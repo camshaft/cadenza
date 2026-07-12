@@ -48,9 +48,10 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // known at compile time, so its bytes are baked into the resource core module (no runtime heap
     // construction, no selection of a compound-returning body — which would decline at `select`) and the
     // whole component takes the resource shape, a different envelope than the multi-export boundary. A
-    // RUNTIME compound (elements computed at run time) is R2 (the real handle-walking encoder); it falls
-    // through to the normal path and still declines at `export_result`. Routes ONLY the constant
-    // single-export case for now.
+    // RUNTIME compound (elements computed at run time) crosses through the SAME resource shape but its
+    // `encode()` WALKS the live handle from the value-form template (R2) instead of baking bytes; it is
+    // routed just below. Only the single nullary-export compound case takes the resource shape; any
+    // other compound host-return (multi-export, parameterized) falls through and declines below.
     if let [e] = &layout.exports[..]
         && e.params.is_empty()
         && matches!(e.result, crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_))
@@ -124,9 +125,9 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
         // The export's RESULT crosses as a `BoundaryResult`: unit → None, a scalar → its primitive
-        // byte, a compound → the canonical binary value form as `list<u8>` (the escape path). Until the
-        // resource `encode()` renderer lands (R2/R3) a compound host-return DECLINES here rather than
-        // crossing as a raw handle — `export_result` carries that decline.
+        // byte. A COMPOUND host-return does not cross on THIS multi-export path — the single nullary
+        // export case took the resource-escape shape above; a compound reaching here (a multi-export or
+        // parameterized export) declines, carried by `export_result`.
         let result = serialize::export_result(&e.result).map_err(Reject::decline)?;
         // Each parameter's COMPONENT-boundary valtype (distinct from the core valtype — a signed 64
         // integer is `s64` at the boundary, `i64` in the core). A parameter is a scalar (a `list<u8>`
