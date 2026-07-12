@@ -4,7 +4,7 @@
 1740	map_insert x1000
 1126	map_iterate x1000
 0	map_lookup x1000
-1953	map_remove x1000
+954	map_remove x1000
 1858	set_difference x1000
 1852	set_intersection x1000
 1041	set_union x1000

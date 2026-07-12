@@ -3160,18 +3160,15 @@ fn champ_remove_fbip(
             Some(j) => j,
             None => return (node, false), // absent — unchanged, zero alloc
         };
-        // Present: NOW take the vector and rebuild without the removed entry.
-        let handles = champ_take_handles(node);
+        // Present: drain the removed entry's `stride` columns from the taken vector IN PLACE (reusing
+        // its allocation), shifting the remaining collision entries left — collision entries stay in
+        // canonical KEY order, so the drain preserves it.
+        let mut handles = champ_take_handles(node);
         let entries_after = (arity / stride - 1) as u32;
-        let mut new_handles = Vec::with_capacity(arity - stride);
-        for (i2, &h) in handles.iter().enumerate() {
-            if i2 >= j && i2 < j + stride {
-                op_drop(h); // removed entry columns: release the node's reference
-            } else {
-                new_handles.push(h); // carried, no dup
-            }
+        for h in handles.drain(j..j + stride) {
+            op_drop(h); // removed entry columns: release the node's reference
         }
-        return (champ_become_hdr(node, new_handles, 0, 0, entries_after), true);
+        return (champ_become_hdr(node, handles, 0, 0, entries_after), true);
     }
 
     let dcount = data_count(datamap) as usize;
@@ -3185,26 +3182,18 @@ fn champ_remove_fbip(
         if !champ_eq(champ_handle_at(node, stride * eidx), key) {
             return (node, false); // different key occupies the slot — absent, zero alloc
         }
-        // Present: take the vector and rebuild without the removed entry (keeping the subnodes).
-        let handles = champ_take_handles(node);
+        // Present: remove the entry's `stride` columns from the taken vector IN PLACE (drain the range),
+        // reusing its allocation rather than building a fresh `new_handles`. The removed columns sit at
+        // `[base .. base+stride)` within the entry region (which precedes the subnodes), so draining them
+        // shifts the remaining entries + all subnodes left by `stride` — exactly the canonical layout.
+        let mut handles = champ_take_handles(node);
         let new_datamap = datamap & !bit;
-        let mut new_handles = Vec::with_capacity(arity - stride);
-        for e in 0..dcount {
-            if e == eidx {
-                for t in 0..stride {
-                    op_drop(handles[stride * e + t]); // removed entry columns: release refs
-                }
-                continue;
-            }
-            for t in 0..stride {
-                new_handles.push(handles[stride * e + t]); // carried, no dup
-            }
-        }
-        for s in 0..scount {
-            new_handles.push(handles[subbase + s]); // carried, no dup
+        let base = stride * eidx;
+        for h in handles.drain(base..base + stride) {
+            op_drop(h); // removed entry columns: release the node's references
         }
         return (
-            champ_become_hdr(node, new_handles, new_datamap, nodemap, size - 1),
+            champ_become_hdr(node, handles, new_datamap, nodemap, size - 1),
             true,
         );
     }
@@ -3953,10 +3942,10 @@ mod tests {
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
-    /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance work
-    /// (insert 1740, remove 1953, iterate 1126, push 197, get 0, lookup 0; set union 1041 / ∩ 1852 /
-    /// ∖ 1858); they are UPPER BOUNDS so ordinary noise never trips them but a regression toward the old
-    /// 6779/8397/5248/1000 does.
+    /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
+    /// in-place remove-drain work (insert 1740, remove 954, iterate 1126, push 197, get 0, lookup 0;
+    /// set union 1041 / ∩ 1852 / ∖ 1858); they are UPPER BOUNDS so ordinary noise never trips them but a
+    /// regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -4010,7 +3999,7 @@ mod tests {
             }
         });
         println!("ALLOC map_remove x{N}: {remove}");
-        assert!(remove <= 2400, "unique map_remove x{N} allocs {remove} exceeds ceiling 2400 (8397 → 5207 champ_become_hdr → 2953 lazy-remove → ~1953 lazy champ_eq worklist)");
+        assert!(remove <= 1100, "unique map_remove x{N} allocs {remove} exceeds ceiling 1100 (8397 → 5207 champ_become_hdr → 2953 lazy-remove → 1953 lazy champ_eq worklist → ~954 in-place drain of the removed entry)");
         op_drop(m2);
 
         // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
@@ -7274,6 +7263,70 @@ mod tests {
         assert_eq!(mlookup_int(m, 3), Some(30));
         op_drop(m);
         assert_eq!(live_nodes(), before);
+    }
+
+    #[test]
+    fn map_remove_inplace_drain_shifts_entries_and_subnodes_canonically() {
+        reset();
+        let before = live_nodes();
+        // Guards the in-place `Vec::drain(base..base+stride)` in the datamap-found remove branch: the
+        // removed entry's columns sit in the entry region (BEFORE the subnodes), so draining them must
+        // shift BOTH the remaining inline entries AND every subnode left by `stride`, preserving the
+        // canonical layout. Build a node with several inline entries PLUS a subnode (from a low-5
+        // split), remove an inline entry whose slot is BELOW the subnode's (so the drain shifts the
+        // subnode), and assert byte-identical (champ_eq + champ_hash) to the copy-path build + a fresh
+        // build of the surviving keys. Value maps (stride 2) so the drain removes two columns at once.
+        let (sa, sb) = low5_split_pair(); // sa,sb share low-5 ⇒ a subnode at the root
+        // Ordinary keys in distinct low-5 slots so they stay inline alongside the subnode.
+        let inline_keys = [1i64, 2, 3, 4];
+        let remove_key = 2i64; // an inline entry to remove (present, not the split pair)
+        let build = |shared: bool| -> Handle {
+            let mut m = op_map_empty();
+            let mut all: Vec<(i64, i64)> = vec![(sa, 100), (sb, 200)];
+            for &k in &inline_keys {
+                all.push((k, k * 10));
+            }
+            for &(k, v) in &all {
+                if shared {
+                    op_dup(m);
+                    let old = m;
+                    m = minsert_int(m, k, v);
+                    op_drop(old);
+                } else {
+                    m = minsert_int(m, k, v);
+                }
+            }
+            if shared {
+                op_dup(m);
+                let old = m;
+                m = mremove_int(m, remove_key);
+                op_drop(old);
+            } else {
+                m = mremove_int(m, remove_key); // unique → the in-place drain path
+            }
+            m
+        };
+        let fbip = build(false);
+        let copy = build(true);
+        let fresh = {
+            // A fresh map of exactly the survivors, in a different insert order.
+            let mut m = op_map_empty();
+            for &(k, v) in &[(4i64, 40), (sa, 100), (3, 30), (sb, 200), (1, 10)] {
+                m = minsert_int(m, k, v);
+            }
+            m
+        };
+        assert!(champ_eq(fbip, copy), "in-place drain remove == copy-path remove (canonical)");
+        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert!(champ_eq(fbip, fresh), "== a fresh map of the survivors (order-independent canonical)");
+        assert_eq!(mlookup_int(fbip, remove_key), None, "removed key absent");
+        for &(k, v) in &[(sa, 100i64), (sb, 200), (1, 10), (3, 30), (4, 40)] {
+            assert_eq!(mlookup_int(fbip, k), Some(v), "survivor {k} intact after the drain shift");
+        }
+        op_drop(fbip);
+        op_drop(copy);
+        op_drop(fresh);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     #[test]
