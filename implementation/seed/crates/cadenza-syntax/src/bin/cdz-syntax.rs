@@ -52,16 +52,20 @@ struct QueryArgs {
     /// (wildcard), `,(x GUARD…)` (guarded, e.g. `,(x is-literal)` / `,(x (head-is +))`).
     pattern: String,
 
-    /// Input file; omit or use `-` to read stdin.
-    file: Option<String>,
+    /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin.
+    files: Vec<String>,
 
-    /// Input format. Inferred from FILE's extension when omitted; required when reading stdin.
+    /// Input format. Inferred from each FILE's extension when omitted; required when reading stdin.
     #[arg(short, long, value_enum)]
     from: Option<Fmt>,
 
     /// Print only the number of matches, not the matches themselves.
     #[arg(short, long)]
     count: bool,
+
+    /// Emit matches as JSON (`[{file?, span, matched, bindings}]`) for machine consumption.
+    #[arg(long)]
+    json: bool,
 
     /// Keep only matches that occur INSIDE some ancestor matching this pattern (repeatable).
     #[arg(long)]
@@ -88,10 +92,10 @@ struct RewriteArgs {
     /// The s-expression replacement template; its metavariables are filled from the match.
     template: Option<String>,
 
-    /// Input file; omit or use `-` to read stdin.
-    file: Option<String>,
+    /// Input files or directories (recursed by extension). Omit (or use `-`) to read stdin.
+    files: Vec<String>,
 
-    /// Input format. Inferred from FILE's extension when omitted; required when reading stdin.
+    /// Input format. Inferred from each FILE's extension when omitted; required when reading stdin.
     #[arg(short, long, value_enum)]
     from: Option<Fmt>,
 
@@ -115,6 +119,19 @@ struct RewriteArgs {
     /// Traverse top-down (match outermost first) instead of the default bottom-up.
     #[arg(long = "top-down")]
     top_down: bool,
+
+    /// Show a unified diff of each change instead of the rewritten program. Preview mode.
+    #[arg(long)]
+    diff: bool,
+
+    /// Apply the rewrite in place, overwriting each input FILE (only when it changes and validates).
+    /// Requires FILE inputs (never stdin). Mutually exclusive with `--diff`/`--json`.
+    #[arg(long)]
+    write: bool,
+
+    /// Emit the rewrite result as JSON (`{file?, count, rewritten}`) for machine consumption.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -201,10 +218,78 @@ fn compile_patterns(srcs: &[String]) -> Result<Vec<Pattern>, String> {
         .collect()
 }
 
-/// Search the target for a pattern (with optional structural context), printing matches (or a count).
+/// One resolved target: an optional path (`None` = stdin) and the format to read it as.
+struct TargetSpec {
+    path: Option<String>,
+    format: Format,
+}
+
+/// Expand the `files` argument list into concrete targets. An empty list (or a lone `-`) means
+/// stdin (then `--from` supplies the format). A directory is recursed, collecting every file whose
+/// extension maps to a surface (`.cdz`/`.ml`/`.sexp`/`.sexpr`/`.bin`/`.cdzb`); `--from` overrides the
+/// per-file inference. Results are path-sorted for deterministic output.
+fn collect_targets(files: &[String], from: Option<Fmt>) -> Result<Vec<TargetSpec>, String> {
+    // stdin case
+    if files.is_empty() || (files.len() == 1 && files[0] == "-") {
+        return Ok(vec![TargetSpec {
+            path: None,
+            format: resolve_from(from, files.first().map(String::as_str))?,
+        }]);
+    }
+    let mut out = Vec::new();
+    for f in files {
+        let p = std::path::Path::new(f);
+        if p.is_dir() {
+            collect_dir(p, from, &mut out)?;
+        } else {
+            let format = resolve_from(from, Some(f))?;
+            out.push(TargetSpec {
+                path: Some(f.clone()),
+                format,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// Recurse `dir`, adding every file with a recognized surface extension (or all files, if `--from`
+/// forces a format). Skips unreadable entries with a stderr warning rather than aborting the walk.
+fn collect_dir(dir: &std::path::Path, from: Option<Fmt>, out: &mut Vec<TargetSpec>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading dir {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("cdz-syntax: skipping unreadable entry in {}: {e}", dir.display());
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path.is_dir() {
+            collect_dir(&path, from, out)?;
+        } else {
+            let path_str = path.to_string_lossy().into_owned();
+            // With no --from, only files whose extension maps to a surface are eligible.
+            match (from, Format::from_extension(&path_str)) {
+                (Some(f), _) => out.push(TargetSpec {
+                    path: Some(path_str),
+                    format: f.into(),
+                }),
+                (None, Some(fmt)) => out.push(TargetSpec {
+                    path: Some(path_str),
+                    format: fmt,
+                }),
+                (None, None) => {} // not a recognized source file; skip
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Search the targets for a pattern (with optional structural context), printing matches, a count,
+/// or JSON. Runs over one-or-more files (or stdin), reporting per file when more than one.
 fn run_query(args: &QueryArgs) -> Result<(), String> {
-    let from = resolve_from(args.from, args.file.as_deref())?;
-    let input = read_input(args.file.as_deref())?;
     let pattern = Pattern::compile(&args.pattern).map_err(|e| e.to_string())?;
     let relquery = Query {
         inside: compile_patterns(&args.inside)?,
@@ -212,31 +297,64 @@ fn run_query(args: &QueryArgs) -> Result<(), String> {
         not_inside: compile_patterns(&args.not_inside)?,
         not_has: compile_patterns(&args.not_has)?,
     };
+    let targets = collect_targets(&args.files, args.from)?;
+    let multi = targets.len() > 1;
+    let mut total = 0usize;
+    let mut json_objs: Vec<String> = Vec::new();
 
-    let (target, errors) = query::driver::load(&input, from)?;
-    report_input_errors(&errors);
+    for spec in &targets {
+        let input = read_input(spec.path.as_deref())?;
+        let (target, errors) = query::driver::load(&input, spec.format)
+            .map_err(|e| with_path(&spec.path, &e))?;
+        report_input_errors(spec.path.as_deref(), &errors);
 
-    if args.count {
-        println!("{}", query::count_with(&pattern, &relquery, &target.tree));
-    } else {
+        if args.json {
+            json_objs.push(query::driver::matches_json(
+                &pattern,
+                &relquery,
+                &target,
+                spec.path.as_deref(),
+            ));
+            continue;
+        }
+        if args.count {
+            let n = query::count_with(&pattern, &relquery, &target.tree);
+            total += n;
+            if multi {
+                println!("{}: {n}", label(&spec.path));
+            }
+            continue;
+        }
         let report = query::driver::report_matches(&pattern, &relquery, &target);
-        // Print the report as-is (each match already ends in a newline); empty means no matches.
+        if multi && !report.is_empty() {
+            println!("=== {} ===", label(&spec.path));
+        }
         print!("{report}");
+    }
+
+    if args.json {
+        // Concatenate the per-file arrays into one flat array of match objects.
+        let inner: Vec<String> = json_objs
+            .iter()
+            .map(|a| a.trim_start_matches('[').trim_end_matches(']').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        println!("[{}]", inner.join(","));
+    } else if args.count && multi {
+        println!("total: {total}");
+    } else if args.count && !multi {
+        println!("{total}");
     }
     Ok(())
 }
 
-/// Rewrite the target: apply the rule (or rule set) under the chosen strategy, validated, then project.
+/// Rewrite the targets: apply the rule (or rule set) under the chosen strategy, validated, then
+/// project — printing the result, a unified diff (`--diff`), JSON (`--json`), or writing in place
+/// (`--write`). Runs over one-or-more files (or stdin).
 fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
-    let from = resolve_from(args.from, args.file.as_deref())?;
-    // Default the output format to the input format (a rewrite usually stays on the same surface),
-    // overridable with --to; binary output is unsupported for rewrites (the driver rejects it).
-    let to = args
-        .to
-        .map(Format::from)
-        .or_else(|| args.file.as_deref().and_then(Format::from_extension))
-        .unwrap_or(from);
-
+    if args.write && (args.diff || args.json) {
+        return Err("--write is mutually exclusive with --diff / --json".into());
+    }
     // The rule set comes from either --rules FILE, or the positional PATTERN + TEMPLATE.
     let rules = match &args.rules {
         Some(path) => {
@@ -262,27 +380,112 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
     } else {
         Strategy::BottomUp
     };
+    let targets = collect_targets(&args.files, args.from)?;
+    if args.write && targets.iter().any(|t| t.path.is_none()) {
+        return Err("--write needs FILE input(s), not stdin".into());
+    }
+    let multi = targets.len() > 1;
+    let mut json_objs: Vec<String> = Vec::new();
 
-    let input = read_input(args.file.as_deref())?;
-    let (target, errors) = query::driver::load(&input, from)?;
-    report_input_errors(&errors);
+    for spec in &targets {
+        // Output format: --to, else the file extension, else the input format.
+        let to = args
+            .to
+            .map(Format::from)
+            .or_else(|| spec.path.as_deref().and_then(Format::from_extension))
+            .unwrap_or(spec.format);
 
-    let outcome =
-        query::driver::apply_rewrite(&rules, strategy, &target, to, args.width, args.fixpoint)?;
-    // Report the site count to stderr (so stdout is exactly the rewritten program, pipeable).
-    eprintln!("cdz-syntax: rewrote {} site(s)", outcome.count);
-    print!("{}", outcome.output);
-    if !outcome.output.ends_with('\n') {
-        println!();
+        let input = read_input(spec.path.as_deref())?;
+        let (target, errors) =
+            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
+        report_input_errors(spec.path.as_deref(), &errors);
+
+        let outcome =
+            query::driver::apply_rewrite(&rules, strategy, &target, to, args.width, args.fixpoint)
+                .map_err(|e| with_path(&spec.path, &e))?;
+
+        if args.json {
+            json_objs.push(query::driver::rewrite_json(
+                spec.path.as_deref(),
+                outcome.count,
+                &outcome.output,
+            ));
+            continue;
+        }
+
+        if args.diff {
+            // Diff the ORIGINAL projected the same way as the result (no reformatting noise).
+            let before = query::driver::project_target(&target, to, args.width)?;
+            let d = query::diff::unified(
+                &before,
+                &outcome.output,
+                &format!("a/{}", label(&spec.path)),
+                &format!("b/{}", label(&spec.path)),
+            );
+            if d.is_empty() {
+                eprintln!("cdz-syntax: {}: no change", label(&spec.path));
+            } else {
+                print!("{d}");
+            }
+            continue;
+        }
+
+        if args.write {
+            let path = spec.path.as_deref().expect("write requires a path");
+            if outcome.count == 0 {
+                eprintln!("cdz-syntax: {path}: no change");
+            } else {
+                let content = ensure_trailing_newline(&outcome.output);
+                std::fs::write(path, content).map_err(|e| format!("writing {path}: {e}"))?;
+                eprintln!("cdz-syntax: {path}: rewrote {} site(s)", outcome.count);
+            }
+            continue;
+        }
+
+        // Default: print the rewritten program to stdout, count to stderr.
+        if multi {
+            eprintln!("cdz-syntax: {}: rewrote {} site(s)", label(&spec.path), outcome.count);
+            println!("=== {} ===", label(&spec.path));
+        } else {
+            eprintln!("cdz-syntax: rewrote {} site(s)", outcome.count);
+        }
+        print!("{}", outcome.output);
+        if !outcome.output.ends_with('\n') {
+            println!();
+        }
+    }
+
+    if args.json {
+        println!("[{}]", json_objs.join(","));
     }
     Ok(())
 }
 
+/// A display label for a target path (`(stdin)` when reading stdin).
+fn label(path: &Option<String>) -> String {
+    path.clone().unwrap_or_else(|| "(stdin)".to_string())
+}
+
+/// Prefix an error with the target path (or `(stdin)`), so a multi-file run points at the culprit.
+fn with_path(path: &Option<String>, msg: &str) -> String {
+    format!("{}: {msg}", label(path))
+}
+
+/// Ensure the text ends in exactly one newline (for writing a file back).
+fn ensure_trailing_newline(s: &str) -> String {
+    if s.ends_with('\n') {
+        s.to_string()
+    } else {
+        format!("{s}\n")
+    }
+}
+
 /// Note any recoverable parse errors in the input on stderr — the query still runs over the
 /// recovered tree (the parser never bails), but the user should know the input wasn't clean.
-fn report_input_errors(errors: &[String]) {
+fn report_input_errors(path: Option<&str>, errors: &[String]) {
+    let where_ = path.unwrap_or("(stdin)");
     for e in errors {
-        eprintln!("cdz-syntax: input parse warning: {e}");
+        eprintln!("cdz-syntax: {where_}: input parse warning: {e}");
     }
 }
 

@@ -4,10 +4,12 @@ description: >-
   How to structurally search and rewrite Cadenza programs with the `cdz-syntax query` / `rewrite`
   codemod tool (in the cadenza-syntax crate). Read this whenever the task is finding or transforming
   code by SHAPE rather than text — structural search-and-replace, a rename/peephole/wrap refactor,
-  a multi-rule simplifier pass, counting occurrences of a form, extracting spans of matching nodes,
-  or building on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern language, structural
-  guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`), multi-rule
-  sets + traversal strategy, the CLI, the library API, and how it maps to the self-hosted sidecar.
+  a multi-rule simplifier pass, running a codemod across files/directories (apply in place, diff
+  preview, or JSON), counting occurrences of a form, extracting spans of matching nodes, or building
+  on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern language, structural guards
+  (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`), multi-rule sets +
+  traversal strategy, multi-file/`--write`/`--diff`/`--json`, the CLI, the library API, and how it
+  maps to the self-hosted sidecar.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
@@ -84,17 +86,29 @@ $ printf '(do (safe x) (danger (g x)))' | cdz-syntax query 'x' --from sexpr --in
 # a multi-rule peephole set (first match wins), applied in one bottom-up pass
 $ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz-syntax rewrite --rules peephole.rules --from sexpr
 (f a b 0)
+
+# run over a whole directory; --json for machine-readable output
+$ cdz-syntax query '(+ ,e 0)' src/ --json
+[{"file":"src/a.ml","span":{"start":2,"end":7},"matched":"(+ x 0)","bindings":{"e":"x"}}, …]
+
+# preview a rewrite (--diff, file untouched), then apply in place across a dir (--write)
+$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --diff
+$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
 ```
 
-- `query` prints matches (span + bindings) or, with `--count`, the number. No match ⇒ empty, exit 0.
-  Filter by structural context: `--inside PAT` / `--has PAT` / `--not-inside PAT` / `--not-has PAT`
-  (repeatable, conjunctive; ancestry/containment only — no scope).
+- **Multiple FILEs and directories** are accepted (a DIR is recursed by extension); with no FILE,
+  input is stdin. Human output over several files is grouped by `=== file ===`.
+- `query` prints matches (span + bindings), `--count` the number (per file + a `total:`), or `--json`
+  a flat array `[{file?, span, matched, bindings}]`. No match ⇒ empty, exit 0. Filter by structural
+  context: `--inside`/`--has`/`--not-inside`/`--not-has PAT` (repeatable, conjunctive; ancestry/
+  containment only — no scope).
 - `rewrite PATTERN TEMPLATE` (or `rewrite --rules FILE`) prints the rewritten program to **stdout** and
-  the site count to **stderr** (so stdout stays a clean, pipeable program). `--rules FILE` is a
-  sequence of `(rule PATTERN TEMPLATE)` forms applied together (first match wins). Traversal is
-  bottom-up by default; `--top-down` matches outermost-first. `--fixpoint` re-applies until stable
-  (bounded). It **validates as a transaction**: the result is re-printed to ML and re-parsed; if it
-  doesn't round-trip, the rewrite is **rejected** (non-zero exit, no output) — never a half-applied edit.
+  the count to **stderr** (stdout stays a clean, pipeable program). `--rules FILE` = `(rule PAT TMPL)`
+  forms (first match wins); `--top-down` (default bottom-up); `--fixpoint` (bounded). Output modes:
+  `--diff` previews a unified diff (file untouched), `--write` applies in place (FILE inputs only,
+  changed files only), `--json` emits `{file?, count, rewritten}` (mutually exclusive with `--write`).
+  Always **validates as a transaction**: the result is re-printed to ML + re-parsed; if it doesn't
+  round-trip it is **rejected** (non-zero exit, nothing written) — never a half-applied edit.
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
@@ -132,7 +146,16 @@ let sat2  = query::rewrite_rules_fixpoint(&rules, &tree, Strategy::BottomUp, 64)
 let (target, warnings) = query::driver::load(bytes, Format::Ml)?;
 let report  = query::driver::report_matches(&pat, &q, &target);
 let outcome = query::driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Ml, 100, false)?;
+
+// machine-readable output + diff (dependency-free helpers)
+let mjson = query::driver::matches_json(&pat, &q, &target, Some("a.ml"));    // [{file?,span,matched,bindings}]
+let rjson = query::driver::rewrite_json(Some("a.ml"), outcome.count, &outcome.output);
+let before = query::driver::project_target(&target, Format::Ml, 100)?;       // "before" side of a diff
+let d = query::diff::unified(&before, &outcome.output, "a/a.ml", "b/a.ml");   // unified diff text
 ```
+
+Multi-file / `--write` / directory-walk plumbing lives in the CLI (the bin), not the library — the
+library stays pure. Reach for the driver + `std::fs` if scripting a batch run in Rust.
 
 `search` is top-down (nested matches included). `rewrite` is **bottom-up** — a node is matched against
 its already-rewritten children, so a rule that exposes a new match collapses in one pass

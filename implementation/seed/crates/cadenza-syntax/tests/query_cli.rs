@@ -216,3 +216,138 @@ fn rewrite_requires_a_pattern_or_rules() {
     assert!(!ok);
     assert!(stderr.contains("required"), "reason: {stderr}");
 }
+
+// ---- multi-file, --write, --diff, --json ----
+
+/// A throwaway directory unique to `tag`, cleaned by the caller. (No external tempfile dep.)
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cdz_cli_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn query_over_a_directory_reports_each_file() {
+    let dir = scratch_dir("qdir");
+    std::fs::write(dir.join("a.ml"), "f(x + 0)\n").unwrap();
+    std::fs::write(dir.join("b.sexp"), "(g (+ y 0))\n").unwrap();
+    let (ok, stdout, _) = run(&["query", "(+ ,e 0)", dir.to_str().unwrap()], "");
+    assert!(ok);
+    // per-file headers and both matches present.
+    assert!(stdout.contains("a.ml ==="), "{stdout}");
+    assert!(stdout.contains("b.sexp ==="), "{stdout}");
+    assert!(stdout.contains("(+ x 0)") && stdout.contains("(+ y 0)"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_count_over_a_directory_totals() {
+    let dir = scratch_dir("qcount");
+    std::fs::write(dir.join("a.ml"), "f(x + 0)\n").unwrap();
+    std::fs::write(dir.join("b.ml"), "g(y + 0, z + 0)\n").unwrap();
+    let (ok, stdout, _) = run(&["query", "(+ ,e 0)", dir.to_str().unwrap(), "--count"], "");
+    assert!(ok);
+    assert!(stdout.contains("total: 3"), "expected 3 total: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_json_is_a_flat_array_with_file_and_span() {
+    let dir = scratch_dir("qjson");
+    std::fs::write(dir.join("a.ml"), "f(x + 0)\n").unwrap();
+    let (ok, stdout, _) = run(&["query", "(+ ,e 0)", dir.to_str().unwrap(), "--json"], "");
+    assert!(ok);
+    let s = stdout.trim();
+    assert!(s.starts_with('[') && s.ends_with(']'), "array: {s}");
+    assert!(s.contains("\"file\":"), "{s}");
+    assert!(s.contains("\"span\":{\"start\":"), "{s}");
+    assert!(s.contains("\"matched\":\"(+ x 0)\""), "{s}");
+    assert!(s.contains("\"e\":\"x\""), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_write_mutates_the_file_in_place() {
+    let dir = scratch_dir("rwrite");
+    let f = dir.join("p.ml");
+    std::fs::write(&f, "f(a + 0, b + 0)\n").unwrap();
+    let (ok, _, stderr) = run(
+        &["rewrite", "(+ ,x 0)", ",x", f.to_str().unwrap(), "--write"],
+        "",
+    );
+    assert!(ok, "stderr: {stderr}");
+    assert!(stderr.contains("rewrote 2 site(s)"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap().trim(), "f(a, b)");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_write_leaves_unmatched_file_untouched() {
+    let dir = scratch_dir("rnomatch");
+    let f = dir.join("p.ml");
+    std::fs::write(&f, "z - 1\n").unwrap();
+    let (ok, _, stderr) = run(
+        &["rewrite", "(+ ,x 0)", ",x", f.to_str().unwrap(), "--write"],
+        "",
+    );
+    assert!(ok);
+    assert!(stderr.contains("no change"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "z - 1\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_write_rejects_stdin() {
+    let (ok, _, stderr) = run(&["rewrite", "(+ ,x 0)", ",x", "--from", "ml", "--write"], "a + 0");
+    assert!(!ok);
+    assert!(stderr.contains("FILE"), "reason: {stderr}");
+}
+
+#[test]
+fn rewrite_diff_shows_a_unified_hunk_and_does_not_write() {
+    let dir = scratch_dir("rdiff");
+    let f = dir.join("p.ml");
+    std::fs::write(&f, "f(a + 0)\n").unwrap();
+    let (ok, stdout, _) = run(
+        &["rewrite", "(+ ,x 0)", ",x", f.to_str().unwrap(), "--diff"],
+        "",
+    );
+    assert!(ok);
+    assert!(stdout.contains("@@ -1,1 +1,1 @@"), "hunk: {stdout}");
+    assert!(stdout.contains("-f(a + 0)") && stdout.contains("+f(a)"), "{stdout}");
+    // the file itself is untouched (diff is preview only).
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "f(a + 0)\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_write_and_diff_are_mutually_exclusive() {
+    let dir = scratch_dir("rexcl");
+    let f = dir.join("p.ml");
+    std::fs::write(&f, "f(a + 0)\n").unwrap();
+    let (ok, _, stderr) = run(
+        &["rewrite", "(+ ,x 0)", ",x", f.to_str().unwrap(), "--write", "--diff"],
+        "",
+    );
+    assert!(!ok);
+    assert!(stderr.contains("mutually exclusive"), "reason: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_json_reports_file_count_and_result() {
+    let dir = scratch_dir("rjson");
+    let f = dir.join("p.sexp");
+    std::fs::write(&f, "(f (+ a 0) (+ b 0))\n").unwrap();
+    let (ok, stdout, _) = run(
+        &["rewrite", "(+ ,x 0)", ",x", f.to_str().unwrap(), "--json"],
+        "",
+    );
+    assert!(ok);
+    let s = stdout.trim();
+    assert!(s.starts_with('[') && s.ends_with(']'), "array: {s}");
+    assert!(s.contains("\"count\":2"), "{s}");
+    assert!(s.contains("\"rewritten\":\"(f a b)\""), "{s}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1075,6 +1075,264 @@ pub mod driver {
             Format::Binary => Err("binary output is not supported for query results".to_string()),
         }
     }
+
+    /// Project the loaded target's ORIGINAL tree in `to` format — the "before" side of a diff. Diffing
+    /// this against the rewrite's output shows ONLY the structural change, never reformatting noise
+    /// (both sides go through the same printer at the same width).
+    pub fn project_target(target: &Target, to: Format, width: usize) -> Result<String, String> {
+        project(&target.tree.to_arena(), to, width)
+    }
+
+    /// A single query match rendered for machine consumption.
+    pub fn matches_json(pattern: &Pattern, query: &Query, target: &Target, file: Option<&str>) -> String {
+        let matches = search_with(pattern, query, &target.tree, target.spans.as_ref());
+        let mut arr = json::Array::new();
+        for m in &matches {
+            let mut obj = json::Object::new();
+            if let Some(f) = file {
+                obj.string("file", f);
+            }
+            match m.span {
+                Some(s) => obj.raw("span", &format!("{{\"start\":{},\"end\":{}}}", s.start, s.end)),
+                None => obj.raw("span", "null"),
+            }
+            obj.string("matched", &m.node.to_sexpr());
+            let mut binds = json::Object::new();
+            for (name, nodes) in m.bindings.iter() {
+                match nodes {
+                    [one] => binds.string(name, &one.to_sexpr()),
+                    many => {
+                        let mut a = json::Array::new();
+                        for n in many {
+                            a.string(&n.to_sexpr());
+                        }
+                        binds.raw(name, &a.finish());
+                    }
+                }
+            }
+            obj.raw("bindings", &binds.finish());
+            arr.raw(&obj.finish());
+        }
+        arr.finish()
+    }
+
+    /// A rewrite outcome rendered for machine consumption: `{file?, count, rewritten}`.
+    ///
+    /// The whole-file replacement (`rewritten`) IS the edit — our rewrite is whole-tree, so there is
+    /// no non-overlapping per-span edit list to fake. `count` is the number of sites that fired.
+    pub fn rewrite_json(file: Option<&str>, count: usize, rewritten: &str) -> String {
+        let mut obj = json::Object::new();
+        if let Some(f) = file {
+            obj.string("file", f);
+        }
+        obj.raw("count", &count.to_string());
+        obj.string("rewritten", rewritten);
+        obj.finish()
+    }
+}
+
+/// A minimal, dependency-free JSON string builder — just what the `--json` output needs (objects,
+/// arrays, strings, and pre-rendered raw values like numbers/nested objects). No parser, no serde.
+pub mod json {
+    /// Escape a string as a JSON string literal (including the surrounding quotes).
+    pub fn quote(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    /// Accumulates `"key": value` members into a JSON object.
+    #[derive(Default)]
+    pub struct Object {
+        parts: Vec<String>,
+    }
+    impl Object {
+        pub fn new() -> Object {
+            Object::default()
+        }
+        /// A string-valued member.
+        pub fn string(&mut self, key: &str, value: &str) {
+            self.parts.push(format!("{}:{}", quote(key), quote(value)));
+        }
+        /// A member whose value is already-rendered JSON (a number, `null`, a nested object/array).
+        pub fn raw(&mut self, key: &str, value: &str) {
+            self.parts.push(format!("{}:{}", quote(key), value));
+        }
+        pub fn finish(&self) -> String {
+            format!("{{{}}}", self.parts.join(","))
+        }
+    }
+
+    /// Accumulates elements into a JSON array.
+    #[derive(Default)]
+    pub struct Array {
+        parts: Vec<String>,
+    }
+    impl Array {
+        pub fn new() -> Array {
+            Array::default()
+        }
+        /// A string element.
+        pub fn string(&mut self, value: &str) {
+            self.parts.push(quote(value));
+        }
+        /// An element whose value is already-rendered JSON.
+        pub fn raw(&mut self, value: &str) {
+            self.parts.push(value.to_string());
+        }
+        pub fn finish(&self) -> String {
+            format!("[{}]", self.parts.join(","))
+        }
+    }
+}
+
+/// A line-based unified diff, dependency-free — for previewing a rewrite before applying it. Diffs
+/// the two texts by longest-common-subsequence over lines and emits `@@`-hunk unified-diff output
+/// with 3 lines of context.
+pub mod diff {
+    /// One line-level edit, carrying the line text (borrowed from the inputs).
+    enum Edit<'a> {
+        Keep(&'a str),
+        Del(&'a str),
+        Ins(&'a str),
+    }
+
+    /// Unified diff of `old` → `new`, labeled `old_label`/`new_label`. Empty string when identical.
+    pub fn unified(old: &str, new: &str, old_label: &str, new_label: &str) -> String {
+        let a: Vec<&str> = old.lines().collect();
+        let b: Vec<&str> = new.lines().collect();
+        let script = edit_script(&a, &b);
+        if script.iter().all(|e| matches!(e, Edit::Keep(_))) {
+            return String::new();
+        }
+        let mut out = format!("--- {old_label}\n+++ {new_label}\n");
+        for h in group_hunks(&script, 3) {
+            out.push_str(&h);
+        }
+        out
+    }
+
+    /// LCS-based edit script over lines.
+    fn edit_script<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<Edit<'a>> {
+        let (n, m) = (a.len(), b.len());
+        // dp[i][j] = LCS length of a[i..], b[j..].
+        let mut dp = vec![vec![0usize; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                dp[i][j] = if a[i] == b[j] {
+                    dp[i + 1][j + 1] + 1
+                } else {
+                    dp[i + 1][j].max(dp[i][j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        let mut script = Vec::new();
+        while i < n && j < m {
+            if a[i] == b[j] {
+                script.push(Edit::Keep(a[i]));
+                i += 1;
+                j += 1;
+            } else if dp[i + 1][j] >= dp[i][j + 1] {
+                script.push(Edit::Del(a[i]));
+                i += 1;
+            } else {
+                script.push(Edit::Ins(b[j]));
+                j += 1;
+            }
+        }
+        while i < n {
+            script.push(Edit::Del(a[i]));
+            i += 1;
+        }
+        while j < m {
+            script.push(Edit::Ins(b[j]));
+            j += 1;
+        }
+        script
+    }
+
+    /// Group the edit script into unified-diff hunks with `context` lines around each change run.
+    fn group_hunks(script: &[Edit], context: usize) -> Vec<String> {
+        let changed: Vec<usize> = script
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !matches!(e, Edit::Keep(_)))
+            .map(|(i, _)| i)
+            .collect();
+        if changed.is_empty() {
+            return Vec::new();
+        }
+        // Merge nearby changes (gap ≤ 2*context) into shared hunks.
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for &c in &changed {
+            let lo = c.saturating_sub(context);
+            let hi = (c + context).min(script.len() - 1);
+            match ranges.last_mut() {
+                Some(last) if lo <= last.1 + 1 => last.1 = last.1.max(hi),
+                _ => ranges.push((lo, hi)),
+            }
+        }
+        ranges
+            .into_iter()
+            .map(|(lo, hi)| render_hunk(script, lo, hi))
+            .collect()
+    }
+
+    /// Render one hunk covering `script[lo..=hi]` with a 1-based `@@` line-range header.
+    fn render_hunk(script: &[Edit], lo: usize, hi: usize) -> String {
+        // Old/new start = count of old/new lines strictly before `lo`.
+        let mut old_start = 0usize;
+        let mut new_start = 0usize;
+        for e in &script[..lo] {
+            match e {
+                Edit::Keep(_) => {
+                    old_start += 1;
+                    new_start += 1;
+                }
+                Edit::Del(_) => old_start += 1,
+                Edit::Ins(_) => new_start += 1,
+            }
+        }
+        let (mut old_count, mut new_count) = (0usize, 0usize);
+        let mut body = String::new();
+        for e in &script[lo..=hi] {
+            match e {
+                Edit::Keep(t) => {
+                    body.push_str(&format!(" {t}\n"));
+                    old_count += 1;
+                    new_count += 1;
+                }
+                Edit::Del(t) => {
+                    body.push_str(&format!("-{t}\n"));
+                    old_count += 1;
+                }
+                Edit::Ins(t) => {
+                    body.push_str(&format!("+{t}\n"));
+                    new_count += 1;
+                }
+            }
+        }
+        format!(
+            "@@ -{},{} +{},{} @@\n{body}",
+            old_start + 1,
+            old_count,
+            new_start + 1,
+            new_count
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1612,6 +1870,87 @@ mod tests {
         fn output_only_format_is_rejected_as_input() {
             let e = driver::load(b"x", Format::Debug).unwrap_err();
             assert!(e.contains("output-only"), "got {e}");
+        }
+
+        #[test]
+        fn matches_json_is_wellformed_with_span_and_bindings() {
+            let (target, _) = driver::load(b"f(a, b)", Format::Ml).unwrap();
+            let j = driver::matches_json(&pat("(f ,x ,y)"), &Query::new(), &target, Some("in.ml"));
+            // one object, carrying file, a numeric span, the matched form, and both bindings.
+            assert!(j.starts_with('[') && j.ends_with(']'), "array: {j}");
+            assert!(j.contains("\"file\":\"in.ml\""), "{j}");
+            assert!(j.contains("\"span\":{\"start\":"), "{j}");
+            assert!(j.contains("\"matched\":\"(f a b)\""), "{j}");
+            assert!(j.contains("\"x\":\"a\"") && j.contains("\"y\":\"b\""), "{j}");
+        }
+
+        #[test]
+        fn matches_json_no_match_is_empty_array() {
+            let (target, _) = driver::load(b"(g x)", Format::Sexpr).unwrap();
+            assert_eq!(driver::matches_json(&pat("(f ,x)"), &Query::new(), &target, None), "[]");
+        }
+
+        #[test]
+        fn rewrite_json_shape() {
+            let j = driver::rewrite_json(Some("p.ml"), 2, "f(a, b)");
+            assert!(j.contains("\"file\":\"p.ml\""), "{j}");
+            assert!(j.contains("\"count\":2"), "{j}");
+            assert!(j.contains("\"rewritten\":\"f(a, b)\""), "{j}");
+        }
+
+        #[test]
+        fn project_target_is_the_before_side() {
+            let (target, _) = driver::load(b"(+ x 0)", Format::Sexpr).unwrap();
+            assert_eq!(driver::project_target(&target, Format::Sexpr, 100).unwrap(), "(+ x 0)");
+        }
+    }
+
+    // ---- json + diff helpers ----
+
+    mod json_tests {
+        use crate::query::json;
+
+        #[test]
+        fn strings_are_escaped() {
+            assert_eq!(json::quote("a\"b\\c\nd"), "\"a\\\"b\\\\c\\nd\"");
+        }
+
+        #[test]
+        fn object_and_array_compose() {
+            let mut o = json::Object::new();
+            o.string("k", "v");
+            o.raw("n", "42");
+            let mut a = json::Array::new();
+            a.string("x");
+            a.raw(&o.finish());
+            assert_eq!(a.finish(), "[\"x\",{\"k\":\"v\",\"n\":42}]");
+        }
+    }
+
+    mod diff_tests {
+        use crate::query::diff;
+
+        #[test]
+        fn identical_inputs_produce_no_diff() {
+            assert_eq!(diff::unified("a\nb\nc", "a\nb\nc", "old", "new"), "");
+        }
+
+        #[test]
+        fn a_single_line_change_is_a_unified_hunk() {
+            let d = diff::unified("a\nb\nc", "a\nB\nc", "old", "new");
+            assert!(d.starts_with("--- old\n+++ new\n"), "header: {d}");
+            assert!(d.contains("@@ -1,3 +1,3 @@"), "hunk header: {d}");
+            assert!(d.contains("-b\n"), "deletion: {d}");
+            assert!(d.contains("+B\n"), "insertion: {d}");
+            assert!(d.contains(" a\n") && d.contains(" c\n"), "context: {d}");
+        }
+
+        #[test]
+        fn pure_insertion_and_deletion() {
+            let ins = diff::unified("a\nc", "a\nb\nc", "o", "n");
+            assert!(ins.contains("+b\n"), "{ins}");
+            let del = diff::unified("a\nb\nc", "a\nc", "o", "n");
+            assert!(del.contains("-b\n"), "{del}");
         }
     }
 }

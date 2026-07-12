@@ -93,14 +93,17 @@ with `--fixpoint` to saturate).
 ## CLI
 
 ```text
-cdz-syntax query   PATTERN [FILE] [--from FMT] [--count]
+cdz-syntax query   PATTERN [FILE|DIR…] [--from FMT] [--count] [--json]
                    [--inside PAT] [--has PAT] [--not-inside PAT] [--not-has PAT]
-cdz-syntax rewrite PATTERN TEMPLATE [FILE] [--from FMT] [--to FMT] [--width N] [--fixpoint] [--top-down]
-cdz-syntax rewrite --rules FILE     [FILE] [--from FMT] [--to FMT] [--width N] [--fixpoint] [--top-down]
+cdz-syntax rewrite PATTERN TEMPLATE [FILE|DIR…] [--from FMT] [--to FMT] [--width N]
+                   [--fixpoint] [--top-down] [--diff | --write | --json]
+cdz-syntax rewrite --rules FILE     [FILE|DIR…] …same flags…
 ```
 
-`--from`/`--to` are inferred from the FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
-binary); `--to` defaults to the input format. With no FILE (or `-`), input is stdin.
+`--from`/`--to` are inferred from each FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
+binary); `--to` defaults to the input format. With no FILE (or `-`), input is stdin. **Multiple FILEs
+and directories** are accepted; a directory is recursed, picking up every file whose extension maps to
+a surface (`--from` forces one). Results are path-sorted.
 
 ```console
 $ printf 'f(a + 0, b * 1)' | cdz-syntax query '(+ ,x 0)' --from ml
@@ -130,15 +133,35 @@ $ printf '(do (safe x) (danger (g x)))' | cdz-syntax query 'x' --from sexpr --in
 $ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz-syntax rewrite --rules peephole.rules --from sexpr
 cdz-syntax: rewrote 3 site(s)
 (f a b 0)
+
+# query a whole directory; --json is a flat, machine-readable array of matches
+$ cdz-syntax query '(+ ,e 0)' src/ --json
+[{"file":"src/a.ml","span":{"start":2,"end":7},"matched":"(+ x 0)","bindings":{"e":"x"}}, …]
+
+# preview a rewrite as a unified diff (file untouched)
+$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --diff
+--- a/src/a.ml
++++ b/src/a.ml
+@@ -1,1 +1,1 @@
+-f(a + 0)
++f(a)
+
+# apply in place across a directory (only files that change and validate are written)
+$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
+cdz-syntax: src/a.ml: rewrote 1 site(s)
 ```
 
 - **query** prints each match as `byte START-END: <matched s-expr>` (the span comes from the parser's
   span table; ML input carries spans, s-expr/binary do not), followed by `  $name = …` binding lines.
-  `--count` prints just the number.
+  `--count` prints the number (per file + a `total:` across a multi-file run). `--json` emits a flat
+  array `[{file?, span, matched, bindings}]`. Over several FILEs/a DIR, human output is grouped by
+  `=== file ===`.
 - **rewrite** prints the rewritten program to stdout and the site count to stderr (so stdout stays a
-  clean, pipeable program). It **validates as a transaction**: the result is re-printed to ML and
-  re-parsed; if it does not round-trip, the rewrite is **rejected** (non-zero exit, no output) — never
-  a half-applied edit.
+  clean, pipeable program). `--diff` previews a unified diff instead (the file is not touched);
+  `--write` applies in place (FILE inputs only, only files that actually change); `--json` emits
+  `{file?, count, rewritten}`. `--write` is mutually exclusive with `--diff`/`--json`. Either way it
+  **validates as a transaction**: the result is re-printed to ML and re-parsed; if it does not
+  round-trip, the rewrite is **rejected** (non-zero exit, nothing written) — never a half-applied edit.
 
 Because the parser is a recovering parser, `query` works over **broken input** too: it reports the
 recoverable parse error on stderr and still runs the query over the recovered tree — the "total query
@@ -181,6 +204,13 @@ rewrite_rules_fixpoint(&RuleSet, &Tree, Strategy, max) -> Rewrite
 query::driver::load(&[u8], Format)                       -> Result<(Target, Vec<String /*warnings*/>), String>
 query::driver::report_matches(&Pattern, &Query, &Target) -> String
 query::driver::apply_rewrite(&RuleSet, Strategy, &Target, Format, width, fixpoint) -> Result<RewriteOutcome, String>
+query::driver::matches_json(&Pattern, &Query, &Target, file: Option<&str>) -> String  // [{file?,span,matched,bindings}]
+query::driver::rewrite_json(file: Option<&str>, count, rewritten) -> String           // {file?,count,rewritten}
+query::driver::project_target(&Target, Format, width) -> Result<String, String>        // the "before" side of a --diff
+
+// small dependency-free helpers (no serde)
+query::json::{quote, Object, Array}     // JSON string builder
+query::diff::unified(old, new, old_label, new_label) -> String   // LCS-based unified diff, 3 lines context
 ```
 
 ## Mapping to the self-hosted end state (Rung 3)
@@ -205,18 +235,21 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
 - **Type-directed queries** (`type-of`, typed metavars) — those reach into the checker; this layer is
   dependency-free (`cadenza-syntax` depends on no compiler crate). They belong to the driver once it
   links `rcdzc`.
-- **Addressed edits** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the
-  `content-addressed-nodes` structural-interface layer, above these primitives.
+- **Addressed edits by stable id** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the
+  `content-addressed-nodes` structural-interface layer, above these primitives. (Pattern-driven
+  replace/apply/preview across files IS here now — via `rewrite --write`/`--diff`/`--json`.)
 - **Type-checking the rewrite result** — the prototype validates *well-formedness* (re-parse +
   round-trip); full type validation is Rung 3.
 
 ## Tests
 
-- `query` module unit tests (53): matching (metavars, consistency, variadic + anchoring, wildcard),
+- `query` module unit tests (62): matching (metavars, consistency, variadic + anchoring, wildcard),
   **guards** (each predicate, `matches`/`not`, conjunction, consistency interaction, compile-time
   rejection), **relational context** (inside/has/not-*, strict-descendant, composition), **multi-rule
-  sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), and the
-  driver.
-- `tests/query_cli.rs` (16): the built binary driven over stdin — query/count/rewrite, guards,
-  relational flags, `--rules` file, `--top-down`, cross-surface, broken-input recovery, bad-pattern /
-  unknown-guard rejection, no-op reprint.
+  sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), the
+  **json** writer + **diff** engine, the driver's JSON/`project_target`.
+- `tests/query_cli.rs` (25): the built binary driven over stdin AND over temp files/dirs — query/
+  count/rewrite, guards, relational flags, `--rules`, `--top-down`, **multi-file & directory walk**,
+  **`--json`** (query + rewrite), **`--diff`** (preview, file untouched), **`--write`** (in-place,
+  no-op skip, stdin-rejected, mutually-exclusive-with-diff), cross-surface, broken-input recovery,
+  bad-pattern / unknown-guard rejection.
