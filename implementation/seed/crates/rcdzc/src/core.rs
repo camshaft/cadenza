@@ -97,8 +97,8 @@ pub enum Core {
     /// selected arm's core in `lower`). The backend emits a chain of `if`s: probe the scrutinee against
     /// each literal, take that arm's body on a match, else fall through to the next; a wildcard arm is
     /// the unconditional tail. `scrutinee` and each body are AST `StructId`s (lowered on demand); the
-    /// probe carries the literal as data so no comparison node is synthesized. Binder/sum/tuple probes
-    /// join this in later increments.
+    /// probe carries the literal as data so no comparison node is synthesized. A binder arm is a `Wild`
+    /// probe (see [`Probe`]); a sum/tuple/record scrutinee walks the value heap rather than probing here.
     Match {
         scrutinee: StructId,
         arms: Vec<(Probe, StructId)>,
