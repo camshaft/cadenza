@@ -2369,12 +2369,19 @@ fn op_map_size(m: Handle) -> u32 {
 /// value at `base+1`; set contains just checks presence.
 #[allow(dead_code)]
 fn champ_find_base(m: Handle, key: Handle, stride: usize) -> Option<(Handle, usize)> {
+    champ_find_base_h(m, key, champ_hash(key), stride)
+}
+
+/// `champ_find_base` but with `key`'s hash PRECOMPUTED by the caller — so a caller that already needs
+/// `champ_hash(key)` for a following insert (set-algebra ∩/∖: probe-then-insert) computes it ONCE
+/// instead of paying a second full subtree hash walk (costly for string/compound keys). BORROWS.
+#[allow(dead_code)]
+fn champ_find_base_h(m: Handle, key: Handle, hash: u32, stride: usize) -> Option<(Handle, usize)> {
     enum Step {
         Hit(usize),
         Miss,
         Descend(Handle),
     }
-    let hash = champ_hash(key);
     let mut node = m;
     let mut level = 0u32;
     loop {
@@ -3723,13 +3730,25 @@ fn op_set_contains(s: Handle, elem: Handle) -> bool {
     champ_find_base(s, elem, SET_STRIDE).is_some()
 }
 
+/// `op_set_contains` with `elem`'s hash PRECOMPUTED — for a caller (set ∩/∖) that will also insert the
+/// same element and so hashes it once, using this for the membership probe and the same hash for the
+/// insert instead of re-walking the element twice. BORROWS both.
+fn set_contains_h(s: Handle, elem: Handle, hash: u32) -> bool {
+    champ_find_base_h(s, elem, hash, SET_STRIDE).is_some()
+}
+
 /// Insert `elem`, returning the new set. CONSUMES `s`, `elem`. Idempotent: inserting an existing
 /// element leaves size unchanged and drops the incoming duplicate (the shared OVERWRITE rule with
 /// no value columns keeps the stored element and drops the newcomer). Persistent: `op_dup` `s` first
 /// to keep it.
 #[allow(dead_code)]
 fn op_set_insert(s: Handle, elem: Handle) -> Handle {
-    let hash = champ_hash(elem);
+    set_insert_h(s, elem, champ_hash(elem))
+}
+
+/// `op_set_insert` with `elem`'s hash PRECOMPUTED — lets the set-algebra ops reuse the one hash they
+/// computed for the membership probe (or the walk) instead of re-hashing. CONSUMES `s` and `elem`.
+fn set_insert_h(s: Handle, elem: Handle, hash: u32) -> Handle {
     let mine = node_rc(s) == 1;
     // SET_STRIDE (1) routes through the SAME FBIP core as the map — one careful change covers both.
     champ_insert_fbip(s, Entry::elem(elem), hash, 0, SET_STRIDE, mine)
@@ -3880,9 +3899,12 @@ fn op_set_intersection(a: Handle, b: Handle) -> Handle {
         if e == Handle::NULL {
             break;
         }
-        if op_set_contains(probe, e) {
+        // Hash `e` ONCE and reuse it for both the membership probe and the insert (the probe and the
+        // insert would otherwise each re-walk `e`'s subtree — a redundant hash per kept element).
+        let h = champ_hash(e);
+        if set_contains_h(probe, e, h) {
             op_dup(e); // carried; cursor BORROWS
-            acc = op_set_insert(acc, e);
+            acc = set_insert_h(acc, e, h);
         }
         cur = op_set_iter_next(cur);
     }
@@ -3913,9 +3935,11 @@ fn op_set_difference(a: Handle, b: Handle) -> Handle {
         if e == Handle::NULL {
             break;
         }
-        if !op_set_contains(b, e) {
+        // Hash `e` ONCE for both the membership probe and (on a kept element) the insert.
+        let h = champ_hash(e);
+        if !set_contains_h(b, e, h) {
             op_dup(e); // carried; cursor BORROWS
-            acc = op_set_insert(acc, e);
+            acc = set_insert_h(acc, e, h);
         }
         cur = op_set_iter_next(cur);
     }
@@ -8948,6 +8972,61 @@ mod tests {
             op_drop(r);
         }
         assert_eq!(live_nodes(), before, "no leak across intersection cases");
+    }
+
+    #[test]
+    fn set_hash_carrying_variants_match_plain() {
+        reset();
+        let before = live_nodes();
+        // Guards the precomputed-hash variants (set_contains_h / set_insert_h / champ_find_base_h) the
+        // set-algebra ops now use to hash each element ONCE instead of twice: passing `champ_hash(e)`
+        // explicitly must be indistinguishable from letting the op recompute it. A wrong precomputed
+        // hash would misplace or fail to find the element — so assert the `_h` forms agree with the
+        // plain forms across present/absent, over BOTH scalar and (subtree-hashed) string elements.
+        let s = set_of(&[1, 2, 3, 10, 20]);
+        // Scalar probes: present and absent, plain vs _h must agree.
+        for &k in &[1i64, 2, 3, 10, 20, 4, 99, -1] {
+            let probe = op_box_int(k);
+            let h = champ_hash(probe);
+            assert_eq!(
+                op_set_contains(s, probe),
+                set_contains_h(s, probe, h),
+                "contains vs contains_h disagree for {k}"
+            );
+            op_drop(probe);
+        }
+        // String elements exercise a real subtree hash (the case the once-hash win actually helps).
+        let mut strs = op_set_empty();
+        for w in ["alpha", "beta", "gamma"] {
+            strs = op_set_insert(strs, op_str_new(w.to_string()));
+        }
+        for w in ["beta", "delta", "alpha", "zzz"] {
+            let probe = op_str_new(w.to_string());
+            let h = champ_hash(probe);
+            assert_eq!(
+                op_set_contains(strs, probe),
+                set_contains_h(strs, probe, h),
+                "string contains vs contains_h disagree for {w:?}"
+            );
+            op_drop(probe);
+        }
+        // set_insert_h with the right hash must equal a plain insert (same canonical set).
+        let via_h = {
+            let mut a = op_set_empty();
+            for &k in &[5i64, 6, 7] {
+                let e = op_box_int(k);
+                a = set_insert_h(a, e, champ_hash(e));
+            }
+            a
+        };
+        let via_plain = set_of(&[7, 5, 6]); // different order — canonical result is order-independent
+        assert!(champ_eq(via_h, via_plain), "set_insert_h builds the same canonical set as op_set_insert");
+        assert_eq!(champ_hash(via_h), champ_hash(via_plain));
+        op_drop(via_h);
+        op_drop(via_plain);
+        op_drop(s);
+        op_drop(strs);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     #[test]
