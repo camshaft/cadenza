@@ -42,7 +42,10 @@ whose second operand is the integer `0`, binding the first operand to `x`.
 Rules to know:
 - **Consistency (non-linear):** a repeated metavar must bind structurally-equal subtrees — `(+ ,x ,x)`
   matches `(+ a a)` and `(+ (f 1) (f 1))`, not `(+ a b)`. Wildcards `,_` are exempt.
-- **One splice per list,** anchorable on both sides: `(call ,head ,@mid ,last)`.
+- **Several splices per list,** as long as no two are ADJACENT — a fixed element between them anchors
+  each run boundary: `(call ,head ,@mid ,last)`, and the clause-delete idiom `(F ,@before X ,@after)`
+  (delete `X` from ANY position of a variadic form). Only directly-adjacent splices (`,@a ,@b`) are
+  rejected (nothing divides the run).
 - **Unbound template var ⇒ that site is left unchanged** (reject-don't-corrupt).
 
 These are the same quote-pattern shapes (`` `(+ ,x 0) ``) that `spec/semantics/20-structural-editing.sexp`
@@ -80,6 +83,11 @@ f(a, b)
 $ printf '(risky a b)' | cdz-syntax rewrite '(risky ,@args)' '(log (risky ,@args))' --from sexpr
 (log (risky a b))
 
+# delete a clause from ANY position of a variadic form (two splices around a fixed anchor)
+$ printf '(case foo (doc "d") (needs bar) (result 1))' \
+    | cdz-syntax rewrite '(case ,@a (needs ,_) ,@b)' '(case ,@a ,@b)' --from sexpr
+(case foo (doc "d") (result 1))
+
 # a guard + a relational constraint
 $ printf '(do (+ 1 a) (+ b c))' | cdz-syntax query '(+ ,(x is-literal) ,y)' --from sexpr --count
 1
@@ -94,9 +102,13 @@ $ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz-syntax rewrite --rules peephole.rul
 $ cdz-syntax query '(+ ,e 0)' src/ --json
 [{"file":"src/a.ml","span":{"start":2,"end":7},"matched":"(+ x 0)","bindings":{"e":"x"}}, …]
 
-# preview a rewrite (--diff, file untouched), then apply in place across a dir (--write)
+# preview a rewrite (--diff, file untouched), then apply in place across a dir (--write).
+# --write/--diff are FORMATTING-PRESERVING by default: only changed subtrees are spliced at their
+# spans, so a hand-formatted file keeps its layout/comments (the diff is minimal, line-by-line).
 $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --diff
 $ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
+# force a canonical whole-file reflow instead (opt out of preserving):
+$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --write --reprint
 
 # STRUCTURAL diff of two programs — which subtrees changed (not text lines)
 $ cdz-syntax diff before.ml after.ml
@@ -133,8 +145,15 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
   forms (first match wins); `--top-down` (default bottom-up); `--fixpoint` (bounded). Output modes:
   `--diff` previews a unified diff (file untouched), `--write` applies in place (FILE inputs only,
   changed files only), `--json` emits `{file?, count, rewritten}` (mutually exclusive with `--write`).
-  Always **validates as a transaction**: the result is re-printed to ML + re-parsed; if it doesn't
-  round-trip it is **rejected** (non-zero exit, nothing written) — never a half-applied edit.
+  **FORMATTING-PRESERVING by default**: when the output surface matches the input and the input carries
+  spans (ml/sexpr), only the changed subtrees are spliced at their source spans — all other bytes
+  (whitespace, newlines, comments, hand-alignment) are copied verbatim, so a bulk edit of a
+  hand-formatted file gives a **minimal, reviewable diff** instead of a whole-file reflow. A deleted
+  list child removes its own line cleanly (no dangling blank line). `--reprint` opts out (canonical
+  whole-tree reflow, the old behavior — for deliberate normalization); a cross-surface `--to` always
+  reprints. Always **validates as a transaction**: the edited text is re-parsed and checked
+  structurally-equal to the rewritten tree; a splice that can't be validated **falls back to a reprint**
+  (with a warning), and a result that doesn't round-trip is **rejected** — never a half-applied edit.
 - `diff FILE-A FILE-B` is a **structural** (subtree) diff, not a line diff: it reports each changed
   node by path — `PATH: replace OLD => NEW` / `add NEW` / `remove OLD`, or `--json`
   `[{path, kind, old?, new?}]`. Same-head lists recurse positionally (a changed operand is one
@@ -191,9 +210,16 @@ let out2  = query::rewrite_rules(&rules, &tree, Strategy::BottomUp);       // or
 let sat2  = query::rewrite_rules_fixpoint(&rules, &tree, Strategy::BottomUp, 64);
 
 // or the whole driver (what the CLI uses): load a target + project output, with validation
-let (target, warnings) = query::driver::load(bytes, Format::Ml)?;
+let (target, warnings) = query::driver::load(bytes, Format::Ml)?;   // Target carries a SpanTable (ml + sexpr)
 let report  = query::driver::report_matches(&pat, &q, &target);
 let outcome = query::driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Ml, 100, false)?;
+
+// FORMATTING-PRESERVING rewrite: splice changed subtrees into the original `src` at their spans
+// (layout/comments verbatim); validated, else Err (the CLI falls back to a reprint on Err).
+let kept = query::driver::apply_rewrite_preserving(&rules, Strategy::BottomUp, &target, src, Format::Sexpr, false)?;
+// low-level: the span-guided minimal-edit engine + the sexpr reader that now records spans
+let (arena, spans) = cadenza_syntax::sexpr::read_spanned(src)?;   // s-expr with a SpanTable (was span-free)
+let te = query::textedit::rewrite_preserving(src, &old_tree, &new_tree, &span_of, Format::Sexpr); // TextRewrite { output, edits }
 
 // machine-readable output + diff (dependency-free helpers)
 let mjson = query::driver::matches_json(&pat, &q, &target, Some("a.ml"));    // [{file?,span,matched,bindings}]
@@ -252,3 +278,9 @@ its already-rewritten children, so a rule that exposes a new match collapses in 
   fresh name or `,_` when you don't want that.
 - **`--fixpoint` is bounded** (64 passes) precisely because a rule whose output re-matches its input
   (e.g. `,x → (w ,x)`) would otherwise loop; a bounded, non-fixed result is returned, not an error.
+- **`--write`/`--diff` preserve layout by default** — the output keeps the source's exact formatting
+  (only changed subtrees are respliced). If you WANT a canonical reflow (normalize a file), pass
+  `--reprint`. A cross-surface `--to` (e.g. `.sexp` in, `--to ml`) can't splice into the original text,
+  so it always reprints.
+- **Two `,@` splices must have a fixed element between them** — `(f ,@a X ,@b)` is fine (delete/anchor
+  around `X`), `(f ,@a ,@b)` is rejected (no anchor to divide the run).

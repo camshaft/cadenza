@@ -11,10 +11,10 @@
 pub mod ast;
 pub mod canon;
 pub mod codec;
-pub mod fxhash;
 pub mod convert;
 pub mod debug;
 pub mod doc;
+pub mod fxhash;
 pub mod iter;
 pub mod leb128;
 pub mod lexer;

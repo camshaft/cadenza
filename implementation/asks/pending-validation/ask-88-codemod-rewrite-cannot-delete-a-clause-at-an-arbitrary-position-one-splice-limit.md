@@ -1,6 +1,32 @@
 # ask-88 — codemod `rewrite` cannot delete a clause at an arbitrary child position (one-`,@`-splice limit)
 
-**State:** open (tooling change). **Priority:** P020 (ergonomics — the tool works via a workaround; this is about making the natural expression legal).
+**State:** pending-validation (tooling change IMPLEMENTED — awaiting a re-probe on the real corpus edit).
+
+## Resolution (implemented)
+
+The one-splice-per-list rule is lifted: a pattern list may now contain **several `,@` splices as long
+as no two are ADJACENT** — a fixed element between them anchors each run boundary. The matcher grew a
+backtracking `match_splice_seq` (each splice tries every feasible run length; snapshot/restore bindings
+per branch) alongside the fast paths for zero and one splice. Only directly-adjacent splices (`,@a ,@b`,
+nothing to divide the run on) are still rejected, now with a clearer message. So the clause-delete idiom
+
+```
+(case ,@before (needs ,_) ,@after) → (case ,@before ,@after)
+```
+
+matches a target sitting ANYWHERE in a variadic form (front, middle, back). `cadenza-syntax` `query.rs`
+(`compile_pat` adjacency check + `match_seq`/`match_splice_seq`); unit tests
+`two_splices_around_a_fixed_anchor_delete_a_clause`, `three_splices_two_anchors`,
+`two_splices_backtrack_when_the_first_greedy_run_blocks_the_anchor`, and CLI
+`rewrite_deletes_a_clause_at_an_arbitrary_position_via_two_splices`.
+
+**Re-probe:** run the `(needs …)`-strip on `spec/semantics/*.sexp` with the two-splice pattern (no
+`--fixpoint` / no fixed-position fragility) and confirm 0 clauses remain. Landed together with ask-89
+(the layout-preserving `--write`), which is what makes the strip actually landable.
+
+---
+
+**Priority (original):** P020 (ergonomics — the tool works via a workaround; this is about making the natural expression legal).
 
 ## Finding
 

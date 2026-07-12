@@ -1,6 +1,41 @@
 # ask-89 — codemod `rewrite --write` reformats the WHOLE file (collapses layout); no formatting-preserving edit
 
-**State:** open (tooling change). **Priority:** P012 (blocks a real operator-directed bulk edit — see below).
+**State:** pending-validation (tooling change IMPLEMENTED — awaiting a re-probe on the real corpus edit).
+
+## Resolution (implemented)
+
+A **formatting-preserving (span-splicing) rewrite** is now the DEFAULT for `--write`/`--diff`/stdout
+whenever the output surface matches the input and the input carries spans. It edits only the changed
+subtrees at their source spans and copies every other byte — whitespace, newlines, comments,
+hand-alignment — verbatim. Two pieces:
+
+1. **The s-expr reader now records spans.** `sexpr::read_spanned` / `read_all_spanned` produce a
+   `SpanTable` in lockstep with the arena (byte-identical to the untracked path — it is the round-trip
+   oracle, verified by `spanned_arena_is_identical_to_untracked` + `cargo xtask roundtrip` 1030/0), so a
+   `.sexp` target now carries spans exactly like an ML one. This was the blocker: the corpus is `.sexp`,
+   and the old `sexpr::read` returned a span-free arena, so there was nothing to anchor a splice to.
+
+2. **A span-guided minimal-edit engine** (`query::textedit`): align the original tree (with spans)
+   against the rewritten tree (same LCS child-alignment as `treediff`), emit primitive edits — a changed
+   operand is one span splice; a deleted list child is one span deletion (widened to swallow its own
+   line's indent + trailing newline, so no blank line dangles); an inserted child is printed and spliced
+   after its sibling. Applied as non-overlapping edits over the original text. The result is validated as
+   a transaction (re-parsed and checked structurally-equal to the rewritten tree); if a splice can't be
+   validated it falls back to a full reprint with a warning (never a corrupt write).
+
+`--reprint` forces the old whole-tree canonical reflow (kept for deliberate normalization); a
+cross-surface `--to` always reprints. `cadenza-syntax`: `sexpr.rs` (spanned readers), `query.rs`
+(`textedit` module + `driver::apply_rewrite_preserving`), `bin/cdz-syntax.rs` (default + `--reprint`).
+Tests: `rewrite_write_preserves_the_hand_formatted_layout`, `rewrite_preserving_diff_is_minimal`,
+`rewrite_preserving_inserts_a_child_in_place`, `rewrite_reprint_flag_forces_canonical_layout`.
+
+**Re-probe:** run the `(needs …)`-strip across `spec/semantics/*.sexp` with `--write` and confirm the
+`git diff` is only the removed clause lines (not a 1387→1 reflow) and `cargo xtask roundtrip` is clean.
+Manually verified on `09-functions.sexp`: 4 clause lines removed, every other byte identical.
+
+---
+
+**Priority (original):** P012 (blocks a real operator-directed bulk edit — see below).
 
 ## Finding
 

@@ -196,6 +196,15 @@ struct RewriteArgs {
     #[arg(long = "top-down")]
     top_down: bool,
 
+    /// Reprint the WHOLE program through the pretty-printer instead of the default
+    /// formatting-preserving (span-splicing) edit. Preserving mode keeps every unchanged byte —
+    /// whitespace, newlines, comments, hand-alignment — exactly as it was, editing only the changed
+    /// subtrees at their spans; it applies when the output surface matches the input (no `--to`
+    /// conversion) and the input carries spans (ml/sexpr). Use `--reprint` to force a canonical
+    /// reflow (e.g. to normalize layout). A cross-surface `--to` always reprints.
+    #[arg(long)]
+    reprint: bool,
+
     /// Show a unified diff of each change instead of the rewritten program. Preview mode.
     #[arg(long)]
     diff: bool,
@@ -667,26 +676,56 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
             .or_else(|| spec.path.as_deref().and_then(Format::from_extension))
             .unwrap_or(spec.format);
 
-        let Some((target, _src)) = load_target(spec, multi)? else {
+        let Some((target, src)) = load_target(spec, multi)? else {
             continue;
         };
 
-        let outcome = match query::driver::apply_rewrite(
-            &rules,
-            strategy,
-            &target,
-            to,
-            args.width,
-            args.fixpoint,
-        ) {
-            Ok(o) => o,
-            // A rewrite that fails its validated-transaction check on one file of many warns and
-            // skips (the other files still get rewritten); a single target is a hard error.
-            Err(e) if multi => {
-                eprintln!("cdz-syntax: skipping {}", with_path(&spec.path, &e));
-                continue;
+        // Formatting-preserving (span-splicing) mode is the DEFAULT: it applies when the output
+        // surface matches the input (no cross-surface `--to`) and the input carried spans. It edits
+        // only changed subtrees at their spans, leaving all other bytes — layout/comments — verbatim.
+        // `--reprint` forces the canonical whole-tree reflow; a cross-surface conversion always does.
+        let preserving = !args.reprint && to == spec.format && target.spans.is_some();
+
+        let (outcome, preserved) = if preserving {
+            match query::driver::apply_rewrite_preserving(
+                &rules,
+                strategy,
+                &target,
+                &src,
+                spec.format,
+                args.fixpoint,
+            ) {
+                Ok(o) => (o, true),
+                // If the span-splice can't be validated (a rewrite whose edit doesn't re-parse to
+                // the intended tree — e.g. a shape the minimal-edit aligner can't place), fall back
+                // to the whole-tree reprint rather than fail, warning that layout will reflow.
+                Err(e) => {
+                    eprintln!(
+                        "cdz-syntax: {}: {e}; falling back to a full reprint (layout will reflow)",
+                        label(&spec.path)
+                    );
+                    match reprint_outcome(&rules, strategy, &target, to, args.width, args.fixpoint)
+                    {
+                        Ok(o) => (o, false),
+                        Err(e) if multi => {
+                            eprintln!("cdz-syntax: skipping {}", with_path(&spec.path, &e));
+                            continue;
+                        }
+                        Err(e) => return Err(with_path(&spec.path, &e)),
+                    }
+                }
             }
-            Err(e) => return Err(with_path(&spec.path, &e)),
+        } else {
+            match reprint_outcome(&rules, strategy, &target, to, args.width, args.fixpoint) {
+                Ok(o) => (o, false),
+                // A rewrite that fails its validated-transaction check on one file of many warns and
+                // skips (the other files still get rewritten); a single target is a hard error.
+                Err(e) if multi => {
+                    eprintln!("cdz-syntax: skipping {}", with_path(&spec.path, &e));
+                    continue;
+                }
+                Err(e) => return Err(with_path(&spec.path, &e)),
+            }
         };
 
         if args.json {
@@ -699,8 +738,13 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         }
 
         if args.diff {
-            // Diff the ORIGINAL projected the same way as the result (no reformatting noise).
-            let before = query::driver::project_target(&target, to, args.width)?;
+            // The "before" side: the ORIGINAL SOURCE when preserving (so the diff shows only the
+            // real edit, no reformatting noise), else the tree reprojected the same way as the result.
+            let before = if preserved {
+                src.clone()
+            } else {
+                query::driver::project_target(&target, to, args.width)?
+            };
             let d = query::diff::unified(
                 &before,
                 &outcome.output,
@@ -748,6 +792,20 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         println!("[{}]", json_objs.join(","));
     }
     Ok(())
+}
+
+/// The whole-tree reprint rewrite (the pre-ask-89 behavior): apply the rules and project the whole
+/// program through the printer. Used for cross-surface `--to`, `--reprint`, and as the fallback when
+/// a formatting-preserving splice can't be validated.
+fn reprint_outcome(
+    rules: &RuleSet,
+    strategy: Strategy,
+    target: &query::driver::Target,
+    to: Format,
+    width: usize,
+    fixpoint: bool,
+) -> Result<query::driver::RewriteOutcome, String> {
+    query::driver::apply_rewrite(rules, strategy, target, to, width, fixpoint)
 }
 
 /// A display label for a target path (`(stdin)` when reading stdin).

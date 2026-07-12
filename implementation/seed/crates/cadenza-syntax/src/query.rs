@@ -14,8 +14,9 @@
 //!
 //! - `,x`  — an `unquote`, binds ONE node to the name `x`. `,_` matches one node, binding nothing.
 //! - `,@xs` — an `unquote-splicing`, binds a RUN of zero-or-more sibling nodes. `,@_` matches any run
-//!   without binding. At most one splice may appear among a list's direct children (an unambiguous
-//!   run boundary); it may be anchored by fixed nodes on either side: `(f ,head ,@mid ,last)`.
+//!   without binding. Several splices may appear among a list's direct children as long as no two are
+//!   ADJACENT — a fixed element between them anchors each run boundary: `(f ,head ,@mid ,last)`,
+//!   `(case ,@before (needs ,_) ,@after)` (delete a clause from anywhere in a variadic form).
 //!
 //! Everything else is a literal that must match structurally: `(+ ,x 0)` matches an addition whose
 //! second operand is exactly the integer `0`, binding the first operand to `x`.
@@ -132,13 +133,13 @@ pub struct Pattern {
 }
 
 /// The compiled pattern tree. A pattern is either a literal to match exactly, a list (which may
-/// contain at most one splice among its direct children), a single-node metavariable (with optional
-/// structural guards), or a splice metavariable.
+/// contain several splices among its direct children, none adjacent), a single-node metavariable
+/// (with optional structural guards), or a splice metavariable.
 #[derive(Clone, Debug)]
 enum Pat {
     /// A literal atom that must match an equal leaf value.
     Lit(Leaf),
-    /// A list; children matched positionally, honoring at most one splice.
+    /// A list; children matched positionally, honoring zero-or-more (non-adjacent) splices.
     List(Vec<Pat>),
     /// `,x` / `,(x guard…)` — binds one node to `name` if every guard holds. `_` is the wildcard.
     Meta { name: String, guards: Vec<Guard> },
@@ -285,8 +286,8 @@ fn is_wildcard(name: &str) -> bool {
 impl Pattern {
     /// Compile a pattern from s-expression text (e.g. `"(+ ,x 0)"`, `"(f ,(x is-literal) ,@rest)"`).
     ///
-    /// Rejects a list with more than one splice among its direct children (ambiguous run boundary),
-    /// a splice used outside list-child position, and an unknown/ill-formed guard.
+    /// Rejects a list with two ADJACENT splices among its direct children (no anchor divides the
+    /// run), a splice used outside list-child position, and an unknown/ill-formed guard.
     pub fn compile(src: &str) -> Result<Pattern, PatternError> {
         let arena =
             sexpr::read(src).map_err(|e| PatternError(format!("pattern parse: {}", e.0)))?;
@@ -325,10 +326,22 @@ fn compile_pat(t: &Tree) -> Result<Pat, PatternError> {
     match t {
         Tree::Atom(l, _) => Ok(Pat::Lit(l.clone())),
         Tree::List(items, _) => {
-            if items.iter().filter(|c| as_splice(c).is_some()).count() > 1 {
-                return Err(PatternError(
-                    "a pattern list may contain at most one `,@` splice".into(),
-                ));
+            // Several `,@` splices per list are allowed, provided no two are ADJACENT: an anchor
+            // (a fixed pattern element) between them keeps the run boundary unambiguous, so
+            // `(F ,@a X ,@b)` matches a bounded sub-sequence around `X` (the clause-delete idiom).
+            // Two directly-adjacent splices (`,@a ,@b`) have nothing to divide the run on and are
+            // rejected.
+            let mut prev_splice = false;
+            for c in items {
+                let is_splice = as_splice(c).is_some();
+                if is_splice && prev_splice {
+                    return Err(PatternError(
+                        "two `,@` splices cannot be adjacent (nothing anchors the run boundary); \
+                         separate them with a fixed element, e.g. `(f ,@a X ,@b)`"
+                            .into(),
+                    ));
+                }
+                prev_splice = is_splice;
             }
             let mut kids = Vec::with_capacity(items.len());
             for c in items {
@@ -466,19 +479,31 @@ fn head_name(t: &Tree) -> Option<&str> {
     }
 }
 
-/// Match a compiled pattern child-sequence against a subject child-sequence, honoring at most one
-/// splice.
+/// Match a compiled pattern child-sequence against a subject child-sequence, honoring zero-or-more
+/// splices (splices are never adjacent — the compiler guarantees a fixed anchor between any two).
+///
+/// The no-splice case is a fast positional zip. With splices the sequence is a run of fixed
+/// patterns interleaved with splices; each splice absorbs a variable-length run of subject nodes.
+/// A single splice is matched greedily around fixed prefix/suffix anchors; two-or-more splices need
+/// backtracking to place each variable-length run, done by [`match_splice_seq`].
 fn match_seq(pitems: &[Pat], sitems: &[Tree], binds: &mut Bindings) -> bool {
-    let splice_at = pitems.iter().position(|c| matches!(c, Pat::Splice { .. }));
-    match splice_at {
-        None => {
+    let splices = pitems
+        .iter()
+        .filter(|c| matches!(c, Pat::Splice { .. }))
+        .count();
+    match splices {
+        0 => {
             pitems.len() == sitems.len()
                 && pitems
                     .iter()
                     .zip(sitems)
                     .all(|(p, s)| match_pat(p, s, binds))
         }
-        Some(k) => {
+        1 => {
+            let k = pitems
+                .iter()
+                .position(|c| matches!(c, Pat::Splice { .. }))
+                .expect("one splice present");
             let before = &pitems[..k];
             let after = &pitems[k + 1..];
             if sitems.len() < before.len() + after.len() {
@@ -501,7 +526,61 @@ fn match_seq(pitems: &[Pat], sitems: &[Tree], binds: &mut Bindings) -> bool {
             };
             bind_run(binds, name, mid)
         }
+        _ => match_splice_seq(pitems, sitems, binds),
     }
+}
+
+/// Match a pattern sequence containing TWO OR MORE splices against a subject sequence, by recursive
+/// backtracking. Non-adjacency (compiler-guaranteed) means each splice is bounded by fixed patterns;
+/// the first splice's run length is the only free choice at each step, so we try every feasible
+/// length, commit the bindings on a snapshot, and recurse on the remainders — restoring the snapshot
+/// on a failed branch. Exponential in the worst case (many splices) but a pattern has a handful.
+fn match_splice_seq(pitems: &[Pat], sitems: &[Tree], binds: &mut Bindings) -> bool {
+    // Consume any leading fixed (non-splice) patterns positionally — they anchor the front.
+    let first_splice = pitems.iter().position(|c| matches!(c, Pat::Splice { .. }));
+    let Some(k) = first_splice else {
+        // No splice left: a plain positional match of the remaining fixed patterns.
+        return pitems.len() == sitems.len()
+            && pitems
+                .iter()
+                .zip(sitems)
+                .all(|(p, s)| match_pat(p, s, binds));
+    };
+    if sitems.len() < k {
+        return false;
+    }
+    for (p, s) in pitems[..k].iter().zip(&sitems[..k]) {
+        if !match_pat(p, s, binds) {
+            return false;
+        }
+    }
+    let Pat::Splice { name } = &pitems[k] else {
+        unreachable!("k points at a splice")
+    };
+    // The minimum subject length the pattern TAIL (after this splice) needs, so the run can't eat
+    // nodes the tail requires. A trailing splice needs 0; each further fixed pattern needs 1.
+    let tail = &pitems[k + 1..];
+    let tail_min = tail
+        .iter()
+        .filter(|c| !matches!(c, Pat::Splice { .. }))
+        .count();
+    let rest = &sitems[k..];
+    if rest.len() < tail_min {
+        return false;
+    }
+    // Try every feasible run length for this splice (greedy or not — all lengths are explored so a
+    // later anchor can force a shorter/longer run). Snapshot/restore bindings across attempts so a
+    // failed branch leaves no partial binding behind.
+    let max_run = rest.len() - tail_min;
+    for run_len in 0..=max_run {
+        let snapshot = binds.clone();
+        let run = &rest[..run_len];
+        if bind_run(binds, name, run) && match_splice_seq(tail, &rest[run_len..], binds) {
+            return true;
+        }
+        *binds = snapshot;
+    }
+    false
 }
 
 /// Bind a single metavariable, enforcing consistency (a repeated non-wildcard name must bind a
@@ -961,16 +1040,19 @@ pub mod driver {
                 // round-trips through the ML printer (which renders a root single-element `(do X)` as
                 // bare `X`). Only multiple forms wrap in `(do …)`. `read` succeeds iff there's exactly
                 // one form (it errors on trailing input); fall back to `read_all` for several.
-                let arena = match sexpr::read(text) {
-                    Ok(a) => a,
-                    Err(_) => {
-                        sexpr::read_all(text).map_err(|e| format!("s-expr parse: {}", e.0))?
-                    }
+                //
+                // The SPANNED readers record a source span per node, so a Sexpr target carries a
+                // span table just like an ML one — this is what enables the formatting-preserving
+                // (span-splicing) rewrite over a hand-formatted `.sexp` corpus (`apply_rewrite_text`).
+                let (arena, spans) = match sexpr::read_spanned(text) {
+                    Ok(pair) => pair,
+                    Err(_) => sexpr::read_all_spanned(text)
+                        .map_err(|e| format!("s-expr parse: {}", e.0))?,
                 };
                 Ok((
                     Target {
                         tree: Tree::of(&arena),
-                        spans: None,
+                        spans: Some(spans),
                     },
                     Vec::new(),
                 ))
@@ -1071,6 +1153,88 @@ pub mod driver {
             output,
             count: r.count,
         })
+    }
+
+    /// Apply a `rules` set to `target` under `strategy` (optionally to a fixed point) as a
+    /// FORMATTING-PRESERVING rewrite: instead of reprinting the whole tree (which reflows a
+    /// hand-formatted file), splice each changed subtree into the ORIGINAL source `src` at its span,
+    /// leaving every unmatched byte verbatim. Needs `target.spans` (both surfaces now carry a span
+    /// table). The result is validated as a transaction just like [`apply_rewrite`] — re-parsed and
+    /// checked structurally-equal to the rewritten tree — so a splice that produced ill-formed text
+    /// is REJECTED, never written.
+    ///
+    /// `surface` is the source's surface (ML or s-expr), used both to re-parse for validation and to
+    /// render the replacement text of changed/inserted nodes so a splice reads like its neighbours.
+    pub fn apply_rewrite_preserving(
+        rules: &RuleSet,
+        strategy: Strategy,
+        target: &Target,
+        src: &str,
+        surface: Format,
+        fixpoint: bool,
+    ) -> Result<RewriteOutcome, String> {
+        let spans = target.spans.as_ref().ok_or(
+            "formatting-preserving rewrite needs source spans (unavailable for this input)",
+        )?;
+        let r = if fixpoint {
+            rewrite_rules_fixpoint(rules, &target.tree, strategy, 64)
+        } else {
+            rewrite_rules(rules, &target.tree, strategy)
+        };
+
+        // Map an ORIGINAL node (drawn from `target.tree`, so it carries provenance) to its span.
+        let span_of = |t: &Tree| -> Option<(usize, usize)> {
+            t.origin()
+                .and_then(|id| spans.get(id))
+                .map(|s| (s.start, s.end))
+        };
+        let edited = textedit::rewrite_preserving(src, &target.tree, &r.tree, &span_of, surface);
+
+        // Validated transaction: the spliced text must re-parse to the SAME tree the structural
+        // rewrite produced (so the splice didn't corrupt or drift from the intended edit).
+        let want = r.tree.to_arena();
+        let reparsed = reparse(&edited.output, surface)?;
+        if !reparsed.structurally_eq(&want) {
+            return Err(
+                "formatting-preserving rewrite rejected: edited text does not re-parse to the \
+                 rewritten tree (falling back to a whole-file reprint would be needed)"
+                    .to_string(),
+            );
+        }
+
+        Ok(RewriteOutcome {
+            output: edited.output,
+            count: r.count,
+        })
+    }
+
+    /// Re-parse `text` in `surface` to an arena for the validated-transaction check.
+    fn reparse(text: &str, surface: Format) -> Result<Arenas, String> {
+        match surface {
+            Format::Ml => {
+                let parsed = parser::read_ml(text);
+                if !parsed.ok() {
+                    return Err(format!(
+                        "result does not re-parse cleanly ({} error(s)); first: {}",
+                        parsed.errors.len(),
+                        parsed
+                            .errors
+                            .first()
+                            .map(|e| e.message.as_str())
+                            .unwrap_or("?")
+                    ));
+                }
+                Ok(parsed.arenas)
+            }
+            Format::Sexpr => match sexpr::read(text) {
+                Ok(a) => Ok(a),
+                Err(_) => sexpr::read_all(text).map_err(|e| format!("s-expr re-parse: {}", e.0)),
+            },
+            other => Err(format!(
+                "formatting-preserving rewrite unsupported for `{}` input",
+                other.name()
+            )),
+        }
     }
 
     /// Render an arena in `to` format (text formats only for the query path).
@@ -1759,7 +1923,9 @@ pub mod treediff {
         }
     }
 
-    enum Align {
+    /// One LCS alignment op between two child slices. Public so the formatting-preserving edit path
+    /// (`super::textedit`) can reuse the exact same child alignment the structural diff uses.
+    pub enum Align {
         Keep(usize, usize), // (index in a, index in b) — structurally equal, recurse for inner diffs
         Del(usize),         // index in a
         Ins(usize),         // index in b
@@ -1767,7 +1933,11 @@ pub mod treediff {
 
     /// LCS alignment of two child slices by structural equality (the same shape as the line diff, on
     /// trees). Prefers keeping structurally-equal children aligned so Add/Remove land on the genuinely
-    /// new/old ones.
+    /// new/old ones. Exposed as `align_children` for reuse by the span-splicing edit path.
+    pub fn align_children(a: &[Tree], b: &[Tree]) -> Vec<Align> {
+        align(a, b)
+    }
+
     fn align(a: &[Tree], b: &[Tree]) -> Vec<Align> {
         let (n, m) = (a.len(), b.len());
         let mut dp = vec![vec![0usize; m + 1]; n + 1];
@@ -1816,6 +1986,248 @@ pub mod treediff {
                 .collect::<Vec<_>>()
                 .join(".")
         }
+    }
+}
+
+/// FORMATTING-PRESERVING rewrite — splice changed subtrees into the ORIGINAL source at their spans,
+/// leaving every unmatched byte (whitespace, newlines, comments, hand-alignment) exactly as it was.
+///
+/// The whole-tree printer path (`driver::apply_rewrite`) re-serializes the program, which reflows a
+/// hand-formatted file onto the printer's canonical layout — unusable for editing a corpus meant to
+/// be read and diffed line-by-line (ask-89). This module instead ALIGNS the original tree (which
+/// carries a source span per node) against the rewritten tree and emits the MINIMAL set of textual
+/// edits: a changed operand is one span-sized splice; a deleted list child is one span deletion
+/// (widened to swallow its own line's leading indent + trailing newline, so no blank line dangles);
+/// an inserted child is printed and spliced at the right offset. Every other byte is copied verbatim.
+///
+/// This mirrors how comby / ast-grep / jscodeshift edit at spans rather than reprint, and it depends
+/// only on the span table the reader now produces for BOTH surfaces (ML and — via `read_spanned` —
+/// s-expr, the corpus surface). Replacement text for new/changed nodes is rendered in the same
+/// surface as the source, so the splice reads consistently with its neighbours.
+pub mod textedit {
+    use super::{Tree, tree_eq};
+    use crate::convert::Format;
+
+    /// One primitive text edit: replace the original byte range `[start, end)` with `text`. A pure
+    /// deletion has `text == ""`; a pure insertion has `start == end`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Edit {
+        pub start: usize,
+        pub end: usize,
+        pub text: String,
+    }
+
+    /// The result of a formatting-preserving rewrite: the edited source plus the number of primitive
+    /// edits applied (0 ⇒ the edit was a no-op / the tree was unchanged).
+    #[derive(Clone, Debug)]
+    pub struct TextRewrite {
+        pub output: String,
+        pub edits: usize,
+    }
+
+    /// Compute the minimal edits turning `src` (whose tree is `old`, with per-node spans available
+    /// via `old`'s provenance and a span lookup) into the program `new`, then apply them.
+    ///
+    /// `span_of` maps an original node to its source byte range. A node with no span (a synthetic /
+    /// rewritten node) can't be edited in place — but the alignment only ever asks for the span of an
+    /// ORIGINAL node (one drawn from `old`), which always has one, so `span_of` returning `None`
+    /// there signals a bug and falls back to a whole-node print (never a panic).
+    pub fn rewrite_preserving(
+        src: &str,
+        old: &Tree,
+        new: &Tree,
+        span_of: &dyn Fn(&Tree) -> Option<(usize, usize)>,
+        surface: Format,
+    ) -> TextRewrite {
+        let mut edits = Vec::new();
+        diff_edits(src, old, new, span_of, surface, &mut edits);
+        let n = edits.len();
+        let output = apply_edits(src, &mut edits);
+        TextRewrite { output, edits: n }
+    }
+
+    /// Render `t` as source text in `surface` (a single node, one line). Used for the replacement
+    /// text of a changed / inserted node.
+    fn render(t: &Tree, surface: Format) -> String {
+        let arena = t.to_arena();
+        match surface {
+            // ML uses the pretty-printer at a generous width so a spliced node stays on one line
+            // where it fits; the surrounding layout is untouched, so only this node is (re)printed.
+            Format::Ml => crate::printer::print(&arena, 100),
+            // sexpr and everything else: the direct one-line s-expression rendering.
+            _ => crate::sexpr::print(&arena),
+        }
+    }
+
+    /// Walk `old`/`new` in parallel, appending edits for the sub-nodes that differ. The alignment
+    /// rule matches `treediff`: identical ⇒ nothing; same-head lists ⇒ recurse (positional if equal
+    /// arity, else LCS align — children Kept recurse, Removed delete their span, Inserted splice in);
+    /// anything else ⇒ replace this whole node's span.
+    fn diff_edits(
+        src: &str,
+        old: &Tree,
+        new: &Tree,
+        span_of: &dyn Fn(&Tree) -> Option<(usize, usize)>,
+        surface: Format,
+        out: &mut Vec<Edit>,
+    ) {
+        if tree_eq(old, new) {
+            return;
+        }
+        match (old, new) {
+            (Tree::List(a, _), Tree::List(b, _)) if same_head(a, b) => {
+                diff_children(src, old, a, b, span_of, surface, out);
+            }
+            _ => {
+                // Whole-node replace: overwrite the old node's span with the new node's text.
+                if let Some((s, e)) = span_of(old) {
+                    out.push(Edit {
+                        start: s,
+                        end: e,
+                        text: render(new, surface),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Do two child lists share a head name? (Same rule as `treediff::same_head`.)
+    fn same_head(a: &[Tree], b: &[Tree]) -> bool {
+        match (a.first(), b.first()) {
+            (None, None) => true,
+            (Some(x), Some(y)) => match (name_of(x), name_of(y)) {
+                (Some(nx), Some(ny)) => nx == ny,
+                _ => true,
+            },
+            _ => false,
+        }
+    }
+
+    fn name_of(t: &Tree) -> Option<&str> {
+        match t {
+            Tree::Atom(crate::ast::Leaf::Name(n), _) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Diff the children of two same-head lists. Equal arity ⇒ positional recursion; unequal ⇒ LCS
+    /// alignment producing span-anchored delete / insert / recurse edits.
+    fn diff_children(
+        src: &str,
+        old_list: &Tree,
+        a: &[Tree],
+        b: &[Tree],
+        span_of: &dyn Fn(&Tree) -> Option<(usize, usize)>,
+        surface: Format,
+        out: &mut Vec<Edit>,
+    ) {
+        if a.len() == b.len() {
+            for (x, y) in a.iter().zip(b) {
+                diff_edits(src, x, y, span_of, surface, out);
+            }
+            return;
+        }
+        let ops = super::treediff::align_children(a, b);
+        // `anchor_end` tracks the byte offset just past the last old child seen (kept or deleted),
+        // so an inserted new child lands right AFTER its preceding sibling. It starts just past the
+        // parent's opening `(` (or its first child, the head) so a leading insertion is well-placed.
+        let mut anchor_end = a
+            .first()
+            .and_then(span_of)
+            .map(|(_, e)| e)
+            .or_else(|| span_of(old_list).map(|(s, _)| s + 1))
+            .unwrap_or(0);
+        for op in ops {
+            match op {
+                super::treediff::Align::Keep(i, j) => {
+                    diff_edits(src, &a[i], &b[j], span_of, surface, out);
+                    if let Some((_, e)) = span_of(&a[i]) {
+                        anchor_end = e;
+                    }
+                }
+                super::treediff::Align::Del(i) => {
+                    if let Some((s, e)) = span_of(&a[i]) {
+                        let (ws, we) = widen_deletion(src, s, e);
+                        out.push(Edit {
+                            start: ws,
+                            end: we,
+                            text: String::new(),
+                        });
+                        anchor_end = e;
+                    }
+                }
+                super::treediff::Align::Ins(j) => {
+                    // Splice the new child right after the current anchor, prefixed with a separating
+                    // space so tokens don't fuse. (Insertion is the rarer path — the corpus edit is a
+                    // pure deletion; a splice the validator rejects falls back to a reprint upstream.)
+                    out.push(Edit {
+                        start: anchor_end,
+                        end: anchor_end,
+                        text: format!(" {}", render(&b[j], surface)),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Widen a deletion `[s, e)` to swallow the deleted node's own line when it sits ALONE on it:
+    /// extend the start back over leading spaces/tabs to the line start, and the end forward over one
+    /// trailing newline — so removing a `(needs …)` clause on its own line leaves no blank line and no
+    /// dangling indent. If other non-space text shares the line before `s`, only trailing spaces up
+    /// to `s` are kept (we don't eat a preceding token). If text follows on the same line after `e`,
+    /// we don't eat the newline (so we don't join two lines).
+    fn widen_deletion(src: &str, s: usize, e: usize) -> (usize, usize) {
+        let bytes = src.as_bytes();
+        // Extend start left over spaces/tabs.
+        let mut ws = s;
+        while ws > 0 && matches!(bytes[ws - 1], b' ' | b'\t') {
+            ws -= 1;
+        }
+        let at_line_start = ws == 0 || bytes[ws - 1] == b'\n';
+        // Is the remainder of the line (after e) only whitespace up to a newline?
+        let mut k = e;
+        while k < bytes.len() && matches!(bytes[k], b' ' | b'\t' | b'\r') {
+            k += 1;
+        }
+        let line_tail_blank = k >= bytes.len() || bytes[k] == b'\n';
+        if at_line_start && line_tail_blank {
+            // The node owns its line: delete leading indent through the trailing newline (inclusive),
+            // removing the whole line.
+            let mut we = e;
+            while we < bytes.len() && matches!(bytes[we], b' ' | b'\t' | b'\r') {
+                we += 1;
+            }
+            if we < bytes.len() && bytes[we] == b'\n' {
+                we += 1;
+            }
+            (ws, we)
+        } else {
+            // Shares its line: delete just the node plus one leading space (so `a b` → `a`, not
+            // `a  `), without touching newlines.
+            let start = if s > ws { s - 1 } else { s };
+            (start, e)
+        }
+    }
+
+    /// Apply non-overlapping `edits` to `src`, producing the edited string. Edits are sorted by start
+    /// offset; an insertion (`start == end`) at the same offset keeps input order. Overlapping edits
+    /// (which the tree alignment never produces — each edit covers a distinct node's span) are applied
+    /// in order, later ones skipped if they'd overlap an already-applied range.
+    fn apply_edits(src: &str, edits: &mut [Edit]) -> String {
+        edits.sort_by_key(|ed| (ed.start, ed.end));
+        let mut out = String::with_capacity(src.len());
+        let mut cursor = 0usize;
+        for ed in edits.iter() {
+            if ed.start < cursor {
+                // Overlaps an already-emitted region — skip (defensive; shouldn't happen).
+                continue;
+            }
+            out.push_str(&src[cursor..ed.start]);
+            out.push_str(&ed.text);
+            cursor = ed.end;
+        }
+        out.push_str(&src[cursor..]);
+        out
     }
 }
 
@@ -2652,9 +3064,104 @@ mod tests {
     }
 
     #[test]
-    fn two_splices_in_one_list_is_rejected() {
+    fn adjacent_splices_are_rejected() {
+        // Two directly-adjacent splices have no anchor to divide the run — still rejected.
         let e = Pattern::compile("(f ,@a ,@b)").unwrap_err();
-        assert!(e.0.contains("at most one"), "got {e}");
+        assert!(e.0.contains("adjacent"), "got {e}");
+    }
+
+    #[test]
+    fn two_splices_around_a_fixed_anchor_delete_a_clause() {
+        // The clause-delete idiom (ask-88): `(F ,@before TARGET ,@after)` matches a target sitting
+        // ANYWHERE in a variadic form, binding the runs on either side.
+        let s = subj("(case a b (needs x) c d)");
+        let m = search(&pat("(case ,@before (needs ,_) ,@after)"), &s, None);
+        assert_eq!(m.len(), 1);
+        let before: Vec<_> = m[0]
+            .bindings
+            .get_run("before")
+            .unwrap()
+            .iter()
+            .map(|t| t.to_sexpr())
+            .collect();
+        let after: Vec<_> = m[0]
+            .bindings
+            .get_run("after")
+            .unwrap()
+            .iter()
+            .map(|t| t.to_sexpr())
+            .collect();
+        assert_eq!(before, ["a", "b"]);
+        assert_eq!(after, ["c", "d"]);
+    }
+
+    #[test]
+    fn two_splices_target_at_the_front_and_back() {
+        // The anchor at position 0 (no `before`) and at the end (no `after`) both bind empty runs.
+        let front = subj("(case (needs x) c d)");
+        let m = search(&pat("(case ,@before (needs ,_) ,@after)"), &front, None);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].bindings.get_run("before").unwrap().len(), 0);
+        assert_eq!(m[0].bindings.get_run("after").unwrap().len(), 2);
+
+        let back = subj("(case a b (needs x))");
+        let m = search(&pat("(case ,@before (needs ,_) ,@after)"), &back, None);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].bindings.get_run("before").unwrap().len(), 2);
+        assert_eq!(m[0].bindings.get_run("after").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn two_splices_delete_rewrite_drops_the_clause() {
+        // The full delete-a-clause rewrite: `(case ,@a (needs ,_) ,@b) → (case ,@a ,@b)`.
+        let s = subj("(case a b (needs x) c d)");
+        let r = rewrite(
+            &pat("(case ,@a (needs ,_) ,@b)"),
+            &tmpl("(case ,@a ,@b)"),
+            &s,
+        );
+        assert_eq!(r.count, 1);
+        assert_eq!(r.tree.to_sexpr(), "(case a b c d)");
+    }
+
+    #[test]
+    fn three_splices_two_anchors() {
+        // Three splices with two fixed anchors — the backtracker places each run.
+        let s = subj("(f a X b c Y d)");
+        let m = search(&pat("(f ,@p X ,@q Y ,@r)"), &s, None);
+        assert_eq!(m.len(), 1);
+        let run = |n: &str| -> Vec<String> {
+            m[0].bindings
+                .get_run(n)
+                .unwrap()
+                .iter()
+                .map(|t| t.to_sexpr())
+                .collect()
+        };
+        assert_eq!(run("p"), ["a"]);
+        assert_eq!(run("q"), ["b", "c"]);
+        assert_eq!(run("r"), ["d"]);
+    }
+
+    #[test]
+    fn two_splices_backtrack_when_the_first_greedy_run_blocks_the_anchor() {
+        // If the anchor (`X`) appears more than once, the run before it must stop at the FIRST so
+        // the tail can still find its own anchor. Backtracking (not a single greedy grab) handles it.
+        let s = subj("(f a X b X c)");
+        // pattern needs: ,@p then X then ,@q then X then ,@r
+        let m = search(&pat("(f ,@p X ,@q X ,@r)"), &s, None);
+        assert_eq!(m.len(), 1);
+        let run = |n: &str| -> Vec<String> {
+            m[0].bindings
+                .get_run(n)
+                .unwrap()
+                .iter()
+                .map(|t| t.to_sexpr())
+                .collect()
+        };
+        assert_eq!(run("p"), ["a"]);
+        assert_eq!(run("q"), ["b"]);
+        assert_eq!(run("r"), ["c"]);
     }
 
     #[test]

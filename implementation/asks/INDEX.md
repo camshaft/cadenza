@@ -42,6 +42,10 @@ Regenerate after moving files. Sorted: open (by priority) → pending-validation
 
 - **ask-55** — ✅ float crash FIXED (compiler.cdz 19:03) — loop-verified: bare `4.5` → decline (was trap), 0 `run error` traps in the byte gate (was 22), int/float mix now rejects. Awaiting stable refresh + four-gate confirm. Follow-on ask-56 (wrong code on the mix).  
   `pending-validation/ask-55-shape-check-regressed-float-from-decline-to-crash.md`
+- **ask-88** — ✅ codemod `rewrite` MULTI-SPLICE landed: a pattern list allows several `,@` splices if none are adjacent, so `(case ,@before (needs ,_) ,@after)` deletes a clause at any position (backtracking matcher). Re-probe = the `(needs)`-strip with the two-splice pattern (no fixed-position fragility).  
+  `pending-validation/ask-88-codemod-rewrite-cannot-delete-a-clause-at-an-arbitrary-position-one-splice-limit.md`
+- **ask-89** — ✅ codemod FORMATTING-PRESERVING edit landed (the real blocker): the s-expr reader now records spans (`read_spanned`), and `--write`/`--diff` splice only changed subtrees at their spans — layout/comments kept verbatim — instead of reprinting. `--reprint` forces the old reflow. Re-probe = the `(needs)`-strip across the corpus yields a minimal diff + clean roundtrip.  
+  `pending-validation/ask-89-codemod-write-reformats-the-whole-file-does-not-preserve-source-line-layout.md`
 
 ## ✅ Done
 

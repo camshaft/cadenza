@@ -172,6 +172,12 @@ impl Builder {
         id
     }
 
+    /// The number of structure occurrences pushed so far — i.e. the next `StructId`'s index. A
+    /// span-tracking reader uses this to keep a parallel `SpanTable` exactly 1:1 with the arena.
+    pub fn structure_len(&self) -> usize {
+        self.structure.len()
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,

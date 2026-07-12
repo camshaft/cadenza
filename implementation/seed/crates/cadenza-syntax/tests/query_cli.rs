@@ -113,10 +113,11 @@ fn query_over_broken_input_still_works_and_warns() {
 }
 
 #[test]
-fn bad_pattern_two_splices_is_rejected() {
+fn bad_pattern_adjacent_splices_is_rejected() {
+    // Two ADJACENT splices are still rejected (no anchor between them); non-adjacent is now allowed.
     let (ok, _, stderr) = run(&["query", "(f ,@a ,@b)", "--from", "ml"], "x");
     assert!(!ok, "exit failure");
-    assert!(stderr.contains("at most one"), "reason: {stderr}");
+    assert!(stderr.contains("adjacent"), "reason: {stderr}");
 }
 
 #[test]
@@ -357,6 +358,151 @@ fn rewrite_diff_shows_a_unified_hunk_and_does_not_write() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ---- ask-88: multi-splice clause deletion; ask-89: formatting-preserving edit ----
+
+#[test]
+fn rewrite_deletes_a_clause_at_an_arbitrary_position_via_two_splices() {
+    // ask-88: `(F ,@before TARGET ,@after) → (F ,@before ,@after)` deletes the clause wherever it
+    // sits — the natural variadic-form edit that the one-splice limit used to forbid.
+    let (ok, stdout, _) = run(
+        &[
+            "rewrite",
+            "(case ,@a (needs ,_) ,@b)",
+            "(case ,@a ,@b)",
+            "--from",
+            "sexpr",
+        ],
+        "(case foo (doc \"d\") (needs bar) (result 1))",
+    );
+    assert!(ok);
+    assert_eq!(stdout.trim(), "(case foo (doc \"d\") (result 1))");
+}
+
+#[test]
+fn rewrite_write_preserves_the_hand_formatted_layout() {
+    // ask-89: `--write` on a multi-line `.sexp` edits ONLY the changed subtree at its span; every
+    // other byte — indentation, newlines, sibling forms — is kept verbatim. (The old whole-tree
+    // reprint collapsed the file onto one line.)
+    let dir = scratch_dir("preserve");
+    let f = dir.join("c.sexp");
+    let before = "(case foo\n  (doc \"a doc\")\n  (needs bar)\n  (result 1))\n";
+    std::fs::write(&f, before).unwrap();
+    let (ok, _, stderr) = run(
+        &[
+            "rewrite",
+            "(case ,@a (needs ,_) ,@b)",
+            "(case ,@a ,@b)",
+            f.to_str().unwrap(),
+            "--write",
+        ],
+        "",
+    );
+    assert!(ok, "stderr: {stderr}");
+    assert!(stderr.contains("rewrote 1 site(s)"), "{stderr}");
+    // ONLY the `(needs bar)` line is gone; the rest is byte-for-byte the original layout.
+    let after = std::fs::read_to_string(&f).unwrap();
+    assert_eq!(
+        after, "(case foo\n  (doc \"a doc\")\n  (result 1))\n",
+        "layout preserved, only the clause line removed"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_preserving_diff_is_minimal() {
+    // ask-89: the preserving `--diff` shows only the removed clause line, not a whole-file reflow.
+    let dir = scratch_dir("prediff");
+    let f = dir.join("c.sexp");
+    std::fs::write(
+        &f,
+        "(case foo\n  (doc \"a doc\")\n  (needs bar)\n  (result 1))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(
+        &[
+            "rewrite",
+            "(case ,@a (needs ,_) ,@b)",
+            "(case ,@a ,@b)",
+            f.to_str().unwrap(),
+            "--diff",
+        ],
+        "",
+    );
+    assert!(ok);
+    assert!(
+        stdout.contains("-  (needs bar)"),
+        "clause removed: {stdout}"
+    );
+    // The doc line and result line are CONTEXT (space-prefixed), not changed.
+    assert!(
+        stdout.contains(" (case foo"),
+        "unchanged context kept: {stdout}"
+    );
+    assert!(
+        !stdout.contains("-  (doc") && !stdout.contains("-  (result"),
+        "only the clause line changes: {stdout}"
+    );
+    // The file is untouched (diff is preview only).
+    assert!(std::fs::read_to_string(&f).unwrap().contains("(needs bar)"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_preserving_inserts_a_child_in_place() {
+    // ask-89: growing a form's arity splices the new child after its sibling, keeping the layout of
+    // the surrounding multi-line file (rather than reflowing the whole thing).
+    let dir = scratch_dir("preins");
+    let f = dir.join("c.sexp");
+    std::fs::write(&f, "(do\n  (f a)\n  (g))\n").unwrap();
+    let (ok, _, stderr) = run(
+        &[
+            "rewrite",
+            "(f ,x)",
+            "(f ,x extra)",
+            f.to_str().unwrap(),
+            "--write",
+        ],
+        "",
+    );
+    assert!(ok, "stderr: {stderr}");
+    let after = std::fs::read_to_string(&f).unwrap();
+    assert_eq!(
+        after, "(do\n  (f a extra)\n  (g))\n",
+        "in-place insert: {after:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rewrite_reprint_flag_forces_canonical_layout() {
+    // `--reprint` opts out of preserving mode: the whole file goes through the printer (one line for
+    // this s-expr), the pre-ask-89 behavior kept for deliberate normalization.
+    let dir = scratch_dir("reprint");
+    let f = dir.join("c.sexp");
+    std::fs::write(&f, "(case foo\n  (needs bar)\n  (result 1))\n").unwrap();
+    let (ok, _, _) = run(
+        &[
+            "rewrite",
+            "(case ,@a (needs ,_) ,@b)",
+            "(case ,@a ,@b)",
+            f.to_str().unwrap(),
+            "--write",
+            "--reprint",
+        ],
+        "",
+    );
+    assert!(ok);
+    let after = std::fs::read_to_string(&f).unwrap();
+    // Reprinted onto a single line (no interior newlines beyond the trailing one).
+    assert_eq!(after.trim(), "(case foo (result 1))");
+    assert_eq!(
+        after.matches('\n').count(),
+        1,
+        "reflowed to one line: {after:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn rewrite_write_and_diff_are_mutually_exclusive() {
     let dir = scratch_dir("rexcl");
@@ -391,7 +537,9 @@ fn rewrite_json_reports_file_count_and_result() {
     let s = stdout.trim();
     assert!(s.starts_with('[') && s.ends_with(']'), "array: {s}");
     assert!(s.contains("\"count\":2"), "{s}");
-    assert!(s.contains("\"rewritten\":\"(f a b)\""), "{s}");
+    // Default formatting-preserving edit: only the two `(+ … 0)` sites change, and the source's
+    // trailing newline is kept verbatim (fidelity), so `rewritten` is the faithful edited file.
+    assert!(s.contains("\"rewritten\":\"(f a b)\\n\""), "{s}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

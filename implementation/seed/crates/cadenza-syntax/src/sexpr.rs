@@ -12,7 +12,9 @@
 //! arbitrary-precision `Int` and an exact `Decimal` (no `i64`/`f64` ceiling). The ML lexer MUST
 //! classify literals identically to this, or the round-trip fails.
 
-use crate::ast::{Arenas, Builder, Leaf, Struct, StructId};
+use crate::ast::{Arenas, Builder, Leaf, LeafId, Struct, StructId};
+use crate::span::Span;
+use crate::spans::{FileId, SpanTable};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug)]
@@ -21,7 +23,7 @@ pub struct ReadError(pub String);
 /// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form).
 pub fn read(text: &str) -> Result<Arenas, ReadError> {
     let mut b = Builder::new();
-    let mut p = Reader::new(text, &mut b);
+    let mut p = Reader::new(text, &mut b, false);
     p.skip_ws();
     let root = p.read_node()?;
     p.skip_ws();
@@ -31,13 +33,46 @@ pub fn read(text: &str) -> Result<Arenas, ReadError> {
     Ok(b.finish(root))
 }
 
+/// Parse a single s-expression, ALSO producing a [`SpanTable`] mapping each structure occurrence to
+/// its source byte range — the same source-tracking substrate the ML parser produces. This is what
+/// lets a formatting-preserving edit splice a replacement into the original text at a node's span,
+/// instead of reprinting the whole tree. The arena is byte-identical to [`read`]'s; only the table
+/// is extra. Every occurrence gets a span (the table is total and exactly 1:1 with the arena), so
+/// synthetic/desugared sub-nodes (a member-access `.` head, a dotted-name spine) carry a best-effort
+/// span covering their source extent.
+pub fn read_spanned(text: &str) -> Result<(Arenas, SpanTable), ReadError> {
+    let mut b = Builder::new();
+    let mut p = Reader::new(text, &mut b, true);
+    p.skip_ws();
+    let root = p.read_node()?;
+    p.skip_ws();
+    if p.peek().is_some() {
+        return Err(ReadError(format!("trailing input at byte {}", p.pos)));
+    }
+    let spans = p.spans.take().expect("span tracking on");
+    Ok((b.finish(root), spans))
+}
+
 /// Parse every top-level s-expression from `text`, each as an element of a synthetic `(do …)` root
 /// — convenient for reading a corpus file, whose top level is a sequence of `(case …)` forms.
 pub fn read_all(text: &str) -> Result<Arenas, ReadError> {
+    let (arenas, _) = read_all_impl(text, false)?;
+    Ok(arenas)
+}
+
+/// Like [`read_all`], but also produces a [`SpanTable`] (see [`read_spanned`]). The synthetic `(do
+/// …)` wrapper node spans the whole input and its `do` head an empty span at byte 0.
+pub fn read_all_spanned(text: &str) -> Result<(Arenas, SpanTable), ReadError> {
+    let (arenas, spans) = read_all_impl(text, true)?;
+    Ok((arenas, spans.expect("span tracking on")))
+}
+
+fn read_all_impl(text: &str, track: bool) -> Result<(Arenas, Option<SpanTable>), ReadError> {
     let mut b = Builder::new();
     let mut roots = Vec::new();
+    let mut spans;
     {
-        let mut p = Reader::new(text, &mut b);
+        let mut p = Reader::new(text, &mut b, track);
         loop {
             p.skip_ws();
             if p.peek().is_none() {
@@ -45,13 +80,23 @@ pub fn read_all(text: &str) -> Result<Arenas, ReadError> {
             }
             roots.push(p.read_node()?);
         }
+        spans = p.spans.take();
     }
+    // The `do` head and the wrapping list are synthetic (no source text): head at byte 0, list over
+    // the whole input. They are created AFTER every root, matching structure-id order, so pushing
+    // their spans here keeps the table 1:1 with the arena.
     let do_head = b.name("do");
+    if let Some(t) = spans.as_mut() {
+        t.push(Span::new(0, 0));
+    }
     let mut items = Vec::with_capacity(roots.len() + 1);
     items.push(do_head);
     items.extend(roots);
     let root = b.list(items);
-    Ok(b.finish(root))
+    if let Some(t) = spans.as_mut() {
+        t.push(Span::new(0, text.len()));
+    }
+    Ok((b.finish(root), spans))
 }
 
 // ============================================================================
@@ -110,16 +155,80 @@ struct Reader<'a, 'b> {
     src: &'a [u8],
     pos: usize,
     b: &'b mut Builder,
+    /// When `Some`, every structure occurrence pushes its source span here, in creation order, so
+    /// the table stays exactly 1:1 with the arena (`spans[id]` is that occurrence's span). `None`
+    /// on the plain [`read`] path — then the `mk_*` helpers are pure builder calls, byte-identical.
+    spans: Option<SpanTable>,
 }
 
 impl<'a, 'b> Reader<'a, 'b> {
-    fn new(text: &'a str, b: &'b mut Builder) -> Reader<'a, 'b> {
+    fn new(text: &'a str, b: &'b mut Builder, track: bool) -> Reader<'a, 'b> {
         Reader {
             src: text.as_bytes(),
             pos: 0,
             b,
+            spans: track.then(|| SpanTable::new(FileId::default())),
         }
     }
+
+    // ---- span-recording arena helpers ----
+    //
+    // Every structure-creating call in the reader routes through one of these so a span is pushed
+    // in lockstep with the `StructId` it creates. Children are always built before their parent
+    // (recursive descent), so pushing each node's span at its `mk_*` call keeps `SpanTable` in
+    // structure-id order without any post-hoc reordering.
+
+    /// Push `span` for the occurrence just created (a no-op when not tracking). Asserts the table
+    /// stays 1:1 with the arena.
+    fn push_span(&mut self, span: Span) {
+        if let Some(t) = self.spans.as_mut() {
+            debug_assert_eq!(
+                t.len() + 1,
+                self.b.structure_len(),
+                "sexpr span table drifted from the arena"
+            );
+            t.push(span);
+        }
+    }
+
+    /// An `Atom(Name)` occurrence covering `span`.
+    fn mk_name(&mut self, name: &str, span: Span) -> StructId {
+        let id = self.b.name(name);
+        self.push_span(span);
+        id
+    }
+
+    /// An `Atom` of an already-interned leaf id, covering `span`.
+    fn mk_atom(&mut self, leaf: LeafId, span: Span) -> StructId {
+        let id = self.b.atom(leaf);
+        self.push_span(span);
+        id
+    }
+
+    /// An `Atom` occurrence of `leaf`, covering `span`.
+    fn mk_atom_leaf(&mut self, leaf: Leaf, span: Span) -> StructId {
+        let id = self.b.atom_leaf(leaf);
+        self.push_span(span);
+        id
+    }
+
+    /// A `List` occurrence over `items`, covering `span`.
+    fn mk_list(&mut self, items: Vec<StructId>, span: Span) -> StructId {
+        let id = self.b.list(items);
+        self.push_span(span);
+        id
+    }
+
+    /// The recorded start byte of an already-built node (for spanning a postfix over its operand).
+    /// Only meaningful while tracking; falls back to `self.pos` otherwise.
+    fn span_start_of(&self, id: StructId) -> usize {
+        self.spans
+            .as_ref()
+            .and_then(|t| t.get(id))
+            .map(|s| s.start)
+            .unwrap_or(self.pos)
+    }
+
     fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
     }
@@ -168,24 +277,32 @@ impl<'a, 'b> Reader<'a, 'b> {
             Some(b'(') => self.read_list(),
             Some(b')') => Err(ReadError(format!("unexpected ')' at byte {}", self.pos))),
             Some(b'"') => self.read_string(),
-            // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display.
+            // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
+            // built BEFORE the synthetic head (preserving structure-id order — the reader is the
+            // round-trip oracle, so the arena stays byte-identical to the untracked path). The head
+            // gets the sigil's own byte range; the wrapping list spans sigil-through-inner.
             Some(b'`') => {
+                let start = self.pos;
                 self.bump();
+                let sigil = Span::new(start, self.pos);
                 let inner = self.read_node()?;
-                let head = self.b.name("quasiquote");
-                Ok(self.b.list(vec![head, inner]))
+                let head = self.mk_name("quasiquote", sigil);
+                Ok(self.mk_list(vec![head, inner], Span::new(start, self.pos)))
             }
             Some(b',') => {
+                let start = self.pos;
                 self.bump();
                 if self.peek() == Some(b'@') {
                     self.bump();
+                    let sigil = Span::new(start, self.pos);
                     let inner = self.read_node()?;
-                    let head = self.b.name("unquote-splicing");
-                    Ok(self.b.list(vec![head, inner]))
+                    let head = self.mk_name("unquote-splicing", sigil);
+                    Ok(self.mk_list(vec![head, inner], Span::new(start, self.pos)))
                 } else {
+                    let sigil = Span::new(start, self.pos);
                     let inner = self.read_node()?;
-                    let head = self.b.name("unquote");
-                    Ok(self.b.list(vec![head, inner]))
+                    let head = self.mk_name("unquote", sigil);
+                    Ok(self.mk_list(vec![head, inner], Span::new(start, self.pos)))
                 }
             }
             Some(_) => self.read_atom_or_name(),
@@ -205,6 +322,7 @@ impl<'a, 'b> Reader<'a, 'b> {
                 .and_then(|s| s.chars().next());
             match next_char {
                 Some(c) if c.is_alphabetic() || c == '_' => {
+                    let dot_pos = self.pos;
                     self.bump(); // '.'
                     // A segment runs up to whitespace, a paren, a comment, or the NEXT '.' (which starts
                     // a further postfix on the next loop iteration).
@@ -217,9 +335,12 @@ impl<'a, 'b> Reader<'a, 'b> {
                     }
                     let seg = std::str::from_utf8(&self.src[start..self.pos])
                         .map_err(|_| ReadError("non-utf8 member segment".into()))?;
-                    let dot = self.b.name(".");
-                    let key = self.b.name(seg);
-                    node = self.b.list(vec![dot, node, key]);
+                    // Synthetic `(. operand key)`: the `.` head spans the dot, the key spans the
+                    // segment, the list spans from the operand's start through the segment.
+                    let operand_start = self.span_start_of(node);
+                    let dot = self.mk_name(".", Span::new(dot_pos, dot_pos + 1));
+                    let key = self.mk_name(seg, Span::new(start, self.pos));
+                    node = self.mk_list(vec![dot, node, key], Span::new(operand_start, self.pos));
                 }
                 _ => break,
             }
@@ -228,6 +349,7 @@ impl<'a, 'b> Reader<'a, 'b> {
     }
 
     fn read_list(&mut self) -> Result<StructId, ReadError> {
+        let start = self.pos;
         self.bump(); // '('
         let mut items = Vec::new();
         loop {
@@ -241,10 +363,12 @@ impl<'a, 'b> Reader<'a, 'b> {
                 Some(_) => items.push(self.read_node()?),
             }
         }
-        Ok(self.b.list(items))
+        // The list spans from `(` through the matching `)` (now consumed, so `self.pos` is just past).
+        Ok(self.mk_list(items, Span::new(start, self.pos)))
     }
 
     fn read_string(&mut self) -> Result<StructId, ReadError> {
+        let start = self.pos;
         self.bump(); // opening quote
         let mut bytes: Vec<u8> = Vec::new();
         loop {
@@ -266,7 +390,8 @@ impl<'a, 'b> Reader<'a, 'b> {
         let s = String::from_utf8(bytes).map_err(|_| ReadError("non-utf8 string".into()))?;
         // NFC-normalize string contents (the value form normalizes text).
         let s: String = s.chars().nfc().collect();
-        Ok(self.b.atom_leaf(Leaf::Str(s)))
+        // The string atom spans the opening quote through the closing quote (now consumed).
+        Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
     }
 
     fn read_atom_or_name(&mut self) -> Result<StructId, ReadError> {
@@ -279,37 +404,47 @@ impl<'a, 'b> Reader<'a, 'b> {
         }
         let tok = std::str::from_utf8(&self.src[start..self.pos])
             .map_err(|_| ReadError("non-utf8 token".into()))?;
-        Ok(self.classify_token(tok))
+        Ok(self.classify_token(tok, start))
     }
 
     /// Classify a whitespace-delimited token into a leaf occurrence. A dotted token `a.b.c` is
     /// display sugar for nested member access `(. (. a b) c)`; otherwise the shared
     /// [`crate::literal::classify_word`] decides Int / Float / Bool / Name — the SAME layer the ML
     /// surface uses, so literal values are byte-identical across surfaces.
-    fn classify_token(&mut self, tok: &str) -> StructId {
+    fn classify_token(&mut self, tok: &str, start: usize) -> StructId {
         // A segmented identifier (`Sign.Neg`, `a.b.c`) desugars to nested member access. This is
         // checked before `classify_word` because a numeric literal (`3.5`) is not a dotted name
-        // (its segments start with digits), so the two never conflict.
+        // (its segments start with digits), so the two never conflict. Each segment's span is its
+        // slice within `tok`; the `.` heads and the intermediate lists span the source consumed so
+        // far, so `(. (. a b) c)` reads left-to-right with each list covering its own extent.
         if is_dotted_name(tok) {
+            let mut off = start;
             let mut segs = tok.split('.');
-            let mut node = self.b.name(segs.next().unwrap());
+            let first = segs.next().unwrap();
+            let mut node = self.mk_name(first, Span::new(off, off + first.len()));
+            off += first.len();
             for seg in segs {
-                let dot = self.b.name(".");
-                let seg_id = self.b.name(seg);
-                node = self.b.list(vec![dot, node, seg_id]);
+                let dot_pos = off; // the '.' separator
+                let seg_start = off + 1;
+                let seg_end = seg_start + seg.len();
+                let dot = self.mk_name(".", Span::new(dot_pos, dot_pos + 1));
+                let seg_id = self.mk_name(seg, Span::new(seg_start, seg_end));
+                node = self.mk_list(vec![dot, node, seg_id], Span::new(start, seg_end));
+                off = seg_end;
             }
             return node;
         }
+        let span = Span::new(start, start + tok.len());
         // Classify the word. A NUMBER/BOOL is a non-Name leaf (interned by value); a NAME is interned
         // by its `&str` slice via `leaf_name` — allocating an owned `String` only on a dedup MISS, not
         // for every occurrence (`classify_word` would `to_string()` the name eagerly and discard it on
         // a hit). `classify_word_nonname` returns `Some` only for the number/bool kinds, so a bare name
         // never allocates on the common repeated-identifier path.
         match crate::literal::classify_word_nonname(tok) {
-            Some(leaf) => self.b.atom_leaf(leaf),
+            Some(leaf) => self.mk_atom_leaf(leaf, span),
             None => {
                 let id = self.b.leaf_name(tok);
-                self.b.atom(id)
+                self.mk_atom(id, span)
             }
         }
     }
@@ -345,6 +480,82 @@ mod tests {
     fn reads_a_form() {
         let a = read("(+ 1 2)").unwrap();
         assert_eq!(a.head_name(a.root), Some("+"));
+    }
+
+    /// The text a span covers, for span assertions.
+    fn slice(src: &str, s: Span) -> &str {
+        &src[s.start..s.end]
+    }
+
+    #[test]
+    fn spanned_arena_is_identical_to_untracked() {
+        // Span tracking must not perturb the arena — it is the round-trip oracle, so the tracked
+        // and untracked paths MUST build byte-identical arenas (same leaves, structure, root).
+        for src in [
+            "(+ 1 2)",
+            "(let ((p (record (x 1) (y 2)))) (. p x))",
+            "(match e ((Some n) n) ((None _) 0))",
+            "(Int 8).max",
+            "Sign.Neg",
+            "(quasiquote (unquote x))",
+            "(f `(a ,b ,@c))",
+            "\"a string\"",
+        ] {
+            let plain = read(src).unwrap();
+            let (tracked, spans) = read_spanned(src).unwrap();
+            assert_eq!(plain, tracked, "arena differs for {src:?}");
+            // The table is total and 1:1 with the arena.
+            assert_eq!(
+                spans.len(),
+                tracked.structure.len(),
+                "span table not 1:1 for {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spans_cover_the_source_text_of_each_node() {
+        let src = "(case foo (needs bar) baz)";
+        let (a, spans) = read_spanned(src).unwrap();
+        // Root list spans the whole form.
+        assert_eq!(slice(src, spans.get(a.root).unwrap()), src);
+        // The `(needs bar)` child (index 2 of the root list) spans exactly that sub-form.
+        let Struct::List(items) = a.get(a.root) else {
+            panic!("root is a list");
+        };
+        let needs = items[2];
+        assert_eq!(a.head_name(needs), Some("needs"));
+        assert_eq!(slice(src, spans.get(needs).unwrap()), "(needs bar)");
+        // The head atom `case` spans its 4 bytes.
+        assert_eq!(slice(src, spans.get(items[0]).unwrap()), "case");
+    }
+
+    #[test]
+    fn read_all_spanned_wraps_and_spans_each_top_form() {
+        let src = "(a 1)\n(b 2)\n";
+        let (a, spans) = read_all_spanned(src).unwrap();
+        // The synthetic `(do …)` root spans the whole input.
+        assert_eq!(a.head_name(a.root), Some("do"));
+        assert_eq!(slice(src, spans.get(a.root).unwrap()), src);
+        let Struct::List(items) = a.get(a.root) else {
+            panic!("root is a list");
+        };
+        // items[0] is the synthetic `do`; items[1]/[2] are the two forms with their own spans.
+        assert_eq!(slice(src, spans.get(items[1]).unwrap()), "(a 1)");
+        assert_eq!(slice(src, spans.get(items[2]).unwrap()), "(b 2)");
+    }
+
+    #[test]
+    fn spans_are_correct_for_a_nested_member_access() {
+        // `(Int 8).max` desugars to `(. (Int 8) max)`; the operand span must cover `(Int 8)`, the
+        // key `max`, and the whole postfix list the full `(Int 8).max`.
+        let src = "(Int 8).max";
+        let (a, spans) = read_spanned(src).unwrap();
+        assert_eq!(a.head_name(a.root), Some("."));
+        assert_eq!(slice(src, spans.get(a.root).unwrap()), "(Int 8).max");
+        let tail = a.as_form(a.root, ".").unwrap();
+        assert_eq!(slice(src, spans.get(tail[0]).unwrap()), "(Int 8)");
+        assert_eq!(slice(src, spans.get(tail[1]).unwrap()), "max");
     }
 
     /// print∘read is stable: reading printed text yields a structurally-equal arena, and printing
