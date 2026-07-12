@@ -478,6 +478,9 @@ pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
 pass	compacting a byte sequence built at run time preserves its bytes
 pass	compacting is the identity on value for a whole byte sequence
+pass	comparing a greater value to a lesser yields Greater
+pass	comparing a lesser value to a greater yields Less
+pass	comparing equal values yields Equal
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
@@ -578,6 +581,8 @@ pass	ordering an integer against a float is rejected, not silently promoted
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop
 pass	overflow of the default integer traps deterministically
+pass	partial application captures a let-bound value in the residual lambda
+pass	partial application captures a runtime parameter in the residual lambda
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
@@ -652,6 +657,8 @@ pass	the runtime-if list takes its else branch and measures that length
 pass	the same function called under two handlers is discharged by each in turn
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the slice overflow guard holds on a chained slice-of-a-slice
+pass	the three-way comparison is deconstructed by an exhaustive match
+pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
@@ -936,11 +943,8 @@ todo	bit-field segments pack sub-byte values into one byte
 todo	byte length agrees with the length of the encoded bytes
 todo	char to-int and from-int round-trip through the scalar value
 todo	compacting a slice preserves its bytes
-todo	comparing a greater value to a lesser yields Greater
-todo	comparing a lesser value to a greater yields Less
 todo	comparing a map to a record is a type error
 todo	comparing an empty map to an empty record is a type error
-todo	comparing equal values yields Equal
 todo	comparing quantities of incompatible dimension is a compile-time error
 todo	comparing same-shape nominal types is a type error
 todo	comparing two quantities of the same dimension yields a Bool
@@ -1080,8 +1084,6 @@ todo	the length of a fixed-width construction is the sum of its segment widths
 todo	the number of elements counts distinct elements
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
-todo	the three-way comparison is deconstructed by an exhaustive match
-todo	the three-way comparison orders strings lexicographically
 todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced

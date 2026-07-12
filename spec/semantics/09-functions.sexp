@@ -664,6 +664,38 @@
             (def (main) ((add 3) 4)) (export main)))
   (output (: 7 Int64)))
 
+; Partial application to a VARIABLE reference (a runtime parameter, a let-bound value) must CAPTURE it in
+; the residual (partially-applied) lambda — the primary use of currying: fixing a function's first
+; argument to a runtime value. `((sub n) 3)` curries to a residual `(fn (b) (- n b))` whose body
+; references `n`; `n`'s binding (the caller's parameter/`let`) must be carried into the residual's scope
+; (closed over), exactly as the non-partial `(sub n 3)` has `n` in scope. A currying copy that substitutes
+; the name occurrence WITHOUT capturing its binding leaves `n` unbound (CDZ0101). A CONSTANT capture (`(add
+; 3)` above) has no free variable to capture and already worked; these pin the variable-reference case.
+
+(case "partial application captures a runtime parameter in the residual lambda"
+  (doc    "`(sub a b)` = a − b. Partially applying it to a runtime PARAMETER — `((sub n) 3)` with `n` a
+           parameter — curries to a residual lambda that CAPTURES `n`, then subtracts: `n` = 10 gives
+           `(sub 10 3)` = 7. The residual body references `n`, so `n`'s binding is carried into the
+           residual's scope (closed over), exactly as the non-partial `(sub n 3)`. Was CDZ0101 'unbound
+           name n' — the currying copy substituted the name occurrence without capturing its binding.")
+  (input  (do
+            (def (sub a b) (- a b))
+            (def (main (: n Int64)) ((sub n) 3))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 7 Int64)))
+
+(case "partial application captures a let-bound value in the residual lambda"
+  (doc    "The let-binding companion: `(let ((m 10)) ((sub m) 3))` partially applies `sub` to the
+           let-bound `m`, currying to a residual lambda that captures `m` = 10, so `(sub 10 3)` = 7. Pins
+           that the captured argument may be any in-scope binding (a `let` name, not only a parameter or a
+           constant) — the residual closes over it.")
+  (input  (do
+            (def (sub a b) (- a b))
+            (def (main) (let ((m 10)) ((sub m) 3)))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a named multi-argument function applies to all its arguments at once"
   (doc    "The DIRECT multi-argument application `(add a b)` — not the explicit curried `((add a) b)` of
            the case above — of a named two-parameter def, at a module entrypoint. `(add2 20 22)` = 42.
