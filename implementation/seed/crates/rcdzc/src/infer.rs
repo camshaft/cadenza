@@ -81,9 +81,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 Ty::Type
             } else {
                 let mut field_tys = std::collections::BTreeMap::new();
-                for (label, value) in fields {
+                for (label, &value) in fields.iter() {
                     let t = type_of(db, value);
-                    field_tys.insert(label, t);
+                    field_tys.insert(label.clone(), t);
                 }
                 Ty::Record(std::sync::Arc::new(field_tys))
             }
@@ -419,7 +419,7 @@ fn collect_param_constraints(
             }
         }
         Resolved::Tuple { elems } => {
-            for &e in &elems {
+            for &e in elems.iter() {
                 collect_param_constraints(db, e, env, def, subst, fresh);
             }
         }
@@ -907,7 +907,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A tuple literal: descend into each element for its own faults.
         Resolved::Tuple { elems } => {
-            for &e in &elems {
+            for &e in elems.iter() {
                 collect(db, e, out);
             }
         }
@@ -944,7 +944,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
         }
         Resolved::Record { fields } => {
-            for (_, value) in fields {
+            for (_, &value) in fields.iter() {
                 collect(db, value, out);
             }
         }

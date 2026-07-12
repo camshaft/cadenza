@@ -221,7 +221,7 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         return match def.body {
             Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
             Some(body) => Resolved::Lambda {
-                params: def.params.clone(),
+                params: def.params.clone().into(),
                 body,
             },
             None => Resolved::Poison(Reject::coded(
@@ -702,9 +702,10 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
         Some(&b) => b,
         None => return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no body")),
     };
-    // The parameter occurrences (each a bare name).
-    let params: Vec<StructId> = match db.ast.get(params_occ) {
-        Struct::List(ps) => ps.clone(),
+    // The parameter occurrences (each a bare name). Collected into the `Arc<[StructId]>` the variant
+    // holds (a refcounted slice — cloning the lambda is then O(1)).
+    let params: std::sync::Arc<[StructId]> = match db.ast.get(params_occ) {
+        Struct::List(ps) => ps.clone().into(),
         _ => {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
@@ -750,7 +751,9 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
             ));
         }
     }
-    Resolved::Record { fields }
+    Resolved::Record {
+        fields: std::sync::Arc::new(fields),
+    }
 }
 
 /// Resolve `(. operand key)` — the ONE dotted projection form, whose KEY KIND selects the meaning:
@@ -804,7 +807,7 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 /// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
 /// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
-    let elems = db.ast.as_form(id, "tuple").unwrap_or(&[]).to_vec();
+    let elems: std::sync::Arc<[StructId]> = db.ast.as_form(id, "tuple").unwrap_or(&[]).into();
     Resolved::Tuple { elems }
 }
 

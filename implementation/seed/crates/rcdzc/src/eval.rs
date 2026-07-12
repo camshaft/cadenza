@@ -41,7 +41,7 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
             let mut ty_vars = Vec::new();
             let mut width_vars = Vec::new();
             let mut sign_vars = Vec::new();
-            for &p in &params {
+            for &p in params.iter() {
                 let n = fresh.var();
                 // A parameter's kind (type var vs width var) is decided by HOW it is used; we record a
                 // single fresh number and let the use site pick. Track it as both — the body reduction
@@ -516,7 +516,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             collect_callees(db, body, out);
         }
         Resolved::Record { fields } => {
-            for (_, value) in fields {
+            for (_, &value) in fields.iter() {
                 collect_callees(db, value, out);
             }
         }
@@ -524,7 +524,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         // A tuple's elements and a projection's operand run when this body runs — a call inside them is
         // a real edge, so descend.
         Resolved::Tuple { elems } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_callees(db, e, out);
             }
         }
@@ -574,7 +574,7 @@ fn callee_body(db: &mut Db, head: StructId) -> Option<StructId> {
 /// function) AND reduces an `Apply` head (a function RETURNED by another application — `(adder 10)`
 /// reduces to the inner `(fn (x) …)`, so `((adder 10) 5)` applies it). This is what makes curried and
 /// returned functions work: the head of an application is itself evaluated to a lambda first.
-fn lambda_of(db: &mut Db, id: StructId) -> Option<(Vec<StructId>, StructId)> {
+fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::sync::Arc<[StructId]>, StructId)> {
     match resolved_of(db, id) {
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
@@ -724,7 +724,7 @@ pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Opt
 /// A `Ref` to a binding that was KEPT as a runtime `Core::Let` is NOT followed (the value lives in a
 /// slot at run time, not visibly here) — so a multi-use `let`-bound tuple projects at run time. A
 /// single-use / propagated binding's ref IS followed (it inlines to the tuple literal, which folds).
-pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<Vec<StructId>> {
+pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc<[StructId]>> {
     match resolved_of(db, id) {
         Resolved::Tuple { elems } => Some(elems),
         Resolved::Ref { value } => {

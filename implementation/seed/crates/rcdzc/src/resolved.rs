@@ -252,7 +252,13 @@ pub enum Resolved {
     /// and a field lookup is O(log n), not a linear scan. The labels are symbols (never resolved); the
     /// values resolve on demand. A duplicate label is a `Poison` before construction (a record's field
     /// names are a set — `core-semantics.md` §A Record Has A Fixed Set Of Named Fields).
-    Record { fields: BTreeMap<Symbol, StructId> },
+    /// (`fields` behind an `Arc` so CLONING a `Resolved::Record` — which `resolved_of` does on every
+    /// memoized read — is a refcount bump, not a deep map copy. A record read field-by-field
+    /// (`member_value` re-clones the operand's resolved form per access) was O(N²) in map clone;
+    /// mirrors the `Ty::Record` Arc choice, faithful to Cadenza's ref-counted port target.)
+    Record {
+        fields: std::sync::Arc<BTreeMap<Symbol, StructId>>,
+    },
     /// Member access `(. operand key)` — the ONE generic projection. `key` is a label read from the
     /// key occurrence's spelling, NOT resolved (`prelude-and-resolution.md` §Member Access Is One
     /// Generic Projection That Does Not Inspect Its Key). The projection resolves the field against
@@ -263,7 +269,9 @@ pub enum Resolved {
     /// its type (a tuple of different arity or a differently-typed position is a different type —
     /// `type-system.md` §The Structural Types Are Record, Tuple, And Sum). Distinct from `Record` (named
     /// fields): a tuple is accessed by POSITION (`Proj`), a record by NAME (`Member`).
-    Tuple { elems: Vec<StructId> },
+    /// (`elems` behind an `Arc<[StructId]>` so cloning a `Resolved::Tuple` is O(1) — same rationale as
+    /// `Record`; a tuple projected element-by-element re-clones the operand's resolved form per access.)
+    Tuple { elems: std::sync::Arc<[StructId]> },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a
@@ -310,7 +318,10 @@ pub enum Resolved {
     /// scheme" is just a compile-time lambda from a type/width to a type — instantiation is applying
     /// it to a fresh variable. Params are the binder-name occurrences; `body` is the body occurrence.
     Lambda {
-        params: Vec<StructId>,
+        // `params` behind an `Arc<[StructId]>` so cloning a `Resolved::Lambda` is a refcount bump; a
+        // def name resolving to its lambda is read once per call site, and `resolved_of` clones on
+        // every read. Same rationale as `Record`/`Tuple`.
+        params: std::sync::Arc<[StructId]>,
         body: StructId,
     },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled

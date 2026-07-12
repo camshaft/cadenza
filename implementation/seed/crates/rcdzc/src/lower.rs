@@ -84,7 +84,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // runtime binding (`reference-compiler.md` §The Core Representation Is In A-Normal Form).
         Resolved::Let { bindings, body } => lower_let(db, &bindings, body),
         // A record value — kept as a compound; folds away only when a member reads a field of it.
-        Resolved::Record { fields } => Core::Record { fields },
+        // (Materialize the shared `Arc` map into the `Core::Record` owned map — a single O(fields)
+        // copy per record NODE, not per access, so it does not reintroduce the O(N²) the Arc removed.)
+        Resolved::Record { fields } => Core::Record {
+            fields: (*fields).clone(),
+        },
         // Member access FOLDS: reduce the operand to a record (following refs, reducing a ctor
         // application) and lower the field's value directly, so `(. (record (x 1)) x)` and `(. (Int
         // 64) max)` both fold to the field's value with no record built. The one projection, via the
@@ -120,7 +124,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A tuple literal — kept as a compound. Like a record, it folds away only when a projection
         // reads a visible element of it; a tuple that survives (constructed from runtime operands, or a
         // constant tuple that escapes) is a `Core::Tuple` the backend builds on the heap.
-        Resolved::Tuple { elems } => Core::Tuple { elems },
+        Resolved::Tuple { elems } => Core::Tuple {
+            elems: elems.to_vec(),
+        },
         // A tuple PROJECTION `(. t N)`. FOLD when the operand reduces to a compile-time-visible tuple:
         // lower the element's core directly (no heap, like a record member fold). Otherwise the operand
         // is a RUNTIME tuple (a parameter, a kept `let` binding) — emit a `Core::Proj` the backend lowers
@@ -907,7 +913,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Member { operand, .. } => uses_in(db, operand, init),
         Resolved::Tuple { elems } => {
             let mut n = 0;
-            for &e in &elems {
+            for &e in elems.iter() {
                 n += uses_in(db, e, init);
             }
             n
