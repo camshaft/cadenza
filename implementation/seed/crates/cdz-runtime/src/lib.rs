@@ -2519,6 +2519,54 @@ fn stored_entry_from(handles: &[Handle], base: usize, stride: usize, dup: bool) 
     Entry { cols, len: stride }
 }
 
+/// The trie-slot indices of a cursor's descent path — a stack of `u32`, one per focused frame. The
+/// depth is HARD-BOUNDED by the trie: at most `CHAMP_LEVELS` (7) normal levels plus one collision
+/// frame at the hash floor, so the stack never exceeds `SLOTS_CAP` entries. Storing it inline in a
+/// fixed `[u32; SLOTS_CAP]` (instead of a `Vec`) removes the per-advance-step slots allocation on the
+/// hot iteration path — `slots.len() == frames.len()`, so the two grow/shrink in lockstep. Overflow is
+/// a compiler-invariant violation (a rope deeper than the hash allows) and TRAPS, never silently wraps.
+const SLOTS_CAP: usize = CHAMP_LEVELS as usize + 2; // 7 normal levels + collision frame + margin
+struct Slots {
+    buf: [u32; SLOTS_CAP],
+    len: usize,
+}
+impl Slots {
+    fn new() -> Slots {
+        Slots { buf: [0; SLOTS_CAP], len: 0 }
+    }
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn push(&mut self, v: u32) {
+        if self.len >= SLOTS_CAP {
+            trap_oob(); // cursor deeper than the trie permits — a compiler-invariant violation
+        }
+        self.buf[self.len] = v;
+        self.len += 1;
+    }
+    fn pop(&mut self) {
+        // Mirrors `Vec::pop`'s use here (the return value is never read) — just shrink.
+        if self.len > 0 {
+            self.len -= 1;
+        }
+    }
+    /// The slot values in push order — for encoding into a cursor's raw header.
+    fn as_slice(&self) -> &[u32] {
+        &self.buf[..self.len]
+    }
+}
+impl core::ops::Index<usize> for Slots {
+    type Output = u32;
+    fn index(&self, i: usize) -> &u32 {
+        &self.buf[..self.len][i]
+    }
+}
+impl core::ops::IndexMut<usize> for Slots {
+    fn index_mut(&mut self, i: usize) -> &mut u32 {
+        &mut self.buf[..self.len][i]
+    }
+}
+
 /// Build a node holding exactly two entries whose keys hash to `h1`/`h2`, splitting by the trie
 /// index at `level` and recursing while they collide; at the hash floor they share a collision node.
 /// CONSUMES both entries (their handles become the new node's). Bounded recursion (≤7).
@@ -3347,7 +3395,7 @@ fn champ_handle_at(node: Handle, idx: usize) -> Handle {
 /// `node` MUST be non-empty (callers exclude the empty root); subnodes are ≥2 entries by invariant,
 /// so this always terminates at an inline entry or a collision frame.
 #[allow(dead_code)]
-fn champ_descend_leftmost(node: Handle, frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) {
+fn champ_descend_leftmost(node: Handle, frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize) {
     let mut cur = node;
     loop {
         let (dm, nm, is_coll) = with_node(cur, (0u32, 0u32, false), |n| {
@@ -3385,7 +3433,7 @@ fn champ_descend_leftmost(node: Handle, frames: &mut Vec<Handle>, slots: &mut Ve
 /// delta is IDENTICAL to `champ_advance` + the external diff — a kept frame: 0; a popped frame: −1; a
 /// descended frame: +1. Returns true on a new entry, false when exhausted (frames/slots emptied, every
 /// remaining frame dropped). SAFETY: caller verified the cursor is `rc == 1` and owns these frames.
-fn champ_advance_fbip(frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) -> bool {
+fn champ_advance_fbip(frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize) -> bool {
     loop {
         let depth = frames.len();
         if depth == 0 {
@@ -3433,7 +3481,7 @@ fn champ_advance_fbip(frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: us
 
 /// `champ_descend_leftmost` but `op_dup`s each frame it pushes — the cursor takes ownership of every
 /// newly-focused node on the descent. Used only by `champ_advance_fbip` (the inline-refcount advance).
-fn champ_descend_leftmost_dup(node: Handle, frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) {
+fn champ_descend_leftmost_dup(node: Handle, frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize) {
     let start = frames.len();
     champ_descend_leftmost(node, frames, slots, stride);
     for &f in &frames[start..] {
@@ -3445,7 +3493,7 @@ fn champ_descend_leftmost_dup(node: Handle, frames: &mut Vec<Handle>, slots: &mu
 /// lands on a new entry (state stays live), false when the walk is exhausted (frames/slots emptied).
 /// Operates on the caller's COPIES (pointer values), so it never mutates any node. Bounded by depth.
 #[allow(dead_code)]
-fn champ_advance(frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) -> bool {
+fn champ_advance(frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize) -> bool {
     loop {
         let depth = frames.len();
         if depth == 0 {
@@ -3494,10 +3542,10 @@ fn champ_advance(frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) 
 
 /// Build a cursor node owning the (already-dup'd) `frames` and encoding `slots` + `state` in raw.
 #[allow(dead_code)]
-fn champ_make_cursor(frames: Vec<Handle>, slots: Vec<u32>, state: u32) -> Handle {
+fn champ_make_cursor(frames: Vec<Handle>, slots: Slots, state: u32) -> Handle {
     let mut raw = Vec::with_capacity(4 * (1 + slots.len()));
     raw.extend_from_slice(&state.to_le_bytes());
-    for s in &slots {
+    for s in slots.as_slice() {
         raw.extend_from_slice(&s.to_le_bytes());
     }
     alloc(frames, raw)
@@ -3506,11 +3554,11 @@ fn champ_make_cursor(frames: Vec<Handle>, slots: Vec<u32>, state: u32) -> Handle
 /// Read a cursor into `(state, frames, slots)`. `frames` are BORROWED pointer copies (owned by the
 /// cursor); `slots.len() == frames.len()`.
 #[allow(dead_code)]
-fn champ_cursor_read(cur: Handle) -> (u32, Vec<Handle>, Vec<u32>) {
-    with_node(cur, (CURSOR_EXHAUSTED, Vec::new(), Vec::new()), |n| {
+fn champ_cursor_read(cur: Handle) -> (u32, Vec<Handle>, Slots) {
+    with_node(cur, (CURSOR_EXHAUSTED, Vec::new(), Slots::new()), |n| {
         let state = read_u32_at(&n.raw, 0);
         let frames = n.handles.clone();
-        let mut slots = Vec::with_capacity(frames.len());
+        let mut slots = Slots::new();
         for i in 0..frames.len() {
             slots.push(read_u32_at(&n.raw, 4 + 4 * i));
         }
@@ -3524,18 +3572,18 @@ fn champ_cursor_read(cur: Handle) -> (u32, Vec<Handle>, Vec<u32>) {
 /// returned `frames` carry the cursor's frame references verbatim (a `Vec<Handle>` move touches no
 /// refcount — `Handle` is `Copy`); the caller MUST reinstall a frame vector via `champ_become_cursor`
 /// before returning (every path does). SAFETY: caller verified `node_rc(cur) == 1`.
-fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Vec<u32>) {
+fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Slots) {
     match unsafe { cur.0.as_mut() } {
         Some(n) => {
             let state = read_u32_at(&n.raw, 0);
             let frames = std::mem::take(&mut n.handles);
-            let mut slots = Vec::with_capacity(frames.len());
+            let mut slots = Slots::new();
             for i in 0..frames.len() {
                 slots.push(read_u32_at(&n.raw, 4 + 4 * i));
             }
             (state, frames, slots)
         }
-        None => (CURSOR_EXHAUSTED, Vec::new(), Vec::new()),
+        None => (CURSOR_EXHAUSTED, Vec::new(), Slots::new()),
     }
 }
 
@@ -3577,10 +3625,10 @@ fn champ_cursor_current(cur: Handle, stride: usize) -> Option<(Handle, usize)> {
 #[allow(dead_code)]
 fn op_map_iter(m: Handle) -> Handle {
     if is_empty_node(m) {
-        return champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
+        return champ_make_cursor(Vec::new(), Slots::new(), CURSOR_EXHAUSTED);
     }
     let mut frames = Vec::new();
-    let mut slots = Vec::new();
+    let mut slots = Slots::new();
     champ_descend_leftmost(m, &mut frames, &mut slots, MAP_STRIDE);
     for &f in &frames {
         op_dup(f); // the cursor owns a reference to every focused node
@@ -3611,14 +3659,14 @@ fn op_map_iter(m: Handle) -> Handle {
 /// No new allocation, no self-drop. Frame REFCOUNTS are the caller's responsibility (it applies the
 /// dup/drop delta before calling); overwriting the old `handles` Vec changes no refcounts (`Handle` is
 /// `Copy`, no `Drop`). SAFETY: caller verified `node_rc(cur) == 1`.
-fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Vec<u32>, state: u32) -> Handle {
+fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Slots, state: u32) -> Handle {
     if let Some(n) = unsafe { cur.0.as_mut() } {
         // Reuse the cursor's EXISTING `raw` allocation (clear keeps its capacity) instead of allocating
         // a fresh Vec — the cursor is rc==1, and its raw already held a `[state]slots…` of comparable
         // size, so the re-extend rarely reallocates. Saves one Vec allocation per advance step.
         n.raw.clear();
         n.raw.extend_from_slice(&state.to_le_bytes());
-        for s in &slots {
+        for s in slots.as_slice() {
             n.raw.extend_from_slice(&s.to_le_bytes());
         }
         n.handles = frames;
@@ -3641,7 +3689,7 @@ fn champ_cursor_next_fbip(cur: Handle, stride: usize) -> Handle {
         for &f in &frames {
             op_drop(f);
         }
-        return champ_become_cursor(cur, Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
+        return champ_become_cursor(cur, Vec::new(), Slots::new(), CURSOR_EXHAUSTED);
     }
     let live = champ_advance_fbip(&mut frames, &mut slots, stride);
     // On exhaustion `champ_advance_fbip` has already dropped every frame it popped (frames now empty);
@@ -3666,7 +3714,7 @@ fn op_map_iter_next(cur: Handle) -> Handle {
     let (state, frames, slots) = champ_cursor_read(cur);
     if state != CURSOR_LIVE {
         op_drop(cur);
-        return champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
+        return champ_make_cursor(Vec::new(), Slots::new(), CURSOR_EXHAUSTED);
     }
     let mut wf = frames;
     let mut ws = slots;
@@ -3677,7 +3725,7 @@ fn op_map_iter_next(cur: Handle) -> Handle {
         }
         champ_make_cursor(wf, ws, CURSOR_LIVE)
     } else {
-        champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED)
+        champ_make_cursor(Vec::new(), Slots::new(), CURSOR_EXHAUSTED)
     };
     op_drop(cur); // release the consumed cursor's frame refs
     new
@@ -3770,10 +3818,10 @@ fn op_set_remove(s: Handle, elem: Handle) -> Handle {
 #[allow(dead_code)]
 fn op_set_iter(s: Handle) -> Handle {
     if is_empty_node(s) {
-        return champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
+        return champ_make_cursor(Vec::new(), Slots::new(), CURSOR_EXHAUSTED);
     }
     let mut frames = Vec::new();
-    let mut slots = Vec::new();
+    let mut slots = Slots::new();
     champ_descend_leftmost(s, &mut frames, &mut slots, SET_STRIDE);
     for &f in &frames {
         op_dup(f);
@@ -3795,7 +3843,7 @@ fn op_set_iter_next(cur: Handle) -> Handle {
     let (state, frames, slots) = champ_cursor_read(cur);
     if state != CURSOR_LIVE {
         op_drop(cur);
-        return champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
+        return champ_make_cursor(Vec::new(), Slots::new(), CURSOR_EXHAUSTED);
     }
     let mut wf = frames;
     let mut ws = slots;
@@ -3806,7 +3854,7 @@ fn op_set_iter_next(cur: Handle) -> Handle {
         }
         champ_make_cursor(wf, ws, CURSOR_LIVE)
     } else {
-        champ_make_cursor(Vec::new(), Vec::new(), CURSOR_EXHAUSTED)
+        champ_make_cursor(Vec::new(), Slots::new(), CURSOR_EXHAUSTED)
     };
     op_drop(cur);
     new
@@ -3991,9 +4039,9 @@ mod tests {
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
-    /// in-place remove-drain work (insert 1740, remove 954, iterate 1126, push 197, get 0, lookup 0;
-    /// set union 1041 / ∩ 1852 / ∖ 1858); they are UPPER BOUNDS so ordinary noise never trips them but a
-    /// regression toward the old 6779/8397/5248/1000 does.
+    /// in-place remove-drain + inline-Slots cursor work (insert 1740, remove 954, iterate 3, push 197,
+    /// get 0, lookup 0; set union 783 / ∩ 729 / ∖ 735); they are UPPER BOUNDS so ordinary noise never
+    /// trips them but a regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -4031,7 +4079,7 @@ mod tests {
             op_drop(c);
         });
         println!("ALLOC map_iterate x{N}: {iterate}");
-        assert!(iterate <= 1300, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 1300 (5248 → 2248 alloc-free cursor_current + raw reuse → ~1126 inline-refcount champ_advance_fbip, no per-step frames clone)");
+        assert!(iterate <= 50, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 50 (5248 → 2248 → 1126 → ~3 inline Slots buffer, iteration is now essentially alloc-free — only the initial cursor's frames Vec)");
         op_drop(m);
 
         // (C) map remove (unique) — remove all N.
@@ -4110,21 +4158,21 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        assert!(union <= 1200, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 1200");
+        assert!(union <= 900, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 900");
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 2100, "set_intersection x{N} allocs {inter} exceeds ceiling 2100");
+        assert!(inter <= 900, "set_intersection x{N} allocs {inter} exceeds ceiling 900");
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 2100, "set_difference x{N} allocs {diff} exceeds ceiling 2100");
+        assert!(diff <= 900, "set_difference x{N} allocs {diff} exceeds ceiling 900");
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -8863,6 +8911,49 @@ mod tests {
         op_drop(cur);
         op_drop(m);
         assert_eq!(live_nodes(), before, "frame refcounts balanced — no leak, no double-free");
+    }
+
+    #[test]
+    fn cursor_depth_never_exceeds_inline_slots_cap() {
+        reset();
+        let before = live_nodes();
+        // Guards the inline `Slots` buffer's fixed capacity (SLOTS_CAP): a cursor's frame stack must
+        // NEVER exceed it, or `Slots::push` traps. Build the DEEPEST possible cursor path — a
+        // full-hash-collision pair forces descent through every trie level down to a collision node at
+        // the hash floor (the maximum frame depth), plus split pairs and ordinary keys to populate
+        // intermediate levels — then walk the whole map and assert at EVERY step that the cursor's frame
+        // count stays within SLOTS_CAP. `handles.len()` on the cursor node IS its live frame depth.
+        let (ca, cb) = full_hash_collision_pair(); // share all 32 hash bits ⇒ deepest descent
+        let (sa, sb) = low5_split_pair();
+        let mut m = op_map_empty();
+        // Include the collision pair (max depth), split pairs (mid-depth subnodes), and spread keys.
+        let mut ks: Vec<i64> = vec![ca, cb, sa, sb];
+        for k in 0..40i64 {
+            ks.push(k * 7 + 1);
+        }
+        for (i, &k) in ks.iter().enumerate() {
+            m = op_map_insert(m, op_box_int(k), op_box_int(i as i64));
+        }
+        let mut cur = op_map_iter(m);
+        let mut steps = 0;
+        loop {
+            // The cursor node's `handles` are its descent frames; `slots.len() == frames.len()`, so this
+            // is exactly what the inline Slots buffer must hold.
+            let depth = with_node(cur, 0usize, |n| n.handles.len());
+            assert!(
+                depth <= SLOTS_CAP,
+                "cursor frame depth {depth} exceeds inline SLOTS_CAP {SLOTS_CAP} at step {steps}"
+            );
+            if op_map_iter_key(cur) == Handle::NULL {
+                break;
+            }
+            cur = op_map_iter_next(cur);
+            steps += 1;
+        }
+        assert_eq!(steps, ks.len(), "walked every entry (deepest paths included)");
+        op_drop(cur);
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     // ── U7: CHAMP set algebra — union / intersection / difference ──────────────────────────────

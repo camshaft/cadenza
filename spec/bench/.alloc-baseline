@@ -2,11 +2,11 @@
 # Source: the `hot_op_allocation_ceilings` test in cdz-runtime. Regenerate with
 # `cargo xtask bench --save`; check with `cargo xtask bench`. Lower is better.
 1740	map_insert x1000
-1126	map_iterate x1000
+3	map_iterate x1000
 0	map_lookup x1000
 954	map_remove x1000
-1858	set_difference x1000
-1852	set_intersection x1000
-1041	set_union x1000
+735	set_difference x1000
+729	set_intersection x1000
+783	set_union x1000
 0	vec_get x1000
 197	vec_push x1000
