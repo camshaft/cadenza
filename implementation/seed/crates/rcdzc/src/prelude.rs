@@ -85,6 +85,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // position IS the type, and `(. Bytes of)` projects the constructor operation.
     names.insert("Bytes".to_string(), bytes_module(ast));
 
+    // `String` — the module of string OPERATIONS (`scalar-len`/`byte-len`, reached by member access `(.
+    // String scalar-len)`). Unlike `List`, `String` is a NULLARY type (it takes no parameter), so the
+    // module has no `(meta apply)` type-constructor channel — `(: x String)` decodes the bare name
+    // directly (`resolve::decode_ty`), and this record only carries the operation fields.
+    names.insert("String".to_string(), string_module(ast));
+
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
@@ -224,6 +230,32 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
     push_list(ast, children)
 }
 
+/// The `String` module record — a record with one field per string OPERATION (reached by member access
+/// `(. String scalar-len)`). Each operation is an operator record: its `(meta t)` is the operation's
+/// type (`String → Int64`), its `(meta apply)` the native prim. This increment realizes the two LENGTH
+/// queries; concat/at/slice arrive with the runtime byte-rope ops.
+fn string_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // The `String` module is a plain record of operation fields — NO `(meta t)`/`(meta apply)`, so it
+    // stays MEMBER-ACCESSIBLE (`(. String scalar-len)`) like `List`; a `(meta t)` would make the whole
+    // record a bare type-VALUE and break projection. `String` as a TYPE (in `(: x String)`, or the op
+    // schemes' `String` param) reduces via the `(intrinsic "String")` type node, NOT this record.
+    // (`Bytes` above CAN carry `(meta t)` because its ops' schemes reduce it via `bytes-ty` and its own
+    // member access still works — but for `String` the plain-record shape is the tested-working one.)
+    let mut children = vec![head];
+    // Each op: a `String → Int64` scheme (built fresh per field — a shared occurrence must not be).
+    for (name, prim) in [
+        ("scalar-len", "str-scalar-len"),
+        ("byte-len", "str-byte-len"),
+    ] {
+        let ty = string_to_int64_type(ast);
+        let op = list_op_record(ast, prim, ty);
+        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![k, op]));
+    }
+    push_list(ast, children)
+}
+
 /// The type `(-> (List Int64) Bytes)` for `Bytes.of` — a monomorphic arrow (no type parameter), taking
 /// a list of `Int64` and returning `Bytes`. The `Bytes` result is the `(intrinsic bytes-ty)` type-value
 /// DIRECTLY, not a bare `Bytes` NAME: this arrow is a field INSIDE the `Bytes` module record, so a name
@@ -247,6 +279,23 @@ fn bytes_len_type(ast: &mut Arenas) -> StructId {
     let bytes = intrinsic_node(ast, "bytes-ty");
     let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
     arrow_type(ast, bytes, int64)
+}
+
+/// The type `(fn () (-> String Int64))` for a string length query — a ZERO-PARAMETER type-lambda
+/// wrapping the monomorphic arrow. The `fn` wrapper is REQUIRED even with no quantified variables: it
+/// makes `scheme_of` read the op record as a polymorphic SCHEME (`type_in_env` on the body), NOT as a
+/// bare type-VALUE — a plain `(-> String Int64)` `(meta t)` would make `typeval_of` reduce the whole op
+/// record to a `Ty::Type`, so projecting `(. String scalar-len)` would yield a type-value (unapplyable)
+/// rather than the length operation. The param is `(intrinsic "String")` (→ `Ty::String`), not the NAME
+/// `String` (which is the module record, a value).
+fn string_to_int64_type(ast: &mut Arenas) -> StructId {
+    let string = intrinsic_node(ast, "String");
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, string, int64);
+    // `(fn () body)` — an empty parameter list (no quantified type variables), the monomorphic wrapper.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// An operation record for a `List` module field: `(record ((meta t) TYPE-LAMBDA) ((meta apply)

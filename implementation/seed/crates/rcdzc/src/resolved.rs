@@ -114,10 +114,14 @@ pub enum Prim {
     /// field-name SET and per-field types ARE the type. Used in type position (an annotation `(: e (Record
     /// …))`), giving the field-name/type check the annotation needs — the record companion of `TupleCtor`.
     RecordCtor,
-    /// The ground type-values — nullary "constructors" that ARE a type-value directly (`Bool`/`Unit`
-    /// resolve to a record whose `(meta t)` holds one of these).
+    /// The ground type-values — nullary "constructors" that ARE a type-value directly (`Bool`/`Unit`/
+    /// `String` resolve to a record whose `(meta t)` holds one of these).
     BoolTy,
     UnitTy,
+    /// The ground `String` type-value — held in the `String` module record's `(meta t)`, so `(: x
+    /// String)` reduces `String` (the record) to `Ty::String` via `typeval_of`. (A NULLARY type, like
+    /// `Bool`/`Unit`; the `String` module ALSO carries operation fields, but its type role is this.)
+    StringTy,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -186,6 +190,15 @@ pub enum Prim {
     /// The ground type-value `Bytes` — the `(meta t)` of the `Bytes` module, so bare `Bytes` in type
     /// position IS the type `Ty::Bytes` (the leaf companion of `BoolTy`/`UnitTy`; `ground_type` maps it).
     BytesTy,
+    /// `String.scalar-len` — the number of Unicode SCALAR VALUES in a string, an `Int64`
+    /// (`collections-and-text.md` §A String Offers Both A Scalar Length And A Byte Length). `String →
+    /// Int64`. On a CONSTANT string it FOLDS to the char count (`"café"` → 4, distinct from its 5 bytes);
+    /// a runtime string declines (the byte-rope length op arrives later).
+    StrScalarLen,
+    /// `String.byte-len` — the number of BYTES in a string's UTF-8 encoding, an `Int64` (`String →
+    /// Int64`). On a CONSTANT string it FOLDS to the UTF-8 byte count (`"café"` → 5); the byte companion
+    /// of `scalar-len`, differing exactly on a multi-byte string.
+    StrByteLen,
 }
 
 impl Prim {
@@ -217,6 +230,7 @@ impl Prim {
             "Record" => Some(Prim::RecordCtor),
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
+            "String" => Some(Prim::StringTy),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
@@ -231,6 +245,8 @@ impl Prim {
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),
             "bytes-ty" => Some(Prim::BytesTy),
+            "str-scalar-len" => Some(Prim::StrScalarLen),
+            "str-byte-len" => Some(Prim::StrByteLen),
             _ => None,
         }
     }
@@ -285,6 +301,7 @@ impl Prim {
             Prim::BoolTy => Some(crate::ty::Ty::Bool),
             Prim::UnitTy => Some(crate::ty::Ty::Unit),
             Prim::BytesTy => Some(crate::ty::Ty::Bytes),
+            Prim::StringTy => Some(crate::ty::Ty::String),
             _ => None,
         }
     }

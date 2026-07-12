@@ -1,6 +1,8 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	Ok carrying a Some keeps both variant tags
 pass	Result type for fallible operations
+pass	String.scalar-len of a string selected by a runtime if
+pass	String.scalar-len of a string selected by a runtime match
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
@@ -35,6 +37,8 @@ pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
+pass	a byte sequence carrying a runtime byte value is a first-class value
+pass	a byte sequence is constructed from a list of integers in range
 pass	a comparison-predicate function returns its boolean result
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
@@ -132,6 +136,7 @@ pass	a list mixing integer and boolean elements is a type error
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
 pass	a match arm binds a nested tuple inside a sum payload
+pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
@@ -271,6 +276,7 @@ pass	a signed-byte entrypoint returns its runtime argument
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
+pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum value annotated as a scalar type is rejected
@@ -362,6 +368,8 @@ pass	bitwise AND masks bits
 pass	bitwise OR combines bits
 pass	bitwise XOR is its own inverse
 pass	bitwise XOR toggles bits
+pass	byte length counts the normalized form, not the source spelling
+pass	byte length is the UTF-8 byte count
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
@@ -432,9 +440,13 @@ pass	record fields render in canonical (key-sorted) order regardless of source o
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
+pass	scalar length counts Unicode scalar values, not bytes
+pass	scalar length of a supplementary-plane character is one scalar value
 pass	splitting a tuple beyond its arity is rejected
 pass	string equality
 pass	string inequality
+pass	string length
+pass	string length counts scalar values after normalization
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
@@ -443,6 +455,7 @@ pass	subtraction below the minimum integer overflows and traps
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the empty byte sequence has length zero
+pass	the empty string has length zero
 pass	the entrypoint adds one to its runtime argument
 pass	the entrypoint branches on its runtime argument
 pass	the entrypoint compares its runtime argument to a bound
@@ -470,6 +483,7 @@ pass	the prelude binds Constructor values not pre-applied Sums
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the runtime-if list takes its else branch and measures that length
+pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	true is greater than false
@@ -492,8 +506,6 @@ todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
 todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Result propagates errors without trapping
-todo	String.scalar-len of a string selected by a runtime if
-todo	String.scalar-len of a string selected by a runtime match
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
 todo	a CBOR atom decodes each scalar major type to its value
@@ -522,8 +534,6 @@ todo	a bottom-up fold matches a tuple of its recursive results with constructor 
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
-todo	a byte sequence carrying a runtime byte value is a first-class value
-todo	a byte sequence is constructed from a list of integers in range
 todo	a byte sequence written as a literal renders back to the same literal
 todo	a byte-string literal equals the explicit byte sequence it desugars to
 todo	a byte-string literal with escapes equals its explicit byte sequence
@@ -603,7 +613,6 @@ todo	a map with a duplicate key is a type error
 todo	a map with record values of different field sets is a type error
 todo	a map with tuple values of different arities is a type error
 todo	a map with values of two different types is a type error
-todo	a match arm building a fresh runtime compound infers its shape
 todo	a match not covering the scrutinee is a compile-time rejection
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
@@ -717,7 +726,6 @@ todo	a string carried as a sum-variant payload is bound and measured at run time
 todo	a string compared to a symbol is a type error
 todo	a string literal
 todo	a string literal is normalized to the canonical text form
-todo	a string passed to a function as a runtime argument is measured by its byte length
 todo	a sum type can mix nullary and payload-carrying variants
 todo	a sum type is declared with named variants
 todo	a sum type variant can carry data
@@ -812,8 +820,6 @@ todo	bitwise AND of an integer and a float does not silently promote
 todo	bitwise OR of an integer and a float does not silently promote
 todo	bitwise XOR of an integer and a float does not silently promote
 todo	byte length agrees with the length of the encoded bytes
-todo	byte length counts the normalized form, not the source spelling
-todo	byte length is the UTF-8 byte count
 todo	byte sequences are equal by their bytes in order
 todo	char to-int and from-int round-trip through the scalar value
 todo	checked addition yields None on overflow instead of trapping
@@ -974,8 +980,6 @@ todo	resuming with a value of the wrong type for the operation's result is a typ
 todo	resuming with a wrong-type value for a compound result type is a type error
 todo	runtime float equality compares by canonical byte form
 todo	runtime float inequality compares by canonical byte form
-todo	scalar length counts Unicode scalar values, not bytes
-todo	scalar length of a supplementary-plane character is one scalar value
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps
@@ -994,8 +998,6 @@ todo	string indexing addresses Unicode scalar values, not bytes
 todo	string indexing at or beyond the length yields None
 todo	string indexing past a supplementary-plane scalar lands on the next scalar
 todo	string indexing returns Some of the character
-todo	string length
-todo	string length counts scalar values after normalization
 todo	string slicing yields Some of the substring
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters
@@ -1013,7 +1015,6 @@ todo	the default-integer pragma is definition-site scoped, not use-site
 todo	the difference contains the elements not in the second set
 todo	the empty reader literal is the empty symbol
 todo	the empty set is equal to the empty set
-todo	the empty string has length zero
 todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
 todo	the intersection contains the elements in both sets
@@ -1024,7 +1025,6 @@ todo	the number of elements counts distinct elements
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
 todo	the same function called under two handlers is discharged by each in turn
-todo	the scalar length of a runtime multi-byte string counts scalars, not bytes
 todo	the three-way comparison is deconstructed by an exhaustive match
 todo	the three-way comparison orders strings lexicographically
 todo	the two variants of Result compare unequal

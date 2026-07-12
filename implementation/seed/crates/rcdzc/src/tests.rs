@@ -3950,6 +3950,51 @@ mod match_engine {
     }
 
     #[test]
+    fn string_scalar_len_folds_to_the_unicode_scalar_count() {
+        // `String.scalar-len` counts UNICODE SCALAR VALUES (`collections-and-text.md` §A String Offers
+        // Both A Scalar Length And A Byte Length). On a CONSTANT string it folds to an `Int64` (no heap):
+        // `"hello"` = 5, `"café"` = 4 (é is ONE scalar though two UTF-8 bytes), `"😀"` = 1 (one
+        // supplementary-plane scalar, four bytes / two UTF-16 units). Pins the scalar count, distinct
+        // from the byte count on a multi-byte string.
+        for (s, want) in [("hello", 5), ("café", 4), ("😀", 1)] {
+            let src = format!("(module m (def (main) (String.scalar-len \"{s}\")) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "scalar-len {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_byte_len_folds_to_the_utf8_byte_count() {
+        // `String.byte-len` counts the UTF-8 BYTES — the byte companion of `scalar-len`, differing exactly
+        // on a multi-byte string. `"hello"` = 5 (ASCII, coincides with scalar-len), `"café"` = 5 (é is two
+        // bytes → 5 bytes vs 4 scalars), `"😀"` = 4 (four bytes vs one scalar). Folds to an `Int64`.
+        for (s, want) in [("hello", 5), ("café", 5), ("😀", 4)] {
+            let src = format!("(module m (def (main) (String.byte-len \"{s}\")) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "byte-len {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_annotation_checks_against_a_string_value() {
+        // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
+        // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the
+        // string value with the Int64 annotation (CDZ0203). Pins `String` as an annotation type + the
+        // String-vs-scalar mismatch (the string counterpart of `(: 5 Bool)`).
+        assert_eq!(
+            reject_code("(module m (def (main) (String.byte-len (: \"hi\" Int64))) (export main))")
+                .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0

@@ -504,6 +504,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Core::BytesLen { operand },
                     }
                 }
+                // `String.scalar-len` / `String.byte-len` — FOLD on a constant string to its scalar (char)
+                // count / UTF-8 byte count respectively (`collections-and-text.md` §A String Offers Both
+                // A Scalar Length And A Byte Length). No escape: the result is an `Int64`. A runtime
+                // string declines (the byte-rope length op arrives with the runtime string heap).
+                Some(prim @ (Prim::StrScalarLen | Prim::StrByteLen)) if args.len() == 1 => {
+                    match core_of(db, args[0]) {
+                        Core::ConstStr(s) => {
+                            let n = match prim {
+                                Prim::StrScalarLen => s.chars().count(),
+                                _ => s.len(), // UTF-8 byte length
+                            };
+                            trace!(target: "rcdzc::fold", node = id.0, ?prim, len = n, "String length folds to a constant");
+                            Core::ConstInt(IntValue::from_i64(n as i64))
+                        }
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::Poison(Reject::decline(
+                            "a runtime string's length is not yet computed (constant strings only)",
+                        )),
+                    }
+                }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2513,7 +2533,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListCtor
         | Prim::BytesOf
         | Prim::BytesLen
-        | Prim::BytesTy => {
+        | Prim::BytesTy
+        | Prim::StrScalarLen
+        | Prim::StrByteLen
+        | Prim::StringTy => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -2881,6 +2904,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RecordCtor => "Record",
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
+        Prim::StringTy => "String",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
@@ -2895,6 +2919,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",
         Prim::BytesTy => "bytes-ty",
+        Prim::StrScalarLen => "str-scalar-len",
+        Prim::StrByteLen => "str-byte-len",
     }
 }
 
