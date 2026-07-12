@@ -47,6 +47,12 @@ const OP_SUM_NEW: &str = "sum-new";
 /// dispatch. `sum-payload(handle) -> u32` — the sum's payload handle, unboxed to the bound value.
 const OP_SUM_DISC: &str = "sum-disc";
 const OP_SUM_PAYLOAD: &str = "sum-payload";
+/// Persistent-vector (list) ops. `vec-empty() -> handle` — a fresh empty list; `vec-push(handle, elem)
+/// -> handle` — append an element (returns the new list, threading the handle); `vec-len(handle) -> u32`
+/// — the length. A list value is built `vec-empty` then a `vec-push` per element.
+const OP_VEC_EMPTY: &str = "vec-empty";
+const OP_VEC_PUSH: &str = "vec-push";
+const OP_VEC_LEN: &str = "vec-len";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
@@ -76,10 +82,15 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // operand; every other occurrence (the result, a tuple element, a call arg) is consuming.
         Core::LocalRef { binder: b } => b == binder && !tail_borrowed,
         // A projection BORROWS its operand — so a `LocalRef` directly under a `Proj` does not escape
-        // through it. Recurse with the borrow flag set for the operand.
-        Core::Proj { operand, .. } => binding_escapes(db, operand, binder, true),
-        // A constructed tuple CONSUMES each element — a binding used as an element escapes into it.
-        Core::Tuple { elems } => elems.iter().any(|&e| binding_escapes(db, e, binder, false)),
+        // through it. Recurse with the borrow flag set for the operand. `List.len` (`vec-len`) reads its
+        // operand without consuming it — a borrow, like a projection.
+        Core::Proj { operand, .. } | Core::ListLen { operand } => {
+            binding_escapes(db, operand, binder, true)
+        }
+        // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
+        Core::Tuple { elems } | Core::ListNew { elems } => {
+            elems.iter().any(|&e| binding_escapes(db, e, binder, false))
+        }
         // A call CONSUMES its arguments.
         Core::Call { args, .. } => args.iter().any(|&a| binding_escapes(db, a, binder, false)),
         // Control flow: the binding escapes if it escapes any reachable sub-position.
@@ -258,6 +269,22 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
+            collect_used_ops(db, operand, out);
+        }
+        // A list construction uses `vec-empty` + a `vec-push` per element (each scalar element boxed).
+        Core::ListNew { elems } => {
+            out.insert(OP_VEC_EMPTY);
+            out.insert(OP_VEC_PUSH);
+            for elem in &elems {
+                if let Ok(Some(op)) = box_op(db, *elem) {
+                    out.insert(op);
+                }
+                collect_used_ops(db, *elem, out);
+            }
+        }
+        // `List.len` uses `vec-len` and evaluates its operand.
+        Core::ListLen { operand } => {
+            out.insert(OP_VEC_LEN);
             collect_used_ops(db, operand, out);
         }
         Core::If { cond, then_, else_ } => {
@@ -1332,6 +1359,36 @@ fn emit(
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
             Ok(()) // leaves [arr] — the tuple handle
+        }
+        // A runtime LIST — build it on the persistent `vec-*` heap: `vec-empty` leaves the list handle,
+        // then for each element push `(handle, boxed-elem)` and `vec-push` (which RETURNS the new handle,
+        // threading it to the next element — like `arr-set` threads the tuple handle). Each element is
+        // BOXED to a u32 handle by its type (`box-int`/`box-bool`, a narrow int extended i32→i64 first);
+        // the list itself is a u32 handle. Empty `(list)` is just `vec-empty`.
+        Core::ListNew { elems } => {
+            out.push(Lir::CallImport(OP_VEC_EMPTY)); // → [list]
+            for &elem in &elems {
+                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, elem]
+                if let Some(op) = box_op(db, elem)? {
+                    if let Some(m) = is_narrow_int(db, elem) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op)); // [list, handle]
+                }
+                out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list]
+            }
+            Ok(()) // leaves [list] — the list handle
+        }
+        // `List.len` — emit the list handle, then `vec-len` (→ u32 length, an i32 slot). The result is an
+        // Int64 at the type level; `vec-len` returns a u32 (i32 slot) that the boundary lifts.
+        Core::ListLen { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [list]
+            out.push(Lir::CallImport(OP_VEC_LEN)); // → [len]
+            Ok(())
         }
         // A runtime SUM construction — `(Option.Some 5)` or a nullary `None`. Build the PAYLOAD handle,
         // then `sum-new(disc, payload)`. The payload is (`value-heap-runtime.md` §Sum):

@@ -175,6 +175,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Tuple { elems } => Core::Tuple {
             elems: elems.to_vec(),
         },
+        // A list literal — a `Core::ListNew` the backend builds on the persistent `vec-*` heap. (Unlike a
+        // tuple, a list has no projection-fold: `List.len`/`List.at` are operations, not a static index.)
+        Resolved::List { elems } => Core::ListNew {
+            elems: elems.to_vec(),
+        },
         // A tuple PROJECTION `(. t N)`. FOLD when the operand reduces to a compile-time-visible tuple:
         // lower the element's core directly (no heap, like a record member fold). Otherwise the operand
         // is a RUNTIME tuple (a parameter, a kept `let` binding) — emit a `Core::Proj` the backend lowers
@@ -341,6 +346,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // is already handled; only a non-lambda head reaches here.) Without this, `(g)` fell through
             // to `meta_apply_of` — which, finding no `(meta apply)` on the scalar 7, rejected it as
             // "value is not applyable", breaking every nullary-function call.
+            // An EMPTY compound-VALUE constructor — `(list)` / `(tuple)` / `(record)` written with the
+            // alias name at zero args — BUILDS the empty compound, it is NOT the ctor value. Route it
+            // through `reduce_ctor` (which rewrites `(list)` → `("list")` → the symbol form) before the
+            // zero-arg identity short-circuit below (which would return the ctor record and then decline
+            // it as a bare built-in value). A NON-empty alias application reaches `reduce_ctor` via the
+            // `Some(prim)` arm; this is only the nullary case the short-circuit would otherwise capture.
+            if args.is_empty()
+                && matches!(
+                    crate::eval::meta_apply_of(db, head),
+                    Some(Prim::TupleNew | Prim::RecordNew | Prim::ListNew)
+                )
+            {
+                let prim = crate::eval::meta_apply_of(db, head).unwrap();
+                return match crate::eval::reduce_ctor(db, prim, id, &args) {
+                    Ok(built) => core_of(db, built),
+                    Err(msg) => Core::Poison(Reject::decline(msg)),
+                };
+            }
             if args.is_empty() {
                 // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
                 // the head would re-enter the same body without end. Decline it exactly as a recursive
@@ -378,6 +401,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::SumNew) => {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: sum variant constructor");
                     lower_sum_new(db, head, &args)
+                }
+                // `List.len` applied to a list — FOLD when the operand is a compile-time-visible list
+                // literal (its length is statically known), else emit `Core::ListLen` (the runtime
+                // `vec-len`). One operand: the list.
+                Some(Prim::ListLen) if args.len() == 1 => {
+                    let operand = args[0];
+                    match core_of(db, operand) {
+                        Core::ListNew { elems } => {
+                            trace!(target: "rcdzc::fold", node = id.0, len = elems.len(), "List.len folds to a constant (visible list literal)");
+                            Core::ConstInt(IntValue::from_i64(elems.len() as i64))
+                        }
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::ListLen { operand },
+                    }
                 }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
@@ -1295,7 +1332,9 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
                 || ref_escapes_whole(db, body, init)
         }
         Resolved::Record { fields } => fields.values().any(|&v| ref_escapes_whole(db, v, init)),
-        Resolved::Tuple { elems } => elems.iter().any(|&e| ref_escapes_whole(db, e, init)),
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
+            elems.iter().any(|&e| ref_escapes_whole(db, e, init))
+        }
         Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
         Resolved::Apply { head, args } => {
             ref_escapes_whole(db, head, init)
@@ -1869,7 +1908,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             n
         }
         Resolved::Member { operand, .. } => uses_in(db, operand, init),
-        Resolved::Tuple { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
             let mut n = 0;
             for &e in elems.iter() {
                 n += uses_in(db, e, init);
@@ -2159,7 +2198,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SumNew
         | Prim::SumCtor
         | Prim::TupleNew
-        | Prim::RecordNew => {
+        | Prim::RecordNew
+        | Prim::ListNew
+        | Prim::ListLen
+        | Prim::ListCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -2408,6 +2450,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
         Prim::RecordNew => "record-new",
+        Prim::ListNew => "list-new",
+        Prim::ListLen => "list-len",
+        Prim::ListCtor => "List",
     }
 }
 

@@ -143,6 +143,20 @@ pub enum Prim {
     /// (x 1) (y 2))` does: each argument is a `(key value)` pair. VARIADIC over its fields; the record
     /// companion of `TupleNew`.
     RecordNew,
+    /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
+    /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
+    /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
+    /// type is `Ty::List(elem)` not a per-position product. Lowers to `Core::ListNew{elems}` (built on
+    /// the persistent `vec-*` heap). The tuple/record companion for the homogeneous sequence.
+    ListNew,
+    /// `List.len` — the length of a list, an `Int64`. The `(meta apply)` of the `len` field of the `List`
+    /// prelude module. Lowers to the runtime `vec-len` op.
+    ListLen,
+    /// `List : Type → Type` — the list-TYPE constructor. `(List Int64)` in type position builds the
+    /// type-value `Ty::List(Int64)` (used in annotations `(: e (List Int64))` and in `List.len`'s scheme
+    /// `∀a. (List a) → Int64`). One element type, unlike `Tuple`'s variadic — the list companion of the
+    /// type constructors `Int`/`Tuple`/`Record`.
+    ListCtor,
 }
 
 impl Prim {
@@ -178,6 +192,9 @@ impl Prim {
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
             "record-new" => Some(Prim::RecordNew),
+            "list-new" => Some(Prim::ListNew),
+            "list-len" => Some(Prim::ListLen),
+            "List" => Some(Prim::ListCtor),
             _ => None,
         }
     }
@@ -318,6 +335,12 @@ pub enum Resolved {
     /// (`elems` behind an `Arc<[StructId]>` so cloning a `Resolved::Tuple` is O(1) — same rationale as
     /// `Record`; a tuple projected element-by-element re-clones the operand's resolved form per access.)
     Tuple { elems: std::sync::Arc<[StructId]> },
+    /// A LIST literal `(list e0 e1 …)` — a HOMOGENEOUS variable-length sequence. The elements are AST
+    /// occurrences in order (resolved on demand); every element's type unifies to ONE element type (a
+    /// mixed list is ill-typed — CDZ0203), so its type is `Ty::List(elem)`. Distinct from `Tuple` (a
+    /// fixed-arity product with per-position types): a list's length is a runtime property and all
+    /// elements share a type. Built on the persistent `vec-*` heap at run time.
+    List { elems: std::sync::Arc<[StructId]> },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

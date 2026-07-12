@@ -248,12 +248,14 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, *value, out);
             }
         }
-        crate::core::Core::Tuple { elems } => {
+        crate::core::Core::Tuple { elems } | crate::core::Core::ListNew { elems } => {
             for e in elems {
                 collect_call_callees(db, e, out);
             }
         }
-        crate::core::Core::Proj { operand, .. } => collect_call_callees(db, operand, out),
+        crate::core::Core::Proj { operand, .. } | crate::core::Core::ListLen { operand } => {
+            collect_call_callees(db, operand, out)
+        }
         // A sum construction's payloads are unconditionally evaluated — descend for their calls.
         crate::core::Core::SumNew { payloads, .. } => {
             for p in payloads {

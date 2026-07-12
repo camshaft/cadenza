@@ -164,6 +164,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             match db.ast.head_ctor(id) {
                 Some("record") => return resolve_record(db, id),
                 Some("tuple") => return resolve_tuple(db, id),
+                Some("list") => return resolve_list(db, id),
                 _ => {}
             }
             match db.ast.head_name(id) {
@@ -918,6 +919,12 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             }
             Some(Ty::Tuple(elems.into()))
         }
+        // A list type-value: `(List <elem>)` — the dual of `eval::encode_ty`'s `List` arm.
+        "List" => {
+            let tail = db.ast.as_form(node, "List")?;
+            let elem = decode_ty(db, *tail.first()?)?;
+            Some(Ty::List(Box::new(elem)))
+        }
         // A sum type-value: `(Sum <name> <decl> arg…)` — the dual of `eval::encode_ty`'s `Sum` arm (and
         // of the shape `sums::synthesize` builds for a sum record's `(meta t)`). The nominal name is for
         // rendering; the declaration occurrence (an integer literal) is the identity; the type ARGS
@@ -1150,6 +1157,15 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
     let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
     Resolved::Tuple { elems }
+}
+
+/// Resolve `(list e0 e1 …)` — a homogeneous sequence literal. Every element is an AST occurrence in
+/// order (resolved on demand); unlike a tuple the elements are NOT per-position (they all unify to one
+/// element type — `infer`/`type_errors` enforce homogeneity). An empty `(list)` has no elements — a
+/// list of a deferred element type.
+fn resolve_list(db: &Db, id: StructId) -> Resolved {
+    let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
+    Resolved::List { elems }
 }
 
 /// Resolve `(: expr ty_expr)` — a type annotation. Both children stay AST occurrences: `expr` is the

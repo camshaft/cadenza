@@ -139,6 +139,15 @@ pub enum Core {
     /// `get-*`. The `index` is within the operand's static arity (checked in `type_errors` before
     /// selection — an out-of-arity index is a compile-time reject, never a runtime trap).
     Proj { operand: StructId, index: usize },
+    /// A LIST value construction — `(list 1 2 3)`. Present when it survives to selection as a RUNTIME
+    /// value (constructed from runtime operands, or a constant list that escapes). The backend builds it
+    /// on the persistent `vec-*` heap: `vec-empty` then a `vec-push` per element (each boxed by the
+    /// element type). Elements are lowered on demand. Homogeneous — one element type.
+    ListNew { elems: Vec<StructId> },
+    /// `List.len` of the list the `operand` occurrence denotes — the runtime `vec-len` op, an `Int64`.
+    /// Present when the operand is a RUNTIME list (a constant list's length folds to a `ConstInt` in
+    /// `lower`, so it never reaches here).
+    ListLen { operand: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

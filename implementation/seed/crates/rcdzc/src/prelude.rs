@@ -73,6 +73,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // split — the name is looked up, the symbol is the unspellable primitive.
     names.insert("tuple".to_string(), ctor_record(ast, "tuple-new"));
     names.insert("record".to_string(), ctor_record(ast, "record-new"));
+    // `list` — the list-VALUE constructor alias (`(list 1 2 3)`), variadic + homogeneous → `Ty::List`.
+    names.insert("list".to_string(), ctor_record(ast, "list-new"));
+    // `List` — BOTH the list-TYPE constructor (`(List Int64)` in type position → `(meta apply)=List`) AND
+    // the module of list OPERATIONS (its `len`/… fields, reached by member access `(. List len)`). One
+    // record carries both roles: applying it builds the type, projecting a field gives an operation.
+    names.insert("List".to_string(), list_module(ast));
 
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
@@ -151,6 +157,54 @@ fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
     push_list(ast, vec![head, apply_field])
+}
+
+/// The `List` module record — a record carrying BOTH `(meta apply)` = the `List` type constructor (so
+/// `(List Int64)` in type position builds `Ty::List`) AND a field per list OPERATION (reached by member
+/// access `(. List len)`). Each operation is an operator record: its `(meta t)` is a type-lambda over
+/// the element type, its `(meta apply)` the runtime op. This increment realizes `len : ∀a. (List a) →
+/// Int64`; push/concat/at arrive in the next increment (a projected-but-unrealized field DECLINES, the
+/// same closed-module rule every prelude module follows).
+fn list_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta apply)` = the `List` TYPE constructor (`(List Int64)` reduces to `Ty::List(Int64)`).
+    let builder = intrinsic_node(ast, "List");
+    let apply_field = meta_field(ast, "apply", builder);
+    // `len : ∀a. (List a) → Int64` — the operator record for `(. List len)`.
+    let len_lambda = list_len_type_lambda(ast);
+    let len_op = list_op_record(ast, "list-len", len_lambda);
+    let len_field = {
+        let k = push_atom(ast, Leaf::Name("len".to_string()));
+        push_list(ast, vec![k, len_op])
+    };
+    push_list(ast, vec![head, apply_field, len_field])
+}
+
+/// An operation record for a `List` module field: `(record ((meta t) TYPE-LAMBDA) ((meta apply)
+/// (intrinsic PRIM)))` — the same shape as `operator_record`, but the type-lambda is supplied (a list
+/// operation's signature varies per op, unlike the shared arithmetic/comparison shapes).
+fn list_op_record(ast: &mut Arenas, prim: &str, type_lambda: StructId) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let t_field = meta_field(ast, "t", type_lambda);
+    let apply = intrinsic_node(ast, prim);
+    let apply_field = meta_field(ast, "apply", apply);
+    push_list(ast, vec![head, t_field, apply_field])
+}
+
+/// The type-lambda `(fn (a) (-> (List a) Int64))` for `List.len` — generic over the element type `a`,
+/// taking a list of it and returning `Int64`. Written as ordinary AST so `infer` reduces it to the
+/// scheme `∀a. (List a) → Int64` through the one evaluator (`(List a)` reduces via `Prim::ListCtor`).
+fn list_len_type_lambda(ast: &mut Arenas) -> StructId {
+    let list = push_atom(ast, Leaf::Name("List".to_string()));
+    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let list_a = push_list(ast, vec![list, a]);
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let arrow = push_atom(ast, Leaf::Name("->".to_string()));
+    let body = push_list(ast, vec![arrow, list_a, int64]);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type shape of a binary operator — which `(meta t)` type-lambda it carries. Both are ordinary

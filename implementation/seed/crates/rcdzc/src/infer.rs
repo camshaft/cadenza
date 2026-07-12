@@ -123,6 +123,17 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A tuple's type is the tuple of its elements' types, in position order (each a lazy `type_of`).
         // Arity + element types ARE the type.
         Resolved::Tuple { elems } => Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()),
+        // A list's type is `List <elem>` where `<elem>` is the JOIN of the element types (like a match's
+        // arm-join — every element shares one type; a deferred/`Any` element yields the others). An empty
+        // list is `List Any` (a deferred element, solved by unification against its use). The homogeneity
+        // CHECK (a mixed list is CDZ0203) is `type_errors`' job; this fills the value column.
+        Resolved::List { elems } => {
+            let mut elem_ty = Ty::Any;
+            for &e in elems.iter() {
+                elem_ty = elem_ty.join(&type_of(db, e));
+            }
+            Ty::List(Box::new(elem_ty))
+        }
         // (Arc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
         // A tuple projection's type is the operand tuple's element type AT `index`. An operand that is
         // not a tuple, or an index outside its arity, has no element type — typed `Any` here so it does
@@ -643,6 +654,39 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
 /// (Int a) → (Int a)`) and a user function alike, with no per-operator logic. On any failure — a
 /// head with no type, a non-function head, an arity/unify mismatch — return `Any` so the value column
 /// stays total; the actual FAULT is reported by `type_errors`.
+/// The type of a compound-VALUE constructor (`tuple`/`record`/`list` alias) applied to `args` — a
+/// compound VARIADIC in the arguments, so it cannot be a fixed `(meta t)` scheme (unlike a sum variant's
+/// arrow). A tuple is the product of the arg types; a record maps each `(key value)` pair's key to its
+/// value type; a list is `List <elem>` where `<elem>` is the JOIN of the argument types (homogeneous,
+/// `Any` for the empty list). Typed the same way the symbol-headed `Resolved::Tuple`/`Record`/`List`
+/// forms are, so the name-alias application and the symbol primitive agree.
+fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId]) -> Ty {
+    use crate::resolved::Prim;
+    match prim {
+        Prim::TupleNew => Ty::Tuple(args.iter().map(|&e| type_of(db, e)).collect()),
+        Prim::RecordNew => match crate::resolve::read_record_fields(db, args) {
+            Ok(fields) => {
+                let mut field_tys = std::collections::BTreeMap::new();
+                for (label, &value) in fields.iter() {
+                    field_tys.insert(label.clone(), type_of(db, value));
+                }
+                Ty::Record(std::sync::Arc::new(field_tys))
+            }
+            // A malformed field list has no well-formed record type — `Any`; the fault is reported by
+            // `type_errors`.
+            Err(_) => Ty::Any,
+        },
+        Prim::ListNew => {
+            let mut elem_ty = Ty::Any;
+            for &e in args {
+                elem_ty = elem_ty.join(&type_of(db, e));
+            }
+            Ty::List(Box::new(elem_ty))
+        }
+        _ => Ty::Any,
+    }
+}
+
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // A LAMBDA head β-reduces; the application's type is the reduced body's type. The reduction runs
     // under the recursion guard (keyed by the lambda body), so a recursive call declines to `Any`
@@ -676,6 +720,19 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
+    // A compound-VALUE constructor (the `tuple`/`record`/`list` alias) applied — its type is the compound
+    // of the argument types, even at ZERO arguments (an empty `(list)` / `(tuple)` is a valid empty
+    // compound, NOT the ctor record). This is checked BEFORE the zero-arg identity short-circuit below so
+    // `(list)` types as `List Any` rather than as the `list` ctor record's type. (The TupleNew/RecordNew/
+    // ListNew arms are the ones that can be nullary; a scheme-typed head falls through.)
+    if let Some(
+        prim @ (crate::resolved::Prim::TupleNew
+        | crate::resolved::Prim::RecordNew
+        | crate::resolved::Prim::ListNew),
+    ) = crate::eval::meta_apply_of(db, head)
+    {
+        return compound_ctor_type(db, prim, args);
+    }
     // A ZERO-ARGUMENT application `(g)` with a non-lambda head is the head value — applying to no
     // arguments is the identity (a nullary def `(def (g) 7)` called). Its type is the head's type.
     // Mirrors the same short-circuit in `lower`, so `(g)` types and lowers as its body value. A
@@ -699,32 +756,6 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         && crate::eval::variant_payload_type(db, head).is_none()
     {
         return type_of(db, head);
-    }
-    // The compound-VALUE constructors reached via the `tuple`/`record` alias names build a compound
-    // whose type is VARIADIC in the arguments — a tuple of the arg types, or a record of the field
-    // types — so it cannot be expressed as a fixed `(meta t)` scheme (unlike a sum variant's arrow).
-    // Type them the same way the symbol-headed `Resolved::Tuple`/`Record` forms are typed, so the
-    // name-alias application and the symbol primitive agree on the value's type.
-    match crate::eval::meta_apply_of(db, head) {
-        Some(crate::resolved::Prim::TupleNew) => {
-            return Ty::Tuple(args.iter().map(|&e| type_of(db, e)).collect());
-        }
-        Some(crate::resolved::Prim::RecordNew) => {
-            // Each arg is a `(key value)` pair; the record type is the field-name → value-type map.
-            return match crate::resolve::read_record_fields(db, args) {
-                Ok(fields) => {
-                    let mut field_tys = std::collections::BTreeMap::new();
-                    for (label, &value) in fields.iter() {
-                        field_tys.insert(label.clone(), type_of(db, value));
-                    }
-                    Ty::Record(std::sync::Arc::new(field_tys))
-                }
-                // A malformed field list has no well-formed record type — `Any` here; the fault is
-                // reported by `type_errors` (which lowers the form and surfaces the poison).
-                Err(_) => Ty::Any,
-            };
-        }
-        _ => {}
     }
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
@@ -831,6 +862,32 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+    // A LIST constructor (`list` alias) applied — its arguments are its ELEMENTS, and a list is
+    // HOMOGENEOUS: every element must share one type (collections-and-text.md §A List Is A Homogeneous
+    // Sequence). Unify each element's type against the first; a mismatch (`(list 1 true)`) is CDZ0203. The
+    // `list` NAME alias resolves to a `Resolved::Apply` (this path), NOT `Resolved::List` (the symbol
+    // form), so this check — not the `Resolved::List` `collect` arm — is what catches a mixed name-alias
+    // list. (`ListNew` has no `(meta t)` scheme, so the generic check below would silently pass it.)
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(crate::resolved::Prim::ListNew)
+    ) {
+        let mut subst = Subst::new();
+        if let Some(&first) = args.first() {
+            let first_ty = type_of(db, first);
+            for &e in args.iter().skip(1) {
+                let et = type_of(db, e);
+                if let Err(reject) = crate::unify::unify(&mut subst, &first_ty, &et) {
+                    trace!(target: "rcdzc::infer", head = head.0, "fault: list elements differ in type (CDZ0203)");
+                    out.push(reject);
+                }
+            }
+        }
+        for &e in args {
+            collect(db, e, out);
+        }
+        return;
+    }
     // A NULLARY variant CONSTRUCTOR applied to the unit value — `(None unit)` / `(Nil ())` — is the
     // canonical construction of a nullary variant (core-semantics.md §Construction MUST Be Via
     // Application). Its ctor `(meta t)` is the bare sum (no arrow — `variant_payload_type` is `None`), so
@@ -1167,6 +1224,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A tuple literal: descend into each element for its own faults.
         Resolved::Tuple { elems } => {
+            for &e in elems.iter() {
+                collect(db, e, out);
+            }
+        }
+        // A list literal is HOMOGENEOUS: every element must share ONE type (collections-and-text.md §A
+        // List Is A Homogeneous Sequence). Unify each element's type against the first — a mismatch (a
+        // `(list 1 true)`) is CDZ0203, the same class as `if` branches disagreeing. Then descend into
+        // each element for its own faults.
+        Resolved::List { elems } => {
+            let mut subst = Subst::new();
+            if let Some(&first) = elems.first() {
+                let first_ty = type_of(db, first);
+                for &e in elems.iter().skip(1) {
+                    let et = type_of(db, e);
+                    if let Err(reject) = crate::unify::unify(&mut subst, &first_ty, &et) {
+                        trace!(target: "rcdzc::infer", node = id.0, "fault: list elements differ in type (CDZ0203)");
+                        out.push(reject);
+                    }
+                }
+            }
             for &e in elems.iter() {
                 collect(db, e, out);
             }

@@ -112,6 +112,7 @@ pass	a let-bound variable derived from a runtime parameter passed as a call argu
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a list annotated with the wrong element type is rejected
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match on a computed runtime value dispatches on the result
@@ -248,6 +249,7 @@ pass	a tuple access out of arity on a function-returned tuple is a type error, n
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple is constructed with positional elements
+pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
@@ -317,6 +319,7 @@ pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	concatenating lists of different element types is a type error
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
 pass	constructor pattern binders capture the payload uniformly
@@ -370,6 +373,7 @@ pass	overflow of the default integer traps deterministically
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
+pass	pushing an element of a different type onto a list is a type error
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
@@ -414,6 +418,7 @@ pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
+pass	updating a list slot with an element of a different type is a type error
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
@@ -513,7 +518,6 @@ todo	a later declaration in a do block sees an earlier one
 todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a left shift by a floating-point count does not silently promote
 todo	a length-prefixed frame is built from a size segment and a bytes segment
-todo	a list annotated with the wrong element type is rejected
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list built by a runtime-length loop has that many elements
 todo	a list mixing integer and boolean elements is a type error
@@ -688,7 +692,6 @@ todo	a tuple of calls to a sibling function on recursive-sum values matches with
 todo	a tuple pattern against a Sign scrutinee is a type error
 todo	a tuple pattern against a sum scrutinee is a type error
 todo	a tuple pattern of the wrong arity is a type error
-todo	a tuple payload consumed INLINE in the sum arm projects and re-matches
 todo	a tuple payload extracted through a helper return must not be rejected as a type error
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
@@ -788,7 +791,6 @@ todo	concatenating an empty byte sequence on the right is the identity
 todo	concatenating an empty string on the left is the identity
 todo	concatenating an empty string on the right is the identity
 todo	concatenating byte sequences built at run time appends their bytes in order
-todo	concatenating lists of different element types is a type error
 todo	concatenating tuples preserves each element's type
 todo	concatenating two byte sequences appends their bytes in order
 todo	concatenating two runtime strings and measuring the result
@@ -910,7 +912,6 @@ todo	popping an absent field is rejected
 todo	projecting a record onto an absent field is rejected
 todo	projecting a record restricts it to the named fields
 todo	projecting the result of a function that threads a tuple parameter must not trap
-todo	pushing an element of a different type onto a list is a type error
 todo	pushing an element onto a list appends it
 todo	quasiquote constructs AST with selective evaluation
 todo	quasiquote makes AST construction readable
@@ -1032,7 +1033,6 @@ todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned comparison orders by magnitude, not by signed interpretation
 todo	unsigned subtraction below zero traps rather than wrapping
 todo	updating a list index replaces that element, leaving others
-todo	updating a list slot with an element of a different type is a type error
 todo	updating a record field changes its type to the new value's
 todo	updating a record field replaces its value
 todo	updating an absent record field is rejected

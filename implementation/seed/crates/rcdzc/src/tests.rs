@@ -2896,6 +2896,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_constructs_and_its_length_folds() {
+        // `(list 1 2 3)` builds a homogeneous list; `List.len` of a compile-time-visible list folds to
+        // its arity (no heap). `((. List len) (list 1 2 3))` → 3; the empty list → 0. Runtime elements
+        // don't change the arity: `(List.len (list n 2))` still folds to 2 (length is static here).
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) ((. List len) (list 1 2 3))) (export main))"),
+                "main"
+            ),
+            3
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) ((. List len) (list))) (export main))"),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn a_mixed_element_list_is_rejected() {
+        // A list is HOMOGENEOUS (collections-and-text.md §A List Is A Homogeneous Sequence): every element
+        // shares one type. `(list 1 true)` mixes Int64 and Bool — a type mismatch (CDZ0203), the same
+        // class as `if` branches disagreeing. Pins the homogeneity check. (Used via `len` so `main`
+        // returns a scalar, not a list — a list result has no boundary form yet, a separate decline.)
+        assert_eq!(
+            reject_code("(module m (def (main) ((. List len) (list 1 true))) (export main))")
+                .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn a_list_annotation_checks_the_element_type() {
+        // `(: (list 1 2) (List Bool))` — the value is a `List Int64`, the annotation says `List Bool`; the
+        // element types conflict, so it is rejected (CDZ0203). Pins `(List T)` in type position + the
+        // annotation element check. A matching annotation `(List Int64)` is transparent (folds to len 2).
+        assert_eq!(
+            reject_code("(module m (def (main) (: (list 1 2) (List Bool))) (export main))")
+                .as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) ((. List len) (: (list 1 2) (List Int64)))) (export main))"
+                ),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
     fn a_constant_scrutinee_folds_to_the_selected_arm() {
         // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
         assert_eq!(
@@ -3013,8 +3068,14 @@ mod match_engine {
         // discarded payload. Regression: nullary-construction-via-application accepted `(Opt.Nn 5)` and
         // discarded the 5, fabricating `(Nn unit)` — an ill-typed program accepted (a soundness hole).
         for (src, ty) in [
-            ("(module m (type Opt (Sm Int64) Nn) (def (main) (Opt.Nn 5)) (export main))", "Int64"),
-            ("(module m (type Opt (Sm Int64) Nn) (def (main) (Opt.Nn true)) (export main))", "Bool"),
+            (
+                "(module m (type Opt (Sm Int64) Nn) (def (main) (Opt.Nn 5)) (export main))",
+                "Int64",
+            ),
+            (
+                "(module m (type Opt (Sm Int64) Nn) (def (main) (Opt.Nn true)) (export main))",
+                "Bool",
+            ),
         ] {
             assert_eq!(
                 reject_code(src).as_deref(),
@@ -5851,9 +5912,7 @@ mod stage1 {
             ("(T.B 8)", 999), // B untested → default
             ("(T.E 2)", 999), // E untested → default
         ] {
-            let src = format!(
-                "(module m {ty} (def (main) (match {scrut} {arms})) (export main))"
-            );
+            let src = format!("(module m {ty} (def (main) (match {scrut} {arms})) (export main))");
             assert_eq!(
                 run_returns::<i64>(
                     &compile_component(&crate::codec::encode(&parse(&src))).expect("compile"),

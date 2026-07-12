@@ -193,7 +193,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
         | Core::Proj { .. }
         | Core::SumNew { .. }
         | Core::MatchSum { .. }
-        | Core::SumPayload { .. } => Err(Reject::decline(
+        | Core::SumPayload { .. }
+        | Core::ListNew { .. }
+        | Core::ListLen { .. } => Err(Reject::decline(
             "the Rust backend does not yet render compound values",
         )),
     }

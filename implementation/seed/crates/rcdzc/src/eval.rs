@@ -153,6 +153,13 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let r = type_in_env(db, args[1], env)?;
                     Some(Ty::Fn(Box::new(p), Box::new(r)))
                 }
+                // `(List a)` inside a type-lambda — the element reduced under the env (so `a` becomes its
+                // type variable), then `Ty::List(elem)`. This is what makes `List.len`'s `(meta t)` =
+                // `(fn (a) (-> (List a) Int64))` read as the scheme `∀a. (List a) → Int64`.
+                Prim::ListCtor if args.len() == 1 => {
+                    let elem = type_in_env(db, args[0], env)?;
+                    Some(Ty::List(Box::new(elem)))
+                }
                 // A GENERIC SUM application `(Option a)` inside a type-lambda — each arg reduced under
                 // the env (so `a` becomes its type variable), then `Ty::Sum{decl, args}`. This is what
                 // makes a generic variant ctor's `(meta t)` = `(fn (a) (-> a (Option a)))` read as the
@@ -611,7 +618,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         Resolved::Member { operand, .. } => collect_callees(db, operand, out),
         // A tuple's elements and a projection's operand run when this body runs — a call inside them is
         // a real edge, so descend.
-        Resolved::Tuple { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
             for &e in elems.iter() {
                 collect_callees(db, e, out);
             }
@@ -1031,6 +1038,18 @@ pub fn reduce_ctor(
             trace!(target: "rcdzc::eval", ty = %tup.render_name(), "ctor (Tuple): built tuple type-value");
             Ok(encode_typeval(db, &tup))
         }
+        // `List` — ONE element type: `(List Int64)` builds `Ty::List(Int64)`, the type an annotation
+        // `(: e (List T))` checks against.
+        Prim::ListCtor => {
+            if args.len() != 1 {
+                return Err("List takes one element-type argument".to_string());
+            }
+            let elem =
+                typeval_of(db, args[0]).ok_or_else(|| "List element is not a type".to_string())?;
+            let list_ty = crate::ty::Ty::List(Box::new(elem));
+            trace!(target: "rcdzc::eval", ty = %list_ty.render_name(), "ctor (List): built list type-value");
+            Ok(encode_typeval(db, &list_ty))
+        }
         // `Record` — VARIADIC over `(name type)` field pairs: each arg is a raw `(name T)` list; read the
         // field name (first child) and reduce the type (second child) to a `Ty`. The field-name SET +
         // per-field types ARE the record type, so `(: e (Record (a T)…))` checks the value's field set and
@@ -1070,7 +1089,7 @@ pub fn reduce_ctor(
         // resolution first (`resolve_subtree` memoizes every node against its CURRENT scope), exactly as
         // β-reduction pins a call argument before splicing it; the later re-parent then cannot change
         // how any node inside an arg resolves.
-        Prim::TupleNew | Prim::RecordNew => {
+        Prim::TupleNew | Prim::RecordNew | Prim::ListNew => {
             // Build once per construction site. The built node is `(head-str arg…)` over the EXACT SAME
             // arg occurrences, so it is a pure function of the SITE being reduced — the same source
             // application demanded repeatedly (a `let`-bound tuple projected field-by-field: `(+ (. t 0)
@@ -1097,10 +1116,10 @@ pub fn reduce_ctor(
             for &a in args {
                 crate::resolve::resolve_subtree(db, a);
             }
-            let head = db.push_str(if matches!(prim, Prim::TupleNew) {
-                "tuple"
-            } else {
-                "record"
+            let head = db.push_str(match prim {
+                Prim::TupleNew => "tuple",
+                Prim::ListNew => "list",
+                _ => "record",
             });
             let mut children = vec![head];
             children.extend_from_slice(args);
@@ -1337,6 +1356,13 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
                 items.push(encode_ty(db, a));
             }
             db.push_list(items)
+        }
+        // A list type-value: `(List <elem>)` — the head then the element type. Round-trips with
+        // `decode_ty`'s `"List"` arm.
+        Ty::List(elem) => {
+            let head = db.push_name("List");
+            let e = encode_ty(db, elem);
+            db.push_list(vec![head, e])
         }
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),

@@ -323,12 +323,14 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A tuple's elements are all unconditionally part of the value; a projection's operand is
         // unconditionally evaluated. Descend into each.
-        Core::Tuple { elems } => {
+        Core::Tuple { elems } | Core::ListNew { elems } => {
             for e in elems {
                 collect_reached_poisons(db, e, out);
             }
         }
-        Core::Proj { operand, .. } => collect_reached_poisons(db, operand, out),
+        Core::Proj { operand, .. } | Core::ListLen { operand } => {
+            collect_reached_poisons(db, operand, out)
+        }
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
             for p in payloads {
@@ -408,7 +410,7 @@ fn walk_for_dead_traps(
     };
     match crate::resolve::resolved_of(db, id) {
         // Value-discarding positions: each constituent whose value may be dropped.
-        Resolved::Tuple { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
             for e in elems.iter() {
                 discarded(db, *e, out, seen);
             }
