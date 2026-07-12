@@ -2564,6 +2564,36 @@ mod runtime_ops {
         ));
     }
 
+    /// A NARROW signed `+`/`-` by a compile-time CONSTANT drops the provably-unreachable range-check
+    /// bound: the exact result moves in ONE direction from an in-range operand, so only that bound can
+    /// be exceeded. `(+ a 1)` Int8 can only exceed `max` (127) — the `r < min` check is dead; `(- a 1)`
+    /// can only fall below `min` (-128) — the `r > max` check is dead. The surviving check must still
+    /// trap at the exact edge, and dropping the dead one must never mask a real overflow or admit a wrap.
+    /// (The general two-runtime-operand case keeps both bounds — see the tests above.)
+    #[test]
+    fn a_narrow_constant_operand_addsub_drops_the_dead_range_bound() {
+        // (+ a 1) Int8: 126→127 fits; 127→128 traps the UPPER edge; MIN(-128)+1=-127 must NOT trap
+        // (the dropped lower check would have been the only risk of a false trap here).
+        assert_eq!(run::<i8>("(: a Int8)", "(+ a 1)", &[Val::S8(126)]), 127);
+        assert!(traps("(: a Int8)", "(+ a 1)", &[Val::S8(127)]));
+        assert_eq!(
+            run::<i8>("(: a Int8)", "(+ a 1)", &[Val::S8(-128)]),
+            -127,
+            "adding 1 to Int8.min stays in range — the dropped lower-bound check must not trap"
+        );
+        // (- a 1) Int8: -127→-128 fits; -128→-129 traps the LOWER edge; MAX(127)-1=126 must NOT trap.
+        assert_eq!(run::<i8>("(: a Int8)", "(- a 1)", &[Val::S8(-127)]), -128);
+        assert!(traps("(: a Int8)", "(- a 1)", &[Val::S8(-128)]));
+        assert_eq!(
+            run::<i8>("(: a Int8)", "(- a 1)", &[Val::S8(127)]),
+            126,
+            "subtracting 1 from Int8.max stays in range — the dropped upper-bound check must not trap"
+        );
+        // A negative constant flips the direction: (+ a -1) moves DOWN → traps only the LOWER edge.
+        assert!(traps("(: a Int8)", "(+ a -1)", &[Val::S8(-128)]));
+        assert_eq!(run::<i8>("(: a Int8)", "(+ a -1)", &[Val::S8(127)]), 126);
+    }
+
     #[test]
     fn runtime_narrow_unsigned_addition_and_subtraction() {
         // UInt8: 200+55=255 fits, 200+56=256 traps (range-check to [0,255]); 0-1 traps below zero.

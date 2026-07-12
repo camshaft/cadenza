@@ -4052,8 +4052,23 @@ fn emit_checked_arith_to(
     out.push(Lir::LocalSet(sr));
     // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot).
     emit_machine_overflow_guard(op, m, sa, sb, sr, out);
-    // Step 2: the narrow-width range-check on the exact result in `$r`.
-    emit_range_check(m, sr, out);
+    // Step 2: the narrow-width range-check on the exact result in `$r`. For a narrow signed `± const`
+    // the exact result moves in ONE direction from an in-range operand, so only that bound is reachable
+    // — drop the dead check. `(+ a C)` C>0 (or `(- a C)` C<0) moves UP → only `r > max`; the reverse
+    // moves DOWN → only `r < min`. (`C==0` is elided in `lower`; a two-const op folds there too.) The
+    // general/two-runtime case, and `*`, keep BOTH bounds (a product can leave either side).
+    let reach = match const_operand_split(op, sa, sb) {
+        Some((_, c)) if c != 0 => {
+            let moves_up = (matches!(op, Prim::Add) && c > 0) || (matches!(op, Prim::Sub) && c < 0);
+            if moves_up {
+                ReachableBounds::UpperOnly
+            } else {
+                ReachableBounds::LowerOnly
+            }
+        }
+        _ => ReachableBounds::Both,
+    };
+    emit_range_check(m, sr, reach, out);
     // The result. `Stack` leaves it on the operand stack (`local.get $r`) for the enclosing expression;
     // `Slot(d)` means `$r` IS `d` and the caller wants the value only in the slot, so nothing is pushed
     // (the `local.set $r` above already stored it) — this is where the copy-into-the-operand-slot goes
@@ -4234,37 +4249,52 @@ fn emit_machine_overflow_guard(
     }
 }
 
+/// Which SIGNED narrow-range bounds a result can actually leave — a range-analysis hint that lets the
+/// range-check drop a provably-unreachable side. `Both` is the safe default (a general op can land
+/// anywhere). `UpperOnly`/`LowerOnly` are asserted only where the caller has PROVEN the result cannot
+/// leave the other side (a narrow signed `± const`: the exact result moves in ONE direction from an
+/// in-range operand, so it can exceed only that bound). Ignored for an unsigned width (already one test).
+#[derive(Clone, Copy, PartialEq)]
+enum ReachableBounds {
+    Both,
+    UpperOnly,
+    LowerOnly,
+}
+
 /// The narrow-width range-check on an exact result in `$r`: trap unless `min_N <= r <= max_N`. A no-op
 /// at a FULL width (`N == slot bits`, where the slot extremes ARE the bounds).
 ///
 /// SIGNED width → two SIGNED guards: `r <ₛ min_N → trap` and `r >ₛ max_N → trap` (the bound and value
 /// are signed slot values; the result sits sign-extended, so a value outside `[min_N, max_N]` is caught
-/// on one side or the other).
+/// on one side or the other). `reach` may PROVE only one side is possible (a narrow signed `± const`),
+/// dropping the dead check — 4 instructions (`local.get`, `const`, compare, `if unreachable`).
 ///
 /// UNSIGNED width → ONE UNSIGNED guard: `r >ᵤ max_N → trap`, i.e. `r >=ᵤ 2^N`. An unsigned narrow
 /// result is `0 <= true value < 2^(slot bits)` and sits zero-extended, so the ONLY way it can leave the
 /// type is by exceeding `2^N-1` — a single unsigned upper-bound test covers it. This is correct at EVERY
 /// width, including one just below the slot size (a `UInt31` sum of `2^32-2` reads as a NEGATIVE signed
 /// slot value, which the old signed `r <ₛ 0` guard caught and a signed `r >ₛ max` would MISS — the
-/// unsigned compare catches it directly). Replacing the two signed guards with one unsigned guard drops
-/// 4 instructions (a `local.get`, a `const`, a compare, an `if unreachable`) per narrow unsigned
-/// `+`/`-`/`*`, and is strictly more obviously correct than the two-signed-guard form it replaces.
-fn emit_range_check(m: Machine, sr: u32, out: &mut Vec<Lir>) {
+/// unsigned compare catches it directly). (`reach` does not apply to unsigned — already one test.)
+fn emit_range_check(m: Machine, sr: u32, reach: ReachableBounds, out: &mut Vec<Lir>) {
     if !m.narrow() {
         return;
     }
     let (min_n, max_n) = m.bounds();
     if m.signed {
-        // r <ₛ min_N → trap.
-        out.push(Lir::LocalGet(sr));
-        out.push(m.konst(min_n));
-        out.push(m.lt_s());
-        out.push(Lir::IfUnreachableEnd);
-        // r >ₛ max_N → trap.
-        out.push(Lir::LocalGet(sr));
-        out.push(m.konst(max_n));
-        out.push(m.gt_s());
-        out.push(Lir::IfUnreachableEnd);
+        // r <ₛ min_N → trap. Skipped when the result provably cannot fall below min (UpperOnly).
+        if reach != ReachableBounds::UpperOnly {
+            out.push(Lir::LocalGet(sr));
+            out.push(m.konst(min_n));
+            out.push(m.lt_s());
+            out.push(Lir::IfUnreachableEnd);
+        }
+        // r >ₛ max_N → trap. Skipped when the result provably cannot exceed max (LowerOnly).
+        if reach != ReachableBounds::LowerOnly {
+            out.push(Lir::LocalGet(sr));
+            out.push(m.konst(max_n));
+            out.push(m.gt_s());
+            out.push(Lir::IfUnreachableEnd);
+        }
     } else {
         // r >=ᵤ 2^N → trap (the single unsigned upper-bound test; `2^N = max_N + 1`).
         out.push(Lir::LocalGet(sr));
@@ -4341,7 +4371,7 @@ fn emit_div_rem(
     )?;
     out.push(m.div()); // traps on ÷0 natively; the machine op does not overflow at a narrow width
     out.push(Lir::LocalSet(sr));
-    emit_range_check(m, sr, out);
+    emit_range_check(m, sr, ReachableBounds::Both, out);
     out.push(Lir::LocalGet(sr));
     Ok(())
 }
@@ -4479,7 +4509,7 @@ fn emit_mul_pow2_as_shift(
     out.push(m.ne());
     out.push(Lir::IfUnreachableEnd);
     // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
-    emit_range_check(m, sr, out);
+    emit_range_check(m, sr, ReachableBounds::Both, out);
     out.push(Lir::LocalGet(sr));
     Ok(())
 }
@@ -4613,7 +4643,7 @@ fn emit_shift(
         out.push(m.ne());
         out.push(Lir::IfUnreachableEnd);
         // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
-        emit_range_check(m, sr, out);
+        emit_range_check(m, sr, ReachableBounds::Both, out);
     }
     out.push(Lir::LocalGet(sr));
     Ok(())
