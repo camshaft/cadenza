@@ -514,7 +514,7 @@ fn ordered_param_binders(db: &Db, def: usize) -> Vec<StructId> {
 /// nullary def is just `R`). Memoized on `db.def_schemes` keyed by the def index (a pure function of
 /// the fixed def structure).
 ///
-/// (See `implementation/DESIGN-anf-step2-runtime-functions.md`.) This computes the scheme for a def
+/// This computes the scheme for a def
 /// whose signature is DETERMINED: an annotated/exported function (its params have definite machine
 /// types and the body types reading them — the scheme AGREES with what β-reduction produces at a call,
 /// cross-checked in tests), OR an unannotated RECURSIVE def whose parameters the connected solve

@@ -38,9 +38,9 @@ agrees, a byte-identical `component-check`), not "someone said they fixed it."
    trust the claim) → move `pending-validation/ → done/`, record the verifying evidence (corpus case,
    byte-identity, reproducer now compiling). If the re-probe *fails*, move it back to `open/` with the
    contradicting evidence — a fix that didn't hold is an open ask again.
-4. The loop **reports the same findings to the compiler agent** via the `📡 FROM THE CONFORMANCE LOOP`
-   section atop `SEED-GAPS-FOR-SELF-HOSTING.md`. `asks/` is the operator's review queue; that banner is the
-   agent's work feed. They stay in sync but serve different readers.
+4. The loop historically **reported the same findings to the compiler agent** via a banner atop
+   `SEED-GAPS-FOR-SELF-HOSTING.md`. That work feed belonged to the pre-rewrite self-host track and has
+   been retired (removed; recoverable from git); `asks/` remains the operator's review queue.
 
 ## Status glyphs inside a file
 
@@ -56,7 +56,5 @@ three directories. Regenerate it after moving files.
 
 ## Related channels (not asks)
 
-- `SEED-GAPS-FOR-SELF-HOSTING.md` — the compiler agent's work feed (seed implementation gaps + the loop's
-  `📡` banner). An ask about seed work cross-references its gap number.
 - `RUNTIME-REQUESTS.md` — WIT/runtime component requests.
 - `spec/learnings/` — dated post-mortems (the durable "why"); an ask often links the learning that drove it.

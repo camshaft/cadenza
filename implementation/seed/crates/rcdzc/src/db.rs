@@ -298,7 +298,7 @@ pub struct Db {
     /// are pinned by the connected solve (`solve_recursive_params`, A2), so its scheme is `Some`;
     /// `None` remains only for a def with a genuinely undetermined parameter (no use constrained it —
     /// it grounds to `Any`), where the caller falls back to β-reduction. A pure function of the fixed
-    /// def structure, so it caches like `build_cache`. (ANF step 2 — `implementation/DESIGN-anf-step2-runtime-functions.md`.)
+    /// def structure, so it caches like `build_cache`.
     pub(crate) def_schemes: std::collections::HashMap<usize, Option<crate::ty::Scheme>>,
 
     /// Memo of an UNANNOTATED RECURSIVE def's parameter types, solved by the connected def-body solve
