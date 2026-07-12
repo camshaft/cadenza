@@ -18,16 +18,20 @@ use crate::ty::{IntTy, Ty};
 pub enum ValType {
     I64,
     I32,
+    /// A 64-bit IEEE float — the machine slot a `Ty::Float` (Float64) value occupies. Added for float
+    /// literals crossing the boundary; float arithmetic (f64.add/…) builds on it.
+    F64,
 }
 
 impl ValType {
-    /// The core-wasm valtype byte (`0x7E` i64, `0x7F` i32) — from the generated `wasm_abi` table
-    /// (extracted from `wasm-encoder`'s `ValType`), not a hand-typed byte. The raw encoding lives here
-    /// (the serializer's concern), but its VALUE is the spec's.
+    /// The core-wasm valtype byte (`0x7E` i64, `0x7F` i32, `0x7C` f64) — from the generated `wasm_abi`
+    /// table (extracted from `wasm-encoder`'s `ValType`), not a hand-typed byte. The raw encoding lives
+    /// here (the serializer's concern), but its VALUE is the spec's.
     pub fn byte(self) -> u8 {
         match self {
             ValType::I64 => wasm_abi::CORE_I64,
             ValType::I32 => wasm_abi::CORE_I32,
+            ValType::F64 => wasm_abi::CORE_F64,
         }
     }
 }
@@ -58,6 +62,10 @@ pub enum Lir {
     ConstI64(i64),
     /// `i32.const N` — a signed 32-bit constant (emitted via SLEB128).
     ConstI32(i32),
+    /// `f64.const` — a 64-bit float constant, carried as its raw IEEE-754 BIT PATTERN (the exact bits,
+    /// so `-0.0` and a NaN round-trip verbatim; `f64.const` is emitted as 8 little-endian bytes of the
+    /// bit pattern, NOT LEB128). A float literal crossing the boundary emits this.
+    F64ConstBits(u64),
     /// `local.get I` — read local `I`.
     LocalGet(u32),
     /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash
@@ -257,9 +265,9 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // CONSTANT string folds (no runtime slot); a runtime string handle lives here (its runtime ops
         // arrive with the byte-rope heap ops).
         Ty::String => Some(ValType::I32),
-        // A float has no machine slot YET (no float arithmetic/runtime) — like a function/type value, a
-        // float reaching a real slot declines rather than guessing a representation.
-        Ty::Float => None,
+        // A Float64 occupies an f64 machine slot — a float literal that crosses the boundary (or, later,
+        // a float arithmetic result) lives here.
+        Ty::Float => Some(ValType::F64),
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,
@@ -337,8 +345,8 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A string escapes as the canonical binary value form via the resource `encode()` path, like a
         // list/record/sum — no primitive boundary valtype. (Constant string escape is a later increment.)
         Ty::String => None,
-        // A float has no boundary form yet (no float value crosses the edge until float runtime lands).
-        Ty::Float => None,
+        // A Float64 crosses the component boundary as the `f64` primitive.
+        Ty::Float => Some(wasm_abi::COMP_F64),
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,

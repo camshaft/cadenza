@@ -234,10 +234,24 @@ capture, so it is strictly cheaper than §4.4 and is the natural first build of 
 
 A **recursive** effectful function cannot be inlined (it would not terminate). Emit it **once per handler
 context it is called under** (`gen_specialized_call`'s clean re-build): each enclosing handler's state
-becomes a hidden trailing parameter and an extra multi-value return —
-`f#ctx(params…, s_in…) -> (result, s_out…)` — threading each context's state **through the call boundary**,
-never a global (a global clobbers on nesting/re-entry). Self- and mutual recursion and nested handler states
+becomes a hidden trailing parameter, threading each context's state **through the call boundary**, never a
+global (a global clobbers on nesting/re-entry). Self- and mutual recursion and nested handler states
 follow. Covers corpus Group 4 (4 cases: recursive walks pulling `Fresh`/`Diag`/`Countdown` state).
+
+> **🔑 2026-07-12 finding (verified against all four executing corpus cases): the general form wants a
+> multi-value return `f#ctx(params…, s_in…) -> (result, s_out…)`, but NO corpus case needs it.** Every
+> corpus recursive-effectful function has a **downward-threaded, single-return** shape: the handler state
+> flows *into* the recursive self-call as a trailing parameter, and the result is a plain scalar — the
+> final state is never carried back up (the handle's value is the *body's* value, not the accumulated
+> state). So the shipping realization is just `f#ctx(params…, s_in…) -> result` (no multi-value, no backend
+> change): rewrite each perform to its arm's resume *value* (a function of `s_in`, via the same
+> `beta_reduce` substitution the tail fold uses) and rewrite the self-call `(f …)` to `(f#ctx …,
+> <threaded next-state>)`. Concretely — `loop#ctx(s) = (if (= s 0) 0 (+ 1 (loop#ctx (- s 1))))` (countdown);
+> `sum-down#ctx(s) = let i = s in (if (= i 0) 0 (+ i (sum-down#ctx (- s 1))))` (range-sum); two nested
+> handlers → two trailing params. The `s_out` multi-value return is only needed when a caller observes state
+> *after* a recursive callee returns (no corpus case does) — defer it until one exists. This makes E3 a
+> source-to-source specialization + a synthesized `db.defs` entry reached through the existing
+> `Core::Call`+`layout` reachability, NOT a backend/ABI change.
 
 Two disciplines the old compiler learned the hard way, adopted from the start:
 - **The context key is a resolved handler-context identity** (interned `EffectRef` + arm identities), **not**

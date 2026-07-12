@@ -117,6 +117,34 @@
             (def (main) (g 10)) (export main)))
   (output (: 22 Int64)))
 
+(case "a nested if on the same condition collapses the inner test to the known branch"
+  (doc    "core-semantics.md #Conditionals Evaluate One Branch: inside the ELSE of `(if c … …)` the
+           condition `c` is known false, so a nested `(if c B D)` there always takes `D`. `(if c 1 (if c 2
+           3))` therefore never yields 2: `c` = true → 1, `c` = false → the outer else, where the inner `c`
+           is false → 3. A compiler that constant-propagates the outer condition into the nested test folds
+           the inner `if` away to `D`; this pins the observable result of that propagation is the same as
+           re-evaluating `c` — the inner branch `2` is dead.")
+  (input  (do
+            (def (main (: c Bool)) (if c 1 (if c 2 3)))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
+(case "conditional propagation respects a shadowing rebind of the condition variable"
+  (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
+           5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is
+           false), so the outer `if` takes its else; there the INNER `c` is a fresh binding = true, so the
+           inner `if` takes 2. The two `c`s are textually identical but denote different values — a
+           propagation that folded the inner `(if c …)` to the outer `c`'s known-false value would wrongly
+           yield 3. Pins that the constant propagation is scope-aware (it stops at a rebinding of the
+           condition name), the control-flow analogue of the lexical-shadowing binding rule.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((c (< n 5))) (if c 1 (let ((c true)) (if c 2 3)))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 2 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`

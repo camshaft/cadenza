@@ -1574,12 +1574,13 @@ fn emit(
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
         )),
-        // A float VALUE has no machine slot yet (no f64 path / boundary rep) — a float constant that
-        // reaches emission (rather than folding away, e.g. through equality) declines. Float equality
-        // folds to a Bool in `lower`; float arithmetic + boundary crossing are later increments.
-        Core::ConstFloat(_) => Err(Reject::decline(
-            "a floating-point value has no machine representation yet (only float equality folds)",
-        )),
+        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Ty::Float`
+        // occupies in its f64 machine slot, and what an export returning a float leaves on the stack (the
+        // boundary lifts it to the component `f64`). Float ARITHMETIC (f64.add/…) is a later increment.
+        Core::ConstFloat(d) => {
+            out.push(Lir::F64ConstBits(d.to_f64_bits()));
+            Ok(())
+        }
         Core::Unit => {
             // Unit occupies no slot and pushes nothing.
             Ok(())
@@ -3720,6 +3721,17 @@ impl OperandSrc {
             OperandSrc::ConstI64(v) => out.push(Lir::ConstI64(v)),
         }
     }
+
+    /// The compile-time constant this operand carries (as i64), or `None` for a runtime slot. Both
+    /// widths widen to i64 for the sign test the constant-operand overflow guard makes (the sign of the
+    /// constant is all that guard needs — an i32 constant's sign is preserved by the i64 widening).
+    fn const_value(self) -> Option<i64> {
+        match self {
+            OperandSrc::ConstI32(v) => Some(v as i64),
+            OperandSrc::ConstI64(v) => Some(v),
+            OperandSrc::Slot(_) => None,
+        }
+    }
 }
 
 /// The reusable operand source for `id` at machine slot type `slot_ty`, or `None` if the operand must
@@ -4089,6 +4101,26 @@ fn emit_operand_into(
     Ok(())
 }
 
+/// For the constant-operand overflow fast path: return `(runtime_operand, C)` when `(op sa sb)` has a
+/// compile-time constant operand and the OTHER is a runtime value that the specialized `r </ₛ> a` guard
+/// tests against. For `Add` (commutative) EITHER side may be the constant — the other is `a`. For `Sub`
+/// (`a - C`) ONLY the RIGHT operand `sb` may be the constant: a constant LEFT (`C - b`) is not the
+/// `a ± C` shape the sign reasoning covers (it would need `-b`'s own overflow analysis), so it declines
+/// to the general guard. `None` when neither operand (of the eligible side) is a constant.
+fn const_operand_split(op: Prim, sa: OperandSrc, sb: OperandSrc) -> Option<(OperandSrc, i64)> {
+    match op {
+        Prim::Add => {
+            if let Some(c) = sb.const_value() {
+                Some((sa, c))
+            } else {
+                sa.const_value().map(|c| (sb, c))
+            }
+        }
+        Prim::Sub => sb.const_value().map(|c| (sa, c)),
+        _ => None,
+    }
+}
+
 /// The machine-slot overflow guard for `(op a b)` with result in `$r` — traps (`if (empty) unreachable
 /// end`) when the true result does not fit the MACHINE slot. For a NARROW `+`/`-` the machine add/sub
 /// cannot overflow its slot (operands are far from the slot extremes), so the guard is skipped and the
@@ -4104,6 +4136,31 @@ fn emit_machine_overflow_guard(
 ) {
     // `+`/`-` overflow the slot only at a FULL width; a narrow add/sub stays within the slot.
     let addsub_can_overflow = !m.narrow();
+    // CONSTANT-OPERAND FAST PATH (full-width signed `+`/`-`): when one operand is a compile-time
+    // constant `C != 0`, the general two-`xor` sign test collapses to a SINGLE signed compare of the
+    // result `r` against the RUNTIME operand `a`. A signed add/sub overflows iff the true result leaves
+    // the type, and with a known-sign constant that shows up as `r` landing on the wrong side of `a`:
+    //   (+ a C): C>0 overflows only upward → wrap makes `r <ₛ a`;  C<0 only downward → `r >ₛ a`.
+    //   (- a C): C>0 subtracts, overflows only downward → `r >ₛ a`; C<0 → `r <ₛ a`.
+    // (`C==0` never overflows and is already elided by the `lower` identity fold, so it never reaches
+    // here; a two-constant op folds entirely in `lower`. `a` is the OTHER, runtime operand.) Reads `$r`
+    // first so the preceding `local.set $r` fuses to `local.tee $r` via the peephole. ~5 fewer ops than
+    // the general guard, on the hot path (loop counters `(- n 1)`, accumulators `(+ acc 1)`).
+    if addsub_can_overflow
+        && m.signed
+        && matches!(op, Prim::Add | Prim::Sub)
+        && let Some((a_src, c)) = const_operand_split(op, sa, sb)
+        && c != 0
+    {
+        // `r < a` traps for: add with C>0, sub with C<0. `r > a` traps for: add with C<0, sub with C>0.
+        let trap_when_r_lt_a =
+            (matches!(op, Prim::Add) && c > 0) || (matches!(op, Prim::Sub) && c < 0);
+        out.push(Lir::LocalGet(sr));
+        a_src.push(out);
+        out.push(if trap_when_r_lt_a { m.lt_s() } else { m.gt_s() });
+        out.push(Lir::IfUnreachableEnd);
+        return;
+    }
     match op {
         Prim::Add if addsub_can_overflow && m.signed => {
             // signed add: `((r^a) & (r^b)) < 0` → trap.
@@ -4921,9 +4978,11 @@ mod tests {
     #[test]
     fn a_constant_operand_is_inlined_not_stashed_in_scratch() {
         // (def (f (: a Int64)) (+ a 1)) — the RHS is a compile-time constant. `operand_src` returns a
-        // `Const` source for it, so it is pushed inline (`i64.const 1`) at BOTH use sites (the add and
-        // the guard's `r^b`) rather than stored into a `$b` scratch local and re-read. Only $r needs
-        // scratch. Sequence: get$a const1 add set$r ; guard ((r^a)&(r^1))<0 ; get$r — the `set$r ;
+        // `Const` source for it, so it is pushed inline (`i64.const 1`) at the add rather than stored
+        // into a `$b` scratch local. Only $r needs scratch. And because a constant `+`/`-` operand at
+        // full signed width lets the overflow guard SPECIALIZE, the guard is a single `r <ₛ a` compare
+        // (C=1>0 for `+` overflows only upward → wrap makes `r < a`), NOT the general two-`xor` sign
+        // test. Sequence: get$a const1 add tee$r ; get$a lt_s ; if unreachable ; get$r — the `set$r ;
         // get$r` pair fuses to `local.tee` via the peephole.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64)) (+ a 1)) (def (main) 0) (export main))",
@@ -4940,14 +4999,8 @@ mod tests {
                 Lir::ConstI64(1),
                 Lir::I64Add,
                 Lir::LocalTee(1), // set $r then the guard's first read of $r, fused.
-                // guard: ((r ^ a) & (r ^ 1)) < 0 → trap. `1` re-materialized inline again.
+                // specialized guard: `r <ₛ a` → trap (a constant `+1` overflows only past MAX).
                 Lir::LocalGet(0),
-                Lir::I64Xor,
-                Lir::LocalGet(1),
-                Lir::ConstI64(1),
-                Lir::I64Xor,
-                Lir::I64And,
-                Lir::ConstI64(0),
                 Lir::I64LtS,
                 Lir::IfUnreachableEnd,
                 Lir::LocalGet(1),

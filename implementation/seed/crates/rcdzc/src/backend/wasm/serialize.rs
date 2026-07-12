@@ -61,6 +61,12 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::I32_CONST);
             crate::backend::wasm::encode::sleb128(*n as i64, out);
         }
+        // `f64.const` — the opcode then the 8 raw bit-pattern bytes, little-endian (NOT LEB128; the
+        // float-const immediate is a fixed-width IEEE-754 encoding). `bits` already IS the pattern.
+        Lir::F64ConstBits(bits) => {
+            out.push(op::F64_CONST);
+            out.extend_from_slice(&bits.to_le_bytes());
+        }
         Lir::LocalGet(idx) => {
             out.push(op::LOCAL_GET);
             uleb128(*idx as u64, out);
@@ -228,17 +234,6 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Debug metadata the backend injects into the embedded core module — the `name` custom section's
-/// inputs (D0 of `DESIGN-debug-info-rcdzc.md`). `module_name` is the program's name (its first export);
-/// `func_names` are `(defined-function index, source name)` pairs for the program's OWN functions, in
-/// ascending index order (a nameless def is omitted). The imported runtime ops are named from the
-/// `imports` slice inside `core_module`, so they are not repeated here. Present only when a debug `Emit`
-/// request drives the compile (Mode E); absent → byte-identical to today (the reproducibility anchor).
-pub struct DebugInfo<'a> {
-    pub module_name: &'a str,
-    pub func_names: &'a [(u32, String)],
-}
-
 /// One defined function's emitted CODE byte range, paired with the source occurrence it derives from —
 /// the D1b line-table primitive (`DESIGN-debug-info-rcdzc.md` §2.1b). `code_start`/`code_end` are byte
 /// offsets of the function's `code_entry` (its `<size><locals><instrs>end` bytes) RELATIVE TO THE START
@@ -326,7 +321,7 @@ fn name_subsection(id: u8, payload: &[u8]) -> Vec<u8> {
 /// guarantees). `func_names` must be ASCENDING by index (the name-map's wire form is ordered); the
 /// caller concatenates imports-then-defined, which is already ascending. Turns `func[N]` into a source
 /// name in every trace, profile, and debugger frame — DWARF-independent, highest value-per-line.
-fn name_section(module_name: &str, func_names: &[(u32, String)]) -> Vec<u8> {
+pub fn name_section(module_name: &str, func_names: &[(u32, String)]) -> Vec<u8> {
     // Contents: the section-name string "name", then the subsections in id order.
     let mut contents = name_string("name");
     // Subsection 0 — module name.
@@ -359,7 +354,6 @@ pub fn core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     layout: &Layout,
-    debug: Option<&DebugInfo>,
 ) -> Result<Vec<u8>, String> {
     let n = funcs.len();
     let import_count = imports.len();
@@ -439,19 +433,9 @@ pub fn core_module(
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&code_sec);
-    // DEBUG (Mode E): append the `name` custom section LAST, after every executed section — so it is
-    // inert (moves no executed byte) and strippable. The function-name map names the imported runtime
-    // ops (indices `0..import_count`, from `imports`) then the program's own defined functions (indices
-    // `import_count..`, from `debug.func_names`), concatenated so the whole map is ascending by index.
-    if let Some(dbg) = debug {
-        let mut func_names: Vec<(u32, String)> = imports
-            .iter()
-            .enumerate()
-            .map(|(i, o)| (i as u32, o.name.to_string()))
-            .collect();
-        func_names.extend(dbg.func_names.iter().cloned());
-        core.extend_from_slice(&name_section(dbg.module_name, &func_names));
-    }
+    // The `name` custom section (Mode E, D0) is now appended by `wasm::append_debug_sections` AFTER this
+    // returns — uniformly for BOTH the ordinary path and the resource-escape path — so `core_module`
+    // stays purely the executed sections (byte-identical to today for every caller).
     Ok(core)
 }
 

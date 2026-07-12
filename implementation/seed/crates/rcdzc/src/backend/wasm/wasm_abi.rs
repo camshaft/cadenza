@@ -15,6 +15,7 @@
 pub mod op {
     pub const I32_CONST: u8 = 0x41;
     pub const I64_CONST: u8 = 0x42;
+    pub const F64_CONST: u8 = 0x44;
     pub const IF: u8 = 0x04;
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0b;

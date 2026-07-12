@@ -382,7 +382,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         vec![0],
         1,
     );
-    let ours = core_module(&[func], &[OPS.arr_alloc], &layout, None).expect("core module");
+    let ours = core_module(&[func], &[OPS.arr_alloc], &layout).expect("core module");
 
     // The oracle: a core module importing `heap."arr-alloc" : (i32) -> i32`, then one defined
     // `() -> i64` func (function index 1) exported as `main`, returning 42.
@@ -624,6 +624,17 @@ impl FromVal for u16 {
         match v {
             wasmtime::component::Val::U16(n) => *n,
             other => panic!("expected U16 result, got {other:?}"),
+        }
+    }
+}
+
+// A Float64 crosses the boundary as the component `f64` primitive — read back as an `f64`. Compared by
+// BITS in the test (so `-0.0` ≠ `0.0` and a NaN is exact), the canonical-value contract.
+impl FromVal for f64 {
+    fn from_val(v: &wasmtime::component::Val) -> f64 {
+        match v {
+            wasmtime::component::Val::Float64(n) => *n,
+            other => panic!("expected Float64 result, got {other:?}"),
         }
     }
 }
@@ -2044,6 +2055,56 @@ fn runtime_subtraction_traps_on_overflow() {
         "sub",
         &[Val::S64(i64::MAX), Val::S64(-1)]
     ));
+}
+
+/// A `+`/`-` by a compile-time CONSTANT uses the specialized single-compare overflow guard (`r <ₛ a` /
+/// `r >ₛ a`) instead of the general two-`xor` sign test. The specialization must trap at EXACTLY the
+/// same boundary the general guard would, and never spuriously — so pin every edge for the four
+/// sign/op combinations. `(+ a 1)` overflows only at `a = MAX`; `(- a 1)` only at `a = MIN`; a negative
+/// constant flips the boundary (`(+ a -1)` at `MIN`, `(- a -1)` = `a+1` at `MAX`), and a
+/// constant-on-the-left add (commutative) behaves as the right-constant form.
+#[test]
+fn a_constant_operand_addsub_traps_at_the_exact_boundary() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let f = |src: &str| compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+
+    // (+ a 1): traps only at MAX; MAX-1 → MAX; MIN stays in range.
+    let add1 = f("(module m (def (g (: a Int64)) (+ a 1)) (export g))");
+    assert_eq!(run_returns_with::<i64>(&add1, "g", &[Val::S64(0)]), 1);
+    assert_eq!(
+        run_returns_with::<i64>(&add1, "g", &[Val::S64(i64::MAX - 1)]),
+        i64::MAX
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&add1, "g", &[Val::S64(i64::MIN)]),
+        i64::MIN + 1,
+        "adding 1 near MIN must NOT spuriously trap"
+    );
+    assert!(call_traps(&add1, "g", &[Val::S64(i64::MAX)]));
+
+    // (- a 1): traps only at MIN; MIN+1 → MIN.
+    let sub1 = f("(module m (def (g (: a Int64)) (- a 1)) (export g))");
+    assert_eq!(
+        run_returns_with::<i64>(&sub1, "g", &[Val::S64(i64::MIN + 1)]),
+        i64::MIN
+    );
+    assert!(call_traps(&sub1, "g", &[Val::S64(i64::MIN)]));
+
+    // (+ a -1) [negative constant]: traps only at MIN (subtracts one).
+    let addneg = f("(module m (def (g (: a Int64)) (+ a -1)) (export g))");
+    assert_eq!(run_returns_with::<i64>(&addneg, "g", &[Val::S64(0)]), -1);
+    assert!(call_traps(&addneg, "g", &[Val::S64(i64::MIN)]));
+
+    // (- a -1) [= a + 1]: traps only at MAX.
+    let subneg = f("(module m (def (g (: a Int64)) (- a -1)) (export g))");
+    assert_eq!(run_returns_with::<i64>(&subneg, "g", &[Val::S64(0)]), 1);
+    assert!(call_traps(&subneg, "g", &[Val::S64(i64::MAX)]));
+
+    // (+ 1 a) [constant on the LEFT, commutative]: same as (+ a 1) — traps only at MAX.
+    let add1l = f("(module m (def (g (: a Int64)) (+ 1 a)) (export g))");
+    assert_eq!(run_returns_with::<i64>(&add1l, "g", &[Val::S64(41)]), 42);
+    assert!(call_traps(&add1l, "g", &[Val::S64(i64::MAX)]));
 }
 
 /// Runtime `*` traps on overflow (`Int64.max * 2`, `Int64.min * -1`), computes in range. The mul guard
@@ -4245,6 +4306,28 @@ mod match_engine {
                 run_returns::<i64>(&component(&src), "main"),
                 want,
                 "float equality fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_float_literal_crosses_the_boundary_as_an_f64_value() {
+        // A float literal `Core::ConstFloat` emits an `f64.const` of its canonical bits; the export
+        // returns f64 (`valtype_of(Ty::Float) = F64`) and the boundary lifts it to the component `f64`
+        // (`comp_valtype_of = COMP_F64`). Read back BY BITS so the canonical value is exact: `3.5`, a
+        // large whole float NOT saturated to i64 (`1e19`), and `-0.0` DISTINCT from `0.0` all round-trip.
+        for (prog, want_bits) in [
+            ("3.5", 3.5f64.to_bits()),
+            ("1e19", 1e19f64.to_bits()),
+            ("-0.0", (-0.0f64).to_bits()),
+            ("0.0", (0.0f64).to_bits()),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let got = run_returns::<f64>(&component(&src), "main");
+            assert_eq!(
+                got.to_bits(),
+                want_bits,
+                "float literal {prog} crosses as its canonical f64 (by bits)"
             );
         }
     }
@@ -11517,7 +11600,7 @@ mod debug_info {
 
         // And the whole thing is consistent with a real `core_module`: the module must contain the two
         // entries' bytes consecutively at the payload region the ranges describe.
-        let core = core_module(&funcs, &imports, &layout, None).expect("core module");
+        let core = core_module(&funcs, &imports, &layout).expect("core module");
         let mut concat = entry0.clone();
         concat.extend_from_slice(&entry1);
         assert!(
@@ -11963,6 +12046,13 @@ mod debug_info {
         assert!(
             has(b"main"),
             "the escape component's DWARF must name the source functions"
+        );
+        // The wasm `name` section rides in too (uniformly with the ordinary path now) — so a plain
+        // profiler/trace shows `f`/`main`, not `func[N]`. Its section-name string is the length-prefixed
+        // `\x04name` (the custom-section name), distinct from the incidental substring "name".
+        assert!(
+            has(b"\x04name"),
+            "the escape component must carry the wasm `name` section"
         );
         // The plain build embeds no DWARF (the sections are debug-only).
         let plain = component_of(src, Target::Wasm);

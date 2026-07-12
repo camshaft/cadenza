@@ -56,7 +56,6 @@ pub fn emit(
     spans: Option<&crate::spans::SpanData>,
     external_debug_info: Option<&str>,
 ) -> Result<Vec<u8>, Reject> {
-    let debug = spans.is_some();
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
@@ -150,40 +149,9 @@ pub fn emit(
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
 
-    // DEBUG (Mode E, D0): the `name`-section inputs — the module name (the first export's name) and a
-    // `(defined-function index, source name)` pair per program function, in emission order. A defined
-    // function at emission position `k` is core function index `import_base + k` (`layout.abs`); its
-    // source name is the def's name. Built only when `debug`; `None` otherwise → byte-identical output.
-    let func_names: Vec<(u32, String)> = if debug {
-        layout
-            .order
-            .iter()
-            .enumerate()
-            .filter_map(|(k, &def)| {
-                let name = &db.defs[def].name;
-                if name.is_empty() {
-                    None
-                } else {
-                    Some((layout.import_base + k as u32, name.clone()))
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let module_name = layout
-        .exports
-        .first()
-        .map(|e| e.name.clone())
-        .unwrap_or_else(|| "main".to_string());
-    let debug_info = debug.then_some(serialize::DebugInfo {
-        module_name: &module_name,
-        func_names: &func_names,
-    });
-
-    // Serialize the embedded core module (multi-export core module, functions in emission order).
-    let mut core = serialize::core_module(&funcs, &imports, layout, debug_info.as_ref())
-        .map_err(Reject::decline)?;
+    // Serialize the embedded core module (multi-export core module, functions in emission order). The
+    // `name` + `.debug_*` sections are appended by `append_debug_sections` below (both paths, one place).
+    let mut core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
 
     // DEBUG (Mode E, D2): append the `.debug_*` DWARF custom sections to the embedded core module, so a
     // debugger can STEP through Cadenza source. Function-granularity: one line row + one subprogram DIE
@@ -287,9 +255,36 @@ fn append_debug_sections(
     spans: Option<&crate::spans::SpanData>,
     core: &mut Vec<u8>,
 ) {
-    if let Some(span_data) = spans
-        && let Some(code_base) = dwarf::code_section_payload_base(core)
-    {
+    let Some(span_data) = spans else { return };
+
+    // The wasm `name` custom section (D0): the module name (first export) + a function-name map. The
+    // imported runtime ops are named at indices `0..imports.len()`; each program function is named at
+    // its ABSOLUTE core index (`layout.abs` — which already accounts for the import shift, whether the
+    // ordinary base `imports.len()` OR the resource path's `imports.len()+2`). Ascending by index, as
+    // the name-map wire form requires (imports first, then defined funcs in emission order). Emitted for
+    // BOTH paths from here (was previously only the ordinary path, inside `core_module`).
+    let mut func_names: Vec<(u32, String)> = imports
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (i as u32, o.name.to_string()))
+        .collect();
+    for &def in &layout.order {
+        let name = &db.defs[def].name;
+        if let Some(abs) = layout.abs(def)
+            && !name.is_empty()
+        {
+            func_names.push((abs, name.clone()));
+        }
+    }
+    let module_name = layout
+        .exports
+        .first()
+        .map(|e| e.name.as_str())
+        .unwrap_or("main");
+    core.extend_from_slice(&serialize::name_section(module_name, &func_names));
+
+    // The `.debug_*` DWARF sections (D2/D3), when the core has a code section to reference.
+    if let Some(code_base) = dwarf::code_section_payload_base(core) {
         let dwarf_funcs = dwarf_funcs_for(db, layout, funcs, imports, code_base, span_data);
         core.extend_from_slice(&dwarf::debug_sections(&span_data.module_path, &dwarf_funcs));
     }
@@ -409,7 +404,7 @@ pub fn emit_dwarf(
     // The code-section base is where the RUNNABLE component's core module lays its code payload — the
     // undecorated core (no debug sections; the sidecar's addresses reference the runnable's code, which
     // carries no embedded debug). Serialize it just to measure that base.
-    let core = serialize::core_module(&funcs, &imports, layout, None).map_err(Reject::decline)?;
+    let core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
     let code_base = dwarf::code_section_payload_base(&core)
         .ok_or_else(|| Reject::decline("the core module has no code section to reference"))?;
 
