@@ -169,7 +169,7 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
 /// `CallImport` op name to its import function index.
 fn code_entry(f: &SelectedFunc, import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8> {
     let mut inner = Vec::new();
-    // Local declarations, run-length-encoded by value type (Stage 0 bodies declare none → count 0).
+    // Local declarations, run-length-encoded by value type (a body with no locals → count 0).
     let groups = rle(&f.declared);
     uleb128(groups.len() as u64, &mut inner);
     for (count, vt) in groups {
@@ -832,14 +832,15 @@ fn encode_walk_body(
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     match ret {
         Ty::Unit => Ok(None),
-        // A COMPOUND returned across the HOST boundary needs the type-directed RENDERER to produce its
-        // canonical text (`(tuple 0 true)`, …) — a later increment. Its internal handle representation
-        // (`comp_valtype_of` → u32) is right for a compound CONSUMED internally (threaded between defs,
-        // projected), but handing the host a raw handle would misreport the value (the gate reads
-        // `1114400` where the corpus expects the rendered tuple). So a compound host-export DECLINES
-        // pending the renderer — reject-don't-miscompile, NOT a raw-handle leak.
+        // A COMPOUND returned across the HOST boundary crosses as the canonical binary value form via
+        // the RESOURCE-ESCAPE path (a single nullary compound export → a resource whose `encode()`
+        // yields the value form; see `wasm::emit`). That path is detected before selection and does not
+        // come through this function; a compound reaching HERE is a multi-export or parameterized
+        // return, which the resource shape does not cover, so it DECLINES — the internal handle
+        // representation (`comp_valtype_of` → u32) is right for a compound CONSUMED internally but
+        // handing the host a raw handle would misreport the value. Reject-don't-miscompile, not a leak.
         Ty::Tuple(_) | Ty::Record(_) => Err(format!(
-            "returning a {} across the host boundary needs the value renderer (not yet built)",
+            "returning a {} on the multi-export boundary is not supported (use a single compound export, which escapes as a resource)",
             ret.render_name()
         )),
         other => match comp_valtype_of(other) {
@@ -854,12 +855,12 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
 }
 
 /// An export's RESULT as the envelope needs it — the same mapping as [`export_result_valtype`] lifted
-/// into the [`BoundaryResult`] the assembler consumes. Unit → `None`; a scalar → its primitive byte; a
-/// COMPOUND → the canonical binary value form as `list<u8>` (the escape path — `BoundaryResult::Bytes`),
-/// EXCEPT that the escape encoder (the resource `encode()` renderer) is not yet emitted, so a compound
-/// host-return still DECLINES here rather than crossing as a raw handle (removed at R3, when the
-/// renderer lands). The `Bytes` variant is exercised by the R0 envelope oracle + wasmtime tests, which
-/// hand-build a `list<u8>`-returning core (the byte layer proven independently of the renderer).
+/// into the [`BoundaryResult`] the assembler consumes. Unit → `None`; a scalar → its primitive byte. A
+/// COMPOUND crosses as the canonical binary value form (`BoundaryResult::Bytes`) only on the
+/// resource-escape path (a single nullary compound export, handled in `wasm::emit`), which does not go
+/// through this function; a compound reaching HERE is a multi-export/parameterized return, which
+/// declines (see [`export_result_valtype`]). The `Bytes` variant is produced by that escape path and
+/// exercised by the R0 envelope oracle + wasmtime tests, which hand-build a `list<u8>`-returning core.
 pub fn export_result(ret: &Ty) -> Result<crate::backend::wasm::envelope::BoundaryResult, String> {
     use crate::backend::wasm::envelope::BoundaryResult;
     match export_result_valtype(ret) {
