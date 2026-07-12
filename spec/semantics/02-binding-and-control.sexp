@@ -1636,6 +1636,23 @@
             (def (main) (is-zero 0)) (export main)))
   (output (: true Bool)))
 
+(case "two sum arms with textually identical bodies still bind their own variant's payload"
+  (doc    "An optimization that collapses a match whose arm bodies are all the same to that one body must
+           not treat two arms as identical when their bodies REFERENCE a per-arm binder: `((N.I x) (+ x 1))`
+           and `((N.J x) (+ x 1))` are textually the same `(+ x 1)`, but `x` binds the `I` payload in the
+           first arm and the `J` payload in the second — they are NOT the same body. With `b` = false the
+           scrutinee is `(N.J 9)`, so the taken arm's `x` is 9 and the result is 10; a collapse that fused
+           the two arms and read the first arm's payload slot would wrongly yield 6 (the `I` payload 5 + 1).
+           Pins that the all-same-body collapse is keyed on the body AFTER binder resolution, so an arm that
+           binds a different sub-value is a distinct body.")
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (main (: b Bool))
+              (match (if b (N.I 5) (N.J 9)) ((N.I x) (+ x 1)) ((N.J x) (+ x 1))))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 10 Int64)))
+
 ; A match is an expression of ONE type — all its arm bodies must agree, exactly as a conditional's two
 ; branches must (core-semantics.md #Matching Is Exhaustive Or Rejected makes a match an expression whose
 ; type is what its arms yield; #Conditionals Evaluate One Branch requires "every branch … type-checked
