@@ -594,6 +594,19 @@
   (input  (= (String.from-bytes (Bytes.of (list 237 160 128))) None))
   (output (: true Bool)))
 
+(case "decoding a four-byte sequence for a code point above U+10FFFF yields none"
+  (doc    "`(Bytes.of (list 244 144 128 128))` is `F4 90 80 80` — a structurally-valid 4-byte UTF-8 shape
+           `11110xxx 10xxxxxx 10xxxxxx 10xxxxxx` whose decoded code point is U+110000, ONE PAST the maximum
+           Unicode scalar U+10FFFF. Strict UTF-8 rejects it: the highest well-formed 4-byte lead is `F4`
+           with a second byte at most `8F` (U+10FFFF), so `90` overflows the range. `String.from-bytes`
+           yields `None`. The fourth failure mode of the total decode alongside invalid bytes, overlong
+           encodings, and surrogates — a byte sequence whose STRUCTURE is valid but whose CODE POINT is out
+           of range (the decode companion of the `Char.from-int 1114112` = U+110000 rejection). Pins that
+           the validator checks the decoded scalar's range, not only the byte structure.")
+  (needs  binary-matching)
+  (input  (= (String.from-bytes (Bytes.of (list 244 144 128 128))) None))
+  (output (: true Bool)))
+
 (case "encoding a decoded string round-trips to the same bytes"
   (doc    "For well-formed bytes `b`, decoding then re-encoding yields `b`: matching the `(Some s)` arm of
            `(String.from-bytes b)` and taking `(String.to-bytes s)` gives back the original UTF-8 bytes.
