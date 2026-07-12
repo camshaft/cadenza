@@ -9,7 +9,11 @@
 # `cargo xtask codegen` to re-record the hash.
 #
 # Edition 2024 requires rustc >= 1.85; the current recorded hash was produced with 1.95.0.
+#
+# `rust-src` is REQUIRED, not optional: the runtime rebuilds core/alloc/std from source
+# (`build-std`, see cdz-runtime/.cargo/config.toml) to compile out the panic machinery that made the
+# runtime hash differ across host architectures. Without rust-src the wasm build fails.
 [toolchain]
 channel = "1.95.0"
-components = ["rustc", "cargo", "clippy", "rustfmt"]
+components = ["rustc", "cargo", "clippy", "rustfmt", "rust-src"]
 targets = ["wasm32-unknown-unknown"]

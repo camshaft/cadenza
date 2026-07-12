@@ -1736,10 +1736,13 @@ fn check(paths: &Paths, profile: &str) {
     // The wasm runtime is EXCLUDED from the native workspace, so a plain `cargo build` skips it — a
     // silent gap the check closes by building it explicitly for its target.
     let rt = paths.seed.join("crates/cdz-runtime");
-    log.step(
+    log.step_env(
         "wasm-runtime",
         "cargo build --release --target wasm32-unknown-unknown",
         &rt,
+        // The runtime builds core/alloc/std from source (deterministic panic=immediate-abort); its
+        // build-std is a -Z feature, enabled on the stable pin via RUSTC_BOOTSTRAP.
+        &[("RUSTC_BOOTSTRAP", "1")],
     );
 
     // The behavior gate — invoke this same xtask binary. Use `gate --check` (vs the baseline) when a
@@ -1785,16 +1788,24 @@ impl Log {
     /// Run a step with its output captured to the log; print `✓ name` on success. On failure, dump
     /// the whole log to the console and exit. `cmd` is a `program arg arg…` string run in `dir`.
     fn step(&mut self, name: &str, cmd: &str, dir: &Path) {
-        self.run_step(name, cmd, dir, false);
+        self.run_step(name, cmd, dir, false, &[]);
+    }
+
+    /// Like `step`, but with extra environment variables set on the child. Used for the wasm-runtime
+    /// build, which needs `RUSTC_BOOTSTRAP=1` to enable the runtime's `build-std` (see
+    /// `cdz-runtime/.cargo/config.toml`) on the stable pin — without leaking that into the native
+    /// build/test/clippy steps.
+    fn step_env(&mut self, name: &str, cmd: &str, dir: &Path, env: &[(&str, &str)]) {
+        self.run_step(name, cmd, dir, false, env);
     }
 
     /// Like `step`, but the child's output ALSO streams to the console (tee) — for a step whose own
     /// output is a concise, useful signal (the gate's tally), not build noise.
     fn step_show(&mut self, name: &str, cmd: &str, dir: &Path) {
-        self.run_step(name, cmd, dir, true);
+        self.run_step(name, cmd, dir, true, &[]);
     }
 
-    fn run_step(&mut self, name: &str, cmd: &str, dir: &Path, show: bool) {
+    fn run_step(&mut self, name: &str, cmd: &str, dir: &Path, show: bool, env: &[(&str, &str)]) {
         use std::io::Write;
         writeln!(self.file, "\n==== {name}: {cmd} ====").ok();
         self.file.flush().ok();
@@ -1806,14 +1817,15 @@ impl Log {
 
         // Capture stdout+stderr. (A true live tee would need thread-per-pipe; capture-then-print is
         // enough here — steps are short and the console output is the point, not streaming.)
-        let out = std::process::Command::new(program)
-            .args(&args)
-            .current_dir(dir)
-            .output()
-            .unwrap_or_else(|e| {
-                eprintln!("  ✗ {name} — could not launch: {e}");
-                std::process::exit(1);
-            });
+        let mut command = std::process::Command::new(program);
+        command.args(&args).current_dir(dir);
+        for (k, v) in env {
+            command.env(k, v);
+        }
+        let out = command.output().unwrap_or_else(|e| {
+            eprintln!("  ✗ {name} — could not launch: {e}");
+            std::process::exit(1);
+        });
         self.file.write_all(&out.stdout).ok();
         self.file.write_all(&out.stderr).ok();
         self.file.flush().ok();
@@ -2189,6 +2201,12 @@ pub(crate) fn build_component_with_features(
             "cargo component build --release --target wasm32-unknown-unknown --features {feats}"
         )
     };
+    // The runtime's `.cargo/config.toml` builds core/alloc/std from source with
+    // `panic = immediate-abort` (see the comment there) so the emitted bytes — and thus the content
+    // hash every program pins — are byte-identical across host architectures. `build-std` is a `-Z`
+    // feature, so enable it on the stable pin with RUSTC_BOOTSTRAP. Without this the wasm build hard-
+    // errors (the config's rustflags parse a nightly option that build-std would otherwise unlock).
+    let build = build.env("RUSTC_BOOTSTRAP", "1");
     if let Err(e) = build.run() {
         eprintln!("cargo component build failed for {crate_dir}: {e}");
         std::process::exit(1);

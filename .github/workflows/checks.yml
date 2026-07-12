@@ -89,8 +89,13 @@ jobs:
         with:
           wasm-tools: "true"
           cache-key: wasm-runtime
+      # RUSTC_BOOTSTRAP=1 enables the runtime's build-std (deterministic panic=immediate-abort, see
+      # cdz-runtime/.cargo/config.toml) on the stable pin. xtask sets this itself for build/gate; this
+      # job builds the runtime directly, so it sets it here.
       - run: cargo build --release --target wasm32-unknown-unknown
         working-directory: implementation/seed/crates/cdz-runtime
+        env:
+          RUSTC_BOOTSTRAP: "1"
 
   gate:
     # The behavior gate: compile+run every corpus case and compare to the recorded verdict.
