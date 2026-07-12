@@ -49,11 +49,13 @@ if (candidates.size === 0) {
   process.exit(1);
 }
 
-// Search likely store locations (the worktree store, then the main repo's store).
+// Search likely store locations: an explicit CADENZA_STORE (passed by `cargo xtask guide-wasm`),
+// then the worktree store, then the main repo's store.
 const stores = [
+  process.env.CADENZA_STORE,
   join(guide, "..", "target", "cadenza-store"),
   join(guide, "..", "..", "..", "..", "target", "cadenza-store"),
-];
+].filter(Boolean);
 let hash = null;
 let runtimePath = null;
 outer: for (const h of candidates) {

@@ -47,6 +47,13 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Data.tsx")),
   },
   {
+    slug: "pattern-matching",
+    title: "Pattern matching",
+    blurb: "Deciding by shape; sum types and exhaustiveness.",
+    section: "Fundamentals",
+    Component: lazy(() => import("./chapters/PatternMatching.tsx")),
+  },
+  {
     slug: "numbers",
     title: "The numeric model",
     blurb: "Checked integers and no silent promotion.",

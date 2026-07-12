@@ -163,6 +163,15 @@ enum Cmd {
         #[arg(long, default_value = "fbip")]
         filter: String,
     },
+    /// Build the browser-facing compiler wasm for the interactive guide and stage it (plus the
+    /// value-heap runtime) into `guide/src/wasm/`. Runs `wasm-pack build --target web` on `cdz-wasm`
+    /// then the guide's `stage-wasm.mjs`. Run `build` first so the runtime the compiler pins is in the
+    /// store. This is what `guide/`'s `npm run wasm` calls, and what CI runs before building the site.
+    GuideWasm {
+        /// Content-addressed store the runtime is staged from. [default: <repo>/target/cadenza-store]
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -199,6 +208,7 @@ fn main() {
         Cmd::Codegen { check } => codegen::run(&paths, check),
         Cmd::Bench { save } => bench::run(&paths, save),
         Cmd::Miri { filter } => miri(&paths, &filter),
+        Cmd::GuideWasm { store } => guide_wasm(&paths, store),
     }
 }
 
@@ -363,6 +373,43 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     println!("   store:   {}", store.display());
     println!("   runtime: {runtime_hash}");
     println!("   debug:   {debug_hash}");
+}
+
+/// Build the browser compiler wasm for the guide and stage it. Two steps, each delegated to its tool:
+///   1. `wasm-pack build --target web --release` on `crates/cdz-wasm` → the JS glue + wasm in `pkg/`.
+///   2. the guide's `scripts/stage-wasm.mjs` → copies `pkg/` and the pinned value-heap runtime into
+///      `guide/src/wasm/`, where Vite picks them up.
+/// Run `cargo xtask build` first so the store holds the runtime whose hash the compiler pins.
+fn guide_wasm(paths: &Paths, store: Option<PathBuf>) {
+    let sh = Shell::new().expect("open a shell for the guide wasm build");
+    let crate_dir = paths.seed.join("crates/cdz-wasm");
+    let guide = paths.repo.join("guide");
+    let store = store.unwrap_or_else(|| paths.repo.join("target/cadenza-store"));
+
+    println!("== xtask: building the guide compiler wasm (wasm-pack --target web) ==");
+    {
+        let _pushed = sh.push_dir(&crate_dir);
+        if let Err(e) = cmd!(sh, "wasm-pack build --target web --release").run() {
+            eprintln!(
+                "wasm-pack build failed for cdz-wasm: {e}\n\
+                 (install it with `cargo install wasm-pack`; needs the wasm32-unknown-unknown target)"
+            );
+            std::process::exit(1);
+        }
+    }
+
+    println!("== xtask: staging pkg/ + runtime into guide/src/wasm/ ==");
+    let script = guide.join("scripts/stage-wasm.mjs");
+    let store_str = store.to_string_lossy().to_string();
+    {
+        let _pushed = sh.push_dir(&guide);
+        // The stage script reads an optional CADENZA_STORE to locate the pinned runtime.
+        if let Err(e) = cmd!(sh, "node {script}").env("CADENZA_STORE", &store_str).run() {
+            eprintln!("staging failed: {e}\n(is node ≥20.19 on PATH?)");
+            std::process::exit(1);
+        }
+    }
+    println!("\n== xtask: guide wasm ready — `cd guide && npm run dev` ==");
 }
 
 /// Compile a Cadenza program and run it — the whole pipeline end-to-end, delegating each stage to

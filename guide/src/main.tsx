@@ -6,10 +6,17 @@ import { SyntaxProvider } from "./syntax/SyntaxContext.tsx";
 import { CHAPTERS } from "./content/chapters.ts";
 import "./index.css";
 
-const router = createBrowserRouter([
-  { path: "/", element: <Navigate to={`/${CHAPTERS[0].slug}`} replace /> },
-  { path: "/:slug", element: <Layout /> },
-]);
+// `import.meta.env.BASE_URL` is Vite's configured `base` (e.g. `/cadenza/` on GitHub Pages, `/`
+// locally). React Router's basename wants it without a trailing slash.
+const basename = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+const router = createBrowserRouter(
+  [
+    { path: "/", element: <Navigate to={`/${CHAPTERS[0].slug}`} replace /> },
+    { path: "/:slug", element: <Layout /> },
+  ],
+  { basename },
+);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

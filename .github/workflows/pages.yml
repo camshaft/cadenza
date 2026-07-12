@@ -1,0 +1,105 @@
+# Build the interactive guide and publish it to GitHub Pages.
+#
+# Self-contained on purpose: it owns only the Pages deploy, so it composes cleanly with whatever
+# general CI workflow lives alongside it. The guide runs the Cadenza compiler in the browser, so the
+# build has to produce the compiler wasm first:
+#   1. build the value-heap runtime component into the content-addressed store  (cargo xtask build)
+#   2. build the browser compiler wasm + stage it and the runtime into guide/   (cargo xtask guide-wasm)
+#   3. build the static site with the Pages base path                           (npm run build)
+#
+# The site is a project page at https://<owner>.github.io/<repo>/, so VITE_BASE is the repo path.
+
+name: Deploy guide to Pages
+
+on:
+  push:
+    branches: [main]
+    # Only rebuild when something that affects the guide changed.
+    paths:
+      - "guide/**"
+      - "implementation/seed/crates/cdz-wasm/**"
+      - "implementation/seed/crates/rcdzc/**"
+      - "implementation/seed/crates/cadenza-syntax/**"
+      - "implementation/seed/crates/cdz-runtime/**"
+      - "xtask/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch: {}
+
+# Least-privilege token scoped to publishing Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight deploy at a time; don't cancel a running publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + wasm targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+          rustup default stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-guide-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-guide-
+
+      - name: Install cargo-component, wasm-pack, wasm-tools
+        run: |
+          cargo install cargo-component --locked || true
+          cargo install wasm-pack --locked || true
+          cargo install wasm-tools --locked || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: guide/package-lock.json
+
+      # 1. Build the value-heap runtime component into the store (the guide bundles the runtime whose
+      #    content hash the compiler pins).
+      - name: Build value-heap runtime
+        run: cargo xtask build
+
+      # 2. Build the browser compiler wasm and stage it + the runtime into guide/src/wasm/.
+      - name: Build & stage guide wasm
+        run: cargo xtask guide-wasm
+
+      # 3. Build the static site under the Pages base path.
+      - name: Build site
+        working-directory: guide
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: guide/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
