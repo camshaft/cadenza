@@ -1857,6 +1857,20 @@ fn emit(
             let m = Machine::of(int_ty_of(db, id));
             trace!(target: "rcdzc::select", node = id.0, ?op, width = m.width, signed = m.signed, "emit runtime integer op");
             match op {
+                // STRENGTH REDUCTION: `x * 2^k` → `x << k`. A left shift IS exact multiplication by a
+                // power of two, with the SAME defined overflow-trap (`numeric-model.md` §Overflow Is
+                // Defined for shifts: "a left shift is exact multiplication by a power of two, so an
+                // overflowing left shift MUST behave like an overflowing *"), so the rewrite preserves
+                // BOTH value and trap at every width/signedness (verified: `* 8` and `<< 3` agree on
+                // value and overflow-trap). The shift's overflow check is a cheap round-trip vs mul's
+                // division; `k < width` is a compile-time constant so there is no count guard. Only for
+                // `Mul` with a constant power-of-two operand ≥ 2 (`*1`/`*0` are handled by `lower`).
+                Prim::Mul if mul_pow2_shift(db, lhs, rhs, m).is_some() => {
+                    let (val, k) = mul_pow2_shift(db, lhs, rhs, m).unwrap();
+                    emit_mul_pow2_as_shift(
+                        db, m, val, k, slots, base, high, scratch_ty, layout, out,
+                    )
+                }
                 Prim::Add | Prim::Sub | Prim::Mul => emit_checked_arith(
                     db, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
                 ),
@@ -3513,6 +3527,127 @@ fn emit_div_rem(
 /// out of the SLOT, and the range-check catches a result that fits the slot but not the narrower N-bit
 /// type — together the exact `2^count`-overflow at any width.
 #[allow(clippy::too_many_arguments)]
+/// For a `Mul` node, if EXACTLY ONE operand is a compile-time constant power of two `2^k` with
+/// `1 <= k < width`, return `(value_operand, k)` — the runtime factor and the shift amount that replaces
+/// the multiply. `None` otherwise (neither operand a power of two, both constant — folded in `lower` —
+/// or `k` out of the useful range: `2^0 = 1` is the `*1` identity `lower` already elides, and `k >=
+/// width` can't be represented as a valid shift). The power-of-two test is on the constant's fit-in-i64
+/// magnitude: `v > 0 && v & (v-1) == 0`, with `k = v.trailing_zeros()`. Commutative — checks both sides.
+fn mul_pow2_shift(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    m: Machine,
+) -> Option<(StructId, u32)> {
+    let pow2_k = |db: &mut Db, id: StructId| -> Option<u32> {
+        match core_of(db, id) {
+            Core::ConstInt(v) => {
+                let n = v.to_i64()?;
+                if n > 1 && (n as u64).is_power_of_two() {
+                    let k = n.trailing_zeros();
+                    // `k` must be a valid shift for this width (a `<< width` would trap as a bad count;
+                    // such a multiplier only ever overflows anyway, but keep the shift well-formed).
+                    if k < m.width {
+                        return Some(k);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    };
+    // The OTHER operand must be the runtime value (not also a constant — that folds in `lower`).
+    if let Some(k) = pow2_k(db, rhs)
+        && !matches!(core_of(db, lhs), Core::ConstInt(_))
+    {
+        return Some((lhs, k));
+    }
+    if let Some(k) = pow2_k(db, lhs)
+        && !matches!(core_of(db, rhs), Core::ConstInt(_))
+    {
+        return Some((rhs, k));
+    }
+    None
+}
+
+/// Emit `x * 2^k` as `x << k` with a COMPILE-TIME-CONSTANT count `k` — the strength-reduced multiply.
+/// Same recipe as `emit_shift`'s `Shl` path (machine shift, then the overflow round-trip `(<r >> k) !=
+/// x → trap`, then the narrow range-check) but the count is an inline constant, so there is NO count
+/// operand and NO count guard (`k < width` by construction). The value operand `$a` is a reusable source
+/// (a local/const pushed at each use) or stashed once in a scratch slot; `$r` holds the shift result.
+#[allow(clippy::too_many_arguments)]
+fn emit_mul_pow2_as_shift(
+    db: &mut Db,
+    m: Machine,
+    val: StructId,
+    k: u32,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    let ot = IntTy::fixed(m.signed, m.width);
+    let mut next_scratch = base;
+    let mut claim = |high: &mut u32| {
+        let s = next_scratch;
+        next_scratch += 1;
+        if s + 1 > *high {
+            *high = s + 1;
+        }
+        s
+    };
+    // The value operand `$a` is read three times (the shift, the round-trip check's compare); a reusable
+    // source (matching local / constant) is pushed at each use, else it is stashed once in scratch.
+    let sa_src = operand_src(db, val, ot, slots)?;
+    let sa = match sa_src {
+        Some(src) => src,
+        None => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            OperandSrc::Slot(s)
+        }
+    };
+    let sr = claim(high);
+    scratch_ty.insert(sr, m.slot());
+    let operand_base = next_scratch;
+    if sa_src.is_none()
+        && let OperandSrc::Slot(sa_slot) = sa
+    {
+        emit_operand_into(
+            db,
+            val,
+            ot,
+            sa_slot,
+            slots,
+            operand_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+    }
+    // `$a << k` → `$r` (count is the inline constant `k`, no guard: `k < width`).
+    sa.push(out);
+    out.push(m.konst(k as i64));
+    out.push(m.shl());
+    out.push(Lir::LocalSet(sr));
+    // Overflow round-trip: `($r >> k)` must recover `$a`, else the shift dropped bits out of the slot.
+    // The inverse shift matches signedness so the round-trip is exact (arithmetic for signed).
+    out.push(Lir::LocalGet(sr));
+    out.push(m.konst(k as i64));
+    out.push(m.shr());
+    sa.push(out);
+    out.push(m.ne());
+    out.push(Lir::IfUnreachableEnd);
+    // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
+    emit_range_check(m, sr, out);
+    out.push(Lir::LocalGet(sr));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_shift(
     db: &mut Db,
     op: Prim,
@@ -3952,6 +4087,62 @@ mod tests {
         );
         // Only $r (slot 1) is declared — the constant operand needs no scratch slot at all.
         assert_eq!(f.declared, vec![ValType::I64; 1]);
+    }
+
+    #[test]
+    fn multiply_by_power_of_two_strength_reduces_to_a_shift() {
+        // (def (f (: n Int64)) (* n 8)) — `* 2^k` becomes `<< k` (here k=3): push n, `shl 3` into $r,
+        // then the overflow round-trip (`($r >> 3) != n → trap`) — no `i64.mul`, no division-based
+        // guard, no count guard (k is the inline constant 3, always < width). Sequence:
+        // get n ; const 3 ; shl ; tee $r ; get $r ; const 3 ; shr_s ; get n ; ne ; if unreachable ; get $r.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (* n 8)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::ConstI64(3),
+                Lir::I64Shl,
+                Lir::LocalTee(1), // set $r then the round-trip's first read of $r, fused.
+                Lir::ConstI64(3),
+                Lir::I64ShrS, // arithmetic shift (signed) for the exact round-trip.
+                Lir::LocalGet(0),
+                Lir::I64Ne,
+                Lir::IfUnreachableEnd,
+                Lir::LocalGet(1),
+            ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64Mul)),
+            "the multiply is strength-reduced away, no i64.mul"
+        );
+    }
+
+    #[test]
+    fn multiply_by_a_non_power_of_two_keeps_the_checked_multiply() {
+        // (* n 3) — 3 is not a power of two, so the strength reduction does NOT fire; the checked
+        // multiply (with its division-based overflow guard) stays.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (* n 3)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::I64Mul)),
+            "a non-power-of-two multiply keeps i64.mul, got: {:?}",
+            f.code
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64Shl)),
+            "a non-power-of-two multiply does not become a shift"
+        );
     }
 
     #[test]

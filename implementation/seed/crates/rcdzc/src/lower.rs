@@ -2059,9 +2059,13 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
 ///  - `x | 0` = `0 | x` = `x ^ 0` = `0 ^ x` = `x` (keeps x); `x & 0` = `0 & x` = `0` (trap-free x only);
 ///  - `x << 0` = `x >> 0` = `x` (a zero shift COUNT is a no-op — count is the RIGHT operand; keeps x).
 ///
-/// Deliberately NOT applied: `0 - x` (negation traps at MIN), `x & allbits` (all-ones is width-
-/// dependent), `0 << x` / `0 >> x` (a non-constant count must still trap if out of range), `x * 2^k →
-/// x << k` (mul's and shift's overflow checks differ — strength-reduction, not an identity).
+/// Deliberately NOT applied HERE: `0 - x` (negation traps at MIN), `x & allbits` (all-ones is width-
+/// dependent), `0 << x` / `0 >> x` (a non-constant count must still trap if out of range). NOTE: the
+/// STRENGTH REDUCTION `x * 2^k → x << k` is not a value-identity (it rewrites the op, not elides it), so
+/// it lives at the SELECTION tier (`emit`'s `Core::Arith` Mul arm → `emit_mul_pow2_as_shift`), where the
+/// shift's cheaper round-trip overflow check replaces the mul's division-based one — sound because a
+/// left shift is EXACT multiplication by a power of two with the SAME defined overflow-trap
+/// (`numeric-model.md` §Overflow Is Defined for shifts).
 fn arith_identity(
     db: &mut Db,
     op: Prim,
