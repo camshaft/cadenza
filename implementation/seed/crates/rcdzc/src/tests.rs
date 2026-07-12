@@ -11423,4 +11423,42 @@ mod debug_info {
             "a lone Wasm target must carry no external_debug_info"
         );
     }
+
+    #[test]
+    fn a_compound_returning_program_carries_dwarf() {
+        // A program returning a RUNTIME compound crosses via the resource-escape path (a different core
+        // than the multi-export path). Its user function bodies still lead the escape core's code
+        // section, so the `.debug_*` sections attribute correctly — a compound-returning program is
+        // debuggable too. `f` recurses (not constant-foldable), so `main` builds the tuple on the heap.
+        let src = "(module m \
+                     (def (f n) (if (= n 0) (tuple n 7) (f (- n 1)))) \
+                     (def (main) (f 3)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        // The resource envelope embeds MULTIPLE core modules (a dtor + the main walker core); the DWARF
+        // rides in the main one, which is not necessarily first — so scan the raw component bytes for
+        // the section names (those bytes are exactly what ships to the debugger) rather than only the
+        // first embedded core. A plain (non-debug) build of the same program carries none of them.
+        let has = |needle: &[u8]| debug.windows(needle.len()).any(|w| w == needle);
+        for want in [b".debug_info".as_slice(), b".debug_line".as_slice()] {
+            assert!(
+                has(want),
+                "a compound-returning program must carry {:?}",
+                std::str::from_utf8(want).unwrap()
+            );
+        }
+        // The source function names ride in — the resource core's user bodies get subprogram DIEs.
+        assert!(
+            has(b"main"),
+            "the escape component's DWARF must name the source functions"
+        );
+        // The plain build embeds no DWARF (the sections are debug-only).
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            !plain
+                .windows(b".debug_info".len())
+                .any(|w| w == b".debug_info"),
+            "a plain compound-returning component must carry no DWARF"
+        );
+    }
 }

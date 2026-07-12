@@ -1097,7 +1097,11 @@ fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
         Some(t) => t,
         None => trap_oob(),
     };
-    alloc_raw(vec![a, b], Raw::inline(&total.to_le_bytes())) // concat rope node: 4-byte len, inline
+    // Concat rope node: [left, right] handles + inline 4-byte `[len]` raw. Build the 2-element handles
+    // INLINE (`inline_from`) rather than `vec![a, b]` — a concat is arity-2 = exactly INLINE_HANDLES_CAP,
+    // so a heap Vec would be allocated then immediately re-inlined + freed by `From<Vec>` (the transient-
+    // Vec smell). Direct inline construction = the node Box only, one fewer alloc per concat.
+    alloc_raw(Handles::inline_from(&[a, b]), Raw::inline(&total.to_le_bytes()))
 }
 
 /// `bytes-slice(buf, start, len)` — a new Bytes = `len` bytes of `buf` from `start`. O(1): one slice
@@ -1126,9 +1130,12 @@ fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
     if let Some((parent, off1)) = collapse {
         op_dup(parent);
         op_drop(buf);
-        return alloc_raw(vec![parent], slice_raw(off1 + start, len)); // slice-of-slice: inline [off,len]
+        // slice-of-slice: 1 handle + inline [off,len]. Build the handle INLINE (arity-1 ≤ cap) — a
+        // `vec![parent]` would allocate a heap Vec then get re-inlined + freed by `From<Vec>`.
+        return alloc_raw(Handles::inline_from(&[parent]), slice_raw(off1 + start, len));
     }
-    alloc_raw(vec![buf], slice_raw(start, len)) // slice node: inline [off,len], no transient Vec
+    // slice node: 1 handle + inline [off,len]. Inline the single handle (no transient heap Vec).
+    alloc_raw(Handles::inline_from(&[buf]), slice_raw(start, len))
 }
 
 /// The 8-byte `[off][len]` raw header of a bytes SLICE node, built INLINE (no transient heap Vec).
@@ -1705,7 +1712,9 @@ fn vec_new_path(level: u32, node: Handle) -> Handle {
     if level == 0 {
         node
     } else {
-        alloc(vec![vec_new_path(level - VEC_BITS, node)], Vec::new())
+        // Arity-1 single-child spine node — build the handle INLINE (no transient `vec![child]` heap Vec
+        // that `From<Vec>` would re-inline + free).
+        alloc_raw(Handles::inline_from(&[vec_new_path(level - VEC_BITS, node)]), Raw::from(Vec::new()))
     }
 }
 
@@ -2064,7 +2073,8 @@ fn op_vec_push(v: Handle, elem: Handle) -> Handle {
         } else if (count as u64) == (1u64 << (shift + VEC_BITS)) {
             op_dup(root);
             let branch = vec_new_path(shift, vec_leaf_of(elem));
-            (alloc(vec![root, branch], Vec::new()), shift + VEC_BITS)
+            // Arity-2 new root — build handles INLINE (exactly INLINE_HANDLES_CAP, no transient Vec).
+            (alloc_raw(Handles::inline_from(&[root, branch]), Raw::from(Vec::new())), shift + VEC_BITS)
         } else {
             (vec_push_into(root, shift, count, elem), shift)
         };
@@ -2083,7 +2093,8 @@ fn op_vec_push(v: Handle, elem: Handle) -> Handle {
         // owned reference to `root` relocates into `new_root` (whatever else references `root` is
         // untouched), so no dup/drop is needed regardless of `root`'s own rc.
         let branch = vec_new_path(shift, vec_leaf_of(elem));
-        let new_root = alloc(vec![root, branch], Vec::new());
+        // Arity-2 new root — build handles INLINE (no transient `vec![root, branch]` heap Vec).
+        let new_root = alloc_raw(Handles::inline_from(&[root, branch]), Raw::from(Vec::new()));
         vec_set_child_inplace(v, 0, new_root);
         vec_set_header_inplace(v, count + 1, shift + VEC_BITS);
     } else {
@@ -2154,7 +2165,8 @@ fn vec_subtree_size(node: Handle, level: u32) -> u32 {
 /// `target >= shift`; the loop is bounded by their difference (≤ the 7-level trie depth per operand).
 fn vec_grow_to_shift(mut node: Handle, mut shift: u32, target: u32) -> Handle {
     while shift < target {
-        node = alloc(vec![node], Vec::new()); // strict single-child wrapper; ownership of `node` moves in
+        // Arity-1 strict single-child wrapper — inline the single handle (no transient `vec![node]`).
+        node = alloc_raw(Handles::inline_from(&[node]), Raw::from(Vec::new()));
         shift += VEC_BITS;
     }
     node
@@ -3335,9 +3347,10 @@ fn merge_two_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, level: u32) -> Hand
     let i1 = level_index(h1, level);
     let i2 = level_index(h2, level);
     if i1 == i2 {
-        // Same slot: nest one subnode a level deeper.
+        // Same slot: nest one subnode a level deeper. Arity-1 — inline the single subnode handle (no
+        // transient `vec![sub]` heap Vec that `From<Vec>` would re-inline + free).
         let sub = merge_two_entries(e1, h1, e2, h2, level + 1);
-        alloc_raw(vec![sub], champ_header(0, 1 << i1, 2))
+        alloc_raw(Handles::inline_from(&[sub]), champ_header(0, 1 << i1, 2))
     } else if i1 < i2 {
         let mut hs = Vec::with_capacity(e1.len() + e2.len());
         e1.extend_into(&mut hs);
@@ -5319,11 +5332,11 @@ mod tests {
         assert!(sum <= 1200, "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)");
 
         // (J) bytes SLICE x1000 — a rope slice node over a shared leaf: 1 handle (the parent buf) +
-        // the 8-byte `[off,len]` raw. With the inline `Raw` the `[off,len]` header no longer allocates
-        // a transient heap Vec (`slice_raw` builds it inline), so a slice node is the node Box + its
-        // 1-element handles Vec = 2 allocs/op (was 3: + the [off,len] Vec). Guards the inline-raw win
-        // for the O(1)-no-copy bytes rope. The leaf is built + retained OUTSIDE the loop so we measure
-        // only the slice node, not the leaf's construction.
+        // the 8-byte `[off,len]` raw. Both the `[off,len]` raw (`slice_raw`) AND the single handle
+        // (`Handles::inline_from`) are now built INLINE, so a slice node is JUST the node Box = 1
+        // alloc/op (was 3: + a heap [off,len] Vec + a heap `vec![buf]` handles Vec; the raw inlined in an
+        // earlier tick, the handles Vec here). Guards the inline win for the O(1)-no-copy bytes rope. The
+        // leaf is built + retained OUTSIDE the loop so we measure only the slice node.
         let leaf = {
             let b = op_bytes_alloc(16);
             for i in 0..16u32 {
@@ -5338,8 +5351,73 @@ mod tests {
             }
         });
         println!("ALLOC bytes_slice x{N}: {slice}");
-        assert!(slice <= 2200, "bytes_slice x{N} allocs {slice} exceeds ceiling 2200 (node Box + 1-elem handles Vec; the [off,len] raw is inline — was 3/op with a heap raw Vec)");
+        assert!(slice <= 1100, "bytes_slice x{N} allocs {slice} exceeds ceiling 1100 (JUST the node Box = 1/op; both the [off,len] raw and the single handle are inline — was 2/op with a heap vec![buf] handles Vec)");
         op_drop(leaf);
+
+        // (J2) bytes CONCAT x1000 — a rope concat node over two shared leaves: 2 handles (left, right) +
+        // the inline 4-byte `[len]` raw = ONE allocation of the node Box + its 2-elem handles (INLINE,
+        // no heap Vec — a concat is arity-2, exactly INLINE_HANDLES_CAP). O(1), copies NOTHING (the two
+        // operands are shared subtrees, not copied). Guards the O(1)-no-copy concat: a regression to
+        // eager materialization (copying the operands' bytes into a fresh leaf) would scale with the
+        // operand lengths, not stay constant. Both operands built + retained OUTSIDE the loop.
+        let la = {
+            let b = op_bytes_alloc(16);
+            for i in 0..16u32 {
+                op_bytes_set(b, i, i);
+            }
+            b
+        };
+        let lb = {
+            let b = op_bytes_alloc(16);
+            for i in 0..16u32 {
+                op_bytes_set(b, i, 100 + i);
+            }
+            b
+        };
+        let concat = measure(&mut || {
+            for _ in 0..N {
+                op_dup(la); // concat consumes a ref to each operand; keep both alive across the batch
+                op_dup(lb);
+                op_drop(op_bytes_concat(la, lb));
+            }
+        });
+        println!("ALLOC bytes_concat x{N}: {concat}");
+        assert!(concat <= 1100, "bytes_concat x{N} allocs {concat} exceeds ceiling 1100 (ONE node Box + inline 2-elem handles + inline [len] raw = 1 alloc/op; a regression to eager byte-copy would scale with operand length, or to a heap handles Vec would ~2x)");
+        op_drop(la);
+        op_drop(lb);
+
+        // (J3) bytes FLATTEN — materialize a DEEP concat rope into one leaf (triggered by `bytes-get` on a
+        // rope). Build a rope of `DEPTH` concat nodes over small leaves, then a single `bytes-get` walks +
+        // copies the logical bytes into a fresh leaf ONCE (an O(total-bytes) iterative walk, NOT per-node
+        // re-flatten). Allocates the one flattened leaf's Heap raw (the bytes exceed the inline cap). A
+        // regression to O(depth²) (e.g. an accidental per-node re-flatten, or op_bytes_len re-walking)
+        // would blow the count up. Measured per-flatten (not ×N) since it's a one-time O(n) materialize.
+        const DEPTH: u32 = 64;
+        let flatten = measure(&mut || {
+            let mut rope = {
+                let b = op_bytes_alloc(4);
+                for i in 0..4u32 {
+                    op_bytes_set(b, i, i);
+                }
+                b
+            };
+            for _ in 0..DEPTH {
+                let piece = {
+                    let b = op_bytes_alloc(4);
+                    for i in 0..4u32 {
+                        op_bytes_set(b, i, i + 1);
+                    }
+                    b
+                };
+                rope = op_bytes_concat(rope, piece); // grows a right-leaning concat spine
+            }
+            let _ = op_bytes_get(rope, 0); // forces bytes_flatten: one O(total) walk into a fresh leaf
+            op_drop(rope);
+        });
+        println!("ALLOC bytes_flatten x{DEPTH}: {flatten}");
+        // Build allocs: 1 base leaf + DEPTH×(piece leaf + concat node) then flatten adds the leaf's Heap
+        // raw. All bounded by O(DEPTH), NOT O(DEPTH²). Ceiling = generous headroom over the linear count.
+        assert!(flatten <= 400, "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 400 (linear in DEPTH: base + DEPTH×(piece+concat) + one flattened leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)");
 
         // (K) build a 2-tuple x1000 (`op_arr_alloc(2)` + two slot sets) — the common positional-product
         // constructor shared by tuples, records, and CHAMP `[k,v]` pairs. With scalar (immediate)
