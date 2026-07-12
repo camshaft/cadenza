@@ -193,14 +193,15 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 /// built artifact).
 fn build_runtime_hashes(paths: &Paths) -> (String, String) {
     let sh = Shell::new().expect("open a shell");
-    // Release runtime — what a shipped program pins and composes.
+    // Release runtime — what a shipped program pins and composes. CANONICALIZE (strip the tool-version
+    // `producers` sections) before hashing, exactly as `build` does when it stores the artifact — so the
+    // committed `REQUIRED_RUNTIME_HASH` is reproducible across machines with the same rustc and matches
+    // the stored file's hash (see `crate::canonicalize_runtime`).
     let release_wasm =
         build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
-    let release_bytes = std::fs::read(&release_wasm)
-        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", release_wasm.display()));
+    let release_bytes = crate::canonicalize_runtime(&release_wasm);
     let release_hash = content_address(&release_bytes);
-    // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in. Read its
-    // bytes before it is (potentially) overwritten by a later build.
+    // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in.
     let debug_wasm = build_component_with_features(
         &sh,
         &paths.seed,
@@ -208,8 +209,7 @@ fn build_runtime_hashes(paths: &Paths) -> (String, String) {
         "cdz_runtime",
         &["debug-counters"],
     );
-    let debug_bytes = std::fs::read(&debug_wasm)
-        .unwrap_or_else(|e| panic!("read built runtime {}: {e}", debug_wasm.display()));
+    let debug_bytes = crate::canonicalize_runtime(&debug_wasm);
     let debug_hash = content_address(&debug_bytes);
     // Leave the RELEASE runtime as the artifact at the shared path (rebuild it last), so a plain
     // `cargo component build` output on disk after codegen is the release one — the default a naive

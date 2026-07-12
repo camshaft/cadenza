@@ -277,13 +277,16 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
         "cdz_runtime",
         &["debug-counters"],
     );
-    let debug_bytes = std::fs::read(&debug_wasm).expect("read debug-counters runtime wasm");
+    // CANONICALIZE (strip the tool-version `producers` sections) before hashing + storing, so the hash
+    // is reproducible across machines with the same rustc — the stored artifact IS the stripped bytes,
+    // so a composed program's imported hash matches the file on disk.
+    let debug_bytes = canonicalize_runtime(&debug_wasm);
     let debug_hash = content_address(&debug_bytes);
     std::fs::write(store.join(format!("{debug_hash}.wasm")), &debug_bytes).expect("store debug rt");
     println!("   debug-counters runtime content address: {debug_hash}");
 
     let runtime_wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
-    let runtime_bytes = std::fs::read(&runtime_wasm).expect("read runtime wasm");
+    let runtime_bytes = canonicalize_runtime(&runtime_wasm);
     let runtime_hash = content_address(&runtime_bytes);
     println!("   runtime content address: {runtime_hash}");
     let runtime_stored = store.join(format!("{runtime_hash}.wasm"));
@@ -1287,6 +1290,50 @@ pub(crate) fn content_address(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+/// CANONICALIZE a built runtime component for content-addressing: strip ALL custom sections
+/// (`wasm-tools strip -a`), which removes the non-deterministic `producers` sections that embed
+/// tool-version strings — `rustc 1.95.0 (<commit>)`, `wit-component X.Y`, `cargo-component X.Y`,
+/// `clang …`, `wit-bindgen …`. Those version strings differ across machines/toolchains, so hashing the
+/// RAW build made `REQUIRED_RUNTIME_HASH` machine-specific (a program pinned one hash on box A that box
+/// B's rebuild never reproduced). Stripping them makes the hash reproducible for a given rustc RELEASE
+/// (a residual `/rustc/<commit>/…/raw_vec/mod.rs` panic-location string still lives in a data segment —
+/// program data, not a custom section, so `strip` can't remove it; it is identical for the same rustc
+/// commit, so it does not break reproducibility across machines sharing a toolchain). Both the stored
+/// artifact AND the hash use the stripped bytes, so a composed program's imported hash matches the
+/// stored file. Requires `wasm-tools` on PATH (`cargo install wasm-tools`); a missing binary is a hard
+/// error (the hash would otherwise silently regress to the non-reproducible raw form).
+pub(crate) fn canonicalize_runtime(raw_wasm_path: &Path) -> Vec<u8> {
+    let out = raw_wasm_path.with_extension("stripped.wasm");
+    let status = std::process::Command::new("wasm-tools")
+        .arg("strip")
+        .arg("-a")
+        .arg(raw_wasm_path)
+        .arg("-o")
+        .arg(&out)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "wasm-tools strip failed ({s}) on {} — cannot canonicalize the runtime",
+                raw_wasm_path.display()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!(
+                "wasm-tools not runnable ({e}); install it with `cargo install wasm-tools` so the \
+                 runtime hash is reproducible (it strips the tool-version `producers` sections)"
+            );
+            std::process::exit(1);
+        }
+    }
+    let bytes = std::fs::read(&out)
+        .unwrap_or_else(|e| panic!("read stripped runtime {}: {e}", out.display()));
+    let _ = std::fs::remove_file(&out);
+    bytes
 }
 
 /// `cargo component build --release --target wasm32-unknown-unknown` in <seed>/crates/<crate>,
