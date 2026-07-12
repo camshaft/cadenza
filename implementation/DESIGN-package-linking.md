@@ -1,8 +1,19 @@
 # Design — package linking: multi-file `import` into one compilation unit (rcdzc)
 
 **Author:** design pass (compiler). **Audience:** the implementer picking this up, + future me.
-**Status:** proposal / handoff — **nothing landed**. Written 2026-07-11 on branch `spec`
-(rcdzc-rewrite merged @`2bb7c68`). Line anchors are landmarks at `9f76c1b`.
+**Status:** proposal / handoff — **nothing landed** (verified 2026-07-12: `link.rs` does not exist;
+`compile()` still selects only the FIRST `ast` artifact — compile.rs:38). Written 2026-07-11; **fact-
+refreshed 2026-07-12** against `spec` @`2504bbb` (291 commits after the original `9f76c1b` anchor).
+Line anchors below are landmarks at `2504bbb`, NOT `9f76c1b` — they drifted heavily and were re-read.
+
+> **What changed since the first draft (read this before the body).** Two new **kinded input
+> artifacts landed** — `sidecar` (`KIND_SIDECAR`, sidecar.rs:38) and `spans` (`KIND_SPANS`,
+> spans.rs:34). `compile()` now does `inputs.iter().find(|a| a.kind == …)` for THREE kinds — `ast`,
+> `sidecar`, `spans` (compile.rs:38/56/79) — and a malformed non-`ast` input DECLINES with its own
+> diagnostic (compile.rs:59/82). **This is the exact shape §3c/§6 recommended for the `entry` /
+> `link-map` artifacts, now proven in tree.** The two open decisions that were "recommend the
+> artifact, but it's a judgment call" are now "follow the landed `spans`/`sidecar` precedent" — see the
+> notes added to §3c and §6. Everything else in this design is unchanged and still applies.
 
 ## The one-paragraph statement
 
@@ -32,17 +43,24 @@ measured reason:
 
 - The `rcdzc-modules-as-records` memory (a module = a compile-time record of its exports; `(. m f)` =
   record projection; `Gather::gather_scope`; `RawFunc::Synthetic`) describes the **pre-rewrite**
-  `rcdzc`. **None of that machinery exists in the columns rewrite.** `grep Gather|gather_scope|
-  Synthetic resolve.rs` = 0 hits.
-- The rewrite has exactly **one flat top-level namespace**: `db::top_items` (db.rs:410) strips a
-  *root-level* `(module NAME …)` head and returns its children as the top-level items; `resolve.rs`
-  step 2 resolves a bare name by `db.def_by_name` (db.rs:335) — a **flat global scan** of every def.
-  There is no per-file scope and **no nested-module → record resolution** (resolve.rs:161 comment:
-  "Stage 0 handles module/def/export/do at the top level, *not here*").
-- **Empirically: all 14 cases in `spec/semantics/11-modules.sexp` are `todo`, 0 pass** (measured via
-  `xtask gate spec/semantics/11-modules.sexp` → `0 pass, 14 todo, 0 fail`). A nested `(module m …)`
-  followed by `(. m f)` does **not** compile today. The passing `member_access_chains_through_a_
-  nested_record` test (tests.rs:2099) uses `(record …)` literals, **not** `(module …)`.
+  `rcdzc`. **None of that machinery exists in the columns rewrite.** `grep -rn 'Gather|gather_scope|
+  Synthetic' rcdzc/src/` = **0 hits** (re-verified @`2504bbb`).
+- The rewrite has exactly **one flat top-level namespace**: `db::top_items` (db.rs:1155) strips a
+  *root-level* `(module NAME …)` head and returns its children as the top-level items (it also strips a
+  `(do …)` root — db.rs:1160); `resolve.rs`'s `resolve_name` step 2 resolves a bare name by
+  `db.def_by_name` (resolve.rs:272, calling db.rs:748) — a **flat global scan** of every def. There is
+  no per-file scope and **no nested-module → record resolution** (the resolve steps are lexical → own
+  defs → own `(type …)` decls → prelude; resolve.rs:260–onward).
+- **Empirically (re-measured 2026-07-12): `xtask gate spec/semantics/11-modules.sexp` → `3 pass, 13
+  todo, 0 fail`** (16 cases; the file grew from 14). ⚠ The original draft said "0 pass, 14 todo" — that
+  DRIFTED, but the finding still holds: the **3 passing cases are all REJECTIONS** (a duplicate
+  `(export …)` clause, a duplicate export of the entry, and a two-`def` module rejected for a colliding
+  field — all CDZ0201-family "reject, don't pick a winner"), NOT nested-module member access. Every
+  case that *runs a module to a value* — `a module declaration binds its name …`, `each definition …
+  registers a reachable export field`, `(. m answer)` — still **declines** (verified per-case with
+  `gate --case`). So a nested `(module m …)` followed by `(. m f)` does **not** compile today, exactly
+  as before. The passing `member_access_chains_through_a_nested_record` test uses `(record …)`
+  literals, **not** `(module …)`.
 
 **Consequence:** package linking on the rewrite is NOT "reuse modules-as-records." It is its own,
 simpler mechanism that operates on the **flat namespace the rewrite already has** — a per-file scope
@@ -58,18 +76,25 @@ design deliberately does not depend on it.)
 The **outer** plumbing for "provide all files as named artifacts" is already built:
 
 - **Artifacts are kinded and named.** `Artifact { kind, name, bytes }` (abi.rs:16). `KIND_AST =
-  "ast"` (abi.rs:32).
-- **`compile()` already takes `&[Artifact]`** (compile.rs:32) — it just currently grabs the *first*
-  `KIND_AST` and ignores the rest (compile.rs:35: `inputs.iter().find(|a| a.kind == KIND_AST)`).
-- **The CLI bin already accepts many named artifacts.** `rcdzc kind:name=path.ast …` (rcdzc.rs:14,
-  parse at rcdzc.rs:221); it pushes each into an `inputs: Vec<Artifact>` (rcdzc.rs:101) and calls
-  `compile(&inputs, &targets)` (rcdzc.rs:129). So `rcdzc a.ast b.ast c.ast -o out.wasm` already
-  *delivers* every file — the compiler just drops all but the first today.
+  "ast"` (abi.rs:32). Sibling kinds `KIND_SIDECAR = "sidecar"` (sidecar.rs:38) and `KIND_SPANS =
+  "spans"` (spans.rs:34) now show the *multi-kind* input pattern is established.
+- **`compile()` already takes `&[Artifact]`** (compile.rs:35) — it grabs the *first* `KIND_AST` and
+  ignores every other `ast` (compile.rs:38: `inputs.iter().find(|a| a.kind == Artifact::KIND_AST)`),
+  then *separately* looks up the `sidecar` and `spans` inputs by kind (compile.rs:56/79). So the
+  "select an input by kind" muscle already exists three times over — package linking adds the
+  select-and-merge of the *multiple* `ast` inputs it currently drops.
+- **The CLI already accepts many named artifacts.** `rcdzc kind:name=path …`, spec parsed by
+  `parse_input_spec` (cli.rs:246, doc at cli.rs:19); it pushes each into `inputs: Vec<Artifact>`
+  (cli.rs:115/134) and calls `compile(&inputs, &targets)` (via `run_with_compiler_stack`, cli.rs:157).
+  So `rcdzc a.ast b.ast c.ast -o out/` already *delivers* every file — the compiler just drops all but
+  the first today. ⚠ Note: the CLI still lives at `rcdzc/src/cli.rs` on committed `spec`; a rename to
+  `src/bin/rcdzc.rs` is in-flight in the main working tree (uncommitted) — anchor to `cli.rs`.
 - **The arena is two Vecs + a root.** `Arenas { leaves: Vec<Leaf>, structure: Vec<Struct>, root:
-  StructId }` (ast.rs:315). `Struct` is `Atom(LeafId)` | `List(Vec<StructId>)` (ast.rs:282). Both ids
+  StructId }` (ast.rs:320). `Struct` is `Atom(LeafId)` | `List(Vec<StructId>)` (ast.rs:287). Both ids
   are `u32` newtypes. This is trivially **append-with-offset** splice-able.
-- **`Db::load(ast: Arenas)`** installs the prelude, scans top-level defs/exports, builds the parent
-  index (db.rs:222). One arena in → one `Db`.
+- **`Db::load(ast: Arenas)`** installs the prelude, scans top-level defs/exports/`type`s, synthesizes
+  sum records, builds the parent + scope-skip + by-name/by-body indices (db.rs:464). One arena in →
+  one `Db`.
 
 So the entire feature is: **turn the N input artifacts into ONE `Arenas` (+ a file-scope map) before
 `Db::load`, and add ONE name-resolution rule for `import`.** Nothing else in the pipeline changes.
@@ -115,10 +140,11 @@ already normative in `spec/capabilities/modules-and-namespaces.md` — this only
 > with it.
 
 Diagnostics codes reused/added: colliding imported names → **CDZ0201** (the same code
-`11-modules.sexp:97` already ties to a duplicate module definition — "resolved by an implicit
-precedence" is exactly what's forbidden); an import of an unknown path → a new coded reject or a
-decline (§7); an import of a name a module doesn't make public → CDZ0101-family (unbound in that
-module) or a dedicated code.
+`11-modules.sexp:81/94` already ties to a duplicate module definition — "resolved by an implicit
+precedence" is exactly what's forbidden, and this is now one of the **3 passing** module cases so the
+reject path + code are live); an import of an unknown path → a new coded reject or a decline (§7); an
+import of a name a module doesn't make public → CDZ0101-family (unbound in that module) or a dedicated
+code.
 
 ---
 
@@ -148,7 +174,9 @@ Append each file's `leaves` and `structure` into a combined arena, shifting ids 
   structure.len()`.
 - For file `f`, copy each `Leaf` verbatim into the combined `leaves` (leaves are values; a `Name` or
   `Int` copies as-is — dedup is optional and not required for correctness since `Builder` dedups only
-  within a file anyway, ast.rs:337).
+  within a file anyway, ast.rs:326/352). ⚠ Note the deliberate NON-dedup path `leaf_unique`
+  (ast.rs:357) exists for placeholders that must stay distinct occurrences — a splice copies leaves as
+  values, so it neither needs nor breaks that; just don't re-intern across files expecting collapse.
 - For each `Struct`, remap: `Atom(LeafId(l))` → `Atom(LeafId(l + leaf_base[f]))`;
   `List(children)` → `List(children.map(|c| StructId(c.0 + struct_base[f])))`.
 - The combined `root` is **not** any file's root — instead the link **synthesizes a `(do …)` root**
@@ -156,8 +184,9 @@ Append each file's `leaves` and `structure` into a combined arena, shifting ids 
   the one built node the splice adds; use `Builder` or push directly.
 
 This is deterministic (a fixed function of the input artifact bytes and their order — no addresses,
-no hashing needed for correctness), matching `parent_index`'s determinism note (db.rs:347). It is the
-structured analogue of the Makefile's `cat` (Makefile:30), but at the arena level with real ids.
+no hashing needed for correctness), matching `parent_index`'s determinism note (db.rs:818–820). It is
+the structured analogue of the Makefile's `cat` (implementation/compiler/Makefile), but at the arena
+level with real ids.
 
 > **Order determinism (spec).** modules-and-namespaces.md §Initialization Order Is Deterministic
 > requires init order to be a deterministic function of the source and to follow import dependencies.
@@ -169,67 +198,83 @@ structured analogue of the Makefile's `cat` (Makefile:30), but at the arena leve
 
 ### 3b. Prelude installed ONCE
 
-`Db::load` calls `prelude::install(&mut ast)` (db.rs:231), which appends prelude nodes and captures
-`user_node_count` as the boundary. With a merged arena this must happen **once, after the splice** —
-all files share one prelude, one `(Int W)` build cache (db.rs:136), one `user_node_count`. The
-cleanest shape: `link()` produces the merged `Arenas` (user nodes only), and `Db::load` installs the
-prelude on top exactly as today — so `user_node_count` = the *combined* user-node count, and every
-file's nodes are `< user_node_count` (all "user" — correct for `is_user_node`, db.rs:289). **No
-change to `Db::load`'s prelude logic**; it just receives a bigger arena.
+`Db::load` captures `user_node_count = ast.structure.len()` BEFORE it calls `prelude::install(&mut
+ast)` (db.rs:469/473) — that count is the boundary. It also appends the built-in sum decls and
+synthesizes sum records after the user scan (db.rs:480–506), all still above `user_node_count`. With a
+merged arena this must all happen **once, after the splice** — all files share one prelude, one
+`user_node_count`, one set of built-in sums. The cleanest shape: `link()` produces the merged `Arenas`
+(user nodes only), and `Db::load` installs the prelude on top exactly as today — so `user_node_count`
+= the *combined* user-node count, and every file's nodes are `< user_node_count` (all "user" — correct
+for `is_user_node`, db.rs:635). **No change to `Db::load`'s prelude/sum logic**; it just receives a
+bigger arena.
 
 ### 3c. Entry selection (operator's choice: named in the compile request)
 
 The compile request names the entry. Two ways to thread it, pick one:
 
-- **(Recommended) A dedicated non-AST input artifact** carrying the entry path — e.g. an artifact of
-  `kind == "entry"` whose bytes are the entry's artifact-name. `compile()` reads it alongside the AST
-  artifacts. Keeps the `compile(&[Artifact], &[Target])` signature **unchanged** (compile.rs:32) —
-  the entry rides in the artifact stream, consistent with "artifacts-in" (abi.rs:1). This is the
-  least invasive and most in-keeping with the kinded-artifact ABI.
-- **A new parameter** on `compile()` (e.g. `compile(inputs, targets, entry: Option<&str>)`). More
-  explicit but touches the frozen-ish entry signature and every caller.
+- **(Recommended — now with a landed precedent) A dedicated non-AST input artifact** carrying the
+  entry path — e.g. an artifact of `kind == "entry"` whose bytes are the entry's artifact-name.
+  `compile()` reads it alongside the AST artifacts. Keeps the `compile(&[Artifact], &[Target])`
+  signature **unchanged** (compile.rs:35) — the entry rides in the artifact stream, consistent with
+  "artifacts-in" (abi.rs:1). **This is exactly how `sidecar` and `spans` were subsequently added**
+  (compile.rs:56/79): a new `KIND_ENTRY` const beside `KIND_SIDECAR`/`KIND_SPANS`, a
+  `inputs.iter().find(|a| a.kind == KIND_ENTRY)`, and a decline if it is present-but-malformed
+  (mirroring compile.rs:59/82). The judgment call from the first draft is now settled by two shipped
+  examples — **do this.**
+- ~~A new parameter on `compile()`~~ — rejected in practice: neither `sidecar` nor `spans` took a
+  parameter; both rode the artifact stream. Adding an `entry` parameter would diverge from the
+  now-established convention for no benefit.
 
 Only the **entry file's `(export …)`** forms become the component's boundary (reusing the existing
-export scan, db.rs:386). A non-entry (library) file's `(export …)`, if any, is **ignored for the
-component boundary** but its exported *names* are what its `import`-ers may bind (§4). (Decision: a
-library file marks its public surface with `(export …)` too — one visibility mechanism, not two. See
-§4.)
+export scan — `scan_top_level`, db.rs:997, feeding `db.exports` and `layout::compute`, layout.rs:121).
+A non-entry (library) file's `(export …)`, if any, is **ignored for the component boundary** but its
+exported *names* are what its `import`-ers may bind (§4). (Decision: a library file marks its public
+surface with `(export …)` too — one visibility mechanism, not two. See §4.)
 
 ---
 
 ## 4. Name resolution across files — the ONE new resolver rule
 
-Today `resolve_name` (resolve.rs:189) is: lexical scope → `db.def_by_name` (flat, ALL defs) →
-prelude. With multiple files spliced flat, `def_by_name`'s global scan would let **any** file see
-**any** other file's defs — violating "imports are explicit" (modules-and-namespaces.md). So the flat
-global step must become **file-scoped**:
+Today `resolve_name` (resolve.rs:260) is: (1) lexical scope → (2) `db.def_by_name` (flat, ALL defs,
+resolve.rs:272) → (3) `db.type_decl_by_name` (flat, ALL `(type …)` decls, resolve.rs:294) → (4)
+prelude (resolve.rs:301). With multiple files spliced flat, the `def_by_name` **and**
+`type_decl_by_name` global scans would let **any** file see **any** other file's defs/types —
+violating "imports are explicit" (modules-and-namespaces.md). So **both** flat global steps must
+become **file-scoped** (the original draft named only `def_by_name`; the `type_decl_by_name` step
+landed since and needs the same treatment — a cross-file `(type …)` reference must also go through an
+import):
 
-> A bare name in file `f` resolves against: (1) lexical scope; (2) `f`'s **own** top-level defs; (3)
-> the names `f` **imported** (each an `(import "p" (…))` mapping a local name → a def in module `p`);
-> (4) prelude. It does **NOT** see another file's defs unless imported.
+> A bare name in file `f` resolves against: (1) lexical scope; (2) `f`'s **own** top-level defs AND
+> `(type …)` decls; (3) the names `f` **imported** (each an `(import "p" (…))` mapping a local name →
+> a def/type in module `p`); (4) prelude. It does **NOT** see another file's defs/types unless
+> imported.
 
 Mechanically:
 
-- `link()` computes, per file, a `visible: HashMap<String, usize /*db.defs index*/>` = own defs ∪
-  imported names. Collisions (two imports, or an import shadowing… — decide the precedence rules per
-  modules-and-namespaces.md §Colliding Imported Names Are Rejected) → **CDZ0201**.
-- A def carries its **owning file** (extend `Def`, db.rs:37, with a `file: usize`, or derive it from
-  the def's `sig_occ` StructId against the `FileSpan` table). `resolve_name` determines the current
-  reference's file from its `StructId` (which `FileSpan` range it falls in — a binary search over
-  `files`), then looks up in **that file's** `visible` map instead of the global `def_by_name`.
+- `link()` computes, per file, a `visible: HashMap<String, usize /*db.defs index*/>` = own defs (and
+  `(type …)` decls) ∪ imported names. Collisions (two imports, or an import shadowing… — decide the
+  precedence rules per modules-and-namespaces.md §Colliding Imported Names Are Rejected) → **CDZ0201**.
+- A def carries its **owning file** (extend `Def`, db.rs:41 — currently `{ name, sig_occ, params,
+  body }`, add a `file: usize`; or derive it from the def's `sig_occ` StructId against the `FileSpan`
+  table). `resolve_name` determines the current reference's file from its `StructId` (which `FileSpan`
+  range it falls in — a binary search over `files`), then looks up in **that file's** `visible` map
+  instead of the global `def_by_name`/`type_decl_by_name`. ⚠ `resolve_name` today takes `&Db`
+  (resolve.rs:260) and reads only `db.def_by_name`/`db.type_decl_by_name`/`db.prelude` — the file-
+  scoped map has to hang off the `Db` (or a sidecar table threaded in) so this stays a `&Db` read.
 - **Visibility:** a name is importable from module `p` only if `p` makes it public. Reuse `(export
   …)`: a file's importable surface = its export list (modules-and-namespaces.md §Visibility Is
   Explicit — "determined by an explicit rule fixed by this specification"; the export list IS that
-  rule, already scanned at db.rs:386). An `(import "p" (f))` where `f` is not in `p`'s exports →
-  reject (name not public). This means every non-entry file lists its public API with `(export …)`,
-  and the entry file's `(export …)` doubles as the component boundary — one mechanism.
+  rule, already scanned by `scan_top_level`, db.rs:997, into `db.exports`). An `(import "p" (f))` where
+  `f` is not in `p`'s exports → reject (name not public). This means every non-entry file lists its
+  public API with `(export …)`, and the entry file's `(export …)` doubles as the component boundary —
+  one mechanism.
 
-> **Why this is small.** It's a **single** change to resolve step 2: replace the global
-> `db.def_by_name` scan with a file-scoped lookup keyed by the reference's `StructId → file`. Steps 1
-> (lexical), 3 (prelude) are untouched. `infer`, `lower`, `eval`/fold, `select`, `layout`, `envelope`
-> — **all unchanged**, because after resolution every reference points at a concrete def occurrence in
-> the one merged arena, and β-reduction monomorphizes across files exactly as within one file (it's
-> the same arena, the same `Db`, the same `apply_lambda`).
+> **Why this is small.** It's essentially a **single** change to resolve steps 2–3: replace the global
+> `db.def_by_name`/`db.type_decl_by_name` scans with a file-scoped lookup keyed by the reference's
+> `StructId → file`. Steps 1 (lexical), 4 (prelude) are untouched. `infer`, `lower`, `eval`/fold,
+> `select`, `layout`, `serialize` — **all unchanged**, because after resolution every reference points
+> at a concrete def occurrence in the one merged arena, and β-reduction monomorphizes across files
+> exactly as within one file (it's the same arena, the same `Db`, the same `apply_lambda`).
 
 ---
 
@@ -237,14 +282,14 @@ Mechanically:
 
 - **Cyclic imports** (modules-and-namespaces.md §Cyclic Module Dependencies Are Rejected): build the
   import graph (files = nodes, `(import "p" …)` = edge f→p) and DFS for a back-edge — the **same
-  shape** as the existing static-recursion call-graph DFS (`eval::is_recursive`,
-  [[rcdzc-rewrite-static-recursion-detection]]). A cycle → a coded reject. *(Note: value-level mutual
-  recursion across files is fine and handled by the existing `Core::Call` recursion path; the
-  forbidden thing is an* import *cycle — a compile-time dependency loop, which topo-sort for splice
-  order, §3c, detects for free.)*
+  shape** as the existing static-recursion call-graph DFS (`eval::is_recursive`, eval.rs:498, an
+  iterative worklist DFS over the call graph; [[rcdzc-rewrite-static-recursion-detection]]). A cycle →
+  a coded reject. *(Note: value-level mutual recursion across files is fine and handled by the existing
+  `Core::Call` recursion path; the forbidden thing is an* import *cycle — a compile-time dependency
+  loop, which topo-sort for splice order, §3c, detects for free.)*
 - **Colliding imported names** (§Colliding Imported Names Are Rejected): two names bound into one
   file's scope under the same key → **CDZ0201**, never implicit precedence (mirrors the duplicate-def
-  rejection the corpus already pins, 11-modules.sexp:88–110).
+  rejection the corpus already pins — and now PASSES — at 11-modules.sexp:81–96).
 - **Duplicate def within a file** stays whatever the rewrite does today (the flat namespace); across
   files, same-named defs in *different* files are fine (they're in different file scopes) — that's the
   whole point of per-file scoping.
@@ -253,18 +298,25 @@ Mechanically:
 
 ## 6. Diagnostics — the one architectural touch beyond "pure front-end"
 
-`Diagnostic.node` is a single `u32` StructId (abi.rs:56) and the consumer maps it to a source span via
-its own span table (query-engine.md §Provenance Is Recovered By Back-Reference). With a merged arena,
-a global StructId no longer maps to a single file's span table. Fix, minimally:
+`Diagnostic.node` is a single `Option<u32>` StructId (abi.rs:56) and the consumer maps it to a source
+span via its own span table (query-engine.md §Provenance Is Recovered By Back-Reference). ⚠ Note that
+a `spans` INPUT artifact now also exists (spans.rs, `SpanData::range(id) -> (u32,u32)`, spans.rs:54) —
+but it is keyed by the SAME per-file `StructId` space and does not itself solve the merged-arena demux;
+the debug path (compile.rs:94) currently assumes one file. With a merged arena, a global StructId no
+longer maps to a single file's span table (nor to a single `spans` input). Fix, minimally:
 
 - `LinkedProgram.files: Vec<FileSpan { path, struct_base, struct_count }>` (§3) lets a consumer demux:
   a diagnostic's global `node` falls in exactly one file's `[struct_base, struct_base+struct_count)`
-  range → `(path, node - struct_base)` = the per-file local id the file's own span table is keyed by.
+  range → `(path, node - struct_base)` = the per-file local id the file's own span table (or its
+  `spans` input) is keyed by.
 - Surface this table to the consumer. Options: (a) a new artifact of `kind == "link-map"` in the
-  `CompileOutput` (consistent with kinded artifacts); (b) an added field on `CompileOutput`
-  (abi.rs:73). (a) keeps the struct frozen. The CLI bin (rcdzc.rs), which holds the file list already,
-  can also just demux locally.
-- `is_user_node` (db.rs:289) still works unchanged: **every** file's node is `< user_node_count`
+  `CompileOutput.artifacts` list (consistent with kinded artifacts); (b) an added field on
+  `CompileOutput` (abi.rs:91). **(a) is now the clear choice** — it keeps the frozen `CompileOutput`
+  struct unchanged AND matches how every other side-channel (`type-info`, `uses`, and the emitted
+  `component` itself) already rides `artifacts` as a distinct kind (sidecar.rs:41/44, the query
+  artifacts pushed at compile.rs:107–113). The CLI (cli.rs), which holds the file list already, can
+  also just demux locally.
+- `is_user_node` (db.rs:635) still works unchanged: **every** file's node is `< user_node_count`
   (all user, none prelude), so the prelude/synthesized boundary is preserved. The file-demux is a
   *finer* partition of the user range, layered on top — it doesn't disturb the user/prelude boundary.
 
@@ -284,7 +336,7 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
 - The **alias form** `(import "p" r)` (needs module-as-record, §2) → **decline** ("qualified import
   is a later phase") until modules-as-records is revived. The named-list form works now.
 - A file with no `(export …)` used as the entry → decline (nothing public to emit — same as the
-  existing layout.rs:74 "no export declines").
+  existing layout.rs:121–123 "no export declines").
 - Anything the single-file pipeline already declines still declines (unchanged).
 
 ---
@@ -299,10 +351,10 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
    cross-file imports (each self-contained) compiles byte-identically to the same files concatenated —
    i.e. reproduce the Makefile concat's result structurally. **This alone retires the Makefile** for
    the no-import case.
-3. **File-scoped resolution + `(import …)` (§4):** the one resolve-step-2 change + import binding +
-   visibility via `(export …)`. Gate: the new `11-modules.sexp` import cases go `todo`→`pass`; a
-   cross-file call monomorphizes and folds (assert the callee's body is inlined, no `Core::Call`
-   unless recursive).
+3. **File-scoped resolution + `(import …)` (§4):** the resolve steps-2-and-3 change (file-scope BOTH
+   `def_by_name` AND `type_decl_by_name`) + import binding + visibility via `(export …)`. Gate: the new
+   `11-modules.sexp` import cases go `todo`→`pass`; a cross-file call monomorphizes and folds (assert
+   the callee's body is inlined, no `Core::Call` unless recursive).
 4. **Cycles & collisions (§5):** import-graph DFS + collision CDZ0201. Gate: a 2-file import cycle
    rejects; a colliding import rejects.
 5. **Diagnostics link-map (§6):** surface the `FileSpan` table so a cross-file error maps to the right
@@ -313,24 +365,30 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
 
 ## 9. What explicitly does NOT change (the payoff of intra-package scope)
 
-`infer.rs`, `lower.rs`, `eval.rs`/fold, `ty.rs`, `unify.rs`, `select.rs`, `layout.rs`, `envelope.rs`,
-`serialize.rs`, `runtime_abi.rs`, `cdz-run`, the component ABI, the value-heap runtime, `import_base`.
-All untouched. After the link step, the compiler sees **one program in one arena** — the same thing it
-sees today, just assembled from many files with an explicit visibility overlay. Monomorphization is
-the existing β-reduction; one component is the existing backend. That is the whole point of doing
-package linking *before* the pipeline and *inside* one component.
+`infer.rs`, `lower.rs`, `eval.rs`/fold, `ty.rs`, `unify.rs`, `select.rs`, `layout.rs`, `serialize.rs`,
+`runtime_abi.rs`, `cdz-run`, the component ABI, the value-heap runtime, `import_base`, **and the
+landed `sidecar`/`spans` query paths** (a query still reads the merged `Db`'s columns — it just now
+answers over a package instead of a file). All untouched. After the link step, the compiler sees **one
+program in one arena** — the same thing it sees today, just assembled from many files with an explicit
+visibility overlay. Monomorphization is the existing β-reduction; one component is the existing
+backend. That is the whole point of doing package linking *before* the pipeline and *inside* one
+component.
 
 ## 10. Open decisions for the implementer
 
-- **Entry threading (§3c):** dedicated `kind=="entry"` artifact (recommended, signature-preserving)
-  vs. a new `compile()` parameter. *Recommend the artifact.*
+- **Entry threading (§3c): SETTLED — dedicated `kind=="entry"` artifact.** Was "recommend the
+  artifact"; now backed by two landed precedents (`sidecar`, `spans`), both of which chose the artifact
+  over a `compile()` parameter. Follow them.
+- **Link-map surfacing (§6): SETTLED — new `kind=="link-map"` artifact.** Same reasoning: every other
+  side-channel (`type-info`, `uses`, `component`) already rides `CompileOutput.artifacts` as a kind;
+  match that and leave the frozen struct alone.
 - **Visibility rule (§4):** reuse `(export …)` as the public surface (recommended, one mechanism) vs.
-  a distinct `pub`/visibility marker. *Recommend reusing `(export …)`.*
-- **Link-map surfacing (§6):** new `kind=="link-map"` artifact vs. a `CompileOutput` field.
-  *Recommend the artifact (keeps the struct frozen).*
+  a distinct `pub`/visibility marker. *Recommend reusing `(export …)`.* (Still open — a genuine design
+  choice, not settled by the landed work.)
 - **Splice order (§3a/c):** topological over the import graph (recommended — deterministic +
   dependency-respecting) vs. request order. *Recommend topological, falling back to request order for
-  independent files to keep it stable.*
+  independent files to keep it stable.* (Still open.)
 - **Whether to also revive modules-as-records** (closes 11-modules.sexp's *single*-file cases and
   enables the `(import "p" alias)` qualified form) — orthogonal; this design does not need it, but
-  they're natural companions.
+  they're natural companions. (Still open — and note the 3 now-passing module cases are all rejects;
+  the value-producing single-file module cases remain `todo`, so this revival is still unstarted.)
