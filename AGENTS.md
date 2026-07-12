@@ -100,6 +100,43 @@ duvet extract -f markdown -o /tmp/ex ./spec/contracts/<name>.md
 duvet report
 ```
 
+## Never edit in the main worktree — always work in an isolated worktree
+
+Every change you make MUST happen in its own git worktree under `.claude/worktrees/`, never
+in the main checkout. The main worktree is a shared, contended resource: multiple agents and
+recurring `/loop` crons run against this repository at once, so an in-place edit there races
+their work, and a stray `git add -A` can commit a sibling's half-finished changes. Isolating
+each unit of work in its own worktree is the rule, not a preference.
+
+The workflow for any change:
+
+1. **Create a fresh worktree off the tip of `spec`** — the branch you land on — not the default
+   base (which branches from `origin/<default>`, typically many commits behind):
+
+   ```sh
+   git worktree add -b <topic> .claude/worktrees/<topic> refs/heads/spec
+   ```
+
+   Give it a name unique to your task; do not reuse an existing named worktree, since a
+   concurrent agent may be mid-edit inside it.
+
+2. **Make your change there, alone.** Never touch files in the main checkout. If you must read
+   a shared worktree, `git status --short` first and treat any file you did not create as
+   foreign — commit only your own files by path, never `git add -A`.
+
+3. **Run the gate from the worktree.** From inside it, `cargo xtask gate` (and `cargo xtask
+   check` for the full health signal) — the seed toolchain builds and runs against your
+   isolated tree, so a sibling's mid-edit cannot corrupt your result. Do not promote a change
+   whose gate you have not seen pass.
+
+4. **Land on `spec` by fast-forward.** `spec` moves fast, so `git merge --ff-only` may fail if
+   it advanced past your base; `git rebase refs/heads/spec` inside the worktree reconciles the
+   disjoint files, then the merge fast-forwards. Merging updates the `spec` ref without editing
+   files in the main worktree.
+
+5. **Remove the worktree when the work is merged** (`git worktree remove`), so the shared
+   `.claude/worktrees/` directory does not accumulate stale trees.
+
 ## The build loop
 
 `./start.sh` is the front door: it installs the neutral commands in `commands/` as Claude Code slash
