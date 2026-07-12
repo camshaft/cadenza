@@ -1070,6 +1070,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // success grounds a deferred width harmlessly. If `T` is not a type this stage reduces, decline
         // the CHECK (no false reject) — the expr still type-checks on its own via the descent below.
         Resolved::Annot { expr, ty_expr } => {
+            // A RUNTIME WIDTH is forbidden: `(: 5 (UInt n))` with `n` a runtime value (a parameter, a
+            // call result) puts runtime data in a type-determining position, which the type system
+            // forbids — an integer type's width MUST be a compile-time natural (`numeric-model.md §An
+            // Integer Type Is Indexed By A Compile-Time Width`; `type-system.md §Generics Are
+            // Type-Valued Parameters` — a type-valued parameter is resolved at compile time, never from
+            // runtime data). This is checked on the ANNOTATION's un-inlined body, so `(def (mk n) (: 5
+            // (UInt n)))` rejects (CDZ0302) even though a constant call site `(mk 8)` would fold `n` — a
+            // width must be non-dependent regardless of how it happens to be called.
+            if crate::eval::is_runtime_width_type(db, ty_expr) {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: integer width from runtime data (CDZ0302)");
+                out.push(Reject::coded(
+                    Code::IntOutOfRange,
+                    "an integer width must be a compile-time natural, not runtime data",
+                ));
+            }
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the

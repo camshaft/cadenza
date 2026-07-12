@@ -578,6 +578,38 @@ impl Db {
     pub fn type_decl_by_occ(&self, occ: StructId) -> Option<&TypeDecl> {
         self.type_decls.iter().find(|t| t.occ == occ)
     }
+
+    /// The top-level items whose head is a form the compiler does NOT model — `(effect …)`, `(pragma
+    /// …)`, or any other unrecognized top-level declaration — as `(head-name, occurrence)` pairs. A
+    /// program containing one DECLINES (decline-don't-miscompile): the compiler cannot claim to compile a
+    /// program whose top level it does not fully understand, so it declines rather than silently ignoring
+    /// the unknown item and compiling the rest (which would run `main` as if the declaration were absent
+    /// — e.g. an `(effect E …)` with a duplicate operation would go unchecked). A bare expression at the
+    /// root (a `(do …)`/module item that is an application/name/literal, not a declaration form) is NOT
+    /// flagged — only a LIST whose head is an unrecognized NAME (a declaration-shaped form) is.
+    pub fn unknown_top_forms(&self) -> Vec<(String, StructId)> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            // Flag a `(head …)` list whose NAME head is neither a recognized TOP-LEVEL declaration
+            // (`type` — `def`/`export`/`module`/`do` are grammar) NOR a grammar/expression head. So an
+            // unmodeled top-level DECLARATION like `(effect …)`/`(pragma …)` declines, while a top-level
+            // EXPRESSION (a `do`-item that is an `if`/application/`match`/… — grammar or an application
+            // whose head is a bound value) is left to the ordinary fold. A bare atom root is fine.
+            if let Some(head) = self.ast.head_name(item)
+                && !TOP_LEVEL_FORMS.contains(&head)
+                && !crate::resolve::is_grammar_head(head)
+                // An APPLICATION `(f x)` at the top level (a `do`-item calling a bound function) has a
+                // head that is a bound name, not an unknown declaration — do not flag it. Only a head
+                // that resolves to NOTHING (an unbound name used as a declaration keyword) is unmodeled.
+                && self.def_by_name(head).is_none()
+                && !self.prelude.contains_key(head)
+                && self.type_decl_by_name(head).is_none()
+            {
+                out.push((head.to_string(), item));
+            }
+        }
+        out
+    }
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
@@ -745,6 +777,13 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
     }
     vec![root]
 }
+
+/// The recognized TOP-LEVEL form heads — the constructs the scan turns into an index entry. A top-level
+/// item whose head is NOT one of these is a construct the compiler does not model (e.g. `(effect …)`,
+/// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
+/// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
+/// meaningful). Kept in sync with `scan_top_level`'s branches.
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type"];
 
 #[cfg(test)]
 mod tests {

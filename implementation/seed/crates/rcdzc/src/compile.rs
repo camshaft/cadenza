@@ -138,6 +138,18 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
 /// reachability-driven (the `layout` decides what is emitted); only well-formedness is total.
 fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // UNMODELED TOP-LEVEL FORM. A top-level declaration the compiler does not model — `(effect …)`,
+    // `(pragma …)` — makes the whole program decline (decline-don't-miscompile): compiling the rest as
+    // if the declaration were absent would silently drop its meaning (e.g. an `(effect E …)` whose
+    // duplicate operation goes unchecked, then `main` runs). Reported here so the reject anchors a node.
+    for (head, occ) in db.unknown_top_forms() {
+        faults.push(
+            Reject::decline(format!(
+                "`{head}` is not a construct this compiler models — the program cannot be compiled"
+            ))
+            .at(occ),
+        );
+    }
     // DUPLICATE DEFINITION. A module evaluates to a record of its definitions, and a record has a FIXED
     // SET of field names (core-semantics.md #A Record Has A Fixed Set Of Named Fields), so defining the
     // same name twice is the same ill-formedness `(record (a 1) (a 2))` is rejected for (CDZ0201) — not

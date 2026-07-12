@@ -725,6 +725,11 @@ struct CorpusRecord {
     call: Option<Call>,
     /// The `expect` line's payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
     expect: String,
+    /// The `(needs …)` capabilities a case documents. NO LONGER gates grading — every case is graded by
+    /// what the compiler ACTUALLY does (a construct it can't compile DECLINES → `Todo`, not skipped), so
+    /// `(needs)` is documentation only now, kept so a corpus `(needs …)` clause still parses. (Was a
+    /// blunt whole-feature skip that hid a case running to a WRONG value as a benign skip.)
+    #[allow(dead_code)]
     needs: Vec<String>,
 }
 
@@ -803,10 +808,13 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord) -> Grade {
 /// Compare an already-run outcome against a case's recorded expectation — the pure grading logic,
 /// shared by the tally path and the single-case debug view.
 fn grade_ran(rec: &CorpusRecord, ran: &Ran) -> Grade {
-    // A case that needs an unrealized capability is out of scope for this generation — treat as todo.
-    if !rec.needs.is_empty() {
-        return Grade::Todo;
-    }
+    // NO capability gate: a case is graded by what the compiler ACTUALLY does with it, never skipped
+    // because it carries a `(needs …)` tag. The compiler DECLINES a construct it cannot yet compile
+    // (decline-don't-miscompile — `reference-compiler.md` §Outcomes Are Ordered By Safety), and a
+    // decline grades `Todo` below — so an unimplemented feature is already out of scope WITHOUT a gate.
+    // Gating a whole feature set on `(needs)` hid a case that RUNS TO A WRONG VALUE (a miscompile) as a
+    // benign skip; running every case surfaces that as a `Fail`, the honest signal. (`(needs …)` stays
+    // in the corpus as documentation of what a case exercises; it no longer suppresses grading.)
     let (kind, payload) = rec
         .expect
         .split_once(' ')

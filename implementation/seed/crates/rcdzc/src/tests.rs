@@ -4130,6 +4130,44 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unmodeled_top_level_form_declines() {
+        // A top-level declaration the compiler does not model — `(effect …)`, `(pragma …)` — makes the
+        // whole program DECLINE (decline-don't-miscompile), NOT silently ignore it and run `main` as if
+        // it were absent. `(effect E …)` is unmodeled, so the program declines rather than compiling
+        // `(def (main) 1)` alone (which would hide the effect's ill-formedness).
+        let src = "(do (effect E (op f (-> Int64 Int64))) (def (main) 1) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a program with an unmodeled top-level form must decline"
+        );
+    }
+
+    #[test]
+    fn a_runtime_integer_width_is_rejected() {
+        // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
+        // width must be a compile-time natural (`numeric-model.md §An Integer Type Is Indexed By A
+        // Compile-Time Width`), so it is rejected (CDZ0302) EVEN THOUGH a constant call site `(mk 8)`
+        // would fold `n` — the width is non-dependent by declaration. (The check fires on the un-inlined
+        // `mk` body during well-formedness, which covers every def reachable or not.)
+        let src = "(module m (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a width from runtime data must reject, not fold at a constant call site"
+        );
+        // Sanity: a CONSTANT width still works — `(UInt 8)` is fine, crossing as a `u8`.
+        assert_eq!(
+            run_returns::<u8>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (: 5 (UInt 8))) (export main))"
+                )))
+                .expect("constant width compiles"),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
     fn a_duplicate_sum_variant_is_rejected() {
         // 05-compound-types §a sum declaring a variant name twice: `(type T (A Int64) (A Bool))` names
         // the variant `A` twice — a sum's variant names are a fixed SET (the fourth closed name-set

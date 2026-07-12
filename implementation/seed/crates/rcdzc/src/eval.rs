@@ -15,11 +15,11 @@
 
 use crate::ast::{IntValue, Leaf, StructId};
 use crate::db::Db;
+use crate::fxhash::FxHashMap as HashMap;
 use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved, Symbol};
 use crate::ty::{IntTy, Scheme, Ty, Width};
 use crate::unify::Fresh;
-use crate::fxhash::FxHashMap as HashMap;
 use tracing::trace;
 
 /// Read a value's `(meta t)` — its TYPE — as a [`Scheme`], reducing the type-lambda it holds. An
@@ -1097,6 +1097,34 @@ fn read_width(db: &mut Db, id: StructId) -> WidthRead {
             }
             _ => WidthRead::NotConst,
         },
+    }
+}
+
+/// Whether the type expression at `id` is an integer type `(Int W)`/`(UInt W)` whose WIDTH is RUNTIME
+/// DATA — a function PARAMETER (or a reference chain reaching one). Such a width puts a runtime value in
+/// a type-determining position, which the type system forbids (a width must be a compile-time natural,
+/// `numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width`). Checked on the UN-INLINED
+/// annotation body so `(def (mk n) (: 5 (UInt n)))` rejects even though a constant call site would fold
+/// `n` — the width is non-dependent by declaration, not by how it is called. Only a genuine
+/// runtime-value width is flagged; a constant width, an unbound name, or a not-yet-built thing is not
+/// (those are handled elsewhere — a malformed width by `read_width`, an unbound name by scope).
+pub fn is_runtime_width_type(db: &mut Db, id: StructId) -> bool {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return false;
+    };
+    match meta_apply_of(db, head) {
+        Some(Prim::IntCtor | Prim::UIntCtor) if args.len() == 1 => width_is_runtime(db, args[0]),
+        _ => false,
+    }
+}
+
+/// Whether a width expression resolves to a RUNTIME value — a function parameter (through any `Ref`
+/// chain). A constant literal, an unbound name, or anything else is not runtime data.
+fn width_is_runtime(db: &mut Db, id: StructId) -> bool {
+    match resolved_of(db, id) {
+        Resolved::Param { .. } => true,
+        Resolved::Ref { value } => width_is_runtime(db, value),
+        _ => false,
     }
 }
 

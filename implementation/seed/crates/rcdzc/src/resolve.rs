@@ -69,6 +69,14 @@ const GRAMMAR: &[&str] = &[
     ":",
 ];
 
+/// Whether `head` is a recognized GRAMMAR head — a binding/control/declaration form the resolver
+/// dispatches structurally. A form whose head is NEITHER grammar NOR a bound value is an unmodeled
+/// construct; `Db::unknown_top_forms` uses this to decline a top-level `(effect …)`/`(pragma …)` rather
+/// than silently ignore it.
+pub fn is_grammar_head(head: &str) -> bool {
+    GRAMMAR.contains(&head)
+}
+
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
 pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
