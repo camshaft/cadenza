@@ -312,6 +312,32 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
 /// walking up from a reference, the first binder of `name` at or outside the reference's position is
 /// the one in effect.
 fn lookup_scope(db: &Db, id: StructId, name: &str) -> Option<Resolved> {
+    // For a LOAD-TIME node, hop candidate-to-candidate via the precomputed scope-skip pointer, skipping
+    // the non-binding spine (record/tuple/`.`/`if`/application forms `binder_in` would only reject).
+    // Each hop lands on a form that MIGHT bind `name`, entered through the recorded child (the `from`
+    // `binder_in` needs); a hop is O(1), so a reference costs O(enclosing BINDERS), not O(nesting
+    // depth) — the deepdata/deeplet/bignest O(N²). The skip chain stays within load-time nodes (a
+    // parent is always older than its child), so once we start on the skip path it remains covered.
+    if db.scope_skip_covers(id) {
+        let mut cursor = db.scope_skip_of(id);
+        while let Some((form, from)) = cursor {
+            if let Some(resolved) = binder_in(db, form, from, name) {
+                return Some(resolved);
+            }
+            cursor = db.scope_skip_of(form);
+        }
+        return None;
+    }
+    // A node SYNTHESIZED after load (a β-reduced body copy) is not in the skip index — walk parents
+    // exhaustively. Such a copy is shallow and self-contained, so the walk is cheap; and its ancestor
+    // chain may cross back into covered load-time nodes, which the plain walk handles uniformly.
+    lookup_scope_walk(db, id, name)
+}
+
+/// The exhaustive parent-by-parent scope walk — used for a node the skip index does not cover (a
+/// synthesized post-load node). Identical semantics to the skip-driven path, visiting every enclosing
+/// form; the skip index is purely an accelerator over this for the load-time arena.
+fn lookup_scope_walk(db: &Db, id: StructId, name: &str) -> Option<Resolved> {
     let mut child = id;
     let mut cursor = db.parent_of(id);
     while let Some(form) = cursor {

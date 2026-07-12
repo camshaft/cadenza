@@ -246,6 +246,26 @@ pub struct Db {
     /// allocation on the hot resolve path.
     scope_binders: crate::fxhash::FxHashMap<StructId, crate::fxhash::FxHashMap<String, StructId>>,
 
+    /// Per-node LEXICAL-SCOPE SKIP pointer: for each `StructId`, the nearest STRICT ANCESTOR that is a
+    /// binding-CANDIDATE (a form `resolve::binder_in` could bind a name in — a `let`/`fn`/`def`, a let
+    /// bindings-list, or a match arm), paired with that candidate's DIRECT CHILD on the path down to
+    /// this node (the `from` argument `binder_in` needs to decide its window: body vs bindings-list
+    /// pair, match-arm body). `None` once the walk reaches the root with no candidate above.
+    ///
+    /// `lookup_scope` walks parents to find a name's binder, but ascends EVERY enclosing form — and in a
+    /// deeply nested value / expression (`(record … (next (record …)))`, a deep `if`/`let` nest) the
+    /// vast majority are NON-binding forms that bind nothing, so an N-deep reference visited O(depth)
+    /// no-op ancestors → O(N²) across N references (the deepdata/deeplet/bignest family; `as_form` +
+    /// `resolved_of` were ~all of self-time). This pointer lets the walk HOP candidate-to-candidate,
+    /// skipping the non-binding spine — O(1) per hop, so a reference costs only the number of enclosing
+    /// BINDERS, not the raw nesting depth. A shape with few binders (the common case) resolves in O(1).
+    ///
+    /// Built once at load ([`build_scope_skip`]) by path-compression over `parent` (no id-ordering
+    /// assumption), and extended incrementally in [`push_list`] for β-reduction's synthesized forms
+    /// (a load-time-only arena index would miss a copied lambda/let body — the lesson from the
+    /// per-scope binder index). A node with no recorded entry falls back to the plain parent walk.
+    scope_skip: Vec<Option<(StructId, StructId)>>,
+
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
     /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
@@ -433,6 +453,9 @@ impl Db {
             }
         }
         let (parent, child_ix) = parent_index(&ast);
+        // Per-node lexical-scope skip pointer (nearest binding-candidate ancestor + entry child) so the
+        // scope walk hops over non-binding forms — O(1) per binder instead of O(nesting depth).
+        let scope_skip = build_scope_skip(&ast, &parent);
         // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
         // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
         let scope_binders = build_scope_binders(&ast);
@@ -456,6 +479,7 @@ impl Db {
             type_decls,
             parent,
             child_ix,
+            scope_skip,
             def_by_body,
             def_name_index: def_by_name,
             scope_binders,
@@ -506,6 +530,26 @@ impl Db {
     /// of the lexical-scope walk.
     pub fn parent_of(&self, id: StructId) -> Option<StructId> {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
+    }
+
+    /// Whether the lexical-scope SKIP index covers `id` — true for a load-time node (its entry is
+    /// precomputed), false for a node synthesized after load (past the index's length). An uncovered
+    /// node uses the exhaustive parent walk instead. See [`scope_skip`].
+    ///
+    /// [`scope_skip`]: Db::scope_skip
+    pub fn scope_skip_covers(&self, id: StructId) -> bool {
+        (id.0 as usize) < self.scope_skip.len()
+    }
+
+    /// The nearest binding-CANDIDATE ancestor of `id` and the candidate's direct child on the path to
+    /// `id` (the `from` a binder check needs), or `None` if no candidate ancestor exists. Only
+    /// meaningful when [`scope_skip_covers`] is true. Lets a lexical-scope walk HOP over the non-binding
+    /// spine. See [`scope_skip`].
+    ///
+    /// [`scope_skip`]: Db::scope_skip
+    /// [`scope_skip_covers`]: Db::scope_skip_covers
+    pub fn scope_skip_of(&self, id: StructId) -> Option<(StructId, StructId)> {
+        self.scope_skip.get(id.0 as usize).copied().flatten()
     }
 
     /// `id`'s position among its parent's children (0-based). Meaningful only when `id` has a parent;
@@ -571,12 +615,16 @@ impl Db {
         self.ast.structure.push(Struct::List(children));
         self.parent.push(None);
         self.child_ix.push(0);
-        // A SYNTHESIZED scope form (β-reduction copies a `fn`/`def` body, building fresh `fn`/`def`
-        // nodes) must join the per-scope binder index too — `binder_in` resolves parameter references
-        // inside a reduced lambda body against THIS node, and the load-time build only covered the
-        // original arena. Without this, a reference inside a copied lambda body finds no binder (the
-        // `(Int 8).wrap` regression). Cheap: only fires for a `fn`/`def` head, and indexes that one
-        // signature's parameters once.
+        // NOTE: `scope_skip` is deliberately NOT extended for synthesized nodes — it covers only the
+        // load-time arena (where the deep-nesting O(N²) lives). A synthesized β-reduced body is a
+        // shallow, self-contained copy; `lookup_scope` falls back to the exhaustive parent walk for any
+        // node the skip index does not cover (`Db::scope_skip_covers`), which is correct and cheap
+        // there. Maintaining the skip pointer bottom-up is subtle (a node's own entry depends on its
+        // not-yet-set parent), and the payoff (a shallow copy) does not warrant it.
+        //
+        // A SYNTHESIZED scope form (β-reduction copies a `fn`/`def` body) DOES still join the per-scope
+        // binder index — `binder_in` resolves parameter references inside a reduced lambda body against
+        // THIS node (the `(Int 8).wrap` regression). Cheap: only fires for a `fn`/`def` head.
         self.index_scope_binders(sid);
         sid
     }
@@ -725,6 +773,95 @@ fn parent_index(ast: &Arenas) -> (Vec<Option<StructId>>, Vec<u32>) {
         }
     }
     (parent, child_ix)
+}
+
+/// Whether `form` is a binding CANDIDATE — a form `resolve::binder_in` could bind a name in, for SOME
+/// child ascended from. This is the structural (name-agnostic, child-agnostic) OVER-approximation the
+/// scope-skip index hops between: a `let`/`fn`/`def` (by head), a `let` BINDINGS-LIST (its parent is a
+/// `let` and it is that let's first tail element), or a MATCH ARM (its parent is a `match` and it is a
+/// non-scrutinee tail element). It is SOUND to over-approximate (a candidate that turns out not to bind
+/// THIS name/child just returns `None` from `binder_in`, and the walk continues), but it must never
+/// UNDER-approximate (skipping a real binder would mis-resolve). Kept in lockstep with `binder_in`'s
+/// cases — a new binding form must be added here too. `parent` is the precomputed parent index.
+fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructId) -> bool {
+    // By head: a `let`/`fn`/`def` form.
+    if let Some(h) = ast.head_name(form)
+        && matches!(h, "let" | "fn" | "def")
+    {
+        return true;
+    }
+    // By parent shape: a `let` bindings-list (parent is a `let`, `form` its first tail element), or a
+    // `match` arm (parent is a `match`, `form` a tail element after the scrutinee at tail position 0).
+    let Some(p) = parent.get(form.0 as usize).copied().flatten() else {
+        return false;
+    };
+    if let Some(tail) = ast.as_form(p, "let") {
+        if tail.first().copied() == Some(form) {
+            return true; // the bindings-list
+        }
+    }
+    if let Some(tail) = ast.as_form(p, "match") {
+        // tail = [scrutinee, arm…]; `form` is an arm iff it is a tail element other than the scrutinee.
+        if tail.first().copied() != Some(form) && tail.iter().any(|&c| c == form) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build the per-node lexical-scope SKIP index (`Db::scope_skip`): for each node, the nearest STRICT
+/// ANCESTOR that is a binding candidate ([`is_binding_candidate`]) plus that candidate's direct child
+/// on the path to this node (the `from` the resolver's `binder_in` needs). `lookup_scope` follows these
+/// to hop over the non-binding spine, so a reference costs O(enclosing binders), not O(nesting depth).
+///
+/// Path-compression, no id-ordering assumption: for a node whose parent is `P`, its entry is `(P, node)`
+/// if `P` is a candidate, else the SAME entry as `P` (same candidate, same entry child — the candidate
+/// above `P` is reached from `node` through the very child `P` reaches it through). Computed with an
+/// explicit stack per node, memoizing as it unwinds, so each node is resolved once (amortized O(n)).
+fn build_scope_skip(
+    ast: &Arenas,
+    parent: &[Option<StructId>],
+) -> Vec<Option<(StructId, StructId)>> {
+    let n = ast.structure.len();
+    let mut skip: Vec<Option<(StructId, StructId)>> = vec![None; n];
+    let mut done = vec![false; n];
+    // A reusable stack of nodes whose entry is not yet computed, pushed child→ancestor until a resolved
+    // (or root) node, then filled on the way back down.
+    let mut stack: Vec<StructId> = Vec::new();
+    for start in 0..n {
+        if done[start] {
+            continue;
+        }
+        stack.clear();
+        let mut cur = StructId(start as u32);
+        // Descend the parent chain collecting unresolved nodes until we hit a resolved node or the root.
+        loop {
+            if done[cur.0 as usize] {
+                break;
+            }
+            done[cur.0 as usize] = true; // mark now; its `skip` is filled below (before any read of it)
+            stack.push(cur);
+            match parent[cur.0 as usize] {
+                Some(p) => cur = p,
+                None => break, // root: no ancestor, entry stays None
+            }
+        }
+        // Unwind: fill each node's skip from its parent's (already-final) skip.
+        while let Some(node) = stack.pop() {
+            let entry = match parent[node.0 as usize] {
+                Some(p) => {
+                    if is_binding_candidate(ast, parent, p) {
+                        Some((p, node)) // parent is the nearest candidate; enter it through `node`
+                    } else {
+                        skip[p.0 as usize] // inherit parent's candidate + its entry child
+                    }
+                }
+                None => None,
+            };
+            skip[node.0 as usize] = entry;
+        }
+    }
+    skip
 }
 
 /// Build the per-scope-form parameter binder index (`Db::scope_binders`): for every `fn` and `def`
