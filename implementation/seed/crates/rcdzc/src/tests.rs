@@ -2543,9 +2543,9 @@ mod recursion {
     #[test]
     fn a_tail_recursive_loop_runs_in_constant_stack() {
         use wasmtime::component::Val;
-        // A tail-recursive accumulator over a RUNTIME count: the self-call is in tail position, so it
-        // emits as `return_call` and reuses the frame — a million iterations complete in O(1) stack.
-        // A frame-per-iteration recursive call would trap (stack exhausted) far below a million.
+        // A tail-recursive accumulator over a RUNTIME count: the SELF tail-call is compiled as a LOOP
+        // (its args update the param locals and `br` back — no call frame), so a million iterations
+        // complete in O(1) stack. A frame-per-iteration recursive call would trap far below a million.
         let f = compile_component(&crate::codec::encode(&parse(
             "(module m (def (f (: n Int64) (: acc Int64)) (if (= n 0) acc (f (- n 1) (+ acc 1)))) (def (main (: n Int64)) (f n 0)) (export main))",
         )))

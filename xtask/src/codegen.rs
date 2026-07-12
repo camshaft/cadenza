@@ -562,6 +562,8 @@ mod wasm_abi {
             op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
             op("ELSE", Instruction::Else),
             op("END", Instruction::End),
+            op("LOOP", Instruction::Loop(wasm_encoder::BlockType::Empty)),
+            op("BR", Instruction::Br(0)),
             op("LOCAL_GET", Instruction::LocalGet(0)),
             op("LOCAL_SET", Instruction::LocalSet(0)),
             op("LOCAL_TEE", Instruction::LocalTee(0)),

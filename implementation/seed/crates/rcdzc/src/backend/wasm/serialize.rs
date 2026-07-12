@@ -103,6 +103,14 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::IF);
             out.push(bt.byte()); // block-type byte lives here, not in the IR
         }
+        Lir::Loop(bt) => {
+            out.push(op::LOOP);
+            out.push(bt.byte());
+        }
+        Lir::Br(depth) => {
+            out.push(op::BR);
+            uleb128(*depth as u64, out);
+        }
         Lir::Else => out.push(op::ELSE),
         Lir::End => out.push(op::END),
         Lir::Unreachable => out.push(op::UNREACHABLE),

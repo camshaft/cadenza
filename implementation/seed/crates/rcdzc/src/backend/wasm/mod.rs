@@ -34,7 +34,7 @@ pub mod serialize;
 pub mod wasm_abi;
 
 use crate::backend::wasm::envelope::BoundaryExport;
-use crate::backend::wasm::select::{SelectedFunc, select_function};
+use crate::backend::wasm::select::{SelectedFunc, select_function_of};
 use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
@@ -123,7 +123,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
             Some(e) => e.params.clone(),
             None => crate::layout::def_params(db, def),
         };
-        funcs.push(select_function(db, body, &params, layout)?);
+        funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
 
     // Serialize the embedded core module (multi-export core module, functions in emission order).
@@ -230,7 +230,7 @@ fn emit_runtime_resource(
             Some(e) => e.params.clone(),
             None => crate::layout::def_params(db, def),
         };
-        funcs.push(select_function(db, body, &params, layout)?);
+        funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
 
     // The escaping export's absolute core-func index — `make` calls it to build the compound.
@@ -317,7 +317,7 @@ fn emit_runtime_sum_resource(
             Some(e) => e.params.clone(),
             None => crate::layout::def_params(db, def),
         };
-        funcs.push(select_function(db, body, &params, layout)?);
+        funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
     let export_abs = layout
         .abs(export_def)

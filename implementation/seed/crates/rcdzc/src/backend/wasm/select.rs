@@ -348,15 +348,31 @@ pub fn select_function(
     params: &[(StructId, Ty)],
     layout: &Layout,
 ) -> Result<SelectedFunc, Reject> {
+    select_function_of(db, body, params, layout, None)
+}
+
+/// [`select_function`] plus the emitting function's OWN `db.defs` index (`self_def`) when known — used
+/// to compile a SELF-tail-recursive function as a `loop` (its self-tail-calls iterate in place rather
+/// than `return_call`). `None` (the `select_function` entry, and `select_body`) disables the loop
+/// transform, so a self-call stays a `return_call`. A nullary or unknown-index function never loops.
+pub fn select_function_of(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    layout: &Layout,
+    self_def: Option<usize>,
+) -> Result<SelectedFunc, Reject> {
     // Assign each parameter a local slot in order, and its wasm value type (its machine rep).
     let mut slot_of: HashMap<StructId, u32> = HashMap::new();
     let mut param_vts: Vec<ValType> = Vec::new();
+    let mut param_slots: Vec<u32> = Vec::new();
     for (i, (binder, ty)) in params.iter().enumerate() {
         let vt = valtype_of(ty).ok_or_else(|| {
             Reject::decline("a function parameter's type has no machine representation")
         })?;
         slot_of.insert(*binder, i as u32);
         param_vts.push(vt);
+        param_slots.push(i as u32);
     }
     let ret = type_of(db, body);
     let mut code = Vec::new();
@@ -370,10 +386,32 @@ pub fn select_function(
     let base = param_vts.len() as u32;
     let mut high = base;
     let mut scratch_ty: HashMap<u32, ValType> = HashMap::new();
+    // If this function makes a SELF tail call (through `if`/`let` result positions) and has parameters,
+    // compile it as a LOOP: its self-tail-calls update the parameter locals and `br` to the loop top
+    // instead of a `return_call` — no wasm call frame per iteration. The loop's block type is the return
+    // type (the value each non-looping tail leaf produces). Detection is conservative — see
+    // `body_has_self_tail_call` (only the `if`/`let` tail positions the loop transform actually handles).
+    let loops =
+        self_def.is_some_and(|d| !param_slots.is_empty() && body_has_self_tail_call(db, body, d));
+    let tl = loops.then(|| TailLoop {
+        self_def: self_def.unwrap(),
+        param_slots: &param_slots,
+        depth: 0,
+    });
     // The body is emitted in TAIL position: a `Core::Call` in the body's result position becomes a
-    // `return_call`, so a tail-recursive function iterates in O(1) stack instead of trapping by stack
-    // exhaustion. `emit_tail` propagates tail-ness through `if`/`match`/`let` result positions and
-    // delegates every non-tail position to `emit`.
+    // `return_call` (or, in a looped function, a self-call becomes a loop iteration). `emit_tail`
+    // propagates tail-ness through `if`/`match`/`let` result positions and delegates every non-tail
+    // position to `emit`.
+    if loops {
+        let block_ty = match &ret {
+            Ty::Unit => BlockType::Empty,
+            other => match valtype_of(other) {
+                Some(vt) => BlockType::Val(vt),
+                None => return Err(Reject::decline("looped function result has no machine rep")),
+            },
+        };
+        code.push(Lir::Loop(block_ty));
+    }
     emit_tail(
         db,
         body,
@@ -383,7 +421,13 @@ pub fn select_function(
         &mut scratch_ty,
         layout,
         &mut code,
+        tl,
     )?;
+    if loops {
+        // Close the loop block. Control reaches here only via a non-looping tail leaf, which left the
+        // result value on the stack — that value is the loop's (and the function's) result.
+        code.push(Lir::End);
+    }
     // Declare scratch slots `base..high` in slot order, each at its recorded type (default i64 for a slot
     // that was counted in the high-water mark but never explicitly typed — a defensive fallback).
     let declared: Vec<ValType> = (base..high)
@@ -425,10 +469,49 @@ fn peephole(code: &mut Vec<Lir>) {
     *code = out;
 }
 
+/// Whether the body at `id` makes a tail call to `self_def` through the tail positions the loop
+/// transform HANDLES — the body itself, an `if`'s two branches, or a `let`'s body. NOT through a
+/// `match` (the loop transform does not enter a match, so a self-call in a match arm stays a
+/// `return_call`), and NOT through a non-tail position (an operand — that is a non-tail call). Mirrors
+/// `emit_tail`'s propagation for exactly the `Call`/`If`/`Let` cases so detection and emission agree.
+fn body_has_self_tail_call(db: &mut Db, id: StructId, self_def: usize) -> bool {
+    match core_of(db, id) {
+        Core::Call { callee, .. } => callee == self_def,
+        Core::If { then_, else_, .. } => {
+            body_has_self_tail_call(db, then_, self_def)
+                || body_has_self_tail_call(db, else_, self_def)
+        }
+        Core::Let { bindings, body } => {
+            // Match `emit_tail`: a `let` keeps its body's tail position only when no heap drop is pending
+            // (a drop after the body would fall back to non-tail `emit`). A scalar-only `let` (the loop
+            // shapes) has no drop, so this simply recurses the body.
+            let any_drop = bindings.iter().any(|(binder, _)| {
+                is_heap_type(&type_of(db, *binder)) && !binding_escapes(db, body, *binder, false)
+            });
+            !any_drop && body_has_self_tail_call(db, body, self_def)
+        }
+        _ => false,
+    }
+}
+
+/// The context for a SELF-TAIL-RECURSIVE function being compiled as a `loop`: which def index a tail
+/// call must recognize as "itself" (`self_def`), that function's parameter slots (a self-tail-call
+/// updates these in place), and the current branch `depth` from the loop (how many `if`/loop blocks
+/// enclose this position — the `br` target). Threaded through `emit_tail`; `None` when the function is
+/// not self-recursive, so a tail call stays a `return_call`.
+#[derive(Clone, Copy)]
+struct TailLoop<'a> {
+    self_def: usize,
+    param_slots: &'a [u32],
+    depth: u32,
+}
+
 /// Emit the node at `id` in TAIL position — the body's result, whose value becomes the function's
 /// return. A `Core::Call` here is emitted as `return_call` (a TAIL call: it replaces the caller's frame
 /// rather than pushing a new one), so a tail-recursive loop runs in O(1) stack instead of trapping by
-/// stack exhaustion at ~35k frames. Tail-ness PROPAGATES through the result-producing sub-positions: an
+/// stack exhaustion at ~35k frames. When `tl` marks this function self-recursive, a SELF tail call is
+/// instead compiled as an in-place LOOP iteration (update the parameter locals, `br` to the loop top) —
+/// no wasm call frame per step. Tail-ness PROPAGATES through the result-producing sub-positions: an
 /// `if`'s two branches, a `let`'s body (only when no heap `drop` must run AFTER it — a drop is code that
 /// executes on return, so the call can't be the last instruction), and a `match`'s arm bodies. Every
 /// other node (an operand, an operation, a plain value) is not a tail call, so it delegates to `emit`.
@@ -443,11 +526,23 @@ fn emit_tail(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Vec<Lir>,
+    tl: Option<TailLoop>,
 ) -> Result<(), Reject> {
     match core_of(db, id) {
-        // A tail call → `return_call`. Push the arguments (each in NON-tail operand position via
-        // `emit`), then the tail call to the resolved function index.
+        // A tail call. When it is a SELF-call of a function being compiled as a loop, iterate in place:
+        // evaluate the new argument values, then move them into the parameter locals and `br` back to
+        // the loop top — no call frame. Otherwise it is a `return_call` (a real tail call: mutual
+        // recursion, or a self-recursive function not compiled as a loop).
         Core::Call { callee, args } => {
+            if let Some(tl) = tl
+                && callee == tl.self_def
+                && args.len() == tl.param_slots.len()
+            {
+                emit_self_loop_iteration(
+                    db, &args, tl, slots, base, high, scratch_ty, layout, out,
+                )?;
+                return Ok(());
+            }
             for &arg in &args {
                 emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
             }
@@ -479,10 +574,16 @@ fn emit_tail(
                 },
             };
             out.push(Lir::If(block_ty));
-            // Each branch is TAIL (a tail call becomes `return_call`), EXCEPT a bare-literal branch,
-            // which must be GROUNDED to the `if`'s result width (a bare literal is never a tail call, so
-            // grounding is safe): a default-Int64 literal opposite a narrow branch would push a
-            // mismatched machine slot into the block. Ground via `emit_operand`, else emit in tail pos.
+            // Inside the `if` block a self-loop `br` must jump one MORE level out to reach the loop top.
+            let inner_tl = tl.map(|t| TailLoop {
+                depth: t.depth + 1,
+                ..t
+            });
+            // Each branch is TAIL (a tail call becomes `return_call`, a self-call a loop `br`), EXCEPT a
+            // bare-literal branch, which must be GROUNDED to the `if`'s result width (a bare literal is
+            // never a tail call, so grounding is safe): a default-Int64 literal opposite a narrow branch
+            // would push a mismatched machine slot into the block. Ground via `emit_operand`, else emit
+            // in tail pos.
             let emit_tail_branch = |db: &mut Db,
                                     b: StructId,
                                     high: &mut u32,
@@ -494,7 +595,7 @@ fn emit_tail(
                 {
                     emit_operand(db, b, *rit, slots, base, high, st, layout, out)
                 } else {
-                    emit_tail(db, b, slots, base, high, st, layout, out)
+                    emit_tail(db, b, slots, base, high, st, layout, out, inner_tl)
                 }
             };
             emit_tail_branch(db, then_, high, scratch_ty, out)?;
@@ -543,7 +644,11 @@ fn emit_tail(
                 extended.insert(*binder, slot);
                 floor = slot + 1;
             }
-            emit_tail(db, body, &extended, floor, high, scratch_ty, layout, out)
+            // A `let` adds no wasm block (its bindings are plain `local.set`s), so the loop-branch depth
+            // is unchanged — the body's tail position is at the same nesting as the `let`.
+            emit_tail(
+                db, body, &extended, floor, high, scratch_ty, layout, out, tl,
+            )
         }
         // A `match` in tail position: each arm body is tail. Delegated with a tail-aware arm emitter.
         Core::Match { scrutinee, arms } => {
@@ -576,6 +681,48 @@ fn emit_tail(
         // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
         _ => emit(db, id, slots, base, high, scratch_ty, layout, out),
     }
+}
+
+/// Emit a SELF-tail-call as a LOOP iteration: update the parameter locals with the new argument values
+/// and `br` back to the loop top — no wasm call frame. The new args are ALL evaluated onto the stack
+/// FIRST (each reading the OLD parameter values), then popped into the param slots in REVERSE order (the
+/// stack is LIFO, so the last-pushed arg is on top and stores into the last param). This is the standard
+/// parallel move: it avoids the clobber where storing arg 0 into `$0` would corrupt a later arg that
+/// reads `$0` (`sum(n-1, acc+n)` — arg 1 `acc+n` reads the OLD `n`, evaluated before `$0` is written).
+/// `tl.depth` is the number of enclosing `if`/loop blocks, so `br depth` targets the loop top.
+#[allow(clippy::too_many_arguments)]
+fn emit_self_loop_iteration(
+    db: &mut Db,
+    args: &[StructId],
+    tl: TailLoop,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    trace!(target: "rcdzc::select", self_def = tl.self_def, depth = tl.depth, args = args.len(), "emit self-tail-call as loop iteration");
+    // Evaluate each new argument value onto the stack, grounding a bare-literal arg to its OWN solved
+    // width (unification already set it to the parameter's type at the call site — the same
+    // reconciliation an operand/branch literal gets, so a default-Int64 literal into a narrow param slot
+    // does not mismatch). All args are evaluated BEFORE any store, so each reads the OLD param values.
+    for &arg in args {
+        if let Core::ConstInt(_) = core_of(db, arg)
+            && let Ty::Int(ait) = type_of(db, arg)
+        {
+            emit_operand(db, arg, ait, slots, base, high, scratch_ty, layout, out)?;
+        } else {
+            emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+        }
+    }
+    // Pop the values into the parameter slots, last-arg-first (stack is LIFO).
+    for &slot in tl.param_slots.iter().rev() {
+        out.push(Lir::LocalSet(slot));
+    }
+    // Jump to the loop top to iterate.
+    out.push(Lir::Br(tl.depth));
+    Ok(())
 }
 
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
@@ -1201,7 +1348,10 @@ fn emit_probe_chain(
             return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
         }
         if tail {
-            emit_tail(db, body, slots, base, high, scratch_ty, layout, out)
+            // A match arm body is a tail position, but the self-loop transform does NOT enter a match
+            // (its nested-`if` probe chain would need per-arm branch-depth bookkeeping); a self-call in
+            // an arm stays a `return_call`. Pass `None` so no loop `br` is emitted here.
+            emit_tail(db, body, slots, base, high, scratch_ty, layout, out, None)
         } else {
             emit(db, body, slots, base, high, scratch_ty, layout, out)
         }
@@ -2591,6 +2741,52 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Add).count(),
             1,
             "one add over the shared product"
+        );
+    }
+
+    #[test]
+    fn a_self_tail_recursive_function_compiles_to_a_loop() {
+        // (def (f (: n Int64) (: acc Int64)) (if (= n 0) acc (f (- n 1) (+ acc 1)))) — the self-call is
+        // in tail position (the `if`'s else branch), so `select_function_of` (given f's own def index)
+        // compiles it as a LOOP: the body opens with `Lir::Loop`, the self-call updates the param slots
+        // (`local.set`s) and `br`s back, and there is NO `ReturnCall`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64) (: acc Int64)) \
+               (if (= n 0) acc (f (- n 1) (+ acc 1)))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            matches!(f.code.first(), Some(Lir::Loop(_))),
+            "a self-tail-recursive function body opens with a loop"
+        );
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::Br(_))),
+            "the self-tail-call branches back to the loop top"
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::ReturnCall(_))),
+            "no return_call — the self-call became a loop iteration"
+        );
+    }
+
+    #[test]
+    fn a_non_recursive_function_is_not_wrapped_in_a_loop() {
+        // A plain `(+ a b)` — no self-call, so no loop wrapping even when the def index is supplied.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ a b)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "a non-recursive function is not wrapped in a loop"
         );
     }
 

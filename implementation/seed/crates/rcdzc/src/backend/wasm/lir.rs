@@ -92,6 +92,16 @@ pub enum Lir {
     CallImport(&'static str),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
+    /// `loop <blocktype>` — open a loop block; a `Br` targeting it jumps BACK to this point (the loop
+    /// label is at the top, unlike a `block` whose label is at the `end`). Used to compile a
+    /// self-tail-recursive function as an in-place iteration: the body is wrapped in a loop and each
+    /// self-tail-call becomes "update the parameter locals, then `Br` back to the loop top" — no wasm
+    /// call frame per iteration. Closed by an `End` like `if`/`block`.
+    Loop(BlockType),
+    /// `br <depth>` — an unconditional branch to the enclosing control construct `depth` levels out
+    /// (0 = the innermost). To a `loop` it jumps to the loop's top (iterate); to a `block`/`if` it
+    /// jumps to the `end` (exit). Used by the self-tail-call → loop transform (`br 0` back to the loop).
+    Br(u32),
     /// `else`.
     Else,
     /// `end`.
