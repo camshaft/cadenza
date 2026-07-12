@@ -4225,6 +4225,31 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_float_equality_folds_by_canonical_value() {
+        // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
+        // form.md): `1e19` and `1e20` round to DIFFERENT doubles → false; `1e19` equals its own decimal
+        // spelling `10000000000000000000.0` → true (same double); `-0.0` and `0.0` have DISTINCT bits →
+        // false (the canonical form distinguishes them); `-0.0` equals `-0.0`. Consumed by an `if` so
+        // `main` returns 1/0 — a Bool result, no float runtime. NESTED in a tuple folds the same way.
+        for (prog, want) in [
+            ("(= 1e19 1e20)", 0),
+            ("(= 1e19 10000000000000000000.0)", 1),
+            ("(= -0.0 0.0)", 0),
+            ("(= -0.0 -0.0)", 1),
+            ("(= 3.5 3.5)", 1),
+            ("(= (tuple -0.0) (tuple 0.0))", 0),
+            ("(= (tuple -0.0 1.0) (tuple -0.0 1.0))", 1),
+        ] {
+            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "float equality fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
     fn a_recognized_string_escape_denotes_its_one_scalar_value() {
         // A string literal's escapes are expanded by the reader before the compiler sees the text, so
         // `"\t"` is the one-scalar string containing a tab — EQUAL to a literal tab in the source

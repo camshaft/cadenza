@@ -65,12 +65,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
-        // A FLOAT literal has a type (`Ty::Float`, so a mix rejects at the type check) but no runnable
-        // core yet — there is no float arithmetic or boundary representation. Decline: a pure-float
-        // program is Todo, never a miscompile.
-        Resolved::Float(_) => Core::Poison(Reject::decline(
-            "a floating-point value does not yet run (float arithmetic/boundary is a later increment)",
-        )),
+        // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
+        // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
+        // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
+        // they consume it; the CONSTANT itself is now a real core value.
+        Resolved::Float(d) => Core::ConstFloat(d),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -3219,6 +3218,33 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant string comparison");
             Core::ConstBool(r)
         }
+        // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
+        // form.md #Numeric Values Serialize Deterministically — floats equal under structural equality
+        // share a canonical form, distinct floats have distinct forms). EQUALITY (`=`) is by RAW BITS, so
+        // `-0.0 ≠ 0.0` (distinct bit patterns → the canonical form distinguishes them) and a NaN is
+        // unequal to itself. `1e19` and `1e20` round to different doubles → unequal. Ordering (`<`/`>`)
+        // uses the IEEE partial order (`f64::partial_cmp`); an unordered pair (NaN) declines rather than
+        // inventing a total order. Only the fold — no float runtime is needed for a Bool result.
+        (Core::ConstFloat(a), Core::ConstFloat(b)) => {
+            let (ba, bb) = (a.to_f64_bits(), b.to_f64_bits());
+            if matches!(op, Prim::Eq) {
+                let r = ba == bb;
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float equality (by canonical bits)");
+                Core::ConstBool(r)
+            } else {
+                match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
+                    Some(ord) => {
+                        let r = compare_ord(op, ord);
+                        trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float comparison");
+                        Core::ConstBool(r)
+                    }
+                    // An unordered pair (a NaN operand) has no defined `<`/`>` result — decline.
+                    None => Core::Poison(Reject::decline(
+                        "an ordering comparison with a NaN operand has no defined result",
+                    )),
+                }
+            }
+        }
         // Two UNIT values — there is exactly ONE unit value, so two units always compare EQUAL. Fold at
         // compile time to the ordering-`Equal` result for the operator (`= unit ()` → true, `< unit ()`
         // → false, `<= unit ()` → true). No heap walk and no runtime op: unit carries no data to
@@ -3281,6 +3307,11 @@ fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
+        // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
+        // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false) and a nested NaN equals a nested NaN (identical
+        // bits under the canonical byte form; contracts/deterministic-value-form.md). By-bits, NOT
+        // `f64` `==`, precisely so `-0.0`/`0.0` differ and NaN self-equals — the structural byte-form rule.
+        (Core::ConstFloat(x), Core::ConstFloat(y)) => Some(x.to_f64_bits() == y.to_f64_bits()),
         (Core::Unit, Core::Unit) => Some(true),
         // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
         // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same

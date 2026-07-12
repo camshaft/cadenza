@@ -251,7 +251,11 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
             // tests, the pipe — wants the decision, not the incidental decline the same body may also
             // raise; e.g. an ungranted perform is CDZ0401, not the "no handler here" decline its standalone
             // lowering also emits.)
-            let errors = || out.diagnostics.iter().filter(|d| d.severity == Severity::Error);
+            let errors = || {
+                out.diagnostics
+                    .iter()
+                    .filter(|d| d.severity == Severity::Error)
+            };
             let chosen = errors()
                 .find(|d| d.code.is_some())
                 .or_else(|| errors().next())
@@ -628,6 +632,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstFloat(_)
         | Core::Unit => {}
     }
 }

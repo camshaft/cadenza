@@ -221,6 +221,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstFloat(_)
         | Core::Unit
         | Core::Param { .. }
         | Core::Poison(_) => false,
@@ -604,6 +605,7 @@ pub fn collect_used_ops(
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstFloat(_)
         | Core::Unit
         | Core::Param { .. }
         | Core::LocalRef { .. }
@@ -1571,6 +1573,12 @@ fn emit(
         // string handle (a byte-rope alloc) is a later increment.
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
+        )),
+        // A float VALUE has no machine slot yet (no f64 path / boundary rep) — a float constant that
+        // reaches emission (rather than folding away, e.g. through equality) declines. Float equality
+        // folds to a Bool in `lower`; float arithmetic + boundary crossing are later increments.
+        Core::ConstFloat(_) => Err(Reject::decline(
+            "a floating-point value has no machine representation yet (only float equality folds)",
         )),
         Core::Unit => {
             // Unit occupies no slot and pushes nothing.
