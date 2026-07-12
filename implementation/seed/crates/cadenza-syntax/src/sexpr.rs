@@ -300,7 +300,18 @@ impl<'a, 'b> Reader<'a, 'b> {
             }
             return node;
         }
-        self.b.atom_leaf(crate::literal::classify_word(tok))
+        // Classify the word. A NUMBER/BOOL is a non-Name leaf (interned by value); a NAME is interned
+        // by its `&str` slice via `leaf_name` — allocating an owned `String` only on a dedup MISS, not
+        // for every occurrence (`classify_word` would `to_string()` the name eagerly and discard it on
+        // a hit). `classify_word_nonname` returns `Some` only for the number/bool kinds, so a bare name
+        // never allocates on the common repeated-identifier path.
+        match crate::literal::classify_word_nonname(tok) {
+            Some(leaf) => self.b.atom_leaf(leaf),
+            None => {
+                let id = self.b.leaf_name(tok);
+                self.b.atom(id)
+            }
+        }
     }
 }
 

@@ -99,6 +99,13 @@ pub struct Builder {
     // never untrusted input, and `leaf` runs once per token during parse — SipHash's `hash_one` was
     // ~a quarter of front-end time. See `crate::fxhash`.
     leaf_index: crate::fxhash::FxHashMap<Leaf, LeafId>,
+    // A SEPARATE dedup index for NAME leaves, keyed by the name STRING. `Name` is by far the most
+    // common leaf (every identifier + construct head + qualified segment), and each occurrence arrives
+    // as a `&str` slice of the source. Keying by `String` lets `leaf_name` look it up with a `&str`
+    // (`String: Borrow<str>`) and allocate the owned `String` ONLY on a genuine cache miss — so a
+    // repeated name (the norm in real code) costs zero allocation, instead of the old path that built a
+    // `Leaf::Name(text.to_string())` for EVERY occurrence and discarded it on a dedup hit.
+    name_index: crate::fxhash::FxHashMap<String, LeafId>,
     structure: Vec<Struct>,
 }
 
@@ -107,14 +114,32 @@ impl Builder {
         Builder::default()
     }
 
-    /// Intern a leaf, returning its (possibly pre-existing) id.
+    /// Intern a leaf, returning its (possibly pre-existing) id. A `Name` leaf is deduped through the
+    /// by-string `name_index` (so an already-interned name reuses its id without touching the general
+    /// index); every other leaf kind uses the general `leaf_index`.
     pub fn leaf(&mut self, leaf: Leaf) -> LeafId {
+        if let Leaf::Name(name) = leaf {
+            return self.leaf_name(&name);
+        }
         if let Some(&id) = self.leaf_index.get(&leaf) {
             return id;
         }
         let id = LeafId(self.leaves.len() as u32);
         self.leaves.push(leaf.clone());
         self.leaf_index.insert(leaf, id);
+        id
+    }
+
+    /// Intern a NAME leaf given its string SLICE, returning its (possibly pre-existing) id. Allocates
+    /// an owned `String` ONLY on a cache miss — a repeated name (the common case) is a pure `&str`
+    /// lookup with no allocation. This is the hot interning path (every identifier occurrence).
+    pub fn leaf_name(&mut self, name: &str) -> LeafId {
+        if let Some(&id) = self.name_index.get(name) {
+            return id;
+        }
+        let id = LeafId(self.leaves.len() as u32);
+        self.leaves.push(Leaf::Name(name.to_string()));
+        self.name_index.insert(name.to_string(), id);
         id
     }
 
@@ -134,9 +159,11 @@ impl Builder {
         self.atom(id)
     }
 
-    /// Convenience: an atom occurrence of a `Name`.
-    pub fn name(&mut self, name: impl Into<String>) -> StructId {
-        self.atom_leaf(Leaf::Name(name.into()))
+    /// Convenience: an atom occurrence of a `Name` given its string SLICE. The hot path — interns via
+    /// `leaf_name` (no allocation on a dedup hit) and pushes the occurrence.
+    pub fn name(&mut self, name: &str) -> StructId {
+        let id = self.leaf_name(name);
+        self.atom(id)
     }
 
     fn push(&mut self, s: Struct) -> StructId {

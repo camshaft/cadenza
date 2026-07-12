@@ -21,18 +21,27 @@ use unicode_normalization::UnicodeNormalization;
 /// Keywords are NOT handled here — that is the parser's job (`token::keyword`); a word like `let`
 /// classifies as `Leaf::Name("let")` and only becomes a keyword in grammatical position.
 pub fn classify_word(text: &str) -> Leaf {
+    classify_word_nonname(text).unwrap_or_else(|| Leaf::Name(text.to_string()))
+}
+
+/// Classify a word into a NON-NAME leaf — `Bool` / `Int` / `Float` — or `None` if it is a plain
+/// identifier (a `Name`). Split out of [`classify_word`] so a caller that interns names by their
+/// `&str` slice (`ast::Builder::leaf_name`, the hot parse path) can decide "is this a number/bool?"
+/// WITHOUT allocating a `Leaf::Name(String)` it would discard on a dedup hit. `classify_word` layers
+/// the owning `Name` fallback back on for callers that want the full `Leaf`.
+pub fn classify_word_nonname(text: &str) -> Option<Leaf> {
     match text {
-        "true" => return Leaf::Bool(true),
-        "false" => return Leaf::Bool(false),
+        "true" => return Some(Leaf::Bool(true)),
+        "false" => return Some(Leaf::Bool(false)),
         _ => {}
     }
     if let Some((value, radix)) = parse_int(text) {
-        return Leaf::Int { value, radix };
+        return Some(Leaf::Int { value, radix });
     }
     if let Some(d) = parse_float(text) {
-        return Leaf::Float(d);
+        return Some(Leaf::Float(d));
     }
-    Leaf::Name(text.to_string())
+    None
 }
 
 /// Parse a decimal / `0x…` / `0b…` integer token into its exact value and the base its text used,
