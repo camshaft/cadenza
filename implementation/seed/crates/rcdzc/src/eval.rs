@@ -356,6 +356,36 @@ pub fn apply_lambda(
     head: StructId,
     args: &[StructId],
 ) -> Result<Option<StructId>, String> {
+    // MEMOIZE the reduction by `(head, args)`. β-reduction is a pure function of the lambda body and
+    // the argument occurrences (fixed node identities), so a given call site reduces to the same term
+    // every time. Without this, a nested call chain `(f (f (f … 0)))` is EXPONENTIAL: each reduction
+    // builds a FRESH body copy (new `StructId`s no downstream memo can hit), and both `infer` and
+    // `lower` reduce every call and recurse into the reduced term whose nested calls re-reduce. Cached,
+    // each distinct call node reduces once and the per-node memos (`type_of`/`core_of`) then hit — the
+    // chain is linear. (`Ok(None)`/`Err(msg)` are deterministic per head too, so they cache as well.)
+    let key = (head, args.to_vec());
+    if let Some(hit) = db.reduce_cache.get(&key) {
+        return match hit {
+            Some(reduced) => Ok(Some(*reduced)),
+            None => Ok(None),
+        };
+    }
+    let result = apply_lambda_uncached(db, head, args);
+    // Cache only a DEFINITE reduction outcome (a reduced node, or a non-lambda `None`). An `Err`
+    // (recursive / partial application) is left uncached — it is cheap to re-derive (a memoized
+    // `is_recursive` read / an arity compare) and never triggers the expensive body copy, so caching it
+    // buys nothing and keeps the cache values `Copy`-cheap `Option<StructId>`.
+    if let Ok(outcome) = &result {
+        db.reduce_cache.insert(key, *outcome);
+    }
+    result
+}
+
+fn apply_lambda_uncached(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+) -> Result<Option<StructId>, String> {
     let (params, body) = match lambda_of(db, head) {
         Some(lam) => lam,
         None => return Ok(None),

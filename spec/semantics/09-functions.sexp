@@ -275,6 +275,50 @@
   (input  (do (def (main) (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) (export main)))
   (output (: 65 Int64)))
 
+; --- A nested CALL chain compiles in roughly LINEAR time, never exponential ----------------------
+; The deeply-nested-CONSTANT case above declines cleanly at a pathological depth (the descent-depth
+; guard). A nested CALL chain `(f (f (f … 0)))` is a DIFFERENT cost: each level β-inlines the callee
+; body, and both `infer` and `lower` reduce every call, recursing into the reduced (fault + type) walk.
+; A generation that did not MEMOIZE the reduction and the fault walk re-analyzed each cached-but-shared
+; reduced term per enclosing level — EXPONENTIAL in the depth (×2 per level; far worse — 2^depth — when
+; the callee DUPLICATES its parameter, so the substituted term doubles each level). A ~20-deep chain
+; took seconds, ~50 never finished: a compiler HANG on a trivial, well-formed program. Memoizing the
+; β-reduction (a call site reduces once) and the fault collection (a node's faults are collected once)
+; makes the chain LINEAR, so it folds to its constant. These pin the folded value at a depth that would
+; have taken exponential time unmemoized; the pathology was the GROWTH RATE, so a linear-time compile is
+; the property. (A chain nested deeper than the inliner reduces is a resource-limit DECLINE, not a hang.)
+
+(case "a nested chain of function calls compiles in linear time and folds to a constant"
+  (doc    "`(f (f (f … (f 0))))` — a depth-18 chain of `(def (f n) (+ n 1))`. Each level inlines the
+           callee; the emitted program is a single constant (18). Unmemoized this took time EXPONENTIAL
+           in the depth (167ms@16, 652ms@18, 10s@22, never finishing by depth 50) — a hang on a trivial
+           program. With the reduction and the fault walk memoized it compiles in milliseconds and folds
+           to 18 (0, then +1 eighteen times). Pins that a nested call chain is compiled in roughly linear
+           time, never exponentially; the value triangulates the fold is correct, and the depth is chosen
+           to be far past where the unmemoized compile was already seconds.")
+  (input  (do
+            (def (f n) (+ n 1))
+            (def (main)
+              (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f 0)))))))))))))))))))
+            (export main)))
+  (call   main)
+  (output (: 18 Int64)))
+
+(case "a nested call chain whose callee duplicates its parameter folds without exponential blowup"
+  (doc    "The worse shape: `(def (g n) (+ n n))` DUPLICATES its parameter, so each inline DOUBLES the
+           substituted term — a depth-d chain is 2^d nodes if re-analyzed naively. Unmemoized, depth 15
+           already took ~17s and depth 18 never finished. `(g (g … (g 1)))` at depth 12 computes
+           1·2^12 = 4096. Pins that parameter DUPLICATION under nesting does not make the compile
+           exponential — the classic β-reduction size explosion a real compiler bounds by memoizing the
+           reduction and the per-node analyses. Folds to 4096.")
+  (input  (do
+            (def (g n) (+ n n))
+            (def (main)
+              (g (g (g (g (g (g (g (g (g (g (g (g 1)))))))))))))
+            (export main)))
+  (call   main)
+  (output (: 4096 Int64)))
+
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
 ; self-call sits in one branch of an inner `if` and a Bool literal in the other: `(if guard (recurse …)

@@ -5744,6 +5744,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_nested_call_chain_compiles_without_exponential_blowup() {
+        // A nested call chain `(f (f (f … 0)))` β-inlines each level; a generation that did not MEMOIZE
+        // the reduction and the fault walk re-analyzed each cached-but-shared reduced term per enclosing
+        // level — EXPONENTIAL (×2/level; 2^depth when the callee duplicates its parameter). At depth 25 a
+        // single-use chain took MINUTES unmemoized; this test would then never finish. Memoized, it folds
+        // in milliseconds. The value (25 increments of 0 = 25) triangulates the fold is correct; the
+        // POINT is that it TERMINATES quickly — a regression here reappears as a hang, not a wrong value.
+        let mut body = "0".to_string();
+        for _ in 0..25 {
+            body = format!("(f {body})");
+        }
+        let src = format!("(module m (def (f n) (+ n 1)) (def (main) {body}) (export main))");
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            25,
+            "a depth-25 single-use call chain must fold to 25 (and compile in linear, not exponential, time)"
+        );
+        // The worse shape: a callee that DUPLICATES its parameter doubles the substituted term per level
+        // (2^depth nodes). At depth 12 the value is 1·2^12 = 4096; unmemoized this was already ~0.6s and
+        // depth 18 never finished. Memoized it is instant.
+        let mut body = "1".to_string();
+        for _ in 0..12 {
+            body = format!("(g {body})");
+        }
+        let src = format!("(module m (def (g n) (+ n n)) (def (main) {body}) (export main))");
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            4096,
+            "a depth-12 parameter-duplicating call chain must fold to 4096 without exponential blowup"
+        );
+    }
+
+    #[test]
     fn mutually_recursive_functions_decline() {
         // `f` calls `g`, `g` calls `f` — neither reaches a normal form. The transitive call-graph walk
         // finds the cycle f→g→f, so applying `f` declines.

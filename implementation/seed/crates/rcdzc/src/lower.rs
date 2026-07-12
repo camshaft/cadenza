@@ -296,9 +296,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         };
                     }
                     None => {
-                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction depth limit hit → decline (recursive)");
+                        // The REDUCTION-depth limit was hit — not (necessarily) a recursive callee, just
+                        // a call chain nested deeper than the inliner reduces (`REDUCE_DEPTH_LIMIT`). A
+                        // finite deep chain is a resource-limit DECLINE, not a miscompile; name it
+                        // accurately (the old "recursive function" wording misdescribed a plain deep
+                        // nest, which since inlining became linear is now reachable on a well-formed
+                        // program). This does NOT route through `lower_recursive_call_or_decline` (that is
+                        // only for an `is_recursive`-origin decline), so the wording is free to be exact.
+                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction depth limit hit → decline (resource limit)");
                         return Core::Poison(Reject::decline(
-                            "a recursive function needs runtime specialization (not yet built)",
+                            "a call chain nested deeper than the inliner reduces (a resource limit was reached)",
                         ));
                     }
                 }

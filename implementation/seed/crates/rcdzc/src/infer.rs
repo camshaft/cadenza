@@ -848,6 +848,11 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             if let Ok(Some(reduced)) = crate::eval::apply_lambda(g, head, args) {
                 collect(g, reduced, out);
             }
+        } else {
+            // The reduction depth limit was hit — the reduced body was NOT collected here, so this
+            // application's fault set is INCOMPLETE. Mark the walk limited so it is not memoized (a
+            // shallower entry would reduce and collect the body). See `collect_cache`.
+            db.collect_limited = true;
         }
         return;
     }
@@ -901,8 +906,10 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // children, so pathologically deep input would overflow the native stack and ABORT the process.
     // Past the limit, report the resource-limit decline and stop descending — a compiler declines on
     // input it cannot handle, never crashes (`self-hosting-and-bootstrap.md`). See `DESCENT_DEPTH_LIMIT`.
+    // Mark the walk LIMITED so this (partial) result is not memoized (see `collect_cache`).
     if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
         trace!(target: "rcdzc::infer", node = id.0, "collect depth limit hit → decline (resource limit)");
+        db.collect_limited = true;
         out.push(
             Reject::decline(
                 "expression nests too deeply to compile (a recursion/resource limit was reached)",
@@ -911,13 +918,32 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         );
         return;
     }
+    // MEMO: a node's faults are a pure function of its structure + its parts' (memoized) types, so a node
+    // collected once is not re-walked. This is what makes a nested call chain's fault walk LINEAR: without
+    // it, `check_application` step 2 re-descends each Apply's cached-but-shared reduced body, whose inner
+    // call re-descends its own reduced body — an exponential re-walk. Replaying the cached faults (each
+    // already carrying its stamped origin) is exact. Only a subtree collected WITHOUT hitting a limit is
+    // cached (a limit-clipped partial walk is not the node's true fault set — tracked by `collect_limited`).
+    if let Some(cached) = db.collect_cache.get(&id) {
+        out.extend(cached.iter().cloned());
+        return;
+    }
     db.descent_depth += 1;
-    let before = out.len();
-    collect_node(db, id, out);
-    for reject in &mut out[before..] {
+    let outer_limited = std::mem::replace(&mut db.collect_limited, false);
+    let mut sub: Vec<Reject> = Vec::new();
+    collect_node(db, id, &mut sub);
+    for reject in &mut sub {
         reject.set_origin_if_absent(id);
     }
+    // Cache the node's faults iff its walk was complete (no limit tripped inside it). Propagate the
+    // limited flag to the enclosing frame (OR it in) so an ancestor is not cached over a clipped child.
+    let this_limited = db.collect_limited;
+    if !this_limited {
+        db.collect_cache.insert(id, sub.clone());
+    }
+    db.collect_limited = outer_limited || this_limited;
     db.descent_depth -= 1;
+    out.extend(sub);
 }
 
 fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {

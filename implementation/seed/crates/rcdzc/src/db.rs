@@ -290,6 +290,13 @@ pub struct Db {
     /// [`DESCENT_DEPTH_LIMIT`].
     pub(crate) descent_depth: u32,
 
+    /// Set true when a `collect` subtree hit a depth/reduction LIMIT (the descent-depth backstop, or a
+    /// reduction that could not proceed because `enter_reduction` was exhausted). A limit-clipped walk is
+    /// PARTIAL — it declined early rather than seeing the node's true faults — so its result must NOT be
+    /// cached in [`collect_cache`] (at a shallower entry depth the same node would collect fully). The
+    /// memo wrapper reads-and-clears this around each subtree: if it was set, the result is not cached.
+    pub(crate) collect_limited: bool,
+
     /// Memo of built values the evaluator produced by applying a native constructor — keyed by the
     /// reduction `(prim, arg-values)`, mapping to the built node's occurrence. Without it, a
     /// type-constructor application like `(Int 64)` would append a FRESH module on every demand
@@ -337,6 +344,35 @@ pub struct Db {
     /// per member — cache each member's own view). Caching collapses the per-def recompute; a def not in
     /// any loop caches an empty vec. Keyed by def index (a `usize` into `defs`).
     pub(crate) mutual_loop_cache: crate::fxhash::FxHashMap<usize, Vec<usize>>,
+
+    /// Memo of a lambda APPLICATION reduced by β-reduction (`eval::apply_lambda`), keyed by the call's
+    /// `(head-occurrence, argument-occurrences)`. β-reduction is a PURE function of the lambda body and
+    /// the argument occurrences (both fixed node identities), so a given call site reduces to the same
+    /// term every time — cache it. WITHOUT this memo a nested call chain `(f (f (f … 0)))` is
+    /// EXPONENTIAL: each `apply_lambda` builds a FRESH copy of the body (new `StructId`s that no
+    /// `type_of`/`core_of`/`resolved_of` memo can hit), and both `infer` AND `lower` reduce every call,
+    /// each recursing into the reduced term whose nested calls re-reduce — O(2^depth) when the body
+    /// duplicates its parameter, O(depth²) even for a single-use param. Memoized, each distinct call
+    /// node reduces ONCE and every later demand returns the same reduced occurrence, so the downstream
+    /// per-node memos hit and the whole chain is linear. `None` caches "not β-reducible here" (a
+    /// non-lambda head / recursive / partial application — the caller falls back to its other path).
+    /// Keyed by `(head, args.to_vec())` — the same identity `build_cache` uses for a constructor
+    /// application, here for a function application.
+    pub(crate) reduce_cache:
+        crate::fxhash::FxHashMap<(StructId, Vec<StructId>), Option<StructId>>,
+
+    /// Memo of the FAULTS a subtree collects (`infer::collect`) — the type-agreement rejections reachable
+    /// from a node, keyed by its occurrence. A node's faults are a pure function of its resolved
+    /// structure and the (memoized) types of its parts, so a node collected once need not be re-walked.
+    /// This is the fault-collection sibling of [`reduce_cache`]: a nested call chain's fault walk
+    /// descends each Apply's REDUCED body (`check_application` step 2), and that reduced body contains
+    /// the inner call, whose collection re-descends its own reduced body — an EXPONENTIAL re-walk of the
+    /// shared reduced terms even though the reduction itself is now cached. Memoized, each reduced node's
+    /// faults are collected ONCE and every later demand copies the cached vec, so the fault walk over a
+    /// call chain is linear. The stored faults already carry their stamped origins (`collect` stamps
+    /// before returning), so replaying them is exact. Only a result collected WITHOUT hitting a
+    /// depth/reduction limit is cached (a limit-clipped partial walk is not a node's true fault set).
+    pub(crate) collect_cache: crate::fxhash::FxHashMap<StructId, Vec<crate::diag::Reject>>,
 
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
@@ -497,11 +533,14 @@ impl Db {
             user_node_count,
             reduce_depth: 0,
             descent_depth: 0,
+            collect_limited: false,
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
+            reduce_cache: crate::fxhash::FxHashMap::default(),
+            collect_cache: crate::fxhash::FxHashMap::default(),
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),

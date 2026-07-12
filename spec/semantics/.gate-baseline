@@ -141,6 +141,8 @@ pass	a negative shift count traps rather than masking
 pass	a negative unsigned integer width is rejected
 pass	a negative width is not honored as a narrow type
 pass	a nested application of a let-bound lambda resolves each argument at its call site
+pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
+pass	a nested chain of function calls compiles in linear time and folds to a constant
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
