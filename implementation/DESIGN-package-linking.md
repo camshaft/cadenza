@@ -398,11 +398,18 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
    tests — a 2-file cycle, a 3-file cycle, a colliding import (all reject), and an acyclic diamond
    (`util` imported twice, no back-edge — must NOT false-positive). ⚠ Uses the existing `Code::Malformed`
    (CDZ0201); a dedicated cyclic-import code can be minted when this folds into the spec taxonomy.
-5. **Diagnostics link-map (§6):** surface the `FileSpan` table so a cross-file error maps to the right
-   file:line. Gate: an unbound name in file B reports against B's span, not a global offset.
+5. **Diagnostics link-map (§6):** ✅ **DONE.** A linked package emits a `link-map` OUTPUT artifact
+   (`kind == "link-map"`, `link::encode_link_map`) — one line per file, `<path>\t<base>\t<count>`. It
+   is SEEDED into the artifact base so it rides EVERY output path (the fault path, the query-only
+   return, and the clean emit), letting a consumer demux a cross-file diagnostic's global node id →
+   `(file, local id)`. Chose the artifact (not a `CompileOutput` field) per the settled §6 decision.
+   Gate: 2 unit tests — a package with a cross-file unbound name carries a `link-map` whose ranges
+   demux the error node to the right file; a single-file compile emits NO `link-map`.
 6. **Bootstrap payoff:** re-author `implementation/compiler/cdzc/*.cdz` to `import` each other instead
    of relying on the Makefile concat; delete the Makefile's concat role. (This is the *why* — do it
-   once steps 2–5 are green.)
+   once steps 2–5 are green.) ⚠ Still gated on the CLI being able to DELIVER a package (an `entry`
+   artifact + multiple `ast` inputs) end-to-end — see the CLI note under step 1; the `compile()` API
+   supports it today, the `.cdz`→`ast` build wiring is what remains.
 
 ## 9. What explicitly does NOT change (the payoff of intra-package scope)
 

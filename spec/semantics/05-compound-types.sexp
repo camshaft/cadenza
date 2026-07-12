@@ -13,6 +13,29 @@
   (input  (let ((p (record (x 1) (y 2)))) p.x))
   (output (: 1 Int64)))
 
+(case "a record scrutinee is bound whole by a match binder"
+  (doc    "A `match` on a RECORD scrutinee with a bare-binder arm binds the WHOLE record for that arm's
+           body — a record is not pattern-DESTRUCTURED field-by-field (core-semantics.md #Patterns Compose
+           lists tuple + constructor patterns, not record patterns; a record is read by `(. r field)`
+           projection), so its only match patterns are a whole-value binder or a wildcard. `(match (record
+           (x 3) (y 4)) (r (+ (. r x) (. r y))))` binds `r` to the record and projects its fields → 7.
+           Pins that a record scrutinee matches (binding the whole value) like a tuple/sum scrutinee does,
+           the degenerate single-binder case.")
+  (input  (match (record (x 3) (y 4))
+            (r (+ (. r x) (. r y)))))
+  (output (: 7 Int64)))
+
+(case "a record field holding a sum is projected then matched"
+  (doc    "The record-carrying-a-sum idiom a self-hosted compiler's node records take: a record whose
+           field is an `Option`, projected out with `(. r tag)` and then matched. `f (Some 7)` builds
+           `(record (tag (Some 7)))`, projects `tag` = `(Some 7)`, and the inner match binds `x` = 7. Pins
+           that a sum stored in a record field is recovered by projection and matched exactly as a bare
+           sum is — the composition of member access with sum matching.")
+  (input  (do
+            (def (f o) (let ((r (record (tag o)))) (match (. r tag) ((Some x) x) ((None _) -1))))
+            (def (main) (f (Some 7))) (export main)))
+  (output (: 7 Int64)))
+
 ; --- A record's field names are a SET: each name appears at most once --------------------
 ; core-semantics.md #A Record Has A Fixed Set Of Named Fields: "A record MUST associate a fixed SET
 ; of statically-known field names each with a value." A set has each name once, so a record literal

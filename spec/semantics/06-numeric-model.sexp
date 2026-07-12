@@ -786,6 +786,16 @@
   (input  (Int64.wrapping-mul Int64.max 2))
   (output (: -2 Int64)))
 
+(case "wrapping multiplication of the minimum by minus one wraps to the minimum"
+  (doc    "`(Int64.wrapping-mul Int64.min -1)` = Int64.min: negating Int64.min has no representable positive
+           result (|MIN| = MAX+1), so `*` and `checked-mul` both report overflow — `*` traps, `checked-mul`
+           yields None. Wrapping multiplication instead returns MIN·−1 ≡ MIN (mod 2^64), the two's-complement
+           identity −MIN = MIN. Pins the asymmetric-range boundary of the signed multiply — the exact edge
+           where a wrapping op that special-cased `b = -1` as plain negation (a common shortcut) would
+           produce a trap or a wrong value instead of the wrapped MIN.")
+  (input  (Int64.wrapping-mul Int64.min -1))
+  (output (: -9223372036854775808 Int64)))
+
 (case "wrapping arithmetic over runtime operands wraps at run time"
   (doc    "The runtime companion: `(w a b)` = `(Int64.wrapping-add a b)` over parameters wraps on the
            i64.add path (wasm's add wraps; no overflow guard), so `(w Int64.max 1)` = Int64.min — the
