@@ -4438,7 +4438,12 @@ fn emit_div_rem(
     )?;
     out.push(m.div()); // traps on ÷0 natively; the machine op does not overflow at a narrow width
     out.push(Lir::LocalSet(sr));
-    emit_range_check(m, sr, ReachableBounds::Both, out);
+    // A narrow signed quotient can overflow the type ONLY upward: the sole out-of-type case is
+    // `MIN_N / -1 = 2^(N-1) = MAX_N + 1` (above the max). It can never fall below `min`: `|q| = |a|/|b| <=
+    // |a| <= 2^(N-1)`, so the most-negative reachable quotient is `-2^(N-1) = MIN_N` itself (in range,
+    // e.g. `MIN_N / 1 = MIN_N`). So the `r < min` half of the range-check is provably dead — only the
+    // upper bound is reachable (`UpperOnly`), dropping 4 instructions (get/const/lt_s/if).
+    emit_range_check(m, sr, ReachableBounds::UpperOnly, out);
     out.push(Lir::LocalGet(sr));
     Ok(())
 }

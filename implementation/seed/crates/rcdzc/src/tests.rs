@@ -2829,6 +2829,87 @@ mod runtime_ops {
         ));
     }
 
+    /// A narrow signed division's range-check needs ONLY its upper bound: a signed quotient can overflow
+    /// the type solely UPWARD (`MIN/-1 = 2^(N-1) > max`). It can never fall below `min` — `|q| = |a|/|b|
+    /// <= |a| <= 2^(N-1)`, so the most-negative reachable quotient is `-2^(N-1) = MIN` itself (in range,
+    /// `MIN / 1 = MIN`). So the `r < min` half is dead and dropped. This test pins BOTH that the upper
+    /// overflow still traps AND that the MIN quotient (the edge the dropped lower check would have
+    /// guarded) does NOT spuriously trap.
+    #[test]
+    fn a_narrow_signed_division_range_check_is_upper_bound_only() {
+        // MIN / 1 = MIN — the exact lower edge. It must compute (not trap): the dropped `r < min` check
+        // was provably unreachable, so removing it must not have removed a real guard.
+        assert_eq!(
+            run::<i8>(
+                "(: a Int8) (: b Int8)",
+                "(/ a b)",
+                &[Val::S8(-128), Val::S8(1)]
+            ),
+            -128
+        );
+        assert_eq!(
+            run::<i16>(
+                "(: a Int16) (: b Int16)",
+                "(/ a b)",
+                &[Val::S16(-32768), Val::S16(1)]
+            ),
+            -32768
+        );
+        // A large-magnitude negative quotient (still >= MIN) computes.
+        assert_eq!(
+            run::<i8>(
+                "(: a Int8) (: b Int8)",
+                "(/ a b)",
+                &[Val::S8(-128), Val::S8(2)]
+            ),
+            -64
+        );
+        // The one real overflow (MIN / -1 → +2^(N-1), above max) still traps — the upper bound stands.
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(/ a b)",
+            &[Val::S8(-128), Val::S8(-1)]
+        ));
+        assert!(traps(
+            "(: a Int16) (: b Int16)",
+            "(/ a b)",
+            &[Val::S16(-32768), Val::S16(-1)]
+        ));
+        // The Lir has ONE range compare (the upper `gt_s`), not two — the dead lower `lt_s` is gone.
+        let code = {
+            use crate::backend::wasm::lir::Lir;
+            use crate::db::Db;
+            let ast = crate::testkit::parse(
+                "(module m (def (f (: a Int8) (: b Int8)) (/ a b)) (def (main) 0) (export main))",
+            );
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        use crate::backend::wasm::lir::Lir;
+        assert!(
+            code.contains(&Lir::I32GtS) && !code.contains(&Lir::I32LtS),
+            "narrow signed div keeps only the upper (gt_s) range bound, got: {code:?}"
+        );
+    }
+
     #[test]
     fn runtime_narrow_left_shift_range_checks() {
         // UInt8 shift: 1<<7=128 fits, 1<<8 traps (count ≥ N=8). And 3<<7=384 overflows UInt8 (the count
