@@ -9,6 +9,7 @@
 0	map_lookup x1000
 2000	map_lookup_tuplekey x1000
 0	map_remove x1000
+6705	map_remove_shared x1000
 362	set_difference x1000
 774	set_difference_unique_small_b x1000
 356	set_intersection x1000

@@ -3308,47 +3308,57 @@ fn collapse_candidate(node: Handle, stride: usize) -> Option<Entry> {
 /// is the unchanged input. Bounded recursion (≤ `CHAMP_LEVELS`). Always path-copies.
 #[allow(dead_code)]
 fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: usize) -> (Handle, bool) {
-    let (datamap, nodemap, size, handles) = with_node(
+    // Read only the HEADER + arity upfront — NOT a clone of `handles`. The old code cloned the whole
+    // handle vector here even on the common ABSENT-key early-returns (`(node, false)`) and on the
+    // fresh-shorter-result branches (found-entry drop, collapse) that only READ it by index — a wasted
+    // Vec alloc + O(arity) copy on every path-copied node. Branches that reuse a full-length copy as the
+    // result (DESCEND non-collapse) clone at their own branch; the rest borrow-and-build / return early.
+    let (datamap, nodemap, size, arity) = with_node(
         node,
-        (0u32, 0u32, 0u32, Vec::<Handle>::new()),
+        (0u32, 0u32, 0u32, 0usize),
         |n| {
             (
                 champ_datamap(&n.raw),
                 champ_nodemap(&n.raw),
                 champ_size(&n.raw),
-                n.handles.clone(),
+                n.handles.len(),
             )
         },
     );
 
     // Empty node or collision node.
     if datamap == 0 && nodemap == 0 {
-        if handles.is_empty() {
+        if arity == 0 {
             return (node, false); // empty — absent
         }
-        // Collision node: linear scan of entries.
-        let mut found = None;
-        let mut idx = 0;
-        while idx < handles.len() {
-            if champ_eq(handles[idx], key) {
-                found = Some(idx);
-                break;
+        // Collision node: linear scan of entries (BORROW — no upfront clone; a miss returns unchanged).
+        let found = with_node(node, None, |n| {
+            let mut idx = 0;
+            while idx < n.handles.len() {
+                if champ_eq(n.handles[idx], key) {
+                    return Some(idx);
+                }
+                idx += stride;
             }
-            idx += stride;
-        }
+            None
+        });
         let j = match found {
             Some(j) => j,
             None => return (node, false), // absent — unchanged
         };
-        let entries_after = (handles.len() / stride - 1) as u32;
-        let mut new_handles = Vec::with_capacity(handles.len() - stride);
-        for (i2, &h) in handles.iter().enumerate() {
-            if i2 >= j && i2 < j + stride {
-                continue; // removed entry columns: NOT dup'd, freed by op_drop(node) below
+        let entries_after = (arity / stride - 1) as u32;
+        // Fresh shorter result — build directly from a borrow of the node's handles.
+        let new_handles = with_node(node, Vec::new(), |n| {
+            let mut nh = Vec::with_capacity(n.handles.len() - stride);
+            for (i2, &h) in n.handles.iter().enumerate() {
+                if i2 >= j && i2 < j + stride {
+                    continue; // removed entry columns: NOT dup'd, freed by op_drop(node) below
+                }
+                op_dup(h);
+                nh.push(h);
             }
-            op_dup(h);
-            new_handles.push(h);
-        }
+            nh
+        });
         let new = alloc_raw(new_handles, champ_header(0, 0, entries_after));
         op_drop(node);
         return (new, true);
@@ -3363,26 +3373,30 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
     if datamap & bit != 0 {
         // Inline entry at this slot: present only if the stored key equals `key`.
         let eidx = entry_index_for_slot(datamap, i) as usize;
-        if !champ_eq(handles[stride * eidx], key) {
+        if !champ_eq(champ_handle_at(node, stride * eidx), key) {
             return (node, false); // different key occupies the slot — absent
         }
         let new_datamap = datamap & !bit;
-        let mut new_handles = Vec::with_capacity(handles.len() - stride);
-        for e in 0..dcount {
-            if e == eidx {
-                continue; // removed entry columns: not dup'd, freed by op_drop(node)
+        // Fresh shorter result (one entry dropped) — build directly from a borrow of the node's handles.
+        let new_handles = with_node(node, Vec::new(), |n| {
+            let mut nh = Vec::with_capacity(n.handles.len() - stride);
+            for e in 0..dcount {
+                if e == eidx {
+                    continue; // removed entry columns: not dup'd, freed by op_drop(node)
+                }
+                for t in 0..stride {
+                    let h = n.handles[stride * e + t];
+                    op_dup(h);
+                    nh.push(h);
+                }
             }
-            for t in 0..stride {
-                let h = handles[stride * e + t];
-                op_dup(h);
-                new_handles.push(h);
+            for s in 0..scount {
+                let c = n.handles[subbase + s];
+                op_dup(c);
+                nh.push(c);
             }
-        }
-        for s in 0..scount {
-            let c = handles[subbase + s];
-            op_dup(c);
-            new_handles.push(c);
-        }
+            nh
+        });
         let new = alloc_raw(new_handles, champ_header(new_datamap, nodemap, size - 1));
         op_drop(node);
         return (new, true);
@@ -3391,7 +3405,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
     if nodemap & bit != 0 {
         // Descend into the subnode.
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
-        let child = handles[subbase + sidx];
+        let child = champ_handle_at(node, subbase + sidx);
         op_dup(child);
         let (new_child, removed) = champ_remove_node(child, key, hash, level + 1, stride);
         if !removed {
@@ -3399,7 +3413,8 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
             return (node, false);
         }
         if let Some(centry) = collapse_candidate(new_child, stride) {
-            // COLLAPSE: inline the child's single entry into this node at slot i.
+            // COLLAPSE: inline the child's single entry into this node at slot i. Fresh reshaped result
+            // (one subnode → one entry) — build directly from a borrow of the node's handles.
             for &h in centry.cols() {
                 op_dup(h);
             }
@@ -3407,37 +3422,43 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
             let new_datamap = datamap | bit;
             let new_nodemap = nodemap & !bit;
             let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-            let mut new_handles = Vec::with_capacity(handles.len());
-            for e in 0..dcount {
-                for t in 0..stride {
-                    let h = handles[stride * e + t];
-                    op_dup(h);
-                    new_handles.push(h);
+            let mut new_handles = with_node(node, Vec::new(), |n| {
+                let mut nh = Vec::with_capacity(n.handles.len());
+                for e in 0..dcount {
+                    for t in 0..stride {
+                        let h = n.handles[stride * e + t];
+                        op_dup(h);
+                        nh.push(h);
+                    }
                 }
-            }
+                nh
+            });
             for (off, &h) in centry.cols().iter().enumerate() {
                 new_handles.insert(stride * new_eidx + off, h); // entry cols at the entry position
             }
-            for s in 0..scount {
-                if s == sidx {
-                    continue; // this subnode was collapsed away
+            with_node(node, (), |n| {
+                for s in 0..scount {
+                    if s == sidx {
+                        continue; // this subnode was collapsed away
+                    }
+                    let c = n.handles[subbase + s];
+                    op_dup(c);
+                    new_handles.push(c);
                 }
-                let c = handles[subbase + s];
-                op_dup(c);
-                new_handles.push(c);
-            }
+            });
             let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size - 1));
             op_drop(node);
             return (new, true);
         }
-        // Subnode still holds ≥2 entries: keep it, just swap in the rebuilt child.
-        let mut new_handles = Vec::with_capacity(handles.len());
-        for (idx, &h) in handles.iter().enumerate() {
+        // Subnode still holds ≥2 entries: keep it, just swap in the rebuilt child. Arity unchanged, so
+        // CLONE the handle vector ONCE and use it AS the result — mutate the one child slot, dup the
+        // rest — rather than reading one vector and building a second.
+        let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
+        for (idx, slot) in new_handles.iter_mut().enumerate() {
             if idx == subbase + sidx {
-                new_handles.push(new_child);
+                *slot = new_child; // owned; old child ref was consumed by the recursion
             } else {
-                op_dup(h);
-                new_handles.push(h);
+                op_dup(*slot); // kept handle: new node needs its own reference
             }
         }
         let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size - 1));
@@ -4407,6 +4428,31 @@ mod tests {
         println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
         assert!(pinsert_new <= 6700, "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)");
         op_drop(mkeep2);
+
+        // (C2) PERSISTENT remove from a SHARED map — keep the base (rc>1) across each remove, so every
+        // remove path-copies the touched spine via `champ_remove_node` instead of refitting in place.
+        // Had the SAME double-alloc smell as the insert copy path: an upfront `handles.clone()` (wasted
+        // on the absent-key early-returns AND the fresh-shorter-result branches, which only read by
+        // index) PLUS a separate `new_handles` per node. Now: read header+arity only upfront; the
+        // arity-preserving DESCEND-no-collapse branch clones ONCE and mutates that copy; the shorter/
+        // reshaped branches (found-entry drop, collapse) borrow-and-build. 9277→6705 (−28%). Guards the
+        // remove copy path stays single-Vec-per-node.
+        let mut mkeep3 = op_map_empty();
+        for k in 0..N {
+            mkeep3 = op_map_insert(mkeep3, op_box_int(k), op_box_int(k));
+        }
+        let premove = measure(&mut || {
+            for k in 0..N {
+                op_dup(mkeep3); // keep the base shared → force the path-copy branch
+                let p = op_box_int(k);
+                let m2 = op_map_remove(mkeep3, p);
+                op_drop(p);
+                op_drop(m2);
+            }
+        });
+        println!("ALLOC map_remove_shared x{N}: {premove}");
+        assert!(premove <= 7000, "shared/persistent map_remove x{N} allocs {premove} exceeds ceiling 7000 (path-copy: 1 Vec + 1 node Box per copied spine node; was 9277 with a wasted upfront handles.clone())");
+        op_drop(mkeep3);
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
