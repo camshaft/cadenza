@@ -101,8 +101,138 @@ struct Node {
     handles: Vec<Handle>,
     /// Packed raw payload: a scalar's little-endian bits, a sum's little-endian discriminant, a
     /// byte buffer, or a string's UTF-8 bytes. Empty for pure-compound nodes (array/map). Read back
-    /// by reinterpretation — the compiler's static type says how to read it.
-    raw: Vec<u8>,
+    /// by reinterpretation — the compiler's static type says how to read it. Stored as `Raw`, which
+    /// inlines the common ≤`INLINE_RAW_CAP`-byte payload (scalars, sum discs, CHAMP headers, vec
+    /// headers — the overwhelming majority) with NO heap Vec, spilling to the heap only for longer
+    /// bytes/strings. This is storage-transparent: `Raw` derefs to `&[u8]`, so the tagless byte-hash
+    /// (`champ_hash`/`champ_eq`/`champ_key_cmp`) and every reader see the identical bytes regardless.
+    raw: Raw,
+}
+
+/// The inline capacity of a `Raw`'s payload. Sized to `CHAMP_HEADER_SIZE` (12) — the largest raw a hot
+/// node carries (a CHAMP node's `[datamap][nodemap][size]`); a scalar is ≤8, a sum disc 4, a vec
+/// header 8, so all of those inline too. Bytes/strings longer than this spill to the heap.
+const INLINE_RAW_CAP: usize = 12;
+
+/// A node's raw payload: inline for the common ≤`INLINE_RAW_CAP`-byte case (no heap allocation),
+/// heap-backed for longer bytes/strings. Reads go through `Deref<Target = [u8]>` so it is a drop-in
+/// for `&[u8]` everywhere the old `Vec<u8>` was borrowed — the byte-hash, comparisons, and every
+/// `read_*`/`champ_*` accessor are storage-transparent. Writes use the explicit methods below, which
+/// mirror the `Vec` surface the runtime used (`clear`/`extend_from_slice`/`resize` + in-place patches
+/// via `as_mut_slice`), transparently promoting inline→heap if a write would exceed the inline cap.
+enum Raw {
+    Inline { len: u8, buf: [u8; INLINE_RAW_CAP] },
+    Heap(Vec<u8>),
+}
+
+impl Raw {
+    /// Build an INLINE `Raw` directly from `bytes` (≤`INLINE_RAW_CAP`) — no heap Vec. For the small
+    /// scalar/disc/header constructors that would otherwise allocate a transient `Vec` just for `alloc`
+    /// to copy inline and drop. Caller guarantees `bytes.len() <= INLINE_RAW_CAP` (scalars are ≤8, a
+    /// sum disc 4, a header 12); a longer slice would truncate, so it's only used where that holds.
+    fn inline(bytes: &[u8]) -> Raw {
+        let mut buf = [0u8; INLINE_RAW_CAP];
+        buf[..bytes.len()].copy_from_slice(bytes);
+        Raw::Inline { len: bytes.len() as u8, buf }
+    }
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Raw::Inline { len, buf } => &buf[..*len as usize],
+            Raw::Heap(v) => v,
+        }
+    }
+    /// Empty the payload. Mirrors `Vec::clear` — a HEAP buffer is emptied but KEEPS its capacity (so a
+    /// clear-then-refill, e.g. the per-step cursor `raw` rebuild in `champ_become_cursor`, reuses the
+    /// allocation instead of reallocating every time); an inline buffer just resets its length. (We do
+    /// NOT re-inline a heap buffer on clear: a node that once spilled is refilled to a similar size, so
+    /// keeping the heap capacity is the right call — re-inlining would reallocate on the next refill.)
+    fn clear(&mut self) {
+        match self {
+            Raw::Inline { len, .. } => *len = 0,
+            Raw::Heap(v) => v.clear(),
+        }
+    }
+    /// Append `bytes`, promoting inline→heap if the total would exceed the inline cap. Mirrors
+    /// `Vec::extend_from_slice`.
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        match self {
+            Raw::Inline { len, buf } => {
+                let cur = *len as usize;
+                if cur + bytes.len() <= INLINE_RAW_CAP {
+                    buf[cur..cur + bytes.len()].copy_from_slice(bytes);
+                    *len = (cur + bytes.len()) as u8;
+                } else {
+                    // Spill: materialize the current inline bytes + the new ones into a heap Vec.
+                    let mut v = Vec::with_capacity(cur + bytes.len());
+                    v.extend_from_slice(&buf[..cur]);
+                    v.extend_from_slice(bytes);
+                    *self = Raw::Heap(v);
+                }
+            }
+            Raw::Heap(v) => v.extend_from_slice(bytes),
+        }
+    }
+    /// Resize to `new_len`, filling new bytes with `fill` (only ever grows a short/absent header to
+    /// `CHAMP_HEADER_SIZE` in practice). Mirrors `Vec::resize`.
+    fn resize(&mut self, new_len: usize, fill: u8) {
+        if new_len <= INLINE_RAW_CAP {
+            // Fits inline: rebuild an inline buffer of `new_len` from the current bytes (truncate or
+            // pad with `fill`), releasing any heap spill.
+            let cur = self.as_slice();
+            let keep = cur.len().min(new_len);
+            let mut buf = [fill; INLINE_RAW_CAP];
+            buf[..keep].copy_from_slice(&cur[..keep]);
+            *self = Raw::Inline { len: new_len as u8, buf };
+        } else {
+            let mut v = self.as_slice().to_vec();
+            v.resize(new_len, fill);
+            *self = Raw::Heap(v);
+        }
+    }
+    /// A mutable slice of the payload, for the in-place `raw[a..b].copy_from_slice(...)` header patches.
+    /// The length is unchanged (the patches only overwrite existing bytes), so no inline↔heap flip.
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        match self {
+            Raw::Inline { len, buf } => &mut buf[..*len as usize],
+            Raw::Heap(v) => v,
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Raw::Inline { len, .. } => *len as usize,
+            Raw::Heap(v) => v.len(),
+        }
+    }
+}
+
+impl From<Vec<u8>> for Raw {
+    /// Build a `Raw` from a freshly-constructed byte vector (the `alloc` boundary): inline it when it
+    /// fits the cap (the common case — the Vec is then dropped, unallocated-away), else keep the heap
+    /// buffer verbatim (no copy).
+    fn from(v: Vec<u8>) -> Raw {
+        if v.len() <= INLINE_RAW_CAP {
+            let mut buf = [0u8; INLINE_RAW_CAP];
+            buf[..v.len()].copy_from_slice(&v);
+            Raw::Inline { len: v.len() as u8, buf }
+        } else {
+            Raw::Heap(v)
+        }
+    }
+}
+
+impl Clone for Raw {
+    fn clone(&self) -> Raw {
+        // `.raw.clone()` sites want an owned copy of the bytes — re-derive via `From` so a small heap
+        // buffer clones back to inline (and a large one stays heap). Keeps clones inline when possible.
+        Raw::from(self.as_slice().to_vec())
+    }
+}
+
+impl core::ops::Deref for Raw {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
 }
 
 /// The internal handle: the address of a `Node`. The core is written entirely in terms of this, so
@@ -232,7 +362,7 @@ fn node_raw_arity(h: Handle) -> (Vec<u8>, usize) {
     if is_immediate(h) {
         (imm_canonical_raw(h), 0)
     } else {
-        with_node(h, (Vec::new(), 0usize), |n| (n.raw.clone(), n.handles.len()))
+        with_node(h, (Vec::new(), 0usize), |n| (n.raw.to_vec(), n.handles.len()))
     }
 }
 
@@ -296,13 +426,19 @@ fn live_object_count() -> u32 {
 /// allocator (talc on wasm) — the core never names it, so a size-classed free-list could be swapped
 /// in here alone.
 fn alloc(handles: Vec<Handle>, raw: Vec<u8>) -> Handle {
+    // Convert the byte vector to a `Raw` (inline ≤INLINE_RAW_CAP, the common case) then delegate. Note:
+    // a caller that ALREADY holds the bytes as a `Vec` (byte buffers, string leaves) still allocated
+    // that Vec; the alloc-saving win is for callers that build a small header directly as inline `Raw`
+    // via `alloc_raw` (see `champ_header`), never materializing a transient Vec.
+    alloc_raw(handles, Raw::from(raw))
+}
+
+/// `alloc` but taking a ready `Raw` — lets a caller that builds a small header INLINE (e.g.
+/// `champ_header`) skip the transient `Vec` allocation entirely.
+fn alloc_raw(handles: Vec<Handle>, raw: Raw) -> Handle {
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() + 1));
-    Handle(Box::into_raw(Box::new(Node {
-        rc: 1,
-        handles,
-        raw,
-    })))
+    Handle(Box::into_raw(Box::new(Node { rc: 1, handles, raw })))
 }
 
 /// Borrow a node to read from it TOTALLY; a null handle yields `default`. Centralizes the one unsafe
@@ -354,7 +490,7 @@ fn op_box_int(v: i64) -> Handle {
     if fixnum_fits(v) {
         return imm_int(v);
     }
-    alloc(Vec::new(), (v as u64).to_le_bytes().to_vec())
+    alloc_raw(Vec::new(), Raw::inline(&(v as u64).to_le_bytes())) // 8-byte scalar: inline, no heap raw
 }
 fn op_get_int(h: Handle) -> i64 {
     if is_immediate(h) {
@@ -374,7 +510,7 @@ fn op_get_bool(h: Handle) -> bool {
     with_node(h, false, |n| n.raw.first().is_some_and(|&b| b != 0))
 }
 fn op_box_float(v: f64) -> Handle {
-    alloc(Vec::new(), v.to_bits().to_le_bytes().to_vec())
+    alloc_raw(Vec::new(), Raw::inline(&v.to_bits().to_le_bytes())) // 8-byte scalar: inline, no heap raw
 }
 fn op_get_float(h: Handle) -> f64 {
     if is_immediate(h) {
@@ -433,7 +569,9 @@ fn op_arr_len(arr: Handle) -> u32 {
 // `sum-payload` is TOTAL (no runtime index): a mismatched node with no handle yields NULL.
 
 fn op_sum_new(disc: u32, payload: Handle) -> Handle {
-    alloc(vec![payload], disc.to_le_bytes().to_vec())
+    // Build the 4-byte disc INLINE (no transient heap Vec) — a sum node is then the node Box + its
+    // 1-element handles Vec, 2 allocs instead of 3.
+    alloc_raw(vec![payload], Raw::inline(&disc.to_le_bytes()))
 }
 fn op_sum_disc(h: Handle) -> u32 {
     if is_immediate(h) {
@@ -465,7 +603,7 @@ fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
     }
     match unsafe { buf.0.as_mut() } {
         None => {}
-        Some(n) => match n.raw.get_mut(index as usize) {
+        Some(n) => match n.raw.as_mut_slice().get_mut(index as usize) {
             Some(slot) => *slot = value as u8,
             None => trap_oob(),
         },
@@ -596,7 +734,7 @@ fn bytes_flatten(h: Handle) {
     // child freed here can never be reached through `h`.
     let children = match unsafe { h.0.as_mut() } {
         Some(n) => {
-            n.raw = dst;
+            n.raw = Raw::from(dst); // the flattened bytes (a rope leaf; usually > inline cap → Heap)
             std::mem::take(&mut n.handles)
         }
         None => return,
@@ -626,7 +764,7 @@ fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
         Some(t) => t,
         None => trap_oob(),
     };
-    alloc(vec![a, b], total.to_le_bytes().to_vec())
+    alloc_raw(vec![a, b], Raw::inline(&total.to_le_bytes())) // concat rope node: 4-byte len, inline
 }
 
 /// `bytes-slice(buf, start, len)` — a new Bytes = `len` bytes of `buf` from `start`. O(1): one slice
@@ -1012,15 +1150,16 @@ fn vec_child(node: Handle, i: usize) -> Handle {
 
 /// Build a vector header owning `root` (or childless when `root` is NULL, i.e. the empty vector).
 fn vec_alloc_header(count: u32, shift: u32, root: Handle) -> Handle {
-    let mut raw = Vec::with_capacity(8);
-    raw.extend_from_slice(&count.to_le_bytes());
-    raw.extend_from_slice(&shift.to_le_bytes());
+    // The 8-byte `[count][shift]` vector header, built INLINE (no transient heap Vec).
+    let mut raw = [0u8; INLINE_RAW_CAP];
+    raw[0..4].copy_from_slice(&count.to_le_bytes());
+    raw[4..8].copy_from_slice(&shift.to_le_bytes());
     let handles = if root == Handle::NULL {
         Vec::new()
     } else {
         vec![root]
     };
-    alloc(handles, raw)
+    alloc_raw(handles, Raw::Inline { len: 8, buf: raw })
 }
 
 /// Decode a header into `(count, shift, root)`. Borrows — no ownership change. A null/short header
@@ -1092,7 +1231,7 @@ fn vec_node_replace_keep_raw(node: Handle, sub: usize, new_child: Handle) -> Han
             hs.push(c);
         }
     }
-    let raw = with_node(node, Vec::new(), |n| n.raw.clone());
+    let raw = with_node(node, Vec::new(), |n| n.raw.to_vec());
     alloc(hs, raw)
 }
 
@@ -1106,7 +1245,7 @@ fn vec_relaxed_grow_last(node: Handle, last: usize, new_child: Handle) -> Handle
     if let Some(n) = unsafe { copy.0.as_mut() } {
         let off = n.raw.len() - 4; // raw.len() == 4*arity ≥ 4 for a relaxed node
         let bumped = read_u32_at(&n.raw, off) + 1;
-        n.raw[off..off + 4].copy_from_slice(&bumped.to_le_bytes());
+        n.raw.as_mut_slice()[off..off + 4].copy_from_slice(&bumped.to_le_bytes());
     }
     copy
 }
@@ -1128,7 +1267,7 @@ fn vec_relaxed_append_branch(node: Handle, branch: Handle) -> Handle {
     } else {
         vec_relaxed_size_at(node, arity - 1)
     };
-    let mut raw = with_node(node, Vec::new(), |n| n.raw.clone());
+    let mut raw = with_node(node, Vec::new(), |n| n.raw.to_vec());
     raw.extend_from_slice(&(old_total + 1).to_le_bytes());
     alloc(hs, raw)
 }
@@ -1366,7 +1505,7 @@ fn vec_bump_last_size_inplace(node: Handle) {
     if let Some(n) = unsafe { node.0.as_mut() } {
         let off = n.raw.len() - 4;
         let bumped = read_u32_at(&n.raw, off) + 1;
-        n.raw[off..off + 4].copy_from_slice(&bumped.to_le_bytes());
+        n.raw.as_mut_slice()[off..off + 4].copy_from_slice(&bumped.to_le_bytes());
     }
 }
 
@@ -2064,12 +2203,16 @@ fn champ_size(raw: &[u8]) -> u32 {
 }
 /// Build a CHAMP raw header `[datamap][nodemap][size]` (12 bytes, all little-endian).
 #[allow(dead_code)]
-fn champ_header(datamap: u32, nodemap: u32, size: u32) -> Vec<u8> {
-    let mut raw = Vec::with_capacity(CHAMP_HEADER_SIZE);
-    raw.extend_from_slice(&datamap.to_le_bytes());
-    raw.extend_from_slice(&nodemap.to_le_bytes());
-    raw.extend_from_slice(&size.to_le_bytes());
-    raw
+fn champ_header(datamap: u32, nodemap: u32, size: u32) -> Raw {
+    // Build the 12-byte `[datamap][nodemap][size]` header directly as an INLINE `Raw` — no transient
+    // heap Vec (CHAMP_HEADER_SIZE == INLINE_RAW_CAP, so it always inlines). This is the alloc-saving
+    // win: every fresh CHAMP node (merge split, collision, path-copy rebuild, empty map/set) previously
+    // allocated a 12-byte Vec here that `alloc` then copied inline and dropped.
+    let mut buf = [0u8; INLINE_RAW_CAP];
+    buf[0..4].copy_from_slice(&datamap.to_le_bytes());
+    buf[4..8].copy_from_slice(&nodemap.to_le_bytes());
+    buf[8..12].copy_from_slice(&size.to_le_bytes());
+    Raw::Inline { len: CHAMP_HEADER_SIZE as u8, buf }
 }
 
 // ── Bitmap / slot arithmetic ──────────────────────────────────────────────────────────────
@@ -2145,7 +2288,7 @@ fn champ_node_raw_hash(h: Handle) -> u32 {
     } else {
         with_node(h, FNV_OFFSET, |n| {
             let mut acc = FNV_OFFSET;
-            for &b in &n.raw {
+            for &b in n.raw.iter() {
                 acc = fnv_step(acc, b);
             }
             acc
@@ -2179,7 +2322,7 @@ fn champ_hash(root: Handle) -> u32 {
     if let Some(hash) = with_node(root, None, |n| {
         if n.handles.iter().all(|&c| is_immediate(c) || with_node(c, 0usize, |cn| cn.handles.len()) == 0) {
             let mut acc = FNV_OFFSET;
-            for &b in &n.raw {
+            for &b in n.raw.iter() {
                 acc = fnv_step(acc, b);
             }
             for &c in n.handles.iter().rev() {
@@ -2261,7 +2404,7 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
         if let Some(result) = unsafe {
             match (a.0.as_ref(), b.0.as_ref()) {
                 (Some(na), Some(nb)) => {
-                    if na.raw != nb.raw || na.handles.len() != nb.handles.len() {
+                    if *na.raw != *nb.raw || na.handles.len() != nb.handles.len() {
                         Some(false) // roots differ ⇒ not equal, no descent
                     } else if na.handles.iter().chain(nb.handles.iter()).all(|&c| is_immediate(c) || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)) {
                         // Shallow: every child on both sides is arity-0 → compare pairwise inline.
@@ -2297,7 +2440,7 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
             match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
                 (None, None) => {}
                 (Some(nx), Some(ny)) => {
-                    if nx.raw != ny.raw || nx.handles.len() != ny.handles.len() {
+                    if *nx.raw != *ny.raw || nx.handles.len() != ny.handles.len() {
                         return false;
                     }
                     descend = Some((nx, ny)); // equal compound roots — push children below
@@ -2345,7 +2488,7 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
                     if !shallow {
                         None // a nested child — use the general worklist walk
                     } else {
-                        let mut ord = na.raw.cmp(&nb.raw).then(na.handles.len().cmp(&nb.handles.len()));
+                        let mut ord = na.raw.as_slice().cmp(nb.raw.as_slice()).then(na.handles.len().cmp(&nb.handles.len()));
                         let mut i = 0;
                         while ord == Ordering::Equal && i < na.handles.len() {
                             let (cx, cy) = (na.handles[i], nb.handles[i]);
@@ -2385,7 +2528,7 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
                 (None, Some(_)) => return Ordering::Less, // null orders before non-null
                 (Some(_), None) => return Ordering::Greater,
                 (Some(nx), Some(ny)) => {
-                    match nx.raw.cmp(&ny.raw) {
+                    match nx.raw.as_slice().cmp(ny.raw.as_slice()) {
                         Ordering::Equal => {}
                         ord => return ord, // raw bytes lexicographically
                     }
@@ -2440,7 +2583,7 @@ fn champ_size_of(node: Handle) -> u32 {
 /// remove-to-empty MUST reproduce this representation so callers can recognise emptiness uniformly.
 #[allow(dead_code)]
 fn op_map_empty() -> Handle {
-    alloc(Vec::new(), champ_header(0, 0, 0))
+    alloc_raw(Vec::new(), champ_header(0, 0, 0))
 }
 
 /// O(1) entry count of the map. BORROWS `m` (no rc change).
@@ -2669,24 +2812,24 @@ fn merge_two_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, level: u32) -> Hand
         let mut hs = Vec::with_capacity(first.len() + second.len());
         first.extend_into(&mut hs);
         second.extend_into(&mut hs);
-        return alloc(hs, champ_header(0, 0, 2));
+        return alloc_raw(hs, champ_header(0, 0, 2));
     }
     let i1 = level_index(h1, level);
     let i2 = level_index(h2, level);
     if i1 == i2 {
         // Same slot: nest one subnode a level deeper.
         let sub = merge_two_entries(e1, h1, e2, h2, level + 1);
-        alloc(vec![sub], champ_header(0, 1 << i1, 2))
+        alloc_raw(vec![sub], champ_header(0, 1 << i1, 2))
     } else if i1 < i2 {
         let mut hs = Vec::with_capacity(e1.len() + e2.len());
         e1.extend_into(&mut hs);
         e2.extend_into(&mut hs);
-        alloc(hs, champ_header((1 << i1) | (1 << i2), 0, 2))
+        alloc_raw(hs, champ_header((1 << i1) | (1 << i2), 0, 2))
     } else {
         let mut hs = Vec::with_capacity(e1.len() + e2.len());
         e2.extend_into(&mut hs);
         e1.extend_into(&mut hs);
-        alloc(hs, champ_header((1 << i2) | (1 << i1), 0, 2))
+        alloc_raw(hs, champ_header((1 << i2) | (1 << i1), 0, 2))
     }
 }
 
@@ -2717,7 +2860,7 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: us
                 }
             }
             let entries = (handles.len() / stride) as u32;
-            let new = alloc(new_handles, champ_header(0, 0, entries));
+            let new = alloc_raw(new_handles, champ_header(0, 0, entries));
             op_drop(entry.key()); // incoming duplicate key unused
             op_drop(node);
             new
@@ -2748,7 +2891,7 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: us
             }
             let _ = entry; // consumed: its columns were copied into new_handles above (once, by `pos`)
             let entries = (handles.len() / stride + 1) as u32;
-            let new = alloc(new_handles, champ_header(0, 0, entries));
+            let new = alloc_raw(new_handles, champ_header(0, 0, entries));
             op_drop(node);
             new
         }
@@ -2777,7 +2920,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
     if datamap == 0 && nodemap == 0 {
         if handles.is_empty() {
             let i = level_index(hash, level);
-            let new = alloc(entry.into_vec(), champ_header(1 << i, 0, 1)); // entry owned
+            let new = alloc_raw(entry.into_vec(), champ_header(1 << i, 0, 1)); // entry owned
             op_drop(node);
             return new;
         }
@@ -2805,7 +2948,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
                     new_handles.push(h);
                 }
             }
-            let new = alloc(new_handles, champ_header(datamap, nodemap, size));
+            let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size));
             op_drop(entry.key()); // incoming duplicate key unused
             op_drop(node); // frees the old value columns if node was unique
             return new;
@@ -2837,7 +2980,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         }
         subs.insert(new_sidx, sub);
         new_handles.extend(subs);
-        let new = alloc(new_handles, champ_header(new_datamap, new_nodemap, size + 1));
+        let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size + 1));
         op_drop(node);
         return new;
     }
@@ -2859,7 +3002,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
                 new_handles.push(h);
             }
         }
-        let new = alloc(new_handles, champ_header(datamap, nodemap, size + delta));
+        let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size + delta));
         op_drop(node);
         return new;
     }
@@ -2884,7 +3027,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         op_dup(c);
         new_handles.push(c);
     }
-    let new = alloc(new_handles, champ_header(new_datamap, nodemap, size + 1));
+    let new = alloc_raw(new_handles, champ_header(new_datamap, nodemap, size + 1));
     op_drop(node);
     new
 }
@@ -2919,9 +3062,10 @@ fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u
         if n.raw.len() != CHAMP_HEADER_SIZE {
             n.raw.resize(CHAMP_HEADER_SIZE, 0); // defensive; a real CHAMP node is already 12 bytes
         }
-        n.raw[0..4].copy_from_slice(&datamap.to_le_bytes());
-        n.raw[4..8].copy_from_slice(&nodemap.to_le_bytes());
-        n.raw[8..12].copy_from_slice(&size.to_le_bytes());
+        let r = n.raw.as_mut_slice();
+        r[0..4].copy_from_slice(&datamap.to_le_bytes());
+        r[4..8].copy_from_slice(&nodemap.to_le_bytes());
+        r[8..12].copy_from_slice(&size.to_le_bytes());
     }
     node
 }
@@ -2947,7 +3091,7 @@ fn champ_set_child_and_size_inplace(node: Handle, slot: usize, child: Handle, si
             *h = child;
         }
         if n.raw.len() >= CHAMP_HEADER_SIZE {
-            n.raw[8..12].copy_from_slice(&size.to_le_bytes());
+            n.raw.as_mut_slice()[8..12].copy_from_slice(&size.to_le_bytes());
         }
     }
 }
@@ -3177,7 +3321,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
             op_dup(h);
             new_handles.push(h);
         }
-        let new = alloc(new_handles, champ_header(0, 0, entries_after));
+        let new = alloc_raw(new_handles, champ_header(0, 0, entries_after));
         op_drop(node);
         return (new, true);
     }
@@ -3211,7 +3355,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
             op_dup(c);
             new_handles.push(c);
         }
-        let new = alloc(new_handles, champ_header(new_datamap, nodemap, size - 1));
+        let new = alloc_raw(new_handles, champ_header(new_datamap, nodemap, size - 1));
         op_drop(node);
         return (new, true);
     }
@@ -3254,7 +3398,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
                 op_dup(c);
                 new_handles.push(c);
             }
-            let new = alloc(new_handles, champ_header(new_datamap, new_nodemap, size - 1));
+            let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size - 1));
             op_drop(node);
             return (new, true);
         }
@@ -3268,7 +3412,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
                 new_handles.push(h);
             }
         }
-        let new = alloc(new_handles, champ_header(datamap, nodemap, size - 1));
+        let new = alloc_raw(new_handles, champ_header(datamap, nodemap, size - 1));
         op_drop(node);
         return (new, true);
     }
@@ -3835,11 +3979,11 @@ fn op_map_iter_val(cur: Handle) -> Handle {
 // use-site differs — and the compiler picks the op family statically, so a set node is only ever
 // touched with stride 1.
 
-/// The canonical empty set — byte-identical to the empty map (`alloc(vec![], champ_header(0,0,0))`);
+/// The canonical empty set — byte-identical to the empty map (`alloc_raw(vec![], champ_header(0,0,0))`);
 /// the collection kind is compile-time knowledge, not a runtime tag.
 #[allow(dead_code)]
 fn op_set_empty() -> Handle {
-    alloc(Vec::new(), champ_header(0, 0, 0))
+    alloc_raw(Vec::new(), champ_header(0, 0, 0))
 }
 
 /// O(1) element count. BORROWS `s`.
@@ -4162,8 +4306,8 @@ mod tests {
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
     /// in-place remove-drain/collapse + inline-Slots cursor + in-place SPLIT + shallow-compound hash+eq work
-    /// (insert 1084, remove 0, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 2000=probe-only;
-    /// set union 595 / ∩ 482 / ∖ 491, ∖ unique-small-b 1093≈build-only; they are UPPER BOUNDS so noise never trips them but a
+    /// (insert 766, remove 0, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 2000=probe-only, sum_new ~2000;
+    /// set union 431 / ∩ 356 / ∖ 362, ∖ unique-small-b 774≈build-only; they are UPPER BOUNDS so noise never trips them but a
     /// regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
@@ -4191,7 +4335,7 @@ mod tests {
             }
         });
         println!("ALLOC map_insert x{N}: {insert}");
-        assert!(insert <= 1200, "unique map_insert x{N} allocs {insert} exceeds ceiling 1200 (6779 → 3907 → 3589 → 3057 → 1740 inline Entry → ~1084 in-place SPLIT; residual is the intrinsic subnode alloc + vec grow)");
+        assert!(insert <= 900, "unique map_insert x{N} allocs {insert} exceeds ceiling 900 (… → 1084 in-place SPLIT → ~766 inline champ_header raw; residual = the intrinsic subnode Box + handles Vec on a split)");
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
@@ -4281,21 +4425,21 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        assert!(union <= 700, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 700");
+        assert!(union <= 500, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 500");
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 650, "set_intersection x{N} allocs {inter} exceeds ceiling 650");
+        assert!(inter <= 450, "set_intersection x{N} allocs {inter} exceeds ceiling 450");
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 650, "set_difference x{N} allocs {diff} exceeds ceiling 650");
+        assert!(diff <= 450, "set_difference x{N} allocs {diff} exceeds ceiling 450");
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -4317,7 +4461,7 @@ mod tests {
         // build_set(0,N) is the map_insert cost. So this asserts the DIFFERENCE ITSELF adds little beyond
         // building da. Ceiling = build cost (~1084) + small headroom; a regression to the insert-fold
         // (which rebuilds another full set) would roughly double it.
-        assert!(ddiff <= 1600, "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 1600 (fast path: build da + in-place removes; a regression to the insert-fold would ~2x)");
+        assert!(ddiff <= 1200, "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 1200 (fast path: build da + in-place removes; a regression to the insert-fold would ~2x)");
         op_drop(db);
 
         // (H) map lookup by a SHALLOW-COMPOUND key (a 2-tuple) — a pure read whose only allocation
@@ -4348,6 +4492,18 @@ mod tests {
         // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
         assert!(clookup <= 2500, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)");
         op_drop(cm);
+
+        // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
+        // inline `Raw`, the 4-byte disc no longer allocates a heap Vec — a sum node is now the node Box
+        // + its 1-element handles Vec = 2 allocs/op (was 3: + the disc Vec). Guards the inline-raw win
+        // for the sum path (the growing Option/Result usage).
+        let sum = measure(&mut || {
+            for k in 0..N {
+                op_drop(op_sum_new(1, op_box_int(k)));
+            }
+        });
+        println!("ALLOC sum_new x{N}: {sum}");
+        assert!(sum <= 2200, "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)");
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
@@ -6976,18 +7132,18 @@ mod tests {
         reset();
         let before = live_nodes();
         // Empty node: both bitmaps 0, no handles.
-        let empty = alloc(Vec::new(), champ_header(0, 0, 0));
+        let empty = alloc_raw(Vec::new(), champ_header(0, 0, 0));
         assert!(is_empty_node(empty));
         assert!(!is_collision_node(empty));
         // Collision node: both bitmaps 0 but holds entries.
         let e0 = op_box_int(1);
-        let collision = alloc(vec![e0], champ_header(0, 0, 1));
+        let collision = alloc_raw(vec![e0], champ_header(0, 0, 1));
         assert!(!is_empty_node(collision));
         assert!(is_collision_node(collision));
         // Normal node: a datamap bit is set.
         let k = op_box_int(2);
         let v = op_box_int(3);
-        let normal = alloc(vec![k, v], champ_header(0b1, 0, 1));
+        let normal = alloc_raw(vec![k, v], champ_header(0b1, 0, 1));
         assert!(!is_empty_node(normal));
         assert!(!is_collision_node(normal));
         // A NULL handle is treated as empty (benign), never a collision.
@@ -7001,7 +7157,7 @@ mod tests {
 
     // Build a small normal CHAMP node owning two int leaves as one k/v entry (datamap bit 0).
     fn champ_kv_node(k: i64, v: i64) -> Handle {
-        alloc(vec![op_box_int(k), op_box_int(v)], champ_header(0b1, 0, 1))
+        alloc_raw(vec![op_box_int(k), op_box_int(v)], champ_header(0b1, 0, 1))
     }
 
     #[test]
@@ -7171,7 +7327,7 @@ mod tests {
         // Nest single-child nodes ~5000 deep: recursion would overflow; the worklist must not.
         let mut node = op_box_int(0);
         for _ in 0..5000u32 {
-            node = alloc(vec![node], champ_header(0, 1, 1));
+            node = alloc_raw(vec![node], champ_header(0, 1, 1));
         }
         let _ = champ_hash(node); // must not overflow the stack
         op_drop(node);
@@ -7185,7 +7341,7 @@ mod tests {
         let a = champ_kv_node(10, 20);
         let b = champ_kv_node(10, 20); // structurally equal, distinct pointers
         let c = champ_kv_node(10, 21); // differing child raw
-        let d = alloc(vec![op_box_int(10)], champ_header(0b1, 0, 1)); // differing arity/raw
+        let d = alloc_raw(vec![op_box_int(10)], champ_header(0b1, 0, 1)); // differing arity/raw
         assert!(champ_eq(a, a)); // same pointer
         assert!(champ_eq(a, b)); // structurally equal
         assert!(!champ_eq(a, c)); // child differs
