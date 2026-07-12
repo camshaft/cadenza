@@ -32,14 +32,21 @@ pass	a boolean-returning function called with a false result
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a comparison-predicate function returns its boolean result
+pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
+pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional shields a trap in a nested unselected branch
+pass	a conditional type error is caught even when the mismatched branch is the one taken
 pass	a conditional whose branches are unit yields unit
 pass	a conditional whose condition folds to a constant still drops the untaken trapping branch
+pass	a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead
 pass	a conditional with a missing branch is rejected, not a crash
+pass	a conditional with an integer then-branch and a boolean else-branch is a type error
 pass	a conditional with too many operands is rejected, not a crash
+pass	a conditional with two tuple branches of different arity is a type error
+pass	a conditional with two tuple branches of different element type is a type error
 pass	a conditional's condition may itself be a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
@@ -110,6 +117,7 @@ pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
 pass	a match takes another match's result as its scrutinee
+pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
@@ -135,11 +143,13 @@ pass	a negative width is not honored as a narrow type
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
+pass	a nested element kind mismatch in equality is a type error
 pass	a nested match on a runtime scrutinee
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
+pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a nullary function called from another function's body
@@ -201,6 +211,7 @@ pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
+pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -234,6 +245,7 @@ pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
+pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-bit integer width is rejected
@@ -256,10 +268,12 @@ pass	an expression tree built at run time is evaluated by matching its node vari
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an inner binding shadows an outer one only within its scope
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
+pass	an integer if condition is a type error, not a running conditional
 pass	an integer literal pattern against a boolean scrutinee is a type error
 pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
+pass	an internally ill-typed unselected match arm body is a type error
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an option value annotated with the wrong payload type is rejected
@@ -287,6 +301,10 @@ pass	bitwise AND masks bits
 pass	bitwise OR combines bits
 pass	bitwise XOR is its own inverse
 pass	bitwise XOR toggles bits
+pass	comparing records whose field sets differ in size is a type error
+pass	comparing records with different field-name sets is a type error
+pass	comparing sums with disjoint variant sets is a type error
+pass	comparing tuples of different lengths is a type error
 pass	constructor pattern binders capture the payload uniformly
 pass	division by zero traps
 pass	division of the minimum integer by -1 overflows and traps
@@ -328,6 +346,9 @@ pass	multiplication
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	nested patterns deconstruct recursively
+pass	ordering an integer against a boolean is a type error
+pass	over-applying a constructor by several arguments is a type error
+pass	over-applying a constructor is a type error, not a silent argument drop
 pass	overflow of the default integer traps deterministically
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
@@ -424,15 +445,8 @@ todo	a checked integer conversion that fits succeeds
 todo	a checked result is consumed by matching its Option at run time
 todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
-todo	a compound if condition is a type error, not an unbound name
-todo	a conditional inside a function with a constant condition and mismatched branches is a type error
-todo	a conditional type error is caught even when the mismatched branch is the one taken
-todo	a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead
-todo	a conditional with an integer then-branch and a boolean else-branch is a type error
 todo	a conditional with integer and floating-point branches is a type error
 todo	a conditional with two list branches of different length is well-typed
-todo	a conditional with two tuple branches of different arity is a type error
-todo	a conditional with two tuple branches of different element type is a type error
 todo	a conditionally-selected nullary variant is returned as a runtime sum result
 todo	a conditionally-selected variant is returned as a runtime sum result
 todo	a conjunction guards a let over a runtime value inside a conditional
@@ -519,7 +533,6 @@ todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
 todo	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 todo	a match over multiple nullary constructors with uniform patterns
-todo	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
 todo	a module function is recursive
@@ -537,10 +550,8 @@ todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested Result pattern selects the inner Err arm
-todo	a nested element kind mismatch in equality is a type error
 todo	a nested literal pattern of the wrong type is a type error
 todo	a nested tuple pattern of the wrong arity is a type error
-todo	a nested tuple-arity mismatch in equality is a type error
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
@@ -618,7 +629,6 @@ todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a runtime three-variant classifier dispatches to the middle arm
 todo	a runtime three-variant classifier dispatches to the negative arm
-todo	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 todo	a scalar element is projected from a let-bound runtime tuple
 todo	a sequencing block discards a pure compound intermediate
 todo	a sequencing block discards a pure list intermediate
@@ -671,7 +681,6 @@ todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
 todo	a u64 segment encodes eight big-endian bytes
-todo	a unary variant applied to a wrong-arity tuple payload is a type error
 todo	a unary variant applied to a wrong-type payload is a type error
 todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
@@ -716,9 +725,7 @@ todo	an explicit annotation overrides the default-integer pragma
 todo	an explicit conversion makes the operation well-typed
 todo	an export and a like-named metadata key do not collide
 todo	an in-bounds slice yields Some of the bytes at that range
-todo	an integer if condition is a type error, not a running conditional
 todo	an integer width above the 64-bit ceiling is rejected
-todo	an internally ill-typed unselected match arm body is a type error
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
@@ -759,11 +766,7 @@ todo	comparing a map to a record is a type error
 todo	comparing an empty map to an empty record is a type error
 todo	comparing equal values yields Equal
 todo	comparing quantities of incompatible dimension is a compile-time error
-todo	comparing records whose field sets differ in size is a type error
-todo	comparing records with different field-name sets is a type error
 todo	comparing same-shape nominal types is a type error
-todo	comparing sums with disjoint variant sets is a type error
-todo	comparing tuples of different lengths is a type error
 todo	comparing two quantities of the same dimension yields a Bool
 todo	comparing two same-shape nominal sum types is a type error, not false
 todo	comparing two units of one dimension converts before comparing
@@ -886,11 +889,8 @@ todo	negative zero is not equal to positive zero
 todo	nested patterns with literals
 todo	nullary constructor patterns are uniform with unary
 todo	ordering a string against an integer is a type error regardless of operand order
-todo	ordering an integer against a boolean is a type error
 todo	ordering an integer against a float is rejected, not silently promoted
 todo	ordering an integer against a string is a type error
-todo	over-applying a constructor by several arguments is a type error
-todo	over-applying a constructor is a type error, not a silent argument drop
 todo	parsing a length-framed message and rebuilding it yields the original bytes
 todo	pattern matching over AST distinguishes forms
 todo	performing a string-parameter operation with a non-string argument is a type error

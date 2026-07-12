@@ -659,7 +659,7 @@
 ; conditional MUST be type-checked whether or not it is evaluated, so that an unevaluated
 ; branch cannot carry a deferred error." So a conditional whose branches have DIFFERENT types
 ; is ill-typed even when the condition is a compile-time constant that never evaluates the
-; mismatched branch — the compiler MUST reject it (CDZ0201). The rejection is the recorded
+; mismatched branch — the compiler MUST reject it (CDZ0203, a type mismatch). The rejection is the recorded
 ; outcome; the program does not run, so it has no branch value. A generation that does not yet
 ; type-check the unevaluated branch declines rather than emitting a component
 ; (reject-don't-miscompile).
@@ -667,21 +667,21 @@
 (case "a conditional with an integer then-branch and a boolean else-branch is a type error"
   (doc    "The then-branch is Int64, the else-branch is Bool — different types. Even with a constant
            condition selecting the Int64 branch, the compiler MUST type-check BOTH branches and reject
-           the mismatch (CDZ0201) rather than run the program.")
+           the mismatch (CDZ0203) rather than run the program.")
   (input  (if true 1 false))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "a conditional type error is caught even when the mismatched branch is the one taken"
   (doc    "The companion with the condition false, selecting the Bool branch: the branches still
-           disagree in type (Int64 vs Bool), so the compiler MUST reject (CDZ0201). Pins that the
+           disagree in type (Int64 vs Bool), so the compiler MUST reject (CDZ0203). Pins that the
            check is on the pair of branch types, not on which branch would run.")
   (input  (if false 1 false))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead"
   (doc    "`(if false (record (a 1)) 7)` — the then-branch is a compound (a record), the else-branch is a
            scalar (Int64); they have different types, so the conditional is ill-typed and the compiler MUST
-           reject it (CDZ0201). The constant condition `false` selects the SCALAR branch, so a compiler that
+           reject it (CDZ0203). The constant condition `false` selects the SCALAR branch, so a compiler that
            const-folds the conditional to its taken branch would discard the compound then-branch WITHOUT
            type-checking it and silently accept an ill-typed program — a miscompile. The type-check is on the
            PAIR of branches, so it must happen BEFORE (or independently of) any fold that eliminates a branch:
@@ -689,7 +689,7 @@
            of the dead-branch check, which the scalar-vs-scalar cases above do not exercise (folding a compound
            branch away is where the check is easiest to skip).")
   (input  (if false (record (a 1)) 7))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The branch-type-agreement check must fire when the conditional is INSIDE A FUNCTION BODY with a
 ; constant condition, not only at the top-level entry expression. The cases above pair mismatched
@@ -698,7 +698,7 @@
 ; discards the untaken branch WITHOUT the pair-of-branches type-check that #Conditionals Evaluate One
 ; Branch requires ("every branch … type-checked whether or not it is evaluated"). `(def (f) (if true 1
 ; false))` pairs an Int64 then-branch with a Bool else-branch — ill-typed exactly as the top-level `(if
-; true 1 false)` is (CDZ0201) — yet the seed accepts it and `f` returns 1, an ill-typed program run
+; true 1 false)` is (CDZ0203) — yet the seed accepts it and `f` returns 1, an ill-typed program run
 ; (and it composes: `(+ (f) 0)` = 1). Worse, when the surviving (taken) branch is a COMPUTED expression
 ; rather than a constant — `(def (f n) (if true (+ n 1) false))`, whose `(+ n 1)` cannot fold to a
 ; literal — the unchecked Int/Bool branch-representation mismatch makes the compiler emit an INVALID
@@ -710,7 +710,7 @@
 ; cases: the fold that eliminates a branch must not eliminate the agreement check, wherever the `if` sits.
 (case "a conditional inside a function with a constant condition and mismatched branches is a type error"
   (doc    "`(def (f) (if true 1 false))` pairs an Int64 then-branch with a Bool else-branch — different
-           types, ill-typed exactly as the top-level `(if true 1 false)` above (CDZ0201). But the `if` is
+           types, ill-typed exactly as the top-level `(if true 1 false)` above (CDZ0203). But the `if` is
            inside a function body with a constant condition, and the seed's const-condition fold in a
            function body discards the untaken `false` branch WITHOUT the pair-of-branches type-check
            (core-semantics.md #Conditionals Evaluate One Branch: every branch type-checked whether or not
@@ -725,7 +725,7 @@
   (input  (do
             (def (f) (if true 1 false))
             (def (main) (f)) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "a conditional with integer and floating-point branches is a type error"
   (doc    "Int64 and Float64 are distinct numeric types that do not silently unify (numeric-model.md
@@ -739,7 +739,7 @@
 ; its type, type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix), so the conditional
 ; is ill-typed even though both branches are "a tuple." `(if true (tuple 1 2) (tuple 3 4 5))` pairs a
 ; two-tuple with a three-tuple; the whole `if` has no single type, so the compiler MUST reject it
-; (CDZ0201) — a check that compares only the branches' KIND (tuple vs tuple) and not their arity accepts
+; (CDZ0203) — a check that compares only the branches' KIND (tuple vs tuple) and not their arity accepts
 ; the mismatch and returns whichever branch the constant condition selects, an unevaluated branch carrying
 ; a deferred type error (core-semantics.md #Conditionals Evaluate One Branch — every branch type-checked).
 ; A generation that does not yet compare branch shapes structurally declines rather than accepting.
@@ -747,21 +747,21 @@
 (case "a conditional with two tuple branches of different arity is a type error"
   (doc    "`(if true (tuple 1 2) (tuple 3 4 5))` pairs a two-element tuple with a three-element tuple —
            different types, since a tuple's arity is part of its type. The whole conditional has no single
-           type, so it is ill-typed and the compiler MUST reject it (CDZ0201), exactly as the Int/Bool and
+           type, so it is ill-typed and the compiler MUST reject it (CDZ0203), exactly as the Int/Bool and
            compound/scalar branch-mismatch cases above. Pins that branch-type agreement is checked
            STRUCTURALLY, not only at coarse kind (both branches being 'a tuple' is not enough) — a compiler
            comparing only branch kinds accepts this and returns the two-tuple, an ill-typed program run.")
   (input  (if true (tuple 1 2) (tuple 3 4 5)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "a conditional with two tuple branches of different element type is a type error"
   (doc    "`(if true (tuple 1 2) (tuple 1 true))` pairs `(Tuple Int64 Int64)` with `(Tuple Int64 Bool)` —
            same arity but a different element type at position 1, so different types. The conditional is
-           ill-typed (CDZ0201), the element-type companion of the arity case above. Pins that the structural
+           ill-typed (CDZ0203), the element-type companion of the arity case above. Pins that the structural
            branch-type comparison descends into a tuple's element types, not only its arity — the same
            depth the list-element homogeneity check already applies.")
   (input  (if true (tuple 1 2) (tuple 1 true)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The structural branch-type check must NOT treat a list's LENGTH as part of its type — unlike a tuple's
 ; arity. A list is a variable-length sequence typed by its element type (collections-and-text.md #A List
@@ -790,7 +790,7 @@
 ; --- A conditional's condition must be a Bool --------------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch: a conditional selects a branch by its
 ; condition, which is a Bool. A condition of any other type is ill-typed — the compiler MUST
-; reject it (CDZ0201). A COMPOUND condition (a tuple/record/list) must be rejected as a not-a-Bool
+; reject it (CDZ0203). A COMPOUND condition (a tuple/record/list) must be rejected as a not-a-Bool
 ; type error with the constructor `tuple`/`record`/`list` intact — it is a recognized form (it
 ; builds a value everywhere else), so a diagnostic of "unbound name: tuple" would be a misleading
 ; code (CDZ0101) for what is plainly a not-a-Bool type error, the same wrong-diagnostic class as an
@@ -798,22 +798,22 @@
 
 (case "an integer if condition is a type error, not a running conditional"
   (doc    "1 is Int64, not Bool. A conditional's condition selects a branch and MUST be a Bool; an
-           Int64 condition is ill-typed (CDZ0201). A C-like language treats a nonzero int as true —
+           Int64 condition is ill-typed (CDZ0203). A C-like language treats a nonzero int as true —
            Cadenza does not silently coerce (numeric-model.md #Numeric Types Do Not Silently
-           Promote); there is no truthiness. A generation that does not yet wire the CDZ0201 code
+           Promote); there is no truthiness. A generation that does not yet wire the CDZ0203 code
            declines rather than running the program (reject-don't-miscompile).")
   (input  (if 1 10 20))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "a compound if condition is a type error, not an unbound name"
-  (doc    "A tuple is not a Bool, so `(if (tuple 1 2) …)` is ill-typed (CDZ0201). The constructor
+  (doc    "A tuple is not a Bool, so `(if (tuple 1 2) …)` is ill-typed (CDZ0203). The constructor
            `tuple` is a recognized form — `(tuple 1 2)` builds a value in every other position — so
            reporting `unbound name: tuple` (CDZ0101) would mistake a not-a-Bool type error for a name
            resolution failure. The condition's type is what is wrong, not the spelling of a name.
            Pins that a compound condition is rejected as a type error with the constructor intact,
            the same misleading-diagnostic class as an out-of-range literal reported as unbound.")
   (input  (if (tuple 1 2) 10 20))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "a pattern binds a name scoped to its branch"
   (doc    "Witnesses core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch.
@@ -1525,7 +1525,7 @@
 ; branches must (core-semantics.md #Matching Is Exhaustive Or Rejected makes a match an expression whose
 ; type is what its arms yield; #Conditionals Evaluate One Branch requires "every branch … type-checked
 ; whether or not it is evaluated"). So arm bodies of DIFFERENT type — a `1` (Int64) arm and a `true`
-; (Bool) arm — make the match ill-typed (CDZ0201), whether or not the constant scrutinee selects one of
+; (Bool) arm — make the match ill-typed (CDZ0203), whether or not the constant scrutinee selects one of
 ; them. A compiler that CONST-FOLDS a match on a literal scrutinee to its matching arm and emits only that
 ; arm — without type-checking the OTHER arms — silently accepts `(match 5 (5 1) (_ true))` and runs it to
 ; 1, an unevaluated arm carrying a deferred type error. This is the match analogue of the conditional
@@ -1537,7 +1537,7 @@
 
 (case "a match whose arm bodies have different types is a type error even when a constant scrutinee selects one"
   (doc    "`(match 5 (5 1) (_ true))` has an Int64 arm body `1` and a Bool arm body `true` — a match is an
-           expression of one type, so disagreeing arm bodies are ill-typed (CDZ0201), the match analogue of
+           expression of one type, so disagreeing arm bodies are ill-typed (CDZ0203), the match analogue of
            the conditional branch-agreement cases (`(if … 1 true)` is rejected). The constant scrutinee `5`
            selects the Int64 arm, so a compiler that const-folds the match to its matching arm and emits
            only that arm — without type-checking the other arms — silently accepts this and runs it to 1,
@@ -1547,7 +1547,7 @@
            path. A generation that does not yet check the unselected arms declines rather than emitting the
            folded arm.")
   (input  (match 5 (5 1) (_ true)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The unselected-arm check must type-check each arm's BODY for internal errors, not only compare the arms'
 ; RESULT types. The case above pins arm-type-AGREEMENT (an Int64 arm vs a Bool arm); this pins that an
@@ -1563,7 +1563,7 @@
 
 (case "an internally ill-typed unselected match arm body is a type error"
   (doc    "`(match 5 (5 1) (_ (+ 1 true)))` — the unselected `_` arm body `(+ 1 true)` mixes Int64 and Bool,
-           an internal type error the compiler MUST reject (CDZ0201), even though the constant scrutinee `5`
+           an internal type error the compiler MUST reject (CDZ0203), even though the constant scrutinee `5`
            selects the `1` arm. Distinct from the arm-type-AGREEMENT case above: there the two arms' result
            types disagree; here an arm's BODY is internally ill-typed while its result type (Int64) agrees
            with the selected arm. core-semantics.md #Conditionals Evaluate One Branch requires every branch
@@ -1572,7 +1572,7 @@
            BODY, not only compares arm result types. A generation that does not yet check the unselected
            arm's body declines rather than emitting the folded arm.")
   (input  (match 5 (5 1) (_ (+ 1 true))))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The unselected-arm check must reach a SCOPE error, not only a type error. The two cases above pin that
 ; a const-folded match type-checks its unselected arms (agreement + internal type); this pins that it
@@ -1625,7 +1625,7 @@
 (case "a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error"
   (doc    "`(match o ((Some x) x) ((None _) true))` over a runtime `o : Option Int64` has a `Some` arm
            body `x` of type Int64 (the payload) and a `None` arm body `true` of type Bool — disagreeing
-           arm types, so the match is ill-typed (CDZ0201), the same arm-agreement rule as `(match 5 (5 1)
+           arm types, so the match is ill-typed (CDZ0203), the same arm-agreement rule as `(match 5 (5 1)
            (_ true))` and the conditional `(if … 1 true)`. The seed accepts it and REINTERPRETS the Int64
            payload as a Bool: `(f (Some 5))` yields `true`, `(f (Some 42))` yields `false` — a wrong value
            (the payload's bits read as a boolean), not merely a missed rejection. The check fires when the
@@ -1638,7 +1638,7 @@
   (input  (do
             (def (f o) (match o ((Some x) x) ((None _) true)))
             (def (main) (f (Some 5))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; --- Boolean connectives (short-circuit) -------------------------------------------------
 ; core-semantics.md #Boolean Connectives Short-Circuit: the language offers conjunction, disjunction,

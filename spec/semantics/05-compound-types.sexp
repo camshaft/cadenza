@@ -2306,56 +2306,56 @@
 (case "comparing tuples of different lengths is a type error"
   (doc    "type-system.md #Structural Values Are Comparable Only When Their Shapes Match: two tuples
            are comparable only when their lengths are identical. A 2-tuple and a 3-tuple have
-           different shapes, so the comparison is a type error the compiler rejects (CDZ0201).")
+           different shapes, so the comparison is a type error the compiler rejects (CDZ0203).")
   (input      (= (tuple 1 2) (tuple 1 2 3)))
-  (error      CDZ0201))
+  (error      CDZ0203))
 
 ; The shape-match requirement is RECURSIVE: it applies to every corresponding pair of sub-values, not
 ; only the top-level shape. So comparing two same-shape outer tuples whose corresponding ELEMENTS have
 ; mismatched shapes (an inner 2-tuple vs an inner 3-tuple, or an inner tuple vs a scalar) is a type
-; error (CDZ0201) — the sub-comparison is between incompatible shapes.
+; error (CDZ0203) — the sub-comparison is between incompatible shapes.
 
 (case "a nested tuple-arity mismatch in equality is a type error"
   (doc    "The outer tuples are both 2-tuples (matching shape), but their first elements are a 2-tuple
            and a 3-tuple — mismatched shapes. Shape compatibility is recursive, so this comparison is
-           a type error (CDZ0201), the same as the top-level `(= (tuple 1 2) (tuple 1 2 3))` above.")
+           a type error (CDZ0203), the same as the top-level `(= (tuple 1 2) (tuple 1 2 3))` above.")
   (input      (= (tuple (tuple 1 2) 9) (tuple (tuple 1 2 3) 9)))
-  (error      CDZ0201))
+  (error      CDZ0203))
 
 (case "a nested element kind mismatch in equality is a type error"
   (doc    "The outer tuples match shape, but one's first element is a tuple and the other's is a scalar
            — different types at that position. Recursive shape matching makes this a type error
-           (CDZ0201), like the top-level `(= (tuple 1 2) 5)`.")
+           (CDZ0203), like the top-level `(= (tuple 1 2) 5)`.")
   (input      (= (tuple (tuple 1 2) 9) (tuple 5 9)))
-  (error      CDZ0201))
+  (error      CDZ0203))
 
 (case "comparing records with different field-name sets is a type error"
   (doc    "type-system.md #Structural Values Are Comparable Only When Their Shapes Match: two records
            are comparable only when their sets of field names are identical. `(record (a 1))` and
            `(record (b 1))` have disjoint field names — different shapes — so the comparison is a type
-           error (CDZ0201).")
+           error (CDZ0203).")
   (needs      collections)
   (input      (= (record (a 1)) (record (b 1))))
-  (error      CDZ0201))
+  (error      CDZ0203))
 
 (case "comparing records whose field sets differ in size is a type error"
   (doc    "type-system.md #Structural Values Are Comparable Only When Their Shapes Match: a record
            with fields {a} and one with fields {a, b} have different field-name sets, hence different
-           shapes. The comparison is a type error the compiler rejects (CDZ0201). (Contrast `(record
+           shapes. The comparison is a type error the compiler rejects (CDZ0203). (Contrast `(record
            (a 1))` vs `(record (a 2))` — same shape, different value — which is an ordinary false, not
            a type error.)")
   (needs      collections)
   (input      (= (record (a 1)) (record (a 1) (b 2))))
-  (error      CDZ0201))
+  (error      CDZ0203))
 
 (case "comparing sums with disjoint variant sets is a type error"
   (doc    "type-system.md #Structural Values Are Comparable Only When Their Shapes Match: two sums are
            comparable only when their variant sets are identical. An Option value (Some) and a Result
            value (Ok) belong to different sum types, so comparing them is a type error the compiler
-           rejects (CDZ0201). (Two values of the SAME sum but different variants — Some vs None — are
+           rejects (CDZ0203). (Two values of the SAME sum but different variants — Some vs None — are
            an ordinary false, witnessed elsewhere.)")
   (input      (= (Some 1) (Ok 1)))
-  (error      CDZ0201))
+  (error      CDZ0203))
 
 (case "two different variants of the SAME sum compare unequal"
   (doc    "The complement of the case above. `Some` and `None` are two variants of ONE sum type
@@ -2471,7 +2471,7 @@
 (case "a unary variant applied to a wrong-arity tuple payload is a type error"
   (doc    "`(type T (Pair (Tuple Int64 Int64)))` declares `T.Pair` with payload type `(Tuple Int64 Int64)`,
            so `(T.Pair (tuple 1 2 3))` applies it to a three-element tuple where a two-element one is
-           declared — a type mismatch the compiler MUST reject (CDZ0201): a tuple's length is part of its
+           declared — a type mismatch the compiler MUST reject (CDZ0203): a tuple's length is part of its
            type (type-system.md #A Tuple Is Reshaped Positionally, #The Structural Types Are Record, Tuple,
            And Sum), so the arities do not unify, exactly as the scalar unary-variant case (`(T.Mk \"x\")`)
            above. Pins that the unary-variant payload-type check covers a COMPOUND (tuple) payload, not
@@ -2483,7 +2483,7 @@
   (input     (do
                (type T (Pair (Tuple Int64 Int64)))
                (def (main) (T.Pair (tuple 1 2 3))) (export main)))
-  (error     CDZ0201))
+  (error     CDZ0203))
 
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
   (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a

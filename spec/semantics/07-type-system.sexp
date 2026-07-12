@@ -235,11 +235,11 @@
 
 (case "ordering an integer against a boolean is a type error"
   (doc    "`(< 1 true)` compares an Int64 with a Bool — unrelated kinds with no shared order, a
-           general type error the compiler rejects (CDZ0201), exactly as `(= 1 true)` is. An
+           general type error the compiler rejects (CDZ0203), exactly as `(= 1 true)` is. An
            ordering operator is not a coercion to a common type; a Bool has no position in Int64's
            order.")
   (input  (< 1 true))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "ordering an integer against a string is a type error"
   (doc    "`(< 1 \"x\")` compares an Int64 with a String — two different types, rejected (CDZ0201)

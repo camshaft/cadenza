@@ -204,18 +204,18 @@
 (case "over-applying a constructor is a type error, not a silent argument drop"
   (doc    "`(Some 1 2)` desugars to `((Some 1) 2)`: the constructor `Some` is single-arity, so
            `(Some 1)` is a complete Sum value, and applying it to `2` applies a non-function — a type
-           error (CDZ0201), the same as `(5 3)` above. The compiler MUST reject it rather than drop
+           error (CDZ0203), the same as `(5 3)` above. The compiler MUST reject it rather than drop
            the `2` and yield `(Some 1)`, which would silently accept the ill-formed application.")
   (input  (Some 1 2))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 (case "over-applying a constructor by several arguments is a type error"
   (doc    "The same shape with more extra arguments: `(Some 1 2 3)` desugars to `(((Some 1) 2) 3)`,
            applying the Sum value `(Some 1)` to `2` (already a non-function application). The compiler
-           MUST reject it (CDZ0201). Pins that the arity check is on the constructor's single-argument
+           MUST reject it (CDZ0203). Pins that the arity check is on the constructor's single-argument
            application, not forgiving of any number of trailing arguments.")
   (input  (Some 1 2 3))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A
 ; sum type constructor is a single-arity function that produces the tagged variant "when applied to
@@ -227,7 +227,7 @@
 ; (`(: (Some) (Option Int64))` yields `(Some unit)` where `(: (Some unit) (Option Int64))` is correctly
 ; rejected — a Unit payload under an `Int64` annotation). The Unit filler is right only for a NULLARY
 ; variant, whose argument type IS Unit; a unary variant applied to zero arguments MUST be rejected
-; (CDZ0201), exactly as over-application is. A generation that does not yet check the low end declines
+; (CDZ0203), exactly as over-application is. A generation that does not yet check the low end declines
 ; rather than fabricating the payload (reject-don't-miscompile).
 
 (case "under-applying a unary constructor is a type error, not a fabricated unit payload"
