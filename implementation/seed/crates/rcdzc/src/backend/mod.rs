@@ -7,8 +7,8 @@
 //! (`query-engine.md` §Producing An Artifact Is A Column A Backend Fills). Selecting one is a branch
 //! on the requested [`Target`]; the query program picks it (`Compiler.compile(db, Compiler.Target.…)`).
 //!
-//! Stage 0 ships one backend (wasm → a WebAssembly component). The `Target` enum is named from genesis
-//! so a second backend is a new arm behind this same seam, not a fork of the pipeline.
+//! One backend ships here (wasm → a WebAssembly component). The `Target` enum exists so a second
+//! backend is a new arm behind this same seam, not a fork of the pipeline.
 
 pub mod wasm;
 
