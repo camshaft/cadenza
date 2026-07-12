@@ -52,6 +52,18 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         Ok(a) => a,
         Err(r) => return fail(vec![r]),
     };
+    // For a linked PACKAGE, emit the `link-map` demux artifact (`DESIGN-package-linking.md` §6): it
+    // lets a consumer map a cross-file diagnostic's GLOBAL node id → `(file, local id)` for source
+    // mapping. It rides alongside every output that carries node-anchored diagnostics — seeded into the
+    // artifact base below so both the fault path and the clean-emit path carry it. `None` (single file)
+    // adds nothing.
+    let link_map = linkage.as_ref().map(|lk| {
+        Artifact::new(
+            link::KIND_LINK_MAP,
+            "link-map",
+            link::encode_link_map(&lk.files),
+        )
+    });
 
     let mut db = Db::load_linked(arenas, linkage);
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
@@ -112,13 +124,14 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // whatever the emit path produces — including alongside the diagnostics when emit declines. (They
     // are computed before layout so a query answers even for a program with no export, which layout
     // would otherwise decline.) Running them first also warms the shared columns the emit path reads.
-    let query_artifacts: Vec<Artifact> = queries
-        .iter()
-        .map(|q| {
-            let r = sidecar::run_query(&mut db, q);
-            Artifact::new(r.kind, r.name, r.bytes)
-        })
-        .collect();
+    // Seed the artifact base with the package `link-map` (if any), so it rides EVERY output path —
+    // the fault path (`fail_with(query_artifacts, …)`), the query-only return, and the clean emit
+    // (which starts `artifacts = query_artifacts`). A single-file compile seeds nothing.
+    let mut query_artifacts: Vec<Artifact> = link_map.into_iter().collect();
+    query_artifacts.extend(queries.iter().map(|q| {
+        let r = sidecar::run_query(&mut db, q);
+        Artifact::new(r.kind, r.name, r.bytes)
+    }));
 
     // QUERY-ONLY mode: the sidecar asked for facts but no artifact to build (`emit_targets` empty
     // because neither `targets` nor an Emit request named one). There is nothing to lay out or emit —

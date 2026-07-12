@@ -17,8 +17,9 @@
 //! …)` survives into the merged `(do …)`, so `db.exports` IS the component boundary. Name resolution
 //! is then FILE-SCOPED (`resolve.rs`): a bare name in file `f` resolves against `f`'s own defs and
 //! `f`'s imports, never a sibling's defs. A colliding imported name → CDZ0201; an import cycle
-//! (`find_import_cycle`, a back-edge DFS over the import graph) → CDZ0201. The diagnostics link-map
-//! artifact (step 5) and the bootstrap re-author (step 6) are the remaining steps.
+//! (`find_import_cycle`, a back-edge DFS over the import graph) → CDZ0201. A linked package also emits
+//! the `link-map` OUTPUT artifact (step 5, `encode_link_map`) so a consumer demuxes a cross-file
+//! diagnostic's global node id → `(file, local id)`. The bootstrap re-author (step 6) is what remains.
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use crate::diag::Reject;
@@ -29,6 +30,32 @@ use crate::diag::Reject;
 /// `.find(kind == KIND_ENTRY)`, no change to `compile`'s signature. Absent + a single `ast` = today's
 /// single-file compile; absent + multiple `ast` = a package with no named entry, which declines.
 pub const KIND_ENTRY: &str = "entry";
+
+/// The OUTPUT-artifact kind carrying the diagnostics DEMUX table for a linked package
+/// (`DESIGN-package-linking.md` §6). A cross-file diagnostic's `node` is a GLOBAL merged `StructId`;
+/// with several files spliced into one arena, that global id no longer maps to a single file's span
+/// table. This artifact lets a consumer demux: a global node `n` falls in exactly one file's
+/// `[struct_base, struct_base+struct_count)` range → `(path, n - struct_base)` = the per-file LOCAL id
+/// that file's own span table (or its `spans` input) is keyed by. One line per file:
+/// `<path>\t<struct_base>\t<struct_count>`, mirroring the `uses` artifact's node-id-per-line style —
+/// a consumer-side two-level back-reference (global id → (file, local id) → span), so the compiler
+/// stays span-free. Present only for a multi-file package.
+pub const KIND_LINK_MAP: &str = "link-map";
+
+/// Encode a package's `FileSpan` table as the `link-map` artifact bytes — one line per file,
+/// `<path>\t<struct_base>\t<struct_count>`, in splice order. The inverse a consumer applies:
+/// find the file whose `[base, base+count)` contains a diagnostic's global node id, then subtract
+/// `base` for the per-file local id.
+pub fn encode_link_map(files: &[FileSpan]) -> Vec<u8> {
+    let mut out = String::new();
+    for f in files {
+        out.push_str(&format!(
+            "{}\t{}\t{}\n",
+            f.path, f.struct_base, f.struct_count
+        ));
+    }
+    out.into_bytes()
+}
 
 /// One file's contribution to the merged arena — the span of structure ids it owns, so a global
 /// `StructId` demuxes back to `(path, local id)` for source mapping (`DESIGN-package-linking.md` §6).
@@ -795,6 +822,74 @@ mod tests {
                 .any(|d| d.message.contains("cyclic module imports")),
             "expected a cyclic-import diagnostic; got {:?}",
             out.diagnostics
+        );
+    }
+
+    /// The `link-map` artifact (`DESIGN-package-linking.md` §6) rides a linked package's output and
+    /// demuxes a cross-file diagnostic's GLOBAL node id → the right file + local id. Here `app` uses an
+    /// unbound name; the emitted `link-map` lets the consumer attribute the error node to `app`.
+    #[test]
+    fn a_package_carries_a_link_map_that_demuxes_a_diagnostic() {
+        let out = compile_files(
+            &[
+                ("lib", "(do (def (helper) 1) (export helper))"),
+                // `app` references `nope` — unbound (not defined, not imported).
+                ("app", "(do (def (main) (nope)) (export main))"),
+            ],
+            "app",
+        );
+        assert!(out.has_error(), "the package has an unbound name");
+        // The `link-map` artifact is present even though compilation failed (it rides the fault path).
+        let map = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == KIND_LINK_MAP)
+            .expect("a linked package must carry a link-map artifact");
+        let text = String::from_utf8(map.bytes.clone()).unwrap();
+        // One line per file: `<path>\t<base>\t<count>`. Parse into (path, base, count).
+        let rows: Vec<(&str, u32, u32)> = text
+            .lines()
+            .map(|l| {
+                let mut it = l.split('\t');
+                let path = it.next().unwrap();
+                let base: u32 = it.next().unwrap().parse().unwrap();
+                let count: u32 = it.next().unwrap().parse().unwrap();
+                (path, base, count)
+            })
+            .collect();
+        assert_eq!(rows.len(), 2, "one link-map row per file");
+        assert!(rows.iter().any(|(p, ..)| *p == "lib"));
+        assert!(rows.iter().any(|(p, ..)| *p == "app"));
+        // The unbound-name diagnostic's node demuxes into exactly ONE file's range.
+        let node = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101"))
+            .and_then(|d| d.node)
+            .expect("an unbound-name diagnostic anchored to a node");
+        let owning: Vec<&str> = rows
+            .iter()
+            .filter(|(_, base, count)| node >= *base && node < base + count)
+            .map(|(p, ..)| *p)
+            .collect();
+        assert_eq!(
+            owning,
+            vec!["app"],
+            "the `nope` reference must demux to `app` (node {node})"
+        );
+    }
+
+    /// A single-file compile carries NO `link-map` (it is not a package — the demux is unneeded).
+    #[test]
+    fn a_single_file_compile_has_no_link_map() {
+        let ast = crate::codec::encode(&arena_of("(do (def (main) (nope)) (export main))"));
+        let out = crate::compile(
+            &[Artifact::new(Artifact::KIND_AST, "main", ast)],
+            &[Target::Wasm],
+        );
+        assert!(
+            out.artifacts.iter().all(|a| a.kind != KIND_LINK_MAP),
+            "a single-file compile must not emit a link-map"
         );
     }
 

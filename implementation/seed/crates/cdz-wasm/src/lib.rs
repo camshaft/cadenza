@@ -66,7 +66,10 @@ impl CompileResult {
 
 /// Flatten an `rcdzc::Diagnostic` for JS, resolving its node id to a source byte range through the
 /// front-end span table (`None` → no span, e.g. a synthesized/prelude node or an unanchored decline).
-fn to_js_diag(d: &rcdzc::Diagnostic, spans: Option<&cadenza_syntax::spans::SpanTable>) -> Diagnostic {
+fn to_js_diag(
+    d: &rcdzc::Diagnostic,
+    spans: Option<&cadenza_syntax::spans::SpanTable>,
+) -> Diagnostic {
     let node = d.node.unwrap_or(u32::MAX);
     let (from, to) = d
         .node
@@ -95,16 +98,21 @@ fn parse_spanned(
 ) -> Result<(Vec<u8>, Option<cadenza_syntax::spans::SpanTable>), String> {
     match from {
         Format::Sexpr => {
-            let (arenas, spans) =
-                cadenza_syntax::sexpr::read_spanned(text).map_err(|e| e.0)?;
+            let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(text).map_err(|e| e.0)?;
             Ok((cadenza_syntax::codec::encode(&arenas), Some(spans)))
         }
         Format::Ml => {
             let parsed = cadenza_syntax::parser::read_ml(text);
             if let Some(err) = parsed.errors.first() {
-                return Err(format!("ML parse error at byte {}: {}", err.span.start, err.message));
+                return Err(format!(
+                    "ML parse error at byte {}: {}",
+                    err.span.start, err.message
+                ));
             }
-            Ok((cadenza_syntax::codec::encode(&parsed.arenas), Some(parsed.spans)))
+            Ok((
+                cadenza_syntax::codec::encode(&parsed.arenas),
+                Some(parsed.spans),
+            ))
         }
         // No reader (or output-only) — fall back to the format-agnostic byte conversion, no spans.
         _ => convert::convert(text.as_bytes(), from, Format::Binary)
@@ -143,19 +151,38 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
 
     // Binary AST -> WebAssembly component. Use the full `compile` entry so warnings ride alongside a
     // successful component too.
-    let out = rcdzc::compile(
-        &[rcdzc::Artifact::new(
-            rcdzc::Artifact::KIND_AST,
-            "main",
-            ast_bytes,
-        )],
-        &[rcdzc::Target::Wasm],
-    );
+    //
+    // EMBED DWARF DEBUG INFO whenever we have a span table (a text surface — the guide's case): pass
+    // the `spans` artifact and request `WasmDebug`, so the emitted component carries `.debug_line` /
+    // `.debug_info` sections. Chrome's "C/C++ DevTools Support (DWARF)" extension then steps through the
+    // ACTUAL Cadenza source and prints scalar arguments — the whole point of running the guide's
+    // programs in the browser debugger. The sections are inert (they change no executed byte) and
+    // strippable, so this costs nothing at runtime; a binary/output-only surface has no spans and falls
+    // back to a plain component (`DESIGN-debug-info-rcdzc.md`, Mode E).
+    let mut inputs = vec![rcdzc::Artifact::new(
+        rcdzc::Artifact::KIND_AST,
+        "main",
+        ast_bytes,
+    )];
+    let target = match &spans {
+        Some(span_table) => {
+            inputs.push(rcdzc::Artifact::new(
+                rcdzc::spans::KIND_SPANS,
+                "main",
+                rcdzc::spans::encode(&span_data_of(text, span_table)),
+            ));
+            rcdzc::Target::WasmDebug
+        }
+        None => rcdzc::Target::Wasm,
+    };
+    let out = rcdzc::compile(&inputs, &[target]);
     let diagnostics = out
         .diagnostics
         .iter()
         .map(|d| to_js_diag(d, spans.as_ref()))
         .collect();
+    // Both `Wasm` and `WasmDebug` produce a `component`-kinded artifact (a debug component is a
+    // decorated component, not a new kind), so the artifact lookup is the same either way.
     let component = out
         .artifact(rcdzc::Target::Wasm.artifact_kind())
         .map(|b| b.to_vec());
@@ -163,6 +190,30 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
         component,
         diagnostics,
     })
+}
+
+/// Project a front-end `SpanTable` (+ the source text) into rcdzc's `spans::SpanData` wire form — the
+/// `(start, len)` byte range per `StructId`, a module path, and the source text (for DWARF line
+/// derivation). MIRRORS rcdzc's format at this driver boundary (the two crates share no code, so the
+/// mapping lives wherever both are held — here, and in the `cdz` bin). The module path is a stable
+/// `"main"` label (the guide compiles one in-memory buffer; there is no tree-relative file path).
+fn span_data_of(
+    source: &str,
+    spantable: &cadenza_syntax::spans::SpanTable,
+) -> rcdzc::spans::SpanData {
+    let spans: Vec<(u32, u32)> = (0..spantable.len())
+        .map(
+            |i| match spantable.get(cadenza_syntax::StructId(i as u32)) {
+                Some(sp) => (sp.start as u32, (sp.end - sp.start) as u32),
+                None => (0, 0),
+            },
+        )
+        .collect();
+    rcdzc::spans::SpanData {
+        module_path: "main.cdz".to_string(),
+        spans,
+        source: source.to_string(),
+    }
 }
 
 /// Type-check `text` (in `from` surface) and return every well-formedness diagnostic — WITHOUT
@@ -197,7 +248,10 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
     };
     let mut db = rcdzc::db::Db::load(arenas);
     let diags = rcdzc::diagnostics(&mut db);
-    Ok(diags.iter().map(|d| to_js_diag(d, spans.as_ref())).collect())
+    Ok(diags
+        .iter()
+        .map(|d| to_js_diag(d, spans.as_ref()))
+        .collect())
 }
 
 /// The inferred type at a source byte offset — for a hover tooltip. Finds the innermost user node
@@ -229,7 +283,9 @@ pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt
     let Some(node) = spans.node_at_offset(off) else {
         return Ok(None);
     };
-    let span = spans.get(node).expect("node_at_offset returned a spanned node");
+    let span = spans
+        .get(node)
+        .expect("node_at_offset returned a spanned node");
     let arenas = match rcdzc::codec::decode(&ast_bytes) {
         Some(a) => a,
         None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
@@ -276,7 +332,9 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
     let Some(node) = spans.node_at_offset(off) else {
         return Ok(None);
     };
-    let ref_span = spans.get(node).expect("node_at_offset returned a spanned node");
+    let ref_span = spans
+        .get(node)
+        .expect("node_at_offset returned a spanned node");
     let arenas = match rcdzc::codec::decode(&ast_bytes) {
         Some(a) => a,
         None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
@@ -318,8 +376,14 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
 pub fn render_syntax(text: &str, from: &str, to: &str) -> Result<String, JsError> {
     let from = parse_format(from)?;
     let to = parse_format(to)?;
-    let bytes = convert::convert(text.as_bytes(), from, to)
-        .map_err(|e| JsError::new(&format!("convert {} -> {}: {}", from.name(), to.name(), e.0)))?;
+    let bytes = convert::convert(text.as_bytes(), from, to).map_err(|e| {
+        JsError::new(&format!(
+            "convert {} -> {}: {}",
+            from.name(),
+            to.name(),
+            e.0
+        ))
+    })?;
     String::from_utf8(bytes).map_err(|_| JsError::new("rendered output was not valid UTF-8"))
 }
 
