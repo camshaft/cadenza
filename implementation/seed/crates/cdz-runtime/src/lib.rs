@@ -1581,13 +1581,20 @@ fn vec_leaf_of(e: Handle) -> Handle {
 /// (the subtree is now shared). Used both for a leaf gaining an element and an interior gaining a
 /// branch; the two are the same op over `handles`.
 fn vec_node_append(node: Handle, child: Handle) -> Handle {
-    let arity = vec_arity(node);
-    let mut hs = Vec::with_capacity(arity + 1);
-    for j in 0..arity {
-        let c = vec_child(node, j);
-        op_dup(c);
-        hs.push(c);
-    }
+    // Deref `node` ONCE and copy its children from the borrowed slice (was one `vec_child` deref +
+    // null-check per sibling — up to 32 for a strict node; the compiler can't hoist them because
+    // `op_dup` writes child memory, defeating alias analysis on the parent). `op_dup(c)` mutates a
+    // CHILD node's rc, disjoint from the parent `&Node` we hold — sound (a well-formed RRB tree has
+    // no cycles, so no child aliases its parent).
+    let mut hs = with_node(node, Vec::new(), |n| {
+        let children = n.handles.as_slice();
+        let mut hs = Vec::with_capacity(children.len() + 1);
+        for &c in children {
+            op_dup(c);
+            hs.push(c);
+        }
+        hs
+    });
     hs.push(child);
     alloc(hs, Vec::new())
 }
@@ -1598,17 +1605,21 @@ fn vec_node_append(node: Handle, child: Handle) -> Handle {
 /// the node's kind. For a relaxed node whose sizes are unchanged (e.g. an in-place element update),
 /// use `vec_node_replace_keep_raw` so the size table survives the copy.
 fn vec_node_replace(node: Handle, sub: usize, new_child: Handle) -> Handle {
-    let arity = vec_arity(node);
-    let mut hs = Vec::with_capacity(arity);
-    for j in 0..arity {
-        if j == sub {
-            hs.push(new_child);
-        } else {
-            let c = vec_child(node, j);
-            op_dup(c);
-            hs.push(c);
+    // One deref of `node` + copy from the borrowed slice (was a `vec_child` deref per sibling). See
+    // `vec_node_append` for the aliasing argument (op_dup mutates a disjoint CHILD node).
+    let hs = with_node(node, Vec::new(), |n| {
+        let children = n.handles.as_slice();
+        let mut hs = Vec::with_capacity(children.len());
+        for (j, &c) in children.iter().enumerate() {
+            if j == sub {
+                hs.push(new_child);
+            } else {
+                op_dup(c);
+                hs.push(c);
+            }
         }
-    }
+        hs
+    });
     alloc(hs, Vec::new())
 }
 
@@ -1617,18 +1628,21 @@ fn vec_node_replace(node: Handle, sub: usize, new_child: Handle) -> Handle {
 /// `vec-update`, which swaps one leaf element for another. Preserves the strict-vs-relaxed kind: a
 /// strict node (empty raw) stays strict, a relaxed node keeps its table.
 fn vec_node_replace_keep_raw(node: Handle, sub: usize, new_child: Handle) -> Handle {
-    let arity = vec_arity(node);
-    let mut hs = Vec::with_capacity(arity);
-    for j in 0..arity {
-        if j == sub {
-            hs.push(new_child);
-        } else {
-            let c = vec_child(node, j);
-            op_dup(c);
-            hs.push(c);
+    // One deref of `node` — copy the children from the borrowed slice AND read the raw size table in
+    // the same borrow (was a `vec_child` deref per sibling PLUS a separate `with_node` for the raw).
+    let (hs, raw) = with_node(node, (Vec::new(), Vec::new()), |n| {
+        let children = n.handles.as_slice();
+        let mut hs = Vec::with_capacity(children.len());
+        for (j, &c) in children.iter().enumerate() {
+            if j == sub {
+                hs.push(new_child);
+            } else {
+                op_dup(c);
+                hs.push(c);
+            }
         }
-    }
-    let raw = with_node(node, Vec::new(), |n| n.raw.to_vec());
+        (hs, n.raw.to_vec())
+    });
     alloc(hs, raw)
 }
 
@@ -5448,6 +5462,44 @@ mod tests {
             let ns = t.elapsed().as_nanos() as f64 / (reps as f64 * n as f64);
             println!("STRKEY len={len:>4}  lookup {ns:6.1} ns/op  (n={n})");
             op_drop(m);
+        }
+    }
+
+    /// CPU-scaling PROBE (diagnostic, not a gate) for the SHARED/PERSISTENT vec copy path — the
+    /// functional-update pattern (keep the base version, derive a new one), the largest realistic
+    /// allocator (vec_push_shared/vec_update_shared ~7000 allocs/1000). Each op path-copies the touched
+    /// RRB spine (root→leaf) via `vec_node_replace`/`vec_node_append`, `op_dup`ing every off-path
+    /// sibling. Times shared push + shared update at growing N to reveal the copy-path hot region under
+    /// `perf` (the alloc bench sees the count but not where the CPU goes). Never profiled before.
+    #[test]
+    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    fn shared_vec_copy_path_cpu_scaling_probe() {
+        for &n in &[1000i64, 4000, 16000, 64000] {
+            // Build an N-element base vector, kept shared (rc>1) across the timed ops.
+            let mut base = op_vec_empty();
+            for k in 0..n {
+                base = op_vec_push(base, op_box_int(k));
+            }
+            // A FIXED large op count (~1M push + 1M update) so timing is stable across N (the copy path
+            // is O(log N) per op — total ops must NOT shrink with N or large-N tiers get too few samples).
+            let reps = 1_000_000i64;
+            // Shared PUSH: dup the base (force path-copy), push, drop the result — base survives.
+            let t0 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(base);
+                op_drop(op_vec_push(base, op_box_int(0)));
+            }
+            let push_ns = t0.elapsed().as_nanos() as f64 / reps as f64;
+            // Shared UPDATE at a middle index (a full-depth spine copy, not the right edge).
+            let mid = (n / 2) as u32;
+            let t1 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(base);
+                op_drop(op_vec_update(base, mid, op_box_int(7)));
+            }
+            let upd_ns = t1.elapsed().as_nanos() as f64 / reps as f64;
+            println!("VECSHARED n={n:>6}  push {push_ns:7.1} ns/op   update {upd_ns:7.1} ns/op");
+            op_drop(base);
         }
     }
 
