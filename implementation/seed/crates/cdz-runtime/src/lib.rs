@@ -239,94 +239,224 @@ impl core::ops::Deref for Raw {
     }
 }
 
-/// A node's child-handle vector. A newtype over `Vec<Handle>` TODAY — the point of the newtype is to
-/// funnel every access through a fixed surface so the storage can later become inline-or-spill (a
-/// `[Handle; 2]` inline arm for the ≤2-child nodes that dominate — tuples, sums `[payload]`, CHAMP
-/// `[k,v]` pairs — spilling to a heap `Vec` only past 2) WITHOUT touching any call site. Mirrors the
-/// `Raw` pattern: `Deref<Target = [Handle]>` makes all READS (len/iter/index/get/first) storage-
-/// transparent; every MUTATION goes through an explicit method here. `take()` yields the inner `Vec`
-/// as a working buffer (the FBIP rebuild path mutates that Vec then reinstalls via `from`/`champ_become_hdr`).
-#[derive(Default)]
-struct Handles(Vec<Handle>);
+/// Inline capacity of the `Handles::Inline` arm — the ≤2-child nodes that dominate (tuples/records of
+/// small arity, sums `[payload]`, CHAMP `[k,v]` data entries) carry their children INLINE in the `Node`
+/// with no separate heap `Vec`; wider nodes spill to `Heap`.
+const INLINE_HANDLES_CAP: usize = 2;
+
+/// A node's child-handle vector, inline-or-spill: ≤`INLINE_HANDLES_CAP` children live INLINE in the
+/// `Node` (no heap `Vec`), more spill to a heap `Vec`. Mirrors `Raw`: `Deref<Target=[Handle]>` makes all
+/// READS storage-transparent; every MUTATION goes through an explicit method that grows inline→heap on
+/// demand. `take()` returns an OWNED `Handles` (a move — NEVER materializes a Vec for an inline node, or
+/// it would re-add a heap alloc to the 0-alloc FBIP paths — the iter-23 trap).
+enum Handles {
+    Inline { buf: [Handle; INLINE_HANDLES_CAP], len: u8 },
+    Heap(Vec<Handle>),
+}
+
+impl Default for Handles {
+    #[inline]
+    fn default() -> Handles {
+        Handles::new()
+    }
+}
 
 impl Handles {
     #[inline]
     fn new() -> Handles {
-        Handles(Vec::new())
+        Handles::Inline { buf: [Handle::NULL; INLINE_HANDLES_CAP], len: 0 }
+    }
+    /// Build a ≤`INLINE_HANDLES_CAP`-element `Handles` INLINE from a slice — no heap Vec. The direct
+    /// construction path for the small terminal nodes (sum `[payload]`, tuple/`[k,v]` of arity ≤2) so
+    /// they carry their children inline with only the `Node` box allocated (the inline-handles WIN).
+    /// Caller guarantees `hs.len() <= INLINE_HANDLES_CAP`.
+    #[inline]
+    fn inline_from(hs: &[Handle]) -> Handles {
+        let mut buf = [Handle::NULL; INLINE_HANDLES_CAP];
+        buf[..hs.len()].copy_from_slice(hs);
+        Handles::Inline { buf, len: hs.len() as u8 }
+    }
+    /// An inline `Handles` of `len` NULL slots (≤ cap) — `op_arr_alloc`'s direct path for a small
+    /// tuple/record before its slots are filled by `op_arr_set`. No heap Vec.
+    #[inline]
+    fn inline_nulls(len: usize) -> Handles {
+        Handles::Inline { buf: [Handle::NULL; INLINE_HANDLES_CAP], len: len as u8 }
     }
     #[inline]
     fn as_slice(&self) -> &[Handle] {
-        &self.0
+        match self {
+            Handles::Inline { buf, len } => &buf[..*len as usize],
+            Handles::Heap(v) => v,
+        }
+    }
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [Handle] {
+        match self {
+            Handles::Inline { buf, len } => &mut buf[..*len as usize],
+            Handles::Heap(v) => v,
+        }
     }
     #[inline]
     fn len(&self) -> usize {
-        self.0.len()
+        match self {
+            Handles::Inline { len, .. } => *len as usize,
+            Handles::Heap(v) => v.len(),
+        }
     }
     #[inline]
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.len() == 0
     }
-    /// Append one handle (`Vec::push`).
+    /// Promote an inline arm to a heap `Vec` (copying the current elements). The spill point.
+    #[inline]
+    fn spill(&mut self) -> &mut Vec<Handle> {
+        if let Handles::Inline { buf, len } = self {
+            let v = buf[..*len as usize].to_vec();
+            *self = Handles::Heap(v);
+        }
+        match self {
+            Handles::Heap(v) => v,
+            Handles::Inline { .. } => unreachable!("just spilled"),
+        }
+    }
+    /// Append one handle, spilling inline→heap if it would exceed the inline capacity.
     #[inline]
     fn push(&mut self, h: Handle) {
-        self.0.push(h);
+        match self {
+            Handles::Inline { buf, len } if (*len as usize) < INLINE_HANDLES_CAP => {
+                buf[*len as usize] = h;
+                *len += 1;
+            }
+            Handles::Heap(v) => v.push(h),
+            Handles::Inline { .. } => self.spill().push(h),
+        }
     }
-    /// Set slot `i` (caller-checked in bounds).
+    /// Set slot `i` in place (length-preserving; caller-checked in bounds).
     #[inline]
     fn set(&mut self, i: usize, h: Handle) {
-        self.0[i] = h;
+        self.as_mut_slice()[i] = h;
     }
-    /// A mutable ref to slot `i`, or `None` if OOB (`Vec::get_mut`).
+    /// A mutable ref to slot `i`, or `None` if OOB (length-preserving).
     #[inline]
     fn get_mut(&mut self, i: usize) -> Option<&mut Handle> {
-        self.0.get_mut(i)
+        self.as_mut_slice().get_mut(i)
     }
-    /// Empty it, keeping capacity (`Vec::clear`).
+    /// Empty it, keeping the arm (Inline → len 0; Heap → keep the buffer, capacity retained).
     #[inline]
     fn clear(&mut self) {
-        self.0.clear();
+        match self {
+            Handles::Inline { len, .. } => *len = 0,
+            Handles::Heap(v) => v.clear(),
+        }
     }
-    /// Resize to `len`, filling new slots with `fill` (`Vec::resize`).
+    /// Resize to `len`, filling new slots with `fill`; spills inline→heap past the inline cap.
     #[inline]
     fn resize(&mut self, len: usize, fill: Handle) {
-        self.0.resize(len, fill);
+        if len <= INLINE_HANDLES_CAP {
+            if let Handles::Inline { buf, len: cur } = self {
+                let old = *cur as usize;
+                for slot in buf.iter_mut().take(len).skip(old) {
+                    *slot = fill;
+                }
+                *cur = len as u8;
+                return;
+            }
+        }
+        self.spill().resize(len, fill);
     }
-    /// Insert `h` at `i`, shifting the tail right (`Vec::insert`).
+    /// Insert `h` at `i`, shifting the tail right; spills inline→heap past the inline cap.
     #[inline]
     fn insert(&mut self, i: usize, h: Handle) {
-        self.0.insert(i, h);
+        match self {
+            Handles::Inline { buf, len } if (*len as usize) < INLINE_HANDLES_CAP => {
+                let mut j = *len as usize;
+                while j > i {
+                    buf[j] = buf[j - 1];
+                    j -= 1;
+                }
+                buf[i] = h;
+                *len += 1;
+            }
+            Handles::Heap(v) => v.insert(i, h),
+            Handles::Inline { .. } => self.spill().insert(i, h),
+        }
     }
-    /// Remove `count` slots starting at `start`, shifting the tail left (`Vec::drain(start..start+count)`).
-    /// The removed handles are DISCARDED (the caller has already relocated/dropped their references).
+    /// Remove `count` slots starting at `start`, shifting the tail left (length-preserving arm). The
+    /// removed handles are DISCARDED (the caller has already relocated/dropped their references).
     #[inline]
     fn drain_range(&mut self, start: usize, count: usize) {
-        self.0.drain(start..start + count);
+        match self {
+            Handles::Inline { buf, len } => {
+                let n = *len as usize;
+                for j in start..n - count {
+                    buf[j] = buf[j + count];
+                }
+                *len -= count as u8;
+            }
+            Handles::Heap(v) => {
+                v.drain(start..start + count);
+            }
+        }
     }
-    /// Take the handles out, leaving an empty `Handles`; returns the inner `Vec` as a working buffer.
-    /// The FBIP rebuild path mutates that buffer and reinstalls it via `Handles::from` / `champ_become_hdr`.
+    /// Take the handles out, leaving an empty (inline) `Handles`; returns the OWNED `Handles` — a MOVE,
+    /// never a heap alloc even for an inline node. The FBIP rebuild mutates the returned value via these
+    /// methods and reinstalls it via `champ_become_hdr`.
     #[inline]
-    fn take(&mut self) -> Vec<Handle> {
-        std::mem::take(&mut self.0)
+    fn take(&mut self) -> Handles {
+        std::mem::take(self)
     }
-    /// A fresh owned `Vec` copy of the handles — the path-copy path clones the source node's children
+    /// A fresh owned `Vec` copy of the handles — the path-COPY path clones the source node's children
     /// into a working buffer it then mutates/reinstalls. (`Handle` is `Copy`, so this copies pointers,
     /// touching no refcount — the caller applies the dup/drop discipline.)
     #[inline]
     fn to_vec(&self) -> Vec<Handle> {
-        self.0.clone()
+        self.as_slice().to_vec()
     }
-    /// Move all handles out onto `out` (draining self), then leave self empty (`Vec::append`).
-    /// Used by the free cascade to move a dying node's children onto the worklist.
+    /// Consume into an owned `Vec` — a MOVE for `Heap`, a materialize for `Inline`. Only for consumers
+    /// that need `Vec` push/pop semantics (the CURSOR frame stack, kept on the heap arm — see
+    /// `from_vec_heap`), so this is a no-copy move in practice.
+    #[inline]
+    fn into_vec(self) -> Vec<Handle> {
+        match self {
+            Handles::Heap(v) => v,
+            Handles::Inline { buf, len } => buf[..len as usize].to_vec(),
+        }
+    }
+    /// Move all handles out onto `out` (leaving self empty). Used by the free cascade.
     #[inline]
     fn append_into(&mut self, out: &mut Vec<Handle>) {
-        out.append(&mut self.0);
+        match self {
+            Handles::Inline { buf, len } => {
+                out.extend_from_slice(&buf[..*len as usize]);
+                *len = 0;
+            }
+            Handles::Heap(v) => out.append(v),
+        }
+    }
+    /// Wrap a `Vec` WITHOUT inlining — keep the `Heap` arm even for ≤2 elements. For the CURSOR frame
+    /// stack only: `champ_advance_fbip` push/pops it as a `Vec` (depth reaches the trie height) and
+    /// `champ_cursor_take` moves it out via `into_vec`; inlining a shallow cursor would force a Vec
+    /// re-materialize every advance step (regresses map_iterate 3→553). NOT for value nodes (those go
+    /// through `From` so ≤2-child nodes inline — the win).
+    #[inline]
+    fn from_vec_heap(v: Vec<Handle>) -> Handles {
+        Handles::Heap(v)
     }
 }
 
 impl From<Vec<Handle>> for Handles {
+    /// Build from a freshly-constructed handle vector (the `alloc`/reinstall boundary): INLINE it when it
+    /// fits (the common ≤2-child node — the Vec is dropped, unallocated-away), else keep the heap buffer
+    /// verbatim (no copy). Same inline-on-construct discipline as `Raw::from`.
     #[inline]
     fn from(v: Vec<Handle>) -> Handles {
-        Handles(v)
+        if v.len() <= INLINE_HANDLES_CAP {
+            let mut buf = [Handle::NULL; INLINE_HANDLES_CAP];
+            buf[..v.len()].copy_from_slice(&v);
+            Handles::Inline { buf, len: v.len() as u8 }
+        } else {
+            Handles::Heap(v)
+        }
     }
 }
 
@@ -334,7 +464,7 @@ impl core::ops::Deref for Handles {
     type Target = [Handle];
     #[inline]
     fn deref(&self) -> &[Handle] {
-        &self.0
+        self.as_slice()
     }
 }
 
@@ -539,12 +669,12 @@ fn alloc(handles: Vec<Handle>, raw: Vec<u8>) -> Handle {
 /// `alloc` but taking a ready `Raw` — lets a caller that builds a small header INLINE (e.g.
 /// `champ_header`) skip the transient `Vec` allocation entirely. `handles` is taken as a `Vec` (the
 /// construction sites build `vec![…]`) and moved into the node's `Handles` field.
-fn alloc_raw(handles: Vec<Handle>, raw: Raw) -> Handle {
+fn alloc_raw(handles: impl Into<Handles>, raw: Raw) -> Handle {
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() + 1));
     Handle(Box::into_raw(Box::new(Node {
         rc: 1,
-        handles: Handles::from(handles),
+        handles: handles.into(),
         raw,
     })))
 }
@@ -637,6 +767,12 @@ fn op_arr_alloc(len: u32) -> Handle {
     if len == 0 {
         return imm_unit();
     }
+    // A small (≤cap) tuple/record builds its slots INLINE (no transient heap Vec that would be copied
+    // into the inline arm and freed) — the node is then just its Box (the inline-handles WIN for the
+    // dominant ≤2-arity products). Wider arrays keep the heap Vec.
+    if (len as usize) <= INLINE_HANDLES_CAP {
+        return alloc_raw(Handles::inline_nulls(len as usize), Raw::from(Vec::new()));
+    }
     alloc(vec![Handle::NULL; len as usize], Vec::new())
 }
 /// Write an element handle and return the array handle (for convenient threading). OOB into a valid
@@ -677,9 +813,9 @@ fn op_arr_len(arr: Handle) -> u32 {
 // `sum-payload` is TOTAL (no runtime index): a mismatched node with no handle yields NULL.
 
 fn op_sum_new(disc: u32, payload: Handle) -> Handle {
-    // Build the 4-byte disc INLINE (no transient heap Vec) — a sum node is then the node Box + its
-    // 1-element handles Vec, 2 allocs instead of 3.
-    alloc_raw(vec![payload], Raw::inline(&disc.to_le_bytes()))
+    // Build BOTH the 4-byte disc raw AND the 1-element handles INLINE (no transient heap Vec for
+    // either) — a sum node is then just the node Box, 1 alloc instead of 2 (was 3 before inline-raw).
+    alloc_raw(Handles::inline_from(&[payload]), Raw::inline(&disc.to_le_bytes()))
 }
 fn op_sum_disc(h: Handle) -> u32 {
     if is_immediate(h) {
@@ -850,11 +986,11 @@ fn bytes_flatten(h: Handle) {
     let children = match unsafe { h.0.as_mut() } {
         Some(n) => {
             n.raw = Raw::from(dst); // the flattened bytes (a rope leaf; usually > inline cap → Heap)
-            n.handles.take() // the (now-orphaned) rope children, as an owned Vec to drop below
+            n.handles.take() // the (now-orphaned) rope children (an owned `Handles`) to drop below
         }
         None => return,
     };
-    for c in children {
+    for &c in children.iter() {
         op_drop(c);
     }
 }
@@ -1061,14 +1197,44 @@ fn op_drop(root: Handle) {
         node.rc -= 1; // shared: cheapest path, no reclamation
         return;
     }
-    // rc == 1: last reference. Reclaim the node and cascade into its children. Reuse the node's own
-    // `handles` vector as the worklist seed (leaf → empty, no allocation).
-    let mut worklist = node.handles.take();
+    // rc == 1: last reference. Reclaim the node and cascade into its children.
+    //
+    // The worklist is allocated LAZILY: an inline node's ≤2 children are pushed straight onto the
+    // (initially-empty) worklist, and a `Vec` is materialized only if/when a HEAP child is expanded (a
+    // node with >2 children — which necessarily already owns a heap Vec, so the cascade is heap-bound
+    // there regardless). This keeps the dominant case — dropping a small (≤2-child, often all-immediate)
+    // compound like a tuple/sum/`[k,v]` — ALLOCATION-FREE, matching the pre-inline behavior where the
+    // freed node's own handle Vec was reused as the worklist seed. `SmallVec`-style: the seed lives in a
+    // fixed `[Handle; INLINE_HANDLES_CAP]` until a spill is unavoidable.
+    let mut seed_buf = [Handle::NULL; INLINE_HANDLES_CAP];
+    let mut seed_len = 0usize;
+    // The worklist REUSES a dying heap node's own `Vec` as its backing rather than allocating a fresh
+    // one (the pre-inline behavior — the freed node's handle Vec was going to be freed anyway, so using
+    // it as scratch is a zero-alloc cascade). It stays empty (no alloc) until the FIRST heap node is
+    // reached, whose Vec it adopts by move; inline nodes' ≤2 children fill `seed_buf` with no heap at all.
+    let mut worklist: Vec<Handle> = Vec::new();
+    // Seed from the root: an inline root fills the buffer; a heap root donates its Vec as the worklist.
+    match &mut node.handles {
+        Handles::Inline { buf, len } => {
+            seed_buf[..*len as usize].copy_from_slice(&buf[..*len as usize]);
+            seed_len = *len as usize;
+        }
+        Handles::Heap(v) => worklist = std::mem::take(v),
+    }
     unsafe { drop(Box::from_raw(root.0)) };
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() - 1));
 
-    while let Some(cur) = worklist.pop() {
+    loop {
+        // Pop from the worklist first (deeper heap subtrees), then drain the inline seed.
+        let cur = match worklist.pop() {
+            Some(c) => c,
+            None if seed_len > 0 => {
+                seed_len -= 1;
+                seed_buf[seed_len]
+            }
+            None => break,
+        };
         if is_immediate(cur) {
             continue; // an inline child owns no heap — the hottest RC path (doc-named)
         }
@@ -1080,8 +1246,31 @@ fn op_drop(root: Handle) {
             n.rc -= 1; // shared child survives; freed only when its last owner drops it
             continue;
         }
-        // Move this node's children onto the worklist (draining its vector), then free it.
-        n.handles.append_into(&mut worklist);
+        // Move this node's children onto the pending set, then free it. An inline child-set with room
+        // fills the seed buffer (no alloc). Otherwise: if the worklist is still empty, ADOPT this node's
+        // own Vec as the worklist backing (a heap node owns one; reuse it — zero alloc, as the pre-inline
+        // cascade did); if the worklist is already backed, append into it.
+        match &mut n.handles {
+            Handles::Inline { buf, len } if seed_len + *len as usize <= INLINE_HANDLES_CAP => {
+                seed_buf[seed_len..seed_len + *len as usize].copy_from_slice(&buf[..*len as usize]);
+                seed_len += *len as usize;
+            }
+            Handles::Heap(v) if worklist.is_empty() => {
+                // Adopt the dying node's Vec (no alloc), then fold any pending inline-seed items in.
+                worklist = std::mem::take(v);
+                if seed_len > 0 {
+                    worklist.extend_from_slice(&seed_buf[..seed_len]);
+                    seed_len = 0;
+                }
+            }
+            _ => {
+                if seed_len > 0 {
+                    worklist.extend_from_slice(&seed_buf[..seed_len]);
+                    seed_len = 0;
+                }
+                n.handles.append_into(&mut worklist);
+            }
+        }
         unsafe { drop(Box::from_raw(cur.0)) };
         #[cfg(any(test, feature = "debug-counters"))]
         LIVE_NODES.with(|n| n.set(n.get() - 1));
@@ -1315,7 +1504,10 @@ fn vec_read_header(v: Handle) -> (u32, u32, Handle) {
 
 /// A one-element leaf node holding `e` (consumed into it).
 fn vec_leaf_of(e: Handle) -> Handle {
-    alloc(vec![e], Vec::new())
+    // Born on the HEAP arm: an RRB leaf grows toward 32 elements via in-place `vec_push_child_inplace`,
+    // so inlining it (≤2) would only pay a spill on the 3rd push with no lasting benefit (it ends up
+    // heap regardless). `from_vec_heap` keeps the single-element Vec as the backing to grow into.
+    alloc_raw(Handles::from_vec_heap(vec![e]), Raw::from(Vec::new()))
 }
 
 /// Append `child` (consumed) to a trie node, `dup`ing the existing children into the copy — the
@@ -3238,9 +3430,15 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
 /// `Copy` pointer with no `Drop`), so a carried child in BOTH the old and new Vec keeps its rc intact.
 /// A CHAMP node's `raw` is always exactly `CHAMP_HEADER_SIZE`, so the header write never grows/reallocs;
 /// a defensively short/absent `raw` is resized to fit. SAFETY: caller verified `node_rc(node) == 1`.
-fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u32, size: u32) -> Handle {
+fn champ_become_hdr(
+    node: Handle,
+    handles: impl Into<Handles>,
+    datamap: u32,
+    nodemap: u32,
+    size: u32,
+) -> Handle {
     if let Some(n) = unsafe { node.0.as_mut() } {
-        n.handles = Handles::from(handles);
+        n.handles = handles.into();
         if n.raw.len() != CHAMP_HEADER_SIZE {
             n.raw.resize(CHAMP_HEADER_SIZE, 0); // defensive; a real CHAMP node is already 12 bytes
         }
@@ -3256,10 +3454,10 @@ fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u
 /// leaving it transiently empty. The caller reinstalls a handle vector via `champ_become_hdr` before
 /// returning, so no other reference observes the empty state (single-threaded). Moving a `Handle` out
 /// touches no refcount (`Copy`, no `Drop`). SAFETY: caller verified `node_rc(node) == 1`.
-fn champ_take_handles(node: Handle) -> Vec<Handle> {
+fn champ_take_handles(node: Handle) -> Handles {
     match unsafe { node.0.as_mut() } {
         Some(n) => n.handles.take(),
-        None => Vec::new(),
+        None => Handles::new(),
     }
 }
 
@@ -3327,7 +3525,7 @@ fn champ_insert_fbip(
     // reinstall this same vector rather than allocating a fresh one.
     let mut handles = match unsafe { node.0.as_mut() } {
         Some(n) => n.handles.take(),
-        None => Vec::new(),
+        None => Handles::new(),
     };
 
     let dcount = data_count(datamap) as usize;
@@ -3345,7 +3543,7 @@ fn champ_insert_fbip(
             // reinstall it, rather than allocating a fresh `new_handles` (saves one Vec per spine node).
             for t in 1..stride {
                 op_drop(handles[base + t]); // old value column, replaced
-                handles[base + t] = entry.col(t); // incoming value column (owned)
+                handles.set(base + t, entry.col(t)); // incoming value column (owned)
             }
             op_drop(entry.key()); // incoming duplicate key unused
             return (champ_become_hdr(node, handles, datamap, nodemap, size), 0); // overwrite
@@ -3366,7 +3564,7 @@ fn champ_insert_fbip(
         //     left by `stride`. (2) INSERT `sub` at its canonical subnode position: after the drain the
         //     entry region holds `dcount-1` entries, so subnodes start at `stride*(dcount-1)`, and `sub`
         //     goes at `+ new_sidx`. The only allocation left is `sub` itself (intrinsic — a new node).
-        handles.drain(base..base + stride);
+        handles.drain_range(base, stride);
         handles.insert(stride * (dcount - 1) + new_sidx, sub);
         return (champ_become_hdr(node, handles, new_datamap, new_nodemap, size + 1), 1); // split: new key
     }
@@ -3384,7 +3582,7 @@ fn champ_insert_fbip(
         // rather than rebuilding a fresh Vec (saves one alloc per descended level, the common path).
         // The recursion CONSUMED `child` (the reference at this slot); writing `new_child` here is a
         // no-op when it reused the shell (`new_child == child`) and installs the fresh node otherwise.
-        handles[subbase + sidx] = new_child;
+        handles.set(subbase + sidx, new_child);
         return (champ_become_hdr(node, handles, datamap, nodemap, size + delta), delta);
     }
 
@@ -3674,9 +3872,10 @@ fn champ_remove_fbip(
         // canonical KEY order, so the drain preserves it.
         let mut handles = champ_take_handles(node);
         let entries_after = (arity / stride - 1) as u32;
-        for h in handles.drain(j..j + stride) {
-            op_drop(h); // removed entry columns: release the node's reference
+        for t in 0..stride {
+            op_drop(handles[j + t]); // removed entry columns: release the node's reference
         }
+        handles.drain_range(j, stride); // shift the remaining collision entries left, in place
         return (champ_become_hdr(node, handles, 0, 0, entries_after), true);
     }
 
@@ -3697,9 +3896,10 @@ fn champ_remove_fbip(
         let mut handles = champ_take_handles(node);
         let new_datamap = datamap & !bit;
         let base = stride * eidx;
-        for h in handles.drain(base..base + stride) {
-            op_drop(h); // removed entry columns: release the node's references
+        for t in 0..stride {
+            op_drop(handles[base + t]); // removed entry columns: release the node's references
         }
+        handles.drain_range(base, stride); // shift the remaining entries + subnodes left, in place
         return (
             champ_become_hdr(node, handles, new_datamap, nodemap, size - 1),
             true,
@@ -3734,7 +3934,7 @@ fn champ_remove_fbip(
             let new_datamap = datamap | bit;
             let new_nodemap = nodemap & !bit;
             let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-            handles.remove(subbase + sidx); // the collapsed subnode handle leaves
+            handles.drain_range(subbase + sidx, 1); // the collapsed subnode handle leaves (already dropped)
             for (off, &h) in centry.cols().iter().enumerate() {
                 handles.insert(stride * new_eidx + off, h); // inlined entry columns (dup'd above)
             }
@@ -3974,7 +4174,10 @@ fn champ_make_cursor(frames: Vec<Handle>, slots: Slots, state: u32) -> Handle {
     for s in slots.as_slice() {
         raw.extend_from_slice(&s.to_le_bytes());
     }
-    alloc(frames, raw)
+    // Keep the frame stack on the HEAP arm (see `from_vec_heap`): cursor frames are push/popped as a Vec
+    // by `champ_advance_fbip` and moved out by `champ_cursor_take`; inlining a shallow cursor would force
+    // a Vec re-materialize every advance step (regresses iterate).
+    alloc_raw(Handles::from_vec_heap(frames), Raw::from(raw))
 }
 
 /// Read a cursor into `(state, frames, slots)`. `frames` are BORROWED pointer copies (owned by the
@@ -4002,7 +4205,7 @@ fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Slots) {
     match unsafe { cur.0.as_mut() } {
         Some(n) => {
             let state = read_u32_at(&n.raw, 0);
-            let frames = n.handles.take();
+            let frames = n.handles.take().into_vec(); // cursor frames need Vec semantics (heap arm)
             let mut slots = Slots::new();
             for i in 0..frames.len() {
                 slots.push(read_u32_at(&n.raw, 4 + 4 * i));
@@ -4104,7 +4307,7 @@ fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Slots, state: u3
         let total = 4 * (sl.len() + 1);
         n.raw.clear();
         n.raw.extend_from_slice(&buf[..total]);
-        n.handles = Handles::from(frames);
+        n.handles = Handles::from_vec_heap(frames); // keep the frame stack on the heap arm (see above)
     }
     cur
 }
@@ -4491,6 +4694,7 @@ fn op_set_difference(a: Handle, b: Handle) -> Handle {
 struct CountingAlloc;
 #[cfg(test)]
 static ALLOC_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[cfg(test)]
 unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
@@ -4596,7 +4800,7 @@ mod tests {
             }
         });
         println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
-        assert!(pinsert_new <= 6700, "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)");
+        assert!(pinsert_new <= 6500, "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)");
         op_drop(mkeep2);
 
         // (C2) PERSISTENT remove from a SHARED map — keep the base (rc>1) across each remove, so every
@@ -4695,7 +4899,7 @@ mod tests {
             }
         });
         println!("ALLOC vec_update_shared x{N}: {vupd_shared}");
-        assert!(vupd_shared <= 8200, "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 8200 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + header)");
+        assert!(vupd_shared <= 7100, "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 8200 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + header)");
         // (D2) PERSISTENT vec_push on a SHARED vec — keep the base (rc>1) so each push path-copies the
         // rightmost spine via `vec_push_into`/`vec_node_append` instead of FBIP in place. Same borrow-and-
         // build copy path; tracked so the persistent-push pattern is guarded (the unique D row is FBIP).
@@ -4707,7 +4911,7 @@ mod tests {
             }
         });
         println!("ALLOC vec_push_shared x{N}: {vpush_shared}");
-        assert!(vpush_shared <= 8300, "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)");
+        assert!(vpush_shared <= 7200, "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)");
         op_drop(v);
 
         // TEMP PROBE: vec_concat / vec_split — the RRB O(log N) rebalancing ops (List.concat/List.split),
@@ -4787,6 +4991,10 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
+        // NOTE (inline-handles, step 2): the set ops rose slightly (union 373→376, ∩ 356→389, ∖ 362→395)
+        // because a set data-node that grows 2→3 entries spills inline→heap once (the cost of inlining a
+        // node that grows). Accepted as a small trade for the big wins (sum_new/tuple2/`[k,v]` −1000 each,
+        // vec push/update shared −1000); TODO next iteration: born-heap for growing CHAMP set nodes.
         assert!(union <= 500, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 500");
         let inter = measure(&mut || {
             op_dup(sa);
@@ -4852,7 +5060,7 @@ mod tests {
         // BOTH the shallow-compound champ_hash fast path AND the shallow-compound champ_eq fast path add
         // NO worklist — so a hit costs exactly the probe. A regression to the general walk (hash and/or
         // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
-        assert!(clookup <= 2500, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)");
+        assert!(clookup <= 1500, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)");
         op_drop(cm);
 
         // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
@@ -4865,7 +5073,7 @@ mod tests {
             }
         });
         println!("ALLOC sum_new x{N}: {sum}");
-        assert!(sum <= 2200, "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)");
+        assert!(sum <= 1200, "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)");
 
         // (J) bytes SLICE x1000 — a rope slice node over a shared leaf: 1 handle (the parent buf) +
         // the 8-byte `[off,len]` raw. With the inline `Raw` the `[off,len]` header no longer allocates
@@ -4906,7 +5114,7 @@ mod tests {
             }
         });
         println!("ALLOC tuple2_build x{N}: {tbuild}");
-        assert!(tbuild <= 2200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
+        assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
     }
 
 
