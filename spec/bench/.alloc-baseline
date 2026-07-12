@@ -7,6 +7,7 @@
 2000	map_lookup_tuplekey x1000
 0	map_remove x1000
 491	set_difference x1000
+1093	set_difference_unique_small_b x1000
 482	set_intersection x1000
 595	set_union x1000
 0	vec_get x1000

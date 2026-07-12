@@ -3884,7 +3884,12 @@ fn set_insert_h(s: Handle, elem: Handle, hash: u32) -> Handle {
 /// set refits in place; a shared set path-copies (old version byte-identical).
 #[allow(dead_code)]
 fn op_set_remove(s: Handle, elem: Handle) -> Handle {
-    let hash = champ_hash(elem);
+    set_remove_h(s, elem, champ_hash(elem))
+}
+
+/// `op_set_remove` with `elem`'s hash PRECOMPUTED — lets set-difference (remove-from-a form) hash each
+/// `b`-element once for its removal instead of re-hashing. CONSUMES `s`, BORROWS `elem`.
+fn set_remove_h(s: Handle, elem: Handle, hash: u32) -> Handle {
     let mine = node_rc(s) == 1;
     let (new, _removed) = champ_remove_fbip(s, elem, hash, 0, SET_STRIDE, mine);
     new
@@ -4071,6 +4076,28 @@ fn op_set_difference(a: Handle, b: Handle) -> Handle {
         op_drop(b);
         return a; // nothing excluded — a unchanged
     }
+    // FAST PATH — remove `b`'s elements FROM `a` in place, when that is a clear win: `a` is UNIQUELY
+    // owned (rc==1, so each remove refits it in place, allocation-free) AND `|b| < |a|` (so `|b|`
+    // removes beat the `|a|` inserts-into-a-fresh-set the general path would do). The `b`-cursor
+    // iterates `b` while the removes target `a` (a DISTINCT tree) — no aliasing. Removing a `b`-element
+    // absent from `a` is a no-op, so the result is exactly `a ∖ b`, canonical (remove preserves shape).
+    // NOTE the guards: on a SHARED `a` every remove would path-copy (WORSE than the insert-fold), and
+    // when `|b| ≥ |a|` the insert-fold does fewer ops — so both fall through to the general path below.
+    if node_rc(a) == 1 && op_set_size(b) < op_set_size(a) {
+        let mut acc = a;
+        let mut cur = op_set_iter(b);
+        loop {
+            let e = op_set_iter_elem(cur);
+            if e == Handle::NULL {
+                break;
+            }
+            acc = set_remove_h(acc, e, champ_hash(e)); // hash `e` once; cursor + remove both BORROW it
+            cur = op_set_iter_next(cur);
+        }
+        op_drop(cur);
+        op_drop(b); // b's references released; nothing carried into the result
+        return acc;
+    }
     let mut acc = op_set_empty();
     let mut cur = op_set_iter(a);
     loop {
@@ -4136,7 +4163,7 @@ mod tests {
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
     /// in-place remove-drain/collapse + inline-Slots cursor + in-place SPLIT + shallow-compound hash+eq work
     /// (insert 1084, remove 0, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 2000=probe-only;
-    /// set union 595 / ∩ 482 / ∖ 491); they are UPPER BOUNDS so ordinary noise never trips them but a
+    /// set union 595 / ∩ 482 / ∖ 491, ∖ unique-small-b 1093≈build-only; they are UPPER BOUNDS so noise never trips them but a
     /// regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
@@ -4272,6 +4299,26 @@ mod tests {
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
+
+        // (G2) set difference with a UNIQUELY-OWNED large `a` minus a SMALL `b` — the remove-from-a fast
+        // path (a rc==1, |b| < |a|): each of |b|'s removes refits `a` in place, so it is allocation-free,
+        // vs the general insert-fold which rebuilds a fresh |a|-element set. `a` is consumed (not dup'd)
+        // so it stays unique; `b` (size N/8) is kept via a dup for reuse. This guards the fast branch —
+        // the (G) rows above use a SHARED equal-size `a`, which correctly stays on the insert-fold path.
+        let db = build_set(0, N / 8); // small exclusion set, kept
+        let ddiff = measure(&mut || {
+            let da = build_set(0, N); // fresh unique `a` each iteration (consumed by the op)
+            op_dup(db);
+            op_drop(op_set_difference(da, db));
+        });
+        println!("ALLOC set_difference_unique_small_b x{N}: {ddiff}");
+        // The fast path adds only the removes (in-place on unique `a`, 0-alloc) + the b-cursor; the build
+        // of the fresh `da` per iteration dominates and is NOT what we measure — subtract it: a bare
+        // build_set(0,N) is the map_insert cost. So this asserts the DIFFERENCE ITSELF adds little beyond
+        // building da. Ceiling = build cost (~1084) + small headroom; a regression to the insert-fold
+        // (which rebuilds another full set) would roughly double it.
+        assert!(ddiff <= 1600, "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 1600 (fast path: build da + in-place removes; a regression to the insert-fold would ~2x)");
+        op_drop(db);
 
         // (H) map lookup by a SHALLOW-COMPOUND key (a 2-tuple) — a pure read whose only allocation
         // would be the probe tuple + champ_hash's worklist. Guards the shallow-compound champ_hash fast
