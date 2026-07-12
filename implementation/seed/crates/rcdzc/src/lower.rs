@@ -761,13 +761,16 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
 /// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // A COMPOUND scrutinee — a SUM or a TUPLE — is matched by the DECISION TREE, not the scalar-probe
-    // path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match is a chain of
-    // `Elem`-path binders / literal tests (the tree handles a discriminant-free root — only lit-tests and
-    // a binder fall-through). Both go through `lower_match_sum` (the shared decision-tree builder); a
-    // scalar scrutinee falls through to the scalar-probe path below. (A record scrutinee is a later
-    // increment; the tuple case is the common structural-match shape.)
-    if let crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) =
+    // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the
+    // scalar-probe path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match
+    // is a chain of `Elem`-path binders / literal tests; a RECORD has neither a discriminant NOR a
+    // sanctioned destructuring pattern (a record is read by `(. r field)` projection, not pattern-matched
+    // field-by-field — `core-semantics.md §Patterns Compose` lists tuple + constructor patterns, NOT
+    // record patterns), so a record match's only patterns are a bare BINDER (binds the whole record) or a
+    // WILDCARD — a degenerate match the tree folds to the first covering arm. All go through
+    // `lower_match_sum` (the shared decision-tree builder); a scalar scrutinee falls through to the
+    // scalar-probe path below.
+    if let crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) =
         crate::infer::type_of(db, scrutinee)
     {
         return lower_match_sum(db, scrutinee, arms);
@@ -959,19 +962,19 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
 /// arm carries only its discriminant + continuation.
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // The scrutinee must be a COMPOUND the decision tree matches — a SUM (its type gives the root variant
-    // set to switch on) or a TUPLE (no discriminant; its arms impose only `Elem`-path binders/lit-tests).
-    // A poisoned scrutinee propagates its poison; anything else is a decline (the caller routes only
-    // sums/tuples here).
+    // set to switch on), a TUPLE (no discriminant; `Elem`-path binders/lit-tests), or a RECORD (no
+    // discriminant and no destructure pattern — only a whole-value binder/wildcard arm). A poisoned
+    // scrutinee propagates its poison; anything else is a decline (the caller routes only these here).
     let scrut_ty = crate::infer::type_of(db, scrutinee);
     if !matches!(
         scrut_ty,
-        crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_)
+        crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_)
     ) {
         if let Core::Poison(r) = core_of(db, scrutinee) {
             return Core::Poison(r);
         }
         return Core::Poison(Reject::decline(
-            "compound match scrutinee is not a sum or tuple",
+            "compound match scrutinee is not a sum, tuple, or record",
         ));
     }
     // Build the initial pattern MATRIX: one row per arm, each a `(constraints, body)` where a constraint
