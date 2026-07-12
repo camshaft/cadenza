@@ -141,6 +141,20 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             }
             Ok(())
         }
+        // Two sums unify iff they are the SAME declaration — a sum's identity is its declaration
+        // OCCURRENCE (`type-system.md` §158/§160), NOT its name, so `decl == decl` is the whole test
+        // (two `(type Foo …)` declared separately are DISTINCT types even with the same name). A sum
+        // carries no type variables, so there is nothing to recurse into — matching how `Subst::apply`
+        // leaves `Ty::Sum` unchanged and `agrees_with` compares sums by `decl`. Without this arm two
+        // identical sums fell through to `mismatch`, so annotating a parameter with its own sum type
+        // (`(def (f (: x N)) …)` applied to an `N`) was rejected with "cannot unify N with N".
+        (Ty::Sum { decl: da, .. }, Ty::Sum { decl: db, .. }) => {
+            if da == db {
+                Ok(())
+            } else {
+                Err(mismatch(&a, &b))
+            }
+        }
         _ => Err(mismatch(&a, &b)),
     }
 }
