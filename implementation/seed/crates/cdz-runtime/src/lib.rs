@@ -97,8 +97,12 @@ struct Node {
     /// scalars/bytes/strings; the elements for an array (tuple/record/list); `[payload]` for a sum;
     /// `[k0, v0, k1, v1, …]` for a map. This is the ONE positional shape backing every compound —
     /// the tuple-vs-list-vs-record distinction and a map's key ordering are compile-time / language
-    /// knowledge the runtime does not hold.
-    handles: Vec<Handle>,
+    /// knowledge the runtime does not hold. Stored as `Handles` (a newtype over `Vec<Handle>` today),
+    /// which `Deref`s to `&[Handle]` so reads are storage-transparent — the intended home for the
+    /// inline-or-spill representation (a `[Handle; 2]` inline arm for the overwhelmingly common ≤2-child
+    /// nodes: tuples, sums, `[k,v]` pairs) once the method surface below has fully replaced direct `Vec`
+    /// access at the mutation sites.
+    handles: Handles,
     /// Packed raw payload: a scalar's little-endian bits, a sum's little-endian discriminant, a
     /// byte buffer, or a string's UTF-8 bytes. Empty for pure-compound nodes (array/map). Read back
     /// by reinterpretation — the compiler's static type says how to read it. Stored as `Raw`, which
@@ -232,6 +236,105 @@ impl core::ops::Deref for Raw {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         self.as_slice()
+    }
+}
+
+/// A node's child-handle vector. A newtype over `Vec<Handle>` TODAY — the point of the newtype is to
+/// funnel every access through a fixed surface so the storage can later become inline-or-spill (a
+/// `[Handle; 2]` inline arm for the ≤2-child nodes that dominate — tuples, sums `[payload]`, CHAMP
+/// `[k,v]` pairs — spilling to a heap `Vec` only past 2) WITHOUT touching any call site. Mirrors the
+/// `Raw` pattern: `Deref<Target = [Handle]>` makes all READS (len/iter/index/get/first) storage-
+/// transparent; every MUTATION goes through an explicit method here. `take()` yields the inner `Vec`
+/// as a working buffer (the FBIP rebuild path mutates that Vec then reinstalls via `from`/`champ_become_hdr`).
+#[derive(Default)]
+struct Handles(Vec<Handle>);
+
+impl Handles {
+    #[inline]
+    fn new() -> Handles {
+        Handles(Vec::new())
+    }
+    #[inline]
+    fn as_slice(&self) -> &[Handle] {
+        &self.0
+    }
+    #[inline]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// Append one handle (`Vec::push`).
+    #[inline]
+    fn push(&mut self, h: Handle) {
+        self.0.push(h);
+    }
+    /// Set slot `i` (caller-checked in bounds).
+    #[inline]
+    fn set(&mut self, i: usize, h: Handle) {
+        self.0[i] = h;
+    }
+    /// A mutable ref to slot `i`, or `None` if OOB (`Vec::get_mut`).
+    #[inline]
+    fn get_mut(&mut self, i: usize) -> Option<&mut Handle> {
+        self.0.get_mut(i)
+    }
+    /// Empty it, keeping capacity (`Vec::clear`).
+    #[inline]
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+    /// Resize to `len`, filling new slots with `fill` (`Vec::resize`).
+    #[inline]
+    fn resize(&mut self, len: usize, fill: Handle) {
+        self.0.resize(len, fill);
+    }
+    /// Insert `h` at `i`, shifting the tail right (`Vec::insert`).
+    #[inline]
+    fn insert(&mut self, i: usize, h: Handle) {
+        self.0.insert(i, h);
+    }
+    /// Remove `count` slots starting at `start`, shifting the tail left (`Vec::drain(start..start+count)`).
+    /// The removed handles are DISCARDED (the caller has already relocated/dropped their references).
+    #[inline]
+    fn drain_range(&mut self, start: usize, count: usize) {
+        self.0.drain(start..start + count);
+    }
+    /// Take the handles out, leaving an empty `Handles`; returns the inner `Vec` as a working buffer.
+    /// The FBIP rebuild path mutates that buffer and reinstalls it via `Handles::from` / `champ_become_hdr`.
+    #[inline]
+    fn take(&mut self) -> Vec<Handle> {
+        std::mem::take(&mut self.0)
+    }
+    /// A fresh owned `Vec` copy of the handles — the path-copy path clones the source node's children
+    /// into a working buffer it then mutates/reinstalls. (`Handle` is `Copy`, so this copies pointers,
+    /// touching no refcount — the caller applies the dup/drop discipline.)
+    #[inline]
+    fn to_vec(&self) -> Vec<Handle> {
+        self.0.clone()
+    }
+    /// Move all handles out onto `out` (draining self), then leave self empty (`Vec::append`).
+    /// Used by the free cascade to move a dying node's children onto the worklist.
+    #[inline]
+    fn append_into(&mut self, out: &mut Vec<Handle>) {
+        out.append(&mut self.0);
+    }
+}
+
+impl From<Vec<Handle>> for Handles {
+    #[inline]
+    fn from(v: Vec<Handle>) -> Handles {
+        Handles(v)
+    }
+}
+
+impl core::ops::Deref for Handles {
+    type Target = [Handle];
+    #[inline]
+    fn deref(&self) -> &[Handle] {
+        &self.0
     }
 }
 
@@ -434,11 +537,16 @@ fn alloc(handles: Vec<Handle>, raw: Vec<u8>) -> Handle {
 }
 
 /// `alloc` but taking a ready `Raw` — lets a caller that builds a small header INLINE (e.g.
-/// `champ_header`) skip the transient `Vec` allocation entirely.
+/// `champ_header`) skip the transient `Vec` allocation entirely. `handles` is taken as a `Vec` (the
+/// construction sites build `vec![…]`) and moved into the node's `Handles` field.
 fn alloc_raw(handles: Vec<Handle>, raw: Raw) -> Handle {
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() + 1));
-    Handle(Box::into_raw(Box::new(Node { rc: 1, handles, raw })))
+    Handle(Box::into_raw(Box::new(Node {
+        rc: 1,
+        handles: Handles::from(handles),
+        raw,
+    })))
 }
 
 /// Borrow a node to read from it TOTALLY; a null handle yields `default`. Centralizes the one unsafe
@@ -742,7 +850,7 @@ fn bytes_flatten(h: Handle) {
     let children = match unsafe { h.0.as_mut() } {
         Some(n) => {
             n.raw = Raw::from(dst); // the flattened bytes (a rope leaf; usually > inline cap → Heap)
-            std::mem::take(&mut n.handles)
+            n.handles.take() // the (now-orphaned) rope children, as an owned Vec to drop below
         }
         None => return,
     };
@@ -856,8 +964,8 @@ fn op_map_set(m: Handle, index: u32, key: Handle, value: Handle) -> Handle {
         Some(n) => {
             let base = (index as usize) * 2;
             if base + 1 < n.handles.len() {
-                n.handles[base] = key;
-                n.handles[base + 1] = value;
+                n.handles.set(base, key);
+                n.handles.set(base + 1, value);
             } else {
                 trap_oob();
             }
@@ -955,7 +1063,7 @@ fn op_drop(root: Handle) {
     }
     // rc == 1: last reference. Reclaim the node and cascade into its children. Reuse the node's own
     // `handles` vector as the worklist seed (leaf → empty, no allocation).
-    let mut worklist = std::mem::take(&mut node.handles);
+    let mut worklist = node.handles.take();
     unsafe { drop(Box::from_raw(root.0)) };
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() - 1));
@@ -973,7 +1081,7 @@ fn op_drop(root: Handle) {
             continue;
         }
         // Move this node's children onto the worklist (draining its vector), then free it.
-        worklist.append(&mut n.handles);
+        n.handles.append_into(&mut worklist);
         unsafe { drop(Box::from_raw(cur.0)) };
         #[cfg(any(test, feature = "debug-counters"))]
         LIVE_NODES.with(|n| n.set(n.get() - 1));
@@ -2400,7 +2508,7 @@ fn champ_hash(root: Handle) -> u32 {
                 let arity = with_node(h, 0usize, |n| n.handles.len());
                 work.push(Task::Combine(h, arity));
                 with_node(h, (), |n| {
-                    for &c in &n.handles {
+                    for &c in n.handles.iter() {
                         work.push(Task::Visit(c));
                     }
                 });
@@ -2977,7 +3085,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
             return (new, 1); // fresh single entry: a new key
         }
         // Collision node — needs an owned copy of the entries (the helper appends + rebuilds).
-        let handles = with_node(node, Vec::new(), |n| n.handles.clone());
+        let handles = with_node(node, Vec::new(), |n| n.handles.to_vec());
         return collision_insert(node, handles, entry, stride); // returns (node, delta)
     }
 
@@ -2997,7 +3105,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
             // one vector and building a second — the new node needs a full-length handles Vec anyway, so
             // the clone IS that vector. Each KEPT handle is dup'd so `new` owns its own reference; the
             // OLD value columns (overwritten below) are released by op_drop(node).
-            let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
+            let mut new_handles = with_node(node, Vec::new(), |n| n.handles.to_vec());
             for (idx, slot) in new_handles.iter_mut().enumerate() {
                 if idx > base && idx < base + stride {
                     *slot = entry.col(idx - base); // incoming value column (owned); old ptr still on node
@@ -3062,7 +3170,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
         let (new_child, delta) = champ_insert_node(child, entry, hash, level + 1, stride);
         // Swap the one child slot to `new_child` (the recursion already consumed the old `child` ref via
         // the op_dup above) and dup each KEPT handle so `new` owns its own references.
-        let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
+        let mut new_handles = with_node(node, Vec::new(), |n| n.handles.to_vec());
         for (idx, slot) in new_handles.iter_mut().enumerate() {
             if idx == subbase + sidx {
                 *slot = new_child; // owned; old child ref was consumed by the recursion
@@ -3132,7 +3240,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
 /// a defensively short/absent `raw` is resized to fit. SAFETY: caller verified `node_rc(node) == 1`.
 fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u32, size: u32) -> Handle {
     if let Some(n) = unsafe { node.0.as_mut() } {
-        n.handles = handles;
+        n.handles = Handles::from(handles);
         if n.raw.len() != CHAMP_HEADER_SIZE {
             n.raw.resize(CHAMP_HEADER_SIZE, 0); // defensive; a real CHAMP node is already 12 bytes
         }
@@ -3150,7 +3258,7 @@ fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u
 /// touches no refcount (`Copy`, no `Drop`). SAFETY: caller verified `node_rc(node) == 1`.
 fn champ_take_handles(node: Handle) -> Vec<Handle> {
     match unsafe { node.0.as_mut() } {
-        Some(n) => std::mem::take(&mut n.handles),
+        Some(n) => n.handles.take(),
         None => Vec::new(),
     }
 }
@@ -3206,7 +3314,7 @@ fn champ_insert_fbip(
         }
         // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
         // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
-        let handles = with_node(node, Vec::new(), |n| n.handles.clone());
+        let handles = with_node(node, Vec::new(), |n| n.handles.to_vec());
         return collision_insert(node, handles, entry, stride); // returns (node, delta)
     }
 
@@ -3218,7 +3326,7 @@ fn champ_insert_fbip(
     // `mut` because the arity-preserving branches (OVERWRITE, DESCEND) mutate a slot in place and
     // reinstall this same vector rather than allocating a fresh one.
     let mut handles = match unsafe { node.0.as_mut() } {
-        Some(n) => std::mem::take(&mut n.handles),
+        Some(n) => n.handles.take(),
         None => Vec::new(),
     };
 
@@ -3501,7 +3609,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
         // Subnode still holds ≥2 entries: keep it, just swap in the rebuilt child. Arity unchanged, so
         // CLONE the handle vector ONCE and use it AS the result — mutate the one child slot, dup the
         // rest — rather than reading one vector and building a second.
-        let mut new_handles = with_node(node, Vec::new(), |n| n.handles.clone());
+        let mut new_handles = with_node(node, Vec::new(), |n| n.handles.to_vec());
         for (idx, slot) in new_handles.iter_mut().enumerate() {
             if idx == subbase + sidx {
                 *slot = new_child; // owned; old child ref was consumed by the recursion
@@ -3875,7 +3983,7 @@ fn champ_make_cursor(frames: Vec<Handle>, slots: Slots, state: u32) -> Handle {
 fn champ_cursor_read(cur: Handle) -> (u32, Vec<Handle>, Slots) {
     with_node(cur, (CURSOR_EXHAUSTED, Vec::new(), Slots::new()), |n| {
         let state = read_u32_at(&n.raw, 0);
-        let frames = n.handles.clone();
+        let frames = n.handles.to_vec();
         let mut slots = Slots::new();
         for i in 0..frames.len() {
             slots.push(read_u32_at(&n.raw, 4 + 4 * i));
@@ -3894,7 +4002,7 @@ fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Slots) {
     match unsafe { cur.0.as_mut() } {
         Some(n) => {
             let state = read_u32_at(&n.raw, 0);
-            let frames = std::mem::take(&mut n.handles);
+            let frames = n.handles.take();
             let mut slots = Slots::new();
             for i in 0..frames.len() {
                 slots.push(read_u32_at(&n.raw, 4 + 4 * i));
@@ -3996,7 +4104,7 @@ fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Slots, state: u3
         let total = 4 * (sl.len() + 1);
         n.raw.clear();
         n.raw.extend_from_slice(&buf[..total]);
-        n.handles = frames;
+        n.handles = Handles::from(frames);
     }
     cur
 }
