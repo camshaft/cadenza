@@ -3357,6 +3357,70 @@ fn champ_descend_leftmost(node: Handle, frames: &mut Vec<Handle>, slots: &mut Ve
     }
 }
 
+/// Advance the cursor's OWN `(frames, slots)` in place to the in-order successor, applying the frame
+/// refcount delta INLINE (`op_drop` each popped frame, `op_dup` each newly-descended frame; the kept
+/// prefix is untouched) — the FBIP twin of `champ_advance` for a uniquely-owned cursor. This lets the
+/// caller advance the taken frames directly, with NO `frames.clone()` and NO post-hoc common-prefix
+/// diff (the whole point: kill the last per-step Vec allocation in `champ_cursor_next_fbip`). The net
+/// delta is IDENTICAL to `champ_advance` + the external diff — a kept frame: 0; a popped frame: −1; a
+/// descended frame: +1. Returns true on a new entry, false when exhausted (frames/slots emptied, every
+/// remaining frame dropped). SAFETY: caller verified the cursor is `rc == 1` and owns these frames.
+fn champ_advance_fbip(frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) -> bool {
+    loop {
+        let depth = frames.len();
+        if depth == 0 {
+            return false; // exhausted — all frames already dropped as they were popped
+        }
+        let node = frames[depth - 1];
+        let cur = slots[depth - 1];
+        let (dm, nm, ecount, is_coll) = with_node(node, (0u32, 0u32, 0usize, false), |n| {
+            let dm = champ_datamap(&n.raw);
+            let nm = champ_nodemap(&n.raw);
+            let is_coll = dm == 0 && nm == 0 && !n.handles.is_empty();
+            (dm, nm, n.handles.len() / stride, is_coll)
+        });
+        if is_coll {
+            if (cur as usize) + 1 < ecount {
+                slots[depth - 1] = cur + 1; // next collision entry — same frame, no ref change
+                return true;
+            }
+            op_drop(frames.pop().unwrap()); // exhausted this collision node — release its ref, resume at parent
+            slots.pop();
+            continue;
+        }
+        let combined = dm | nm;
+        let above = if cur >= 31 {
+            0
+        } else {
+            combined & !((1u32 << (cur + 1)) - 1)
+        };
+        if above == 0 {
+            op_drop(frames.pop().unwrap()); // nothing left here — release this frame, resume at parent
+            slots.pop();
+            continue;
+        }
+        let j = above.trailing_zeros();
+        slots[depth - 1] = j; // move within the SAME (kept) frame — no ref change
+        if dm & (1 << j) != 0 {
+            return true; // inline entry here — deepest
+        }
+        // nodemap bit: descend into the subnode and take its leftmost, DUP'ing each new frame.
+        let child = champ_subnode_at(node, j, stride);
+        champ_descend_leftmost_dup(child, frames, slots, stride);
+        return true;
+    }
+}
+
+/// `champ_descend_leftmost` but `op_dup`s each frame it pushes — the cursor takes ownership of every
+/// newly-focused node on the descent. Used only by `champ_advance_fbip` (the inline-refcount advance).
+fn champ_descend_leftmost_dup(node: Handle, frames: &mut Vec<Handle>, slots: &mut Vec<u32>, stride: usize) {
+    let start = frames.len();
+    champ_descend_leftmost(node, frames, slots, stride);
+    for &f in &frames[start..] {
+        op_dup(f); // the cursor now owns a reference to each descended frame
+    }
+}
+
 /// Advance a working `(frames, slots)` walk state to the in-order successor. Returns true when it
 /// lands on a new entry (state stays live), false when the walk is exhausted (frames/slots emptied).
 /// Operates on the caller's COPIES (pointer values), so it never mutates any node. Bounded by depth.
@@ -3546,9 +3610,12 @@ fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Vec<u32>, state:
 /// the traversal (identical order + exhausted-signal to the copy path), then applies ONLY the frame-ref
 /// delta and refits `cur`'s shell in place. Returns `cur`. Stride selects map (2) vs set (1).
 fn champ_cursor_next_fbip(cur: Handle, stride: usize) -> Handle {
-    // `cur` is rc==1 (caller-gated) ⇒ MOVE its frames out (no clone); we reinstall via
-    // `champ_become_cursor` on every return path before any other reference could observe `cur`.
-    let (state, frames, slots) = champ_cursor_take(cur);
+    // `cur` is rc==1 (caller-gated) ⇒ MOVE its frames/slots out (no clone) and advance them IN PLACE.
+    // `champ_advance_fbip` applies the frame refcount delta inline (drop popped, dup descended, keep
+    // the prefix), so there is NO `frames.clone()` and NO post-hoc common-prefix diff — the last
+    // per-step Vec allocation is gone. We reinstall via `champ_become_cursor` on every return path
+    // before any other reference could observe `cur` (single-threaded, rc==1).
+    let (state, mut frames, mut slots) = champ_cursor_take(cur);
     if state != CURSOR_LIVE {
         // Already exhausted: release any frames it held (normally none) and stay exhausted in place.
         for &f in &frames {
@@ -3556,31 +3623,12 @@ fn champ_cursor_next_fbip(cur: Handle, stride: usize) -> Handle {
         }
         return champ_become_cursor(cur, Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
     }
-    // The advance mutates a working copy `wf`/`ws`; we still need the ORIGINAL `frames` afterward for
-    // the common-prefix compare, so `wf` is a genuine clone. But the original `slots` is never read
-    // again after `champ_advance`, so `ws` MOVES `slots` (one clone saved per step).
-    let mut wf = frames.clone();
-    let mut ws = slots;
-    let live = champ_advance(&mut wf, &mut ws, stride);
-    if !live {
-        // Walk exhausted: every frame the cursor owned is gone → drop them all, become exhausted.
-        for &f in &frames {
-            op_drop(f);
-        }
-        return champ_become_cursor(cur, Vec::new(), Vec::new(), CURSOR_EXHAUSTED);
-    }
-    // Live: retain the shared prefix (untouched refs), drop the popped old tail, dup the new tail.
-    let mut common = 0;
-    while common < frames.len() && common < wf.len() && frames[common] == wf[common] {
-        common += 1;
-    }
-    for &f in &frames[common..] {
-        op_drop(f); // popped frame: release the cursor's ref
-    }
-    for &f in &wf[common..] {
-        op_dup(f); // newly descended frame: the cursor now owns a ref
-    }
-    champ_become_cursor(cur, wf, ws, CURSOR_LIVE)
+    let live = champ_advance_fbip(&mut frames, &mut slots, stride);
+    // On exhaustion `champ_advance_fbip` has already dropped every frame it popped (frames now empty);
+    // on a live step it has applied the exact drop/dup delta. Either way `(frames, slots)` is the new
+    // cursor state with correct refcounts — just reinstall it.
+    let new_state = if live { CURSOR_LIVE } else { CURSOR_EXHAUSTED };
+    champ_become_cursor(cur, frames, slots, new_state)
 }
 
 /// Advance to the in-order successor. CONSUMES `cur`, returns the advanced cursor. FBIP: a uniquely
@@ -3905,9 +3953,10 @@ mod tests {
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
-    /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry work (insert 1740, remove 1953,
-    /// iterate 2248, push 197, get 0, lookup 0; set union 1298 / ∩ 2974 / ∖ 2980); they are UPPER
-    /// BOUNDS so ordinary noise never trips them but a regression toward the old 6779/8397/5248/1000 does.
+    /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance work
+    /// (insert 1740, remove 1953, iterate 1126, push 197, get 0, lookup 0; set union 1041 / ∩ 1852 /
+    /// ∖ 1858); they are UPPER BOUNDS so ordinary noise never trips them but a regression toward the old
+    /// 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -3945,7 +3994,7 @@ mod tests {
             op_drop(c);
         });
         println!("ALLOC map_iterate x{N}: {iterate}");
-        assert!(iterate <= 2800, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 2800 (was 5248; champ_cursor_current now alloc-free + champ_become_cursor reuses raw)");
+        assert!(iterate <= 1300, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 1300 (5248 → 2248 alloc-free cursor_current + raw reuse → ~1126 inline-refcount champ_advance_fbip, no per-step frames clone)");
         op_drop(m);
 
         // (C) map remove (unique) — remove all N.
@@ -4024,21 +4073,21 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        assert!(union <= 1600, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 1600");
+        assert!(union <= 1200, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 1200");
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 3300, "set_intersection x{N} allocs {inter} exceeds ceiling 3300");
+        assert!(inter <= 2100, "set_intersection x{N} allocs {inter} exceeds ceiling 2100");
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 3300, "set_difference x{N} allocs {diff} exceeds ceiling 3300");
+        assert!(diff <= 2100, "set_difference x{N} allocs {diff} exceeds ceiling 2100");
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -8665,6 +8714,54 @@ mod tests {
         assert!(selems.contains(&ca) && selems.contains(&cb), "collision elems both visited");
         op_drop(s);
         assert_eq!(live_nodes(), before, "no leak across the traversals");
+    }
+
+    #[test]
+    fn champ_advance_fbip_frame_refcounts_balance_over_deep_walk() {
+        reset();
+        let before = live_nodes();
+        // Guards champ_advance_fbip: the frame refcount delta is now applied INLINE during the walk
+        // (op_drop each popped frame at the pop site, op_dup each descended frame) rather than by a
+        // post-hoc diff against a cloned frame list. A miscount would leak (too few drops) or double-free
+        // (too many). Build a map DEEP enough that a single advance both POPS several exhausted frames
+        // AND DESCENDS a fresh multi-level tail (the case the inline delta must get exactly right), walk
+        // it fully in place to exhaustion, then over-advance — and assert LIVE_NODES returns to baseline.
+        // Keys sharing low 5/10/15 bits force ≥3 levels of subnodes; a collision pair adds a collision
+        // frame at the floor, so the walk exercises pop-from-collision + pop-from-normal + deep descend.
+        let (ca, cb) = full_hash_collision_pair();
+        let deep = [
+            0i64, 1 << 5, 1 << 10, (1 << 5) | (1 << 10), (1 << 10) | (1 << 15),
+            1, 2, ca, cb, 7, 8, 40, 41,
+        ];
+        // Map each key to a small, collision-safe tag value (a running index, not k*const — the
+        // collision pair carries full-width i64 payloads that would overflow a multiply).
+        let reference: std::collections::BTreeMap<i64, i64> =
+            deep.iter().enumerate().map(|(i, &k)| (k, 1000 + i as i64)).collect();
+        let mut m = op_map_empty();
+        for (&k, &v) in &reference {
+            m = op_map_insert(m, op_box_int(k), op_box_int(v));
+        }
+        // Full in-place walk to exhaustion (unique cursor → champ_advance_fbip every step).
+        let mut cur = op_map_iter(m);
+        let mut seen: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        loop {
+            let k = op_map_iter_key(cur);
+            if k == Handle::NULL {
+                break;
+            }
+            let v = op_map_iter_val(cur);
+            seen.insert(op_get_int(k), op_get_int(v)); // key→value pairing must survive the walk
+            cur = op_map_iter_next(cur);
+        }
+        assert_eq!(seen, reference, "in-place walk visited exactly the reference key→value map");
+        // Over-advance the exhausted cursor a few times (each an rc==1 advance on empty frames).
+        for _ in 0..3 {
+            cur = op_map_iter_next(cur);
+            assert_eq!(op_map_iter_key(cur), Handle::NULL, "stays exhausted");
+        }
+        op_drop(cur);
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "frame refcounts balanced — no leak, no double-free");
     }
 
     // ── U7: CHAMP set algebra — union / intersection / difference ──────────────────────────────
