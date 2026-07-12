@@ -53,6 +53,8 @@ impl Subst {
                     .collect(),
             )),
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
+            // A list substitutes into its element type (a deferred `List ?0` — the empty-list case).
+            Ty::List(elem) => Ty::List(Box::new(self.apply(elem))),
             // A sum's identity is its `decl`, but a GENERIC instantiation carries type ARGS that may hold
             // unsolved variables (a deferred payload — `Option ?0`), so substitute into each arg. A
             // monomorphic sum has empty args, so this is a cheap clone of the name/decl.
@@ -147,6 +149,10 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             }
             Ok(())
         }
+        // Two lists unify iff their ELEMENT types unify — this is what makes every element of `(list …)`
+        // share one type (a mixed list fails here) and solves a deferred element (an empty `(list)` : List
+        // ?0 unified against a `List Int64`).
+        (Ty::List(ea), Ty::List(eb)) => unify(subst, ea, eb),
         // Two sums unify iff they are the SAME declaration AND their type ARGS unify pairwise — a sum's
         // identity is its declaration OCCURRENCE (`type-system.md` §158/§160), NOT its name (two `(type
         // Foo …)` declared separately are DISTINCT types even with the same name), together with its
@@ -253,6 +259,8 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         // A GENERIC sum's type ARGS may hold a variable (a deferred payload) — check each. A monomorphic
         // sum has empty args, so no variable occurs in it (like the ground types).
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
+        // A list's element type may hold the variable (`List ?0`).
+        Ty::List(elem) => occurs(subst, v, &elem),
         Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
     }
 }
@@ -389,6 +397,8 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
                 .collect(),
         )),
         Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| rename(t, m)).collect()),
+        // A list scheme's element type may hold a bound variable (a `(fn (a) … (List a))` scheme) — rename.
+        Ty::List(elem) => Ty::List(Box::new(rename(elem, m))),
         // A GENERIC sum scheme's type ARGS may hold bound variables (a `(fn (a) … (Option a))` variant
         // ctor scheme) — rename each. A monomorphic sum has empty args; nothing to rename.
         Ty::Sum { decl, name, args } => Ty::Sum {
@@ -532,12 +542,24 @@ mod tests {
         let Ty::Fn(p, r) = &inst else {
             panic!("expected a function type");
         };
-        assert_eq!(**p, Ty::Var(0), "the ty var renames to the ty block base (0)");
+        assert_eq!(
+            **p,
+            Ty::Var(0),
+            "the ty var renames to the ty block base (0)"
+        );
         let Ty::Int(it) = &**r else {
             panic!("expected an Int result");
         };
-        assert_eq!(it.width, Width::Var(1), "the width var renames to the width block base (1)");
-        assert_eq!(it.sign, Sign::Var(2), "the sign var renames to the sign block base (2)");
+        assert_eq!(
+            it.width,
+            Width::Var(1),
+            "the width var renames to the width block base (1)"
+        );
+        assert_eq!(
+            it.sign,
+            Sign::Var(2),
+            "the sign var renames to the sign block base (2)"
+        );
         // And the whole reservation advanced the counter past all three (next fresh is 3).
         assert_eq!(fresh.var(), 3);
     }

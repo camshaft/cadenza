@@ -1821,6 +1821,12 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             }
             Some(b.list(children))
         }
+        // A list's type surface is `(List Elem)` — matches `render_name`.
+        Ty::List(elem) => {
+            let head = b.name("List");
+            let ety = type_ast(b, elem)?;
+            Some(b.list(vec![head, ety]))
+        }
         Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
     }
 }

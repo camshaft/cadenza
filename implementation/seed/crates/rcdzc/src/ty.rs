@@ -145,6 +145,13 @@ pub enum Ty {
     /// shared tuple) was O(N²) in `Vec<Ty>` clone. Indexing/iterating are unchanged (it derefs to a
     /// slice); only construction differs (`.collect::<Vec<_>>().into()` or `vec![…].into()`).
     Tuple(std::sync::Arc<[Ty]>),
+    /// A LIST: a homogeneous, variable-length sequence of one ELEMENT type (`collections-and-text.md` §A
+    /// List Is A Homogeneous Sequence). Unlike a tuple (fixed arity, per-position type), a list's length
+    /// is a runtime property and every element shares ONE type — so `(list 1 true)` (mixed) is ill-typed
+    /// (the elements do not unify) and `(list)` is a list of a deferred element type. `List Int64` and
+    /// `List Bool` are distinct; the element type is held behind a `Box` (one type, unlike the tuple's
+    /// slice). Backed at run time by the persistent `vec-*` RRB heap ops.
+    List(Box<Ty>),
     /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
     /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
     /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
@@ -258,6 +265,9 @@ impl Ty {
             (Ty::Tuple(a), Ty::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(ta, tb)| ta.agrees_with(tb))
             }
+            // Two lists agree iff their ELEMENT types agree — `List Int64` ≠ `List Bool`, and a list of a
+            // deferred element type is compatible via the recursive `agrees_with` (the empty-list case).
+            (Ty::List(a), Ty::List(b)) => a.agrees_with(b),
             // Two sums agree iff their DECLARATIONS match AND their type ARGS agree pairwise — a sum's
             // identity is its declaration (`type-system.md §160`: distinct FQNs ⇒ distinct types, so
             // module A's `Foo` ≠ module B's `Foo`) TOGETHER WITH its instantiation (`Option Int64 ≠
@@ -353,6 +363,8 @@ impl Ty {
                 s.push(')');
                 s
             }
+            // A list renders as `(List Elem)` — the element type is its only type parameter.
+            Ty::List(elem) => format!("(List {})", elem.render_name()),
             // A sum renders as its NOMINAL NAME, applied to its type ARGS when generic: a monomorphic
             // sum (`args: []`) is the bare name (`(: (Neg unit) Sign)`); a generic sum is `(Name arg…)`
             // — `(: (Some 5) (Option Int64))` (`type-system.md §158`; the corpus form). The variant set

@@ -228,6 +228,9 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // `sum-disc`/`sum-payload` handle), the nominal tag adding nothing to the representation
         // (`type-system.md §156`). So a runtime sum value lives in an i32 local, like a tuple/record.
         Ty::Sum { .. } => Some(ValType::I32),
+        // A list is a value-heap compound too — at run time an OPAQUE u32 HANDLE into the persistent
+        // `vec-*` store, so it lives in an i32 local like a tuple/record/sum.
+        Ty::List(_) => Some(ValType::I32),
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,
@@ -296,6 +299,9 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
         Ty::Sum { .. } => None,
+        // A list escapes as the canonical binary value form via the resource `encode()` path, not a
+        // primitive handle valtype (like a record/sum).
+        Ty::List(_) => None,
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
