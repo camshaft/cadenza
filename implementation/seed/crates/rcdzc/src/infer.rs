@@ -825,6 +825,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 format!("record has no field `{}`", key.name),
                             ))
                         }
+                        // An UNCONSTRAINED operand (`Any`) — a bare (unannotated) parameter of a
+                        // non-recursive def, whose type is not known until the def inlines at a call
+                        // site with a concrete argument. `Any` means "no constraint" (it agrees with
+                        // everything), so a field read on it is NOT a fault HERE — the real check runs
+                        // on the reduced body at the call site (where the argument's record type flows
+                        // in). Rejecting here spuriously fails a well-typed program `(def (get-x r) (. r
+                        // x))`, exactly as arithmetic on an `Any` param (`(+ r 1)`) does not fault.
+                        Ty::Any => {}
                         other => {
                             trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
                             out.push(Reject::coded(
@@ -860,6 +868,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         ));
                     }
                 }
+                // An UNCONSTRAINED operand (`Any`) — a bare (unannotated) parameter of a non-recursive
+                // def, whose tuple type is not known until the def inlines at a call site with a
+                // concrete argument. `Any` means "no constraint", so a projection on it is NOT a fault
+                // HERE — the real check runs on the reduced body at the call site (where the argument's
+                // tuple type flows in). Rejecting here spuriously fails a well-typed `(def (fst t) (. t
+                // 0))`, exactly as arithmetic on an `Any` param does not fault.
+                Ty::Any => {}
                 // A non-tuple operand (that is not itself a poison) — projecting a position of a
                 // non-tuple has no defined result.
                 _ if !operand_is_poison => {

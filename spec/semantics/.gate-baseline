@@ -29,6 +29,9 @@ pass	a function is returned as a result
 pass	a function returning a boolean predicate result
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a helper projects a record parameter constrained by its argument
+pass	a helper projects a tuple parameter constrained by its argument
+pass	a helper sums two fields of a record parameter
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal with digit separators
@@ -857,6 +860,7 @@ todo	performing an operation with an argument of the wrong type is a type error
 todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
 todo	popping an absent field is rejected
+todo	projecting a field of a non-compound argument is rejected at the call site
 todo	projecting a record onto an absent field is rejected
 todo	projecting a record restricts it to the named fields
 todo	projecting a tuple passed as a function parameter yields the element, never an invalid component

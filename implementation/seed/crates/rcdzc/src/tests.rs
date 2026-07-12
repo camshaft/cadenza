@@ -831,6 +831,61 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
     }
 }
 
+/// A bare (unannotated) parameter PROJECTED in a helper's body is UNCONSTRAINED there (typed `Any`
+/// until the def inlines) — so the projection is checked at the CALL SITE, where the argument's
+/// compound type flows in, not standalone. `(def (get-x r) (. r x))` is well-formed even though `r`'s
+/// type is unknown in the body, exactly as `(+ r 1)` on an `Any` parameter is; applied to a runtime
+/// record `(mk v)`, `r` is that record and `(. r x)` is `v`. Earlier the seed rejected the body
+/// standalone with a self-contradictory CDZ0201 "requires a record, found Any" (an `Any` operand is
+/// unconstrained, not a proven non-record) — projection was the outlier vs arithmetic, which never
+/// faulted on `Any`. Composed run: `get-x (mk 41)` = 41.
+#[test]
+fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
+    use crate::testkit::parse;
+    let src = "(module m (def (get-x r) (. r x)) (def (mk n) (record (x n) (y 2))) \
+                 (def (main (: v Int64)) (get-x (mk v))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "projecting a record parameter built at run time must import the value-heap runtime"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["41".to_string()],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "41", "get-x (mk 41) projects field x = the argument")
+        }
+        cdz_run::Outcome::Trap(t) => panic!("projected-parameter helper trapped (miscompile?): {t}"),
+    }
+}
+
+/// The deferral above is NOT a drop: applying a projecting helper to a NON-compound argument is still
+/// rejected — at the call site, where the concrete type is known. `(get-x v)` with `v : Int64` reduces
+/// the body to a field read of an integer, which faults CDZ0201. Pins that a bad structural use is
+/// caught (just deferred from the polymorphic body to the concrete call), so accepting the well-typed
+/// helper above did not weaken the check.
+#[test]
+fn projecting_a_non_compound_argument_is_still_rejected() {
+    use crate::testkit::parse;
+    let src = "(module m (def (get-x r) (. r x)) \
+                 (def (main (: v Int64)) (get-x v)) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("projecting a field of an Int64 argument must be rejected");
+    assert_eq!(
+        err.code.as_deref(),
+        Some("CDZ0201"),
+        "expected a CDZ0201 member-access rejection, got: {}",
+        err.message
+    );
+}
+
 /// R2 e2e: a RUNTIME compound built behind a RECURSIVE call ESCAPES to the host as a resource, and its
 /// `encode()` walks the live handle to the canonical value form. `f` is genuinely recursive (calls
 /// itself), so `is_recursive` DECLINES the compile-time fold — `f` becomes a real `Core::Call`, `(f 3)`

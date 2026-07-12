@@ -682,6 +682,73 @@
             (def (main) (id true)) (export main)))
   (output (: true Bool)))
 
+; --- A bare parameter PROJECTED in the body is constrained only at the call site ------------------
+; A companion of the polymorphic-parameter cases above, for a STRUCTURAL use: a bare (unannotated)
+; parameter that the body PROJECTS — `(. r field)` / `(. t N)` — is unconstrained in the standalone
+; body (its type is `Any` until the def inlines), exactly as an arithmetic use `(+ r 1)` leaves it
+; `Any`. A non-recursive def inlines at its call site, so the projection's real check runs THERE,
+; where the argument's compound type flows in — the same way the identity function's parameter type is
+; determined by the argument. Earlier the seed rejected the body standalone with a self-contradictory
+; CDZ0201 "requires a record/tuple, found Any" (an `Any` operand is unconstrained, not a proven
+; non-compound), spuriously failing a well-typed helper; arithmetic on an `Any` parameter never
+; faulted, so projection was the outlier. A genuinely non-compound argument (an Int64) is still
+; rejected at the call site (the reduced body projects a non-record) — the check is deferred, not
+; dropped.
+
+(case "a helper projects a record parameter constrained by its argument"
+  (doc    "`(def (get-x r) (. r x))` reads field `x` of its bare parameter `r`. `r` is unconstrained in
+           the body (typed `Any` — nothing pins it until `get-x` inlines), so the field read is NOT a
+           fault there; the argument `(mk v)` is a runtime `(record (x v) (y 2))`, so at the call site
+           `r` is that record and `(. r x)` is `v`. With v=41 the result is 41. Pins that a bare
+           parameter projected in the body types like an arithmetic use of it — constrained at the call
+           site, not spuriously rejected standalone.")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (mk n)    (record (x n) (y 2)))
+            (def (main (: v Int64)) (get-x (mk v)))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 41 Int64)))
+
+(case "a helper projects a tuple parameter constrained by its argument"
+  (doc    "The tuple companion: `(def (fst t) (. t 0))` projects element 0 of its bare parameter. `t` is
+           unconstrained in the body; the argument `(mk v)` is a runtime `(tuple v 2)`, so `(. t 0)` is
+           `v`. With v=9 the result is 9. The positional analogue of the record helper — a bare
+           parameter projected by position is likewise constrained at the call site.")
+  (input  (do
+            (def (fst t) (. t 0))
+            (def (mk n)  (tuple n 2))
+            (def (main (: v Int64)) (fst (mk v)))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
+
+(case "a helper sums two fields of a record parameter"
+  (doc    "The body uses the parameter's fields in ARITHMETIC: `(+ (. r x) (. r y))`. Both field reads
+           are on the unconstrained `r`, and both feed `+`; at the call site `r` is `(record (x v) (y
+           2))`, so the sum is v+2. With v=7 the result is 9. Pins that MULTIPLE projections of one bare
+           compound parameter all resolve at the call site and compose with arithmetic on the results.")
+  (input  (do
+            (def (sum-xy r) (+ (. r x) (. r y)))
+            (def (mk n)     (record (x n) (y 2)))
+            (def (main (: v Int64)) (sum-xy (mk v)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 9 Int64)))
+
+(case "projecting a field of a non-compound argument is rejected at the call site"
+  (doc    "The deferral is not a drop: `(def (get-x r) (. r x))` is well-formed standalone (its `r` is
+           unconstrained), but applying it to an Int64 — `(get-x v)` with `v : Int64` — makes the
+           reduced body project a field of an integer, which has no defined result. type-system.md
+           §Member Access Projects A Record Field: the seed rejects CDZ0201 at the call site (the
+           argument's Int64 type flows into `r`), so a bad structural use is still caught — just where
+           the concrete type is known, not in the polymorphic body.")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (main (: v Int64)) (get-x v))
+            (export main)))
+  (error  CDZ0201))
+
 ; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
 ; NEAREST enclosing binding of that name — regardless of the name's capitalization. So a `def` whose name
 ; happens to start with an uppercase letter binds that name exactly as a lowercase one does, and a call to
