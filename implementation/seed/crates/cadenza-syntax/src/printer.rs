@@ -85,6 +85,7 @@ impl<'a> Printer<'a> {
             Leaf::Float(d) => self.doc.word(literal::render_decimal(d)),
             Leaf::Bool(b) => self.doc.word(if *b { "true" } else { "false" }),
             Leaf::Str(s) => self.doc.word(format!("\"{}\"", literal::escape_string(s))),
+            Leaf::Bytes(b) => self.doc.word(format!("b\"{}\"", literal::escape_bytes(b))),
             Leaf::Name(n) => self.doc.word(emit_name(n)),
         }
     }

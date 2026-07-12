@@ -57,6 +57,7 @@ const KIND_STR: u8 = 7;
 const KIND_BOOL_FALSE: u8 = 8;
 const KIND_BOOL_TRUE: u8 = 9;
 const KIND_NAME: u8 = 10;
+const KIND_BYTES: u8 = 11;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -129,6 +130,10 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         Leaf::Str(s) => {
             out.push(KIND_STR);
             write_bytes(out, s.as_bytes());
+        }
+        Leaf::Bytes(b) => {
+            out.push(KIND_BYTES);
+            write_bytes(out, b);
         }
         Leaf::Bool(b) => {
             out.push(if *b { KIND_BOOL_TRUE } else { KIND_BOOL_FALSE });
@@ -254,6 +259,7 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
             })
         }
         KIND_STR => Leaf::Str(read_string(r)?),
+        KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?),
         KIND_BOOL_FALSE => Leaf::Bool(false),
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
@@ -265,6 +271,13 @@ fn read_string(r: &mut Reader) -> Option<String> {
     let len = r.read_var_len()?;
     let bytes = r.take(len)?;
     String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// Read a raw byte sequence (a `Bytes` leaf's payload) — a length then that many bytes, verbatim (no
+/// UTF-8 check, unlike [`read_string`]: a byte sequence is arbitrary bytes).
+fn read_raw_bytes(r: &mut Reader) -> Option<Vec<u8>> {
+    let len = r.read_var_len()?;
+    Some(r.take(len)?.to_vec())
 }
 
 fn read_bool(r: &mut Reader) -> Option<bool> {

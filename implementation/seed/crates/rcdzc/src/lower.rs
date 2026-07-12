@@ -1929,6 +1929,11 @@ fn resolve_leaf_offsets(
             crate::ast::Leaf::Str(s) => {
                 off += 1 + leb_len(s.len() as u64) + s.len();
             }
+            // A bytes leaf is a fully-baked constant (no runtime hole) — advance past it like a Str
+            // (kind byte + len LEB + the raw bytes).
+            crate::ast::Leaf::Bytes(bs) => {
+                off += 1 + leb_len(bs.len() as u64) + bs.len();
+            }
             crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
         }
     }
@@ -2061,6 +2066,22 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
                 _ => return None,
             }
             Some(b.list(children))
+        }
+        // A constant `Bytes.of` → a `Leaf::Bytes` value node (rendered `b"…"` by the host). Each element
+        // is a constant Int in `0..=255` (range-checked at `lower_bytes_of`); collect the raw bytes. A
+        // non-constant element would have declined at `lower_bytes_of` (no `Core::BytesOf` built), so
+        // every element here folds to a `ConstInt` in range.
+        Core::BytesOf { elems } => {
+            let mut raw = Vec::with_capacity(elems.len());
+            for e in elems {
+                match core_of(db, e) {
+                    Core::ConstInt(v) => {
+                        raw.push(v.to_i64().filter(|n| (0..=255).contains(n))? as u8)
+                    }
+                    _ => return None,
+                }
+            }
+            Some(b.atom_leaf(Leaf::Bytes(raw)))
         }
         _ => None,
     }

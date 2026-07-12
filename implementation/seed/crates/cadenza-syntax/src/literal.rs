@@ -299,6 +299,28 @@ pub fn escape_string(s: &str) -> String {
     out
 }
 
+/// Escape a byte sequence's contents for a `b"…"` literal — the byte-string form
+/// (`options/binary-syntax`). A printable ASCII byte (`0x20..=0x7e`) stands for itself; `\n \r \t \\
+/// \"` use their named escapes; every other byte is a two-lowercase-hex `\xNN`. So `[1,2,3]` →
+/// `\x01\x02\x03` and `[65,10,66]` → `A\nB`. The dual of the `b"…"` reader's unescape; a byte
+/// sequence's canonical observable form.
+pub fn escape_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    for &b in bytes {
+        match b {
+            b'\n' => out.push_str("\\n"),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => out.push_str("\\r"),
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            // Printable ASCII stands for itself; every other byte is a `\xNN` (two lowercase hex).
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\x{b:02x}")),
+        }
+    }
+    out
+}
+
 /// True iff every `_` in `body` sits BETWEEN two `is_digit` chars — no leading, trailing, or
 /// doubled separator. The between-digits rule, applied in both directions.
 pub fn separators_between_digits(body: &str, is_digit: impl Fn(char) -> bool) -> bool {

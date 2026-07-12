@@ -145,6 +145,12 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
             out.push_str(&crate::literal::escape_string(s));
             out.push('"');
         }
+        // A byte sequence renders `b"…"` — the byte-string form (printable ASCII raw, else `\xNN`).
+        Leaf::Bytes(b) => {
+            out.push_str("b\"");
+            out.push_str(&crate::literal::escape_bytes(b));
+            out.push('"');
+        }
         // A name is written verbatim. (The s-expr surface has no reserved words — `let`, `+`, `|`
         // are all ordinary atoms — so no escaping is needed here, unlike the ML surface.)
         Leaf::Name(n) => out.push_str(n),

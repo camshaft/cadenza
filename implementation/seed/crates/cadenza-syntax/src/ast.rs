@@ -37,6 +37,10 @@ pub enum Leaf {
     },
     Float(Decimal),
     Str(String),
+    /// A BYTE SEQUENCE literal (`b"…"`) — the value form of a `Bytes`. Holds the raw bytes (arbitrary,
+    /// NOT necessarily UTF-8, so distinct from `Str`); printed `b"…"` (printable ASCII raw, `\n \r \t \\
+    /// \"` named, else `\xNN`). The canonical value-form leaf a byte sequence crosses the boundary as.
+    Bytes(Vec<u8>),
     Bool(bool),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
     Name(String),

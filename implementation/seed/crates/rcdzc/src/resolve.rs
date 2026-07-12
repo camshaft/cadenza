@@ -149,6 +149,13 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A string literal — its text is already unescaped to canonical form by the reader. A
             // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
             Leaf::Str(s) => Resolved::Str(s.clone()),
+            // A `Leaf::Bytes` is the value-form leaf a `Bytes` VALUE round-trips through (rendered
+            // `b"…"`); it is not something a source program writes directly (a byte sequence is written
+            // `(Bytes.of (list …))`, or a `b"…"` literal the reader desugars). If one appears in source
+            // position it has no meaning yet — decline (the `b"…"` reader-literal surface is a later slice).
+            Leaf::Bytes(_) => Resolved::Poison(Reject::decline(
+                "a bytes literal is not yet supported in source",
+            )),
             Leaf::Float(_) => Resolved::Poison(Reject::decline("float literals not yet supported")),
         },
         Struct::List(children) => {

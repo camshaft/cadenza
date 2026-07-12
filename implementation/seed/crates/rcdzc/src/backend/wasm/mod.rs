@@ -60,6 +60,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
                 | crate::ty::Ty::Record(_)
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
+                | crate::ty::Ty::Bytes
         )
     {
         let body = def_body(db, e.def)?;

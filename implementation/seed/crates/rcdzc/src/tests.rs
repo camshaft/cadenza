@@ -3871,6 +3871,33 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bytes_escapes_and_renders_b_string() {
+        // A CONSTANT `Bytes.of` returned as the program result crosses the host boundary through the
+        // resource-escape path (like a constant list): its bytes are known, so they bake into the value
+        // form as a `Leaf::Bytes` and `encode()` serves them; the host renders `b"…"` — printable ASCII
+        // raw, else `\xNN`. `(Bytes.of (list 1 2 3))` (all non-printable) → `(: b"\x01\x02\x03" Bytes)`;
+        // `(Bytes.of (list 65 66 67))` (printable) → `(: b"ABC" Bytes)`. (collections-and-text.md §the
+        // observable form is the byte-string display.)
+        let Some(out) =
+            escape_render("(module m (def (main) (Bytes.of (list 1 2 3))) (export main))")
+        else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "(: b\"\\x01\\x02\\x03\" Bytes)",
+            "non-printable bytes escape"
+        );
+
+        let Some(out) =
+            escape_render("(module m (def (main) (Bytes.of (list 65 66 67))) (export main))")
+        else {
+            return;
+        };
+        assert_eq!(out, "(: b\"ABC\" Bytes)", "printable bytes escape");
+    }
+
+    #[test]
     fn a_constant_list_of_tuples_escapes_nested() {
         // A list whose ELEMENTS are themselves compounds escapes with each element template nested inside
         // the `(list …)` — the type-directed renderer recurses through `List → Tuple`. `(list (tuple 1 2)

@@ -97,6 +97,7 @@ fn leaf(l: &Leaf) -> String {
         Leaf::Int { value, radix } => format!("Int {value} ({})", radix_name(*radix)),
         Leaf::Float(d) => format!("Float {}", crate::literal::render_decimal(d)),
         Leaf::Str(s) => format!("Str {s:?}"),
+        Leaf::Bytes(b) => format!("Bytes {b:?}"),
         Leaf::Bool(b) => format!("Bool {b}"),
         Leaf::Name(n) => format!("Name {n}"),
     }
