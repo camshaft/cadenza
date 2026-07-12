@@ -1,0 +1,15 @@
+# Pinned toolchain for the seed workspace.
+#
+# The pin is load-bearing, not hygiene: `cargo xtask codegen` bakes the value-heap runtime's
+# content hash (`REQUIRED_RUNTIME_HASH`) into a committed source file, and that hash is only
+# reproducible on the SAME rustc (the runtime's wasm bytes are a function of the compiler
+# version). `codegen --check` — a hard gate in `xtask check` and in CI — therefore fails if CI
+# builds the runtime on a different rustc than the one the committed hash was recorded with. Pin
+# here so every checkout and every CI job agrees. Bump deliberately, then re-run
+# `cargo xtask codegen` to re-record the hash.
+#
+# Edition 2024 requires rustc >= 1.85; the current recorded hash was produced with 1.95.0.
+[toolchain]
+channel = "1.95.0"
+components = ["rustc", "cargo", "clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]

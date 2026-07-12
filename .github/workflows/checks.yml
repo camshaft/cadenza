@@ -1,0 +1,134 @@
+# Reusable health-check workflow — the parallel fan-out of `cargo xtask check`.
+#
+# `cargo xtask check` runs its steps SERIALLY (fmt → build → test → clippy → codegen → wasm-runtime
+# → gate) for a single local green/red signal. In CI we want wall-clock, so each step is its own
+# job and they run concurrently. Together they cover exactly what `check` covers, plus roundtrip and
+# the allocation bench, which `check` doesn't run but the promotion bar cares about.
+#
+# Called by ci.yml (push/PR), release.yml, and nightly.yml via `workflow_call`.
+name: checks
+
+on:
+  workflow_call:
+    inputs:
+      # Nightly flips this on so the behavior gate runs WITHOUT `--check`: it still fails on a real
+      # miscompile (a corpus disagreement), but no longer on mere baseline drift — surfacing
+      # newly-passing cases as a nudge to re-record. Day-to-day CI leaves it off (strict --check).
+      soft-baselines:
+        type: boolean
+        default: false
+
+# CARGO_INCREMENTAL=0: incremental artifacts only bloat the cache and never hit across CI runs.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ── Pure native, no wasm toolchain ──────────────────────────────────────────
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: fmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: test-${{ matrix.os }}
+      - run: cargo test --workspace
+
+  # ── wasm-runtime-dependent jobs ─────────────────────────────────────────────
+  # The value-heap runtime is invisible to `cargo build`; these jobs build it explicitly.
+
+  codegen:
+    # The staleness gate: regenerates the runtime-ABI table + REQUIRED_RUNTIME_HASH in memory and
+    # fails if the committed source drifted. Reproducible only on the pinned rustc (see
+    # rust-toolchain.toml) — this job is why the toolchain is pinned.
+    name: codegen (ABI staleness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: codegen
+      - run: cargo xtask codegen --check
+
+  wasm-runtime:
+    # The runtime is workspace-excluded and wasm32-only; a plain `cargo build` skips it, so build it
+    # explicitly the way `xtask check` does.
+    name: wasm runtime build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: wasm-runtime
+      - run: cargo build --release --target wasm32-unknown-unknown
+        working-directory: implementation/seed/crates/cdz-runtime
+
+  gate:
+    # The behavior gate: compile+run every corpus case and compare to the recorded verdict.
+    # MUST build the runtime store first (`xtask build`) or every heap case is a false "runtime
+    # missing" failure. `gate --check` fails only on a REGRESSION vs the committed baseline.
+    name: behavior gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: gate
+      - name: Build the runtime store
+        run: cargo xtask build
+      - name: Run the corpus gate
+        run: cargo xtask gate ${{ inputs.soft-baselines && '' || '--check' }}
+
+  roundtrip:
+    # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
+    # independently of the compiler. No runtime needed.
+    name: syntax roundtrip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: roundtrip
+      - run: cargo xtask roundtrip
+
+  bench:
+    # Runtime allocation regression check (allocation COUNT, deterministic native↔wasm) vs the
+    # committed baseline. Runs the cdz-runtime native #[ignore]d ceilings test.
+    name: allocation bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: bench
+      - run: cargo xtask bench

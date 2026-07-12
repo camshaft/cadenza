@@ -1,0 +1,59 @@
+# Composite action: install the pinned toolchain and the wasm build tools, with caching.
+#
+# `rust-toolchain.toml` at the repo root pins the channel, components, and the
+# `wasm32-unknown-unknown` target — so a bare `rustup show` (run implicitly by the first cargo
+# invocation) installs exactly that. This action layers on the two out-of-tree tools the value-heap
+# runtime build needs (`cargo-component`, `wasm-tools`) and the Rust build cache. Every job that
+# touches cargo starts with `uses: ./.github/actions/setup-rust`.
+name: setup-rust
+description: Install the pinned Rust toolchain, wasm tooling, and warm the build cache.
+
+inputs:
+  # Runtime/gate/codegen jobs need the wasm toolchain; a pure `cargo test` job does not, so it can
+  # skip the (cached, but non-trivial) install of cargo-component.
+  wasm-tools:
+    description: Install cargo-component + wasm-tools (needed to build the value-heap runtime).
+    default: "false"
+  # Distinguishes cache entries so jobs with different target sets don't thrash one shared key.
+  cache-key:
+    description: Extra suffix mixed into the cache key.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Materialize the pinned toolchain from rust-toolchain.toml (channel + components + target).
+    # rustup is preinstalled on GitHub runners; `rustup show` triggers the toolchain-file install.
+    - name: Install pinned toolchain
+      shell: bash
+      run: |
+        rustup show active-toolchain || rustup toolchain install
+        rustc --version
+        cargo --version
+
+    # Cache registry, git deps, and target/. Keyed on the lockfile + toolchain so a dependency or
+    # compiler bump invalidates cleanly. (Cargo.lock is gitignored here, so fall back to the
+    # manifests when it is absent — the cache still helps, it just refreshes more often.)
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        # Cache the wasm runtime's separate target dir too (it is a standalone workspace).
+        workspaces: |
+          .
+          implementation/seed/crates/cdz-runtime
+        key: ${{ inputs.cache-key }}
+        # Do not fail the build if the cache service hiccups.
+        cache-on-failure: "true"
+
+    # The value-heap runtime is a wasm component: `cargo xtask build`/`codegen`/`gate` shell out to
+    # `cargo component build` and canonicalize the bytes with `wasm-tools strip`. Pin both so the
+    # recorded REQUIRED_RUNTIME_HASH stays reproducible. `cargo-bins/cargo-binstall` fetches
+    # prebuilt binaries (seconds) instead of compiling from source (minutes).
+    - name: Install wasm tooling
+      if: inputs.wasm-tools == 'true'
+      shell: bash
+      run: |
+        curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        cargo binstall -y --no-confirm cargo-component@0.21.1 wasm-tools@1.253.0
+        cargo component --version
+        wasm-tools --version

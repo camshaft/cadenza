@@ -1,0 +1,14 @@
+# Keep the pinned action versions (checkout, cache, download/upload-artifact, gh-release,
+# rust-cache) current. Actions only — Rust deps are governed by the pinned toolchain and the
+# corpus/gate baselines, not a bot. Grouped into one weekly PR to stay low-noise.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"

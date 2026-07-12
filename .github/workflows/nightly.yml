@@ -1,0 +1,69 @@
+# Nightly — a scheduled full check plus a rolling prerelease of fresh artifacts.
+#
+# Two purposes:
+#   - Catch bit-rot the PR gate can't: toolchain/dependency drift, and baseline SOFTENING
+#     (`soft-baselines: true` runs the gate/bench without --check, so a *newly passing* case or an
+#     allocation improvement is reported instead of ignored — a nudge to re-record the baselines).
+#   - Publish a rolling `nightly` prerelease so consumers can always grab the tip build.
+#
+# ⚠ GitHub runs `schedule` triggers ONLY from the repository's DEFAULT branch. The active workspace
+# lives on `spec`; make `spec` the default branch (Settings → Branches) for the cron to fire on the
+# right tree. Until then, run this manually from the `spec` branch via the "Run workflow" button
+# (workflow_dispatch), which is branch-selectable.
+name: nightly
+
+on:
+  schedule:
+    # 07:00 UTC daily (~midnight US Pacific). Cron only reads the default branch's copy.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: write # move the rolling `nightly` tag + prerelease
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      soft-baselines: true
+
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: nightly
+
+  publish:
+    name: rolling nightly prerelease
+    runs-on: ubuntu-latest
+    needs: [checks, build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Overwrite the single `nightly` tag to point at this commit, then replace the prerelease
+      # assets. action-gh-release moves the tag for us (with a fresh commit target).
+      - name: Publish rolling nightly
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly build
+          prerelease: true
+          # A rolling tag: clobber the previous nightly assets rather than appending.
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            Rolling nightly build from `${{ github.ref_name }}` @ ${{ github.sha }}.
+            Unstable — rebuilt every night. Use a `v*` release for a pinned version.
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+            artifacts/cadenza-runtime-*.wasm
+            artifacts/runtime.toml

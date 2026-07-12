@@ -1,0 +1,23 @@
+# CI — runs on every push and pull request against the active branches.
+#
+# Thin entrypoint: delegates the whole parallel check fan-out to the reusable `checks.yml`. Kept
+# separate from checks.yml so release/nightly can reuse the checks without re-declaring triggers.
+name: ci
+
+on:
+  push:
+    branches: [spec, main]
+  pull_request:
+    branches: [spec, main]
+
+# Cancel superseded runs on the same ref — a new push to a PR obsoletes the in-flight one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
