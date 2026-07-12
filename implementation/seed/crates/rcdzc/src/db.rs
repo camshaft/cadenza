@@ -42,7 +42,8 @@ pub struct Def {
     pub name: String,
     /// Signature occurrence, for diagnostics.
     pub sig_occ: StructId,
-    /// Parameter occurrences (Stage 0 realizes only nullary defs).
+    /// Parameter occurrences, in signature order (empty = a nullary def). A parameter may be a bare
+    /// name or an annotated `(: name T)` binder.
     pub params: Vec<StructId>,
     /// Body expression occurrence, or `None` if the def is malformed.
     pub body: Option<StructId>,
