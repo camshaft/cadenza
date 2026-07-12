@@ -235,6 +235,14 @@ pub enum Prim {
     /// a runtime string declines (the byte-rope slice arrives later). The string companion of
     /// `Bytes.slice`, but cut by scalar offset and with an `(start, end)` — not `(start, len)` — range.
     StrSlice,
+    /// `Option.expect` / `Result.expect` — the unwrap-or-trap accessor `∀a. Sum<a> → String → a`. The
+    /// `(meta apply)` of the `expect` field on the synthesized Option/Result records. Applying it to a
+    /// present variant (`Some`/`Ok`, discriminant 0) yields the payload; the absent variant TRAPS
+    /// (core-semantics.md §Requiring The Value Of An Optional Traps On Absence). A constant present
+    /// variant FOLDS to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
+    /// The message argument is a `String` (for a human), dropped by the pure core (the wasm trap is
+    /// textless). ONE prim for both Option and Result — present is discriminant 0 in each.
+    SumExpect,
 }
 
 impl Prim {
@@ -290,6 +298,7 @@ impl Prim {
             "str-at" => Some(Prim::StrAt),
             "str-concat" => Some(Prim::StrConcat),
             "str-slice" => Some(Prim::StrSlice),
+            "sum-expect" => Some(Prim::SumExpect),
             _ => None,
         }
     }

@@ -302,6 +302,9 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_cont_callees(db, &root, out);
         }
         crate::core::Core::SumPayload { scrutinee, .. } => collect_call_callees(db, scrutinee, out),
+        // `expect` evaluates its scrutinee (which may CALL — a `checked-add` composes here); the trap path
+        // calls nothing.
+        crate::core::Core::SumExpect { scrutinee, .. } => collect_call_callees(db, scrutinee, out),
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)

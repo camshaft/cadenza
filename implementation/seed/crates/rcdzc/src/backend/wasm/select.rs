@@ -214,6 +214,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
         Core::SumPayload { scrutinee, .. } => binding_escapes(db, scrutinee, binder, true),
+        // `expect` reads the scrutinee's payload (a borrow, like `SumPayload`) — a `LocalRef` reached
+        // through it does not escape (the payload is unboxed/used in place, not moved out).
+        Core::SumExpect { scrutinee, .. } => binding_escapes(db, scrutinee, binder, true),
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -580,6 +583,17 @@ pub fn collect_used_ops(
                     crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
                 };
             }
+            if let Ok(Some(op)) = get_op(db, id) {
+                out.insert(op);
+            }
+            collect_used_ops(db, scrutinee, out);
+        }
+        // `expect` probes the discriminant (`sum-disc`) and, on the present arm, reads the payload
+        // (`sum-payload`) then unboxes by the result type (`get-*`); the absent arm traps (no op). It also
+        // emits the scrutinee once.
+        Core::SumExpect { scrutinee, .. } => {
+            out.insert(OP_SUM_DISC);
+            out.insert(OP_SUM_PAYLOAD);
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
@@ -2091,6 +2105,72 @@ fn emit(
                     out.push(Lir::I32WrapI64);
                 }
             }
+            Ok(())
+        }
+        // `Option.expect` / `Result.expect` on a RUNTIME sum — probe the discriminant; on the PRESENT
+        // variant (`disc_present`) read the payload + unbox by the result type, else TRAP (`unreachable`).
+        // Materialize the scrutinee ONCE into a fresh i32 slot (a computed scrutinee — a `checked-add` —
+        // must not be recomputed for the disc probe and the payload read; a reusable param/local is read
+        // from its own slot). Then: `sum-disc == disc_present` selects an `if` whose THEN reads
+        // `sum-payload` (+ `get-*` unbox, narrowing an i32 int) and whose ELSE is `unreachable` (the
+        // absent-variant trap — textless; core-semantics.md §Requiring The Value Of An Optional Traps On
+        // Absence). Both `sum-disc`/`sum-payload` BORROW the handle (no rc change), like a match probe.
+        Core::SumExpect {
+            scrutinee,
+            disc_present,
+        } => {
+            // Reserve slot `base` for the sum handle (i32); emit the scrutinee ABOVE it (`base + 1`, so its
+            // own transient scratch — a `checked-add`'s temps — floats clear), then stash the one handle.
+            // Reading the slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE, whether
+            // it is a reusable param/local or a computed value.
+            let handle_slot = base;
+            if handle_slot + 1 > *high {
+                *high = handle_slot + 1;
+            }
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(
+                db,
+                scrutinee,
+                slots,
+                base + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(handle_slot));
+            // The result block type is this node's solved type (the payload type).
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "expect result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            // disc(handle) == disc_present ?
+            out.push(Lir::LocalGet(handle_slot));
+            out.push(Lir::CallImport(OP_SUM_DISC)); // [disc]
+            out.push(Lir::ConstI32(disc_present as i32));
+            out.push(Lir::I32Eq); // [present?]
+            out.push(Lir::If(block_ty));
+            // THEN — the present payload: sum-payload + unbox by result type.
+            out.push(Lir::LocalGet(handle_slot));
+            out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload-handle]
+            if let Some(op) = get_op(db, id)? {
+                out.push(Lir::CallImport(op)); // [scalar]
+                if is_narrow_int(db, id).is_some() {
+                    out.push(Lir::I32WrapI64);
+                }
+            }
+            out.push(Lir::Else);
+            // ELSE — absent variant: trap. `unreachable` leaves the stack polymorphic, so the block's
+            // declared result type validates without a produced value.
+            out.push(Lir::Unreachable);
+            out.push(Lir::End);
             Ok(())
         }
         Core::If { cond, then_, else_ } => {

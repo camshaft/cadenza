@@ -582,6 +582,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::StrSlice) if args.len() == 3 => {
                     lower_str_slice(db, id, args[0], args[1], args[2])
                 }
+                // `Option.expect` / `Result.expect` — the unwrap-or-trap accessor. `args[0]` is the sum,
+                // `args[1]` the message (dropped — the wasm trap is textless). FOLD a constant PRESENT
+                // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
+                // trap).
+                Some(Prim::SumExpect) if args.len() == 2 => lower_sum_expect(db, id, args[0]),
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
                 // concatenation (the result is another constant `String`). The value form is always NFC,
                 // and NFC is NOT closed under concatenation in general (a combining mark starting the RIGHT
@@ -2825,6 +2830,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrAt
         | Prim::StrConcat
         | Prim::StrSlice
+        | Prim::SumExpect
         | Prim::StringTy
         | Prim::BytesAt
         | Prim::BytesConcat
@@ -3174,6 +3180,44 @@ fn lower_str_slice(
     }
 }
 
+/// Lower `(Option.expect sum message)` / `(Result.expect sum message)` — the unwrap-or-trap accessor. The
+/// PRESENT variant is discriminant 0 (`Some`/`Ok`, the sum's FIRST variant — the shape the `expect` field
+/// is added for). FOLD a compile-time-visible PRESENT variant (`Core::SumNew{disc:0, payloads:[p]}`) to
+/// its payload `p` (the message is discarded). A constant ABSENT variant is a PROVABLE trap; not folded
+/// yet (declines cleanly — no corpus case exercises a constant absent expect, and a codeless decline
+/// grades Todo, never a miscompile). A runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
+/// A poison sum propagates. `message` is not lowered — the wasm trap carries no text.
+fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, sum) {
+        return Core::Poison(r);
+    }
+    // The present variant is discriminant 0 (the sum's first variant). Confirm the scrutinee IS a sum.
+    let crate::ty::Ty::Sum { .. } = crate::infer::type_of(db, sum) else {
+        return Core::Poison(Reject::decline(
+            "expect applies to an Option/Result sum value",
+        ));
+    };
+    const DISC_PRESENT: u32 = 0;
+    // FOLD a compile-time-visible present variant to its single payload.
+    if let Core::SumNew { disc, payloads } = core_of(db, sum) {
+        if disc == DISC_PRESENT && payloads.len() == 1 {
+            trace!(target: "rcdzc::fold", node = id.0, "expect folds a constant present variant to its payload");
+            return core_of(db, payloads[0]);
+        }
+        if disc != DISC_PRESENT {
+            // A provably-absent constant expect — a compile-time trap. Not folded this increment.
+            return Core::Poison(Reject::decline(
+                "expect on a constant absent variant (a provable trap) is not yet folded",
+            ));
+        }
+    }
+    // A runtime sum — probe the discriminant at run time, unwrap the payload or trap.
+    Core::SumExpect {
+        scrutinee: sum,
+        disc_present: DISC_PRESENT,
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3459,6 +3503,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrAt => "str-at",
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
+        Prim::SumExpect => "sum-expect",
     }
 }
 

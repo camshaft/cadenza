@@ -4261,6 +4261,48 @@ mod match_engine {
     }
 
     #[test]
+    fn option_expect_folds_a_constant_present_variant_to_its_payload() {
+        // `Option.expect`/`Result.expect` on a compile-time-visible PRESENT variant FOLDS to its payload
+        // (core-semantics.md §Requiring The Value Of An Optional Traps On Absence — the present branch).
+        // A constant `(Some 7)` / `(Ok 99)` unwraps at compile time (no heap, no runtime probe); the
+        // message is discarded. Consumed to a scalar so `main` returns it directly.
+        for (prog, want) in [
+            ("(Option.expect (Some 7) \"m\")", 7),
+            ("(Result.expect (Ok 99) \"m\")", 99),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "expect folds constant present: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn option_expect_unwraps_a_runtime_optional_through_the_disc_probe() {
+        // The RUNTIME `Option.expect` path: unwrap an optional a runtime op PRODUCED (not a constant), the
+        // compiler's `List.at`+`Option.expect` idiom the spec cites. `build 0 3 (list)` = `[0 1 2]`;
+        // `(List.at xs 1)` is a runtime `(Some 1)` (a heap sum, does NOT fold), and `(Option.expect … "m")`
+        // unwraps it → 1. Exercises the emitted `sum-disc == 0` probe + `sum-payload` unbox on the present
+        // arm (no trap). This forces the genuine `Core::SumExpect` emit (the sum is a runtime handle).
+        let Some(out) = run_on_heap(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) (let ((xs (build 0 3 (list)))) \
+                 ((. Option expect) ((. List at) xs 1) \"in range\"))) \
+               (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "1",
+            "runtime Option.expect unwraps the present payload"
+        );
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0

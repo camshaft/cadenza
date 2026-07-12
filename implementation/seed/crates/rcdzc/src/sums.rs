@@ -169,7 +169,71 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         let k = push_atom(ast, Leaf::Name(variant.name.clone()));
         children.push(push_list(ast, vec![k, ctor]));
     }
+
+    // The `expect` ACCESSOR field — the unwrap-or-trap `∀params. (Sum params) → String → <payload0>`
+    // (`Option.expect`/`Result.expect`, core-semantics.md §Requiring The Value Of An Optional Traps On
+    // Absence). Present on a sum whose PRESENT variant (discriminant 0) carries exactly ONE payload — the
+    // Option/Result shape — since expect unwraps that one payload; a nullary or multi-payload disc-0 has
+    // no single value to yield, so no `expect` field (and a program's `(. T expect)` declines through the
+    // ordinary closed-record projection, not a name special-case). Nothing is privileged BY NAME: the
+    // field is added by SHAPE, so a user sum with the same disc-0-single-payload shape gets it too.
+    if let Some(present) = decl.variants.first()
+        && present.payloads.len() == 1
+    {
+        let expect_ty = expect_type_scheme(ast, decl, present.payloads[0]);
+        let expect_op = expect_op_record(ast, expect_ty);
+        let ek = push_atom(ast, Leaf::Name("expect".to_string()));
+        children.push(push_list(ast, vec![ek, expect_op]));
+    }
+
     (push_list(ast, children), ctors)
+}
+
+/// The `expect` field's type scheme — `∀params. (Sum params) → String → <payload0>` — as a `(meta t)`
+/// type expression. For a GENERIC sum a type-LAMBDA over the sum's params (so `scheme_of` reads a
+/// polymorphic scheme, `(Option.expect (Some 5) "m")` unifying the payload param to `Int64`); the body
+/// is `(-> (Sum params) (-> String <payload0>))`. `payload0` is the disc-0 variant's single payload TYPE
+/// occurrence (COPIED fresh so a `a` re-resolves to the lambda param), the value `expect` yields.
+fn expect_type_scheme(ast: &mut Arenas, decl: &TypeDecl, payload0: StructId) -> StructId {
+    // `(-> (Sum params) (-> String <payload0>))`.
+    let ret = copy_subtree(ast, payload0);
+    let string = {
+        let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+        let who = push_atom(ast, Leaf::Name("String".to_string()));
+        push_list(ast, vec![ih, who])
+    };
+    let arrow2 = push_atom(ast, Leaf::Name("->".to_string()));
+    let inner = push_list(ast, vec![arrow2, string, ret]); // (-> String <payload0>)
+    let sum = sum_applied(ast, decl); // (Sum params) or the bare typeval
+    let arrow1 = push_atom(ast, Leaf::Name("->".to_string()));
+    let body = push_list(ast, vec![arrow1, sum, inner]); // (-> (Sum params) (-> String payload0))
+    if decl.params.is_empty() {
+        return body;
+    }
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let param_atoms: Vec<StructId> = decl
+        .params
+        .iter()
+        .map(|p| push_atom(ast, Leaf::Name(p.clone())))
+        .collect();
+    let params_list = push_list(ast, param_atoms);
+    push_list(ast, vec![fn_head, params_list, body])
+}
+
+/// The `expect` operation record: `(record ((meta t) TYPE-SCHEME) ((meta apply) (intrinsic sum-expect)))`
+/// — the same operator-record shape as a variant constructor, but its `(meta apply)` is the `sum-expect`
+/// intrinsic (`Prim::SumExpect`). Projecting `(. Option expect)` gives this record; applying it dispatches
+/// through the ordinary `(meta apply)` path to the unwrap-or-trap lowering.
+fn expect_op_record(ast: &mut Arenas, type_scheme: StructId) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let t_field = meta_field(ast, "t", type_scheme);
+    let builder = {
+        let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+        let who = push_atom(ast, Leaf::Name("sum-expect".to_string()));
+        push_list(ast, vec![ih, who])
+    };
+    let apply_field = meta_field(ast, "apply", builder);
+    push_list(ast, vec![head, t_field, apply_field])
 }
 
 /// A variant constructor record. It carries THREE meta channels — the SAME shape an operator record

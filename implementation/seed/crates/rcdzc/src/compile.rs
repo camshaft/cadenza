@@ -542,6 +542,9 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // and `if`. Do not descend into arm bodies. A sum-payload read evaluates the scrutinee.
         Core::MatchSum { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         Core::SumPayload { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
+        // `expect` unconditionally evaluates its scrutinee (descend); the absent-variant trap is a RUNTIME
+        // trap on a runtime discriminant, not a compile-time provable poison — nothing to collect there.
+        Core::SumExpect { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }
