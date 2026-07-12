@@ -335,55 +335,70 @@ fn lookup_scope(db: &Db, id: StructId, name: &str) -> Option<Resolved> {
 /// A `def`'s parameters bind in its body too — Case 4 below, exactly as a `fn` body sees its own
 /// parameters (a def-with-params is no longer nullary-only).
 fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Resolved> {
-    // Case 1: `form` is a `let`, ascended from its body → all bindings visible.
-    if let Some(tail) = db.ast.as_form(form, "let") {
-        let bindings_occ = tail.first().copied()?;
-        let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ {
-            // The body sees EVERY binding — no `stop_before`.
-            return last_binder_named(db, bindings_occ, name, None)
-                .map(|v| Resolved::Ref { value: v });
+    // Read `form`'s head name ONCE and dispatch on it, rather than probing it with a cascade of
+    // `as_form(form, "let"/"fn"/"def")` (each re-fetches the node, re-reads the head, and string-
+    // compares). A lexical-scope walk ascends EVERY enclosing form — and in a deeply nested value
+    // (`(record … (next (record … )))`, `(tuple a (tuple …))`) the vast majority are non-binding
+    // forms (a record/tuple/`.`/`if`/application), so paying five string-compares each to conclude
+    // "binds nothing" was the bulk of the O(depth)-per-reference walk (measured: `as_form` was ~45%
+    // of self-time and O(N²) in call count on a depth-N nest). One `head_name` + `==` per form.
+    let head = db.ast.head_name(form);
+    match head {
+        // Case 1: `form` is a `let`, ascended from its body → all bindings visible.
+        Some("let") => {
+            let tail = db.ast.as_form(form, "let")?;
+            let bindings_occ = tail.first().copied()?;
+            let body_occ = tail.get(1).copied();
+            if Some(from) == body_occ {
+                // The body sees EVERY binding — no `stop_before`.
+                return last_binder_named(db, bindings_occ, name, None)
+                    .map(|v| Resolved::Ref { value: v });
+            }
+            return None;
         }
-        return None;
+        // Case 3: `form` is a `(fn (params) body)`, ascended from the body → its parameters bind. A
+        // parameter reference resolves to the PARAMETER occurrence itself (a formal); the evaluator
+        // substitutes the argument there at application, and `infer` gives an unsubstituted parameter a
+        // fresh variable. The last param of `name` wins (shadowing among params, harmless).
+        Some("fn") => {
+            let tail = db.ast.as_form(form, "fn")?;
+            let params_occ = tail.first().copied()?;
+            let body_occ = tail.get(1).copied();
+            if Some(from) == body_occ && matches!(db.ast.get(params_occ), Struct::List(_)) {
+                // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike. The
+                // last param of `name` wins. O(1) via the precomputed per-scope binder index (built once
+                // at load; see `Db::binder_in_scope`) — a linear scan here was O(N²) when N body
+                // references each ascended into an N-parameter signature.
+                return db
+                    .binder_in_scope(form, name)
+                    .map(|v| Resolved::Ref { value: v });
+            }
+            return None;
+        }
+        // Case 4: `form` is a `(def (NAME param…) body)`, ascended from the body → the signature's
+        // parameters (everything after NAME) bind. So a def-with-params body sees its parameters,
+        // exactly as a lambda body sees its own. A parameter may be an annotated binder `(: a T)`.
+        Some("def") => {
+            let tail = db.ast.as_form(form, "def")?;
+            let sig_occ = tail.first().copied()?;
+            let body_occ = tail.get(1).copied();
+            if Some(from) == body_occ && matches!(db.ast.get(sig_occ), Struct::List(_)) {
+                // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence,
+                // last-wins. O(1) via the precomputed per-scope binder index (see `Db::binder_in_scope`).
+                return db
+                    .binder_in_scope(form, name)
+                    .map(|v| Resolved::Ref { value: v });
+            }
+            return None;
+        }
+        _ => {}
     }
     // Case 2: `form` is a let's BINDINGS-LIST, ascended from pair `from` → the bindings BEFORE `from`
-    // are visible (an initializer sees the earlier bindings, not itself or later ones).
+    // are visible (an initializer sees the earlier bindings, not itself or later ones). A bindings-list
+    // has NO head name (it is a bare list of pairs), so this is only reached for a headless/other-headed
+    // form — its own parent-shape check (`let_of_bindings_list`) confirms it.
     if let_of_bindings_list(db, form).is_some() {
         return last_binder_named(db, form, name, Some(from)).map(|v| Resolved::Ref { value: v });
-    }
-    // Case 3: `form` is a `(fn (params) body)`, ascended from the body → its parameters bind. A
-    // parameter reference resolves to the PARAMETER occurrence itself (a formal); the evaluator
-    // substitutes the argument there at application, and `infer` gives an unsubstituted parameter a
-    // fresh variable. The last param of `name` wins (shadowing among params, harmless).
-    if let Some(tail) = db.ast.as_form(form, "fn") {
-        let params_occ = tail.first().copied()?;
-        let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ && matches!(db.ast.get(params_occ), Struct::List(_)) {
-            // A parameter binds the name it declares — bare `a` or annotated `(: a T)` alike. The last
-            // param of `name` wins (shadowing among params). O(1) via the precomputed per-scope binder
-            // index (built once at load; see `Db::binder_in_scope`) — a linear scan here was O(N²) when
-            // N body references each ascended into an N-parameter signature.
-            return db
-                .binder_in_scope(form, name)
-                .map(|v| Resolved::Ref { value: v });
-        }
-        return None;
-    }
-    // Case 4: `form` is a `(def (NAME param…) body)`, ascended from the body → the signature's
-    // parameters (everything after NAME) bind. So a def-with-params body sees its parameters, exactly
-    // as a lambda body sees its own. A parameter may be an annotated binder `(: a T)`.
-    if let Some(tail) = db.ast.as_form(form, "def") {
-        let sig_occ = tail.first().copied()?;
-        let body_occ = tail.get(1).copied();
-        if Some(from) == body_occ && matches!(db.ast.get(sig_occ), Struct::List(_)) {
-            // sig = [NAME, param…]; a reference binds to the matching PARAM's name occurrence, last-wins.
-            // O(1) via the precomputed per-scope binder index (see `Db::binder_in_scope`) rather than the
-            // O(N)-per-reference signature scan that made N references into an N-param def O(N²).
-            return db
-                .binder_in_scope(form, name)
-                .map(|v| Resolved::Ref { value: v });
-        }
-        return None;
     }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
