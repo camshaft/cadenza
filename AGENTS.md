@@ -137,6 +137,24 @@ The workflow for any change:
 5. **Remove the worktree when the work is merged** (`git worktree remove`), so the shared
    `.claude/worktrees/` directory does not accumulate stale trees.
 
+`spec` is the LOCAL integration branch only — it does not exist on the remote. All the steps
+above stay local; nothing here pushes.
+
+## Publishing to the remote — local `spec` maps to `origin/main` via a PR
+
+The remote default branch is **`main`** (protected: a ruleset requires the `checks / …` CI jobs
+to pass, so it cannot be pushed to directly). Local `spec` is what everything integrates onto;
+it is mapped onto `origin/main` at push time through a pull request:
+
+```sh
+git push origin spec:staging-<topic>          # push the local tip to a staging branch
+gh pr create --base main --head staging-<topic> --fill
+```
+
+CI runs on the PR; it merges into `main` once the required checks are green. Do NOT rename the
+local branch or try to push `spec` straight to `main` — the mapping is only at publish time, and
+the direct push is refused by the ruleset. (Prior generations live on the remote `old` branch.)
+
 ## The build loop
 
 `./start.sh` is the front door: it installs the neutral commands in `commands/` as Claude Code slash

@@ -1,10 +1,9 @@
 # =============================================================================
-# This is the Cadenza specification branch. It holds the durable source of truth:
-# the specification tree, the neutral build-loop commands (commands/), and the
-# entry point (start.sh). The Cadenza compiler itself is a disposable, regenerable
-# projection of these specs and is NEVER committed here; it is regenerated into
-# implementation/ (below), and the commands are installed into .claude/commands/
-# as a local, generated target.
+# The Cadenza repository. `main` holds the durable source of truth — the specification tree,
+# the neutral build-loop commands (commands/), the entry point (start.sh), and the seed
+# toolchain under implementation/seed/. Regenerated, machine-local, and agent-local artifacts
+# are ignored below: the built `implementation/stable` binary, the target/ dirs, and the
+# gitignored .claude/ (into which commands/ and skills/ are installed as local generated targets).
 # =============================================================================
 
 # Editor / OS / agent-local
