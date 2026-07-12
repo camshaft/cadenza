@@ -4059,6 +4059,51 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_bytes_slice_folds_to_some_of_the_sub_range() {
+        // `(Bytes.slice (Bytes.of …) start len)` on constant operands FOLDS: an in-range slice → a
+        // constant `Some(Bytes.of <sub>)` (its bytes then compare structurally via the constant-compound
+        // equality fold), a zero-length slice → `Some(<empty>)` (present, not None), out-of-range → None.
+        // Each returns a scalar (1/0 via `if (= …)`) so `main` needs no bytes escape. Was declined
+        // "comparison of a compound value needs a heap walk" / the runtime slice path before the fold.
+        for (body, want) in [
+            // in-range: bytes [1,2] of (10 20 30 40) == (20 30)
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) \"x\") (Bytes.of (list 20 30))) 1 0)) (export main))",
+                1,
+            ),
+            // zero-length in-range slice == empty
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) \"x\") (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            // slice across a folded concat seam: [1,2] of (1 2 3 4) == (2 3)
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2) \"x\") (Bytes.of (list 2 3))) 1 0)) (export main))",
+                1,
+            ),
+            // a wrong expected sub-range → false (the fold really compares the bytes, not just Some-ness)
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) \"x\") (Bytes.of (list 20 99))) 1 0)) (export main))",
+                0,
+            ),
+            // out of range (start 2 + len 5 > 4) → None (not Some), so it is not the empty-Some
+            (
+                "(module m (def (main) (if (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 5) (None unit)) 1 0)) (export main))",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant Bytes.slice folds: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the

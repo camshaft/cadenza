@@ -4104,11 +4104,12 @@ fn lower_bytes_concat(db: &mut Db, lhs: StructId, rhs: StructId) -> Core {
 /// Lower `(Bytes.slice bytes start len)` — the fallible sub-range read. Emits the runtime
 /// `Core::BytesSlice`, which bounds-checks (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) and
 /// yields `Some(bytes-slice)` in range / `None` out — never trapping (the runtime `bytes-slice` traps on
-/// OOB, so the emit guards first). A provably-out-of-range CONSTANT slice folds to `None` here (a cheap
-/// safe fold); an in-range constant slice does NOT fold to a baked `Some(Bytes)` — its payload is a
-/// sub-sequence, which would need a synthesized `Core::BytesOf` payload occurrence — so it takes the
-/// runtime path (correct, just imports the runtime). The `Some(Bytes)` payload is a Bytes HANDLE, used
-/// directly (no box). Mirrors `lower_bytes_at`'s shape; the constant-Some fold is a later refinement.
+/// OOB, so the emit guards first). A CONSTANT slice (`Bytes.of` sliced by constant `start`/`len`) FOLDS:
+/// out-of-range → `None`; in-range → `Some(Bytes.of <sub-range>)`, a synthesized `Core::BytesOf` carrying
+/// the selected element occurrences (its core + type PRE-FILLED so it lowers/types/escapes/compares like
+/// any constant `Bytes.of` — same shape `String.slice`/`String.to-bytes` synthesize a folded payload). A
+/// runtime bytes/start/len takes the runtime path; the runtime `Some(Bytes)` payload is a Bytes HANDLE
+/// (no box). Mirrors `lower_bytes_at`, extended to the compound `Some` payload.
 fn lower_bytes_slice(
     db: &mut Db,
     id: StructId,
@@ -4126,21 +4127,51 @@ fn lower_bytes_slice(
             "Bytes.slice result is not the built-in Option sum",
         ));
     };
-    // A provably-out-of-range CONSTANT slice folds to `None` (safe, no synthesized payload needed).
+    // A CONSTANT slice — a visible `Bytes.of` sliced by constant `start`/`len` — folds at compile time.
     if let (Core::BytesOf { elems }, Core::ConstInt(s), Core::ConstInt(l)) =
         (core_of(db, bytes), core_of(db, start), core_of(db, len))
     {
         let n = elems.len() as i128;
-        let in_range = match (s.to_i64(), l.to_i64()) {
-            (Some(s), Some(l)) if s >= 0 && l >= 0 => (s as i128) + (l as i128) <= n,
-            _ => false,
-        };
-        if !in_range {
-            trace!(target: "rcdzc::fold", node = id.0, "Bytes.slice folds to None (out-of-range constant)");
-            return Core::SumNew {
-                disc: disc_none,
-                payloads: Vec::new(),
-            };
+        match (s.to_i64(), l.to_i64()) {
+            // In range (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) → `Some(Bytes.of <sub>)`.
+            // The payload is a synthesized node whose core is a `Core::BytesOf` of the selected element
+            // occurrences (already range-checked constant bytes) — its `core`/`ty` are pre-filled so it
+            // rides the ordinary constant-`Bytes.of` fold/escape/equality (both `core_of` and `type_of`
+            // short-circuit on a filled memo slot), no runtime op. `start == len == 0` yields the empty
+            // sequence (present, not None).
+            (Some(s), Some(l)) if s >= 0 && l >= 0 && (s as i128) + (l as i128) <= n => {
+                let sub: Vec<StructId> = elems[s as usize..(s + l) as usize].to_vec();
+                // A fresh occurrence to carry the folded sub-sequence. Its leaf is a placeholder (a
+                // `Leaf::Bytes` of the raw sub-bytes, purely so an inspected node is self-consistent);
+                // the `core`/`ty` pre-fill below is authoritative — `core_of`/`type_of` short-circuit on
+                // a filled slot, so the node never re-resolves through the leaf.
+                let raw: Vec<u8> = elems[s as usize..(s + l) as usize]
+                    .iter()
+                    .filter_map(|&e| match core_of(db, e) {
+                        Core::ConstInt(v) => v
+                            .to_i64()
+                            .filter(|n| (0..=255).contains(n))
+                            .map(|n| n as u8),
+                        _ => None,
+                    })
+                    .collect();
+                let payload = db.push_atom(crate::ast::Leaf::Bytes(raw));
+                db.core.fill(payload, Core::BytesOf { elems: sub });
+                db.types.fill(payload, crate::ty::Ty::Bytes);
+                trace!(target: "rcdzc::fold", node = id.0, start = s, len = l, "Bytes.slice folds to Some (in-range constant)");
+                return Core::SumNew {
+                    disc: disc_some,
+                    payloads: vec![payload],
+                };
+            }
+            // Provably out of range → `None`.
+            _ => {
+                trace!(target: "rcdzc::fold", node = id.0, "Bytes.slice folds to None (out-of-range constant)");
+                return Core::SumNew {
+                    disc: disc_none,
+                    payloads: Vec::new(),
+                };
+            }
         }
     }
     Core::BytesSlice {
