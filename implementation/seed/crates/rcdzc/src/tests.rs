@@ -1418,11 +1418,11 @@ fn a_runtime_resource_escape_leaves_no_live_objects() {
 //
 // A compound leaving a function transfers ownership of its handle to the consumer (the callee does not
 // drop it — `binding_escapes`). The HOST-facing return (a compound crossing the component boundary) is
-// NOT a raw handle — that was a shortcut. It will be a monomorphized component-model RESOURCE carrying
-// `display-value` / `display-type` methods (the resource vertical, tasks below); until that lands, a
-// compound host-return DECLINES (reject-don't-miscompile — `export_result_valtype`). The internal
-// ownership-transfer behavior is still exercised by the H2 round-trips + the balance probe; the two
-// former raw-handle-to-host tests are removed as the shortcut they tested is being replaced.
+// NOT a raw handle: a single nullary export returning a tuple/record crosses as a component-model
+// RESOURCE whose `encode() -> list<u8>` walks the live handle into the canonical binary value form
+// (the resource vertical, tests below). A compound on the MULTI-EXPORT boundary has no such shape and
+// still DECLINES (reject-don't-miscompile — `export_result_valtype`). The internal ownership-transfer
+// behavior is exercised by the H2 round-trips + the balance probe.
 
 /// The heap interface's function names, read off the runtime component's type (the same discovery
 /// `cdz-run` does) — so the balance probe forwards exactly what the runtime exports, nothing hard-coded.
