@@ -983,6 +983,44 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc
     }
 }
 
+/// The condition occurrence and the two branches' element occurrences of an `if` whose branches both
+/// reduce to same-arity visible tuples — the result of [`reduce_to_if_of_tuples`].
+type IfOfTuples = (
+    StructId,
+    std::sync::Arc<[StructId]>,
+    std::sync::Arc<[StructId]>,
+);
+
+/// If `id` reduces (through refs/annotations) to an `(if cond T E)` whose BOTH branches reduce to
+/// compile-time-visible tuples of the SAME arity, return `(cond, te, ee)` — the condition occurrence and
+/// the two branches' element occurrences. This lets a projection push INTO the branches:
+/// `(. (if c T E) i)` → `(if c T[i] E[i])`, reusing the EXISTING element occurrences as the new `if`'s
+/// branches (NO ast synthesis, NO re-resolution — each occurrence keeps the scope it was resolved in).
+/// The un-projected sibling elements drop exactly as they do for a plain tuple projection
+/// (`reduce_to_tuple_elems` — a trapping sibling that folds away is never built, so never evaluated), and
+/// `cond` is evaluated in both forms, so the fold is value- and trap-preserving. `None` when the operand
+/// is not such an `if`, hits a KEPT multi-use binding (opaque — a runtime tuple, read by `arr-get`), or
+/// the branch tuples disagree in arity (then the projection stays a runtime `Core::Proj`). Mirrors
+/// `reduce_to_tuple_elems`'s ref/annot/kept handling.
+pub fn reduce_to_if_of_tuples(db: &mut Db, id: StructId) -> Option<IfOfTuples> {
+    match resolved_of(db, id) {
+        Resolved::If { cond, then_, else_ } => {
+            let te = reduce_to_tuple_elems(db, then_)?;
+            let ee = reduce_to_tuple_elems(db, else_)?;
+            (te.len() == ee.len()).then_some((cond, te, ee))
+        }
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                None
+            } else {
+                reduce_to_if_of_tuples(db, value)
+            }
+        }
+        Resolved::Annot { expr, .. } => reduce_to_if_of_tuples(db, expr),
+        _ => None,
+    }
+}
+
 /// The primitive the value at `id` denotes, following a `Ref` — `+` resolves to a `Ref` to its
 /// `(intrinsic +)` node, which resolves to `Prim::Add`. `None` if not a primitive.
 pub fn prim_of(db: &mut Db, id: StructId) -> Option<Prim> {

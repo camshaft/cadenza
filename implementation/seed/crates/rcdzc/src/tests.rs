@@ -747,6 +747,42 @@ fn a_projection_only_runtime_tuple_folds_without_the_heap() {
     assert_eq!(got, 42, "folds to (+ a b)");
 }
 
+/// A SINGLE projection of a tuple built through an `if` FOLDS the tuple away by pushing the projection
+/// INTO the branches: `(. (if c (tuple a b) (tuple b a)) 0)` → `(if c a b)`. The `if`-selected tuple was
+/// previously OPAQUE to the projection fold (`reduce_to_tuple_elems` stops at an `if`), forcing a
+/// per-call `arr-alloc` + `arr-get`; now the projection reduces to one `if` over the two selected element
+/// occurrences — no heap, no runtime import. The transform reuses the EXISTING element occurrences
+/// (each keeps the scope it was resolved in — no ast synthesis), so `.0` selects `a`/`b` by the
+/// condition and `.1` selects `b`/`a`. A trap in the condition is preserved (it still gates each branch),
+/// and the un-projected sibling drops exactly as it does for a plain visible-tuple projection. Contrast
+/// `a_narrow_runtime_tuple_element_crosses_the_heap_boundary`, where the tuple is read TWICE (a kept
+/// multi-use binding) so the fold correctly DECLINES and the heap round-trip stands.
+#[test]
+fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // `.0` of `(if p (tuple a b) (tuple b a))` → `(if p a b)`: p true selects a, p false selects b.
+    let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
+                 (. (if p (tuple a b) (tuple b a)) 0)) (export pick))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a single projection of an if-of-tuples must fold (no per-call arr-alloc, no runtime import)"
+    );
+    let t: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(true), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(t, 10, "p true → .0 = a");
+    let f: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(false), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(f, 20, "p false → .0 = b (the else branch's element 0)");
+}
+
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
 /// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip

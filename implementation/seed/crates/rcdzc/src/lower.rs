@@ -199,8 +199,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     )),
                 },
                 None => {
-                    trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
-                    Core::Proj { operand, index }
+                    // PROJECTION-INTO-IF: `(. (if c T E) i)` where BOTH branches are visible tuples of
+                    // matching arity → `(if c T[i] E[i])`, pushing the projection into each branch. This
+                    // reuses the EXISTING element occurrences as the `if`'s branches (no ast synthesis,
+                    // no re-resolution — each keeps its resolved scope), so a tuple built through an `if`
+                    // never reaches the heap when it is only projected: the two branch tuples fold away
+                    // (their un-projected siblings drop exactly as a plain tuple projection drops them),
+                    // leaving one `if` over the two selected elements. `c` is evaluated either way, so any
+                    // trap in it is preserved. An out-of-arity index is impossible here (rejected in
+                    // `type_errors`); defensively it poisons like the visible-tuple case.
+                    if let Some((cond, te, ee)) = crate::eval::reduce_to_if_of_tuples(db, operand) {
+                        match (te.get(index), ee.get(index)) {
+                            (Some(&then_), Some(&else_)) => {
+                                trace!(target: "rcdzc::fold", node = id.0, index, "projection pushed into an if of tuples (no heap build)");
+                                Core::If { cond, then_, else_ }
+                            }
+                            _ => Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                format!("tuple index {index} is out of range"),
+                            )),
+                        }
+                    } else {
+                        trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
+                        Core::Proj { operand, index }
+                    }
                 }
             }
         }
