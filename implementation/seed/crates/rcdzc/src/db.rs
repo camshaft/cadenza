@@ -294,11 +294,11 @@ pub struct Db {
 
     /// Memo of a top-level definition's generalized SIGNATURE as a [`crate::ty::Scheme`] — its type as
     /// a value, so a CALL can be typed by instantiating the scheme rather than β-reducing the body
-    /// (`infer::def_scheme`). Keyed by the `db.defs` index. `None` for a def whose signature needs the
-    /// CONNECTED def-body solve that is not built yet (an unannotated parameter needing let-generalized
-    /// inference, or a recursive def needing a fixpoint) — the caller falls back to β-reduction (the
-    /// current typing path) for those. A pure function of the fixed def structure, so it caches like
-    /// `build_cache`. (Foundation for ANF step 2 — see `implementation/DESIGN-anf-step2-runtime-functions.md`.)
+    /// (`infer::def_scheme`). Keyed by the `db.defs` index. An unannotated recursive def's parameters
+    /// are pinned by the connected solve (`solve_recursive_params`, A2), so its scheme is `Some`;
+    /// `None` remains only for a def with a genuinely undetermined parameter (no use constrained it —
+    /// it grounds to `Any`), where the caller falls back to β-reduction. A pure function of the fixed
+    /// def structure, so it caches like `build_cache`. (ANF step 2 — `implementation/DESIGN-anf-step2-runtime-functions.md`.)
     pub(crate) def_schemes: std::collections::HashMap<usize, Option<crate::ty::Scheme>>,
 
     /// Memo of an UNANNOTATED RECURSIVE def's parameter types, solved by the connected def-body solve
