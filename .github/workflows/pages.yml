@@ -38,31 +38,26 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # aarch64 to match the rest of CI: `cargo xtask build` produces the value-heap runtime whose
+    # content hash the compiler pins, and that hash is only reproducible per-arch until the function-
+    # order canonicalizer lands (see runtime-cross-arch-determinism / checks.yml). The guide bundles
+    # that runtime, so it must be the same build.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust + wasm targets
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add wasm32-unknown-unknown
-          rustup default stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # The pinned toolchain (rust-toolchain.toml: 1.95.0 + rust-src + wasm32) and the exact
+      # cargo-component / wasm-tools versions the rest of CI uses. Using `rustup default stable` +
+      # `cargo install` (as before) diverged tool/compiler versions from `checks.yml`, which can stage
+      # a subtly different browser wasm — the likely cause of the guide build's flaky module graph.
+      - uses: ./.github/actions/setup-rust
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-guide-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-guide-
+          wasm-tools: "true"
+          cache-key: pages
 
-      - name: Install cargo-component, wasm-pack, wasm-tools
-        run: |
-          cargo install cargo-component --locked || true
-          cargo install wasm-pack --locked || true
-          cargo install wasm-tools --locked || true
+      # wasm-pack is not in setup-rust (only the guide uses it); install it here.
+      - name: Install wasm-pack
+        run: cargo binstall -y --force wasm-pack
 
       - uses: actions/setup-node@v4
         with:
@@ -71,7 +66,8 @@ jobs:
           cache-dependency-path: guide/package-lock.json
 
       # 1. Build the value-heap runtime component into the store (the guide bundles the runtime whose
-      #    content hash the compiler pins).
+      #    content hash the compiler pins). RUSTC_BOOTSTRAP=1 enables the runtime's build-std (see
+      #    cdz-runtime/.cargo/config.toml).
       - name: Build value-heap runtime
         run: cargo xtask build
 
