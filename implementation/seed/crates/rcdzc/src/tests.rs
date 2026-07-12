@@ -2567,6 +2567,33 @@ mod recursion {
     }
 
     #[test]
+    fn a_match_based_tail_recursion_loops_in_constant_stack() {
+        use wasmtime::component::Val;
+        // The base case via a MATCH (idiomatic) — `(match n (0 acc) (_ (f (- n 1) (+ acc 1))))`. The
+        // self-tail-call is in a match ARM; the probe chain threads the loop context, so the arm's call
+        // becomes a loop `br` (not `return_call`). A million iterations run in O(1) stack.
+        let f = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: n Int64) (: acc Int64)) (match n (0 acc) (_ (f (- n 1) (+ acc 1))))) (def (main (: n Int64)) (f n 0)) (export main))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&f, "main", &[Val::S64(1_000_000)]),
+            1_000_000
+        );
+        // A match with an EARLIER literal arm before the recursive one, nested one probe deeper —
+        // exercises the depth+1-per-probe `br` target. `(match n (0 acc) (1 (+ acc 1)) (_ (f …)))`.
+        let g = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (g (: n Int64) (: acc Int64)) (match n (0 acc) (1 (+ acc 100)) (_ (g (- n 1) (+ acc 1))))) (def (main (: n Int64)) (g n 0)) (export main))",
+        )))
+        .expect("compile");
+        // g(500000, 0): counts down, at n==1 adds 100 → 499999 (from n=500000..2) + 100 = 500099.
+        assert_eq!(
+            run_returns_with::<i64>(&g, "main", &[Val::S64(500_000)]),
+            500_099
+        );
+    }
+
+    #[test]
     fn a_recursive_overflow_traps_at_runtime() {
         // fac(25) overflows i64 (25! > 2^63); the checked multiply TRAPS at run time (not a compile-time
         // fold — the value only exists at run time through the call chain). Proves the call ABI carries
@@ -3358,8 +3385,14 @@ mod stage1 {
         // `(tuple 3 4)` applies the bound function (7), NOT the built-in tuple value. Earlier the
         // structural grammar dispatch on the head name won over the binding (wrong value / spurious
         // reject) — the head-vs-value resolution split #Binding Is Lexical forbids.
-        assert_eq!(run_main("(let ((tuple (fn (a b) (+ a b)))) (tuple 3 4))"), 7);
-        assert_eq!(run_main("(let ((record (fn (a b) (+ a b)))) (record 3 4))"), 7);
+        assert_eq!(
+            run_main("(let ((tuple (fn (a b) (+ a b)))) (tuple 3 4))"),
+            7
+        );
+        assert_eq!(
+            run_main("(let ((record (fn (a b) (+ a b)))) (record 3 4))"),
+            7
+        );
         // A PARAMETER named `tuple` shadows it just the same (applies the argument function): 3*4 = 12.
         assert_eq!(
             run_main("((fn (tuple) (tuple 3 4)) (fn (a b) (* a b)))"),

@@ -470,10 +470,9 @@ fn peephole(code: &mut Vec<Lir>) {
 }
 
 /// Whether the body at `id` makes a tail call to `self_def` through the tail positions the loop
-/// transform HANDLES — the body itself, an `if`'s two branches, or a `let`'s body. NOT through a
-/// `match` (the loop transform does not enter a match, so a self-call in a match arm stays a
-/// `return_call`), and NOT through a non-tail position (an operand — that is a non-tail call). Mirrors
-/// `emit_tail`'s propagation for exactly the `Call`/`If`/`Let` cases so detection and emission agree.
+/// transform HANDLES — the body itself, an `if`'s two branches, a `let`'s body, or a `match`'s arm
+/// bodies. NOT a non-tail position (an operand — that is a non-tail call). Mirrors `emit_tail`'s
+/// propagation for exactly the `Call`/`If`/`Let`/`Match` cases so detection and emission agree.
 fn body_has_self_tail_call(db: &mut Db, id: StructId, self_def: usize) -> bool {
     match core_of(db, id) {
         Core::Call { callee, .. } => callee == self_def,
@@ -490,6 +489,11 @@ fn body_has_self_tail_call(db: &mut Db, id: StructId, self_def: usize) -> bool {
             });
             !any_drop && body_has_self_tail_call(db, body, self_def)
         }
+        // A `match`'s arm bodies are tail positions (the probe chain threads the loop context into each),
+        // so a self-tail-call in any arm makes the function loopable.
+        Core::Match { arms, .. } => arms
+            .iter()
+            .any(|(_, body)| body_has_self_tail_call(db, *body, self_def)),
         _ => false,
     }
 }
@@ -504,6 +508,16 @@ struct TailLoop<'a> {
     self_def: usize,
     param_slots: &'a [u32],
     depth: u32,
+}
+
+/// Whether a match's arm bodies are in TAIL position (and, if so, the enclosing self-loop context so a
+/// self-tail-call in an arm iterates the loop rather than emitting `return_call`). `NonTail` = an
+/// ordinary value match (arm bodies emit via `emit`); `Tail(tl)` = a match in tail position (arm bodies
+/// via `emit_tail`, threading `tl` — `None` inside `tl` means tail-but-not-self-recursive).
+#[derive(Clone, Copy)]
+enum TailPos<'a> {
+    NonTail,
+    Tail(Option<TailLoop<'a>>),
 }
 
 /// Emit the node at `id` in TAIL position — the body's result, whose value becomes the function's
@@ -674,8 +688,19 @@ fn emit_tail(
                 _ => None,
             };
             emit_match_arms_tailable(
-                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty,
-                layout, out, true,
+                db,
+                scrutinee,
+                &arms,
+                it,
+                result_it,
+                block_ty,
+                slots,
+                base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                TailPos::Tail(tl),
             )
         }
         // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
@@ -1205,15 +1230,26 @@ fn emit_match_arms(
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     emit_match_arms_tailable(
-        db, scrutinee, arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-        false,
+        db,
+        scrutinee,
+        arms,
+        it,
+        result_it,
+        block_ty,
+        slots,
+        base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+        TailPos::NonTail,
     )
 }
 
-/// `emit_match_arms`, but with a `tail` flag: when the match is in TAIL position, each ARM BODY is a
-/// tail position too (a tail call in an arm becomes `return_call`), so arm bodies emit via `emit_tail`.
-/// The scrutinee and the probe comparisons are never tail (they are values the dispatch reads). With
-/// `tail = false` this is the ordinary chain (`emit` for the bodies) — the non-tail entry point above.
+/// `emit_match_arms`, but with a [`TailPos`]: when the match is in TAIL position, each ARM BODY is a
+/// tail position too — a tail call in an arm becomes `return_call`, or, when the enclosing function is
+/// self-recursive (`TailPos::Tail(Some(tl))`), a SELF tail-call in an arm iterates the loop. The
+/// scrutinee and the probe comparisons are never tail (they are values the dispatch reads).
 #[allow(clippy::too_many_arguments)]
 fn emit_match_arms_tailable(
     db: &mut Db,
@@ -1228,7 +1264,7 @@ fn emit_match_arms_tailable(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Vec<Lir>,
-    tail: bool,
+    tail: TailPos,
 ) -> Result<(), Reject> {
     // Resolve the scrutinee to a SOURCE pushed once per probe. A match dispatches by testing the
     // scrutinee against each arm's literal in turn — so the scrutinee is read once PER PROBE. If it is a
@@ -1329,31 +1365,30 @@ fn emit_probe_chain(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Vec<Lir>,
-    tail: bool,
+    tail: TailPos,
 ) -> Result<(), Reject> {
-    // Emit an arm body. Every arm produces the match's RESULT type, so a bare-LITERAL arm body must be
-    // grounded to the result's integer width (`result_it`) — otherwise a default-Int64 literal arm
-    // beside a narrow-width arm pushes a mismatched machine slot and wasm rejects the block (the same
-    // width-reconciliation `emit_operand` does for a binary op's literal operand). A non-literal arm,
-    // or a non-integer result, emits normally. A tail arm goes through `emit_tail` (a `ConstInt` is
-    // never a tail call, so grounding is unaffected by tail-ness).
+    // Emit an arm body at [`TailPos`] `tp`. Every arm produces the match's RESULT type, so a bare-LITERAL
+    // arm body must be grounded to the result's integer width (`result_it`) — otherwise a default-Int64
+    // literal arm beside a narrow-width arm pushes a mismatched machine slot and wasm rejects the block
+    // (the same width-reconciliation `emit_operand` does for a binary op's literal operand). A tail arm
+    // goes through `emit_tail` (a `ConstInt` is never a tail call, so grounding is unaffected by
+    // tail-ness); `tp` carries the self-loop context so a SELF tail-call in the arm iterates the loop.
     let emit_body = |db: &mut Db,
                      body: StructId,
                      base: u32,
                      high: &mut u32,
                      scratch_ty: &mut HashMap<u32, ValType>,
-                     out: &mut Vec<Lir>|
+                     out: &mut Vec<Lir>,
+                     tp: TailPos|
      -> Result<(), Reject> {
         if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
             return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
         }
-        if tail {
-            // A match arm body is a tail position, but the self-loop transform does NOT enter a match
-            // (its nested-`if` probe chain would need per-arm branch-depth bookkeeping); a self-call in
-            // an arm stays a `return_call`. Pass `None` so no loop `br` is emitted here.
-            emit_tail(db, body, slots, base, high, scratch_ty, layout, out, None)
-        } else {
-            emit(db, body, slots, base, high, scratch_ty, layout, out)
+        match tp {
+            TailPos::Tail(tl) => {
+                emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl)
+            }
+            TailPos::NonTail => emit(db, body, slots, base, high, scratch_ty, layout, out),
         }
     };
     match arms.split_first() {
@@ -1365,19 +1400,17 @@ fn emit_probe_chain(
             ))
         }
         Some(((crate::core::Probe::Wild, body), _rest)) => {
-            // The wildcard is the unconditional tail — its body is the value, no probe. (Any arms after
-            // a wildcard are unreachable; `lower` keeps them but they never emit.)
-            emit_body(db, *body, base, high, scratch_ty, out)
+            // The wildcard is the unconditional tail — its body is the value, no probe, at THIS nesting
+            // (no new `if`). (Any arms after a wildcard are unreachable; `lower` keeps them but they
+            // never emit.)
+            emit_body(db, *body, base, high, scratch_ty, out, tail)
         }
         Some(((_probe, body), [])) => {
             // The LAST arm of a wildcard-less match — its probe is redundant: `lower` admitted this
             // match only if it is exhaustive (a wildcard tail, or a Bool scrutinee whose `true`+`false`
             // arms cover the type), so once every earlier probe has failed this arm's value is the ONLY
-            // remaining one. Emit its body unconditionally, exactly like a wildcard tail — a final
-            // `scrutinee == literal` test would be dead (always true here) and, worse, leave the `else`
-            // with no value (the "ran off the end" decline below). So a two-arm Bool match `(true X)
-            // (false Y)` emits `if (== s true) X else Y` with no dangling arm.
-            emit_body(db, *body, base, high, scratch_ty, out)
+            // remaining one. Emit its body unconditionally at THIS nesting, exactly like a wildcard tail.
+            emit_body(db, *body, base, high, scratch_ty, out, tail)
         }
         Some(((probe, body), rest)) => {
             // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`. The
@@ -1397,11 +1430,20 @@ fn emit_probe_chain(
                 crate::core::Probe::Wild => unreachable!("wildcard handled above"),
             }
             out.push(Lir::If(block_ty));
-            emit_body(db, *body, base, high, scratch_ty, out)?;
+            // The matched body AND the `else` recursion are both INSIDE this `if` block — so a self-loop
+            // `br` from either must jump one MORE level out to reach the loop top (depth + 1).
+            let inner = match tail {
+                TailPos::Tail(tl) => TailPos::Tail(tl.map(|t| TailLoop {
+                    depth: t.depth + 1,
+                    ..t
+                })),
+                TailPos::NonTail => TailPos::NonTail,
+            };
+            emit_body(db, *body, base, high, scratch_ty, out, inner)?;
             out.push(Lir::Else);
             emit_probe_chain(
                 db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-                tail,
+                inner,
             )?;
             out.push(Lir::End);
             Ok(())
