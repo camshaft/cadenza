@@ -44,6 +44,7 @@ Run from anywhere in the repo (`cargo xtask` resolves the workspace root itself)
 | `cargo xtask roundtrip [FILE.sexp…]` | every corpus program must round-trip through the syntax surfaces |
 | `cargo xtask fmt [--check] <file…>` | format program files through the printer |
 | `cargo xtask bench [--save]` | runtime **allocation benchmark**: gross heap allocs per hot op, diffed against the committed `spec/bench/.alloc-baseline` (regression ⇒ non-zero exit); `--save` records the baseline |
+| `cargo xtask miri [--filter F]` | run the cdz-runtime tests under **Miri** (the UB oracle for the refcount/FBIP heap core): flags use-after-free, OOB, uninit reads, and aliasing (Stacked Borrows) violations the normal run can't see. Sets `-Zmiri-permissive-provenance` (mandatory — the tagged-pointer `Handle` stuffs immediates into pointer bits). Defaults to the aliasing-critical subset (`fbip`); `--filter ""` runs the whole suite (slow, ~100-1000×). Needs `rustup component add --toolchain nightly miri`. |
 
 Global `--profile <name>` picks the cargo profile the pipeline tools are built under. It defaults to
 **`release-debug`** (optimized — so the ~900-case gate is fast). Pass `--profile dev` for a quick
