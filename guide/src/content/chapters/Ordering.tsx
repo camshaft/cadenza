@@ -61,13 +61,12 @@ export default function Ordering() {
       />
 
       <Why tenet="A total order is a three-way answer">
-        Returning <C>-1 / 0 / 1</C> works, but Cadenza's real design goes one better: a comparison
-        yields a small sum value with three named variants — <em>less</em>, <em>equal</em>,{" "}
-        <em>greater</em> — that you take apart with <C>match</C>. Why a sum instead of a number or a
-        pair of booleans? Because then the compiler can check that a caller handled <em>all three</em>
-        cases, and there's no fourth nonsense value (what would <C>2</C> or <C>true,true</C> mean?). One
-        comparison, three cases, exhaustively handled. (This built-in <C>compare</C> is still being
-        wired up in the compiler — for now, model it yourself as above.)
+        Returning <C>-1 / 0 / 1</C> works, but Cadenza's design goes one better: comparison yields a
+        small sum value with three named variants — <em>less</em>, <em>equal</em>, <em>greater</em> —
+        that you take apart with <C>match</C>. Why a sum instead of a number or a pair of booleans?
+        Because then the compiler can check that a caller handled <em>all three</em> cases, and there's
+        no fourth nonsense value (what would <C>2</C>, or <C>true,true</C>, even mean?). One comparison,
+        three cases, exhaustively handled.
       </Why>
 
       <H2>Your turn</H2>
