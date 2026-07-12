@@ -10,10 +10,11 @@
 //! (decline-don't-miscompile: a construct the compiler cannot compile correctly declines rather than
 //! emitting a wrong or trapping component — `reference-compiler.md` §Outcomes Are Ordered By Safety).
 //!
-//! Poison collection descends only into positions a value is UNCONDITIONALLY used — it does not
-//! descend into a conditional's branches — so a fault shielded by an untaken branch stays a runtime
-//! trap rather than failing the build (`reference-compiler.md` §Reachability Is A Consequence Of
-//! Reduction). Stage 0's slice reaches poisons only at a definition body root or an `if` condition.
+//! Poison collection descends only into positions a value is UNCONDITIONALLY used — an `if`
+//! condition, a `let` binding and body, arithmetic/comparison/conversion operands, a call's
+//! arguments, a match scrutinee, and tuple/record/sum construction — but NOT a conditional's branches
+//! or a match arm's body, so a fault shielded by an untaken branch stays a runtime trap rather than
+//! failing the build (`reference-compiler.md` §Reachability Is A Consequence Of Reduction).
 
 use crate::abi::{Artifact, CompileOutput, Diagnostic, Severity};
 use crate::ast::StructId;
