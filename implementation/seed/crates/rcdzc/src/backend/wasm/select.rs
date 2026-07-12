@@ -10,8 +10,11 @@
 //! its solved width DECLINES rather than emitting a truncated value.
 //!
 //! A construct the flat rung cannot express declines (`reference-compiler.md` §A Guarded Operation
-//! Reserves Bounded Scratch Or Declines). Stage 0's slice — a constant, a two-way `if` — lowers to a
-//! constant push and a structured `if`/`else`/`end`, so nothing declines here yet.
+//! Reserves Bounded Scratch Or Declines). What is selected: constant pushes, a structured
+//! `if`/`else`/`end`, checked arithmetic and comparisons (guarded scratch locals), truncating
+//! conversions, a `match` as a probe chain, a runtime `Core::Call`, and value-heap construction/
+//! projection for tuples, records, and sums. A construct without a machine form here declines (e.g. a
+//! runtime compound of a type that cannot yet cross the boundary).
 
 use crate::ast::StructId;
 use crate::backend::wasm::lir::{BlockType, Lir, ValType, valtype_of};
@@ -171,7 +174,8 @@ fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
 
 /// A selected function body: its flat instruction sequence, the value types of its declared (non-
 /// parameter) locals in slot order, its parameter value types, and its solved return type (for the
-/// type section). Stage 0 bodies are nullary with no locals.
+/// type section). A body may take parameters and declare locals (the scratch a guarded operation
+/// reserves, and any persistent slot a kept `let` binding holds).
 pub struct SelectedFunc {
     pub params: Vec<ValType>,
     pub ret: Ty,
