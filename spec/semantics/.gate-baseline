@@ -180,6 +180,7 @@ pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
 pass	a negative right-shift count traps rather than masking
 pass	a negative shift count traps rather than masking
+pass	a negative string index yields None rather than wrapping to a large offset
 pass	a negative unsigned integer width is rejected
 pass	a negative width is not honored as a narrow type
 pass	a nested Result pattern selects the inner Err arm
@@ -462,6 +463,10 @@ pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	splitting a tuple beyond its arity is rejected
 pass	string equality
+pass	string indexing addresses Unicode scalar values, not bytes
+pass	string indexing at or beyond the length yields None
+pass	string indexing past a supplementary-plane scalar lands on the next scalar
+pass	string indexing returns Some of the character
 pass	string inequality
 pass	string length
 pass	string length counts scalar values after normalization
@@ -646,7 +651,6 @@ todo	a name bound to a string keys a map by its value, not the literal name
 todo	a named function is partially applied, bound, and used
 todo	a named multi-argument function applies in explicit curried form
 todo	a nearer handler on the call chain shadows an outer one
-todo	a negative string index yields None rather than wrapping to a large offset
 todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
@@ -1004,10 +1008,6 @@ todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	string concatenation
-todo	string indexing addresses Unicode scalar values, not bytes
-todo	string indexing at or beyond the length yields None
-todo	string indexing past a supplementary-plane scalar lands on the next scalar
-todo	string indexing returns Some of the character
 todo	string slicing yields Some of the substring
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters

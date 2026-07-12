@@ -528,6 +528,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
                 Some(Prim::BytesAt) if args.len() == 2 => lower_bytes_at(db, id, args[0], args[1]),
+                // `String.at` — the FALLIBLE scalar-indexed read. FOLD a constant string + constant index
+                // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
+                // runtime string declines (the byte-rope read is a later increment).
+                Some(Prim::StrAt) if args.len() == 2 => lower_str_at(db, id, args[0], args[1]),
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2576,6 +2580,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BytesTy
         | Prim::StrScalarLen
         | Prim::StrByteLen
+        | Prim::StrAt
         | Prim::StringTy
         | Prim::BytesAt => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -2807,6 +2812,64 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
     }
 }
 
+/// Lower `(String.at string index)` — the fallible SCALAR-indexed read. FOLD when both operands are
+/// constant: index the string by UNICODE SCALAR position (`chars().nth`, NOT byte offset —
+/// collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), yielding `(Some
+/// "<char>")` in range (the ONE-scalar string at that position, a fresh `Core::ConstStr` synthesized
+/// into the arena) and `None` out (negative, or `>=` the scalar length). Builds a `Core::SumNew` at the
+/// result Option's Some/None discriminants, so it rides the ordinary sum fold/escape/match — no string
+/// heap. A runtime string declines (the byte-rope indexed read is a later increment). A poison
+/// operand propagates.
+fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, string) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, index) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.at result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, string), core_of(db, index)) {
+        (Core::ConstStr(s), Core::ConstInt(i)) => {
+            // Index by scalar value; a negative index or one at/beyond the scalar length is out of range.
+            let scalar = i.to_i64().and_then(|n| {
+                if n >= 0 {
+                    s.chars().nth(n as usize)
+                } else {
+                    None
+                }
+            });
+            match scalar {
+                Some(c) => {
+                    // The one-scalar string at that position — a fresh `Leaf::Str` node whose `core_of`
+                    // is `Core::ConstStr`, used as the `Some` payload (the same shape `List.at` uses,
+                    // but the element is synthesized here since a string has no element sub-nodes).
+                    trace!(target: "rcdzc::fold", node = id.0, "String.at folds to Some (in-bounds constant scalar index)");
+                    let payload = db.push_atom(crate::ast::Leaf::Str(c.to_string()));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "String.at folds to None (out-of-range constant index)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        // A runtime string or runtime index — the byte-rope indexed read is a later increment.
+        _ => Core::Poison(Reject::decline(
+            "String.at on a runtime string is not yet computed (constant strings only)",
+        )),
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3009,6 +3072,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrScalarLen => "str-scalar-len",
         Prim::StrByteLen => "str-byte-len",
         Prim::BytesAt => "bytes-at",
+        Prim::StrAt => "str-at",
     }
 }
 

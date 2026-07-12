@@ -4060,6 +4060,43 @@ mod match_engine {
     }
 
     #[test]
+    fn string_at_folds_to_some_of_the_scalar_in_bounds() {
+        // `String.at : String → Int64 → (Option String)` — the fallible SCALAR-indexed read. A constant
+        // string + constant in-range index FOLDS to `(Some "<char>")` at compile time — indexed by
+        // UNICODE SCALAR position, NOT byte offset (`"café" [3]` = "é", though é is bytes 3–4 of the
+        // 5-byte UTF-8; `"😀b" [1]` = "b", though 😀 is 4 bytes / 2 UTF-16 units). Consumed by a match to
+        // a scalar (constant string equality) so `main` returns a Bool — fully foldable, no string escape.
+        for (s, i, want) in [("hello", 1, "e"), ("café", 3, "é"), ("😀b", 1, "b")] {
+            let src = format!(
+                "(module m (def (main) (if (= (match (String.at \"{s}\" {i}) ((Some c) c) ((None _) \"\")) \"{want}\") 1 0)) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                1,
+                "String.at {s:?}[{i}] = {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_at_out_of_range_folds_to_none() {
+        // An out-of-range constant index yields `None` (collections-and-text.md #Indexing And Lookup Are
+        // Fallible, Not Trapping): at/beyond the scalar length (`"hi" [5]`) and a NEGATIVE index (`"hi"
+        // [-1]`, which MUST NOT wrap to a huge offset) both take the `None` arm → -1. The String companion
+        // of the List.at / Bytes.at out-of-bounds Nones.
+        for (s, i) in [("hi", 5), ("hi", -1), ("", 0)] {
+            let src = format!(
+                "(module m (def (main) (match (String.at \"{s}\" {i}) ((Some c) 1) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                -1,
+                "String.at {s:?}[{i}] out of range → None"
+            );
+        }
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0
