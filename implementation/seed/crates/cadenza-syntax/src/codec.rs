@@ -86,7 +86,10 @@ fn int_kind(sign: Sign, radix: Radix) -> u8 {
 /// in different orders (see `canon.rs`). Encoding is thus the point at which the canonical normal
 /// form is imposed; `decode` returns that canonical (structurally-equal, re-indexed) arena.
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
-    let arenas = &crate::canon::canonicalize(arenas);
+    // Canonicalize to normal form so equal programs encode to identical bytes. `canonicalize` returns
+    // a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh parse is.
+    let canon = crate::canon::canonicalize(arenas);
+    let arenas = &*canon;
     let mut out = Vec::new();
     out.extend_from_slice(&SCHEMA_HEADER);
 

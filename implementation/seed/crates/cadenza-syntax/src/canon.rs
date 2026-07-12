@@ -20,7 +20,17 @@ use crate::fxhash::FxHashMap;
 
 /// Return the canonical form of `arenas`: the same program, re-indexed so that any arena denoting
 /// this tree yields byte-identical output from [`crate::codec::encode`]. Idempotent.
-pub fn canonicalize(arenas: &Arenas) -> Arenas {
+///
+/// Returns a [`Cow`]: `Borrowed` when `arenas` is ALREADY canonical (the common case — the s-expr
+/// reader builds structure in pre-order and interns leaves in first-encounter order, so a fresh parse
+/// is already normal-form), so the caller serializes it in place with NO clone and NO rebuild; `Owned`
+/// only when a genuine renumbering is needed (e.g. the ML surface, which parses operands before
+/// synthesizing heads). The full rebuild below would otherwise clone every leaf + structure node — a
+/// second full pass over a large arena — and throw the identical result away.
+pub fn canonicalize(arenas: &Arenas) -> std::borrow::Cow<'_, Arenas> {
+    if is_canonical(arenas) {
+        return std::borrow::Cow::Borrowed(arenas);
+    }
     let mut c = Canon {
         src: arenas,
         leaves: Vec::new(),
@@ -28,11 +38,76 @@ pub fn canonicalize(arenas: &Arenas) -> Arenas {
         structure: Vec::new(),
     };
     let root = c.visit(arenas.root);
-    Arenas {
+    std::borrow::Cow::Owned(Arenas {
         leaves: c.leaves,
         structure: c.structure,
         root,
+    })
+}
+
+/// Whether `arenas` is ALREADY in canonical form — i.e. [`canonicalize`] would rebuild a structurally
+/// identical arena, so serializing `arenas` in place is byte-equal. The normal form numbers structure
+/// nodes AND leaves by FIRST-ENCOUNTER in the PRE-ORDER walk from `root` (`canonicalize`'s `visit`), so
+/// this replays exactly that walk and checks the numbering is the identity: each node visited is the
+/// next sequential `StructId`, each leaf first-seen is the next `LeafId`, and every node/leaf is
+/// reached. A structure-array-order scan is NOT equivalent — the rebuild's leaf order follows the
+/// pre-order VISIT, which a repeated leaf under a different subtree can reorder relative to the array —
+/// so the walk is load-bearing (a linear scan gave false positives on cross-surface programs and broke
+/// the byte-equality tests). Any deviation returns `false` → the full rebuild is the sound fallback (a
+/// false negative only costs the rebuild we already do, never a wrong result). No native recursion (an
+/// explicit stack), so deep input can't overflow.
+fn is_canonical(arenas: &Arenas) -> bool {
+    if arenas.structure.is_empty() {
+        return false;
     }
+    let mut next_leaf: u32 = 0;
+    let mut seen_leaf = vec![false; arenas.leaves.len()];
+    let mut next_struct: u32 = 0;
+    let mut entered = vec![false; arenas.structure.len()];
+    // (node, child-cursor): a `List` is visited (assigned its id) AFTER its children — matching
+    // `canonicalize`'s post-order `push`; an `Atom` is assigned immediately.
+    let mut stack: Vec<(StructId, usize)> = vec![(arenas.root, 0)];
+    while let Some((node, cursor)) = stack.pop() {
+        match arenas.get(node) {
+            Struct::Atom(leaf) => {
+                let lid = leaf.0 as usize;
+                if lid >= seen_leaf.len() {
+                    return false;
+                }
+                if !seen_leaf[lid] {
+                    if leaf.0 != next_leaf {
+                        return false;
+                    }
+                    seen_leaf[lid] = true;
+                    next_leaf += 1;
+                }
+                if node.0 != next_struct {
+                    return false;
+                }
+                next_struct += 1;
+            }
+            Struct::List(children) => {
+                if cursor == 0 {
+                    if entered[node.0 as usize] {
+                        // A node reached twice = a shared (non-tree) arena; the reader never produces
+                        // one, so bail to the safe rebuild.
+                        return false;
+                    }
+                    entered[node.0 as usize] = true;
+                }
+                if cursor < children.len() {
+                    stack.push((node, cursor + 1));
+                    stack.push((children[cursor], 0));
+                } else {
+                    if node.0 != next_struct {
+                        return false;
+                    }
+                    next_struct += 1;
+                }
+            }
+        }
+    }
+    next_struct as usize == arenas.structure.len() && next_leaf as usize == arenas.leaves.len()
 }
 
 struct Canon<'a> {
