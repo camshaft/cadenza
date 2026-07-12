@@ -17,15 +17,34 @@
 
 use crate::ty::{IntTy, Sign, Ty, Width};
 
-/// The native Rust type for a solved Cadenza type, or `None` if this scalar backend has no native
-/// representation for it (a non-aliased integer width, a compound, or an unresolved/erased type). The
-/// caller turns a `None` into a decline attributed to this target.
-pub fn rust_type(ty: &Ty) -> Option<&'static str> {
+/// The native Rust type for a solved Cadenza type, or `None` if this backend has no native
+/// representation for it (a non-aliased integer width, a not-yet-supported compound, or an
+/// unresolved/erased type). The caller turns a `None` into a decline attributed to this target.
+///
+/// Returns an owned `String` because a compound type is a COMPOSED spelling (a tuple `(T0, T1)`), not a
+/// fixed primitive name. A scalar's mapping is still one of a fixed set (`int_type`/`bool`/`()`).
+pub fn rust_type(ty: &Ty) -> Option<String> {
     match ty {
-        Ty::Int(it) => int_type(*it),
-        Ty::Bool => Some("bool"),
-        Ty::Unit => Some("()"),
-        // Compounds, functions, and type/erased values have no scalar native mapping yet.
+        Ty::Int(it) => int_type(*it).map(String::from),
+        Ty::Bool => Some("bool".to_string()),
+        Ty::Unit => Some("()".to_string()),
+        // A tuple is Rust's native tuple: `(T0, T1, …)` — each element mapped recursively (so a nested
+        // tuple / a tuple of scalars composes). A 1-tuple is written `(T,)` (Rust needs the trailing
+        // comma to distinguish it from a parenthesized type). An element with no native mapping declines
+        // the whole tuple. (The empty tuple `Ty::Tuple([])` is distinct from `Unit` upstream, but has no
+        // element to map — render it as `()`, Rust's unit/empty-tuple type.)
+        Ty::Tuple(elems) => {
+            if elems.is_empty() {
+                return Some("()".to_string());
+            }
+            let mut parts = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                parts.push(rust_type(e)?);
+            }
+            let trailing = if parts.len() == 1 { "," } else { "" };
+            Some(format!("({}{trailing})", parts.join(", ")))
+        }
+        // Records, sums, functions, and type/erased values have no native mapping yet.
         _ => None,
     }
 }

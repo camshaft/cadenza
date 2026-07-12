@@ -788,12 +788,13 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // `Display`, so the driver evaluates the call for its (absent) value and prints `unit` directly. A
     // scalar/bool export prints via `Display` (`42`, `true`), exactly as cdz-run renders it. The return
     // type is read off the emitted `pub fn …(-> <ty>)` signature, so the one driver stays type-agnostic.
-    let returns_unit = export_returns_unit(&module, &export);
-    // The driver's `fn main` calls the export and prints the result the way cdz-run renders it (a bare
-    // scalar/bool via `{}`, or the token `unit` for a `()` return). In ASYNC mode the export is an
-    // `async fn` that takes `&mut impl CdzEnv` first, so the driver supplies a no-limit gas `Env` + a
-    // minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer must MATCH the
-    // sync/wasm oracle (gas metering is invisible to the result), so the async form is graded identically.
+    // The export's RETURN type, read off the emitted signature — drives how the result is rendered to
+    // cdz-run's text form (a scalar via `{}`, `()` → the token `unit`, a tuple → `(tuple …)`).
+    let ret_ty = export_return_type(&module, &export);
+    // The driver's `fn main` calls the export and prints the result the way cdz-run renders it. In ASYNC
+    // mode the export is an `async fn` taking `&mut impl CdzEnv` first, so the driver supplies a no-limit
+    // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
+    // must MATCH the sync/wasm oracle (gas metering is invisible to the result), so it grades identically.
     let call_or_await = if async_mode {
         // Rewrite `export(args…)` → `block_on(prog::export(&mut GATE_ENV_INIT, args…))`; a nullary call
         // `export()` becomes `block_on(prog::export(&mut …))`.
@@ -811,10 +812,16 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     } else {
         format!("prog::{call_expr}")
     };
-    let body = if returns_unit {
-        format!("fn main() {{ let _ = {call_or_await}; println!(\"unit\"); }}\n")
-    } else {
-        format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n")
+    // Render the result to cdz-run's text form via a TYPE-DIRECTED expression built from the return type.
+    // A scalar prints via `{}`; `()` prints `unit`; a tuple `(T0,T1)` prints `(tuple <r.0> <r.1>)`,
+    // recursively — matching the `(tuple …)` a compound value crosses as (the gate accepts either the
+    // bare value or the full `(: value type)` form, so the bare `(tuple …)` suffices).
+    let body = match ret_ty.as_deref().map(cdz_render_expr) {
+        Some(render) => {
+            format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
+        }
+        // Unknown return type (no emitted signature parsed) — fall back to `{}` (a scalar).
+        None => format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n"),
     };
     // In async mode the driver needs an `Env` impl (a no-limit gas meter — the gate checks ANSWERS, not
     // fuel bounds) and a tiny `block_on` executor, plus `let mut env = …` before the call.
@@ -935,24 +942,90 @@ fn rust_ident(name: &str) -> String {
 /// …) -> <ty> {` line in the emitted module. A unit return has no `Display`, so the driver prints the
 /// `unit` token directly rather than through `{}`. Matches by the exact `pub fn <name>(` prefix so a
 /// different export's signature is not misread.
-fn export_returns_unit(module: &str, name: &str) -> bool {
-    // Find the exported fn's signature line — `pub fn <name>(` (sync) or `pub async fn <name><`/`(`
-    // (async, with a `<E: CdzEnv>` generic before the params) — and read its return type. Unit is `-> ()`.
+/// The exported fn's RETURN type as its emitted Rust type string (e.g. `i64`, `bool`, `()`, `(i64,
+/// i64)`), or `None` if the signature can't be found. Read off the `pub fn <name>(` (sync) or
+/// `pub async fn <name>(`/`<` (async, with a `<E: CdzEnv>` generic) signature line. The gate uses it to
+/// render the result to cdz-run's text form.
+fn export_return_type(module: &str, name: &str) -> Option<String> {
     let sync = format!("pub fn {name}(");
     let async_paren = format!("pub async fn {name}(");
     let async_gen = format!("pub async fn {name}<");
     for line in module.lines() {
         let t = line.trim_start();
         if t.starts_with(&sync) || t.starts_with(&async_paren) || t.starts_with(&async_gen) {
-            // The return type is between `-> ` and the opening ` {`. Unit is `()`.
-            if let Some(arrow) = t.split_once("-> ") {
-                let ret = arrow.1.trim_end().trim_end_matches('{').trim();
-                return ret == "()";
-            }
-            return true; // no `->` — implicit unit (defensive; the backend always writes `-> ()`).
+            // The return type is between `-> ` and the opening ` {`.
+            let arrow = t.split_once("-> ")?;
+            return Some(arrow.1.trim_end().trim_end_matches('{').trim().to_string());
         }
     }
-    false
+    None
+}
+
+/// A Rust EXPRESSION that renders the driver's result binding `__r` (of Rust type `ty`) to cdz-run's
+/// canonical text form — the value the gate grades against. Type-directed and recursive:
+///  - `()` → the token `unit`;
+///  - a tuple `(T0, T1, …)` → `(tuple <r.0> <r.1> …)`, each element rendered as its own type (so a
+///    nested tuple / a tuple of scalars composes);
+///  - any scalar → `{}` (an integer/bool `Display`s exactly as cdz-run prints it).
+fn cdz_render_expr(ty: &str) -> String {
+    cdz_render_at(ty, "__r")
+}
+
+/// The recursive worker for [`cdz_render_expr`]: `path` is the Rust access path to the value being
+/// rendered (starts at `__r`, descends `.0`/`.1`… into tuple elements).
+fn cdz_render_at(ty: &str, path: &str) -> String {
+    let ty = ty.trim();
+    if ty == "()" {
+        return "\"unit\".to_string()".to_string();
+    }
+    if let Some(elems) = parse_tuple_type(ty) {
+        // `(tuple <e0> <e1> …)` — a `format!` with one `{}` per element, each recursively rendered.
+        let placeholders = vec!["{}"; elems.len()].join(" ");
+        let args: Vec<String> = elems
+            .iter()
+            .enumerate()
+            .map(|(i, e)| cdz_render_at(e, &format!("({path}).{i}")))
+            .collect();
+        return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
+    }
+    // A scalar: Display it.
+    format!("format!(\"{{}}\", {path})")
+}
+
+/// Split a Rust tuple TYPE `(T0, T1, …)` into its element type strings, or `None` if `ty` is not a
+/// tuple. Respects nesting — a comma inside a nested `(…)` does not split. A `()` (empty) is NOT a tuple
+/// here (handled as unit by the caller); a 1-tuple `(T,)` yields `[T]`.
+fn parse_tuple_type(ty: &str) -> Option<Vec<String>> {
+    let inner = ty.strip_prefix('(')?.strip_suffix(')')?;
+    if inner.trim().is_empty() {
+        return None; // `()` — unit, not a tuple
+    }
+    let mut elems = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let bytes = inner.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' | b'<' => depth += 1,
+            b')' | b']' | b'>' => depth -= 1,
+            b',' if depth == 0 => {
+                let seg = inner[start..i].trim();
+                if !seg.is_empty() {
+                    elems.push(seg.to_string());
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = inner[start..].trim();
+    if !last.is_empty() {
+        elems.push(last.to_string());
+    }
+    // A single element with a trailing comma (`(T,)`) parsed to one elem — that IS a 1-tuple. A single
+    // element WITHOUT a comma (`(T)`) is a parenthesized type, not a tuple — but the backend never emits
+    // that (it writes `(T,)` for a 1-tuple), so treat any `elems` we found as a tuple.
+    Some(elems)
 }
 
 /// A tiny FNV-1a hash of a string → a stable per-program key for the temp compile dir (no dependency;
@@ -1414,16 +1487,39 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
 /// The value out of an `output` payload `(: <value> <Type>)` — the text of `<value>`. Falls back to
 /// the whole payload if it is not the `(: value Type)` shape.
 fn expected_value(payload: &str) -> String {
-    // payload looks like `(: 42 Int64)`; take the token(s) between `(:` and the trailing ` Type)`.
+    // payload is `(: <value> <Type>)`. Take the FIRST whitespace-separated token after `(:` as the
+    // value, respecting nesting — a COMPOUND value/type is itself parenthesized (`(: (tuple 0 7) (Tuple
+    // Int64 Int64))`), so a naive "everything up to the last space" split cuts the value wrong. Scan the
+    // first balanced token: a `(…)` group, or a bare atom up to the next top-level space.
     let inner = payload.trim();
-    if let Some(rest) = inner.strip_prefix("(:") {
-        let rest = rest.trim_end_matches(')').trim();
-        // `<value> <Type>` — the value is everything up to the LAST whitespace-separated token (Type).
-        if let Some(idx) = rest.rfind(char::is_whitespace) {
-            return rest[..idx].trim().to_string();
+    let Some(rest) = inner.strip_prefix("(:") else {
+        return inner.to_string();
+    };
+    let rest = rest.trim();
+    let bytes = rest.as_bytes();
+    if bytes.first() == Some(&b'(') {
+        // A parenthesized value — take the balanced `(…)` group.
+        let mut depth = 0i32;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return rest[..=i].to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest.to_string()
+    } else {
+        // A bare atom — up to the next space.
+        match rest.find(char::is_whitespace) {
+            Some(idx) => rest[..idx].to_string(),
+            None => rest.trim_end_matches(')').to_string(),
         }
     }
-    inner.to_string()
 }
 
 /// The default corpus: every `spec/semantics/NN-*.{sexp,md}`, sorted for stable order. Corpus files

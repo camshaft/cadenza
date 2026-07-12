@@ -236,7 +236,7 @@ fn loop_group(db: &mut Db, self_def: usize) -> Vec<usize> {
             let mut callees = Vec::new();
             tail_callees(db, body, &mut callees);
             for c in callees {
-                if !reach.contains(&c) && sig_types(db, c).as_deref() == Some(&self_sig) {
+                if !reach.contains(&c) && sig_types(db, c).as_ref() == Some(&self_sig) {
                     reach.push(c);
                 }
             }
@@ -269,7 +269,7 @@ fn loop_group(db: &mut Db, self_def: usize) -> Vec<usize> {
 /// type has no native mapping. Two defs share a loop only if these agree — they reassign the SAME shared
 /// positional locals, so the widths must match position-for-position (and the result type must match so
 /// every member's `break` yields one type).
-fn sig_types(db: &mut Db, def: usize) -> Option<Vec<&'static str>> {
+fn sig_types(db: &mut Db, def: usize) -> Option<Vec<String>> {
     let params = crate::layout::def_params(db, def);
     let body = db.defs[def].body?;
     let mut sig = Vec::new();
@@ -277,7 +277,7 @@ fn sig_types(db: &mut Db, def: usize) -> Option<Vec<&'static str>> {
         sig.push(types::rust_type(ty)?);
     }
     // A sentinel separates params from result so `(u8)->u16` ≠ `(u8,u16)->()` etc.
-    sig.push("->");
+    sig.push("->".to_string());
     sig.push(types::rust_type(&type_of(db, body))?);
     Some(sig)
 }
@@ -610,14 +610,31 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(format!("{ident}({})", rendered.join(", ")))
             }
         }
+        // A runtime TUPLE → Rust's native tuple literal `(e0, e1, …)`. Each element is rendered
+        // recursively (a scalar or a nested tuple), so a tuple of scalars and a nested tuple both
+        // compose directly. The native-aggregate value strategy: a Cadenza tuple IS a Rust tuple, no
+        // heap handle (unlike the wasm backend's `arr-alloc`). A 1-tuple needs the trailing comma
+        // `(e,)` to be a tuple rather than a parenthesized expression.
+        Core::Tuple { elems } => {
+            let mut parts = Vec::with_capacity(elems.len());
+            for &e in &elems {
+                parts.push(emit(db, e, env, ctx)?);
+            }
+            let trailing = if parts.len() == 1 { "," } else { "" };
+            Ok(format!("({}{trailing})", parts.join(", ")))
+        }
+        // A runtime tuple PROJECTION `(. t i)` → Rust's tuple field access `(<operand>).index`. The
+        // index is within the tuple's static arity (checked before selection), so it is always a valid
+        // Rust field. Parenthesize the operand so a compound operand expression binds correctly.
+        Core::Proj { operand, index } => {
+            let t = emit(db, operand, env, ctx)?;
+            Ok(format!("({t}).{index}"))
+        }
         // A poison reaching selection is a fault the collector surfaces before emission; reaching here
         // is a decline rather than emitted code (same as the wasm backend).
         Core::Poison(reject) => Err(reject),
-        // Compound construction/projection and sum forms are not in the scalar slice — decline,
-        // attributed to this target. (These arrive with the native-aggregate compound increment.)
+        // Records, sums, and lists are not in this slice yet — decline, attributed to this target.
         Core::Record { .. }
-        | Core::Tuple { .. }
-        | Core::Proj { .. }
         | Core::SumNew { .. }
         | Core::MatchSum { .. }
         | Core::SumPayload { .. }
@@ -627,7 +644,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }
         | Core::ListAt { .. } => Err(Reject::decline(
-            "the Rust backend does not yet render compound values",
+            "the Rust backend does not yet render this compound value",
         )),
     }
 }

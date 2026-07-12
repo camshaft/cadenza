@@ -137,15 +137,65 @@ fn an_if_emits_a_rust_if_expression() {
 }
 
 #[test]
-fn a_compound_result_declines_attributed_to_this_target() {
-    // A tuple-returning export has no scalar native rep yet — the Rust backend declines cleanly.
-    let src = "(module m (def (main) (tuple 1 2)) (export main))";
-    let err = try_compile_rust(src).expect_err("a compound result must decline");
+fn a_record_result_declines_attributed_to_this_target() {
+    // A record-returning export has no native rep yet (tuples do, records don't) — declines cleanly.
+    let src = "(module m (def (f (: n Int64)) (if (= n 0) (record (a n) (b 7)) (f (+ n -1)))) \
+                          (def (main) (f 3)) (export main))";
+    let err = try_compile_rust(src).expect_err("a record result must decline");
     assert!(
         err.iter()
             .any(|m| m.contains("compound") || m.contains("native Rust")),
         "decline message: {err:?}"
     );
+}
+
+#[test]
+fn a_runtime_tuple_emits_a_native_rust_tuple() {
+    // A tuple that survives to runtime (built behind a recursive call) → a Rust tuple type + literal;
+    // a projection → tuple field access. Scalar elements and nested tuples both compose.
+    let rs = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (tuple n 7) (f (+ n -1)))) \
+                    (def (main) (f 3)) (export main))",
+    );
+    assert!(rs.contains("-> (i64, i64)"), "tuple return type:\n{rs}");
+    assert!(rs.contains("(__p0, (7u64 as i64))"), "tuple literal:\n{rs}");
+
+    let nested = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (tuple n (tuple n n)) (f (+ n -1)))) \
+                    (def (main) (f 2)) (export main))",
+    );
+    assert!(
+        nested.contains("-> (i64, (i64, i64))"),
+        "nested tuple type:\n{nested}"
+    );
+
+    let proj =
+        compile_rust("(module m (def (fst (: t (Tuple Int64 Int64))) (. t 0)) (export fst))");
+    assert!(proj.contains("t: (i64, i64)"), "tuple param type:\n{proj}");
+    assert!(proj.contains("(t).0"), "projection:\n{proj}");
+}
+
+#[test]
+fn rustc_roundtrip_tuple_builds_and_projects() {
+    // A tuple crosses rustc end-to-end: a projection reads the element, and a returned tuple renders as
+    // the `(tuple …)` form. `fst((5,9))=5`; the nested tuple result is driven via field access.
+    let proj =
+        compile_rust("(module m (def (fst (: t (Tuple Int64 Int64))) (. t 0)) (export fst))");
+    if let Some(out) = rustc_run(&proj, "fst((5, 9))") {
+        assert_eq!(out, "5");
+    }
+    let mk = compile_rust(
+        "(module m (def (f (: n Int64)) (if (= n 0) (tuple n 7) (f (+ n -1)))) \
+                    (def (mktup) (f 3)) (export mktup))",
+    );
+    // Drive the tuple result, printing cdz-run's `(tuple …)` form via field access. (Export is `mktup`,
+    // not `main`, so the call in the driver's `fn main` names the export, not the driver itself.)
+    if let Some(out) = rustc_run(
+        &mk,
+        "{ let t = mktup(); format!(\"(tuple {} {})\", t.0, t.1) }",
+    ) {
+        assert_eq!(out, "(tuple 0 7)");
+    }
 }
 
 #[test]

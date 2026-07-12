@@ -1,6 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	a decimal integer literal
-fail	an entrypoint that delegates no effect is pure and makes no host call
 pass	Result type for fallible operations
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
@@ -34,6 +32,7 @@ pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a built-in Option is unwrapped by a helper that binds its payload
+pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a comparison-predicate function returns its boolean result
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
@@ -55,10 +54,13 @@ pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
+pass	a constant tuple is returned as a program result
+pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function-type annotation checks its inner result type against the argument
+pass	a decimal integer literal
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
@@ -153,6 +155,8 @@ pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested match on a runtime scrutinee
 pass	a nested option value annotated with the wrong inner payload type is rejected
+pass	a nested runtime tuple built behind a recursive call escapes to the host
+pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
@@ -208,8 +212,11 @@ pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime subtraction that overflows traps
 pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
+pass	a runtime tuple built behind a recursive call escapes to the host
+pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
+pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
@@ -228,13 +235,18 @@ pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum value annotated as a scalar type is rejected
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
+pass	a three-element runtime tuple is returned as a result
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
+pass	a tuple is constructed with positional elements
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
+pass	a tuple payload returned through a helper from a built-in Option must not trap
+pass	a tuple with a runtime element is returned as a program result
+pass	a tuple with every element computed at run time is returned as a result
 pass	a two-arm Bool match selects its second (false) arm
 pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
@@ -255,8 +267,10 @@ pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
+pass	an element is projected from a tuple returned by a nullary function
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
+pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an inner binding shadows an outer one only within its scope
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
@@ -389,6 +403,7 @@ pass	true is greater than false
 pass	true is not less than false
 pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
+pass	tuple access on a tuple chosen by a conditional projects the element
 pass	two functions defined by mutual recursion compute a result
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
@@ -433,7 +448,6 @@ todo	a bottom-up fold matches a tuple of its recursive results with constructor 
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
-todo	a built-in Option tuple payload consumed INLINE in the Some arm projects
 todo	a byte sequence carrying a runtime byte value is a first-class value
 todo	a byte sequence is constructed from a list of integers in range
 todo	a byte sequence written as a literal renders back to the same literal
@@ -451,7 +465,6 @@ todo	a conditional with integer and floating-point branches is a type error
 todo	a conditional with two list branches of different length is well-typed
 todo	a conditionally-selected nullary variant is returned as a runtime sum result
 todo	a conditionally-selected variant is returned as a runtime sum result
-todo	a constant tuple is returned as a program result
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a constructor whose payload is a constructor keeps the outer variant tag
@@ -557,8 +570,6 @@ todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested literal pattern of the wrong type is a type error
-todo	a nested runtime tuple built behind a recursive call escapes to the host
-todo	a nested runtime tuple is returned as a result
 todo	a nested tuple pattern of the wrong arity is a type error
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
@@ -643,9 +654,6 @@ todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a runtime three-variant classifier dispatches to the middle arm
 todo	a runtime three-variant classifier dispatches to the negative arm
-todo	a runtime tuple built behind a recursive call escapes to the host
-todo	a runtime tuple with a boolean element is returned as a result
-todo	a runtime-branched tuple returned from a callee is projected in the caller
 todo	a scalar element is projected from a let-bound runtime tuple
 todo	a sequencing block discards a pure compound intermediate
 todo	a sequencing block discards a pure list intermediate
@@ -681,7 +689,6 @@ todo	a symbol's identity is its content, not how the content was derived
 todo	a tag-length-value record round-trips through construct then match
 todo	a tail-recursive function returning a tuple is tuple-valued
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
-todo	a three-element runtime tuple is returned as a result
 todo	a top-level value definition binds a name usable by the program's functions
 todo	a top-level value definition binds a record projected by the program's functions
 todo	a trailing bytes segment accepts the leftover the fixed segments leave
@@ -689,15 +696,11 @@ todo	a transformation maps a syntax tree to a syntax tree and preserves meaning
 todo	a transformation observably rewrites the tree, not just its value
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a tuple is constructed with positional elements
 todo	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 todo	a tuple pattern against a Sign scrutinee is a type error
 todo	a tuple pattern against a sum scrutinee is a type error
 todo	a tuple pattern of the wrong arity is a type error
 todo	a tuple payload extracted through a helper return must not be rejected as a type error
-todo	a tuple payload returned through a helper from a built-in Option must not trap
-todo	a tuple with a runtime element is returned as a program result
-todo	a tuple with every element computed at run time is returned as a result
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -724,6 +727,7 @@ todo	an IEC binary prefix scales a unit by a power of two
 todo	an Option built by an if with the nullary branch first type-checks
 todo	an Option built by an if with the payload branch first type-checks (the control)
 todo	an SI decimal prefix scales a unit by a power of ten
+todo	an annotated escaped None renders its canonical nullary-variant form (the control)
 todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
@@ -734,7 +738,6 @@ todo	an effect performed in a callee is discharged by the caller's handler
 todo	an effect resolves past an intermediate frame that installs no handler
 todo	an effect resolves through a deep chain of intermediate functions
 todo	an effect that declares an operation name twice is rejected
-todo	an element is projected from a tuple returned by a nullary function
 todo	an element pattern matches a list by its length and elements
 todo	an element read across a concatenation boundary is the right value
 todo	an empty binary form is the empty byte sequence
@@ -746,6 +749,7 @@ todo	an empty string is unequal to a non-empty string
 todo	an empty-range slice of a non-empty string is Some of the empty string
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
+todo	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 todo	an expect of a list index result is an integer usable in arithmetic
 todo	an explicit annotation overrides the default-integer pragma
 todo	an explicit conversion makes the operation well-typed
@@ -1017,7 +1021,6 @@ todo	the underlying numeric type obeys the numeric core — no silent promotion 
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
-todo	tuple access on a tuple chosen by a conditional projects the element
 todo	tuple elements are accessed by index
 todo	tuples are deconstructed by pattern matching
 todo	two dependent-size segments each bind the count a preceding segment named
