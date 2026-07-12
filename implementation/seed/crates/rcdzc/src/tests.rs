@@ -2386,6 +2386,51 @@ mod runtime_ops {
             3
         );
     }
+
+    // ── common-subexpression elimination: an identical operand is computed once ───────────────────
+
+    #[test]
+    fn identical_operands_share_one_computation() {
+        // `(+ (* a b) (* a b))` — the two operands are the SAME pure computation. CSE computes `(* a b)`
+        // ONCE and reads it twice, so the result is `2 * (a*b)` and it is observably identical to
+        // computing the product twice. 3*4=12 → 24.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(+ (* a b) (* a b))",
+                &[Val::S64(3), Val::S64(4)]
+            ),
+            24
+        );
+        // The shared computation's overflow guard STILL fires: `(* a b)` overflowing Int64 traps even
+        // though it is computed once (a trapping subexpression traps at its single evaluation point).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(+ (* a b) (* a b))",
+            &[Val::S64(i64::MAX), Val::S64(2)]
+        ));
+        // A deeper identical operand: `(- (+ a b) (+ a b))` = 0 for any a,b — computed once, subtracted
+        // from itself. (a+b) itself must not overflow, but the subtraction of equal values is 0.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(- (+ a b) (+ a b))",
+                &[Val::S64(100), Val::S64(23)]
+            ),
+            0
+        );
+        // NON-identical operands are NOT shared (a≠b computation): `(+ (* a b) (* b a))` — `(* a b)` and
+        // `(* b a)` differ structurally (operand order), so both compute; result 2*a*b still, but via
+        // two products. Correctness (not sharing) is what matters here: 3*4 + 4*3 = 24.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(+ (* a b) (* b a))",
+                &[Val::S64(3), Val::S64(4)]
+            ),
+            24
+        );
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────

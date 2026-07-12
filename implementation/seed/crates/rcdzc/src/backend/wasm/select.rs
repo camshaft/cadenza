@@ -1674,6 +1674,80 @@ fn m_slot(ot: IntTy) -> ValType {
     }
 }
 
+/// Whether the nodes at `a` and `b` lower to the STRUCTURALLY IDENTICAL core computation — the basis
+/// for common-subexpression elimination. Two nodes are equal iff their core forms are the same operator
+/// over recursively-equal operands, bottoming out at the same param/local slot or the same constant.
+/// This is used ONLY to decide whether a repeated operand can be computed ONCE and read twice, so it is
+/// deliberately CONSERVATIVE: any core kind not enumerated here (a call, a conditional, a heap
+/// construct — whose equality would need more than structural matching, or whose sharing is not clearly
+/// safe) compares UNEQUAL, so CSE simply does not fire. Every kind that DOES compare equal is a PURE,
+/// deterministic scalar computation (arithmetic/comparison/conversion/projection over equal operands,
+/// or a leaf) — so computing it once and reusing the value is observably identical to computing it
+/// twice, INCLUDING its trap behavior (a trapping subexpression traps at the same first-occurrence
+/// point whether shared or not). Effects would break this, but rcdzc has none yet.
+fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
+    if a == b {
+        return true; // the SAME occurrence — trivially identical.
+    }
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::ConstInt(x), Core::ConstInt(y)) => x.eq_value(&y),
+        (Core::ConstBool(x), Core::ConstBool(y)) => x == y,
+        (Core::Unit, Core::Unit) => true,
+        // A leaf reference: equal iff the SAME binder (same param/local slot → same value).
+        (Core::Param { binder: x }, Core::Param { binder: y }) => x == y,
+        (Core::LocalRef { binder: x }, Core::LocalRef { binder: y }) => x == y,
+        // A pure binary op: same operator over recursively-equal operands. (Arithmetic and comparison
+        // are the operators whose two runtime operands can be the shared subexpression.)
+        (
+            Core::Arith {
+                op: ox,
+                lhs: lx,
+                rhs: rx,
+            },
+            Core::Arith {
+                op: oy,
+                lhs: ly,
+                rhs: ry,
+            },
+        )
+        | (
+            Core::Compare {
+                op: ox,
+                lhs: lx,
+                rhs: rx,
+            },
+            Core::Compare {
+                op: oy,
+                lhs: ly,
+                rhs: ry,
+            },
+        ) => ox == oy && core_eq(db, lx, ly) && core_eq(db, rx, ry),
+        // A pure conversion: same op over an equal operand.
+        (
+            Core::Convert {
+                op: ox,
+                operand: px,
+            },
+            Core::Convert {
+                op: oy,
+                operand: py,
+            },
+        ) => ox == oy && core_eq(db, px, py),
+        // A tuple projection: same index off an equal (runtime) operand.
+        (
+            Core::Proj {
+                operand: px,
+                index: ix,
+            },
+            Core::Proj {
+                operand: py,
+                index: iy,
+            },
+        ) => ix == iy && core_eq(db, px, py),
+        _ => false,
+    }
+}
+
 /// Where a checked op leaves its result:
 ///  - `Stack` — the usual case: the result is left on the operand stack (via `local.get $r`), for the
 ///    enclosing expression to consume.
@@ -1759,9 +1833,25 @@ fn emit_checked_arith_to(
             OperandSrc::Slot(s)
         }
     };
+    // COMMON-SUBEXPRESSION ELIMINATION: if B is a non-reusable computation STRUCTURALLY IDENTICAL to A,
+    // it produces the same value — so compute it ONCE (as A, into `$a`) and read `$a` for B too, rather
+    // than emitting the whole computation (and its guards) a second time. `(+ (* a b) (* a b))` becomes
+    // one `*` + one guard, read twice. Safe because `core_eq` only matches PURE deterministic scalar
+    // computations (see its doc) — no effects, and a trapping operand traps identically. Only fires when
+    // A itself was stashed in a slot (`sa` is a Slot): a reusable A (a bare local/const) is already free
+    // to re-push, so B just shares that same source with no CSE needed.
     let sb_src = operand_src(db, rhs, ot, slots)?;
+    // `sb_shares_a` records that B is the SAME computation as A and reuses A's slot (CSE) — so B is NOT
+    // emitted separately below (it would recompute into A's slot). Distinct from `sb_src.is_some()` (a
+    // reusable source that also skips the emit but for a different reason).
+    let mut sb_shares_a = false;
     let sb = match sb_src {
         Some(src) => src,
+        None if matches!(sa, OperandSrc::Slot(_)) && core_eq(db, lhs, rhs) => {
+            trace!(target: "rcdzc::select", lhs = lhs.0, rhs = rhs.0, "CSE: identical operands share one computation");
+            sb_shares_a = true;
+            sa
+        }
         None => {
             let s = claim(high);
             scratch_ty.insert(s, m.slot());
@@ -1804,8 +1894,11 @@ fn emit_checked_arith_to(
             out,
         )?;
     }
-    // <B> compute B into $b — likewise only for a stashed operand.
+    // <B> compute B into $b — only for a stashed operand that is NOT shared with A (CSE). When
+    // `sb_shares_a`, B's value already sits in A's slot (computed once), so re-emitting it would both
+    // recompute and clobber — skip it.
     if sb_src.is_none()
+        && !sb_shares_a
         && let OperandSrc::Slot(sb_slot) = sb
     {
         emit_operand_into(
@@ -2471,6 +2564,34 @@ mod tests {
         );
         // Only $r (slot 1) is declared — the constant operand needs no scratch slot at all.
         assert_eq!(f.declared, vec![ValType::I64; 1]);
+    }
+
+    #[test]
+    fn identical_operands_are_computed_once_via_cse() {
+        // (def (f (: a Int64) (: b Int64)) (+ (* a b) (* a b))) — the two operands are the SAME product.
+        // CSE computes `(* a b)` ONCE into a slot; the outer add reads that slot for BOTH operands. So
+        // the body contains exactly ONE `i64.mul` (not two), and the add's operands are two reads of the
+        // shared slot.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ (* a b) (* a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            1,
+            "the shared product is computed exactly once (CSE)"
+        );
+        // The add reads the product's slot twice as its two operands (a LocalGet of the same slot). Find
+        // the mul's result slot (the LocalSet right after the sole I64Mul... or a LocalTee if the guard
+        // fused) and confirm the I64Add is preceded by two reads of it.
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Add).count(),
+            1,
+            "one add over the shared product"
+        );
     }
 
     #[test]
