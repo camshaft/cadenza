@@ -1418,7 +1418,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Annot { expr, .. } => uses_in(db, expr, init),
         Resolved::Apply { head, args } => {
             let mut n = uses_in(db, head, init);
-            for a in &args {
+            for a in args.iter() {
                 n += uses_in(db, *a, init);
             }
             n

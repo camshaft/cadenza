@@ -370,7 +370,7 @@ fn collect_param_constraints(
             // 0)` / `(+ n …)` and to a Bool in a boolean op.
             if let Some(scheme) = crate::eval::scheme_of(db, head, fresh) {
                 let mut cur = crate::unify::instantiate(&scheme, fresh);
-                for &arg in &args {
+                for &arg in args.iter() {
                     let applied = subst.apply(&cur);
                     if let Ty::Fn(param, result) = applied {
                         let at = arg_ty_in_env(db, arg, env, subst);
@@ -401,7 +401,7 @@ fn collect_param_constraints(
             if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
                 collect_param_constraints(db, head, env, def, subst, fresh);
             }
-            for arg in args {
+            for &arg in args.iter() {
                 collect_param_constraints(db, arg, env, def, subst, fresh);
             }
         }
@@ -1060,7 +1060,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Err(reject) => out.push(reject),
                 }
             } else {
-                for &arg in &args {
+                for &arg in args.iter() {
                     collect(db, arg, out);
                 }
             }

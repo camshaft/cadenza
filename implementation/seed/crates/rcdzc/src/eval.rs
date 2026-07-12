@@ -167,7 +167,7 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     };
                     let name = db.type_decl_by_occ(decl)?.name.clone();
                     let mut arg_tys = Vec::with_capacity(args.len());
-                    for &a in &args {
+                    for &a in args.iter() {
                         arg_tys.push(type_in_env(db, a, env)?);
                     }
                     Some(Ty::Sum {
@@ -542,7 +542,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
                 collect_callees(db, head, out);
             }
-            for a in args {
+            for &a in args.iter() {
                 collect_callees(db, a, out);
             }
         }
@@ -691,12 +691,22 @@ pub fn variant_payload_type(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> 
 /// Project a meta-channel field named `key` from the record value at `id`, following a `Ref` to the
 /// record. Returns the field's value occurrence, or `None` if the value is not a record or has no such
 /// field. The one generic projection, restricted to the `meta` namespace.
+///
+/// Reduces to the record then SCANS its fields comparing `namespace`/`name` by `&str` — it does NOT
+/// build a `Symbol` key. This is the SAME lookup a `BTreeMap::get(&Symbol{"meta", key})` performs (a
+/// meta record carries a handful of fields, so the linear scan is as cheap as the log-n probe), but
+/// allocating a two-`String` `Symbol` on EVERY call was pure churn: `meta_apply_of` runs for every
+/// operator application, and every inline re-projects `(meta apply)` — on a deep inline chain that
+/// `Symbol` alloc/free was a top allocation source in the profile. Behaviour-identical (same fields,
+/// same match); only the transient key object is gone.
 pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
-    let sym = Symbol {
-        namespace: Some("meta".to_string()),
-        name: key.to_string(),
-    };
-    project_field(db, id, &sym)
+    let rec = reduce_to_record_id(db, id)?;
+    match resolved_of(db, rec) {
+        Resolved::Record { fields } => fields.iter().find_map(|(sym, &value)| {
+            (sym.namespace.as_deref() == Some("meta") && sym.name == key).then_some(value)
+        }),
+        _ => None,
+    }
 }
 
 /// Project a field `key` from the record value at `id`, returning its value occurrence. The generic

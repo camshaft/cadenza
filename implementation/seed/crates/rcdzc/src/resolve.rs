@@ -225,7 +225,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     trace!(target: "rcdzc::resolve", node = id.0, head = children[0].0, args = children.len() - 1, "application");
                     Resolved::Apply {
                         head: children[0],
-                        args: children[1..].to_vec(),
+                        args: children[1..].into(),
                     }
                 }
             }

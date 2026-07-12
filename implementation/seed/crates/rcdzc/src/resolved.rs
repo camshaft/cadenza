@@ -332,7 +332,15 @@ pub enum Resolved {
     /// user function — dispatch is by the head value's meta channel, never its spelling
     /// (`prelude-and-resolution.md` §A Form Whose Head Is Not A Grammar Name Is Dispatched By The Kind
     /// Of Value Its Head Resolves To).
-    Apply { head: StructId, args: Vec<StructId> },
+    /// (`args` behind an `Arc<[StructId]>` so CLONING a `Resolved::Apply` — which `resolved_of` does on
+    /// EVERY memoized read — is a refcount bump, not a fresh heap `Vec`. An application is the most
+    /// common node in operator-heavy / call-heavy programs, and every inline re-reads it; the per-clone
+    /// `Vec` alloc/free was a top allocation source in the profile. Same rationale as the `Tuple`/
+    /// `Record`/`Lambda.params` Arc choice.)
+    Apply {
+        head: StructId,
+        args: std::sync::Arc<[StructId]>,
+    },
     /// A TYPE ANNOTATION `(: expr ty_expr)` — the value of `expr`, with its type CONSTRAINED to the
     /// type `ty_expr` denotes. The annotation is transparent to the value: `(: e T)` evaluates and
     /// lowers exactly as `e` (the annotation ERASES). Its force is on inference — the type `ty_expr`
