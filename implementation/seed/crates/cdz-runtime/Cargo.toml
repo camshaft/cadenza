@@ -52,3 +52,6 @@ panic = "abort"
 opt-level = "s"
 lto = true
 codegen-units = 1
+
+[dev-dependencies]
+bolero = "0.13.4"

@@ -9694,6 +9694,249 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak across the mixed sequence");
     }
 
+    // ── Property tests (bolero) — a generated-input generalization of the hand-rolled fuzz oracles ──
+    // These drive RANDOM operation sequences (bolero shrinks failures to a minimal counterexample) at
+    // the crown-jewel refcount/FBIP paths, checking three invariants against a std reference on EVERY
+    // generated sequence: (1) value equivalence (lookup/contains match the oracle over the whole
+    // keyspace); (2) canonical-shape — two maps with equal contents are champ_eq + champ_hash-equal
+    // regardless of build order (byte-canonicality, the property the whole tagless design rests on);
+    // (3) no leak / no double-free (live_nodes() returns to baseline). They run in the normal suite as
+    // property tests AND under `cargo xtask miri` — so a memory bug the inline-`handles` change (task
+    // #22) might introduce is caught by Miri on a RANDOM adversarial sequence, not just fixed cases.
+    //
+    // A `Model` mirrors the runtime map with a BTreeMap while maintaining a STACK of live forked
+    // versions (each a (Handle, BTreeMap) pair) so the sequence exercises rc>1 shared-version paths —
+    // the exact aliasing surface where a path-copy vs in-place-reuse bug would corrupt a sibling.
+
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum MapOp {
+        Insert { key: u8, val: u8 },
+        Remove { key: u8 },
+        Fork,          // dup the current version + push it onto the live stack
+        DropForked,    // drop + pop the most recent forked version (no-op if none)
+    }
+
+    /// Build a reference-equal fresh map from a BTreeMap oracle (for the canonical-shape cross-check).
+    fn map_of_reference(reference: &std::collections::BTreeMap<i64, i64>) -> Handle {
+        let mut m = op_map_empty();
+        for (&k, &v) in reference {
+            m = minsert_int(m, k, v);
+        }
+        m
+    }
+
+    fn run_map_op_sequence(ops: &[MapOp]) {
+        let before = live_nodes();
+        let mut m = op_map_empty();
+        let mut reference: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        // Live forked versions: each keeps its own reference snapshot to verify it stays UNDISTURBED.
+        let mut forks: Vec<(Handle, std::collections::BTreeMap<i64, i64>)> = Vec::new();
+        for op in ops {
+            match *op {
+                MapOp::Insert { key, val } => {
+                    let (k, v) = (key as i64, val as i64);
+                    m = minsert_int(m, k, v);
+                    reference.insert(k, v);
+                }
+                MapOp::Remove { key } => {
+                    let k = key as i64;
+                    m = mremove_int(m, k);
+                    reference.remove(&k);
+                }
+                MapOp::Fork => {
+                    op_dup(m); // now rc>1: the next mutation of `m` must path-copy, leaving this snapshot intact
+                    forks.push((m, reference.clone()));
+                }
+                MapOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) value equivalence over the whole u8 keyspace (probes present + absent keys).
+        assert_eq!(op_map_size(m) as usize, reference.len(), "size matches reference");
+        for k in 0..=255i64 {
+            assert_eq!(mlookup_int(m, k), reference.get(&k).copied(), "key {k} matches reference");
+        }
+        // (2) canonical shape: same contents ⇒ byte-identical to a freshly-built twin, regardless of the
+        // insert/remove/fork history that produced `m`.
+        let twin = map_of_reference(&reference);
+        assert!(champ_eq(m, twin), "map equals a fresh twin of the same contents (canonical)");
+        assert_eq!(champ_hash(m), champ_hash(twin), "…and hashes identically");
+        op_drop(twin);
+        // Every forked snapshot must be UNDISTURBED by the later mutations of `m` (aliasing safety).
+        for (h, snap) in &forks {
+            assert_eq!(op_map_size(*h) as usize, snap.len(), "forked snapshot size intact");
+            for (&k, &v) in snap {
+                assert_eq!(mlookup_int(*h, k), Some(v), "forked snapshot key {k} intact");
+            }
+        }
+        // (3) no leak / no double-free: release everything, live count returns to baseline.
+        op_drop(m);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "no leak / no double-free across the whole sequence");
+    }
+
+    #[test]
+    fn prop_map_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<MapOp>>()
+            .for_each(|ops| run_map_op_sequence(ops));
+    }
+
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum SetOp {
+        Insert { elem: u8 },
+        Remove { elem: u8 },
+        Fork,
+        DropForked,
+    }
+
+    fn set_of_reference(reference: &std::collections::BTreeSet<i64>) -> Handle {
+        let mut s = op_set_empty();
+        for &e in reference {
+            s = sinsert_int(s, e);
+        }
+        s
+    }
+
+    fn run_set_op_sequence(ops: &[SetOp]) {
+        let before = live_nodes();
+        let mut s = op_set_empty();
+        let mut reference: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut forks: Vec<(Handle, std::collections::BTreeSet<i64>)> = Vec::new();
+        for op in ops {
+            match *op {
+                SetOp::Insert { elem } => {
+                    let e = elem as i64;
+                    s = sinsert_int(s, e);
+                    reference.insert(e);
+                }
+                SetOp::Remove { elem } => {
+                    let e = elem as i64;
+                    s = sremove_int(s, e);
+                    reference.remove(&e);
+                }
+                SetOp::Fork => {
+                    op_dup(s);
+                    forks.push((s, reference.clone()));
+                }
+                SetOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        assert_eq!(op_set_size(s) as usize, reference.len(), "set size matches reference");
+        for e in 0..=255i64 {
+            assert_eq!(scontains_int(s, e), reference.contains(&e), "membership of {e} matches");
+        }
+        let twin = set_of_reference(&reference);
+        assert!(champ_eq(s, twin), "set equals a fresh twin of the same contents (canonical)");
+        assert_eq!(champ_hash(s), champ_hash(twin), "…and hashes identically");
+        op_drop(twin);
+        for (h, snap) in &forks {
+            assert_eq!(op_set_size(*h) as usize, snap.len(), "forked set snapshot size intact");
+            for &e in snap {
+                assert!(scontains_int(*h, e), "forked set snapshot elem {e} intact");
+            }
+        }
+        op_drop(s);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "no leak / no double-free across the set sequence");
+    }
+
+    #[test]
+    fn prop_set_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<SetOp>>()
+            .for_each(|ops| run_set_op_sequence(ops));
+    }
+
+    // COMPOUND-KEY variant — 2-tuple keys are the ≤2-handle nodes the inline-`handles` change (#22)
+    // targets, so this is the MOST load-bearing shape for de-risking it: every insert/lookup builds a
+    // tuple node (node + 2-elem handles), hashes it via the shallow-compound path, and champ_eq-compares
+    // it on a slot hit. A refcount bug in the tuple key's handles would surface here under Miri.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum TupleKeyOp {
+        Insert { a: u8, b: u8, val: u8 },
+        Remove { a: u8, b: u8 },
+        Fork,
+        DropForked,
+    }
+
+    fn ctuple_key(a: i64, b: i64) -> Handle {
+        let t = op_arr_alloc(2);
+        op_arr_set(t, 0, op_box_int(a));
+        op_arr_set(t, 1, op_box_int(b));
+        t
+    }
+
+    fn run_tuplekey_op_sequence(ops: &[TupleKeyOp]) {
+        let before = live_nodes();
+        let mut m = op_map_empty();
+        let mut reference: std::collections::BTreeMap<(i64, i64), i64> = std::collections::BTreeMap::new();
+        let mut forks: Vec<(Handle, std::collections::BTreeMap<(i64, i64), i64>)> = Vec::new();
+        // Small tuple keyspace (a,b ∈ 0..8) → real overwrites, splits, and shared-prefix hashing.
+        for op in ops {
+            match *op {
+                TupleKeyOp::Insert { a, b, val } => {
+                    let (a, b, v) = ((a % 8) as i64, (b % 8) as i64, val as i64);
+                    m = op_map_insert(m, ctuple_key(a, b), op_box_int(v));
+                    reference.insert((a, b), v);
+                }
+                TupleKeyOp::Remove { a, b } => {
+                    let (a, b) = ((a % 8) as i64, (b % 8) as i64);
+                    let probe = ctuple_key(a, b);
+                    m = op_map_remove(m, probe);
+                    op_drop(probe); // remove BORROWS the key — we own the probe, drop it
+                    reference.remove(&(a, b));
+                }
+                TupleKeyOp::Fork => {
+                    op_dup(m);
+                    forks.push((m, reference.clone()));
+                }
+                TupleKeyOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        assert_eq!(op_map_size(m) as usize, reference.len(), "tuple-key map size matches reference");
+        for a in 0..8i64 {
+            for b in 0..8i64 {
+                let probe = ctuple_key(a, b);
+                let got = op_map_lookup(m, probe);
+                op_drop(probe);
+                let want = reference.get(&(a, b)).copied();
+                assert_eq!(
+                    if got == Handle::NULL { None } else { Some(op_get_int(got)) },
+                    want,
+                    "tuple key ({a},{b}) matches reference"
+                );
+            }
+        }
+        op_drop(m);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "no leak across the tuple-key sequence");
+    }
+
+    #[test]
+    fn prop_tuplekey_map_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<TupleKeyOp>>()
+            .for_each(|ops| run_tuplekey_op_sequence(ops));
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
