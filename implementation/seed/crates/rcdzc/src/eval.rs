@@ -428,9 +428,11 @@ pub fn lambda_params_of(db: &mut Db, head: StructId) -> Option<Vec<StructId>> {
 /// a cycle back to `body`? A recursive function cannot be β-reduced to a normal form at compile time
 /// (it would inline without end, and one that branches — several self-calls per body, like a CBOR tree
 /// reader — explodes EXPONENTIALLY in appended nodes long before any depth bound), so the evaluator
-/// reads this BEFORE reducing a call and DECLINES a recursive one (it needs runtime specialization,
-/// not yet built). This is the SOUND, PURELY STRUCTURAL recursion signal — a static property of the
-/// resolved call graph, computed WITHOUT reducing (no `apply_lambda`, no arena growth), unlike the
+/// reads this BEFORE reducing a call and DECLINES a recursive one. The evaluator only monomorphizes by
+/// reduction; a recursive call is instead emitted as a runtime `Core::Call` by [`crate::lower`] (when
+/// the callee's signature is determined), so this decline is a hand-off to lowering, not an
+/// unimplemented feature. This is the SOUND, PURELY STRUCTURAL recursion signal — a static property of
+/// the resolved call graph, computed WITHOUT reducing (no `apply_lambda`, no arena growth), unlike the
 /// body-on-the-stack set that false-positived on `(f (f v))`. Cached per body occurrence (the fixed
 /// def/`let` structure makes the verdict stable), the same memoization `build_cache` uses.
 pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
@@ -819,8 +821,9 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
             // A MALFORMED width (negative/non-natural) reduces to the invalid sentinel width 0, so the
             // built module's type is `Ty::Int(Fixed(0))` — which `int_bounds`/`fits_width` reject as
             // CDZ0302 exactly as an explicit `(UInt 0)` is (a nonsensical width is rejected at the
-            // annotation, not silently dropped to the default Int64). A NON-CONSTANT width still
-            // declines (a runtime/variable width is not yet supported), unchanged.
+            // annotation, not silently dropped to the default Int64). A NON-CONSTANT width declines: an
+            // integer width must be a compile-time value (numeric-model.md §An Integer Type Is Indexed
+            // By A Compile-Time Width), so a runtime width is rejected, not a missing feature.
             let width = match read_width(db, args[0]) {
                 WidthRead::Fixed(w) => w,
                 WidthRead::Malformed => 0,
@@ -944,7 +947,8 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
 /// width position — is `Malformed`: the diagnostics registry lists exactly these (CDZ0302, "a negative
 /// width, or a non-natural width"). A width that is not a concrete value at all — a width variable, an
 /// unbound name, or a non-constant computation — is `NotConst`, a genuine decline (its own scope error,
-/// if any, surfaces elsewhere; a runtime width is simply not yet supported).
+/// if any, surfaces elsewhere; a width must be a compile-time value, so a runtime width is rejected —
+/// numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width).
 enum WidthRead {
     Fixed(u32),
     Malformed,
