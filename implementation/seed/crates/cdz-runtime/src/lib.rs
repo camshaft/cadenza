@@ -4554,6 +4554,42 @@ mod tests {
         assert!(vpush_shared <= 8300, "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)");
         op_drop(v);
 
+        // TEMP PROBE: vec_concat / vec_split — the RRB O(log N) rebalancing ops (List.concat/List.split),
+        // never benched. concat lifts both roots to a common level, gathers ≤64 children, builds 1-2
+        // relaxed nodes: a SMALL constant node count independent of N (the shared subtrees are dup'd, not
+        // copied). split rebuilds one boundary spine (≤7 relaxed nodes) + dup'd whole children. Measure
+        // per-op (not ×N) since they're logarithmic. Build two N-element vecs once, outside the timing.
+        let mk_vec = |lo: i64, hi: i64| -> Handle {
+            let mut vv = op_vec_empty();
+            for k in lo..hi {
+                vv = op_vec_push(vv, op_box_int(k));
+            }
+            vv
+        };
+        let ca = mk_vec(0, N);
+        let cbv = mk_vec(N, 2 * N);
+        let concat_allocs = measure(&mut || {
+            for _ in 0..100 {
+                op_dup(ca);
+                op_dup(cbv);
+                op_drop(op_vec_concat(ca, cbv)); // consumes both dups
+            }
+        });
+        println!("ALLOC vec_concat x100: {concat_allocs}");
+        assert!(concat_allocs <= 2000, "vec_concat x100 allocs {concat_allocs} exceeds ceiling 2000 (O(log N) rebalance: ≤a few nodes/op, N-independent — a regression to element-copy would scale with N)");
+        let split_allocs = measure(&mut || {
+            for _ in 0..100 {
+                op_dup(ca);
+                let (l, r) = op_vec_split(ca, N as u32 / 2); // consumes the dup
+                op_drop(l);
+                op_drop(r);
+            }
+        });
+        println!("ALLOC vec_split x100: {split_allocs}");
+        assert!(split_allocs <= 3000, "vec_split x100 allocs {split_allocs} exceeds ceiling 3000 (O(log N) boundary-spine rebuild, N-independent)");
+        op_drop(ca);
+        op_drop(cbv);
+
         // (F) map lookup — a pure read on scalar keys must allocate NOTHING. Guards the lazy champ_eq
         // worklist (it used to allocate a `vec![(a,b)]` per key comparison even when the scalar keys
         // resolved with no child descent — 1 alloc per lookup on the hot path).
