@@ -3963,11 +3963,20 @@ fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Slots, state: u3
         // Reuse the cursor's EXISTING `raw` allocation (clear keeps its capacity) instead of allocating
         // a fresh Vec — the cursor is rc==1, and its raw already held a `[state]slots…` of comparable
         // size, so the re-extend rarely reallocates. Saves one Vec allocation per advance step.
-        n.raw.clear();
-        n.raw.extend_from_slice(&state.to_le_bytes());
-        for s in slots.as_slice() {
-            n.raw.extend_from_slice(&s.to_le_bytes());
+        //
+        // Pack `[state][slot0][slot1]…` into a single STACK buffer and write it with ONE
+        // `extend_from_slice`, rather than a per-slot `extend_from_slice` loop (up to 9 calls, each
+        // re-checking inline/heap capacity). This advance runs once PER WALKED ELEMENT and showed up as
+        // `champ_become_cursor` + `Raw::extend_from_slice` ~5% of the set-algebra profile.
+        let sl = slots.as_slice();
+        let mut buf = [0u8; 4 * (SLOTS_CAP + 1)]; // state + up to SLOTS_CAP slots; never overflows
+        buf[0..4].copy_from_slice(&state.to_le_bytes());
+        for (i, &s) in sl.iter().enumerate() {
+            buf[4 + 4 * i..8 + 4 * i].copy_from_slice(&s.to_le_bytes());
         }
+        let total = 4 * (sl.len() + 1);
+        n.raw.clear();
+        n.raw.extend_from_slice(&buf[..total]);
         n.handles = frames;
     }
     cur
@@ -4772,6 +4781,7 @@ mod tests {
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 2200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
     }
+
 
     /// CPU-scaling PROBE (diagnostic, not a regression gate): times set ∩/∖ at growing N to reveal
     /// whether they are linear-ish or super-linear (the alloc bench can't see the O(log) contains-probe
