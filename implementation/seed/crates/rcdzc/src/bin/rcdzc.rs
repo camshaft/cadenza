@@ -55,6 +55,9 @@ enum TargetArg {
     Wasm,
     /// Rust source (a `.rs` module linking into a Rust codebase, no FFI).
     Rust,
+    /// Rust source in ASYNC, GAS-METERED form: every fn is `async` and threads `env: &mut impl CdzEnv`,
+    /// awaiting `env.consume(1)` at entry so the host meters fuel and can yield cooperatively.
+    RustAsync,
 }
 
 impl From<TargetArg> for Target {
@@ -62,6 +65,7 @@ impl From<TargetArg> for Target {
         match t {
             TargetArg::Wasm => Target::Wasm,
             TargetArg::Rust => Target::Rust,
+            TargetArg::RustAsync => Target::RustAsync,
         }
     }
 }

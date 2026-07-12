@@ -33,6 +33,13 @@ pub enum Target {
     /// structured second backend (`backends-and-targets.md` §A Backend Linearizes The Core Only If Its
     /// Target Is Linear).
     Rust,
+    /// Rust source in ASYNC, GAS-METERED form — every emitted function is an `async fn` taking a
+    /// caller-supplied `env: &mut impl CdzEnv` and awaiting `env.consume(1)` at entry, so the host meters
+    /// fuel and can yield COOPERATIVELY at each step (the emitted computation is bounded and pausable
+    /// rather than a runaway synchronous call). Same value semantics as [`Target::Rust`]; the difference
+    /// is the async/`env`-threaded calling convention, so it composes into an async Rust codebase where
+    /// untrusted Cadenza code must be fuel-bounded.
+    RustAsync,
 }
 
 impl Target {
@@ -41,7 +48,9 @@ impl Target {
     pub fn artifact_kind(self) -> &'static str {
         match self {
             Target::Wasm => "component",
-            Target::Rust => "rust",
+            // Both Rust forms are `rust`-kinded `.rs` source — they differ in calling convention, not
+            // in artifact kind (a consumer picks the flavor by which target it asked to emit).
+            Target::Rust | Target::RustAsync => "rust",
         }
     }
 }
@@ -51,7 +60,8 @@ impl Target {
 pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let result = match target {
         Target::Wasm => wasm::emit(db, layout),
-        Target::Rust => rust::emit(db, layout),
+        Target::Rust => rust::emit(db, layout, rust::Mode::Sync),
+        Target::RustAsync => rust::emit(db, layout, rust::Mode::Async),
     };
     match &result {
         Ok(bytes) => {

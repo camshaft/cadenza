@@ -39,6 +39,25 @@ use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
 
+/// Which calling convention the Rust backend emits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Plain synchronous `fn`s — an ordinary Rust module, no runtime threading.
+    Sync,
+    /// ASYNC, GAS-METERED `async fn`s that thread a caller-supplied `env: &mut impl CdzEnv` and await
+    /// `env.consume(1)` at each function entry, so the host meters fuel and can yield cooperatively.
+    /// Every emitted call is `Box::pin(callee(env, …)).await` (the pin makes a recursive `async fn`
+    /// well-sized — a recursive future is otherwise infinite; a non-recursive call inlines and never
+    /// reaches here). The `CdzEnv` trait is emitted into the module preamble.
+    Async,
+}
+
+impl Mode {
+    fn is_async(self) -> bool {
+        matches!(self, Mode::Async)
+    }
+}
+
 /// Emit a Rust-source artifact for the program in `db` under the boundary `layout`. Produces one
 /// `pub fn` per export (verbatim name, native scalar signature), reading the shared columns on demand.
 /// Declines — attributed to this target — for a construct the scalar slice does not yet render.
@@ -51,21 +70,39 @@ use crate::layout::Layout;
 /// the same functions; only the rendering differs. Recursion needs no special handling — a Rust `fn`
 /// calls itself directly (native stack), so the wasm backend's tail-call-to-loop transform is simply
 /// unnecessary here.
-pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject> {
     let mut out = String::new();
     out.push_str(PREAMBLE);
+    // In async/gas mode, the emitted module carries the `CdzEnv` trait the host implements — the fuel
+    // meter + cooperative-yield point every emitted function awaits at entry.
+    if mode.is_async() {
+        out.push_str(CDZ_ENV_TRAIT);
+    }
     for &def in &layout.order {
         let f = match layout.export_plan(def) {
             // An exported definition — a `pub fn` under its verbatim boundary name.
-            Some(e) => emit_export(db, e, layout)?,
+            Some(e) => emit_export(db, e, layout, mode)?,
             // A reachable non-export callee (reached via a runtime `Core::Call`) — a private `fn`.
-            None => emit_fn(db, def, layout)?,
+            None => emit_fn(db, def, layout, mode)?,
         };
         out.push('\n');
         out.push_str(&f);
     }
     Ok(out.into_bytes())
 }
+
+/// The gas/yield interface the async-mode module declares and the host implements. `consume` is `async`
+/// so a host can `.await` a cooperative yield inside it (return control to the executor after metering);
+/// it returns `impl Future` (RPITIT) rather than `async fn` in the trait so the emitted source is
+/// lint-clean and needs no `async_trait` dependency. An implementation typically panics (or the future
+/// never resolves) when fuel is exhausted — an emitted function awaits `consume(1)` at entry, so a
+/// runaway computation is bounded at the granularity of a call.
+const CDZ_ENV_TRAIT: &str = "\
+/// The gas/yield interface: the host meters fuel in `consume` and MAY await a cooperative yield there.
+pub trait CdzEnv {
+    fn consume(&mut self, gas: u64) -> impl core::future::Future<Output = ()>;
+}
+";
 
 /// The file preamble — a header comment marking the source as generated, and the lint allowances a
 /// mechanically-emitted file needs (its names come verbatim from the source program, so they will not
@@ -83,22 +120,25 @@ fn emit_export(
     db: &mut Db,
     e: &crate::layout::ExportPlan,
     layout: &Layout,
+    mode: Mode,
 ) -> Result<String, Reject> {
-    emit_signature(db, &e.name, true, &e.params, &e.result, e.body, layout)
+    emit_signature(
+        db, &e.name, true, e.def, &e.params, &e.result, e.body, layout, mode,
+    )
 }
 
 /// Emit a reachable NON-export definition as a private `fn` — a recursive helper or a mutual-recursion
 /// partner a `Core::Call` names. Its name is the source name; its parameters come from
 /// [`crate::layout::def_params`] (core types, no boundary-representability constraint — an internal
 /// callee never crosses the crate edge); its result type is the body's solved type.
-fn emit_fn(db: &mut Db, def: usize, layout: &Layout) -> Result<String, Reject> {
+fn emit_fn(db: &mut Db, def: usize, layout: &Layout, mode: Mode) -> Result<String, Reject> {
     let name = db.defs[def].name.clone();
     let body = db.defs[def]
         .body
         .ok_or_else(|| Reject::decline(format!("definition `{name}` has no body")))?;
     let params = crate::layout::def_params(db, def);
     let result = crate::infer::type_of(db, body);
-    emit_signature(db, &name, false, &params, &result, body, layout)
+    emit_signature(db, &name, false, def, &params, &result, body, layout, mode)
 }
 
 /// Emit a function definition (shared by the export and non-export paths): `[pub] fn <name>(<params>)
@@ -106,18 +146,30 @@ fn emit_fn(db: &mut Db, def: usize, layout: &Layout) -> Result<String, Reject> {
 /// native mapping (an unresolved/ambiguous or not-yet-supported type) declines. The result type maps
 /// the same way (unit → `()`; a compound declines in the scalar slice). The body is the core of `body`
 /// rendered as a Rust expression, with the parameters in scope by their emitted names.
+#[allow(clippy::too_many_arguments)]
 fn emit_signature(
     db: &mut Db,
     name: &str,
     public: bool,
+    def: usize,
     params: &[(crate::ast::StructId, crate::ty::Ty)],
     result: &crate::ty::Ty,
     body: crate::ast::StructId,
     layout: &Layout,
+    mode: Mode,
 ) -> Result<String, Reject> {
+    // Whether this function is compiled as a `loop` (it self-tail-calls). A looped function REASSIGNS
+    // its parameter locals each iteration, so they are declared `mut`. Detected once here and again in
+    // `emit_body` (both read the same predicate), so the signature's `mut` and the body's loop agree.
+    let loops = !params.is_empty() && expr::body_self_loops(db, body, def);
     let mut param_src = String::new();
+    // In async/gas mode, the FIRST parameter is the caller-supplied gas/yield env, threaded into every
+    // call. It precedes the source parameters; the source params keep their positions after it.
+    if mode.is_async() {
+        param_src.push_str("env: &mut E");
+    }
     for (i, (binder, ty)) in params.iter().enumerate() {
-        if i > 0 {
+        if i > 0 || mode.is_async() {
             param_src.push_str(", ");
         }
         let pname = param_name(db, *binder, i);
@@ -127,7 +179,9 @@ fn emit_signature(
                 ty.render_name()
             ))
         })?;
-        param_src.push_str(&format!("{pname}: {rty}"));
+        // A looped function's params are reassigned per iteration → `mut`.
+        let mut_kw = if loops { "mut " } else { "" };
+        param_src.push_str(&format!("{mut_kw}{pname}: {rty}"));
     }
     let ret = types::rust_type(result).ok_or_else(|| {
         Reject::decline(format!(
@@ -136,16 +190,26 @@ fn emit_signature(
         ))
     })?;
     // Render the body against the parameter environment. Selection reads the core + type columns on
-    // demand, so a fault deep in the body surfaces here as a decline.
-    let body_src = expr::emit_body(db, body, params, layout)?;
+    // demand, so a fault deep in the body surfaces here as a decline. In async mode the body's calls
+    // become `Box::pin(callee(env, …)).await`; a self-tail-recursive body becomes a `loop` (so `def` is
+    // passed to detect a self-call).
+    let body_src = expr::emit_body(db, body, params, def, layout, mode)?;
     let vis = if public { "pub " } else { "" };
     // The function NAME is sanitized to a valid Rust identifier (`sum-to` → `sum_to`) — the SAME
     // mapping a `Core::Call` uses at the call site, so the declaration and every call agree. (A `-` is
     // the idiomatic Cadenza word separator but not a Rust ident char.)
     let ident = sanitize_ident(name);
-    Ok(format!(
-        "{vis}fn {ident}({param_src}) -> {ret} {{\n{body_src}\n}}\n"
-    ))
+    if mode.is_async() {
+        // `async fn <name><E: CdzEnv>(env: &mut E, …) -> <ret> { env.consume(1).await; <body> }` — the
+        // per-call fuel charge + cooperative-yield point at entry. `<E: CdzEnv>` is the host's env type.
+        Ok(format!(
+            "{vis}async fn {ident}<E: CdzEnv>({param_src}) -> {ret} {{\n    env.consume(1).await;\n{body_src}\n}}\n"
+        ))
+    } else {
+        Ok(format!(
+            "{vis}fn {ident}({param_src}) -> {ret} {{\n{body_src}\n}}\n"
+        ))
+    }
 }
 
 /// The Rust identifier for parameter `index`, from its source name occurrence. Falls back to a

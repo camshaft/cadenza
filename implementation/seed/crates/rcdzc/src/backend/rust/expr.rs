@@ -27,6 +27,7 @@
 //! not yet expressed), a compound value, a poison — DECLINES, attributed to this target
 //! (`backends-and-targets.md` §A Backend Inherits The Front's Decline Boundaries).
 
+use super::Mode;
 use super::types;
 use crate::ast::{IntValue, StructId};
 use crate::core::Core;
@@ -44,22 +45,99 @@ use std::collections::HashMap;
 /// binder up here. Populated with the parameters at the export, and extended with each `let` binding.
 type Env = HashMap<StructId, String>;
 
+/// The rendering context threaded through every `emit` — the emission [`Mode`] (sync vs async/gas) and,
+/// when the function being emitted is SELF-TAIL-RECURSIVE, the [`SelfLoop`] describing how a tail self-
+/// call iterates in place. A struct (not a bare `Mode`) so these ride along without widening every
+/// helper's argument list; the callee-name/param lookups a `Core::Call` needs read `db` directly, so the
+/// boundary `Layout` is not needed here (the caller passes it only to `emit_body`).
+#[derive(Clone)]
+pub struct Ctx<'a> {
+    pub mode: Mode,
+    /// `Some` iff the function being emitted is compiled as a `loop` (it makes a self-tail-call). A
+    /// self-tail-call then reassigns the parameter locals + `continue`s instead of recursing; every
+    /// other tail position `break`s its value out of the loop. `None` = an ordinary body (no loop).
+    pub self_loop: Option<&'a SelfLoop>,
+}
+
+/// Describes a self-tail-recursive function compiled as a `loop`: the `db.defs` index that a tail
+/// `Core::Call` recognizes as "itself", and the parameter identifiers (in signature order) a self-call
+/// reassigns. The parameters are emitted as `let mut`; a tail self-call `f(a0, a1)` becomes
+/// `{ let (t0, t1) = (a0, a1); p0 = t0; p1 = t1; continue }` — a PARALLEL move (all args computed into
+/// temps before any param is overwritten, so an arg reading an old param value is correct).
+pub struct SelfLoop {
+    pub def: usize,
+    pub param_names: Vec<String>,
+    /// The function's result integer type, if it returns an integer — a bare-literal tail leaf (`break
+    /// 0`) is grounded to it so every `break` in the loop yields the SAME Rust type (a `loop` requires
+    /// all its `break` values agree). `None` for a non-integer result (Bool/unit — no width to reconcile).
+    pub result_it: Option<IntTy>,
+}
+
 /// Render a function body as the Rust expression that is its return value. Builds the initial
 /// environment from the function's parameters (each binder → its emitted name), then renders the body
-/// core. The result is a single expression (the function's tail expression), indented one level. Shared
-/// by the export and non-export function paths (both pass their `(binder, type)` parameter list).
+/// core. `self_def` is the function's own `db.defs` index — used to detect a SELF-tail-call and, when
+/// the body has one, compile the whole body as a `loop` (bounded stack in sync mode; no `Box::pin` poll-
+/// chain in async mode). Shared by the export and non-export paths (both pass their `(binder, type)`
+/// parameter list). The result is a single expression (the function's tail expression), indented once.
 pub fn emit_body(
     db: &mut Db,
     body: StructId,
     params: &[(StructId, Ty)],
-    layout: &Layout,
+    self_def: usize,
+    _layout: &Layout,
+    mode: Mode,
 ) -> Result<String, Reject> {
     let mut env: Env = HashMap::new();
+    let mut param_names = Vec::new();
     for (i, (binder, _)) in params.iter().enumerate() {
-        env.insert(*binder, super::param_name(db, *binder, i));
+        let name = super::param_name(db, *binder, i);
+        env.insert(*binder, name.clone());
+        param_names.push(name);
     }
-    let expr = emit(db, body, &env, layout)?;
+    // If the body makes a self-tail-call, compile it as a `loop`: a tail self-call reassigns the params
+    // and `continue`s; every other tail position `break`s its value. This is what keeps deep tail
+    // recursion bounded — vital in async mode, where the `Box::pin` poll-chain would otherwise be as
+    // deep as the recursion (a 1M-deep tail loop overflows the executor's poll stack).
+    if !params.is_empty() && body_self_loops(db, body, self_def) {
+        let result_it = match type_of(db, body) {
+            Ty::Int(it) => Some(it),
+            _ => None,
+        };
+        let sl = SelfLoop {
+            def: self_def,
+            param_names,
+            result_it,
+        };
+        let ctx = Ctx {
+            mode,
+            self_loop: Some(&sl),
+        };
+        let body_src = emit_tail(db, body, &env, &ctx)?;
+        return Ok(format!("    loop {{\n        {body_src}\n    }}"));
+    }
+    let ctx = Ctx {
+        mode,
+        self_loop: None,
+    };
+    let expr = emit(db, body, &env, &ctx)?;
     Ok(format!("    {expr}"))
+}
+
+/// Whether the body at `id` makes a tail call to `self_def` through the tail positions the loop
+/// transform handles — the body itself, an `if`'s branches, a `let`'s body, or a `match`'s arm bodies.
+/// A call in a NON-tail position (an operand) is NOT a tail call. Mirrors [`emit_tail`]'s propagation so
+/// detection and emission agree. (A `match` GUARD is a predicate, not a tail position — not considered.)
+/// `pub(super)` so `emit_signature` reads the SAME predicate to decide whether to declare params `mut`.
+pub(super) fn body_self_loops(db: &mut Db, id: StructId, self_def: usize) -> bool {
+    match core_of(db, id) {
+        Core::Call { callee, .. } => callee == self_def,
+        Core::If { then_, else_, .. } => {
+            body_self_loops(db, then_, self_def) || body_self_loops(db, else_, self_def)
+        }
+        Core::Let { body, .. } => body_self_loops(db, body, self_def),
+        Core::Match { arms, .. } => arms.iter().any(|a| body_self_loops(db, a.body, self_def)),
+        _ => false,
+    }
 }
 
 /// Render the node at `id` GROUNDED to the context integer type `it` — the width/signedness of the
@@ -76,18 +154,98 @@ fn emit_grounded(
     id: StructId,
     it: IntTy,
     env: &Env,
-    layout: &Layout,
+    ctx: &Ctx,
 ) -> Result<String, Reject> {
     if let Core::ConstInt(v) = core_of(db, id) {
         return emit_const_int_at(it, &v);
     }
-    emit(db, id, env, layout)
+    emit(db, id, env, ctx)
+}
+
+/// Render the node at `id` in TAIL position inside a self-loop (`ctx.self_loop` is `Some`) — the result
+/// each path produces is the function's result. Tail-ness PROPAGATES through the result-producing
+/// sub-positions (an `if`'s branches, a `match`'s arm bodies, a `let`'s body); the condition/scrutinee/
+/// binding values are NOT tail (they are ordinary values, emitted via `emit`). At a tail LEAF:
+///  - a SELF tail-call `f(a…)` becomes the parallel move `{ let (t…) = (a…); p0 = t0; …; continue }` —
+///    all args computed into temps before any param is overwritten, then jump to the loop top;
+///  - any other value `v` becomes `break v` (yielding the loop's — the function's — result).
+///
+/// Returns a Rust STATEMENT/expression usable as the loop body. Only called when `ctx.self_loop` is set.
+fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Reject> {
+    let sl = ctx
+        .self_loop
+        .expect("emit_tail is only called inside a self-loop");
+    match core_of(db, id) {
+        // A tail call. A SELF-call iterates the loop (reassign params + continue); any OTHER call is not
+        // a self-recursion edge, so it is an ordinary (boxed, in async) call whose result breaks the loop.
+        Core::Call { callee, args } if callee == sl.def => {
+            // Ground each arg to the callee's (== our own) param width, exactly as the ordinary call arm.
+            let param_tys = crate::layout::def_params(db, callee);
+            let mut rendered = Vec::new();
+            for (i, &a) in args.iter().enumerate() {
+                match param_tys.get(i).map(|(_, t)| t) {
+                    Some(Ty::Int(it)) => rendered.push(emit_grounded(db, a, *it, env, ctx)?),
+                    _ => rendered.push(emit(db, a, env, ctx)?),
+                }
+            }
+            if rendered.len() != sl.param_names.len() {
+                return Err(Reject::decline("self-tail-call arity mismatch"));
+            }
+            // Parallel move: bind all new values into temps, THEN assign each param — so an arg that
+            // reads an old param value (`f(n-1, acc+n)`) sees the pre-iteration params. `continue` jumps
+            // to the loop top, where (in async mode) `env.consume(1).await` runs again.
+            let temps: Vec<String> = (0..rendered.len()).map(|i| format!("__t{i}")).collect();
+            let binds = format!("let ({}) = ({});", temps.join(", "), rendered.join(", "));
+            let moves = sl
+                .param_names
+                .iter()
+                .zip(&temps)
+                .map(|(p, t)| format!("{p} = {t};"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(format!("{{ {binds} {moves} continue; }}"))
+        }
+        // An `if` in tail position: both branches are tail; the condition is an ordinary value.
+        Core::If { cond, then_, else_ } => {
+            let c = emit(db, cond, env, ctx)?;
+            let t = emit_tail(db, then_, env, ctx)?;
+            let e = emit_tail(db, else_, env, ctx)?;
+            Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
+        }
+        // A `let` in tail position: its bindings are ordinary values, its body is tail.
+        Core::Let { bindings, body } => {
+            let mut extended = env.clone();
+            let mut lines = String::new();
+            for (binder, value) in &bindings {
+                let name = local_name(db, *binder, &extended);
+                let v = emit(db, *value, &extended, ctx)?;
+                lines.push_str(&format!("let {name} = {v}; "));
+                extended.insert(*binder, name);
+            }
+            let b = emit_tail(db, body, &extended, ctx)?;
+            Ok(format!("{{ {lines}{b} }}"))
+        }
+        // A `match` in tail position: each arm body is tail. (Delegates to the shared match emitter with
+        // a tail flag so arm bodies go through `emit_tail`.)
+        Core::Match { scrutinee, arms } => {
+            emit_match_impl(db, id, scrutinee, &arms, env, ctx, true)
+        }
+        // Any other tail leaf: its value is the loop's result — `break` it out. A bare-literal leaf is
+        // grounded to the function's result width so every `break` in the loop yields the same type.
+        _ => {
+            let v = match sl.result_it {
+                Some(it) => emit_grounded(db, id, it, env, ctx)?,
+                None => emit(db, id, env, ctx)?,
+            };
+            Ok(format!("break {v};"))
+        }
+    }
 }
 
 /// Render the node at `id` as a Rust expression string. Exhaustive over `Core`; a form without a
 /// scalar rendering declines. Reads the core + type columns on demand. The rendered expression is
 /// parenthesized where needed so it composes as a sub-expression without precedence surprises.
-fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String, Reject> {
+fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Reject> {
     match core_of(db, id) {
         // An integer constant, written as its two's-complement BIT PATTERN in the unsigned type of its
         // width, then cast to the target type — the same bit-pattern emit the wasm backend does
@@ -116,9 +274,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
         // (via `emit_branch`) so a default-Int64 literal opposite a narrow branch does not mismatch the
         // block's type — the same reconciliation the wasm backend's `emit_branch` does.
         Core::If { cond, then_, else_ } => {
-            let c = emit(db, cond, env, layout)?;
-            let t = emit_branch(db, then_, id, env, layout)?;
-            let e = emit_branch(db, else_, id, env, layout)?;
+            let c = emit(db, cond, env, ctx)?;
+            let t = emit_branch(db, then_, id, env, ctx)?;
+            let e = emit_branch(db, else_, id, env, ctx)?;
             Ok(format!("if {c} {{ {t} }} else {{ {e} }}"))
         }
         // A short-circuiting boolean connective → Rust's own `&&`/`||`, which short-circuit with
@@ -127,8 +285,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
         // (`and`) / `if lhs then true else rhs` (`or`) prescribes (core-semantics.md §Boolean
         // Connectives Short-Circuit). The structured target expresses the connective as itself.
         Core::And { lhs, rhs, is_and } => {
-            let l = emit(db, lhs, env, layout)?;
-            let r = emit(db, rhs, env, layout)?;
+            let l = emit(db, lhs, env, ctx)?;
+            let r = emit(db, rhs, env, ctx)?;
             let op = if is_and { "&&" } else { "||" };
             Ok(format!("({l} {op} {r})"))
         }
@@ -143,18 +301,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
             let mut lines = String::new();
             for (binder, value) in &bindings {
                 let name = local_name(db, *binder, &extended);
-                let v = emit(db, *value, &extended, layout)?;
+                let v = emit(db, *value, &extended, ctx)?;
                 lines.push_str(&format!("let {name} = {v}; "));
                 extended.insert(*binder, name);
             }
-            let b = emit(db, body, &extended, layout)?;
+            let b = emit(db, body, &extended, ctx)?;
             Ok(format!("{{ {lines}{b} }}"))
         }
         // A scalar `match` → Rust's `match`. Each arm renders `pattern => body`; a literal probe is the
         // literal pattern (written in the scrutinee's type), a wildcard/binder is `_`. `lower`
         // guaranteed exhaustiveness (a wildcard tail, or full Bool coverage), so the Rust match is
         // exhaustive too. The scrutinee is rendered once (Rust binds it), not re-tested per arm.
-        Core::Match { scrutinee, arms } => emit_match(db, id, scrutinee, &arms, env, layout),
+        Core::Match { scrutinee, arms } => emit_match(db, id, scrutinee, &arms, env, ctx),
         // A runtime comparison → the Rust comparison operator. Signedness/width are already baked into
         // the operands' Rust types (a `u32` compares unsigned, an `i8` signed), so the operator alone
         // is correct — no `_s`/`_u` variant selection like wasm needs. Both operands must share one
@@ -165,20 +323,20 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
                 compare_sym(op).ok_or_else(|| Reject::decline("not a comparison operator"))?;
             match operand_int_ty(db, lhs, rhs) {
                 Some(it) => {
-                    let l = emit_grounded(db, lhs, it, env, layout)?;
-                    let r = emit_grounded(db, rhs, it, env, layout)?;
+                    let l = emit_grounded(db, lhs, it, env, ctx)?;
+                    let r = emit_grounded(db, rhs, it, env, ctx)?;
                     Ok(format!("({l} {sym} {r})"))
                 }
                 // A non-integer comparison (Bool operands) — no width to reconcile, emit as-is.
                 None => {
-                    let l = emit(db, lhs, env, layout)?;
-                    let r = emit(db, rhs, env, layout)?;
+                    let l = emit(db, lhs, env, ctx)?;
+                    let r = emit(db, rhs, env, ctx)?;
                     Ok(format!("({l} {sym} {r})"))
                 }
             }
         }
         // A runtime arithmetic op.
-        Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, layout),
+        Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, ctx),
         // A runtime `.wrap` conversion → an `as` cast to the target Rust type. Rust's `as` between
         // integers keeps the low bits and reinterprets at the target sign — bit-identical to
         // `IntValue::wrap_to`, and total (never panics), as `.wrap` requires.
@@ -188,14 +346,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
                 let rty = types::rust_type(&Ty::Int(dst)).ok_or_else(|| {
                     Reject::decline("wrap target width has no native Rust representation")
                 })?;
-                let operand_s = emit(db, operand, env, layout)?;
+                let operand_s = emit(db, operand, env, ctx)?;
                 Ok(format!("({operand_s} as {rty})"))
             }
             _ => Err(Reject::decline("not a runtime conversion")),
         },
         // A boolean negation `!operand`.
         Core::Not { operand } => {
-            let o = emit(db, operand, env, layout)?;
+            let o = emit(db, operand, env, ctx)?;
             Ok(format!("(!{o})"))
         }
         // A runtime call → `callee(args…)`. The callee is a reachable definition every backend emits
@@ -216,15 +374,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
                 // Ground a literal arg to the callee's param type at this position; a non-literal arg,
                 // or a position past the known params (arity is checked upstream), emits as-is.
                 match param_tys.get(i).map(|(_, t)| t) {
-                    Some(Ty::Int(it)) => rendered.push(emit_grounded(db, a, *it, env, layout)?),
-                    _ => rendered.push(emit(db, a, env, layout)?),
+                    Some(Ty::Int(it)) => rendered.push(emit_grounded(db, a, *it, env, ctx)?),
+                    _ => rendered.push(emit(db, a, env, ctx)?),
                 }
             }
-            Ok(format!(
-                "{}({})",
-                super::sanitize_ident(&name),
-                rendered.join(", ")
-            ))
+            let ident = super::sanitize_ident(&name);
+            if ctx.mode.is_async() {
+                // Async/gas mode: thread `env` as the callee's first argument, and `Box::pin(…).await`
+                // the call. The pin is what makes a RECURSIVE `async fn` well-sized (a recursive future
+                // is otherwise infinite); a non-recursive call inlines upstream and never reaches here,
+                // so this only ever wraps a genuine recursive/mutual call. `env` is passed by `&mut *env`
+                // — a fresh reborrow per call so a later sibling call (two calls as operands of one op)
+                // can borrow `env` again after this `.await` releases it.
+                let args = if rendered.is_empty() {
+                    "env".to_string()
+                } else {
+                    format!("env, {}", rendered.join(", "))
+                };
+                Ok(format!("Box::pin({ident}({args})).await"))
+            } else {
+                Ok(format!("{ident}({})", rendered.join(", ")))
+            }
         }
         // A poison reaching selection is a fault the collector surfaces before emission; reaching here
         // is a decline rather than emitted code (same as the wasm backend).
@@ -306,14 +476,14 @@ fn emit_arith(
     lhs: StructId,
     rhs: StructId,
     env: &Env,
-    layout: &Layout,
+    ctx: &Ctx,
 ) -> Result<String, Reject> {
     // Both operands share the OP's integer type (its result width == operand width). Ground a bare
     // literal operand to it so `(+ a 1)` over a narrow `a` emits `<narrow>::checked_add(1<narrow>)`,
     // not `checked_add((1u64 as i64))` (Rust E0308) — the analogue of the wasm backend's `emit_operand`.
     let it = int_ty_of(db, id);
-    let l = emit_grounded(db, lhs, it, env, layout)?;
-    let r = emit_grounded(db, rhs, it, env, layout)?;
+    let l = emit_grounded(db, lhs, it, env, ctx)?;
+    let r = emit_grounded(db, rhs, it, env, ctx)?;
     match op {
         Prim::Add | Prim::Sub | Prim::Mul => {
             let method = match op {
@@ -371,7 +541,7 @@ fn emit_arith(
             // The count expression: its own solved type (a shift count is not rigidly the value's type),
             // cast to u32 for the guard and the shift-count position.
             let count_it = int_ty_of(db, rhs);
-            let count = emit_grounded(db, rhs, count_it, env, layout)?;
+            let count = emit_grounded(db, rhs, count_it, env, ctx)?;
             if matches!(op, Prim::Shr) {
                 // `>>`: guard the count, then the native shift (arithmetic/logical by `vty`'s sign).
                 Ok(format!(
@@ -414,7 +584,24 @@ fn emit_match(
     scrutinee: StructId,
     arms: &[crate::core::MatchArm],
     env: &Env,
-    layout: &Layout,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    emit_match_impl(db, match_id, scrutinee, arms, env, ctx, false)
+}
+
+/// Render a scalar `match`, with `tail` selecting whether the arm bodies are in TAIL position (inside a
+/// self-loop): when `tail`, each arm body goes through [`emit_tail`] (a self-call iterates the loop, any
+/// other value `break`s it); otherwise each arm body is an ordinary expression grounded to the match's
+/// result width. The scrutinee, patterns, and guards are identical either way.
+#[allow(clippy::too_many_arguments)]
+fn emit_match_impl(
+    db: &mut Db,
+    match_id: StructId,
+    scrutinee: StructId,
+    arms: &[crate::core::MatchArm],
+    env: &Env,
+    ctx: &Ctx,
+    tail: bool,
 ) -> Result<String, Reject> {
     // The match's RESULT integer type, if any — a bare-literal arm body is grounded to it so a
     // default-Int64 literal arm beside a narrow-width arm does not yield a mismatched type (Rust E0308),
@@ -423,7 +610,7 @@ fn emit_match(
         Ty::Int(it) => Some(it),
         _ => None,
     };
-    let scrut = emit(db, scrutinee, env, layout)?;
+    let scrut = emit(db, scrutinee, env, ctx)?;
     let mut out = format!("match ({scrut}) {{ ");
     for arm in arms {
         let pat = match arm.probe {
@@ -432,12 +619,18 @@ fn emit_match(
             crate::core::Probe::Wild => "_".to_string(),
         };
         let guard = match arm.guard {
-            Some(g) => format!(" if {}", emit(db, g, env, layout)?),
+            Some(g) => format!(" if {}", emit(db, g, env, ctx)?),
             None => String::new(),
         };
-        let b = match result_it {
-            Some(it) => emit_grounded(db, arm.body, it, env, layout)?,
-            None => emit(db, arm.body, env, layout)?,
+        let b = if tail {
+            // Tail arm: `emit_tail` produces `break v;` / a self-loop `continue` — a statement, so the
+            // arm is `pat => { <stmt> }` (braces make a statement a valid match-arm body).
+            format!("{{ {} }}", emit_tail(db, arm.body, env, ctx)?)
+        } else {
+            match result_it {
+                Some(it) => emit_grounded(db, arm.body, it, env, ctx)?,
+                None => emit(db, arm.body, env, ctx)?,
+            }
         };
         out.push_str(&format!("{pat}{guard} => {b}, "));
         // An UNGUARDED wildcard is the unconditional catch-all — every later arm is unreachable (as in
@@ -572,11 +765,11 @@ fn emit_branch(
     branch: StructId,
     construct_id: StructId,
     env: &Env,
-    layout: &Layout,
+    ctx: &Ctx,
 ) -> Result<String, Reject> {
     match type_of(db, construct_id) {
-        Ty::Int(it) => emit_grounded(db, branch, it, env, layout),
-        _ => emit(db, branch, env, layout),
+        Ty::Int(it) => emit_grounded(db, branch, it, env, ctx),
+        _ => emit(db, branch, env, ctx),
     }
 }
 

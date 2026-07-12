@@ -209,6 +209,7 @@ fn main() {
                 target: match target {
                     GateTargetArg::Wasm => GateTarget::Wasm,
                     GateTargetArg::Rust => GateTarget::Rust,
+                    GateTargetArg::RustAsync => GateTarget::RustAsync,
                 },
             },
         ),
@@ -576,6 +577,10 @@ enum Ran {
 enum GateTarget {
     Wasm,
     Rust,
+    /// The ASYNC/gas-metered Rust backend: emit `--target rust-async`, wrap it with a no-limit gas `Env`
+    /// and a minimal executor, and drive the export under `block_on` — so the SAME corpus expectations
+    /// grade the async form (its answers must match, gas threading and all).
+    RustAsync,
 }
 
 /// The `--target` value clap parses for the `gate` command (its own enum so clap validates the
@@ -584,6 +589,7 @@ enum GateTarget {
 enum GateTargetArg {
     Wasm,
     Rust,
+    RustAsync,
 }
 
 /// Drive one program's s-expression `text` through cdz-syntax → rcdzc → cdz-run, returning the
@@ -600,7 +606,8 @@ fn run_program(
 ) -> Ran {
     match target {
         GateTarget::Wasm => run_program_wasm(tools, store, program, call),
-        GateTarget::Rust => run_program_rust(tools, program, call),
+        GateTarget::Rust => run_program_rust(tools, program, call, false),
+        GateTarget::RustAsync => run_program_rust(tools, program, call, true),
     }
 }
 
@@ -695,11 +702,12 @@ fn run_program_wasm(
 /// args written verbatim as Rust literals) and prints the result, so the value crosses on stdout exactly
 /// as cdz-run emits it. Scalar-only today: a compound result declines in the Rust backend (→ `Declined`
 /// → Todo), so no `(: value type)` rendering is needed here.
-fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
+fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mode: bool) -> Ran {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    // Stage 1+2: program text → binary AST → Rust source (rcdzc `--target rust -o -`, source on stdout).
+    // Stage 1+2: program text → binary AST → Rust source (rcdzc `--target rust[-async] -o -`, on stdout).
+    let rust_target = if async_mode { "rust-async" } else { "rust" };
     let mut syntax = Command::new(&tools.syntax)
         .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
         .stdin(Stdio::piped())
@@ -714,7 +722,7 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
         .write_all(program.as_bytes())
         .ok();
     let rcdzc = Command::new(&tools.rcdzc)
-        .args(["-", "-o", "-", "--target", "rust"])
+        .args(["-", "-o", "-", "--target", rust_target])
         .stdin(Stdio::from(syntax.stdout.take().unwrap()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -740,14 +748,21 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
         ),
         None => {
             // The sole export's name is the fn to call with no args — recover it from the emitted
-            // `pub fn <name>(`. (A nullary export; the common no-`call` case.)
+            // signature. Sync mode emits `pub fn <name>(`; async mode emits `pub async fn <name><E:
+            // CdzEnv>(`, so split on whichever marker is present and stop the name at `(` OR `<` (the
+            // async generic-parameter list). (A nullary export; the common no-`call` case.)
+            let marker = if async_mode {
+                "pub async fn "
+            } else {
+                "pub fn "
+            };
             match module
-                .split("pub fn ")
+                .split(marker)
                 .nth(1)
-                .and_then(|s| s.split('(').next())
+                .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
             {
-                Some(name) => (name.trim().to_string(), format!("{}()", name.trim())),
-                None => return Ran::BadArtifact("no `pub fn` in emitted Rust".to_string()),
+                Some(name) if !name.is_empty() => (name.to_string(), format!("{name}()")),
+                _ => return Ran::BadArtifact("no exported fn in emitted Rust".to_string()),
             }
         }
     };
@@ -774,12 +789,48 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
     // scalar/bool export prints via `Display` (`42`, `true`), exactly as cdz-run renders it. The return
     // type is read off the emitted `pub fn …(-> <ty>)` signature, so the one driver stays type-agnostic.
     let returns_unit = export_returns_unit(&module, &export);
-    let body = if returns_unit {
-        format!("fn main() {{ prog::{call_expr}; println!(\"unit\"); }}\n")
+    // The driver's `fn main` calls the export and prints the result the way cdz-run renders it (a bare
+    // scalar/bool via `{}`, or the token `unit` for a `()` return). In ASYNC mode the export is an
+    // `async fn` that takes `&mut impl CdzEnv` first, so the driver supplies a no-limit gas `Env` + a
+    // minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer must MATCH the
+    // sync/wasm oracle (gas metering is invisible to the result), so the async form is graded identically.
+    let call_or_await = if async_mode {
+        // Rewrite `export(args…)` → `block_on(prog::export(&mut GATE_ENV_INIT, args…))`; a nullary call
+        // `export()` becomes `block_on(prog::export(&mut …))`.
+        let inner = if call_expr.ends_with("()") {
+            format!("prog::{}(&mut env)", export)
+        } else {
+            // `export(a, b)` → `prog::export(&mut env, a, b)`.
+            let arglist = call_expr
+                .strip_prefix(&format!("{export}("))
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("");
+            format!("prog::{export}(&mut env, {arglist})")
+        };
+        format!("block_on({inner})")
     } else {
-        format!("fn main() {{ println!(\"{{}}\", prog::{call_expr}); }}\n")
+        format!("prog::{call_expr}")
     };
-    let full = format!("mod prog {{\n{module}\n}}\n{body}");
+    let body = if returns_unit {
+        format!("fn main() {{ let _ = {call_or_await}; println!(\"unit\"); }}\n")
+    } else {
+        format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n")
+    };
+    // In async mode the driver needs an `Env` impl (a no-limit gas meter — the gate checks ANSWERS, not
+    // fuel bounds) and a tiny `block_on` executor, plus `let mut env = …` before the call.
+    let full = if async_mode {
+        format!("mod prog {{\n{module}\n}}\n{ASYNC_GATE_HARNESS}\n{body}")
+    } else {
+        format!("mod prog {{\n{module}\n}}\n{body}")
+    };
+    // `body` above referenced `env` in async mode; the harness defines it via a `let` inside `main`, so
+    // splice that in. (Kept simple: the harness provides a `gate_env()` and `block_on`, and `main` binds
+    // `env` first.)
+    let full = if async_mode {
+        full.replace("fn main() {", "fn main() { let mut env = GateEnv;")
+    } else {
+        full
+    };
     if std::fs::write(&src, &full).is_err() {
         return Ran::BadArtifact("could not write emitted Rust to a temp file".to_string());
     }
@@ -817,6 +868,29 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>) -> Ran {
     }
 }
 
+/// The async gate driver's harness: a no-limit `GateEnv` implementing the emitted `CdzEnv` (the gate
+/// checks ANSWERS, not fuel bounds, so `consume` never blocks/panics) + a minimal `block_on` executor
+/// (a real Waker is unneeded — the emitted futures never register one; they only `.await` `consume`,
+/// which is `Ready` immediately, so a busy-poll loop drives them to completion). Spliced into the async
+/// driver before `fn main`.
+const ASYNC_GATE_HARNESS: &str = r#"
+struct GateEnv;
+impl prog::CdzEnv for GateEnv {
+    async fn consume(&mut self, _gas: u64) {}
+}
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    fn noop(_: *const ()) {}
+    fn clone(_: *const ()) -> RawWaker { raw() }
+    fn raw() -> RawWaker { RawWaker::new(core::ptr::null(), &VT) }
+    static VT: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    let w = unsafe { Waker::from_raw(raw()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+"#;
+
 /// Make a Cadenza name a Rust identifier the SAME way the Rust backend does (`sanitize_ident`): a `-`
 /// (and any non-ident char) becomes `_`. Kept in lockstep so the driver's call names match the emitted
 /// `pub fn` names. (A small copy rather than a dependency on the compiler crate, per the xtask/tools
@@ -844,16 +918,20 @@ fn rust_ident(name: &str) -> String {
 /// `unit` token directly rather than through `{}`. Matches by the exact `pub fn <name>(` prefix so a
 /// different export's signature is not misread.
 fn export_returns_unit(module: &str, name: &str) -> bool {
-    let needle = format!("pub fn {name}(");
+    // Find the exported fn's signature line — `pub fn <name>(` (sync) or `pub async fn <name><`/`(`
+    // (async, with a `<E: CdzEnv>` generic before the params) — and read its return type. Unit is `-> ()`.
+    let sync = format!("pub fn {name}(");
+    let async_paren = format!("pub async fn {name}(");
+    let async_gen = format!("pub async fn {name}<");
     for line in module.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix(&needle) {
-            // The signature's return type is between `-> ` and the opening ` {`. Unit is `()`.
-            if let Some(arrow) = rest.split_once("-> ") {
+        let t = line.trim_start();
+        if t.starts_with(&sync) || t.starts_with(&async_paren) || t.starts_with(&async_gen) {
+            // The return type is between `-> ` and the opening ` {`. Unit is `()`.
+            if let Some(arrow) = t.split_once("-> ") {
                 let ret = arrow.1.trim_end().trim_end_matches('{').trim();
                 return ret == "()";
             }
-            // No `->` means an implicit unit return (the backend always writes `-> ()`, but be safe).
-            return true;
+            return true; // no `->` — implicit unit (defensive; the backend always writes `-> ()`).
         }
     }
     false
@@ -1408,6 +1486,7 @@ fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
     let name = match target {
         GateTarget::Wasm => ".gate-baseline".to_string(),
         GateTarget::Rust => ".gate-baseline-rust".to_string(),
+        GateTarget::RustAsync => ".gate-baseline-rust-async".to_string(),
     };
     paths.repo.join("spec/semantics").join(name)
 }

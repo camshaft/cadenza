@@ -183,6 +183,75 @@ fn mutual_recursion_emits_a_pub_fn_and_a_private_fn() {
     );
 }
 
+#[test]
+fn self_tail_recursion_compiles_to_a_loop() {
+    // A self-tail-recursive fn becomes a `loop` with `mut` params: the tail self-call reassigns params
+    // + `continue`s, the base case `break`s its value. Bounded stack (sync) / no Box::pin (async).
+    let rs = compile_rust(
+        "(module m (def (go (: n Int64) (: acc Int64)) \
+           (if (= n 0) acc (go (+ n -1) (+ acc n)))) (export go))",
+    );
+    assert!(
+        rs.contains("pub fn go(mut n: i64, mut acc: i64)"),
+        "mut params:\n{rs}"
+    );
+    assert!(rs.contains("loop {"), "loop:\n{rs}");
+    assert!(rs.contains("break acc;"), "base case breaks:\n{rs}");
+    assert!(
+        rs.contains("continue;") && rs.contains("let (__t0, __t1)"),
+        "parallel-move + continue:\n{rs}"
+    );
+    // The tail self-call became the reassignment+continue, not a recursive call — no `Box::pin`, and no
+    // `go(` CALL survives (the only `go(` is the `pub fn go(` declaration head).
+    assert!(!rs.contains("Box::pin"), "no boxing (sync):\n{rs}");
+    assert_eq!(
+        rs.matches("go(").count(),
+        1,
+        "only the decl, no self-call:\n{rs}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_self_loop_runs_deep() {
+    // The loop must run a large tail recursion in bounded stack — 1M iterations (sum 1..=1_000_000).
+    // Export is `sumn` (not `main`, which would collide with the driver's `fn main`).
+    let rs = compile_rust(
+        "(module m (def (go (: n Int64) (: acc Int64)) (if (= n 0) acc (go (+ n -1) (+ acc n)))) \
+                    (def (sumn (: n Int64)) (go n 0)) (export sumn))",
+    );
+    if let Some(out) = rustc_run(&rs, "sumn(1000000)") {
+        assert_eq!(out, "500000500000");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_async_self_loop_deep_is_bounded() {
+    // The async form of a deep tail loop must ALSO run in bounded stack — no Box::pin poll-chain (the
+    // loop iterates in place), so 1M iterations complete under the executor. Same answer as sync.
+    let module = compile_rust_async(
+        "(module m (def (go (: n Int64) (: acc Int64)) (if (= n 0) acc (go (+ n -1) (+ acc n)))) \
+                    (def (main (: n Int64)) (go n 0)) (export main))",
+    );
+    let driver = r#"
+struct GateEnv;
+impl prog::CdzEnv for GateEnv { async fn consume(&mut self, _g: u64) {} }
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() { println!("{}", block_on(prog::main(&mut GateEnv, 1000000))); }
+"#;
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(out, "500000500000");
+    }
+}
+
 // ── the rustc round-trip (behavior oracle) ───────────────────────────────────────────────────────
 
 /// Compile the emitted Rust `module` plus a generated `main` that calls `export`(`args`) and prints
@@ -213,6 +282,45 @@ fn rustc_run(module: &str, call: &str) -> Option<String> {
     assert!(
         status.status.success(),
         "emitted Rust did not compile:\n{}\n--- source ---\n{module}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let run = Command::new(&bin_path).output().expect("run compiled prog");
+    assert!(
+        run.status.success(),
+        "compiled prog did not run:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    Some(String::from_utf8_lossy(&run.stdout).trim().to_string())
+}
+
+/// Compile the emitted `module` wrapped in `mod prog { … }` PLUS a caller-supplied `driver` (which
+/// defines its own `fn main` and references the module as `prog::…`), run it, and return the printed
+/// line. `None` if `rustc` is absent. Used for the async round-trip, where the driver must supply an
+/// `Env` impl + an executor rather than a one-line `println!(call)`.
+fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
+    use std::process::Command;
+    if Command::new("rustc").arg("--version").output().is_err() {
+        return None;
+    }
+    let dir =
+        std::env::temp_dir().join(format!("rcdzc-rust-drv-{}-{}", module.len(), driver.len()));
+    let _ = std::fs::create_dir_all(&dir);
+    let src_path = dir.join("prog.rs");
+    let bin_path = dir.join("prog");
+    // Wrap the module in `mod prog { … }` so its `pub fn`s are `prog::…` and its `#![allow(…)]` inner
+    // attrs stay valid at the mod head, then append the driver (which owns `fn main`).
+    let full = format!("mod prog {{\n{module}\n}}\n{driver}");
+    std::fs::write(&src_path, full).expect("write rust source");
+    let status = Command::new("rustc")
+        .args(["-O", "--edition", "2021"])
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("run rustc");
+    assert!(
+        status.status.success(),
+        "emitted async Rust did not compile:\n{}\n--- source ---\n{module}",
         String::from_utf8_lossy(&status.stderr)
     );
     let run = Command::new(&bin_path).output().expect("run compiled prog");
@@ -350,5 +458,86 @@ fn rustc_roundtrip_mutual_recursion() {
     }
     if let Some(out) = rustc_run(&rs, "even(7)") {
         assert_eq!(out, "false");
+    }
+}
+
+// ── async / gas-metered emission ─────────────────────────────────────────────────────────────────
+
+/// Compile a program to the ASYNC Rust backend (gas-metered `async fn`s + the `CdzEnv` trait).
+fn compile_rust_async(src: &str) -> String {
+    let ast_bytes = crate::codec::encode(&parse(src));
+    let out = compile(
+        &[Artifact::new(Artifact::KIND_AST, "main", ast_bytes)],
+        &[Target::RustAsync],
+    );
+    match out.artifact(Target::RustAsync.artifact_kind()) {
+        Some(bytes) => String::from_utf8(bytes.to_vec()).expect("emitted Rust is utf-8"),
+        None => panic!(
+            "async Rust emit failed: {:?}",
+            out.diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        ),
+    }
+}
+
+#[test]
+fn async_mode_emits_env_threaded_gas_metered_fns() {
+    let rs = compile_rust_async(
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+    );
+    // The gas/yield trait is declared once in the module.
+    assert!(rs.contains("pub trait CdzEnv"), "trait:\n{rs}");
+    // The fn is async, takes `env: &mut E`, and charges gas at entry.
+    assert!(
+        rs.contains("pub async fn sum_to<E: CdzEnv>(env: &mut E, n: i64)"),
+        "signature:\n{rs}"
+    );
+    assert!(rs.contains("env.consume(1).await;"), "gas charge:\n{rs}");
+    // The recursive call is boxed-and-awaited, threading `env` first.
+    assert!(
+        rs.contains("Box::pin(sum_to(env,"),
+        "boxed recursive call:\n{rs}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_async_gas_metered() {
+    // The async form compiles and runs under a hand-rolled executor with a real gas Env — same answer as
+    // the sync form (sum_to(5)=15), gas is metered, and an exhausted budget traps.
+    let module = compile_rust_async(
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+    );
+    // A driver: a Meter env (counts gas, panics past budget) + a minimal block_on executor.
+    let driver = r#"
+struct Meter { spent: u64, budget: u64 }
+impl prog::CdzEnv for Meter {
+    async fn consume(&mut self, g: u64) { self.spent += g; if self.spent > self.budget { panic!("oom") } }
+}
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut e = Meter { spent: 0, budget: 10000 };
+    let v = block_on(prog::sum_to(&mut e, 5));
+    let gas = e.spent;
+    let oom = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || block_on(prog::sum_to(&mut Meter { spent: 0, budget: 3 }, 100)),
+    )).is_err();
+    println!("{v} {} {oom}", gas > 0);
+}
+"#;
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        // sum_to(5)=15, gas was metered (>0), and the budget-3 run trapped.
+        assert_eq!(out, "15 true true", "async run:\n{module}");
     }
 }
