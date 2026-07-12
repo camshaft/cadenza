@@ -784,9 +784,12 @@ fn parent_index(ast: &Arenas) -> (Vec<Option<StructId>>, Vec<u32>) {
 /// UNDER-approximate (skipping a real binder would mis-resolve). Kept in lockstep with `binder_in`'s
 /// cases — a new binding form must be added here too. `parent` is the precomputed parent index.
 fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructId) -> bool {
-    // By head: a `let`/`fn`/`def` form.
+    // By head: a `let`/`fn`/`def` form, or a match-arm `(guard <binder> <cond>)` — the guard binds the
+    // pattern's binder in scope for the guard COND (`binder_in`'s Case 5g / `guard_cond_binds`). Without
+    // the guard as a candidate the scope-skip index would hop PAST it and Case 5g would never fire, so a
+    // guard reference to its binder would be spuriously unbound.
     if let Some(h) = ast.head_name(form)
-        && matches!(h, "let" | "fn" | "def")
+        && matches!(h, "let" | "fn" | "def" | "guard")
     {
         return true;
     }
@@ -795,14 +798,14 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
     let Some(p) = parent.get(form.0 as usize).copied().flatten() else {
         return false;
     };
-    if let Some(tail) = ast.as_form(p, "let") {
-        if tail.first().copied() == Some(form) {
-            return true; // the bindings-list
-        }
+    if let Some(tail) = ast.as_form(p, "let")
+        && tail.first().copied() == Some(form)
+    {
+        return true; // the bindings-list
     }
     if let Some(tail) = ast.as_form(p, "match") {
         // tail = [scrutinee, arm…]; `form` is an arm iff it is a tail element other than the scrutinee.
-        if tail.first().copied() != Some(form) && tail.iter().any(|&c| c == form) {
+        if tail.first().copied() != Some(form) && tail.contains(&form) {
             return true;
         }
     }

@@ -64,6 +64,19 @@ pub enum Probe {
     Wild,
 }
 
+/// One arm of a scalar [`Core::Match`]: a [`Probe`], an optional GUARD, and a body. The arm fires when
+/// the scrutinee satisfies `probe` AND (if present) `guard` evaluates to true; otherwise matching falls
+/// through to the next arm. `guard` is a boolean expression occurrence lowered on demand, evaluated with
+/// the arm's binder in scope (a binder pattern binds the scrutinee, resolve Case 5). A guarded arm does
+/// NOT count toward exhaustiveness — its guard may fail — so a guarded wildcard is not a covering tail.
+#[derive(Clone, PartialEq, Debug)]
+pub struct MatchArm {
+    pub probe: Probe,
+    /// The arm's guard condition (a boolean expression occurrence), or `None` for an unguarded arm.
+    pub guard: Option<StructId>,
+    pub body: StructId,
+}
+
 /// One arm of a sum SWITCH (`Core::MatchSum` or a nested [`SumCont::Switch`]): which variant it matches
 /// (by discriminant) and what happens next. A `disc: Some(k)` arm matches when the switched-on
 /// discriminant `== k`; a `disc: None` arm is the DEFAULT (wildcard) tail (always matches). What
@@ -170,17 +183,19 @@ pub enum Core {
         then_: StructId,
         else_: StructId,
     },
-    /// A scalar MATCH over `scrutinee` — arms tried top-to-bottom, each a `(probe, body)`. A `Probe`
-    /// is either a literal to compare the scrutinee against (`== literal`) or the wildcard (always
-    /// matches). Present only when the scrutinee is a RUNTIME scalar (a constant scrutinee folds to the
-    /// selected arm's core in `lower`). The backend emits a chain of `if`s: probe the scrutinee against
-    /// each literal, take that arm's body on a match, else fall through to the next; a wildcard arm is
-    /// the unconditional tail. `scrutinee` and each body are AST `StructId`s (lowered on demand); the
-    /// probe carries the literal as data so no comparison node is synthesized. A binder arm is a `Wild`
-    /// probe (see [`Probe`]); a sum/tuple/record scrutinee walks the value heap rather than probing here.
+    /// A scalar MATCH over `scrutinee` — arms tried top-to-bottom, each a [`MatchArm`] (a probe, an
+    /// optional GUARD, and a body). A `Probe` is either a literal to compare the scrutinee against
+    /// (`== literal`) or the wildcard (always matches); a `guard` is a boolean expression evaluated with
+    /// the arm's binder in scope that must ALSO hold for the arm to fire. Present only when the scrutinee
+    /// is a RUNTIME scalar (a constant scrutinee folds to the selected arm's core in `lower`). The backend
+    /// emits a chain of `if`s: probe the scrutinee against each literal (AND its guard, if any), take that
+    /// arm's body on a match, else fall through to the next; an unguarded wildcard arm is the
+    /// unconditional tail. `scrutinee`, each body, and each guard are AST `StructId`s (lowered on demand);
+    /// the probe carries the literal as data so no comparison node is synthesized. A binder arm is a
+    /// `Wild` probe (see [`Probe`]); a sum/tuple/record scrutinee walks the value heap rather than here.
     Match {
         scrutinee: StructId,
-        arms: Vec<(Probe, StructId)>,
+        arms: Vec<MatchArm>,
     },
     /// An A-normal binding sequence: name each `(binder, value)` — its VALUE computed once — then the
     /// `body` uses each name by a [`Core::LocalRef`]. The `binder` is the initializer's AST `StructId`

@@ -90,9 +90,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         Core::Match { scrutinee, arms } => {
             binding_escapes(db, scrutinee, binder, false)
-                || arms
-                    .iter()
-                    .any(|(_, b)| binding_escapes(db, *b, binder, false))
+                || arms.iter().any(|a| {
+                    a.guard
+                        .is_some_and(|g| binding_escapes(db, g, binder, false))
+                        || binding_escapes(db, a.body, binder, false)
+                })
         }
         Core::Let { bindings, body } => {
             bindings
@@ -263,8 +265,11 @@ pub fn collect_used_ops(
         }
         Core::Match { scrutinee, arms } => {
             collect_used_ops(db, scrutinee, out);
-            for (_, body) in arms {
-                collect_used_ops(db, body, out);
+            for arm in arms {
+                if let Some(g) = arm.guard {
+                    collect_used_ops(db, g, out);
+                }
+                collect_used_ops(db, arm.body, out);
             }
         }
         Core::Let { bindings, body } => {
@@ -552,10 +557,11 @@ fn body_has_self_tail_call(db: &mut Db, id: StructId, self_def: usize) -> bool {
             !any_drop && body_has_self_tail_call(db, body, self_def)
         }
         // A `match`'s arm bodies are tail positions (the probe chain threads the loop context into each),
-        // so a self-tail-call in any arm makes the function loopable.
+        // so a self-tail-call in any arm makes the function loopable. (A guard is NOT a tail position — it
+        // is a predicate evaluated before the body, so it is not considered here.)
         Core::Match { arms, .. } => arms
             .iter()
-            .any(|(_, body)| body_has_self_tail_call(db, *body, self_def)),
+            .any(|a| body_has_self_tail_call(db, a.body, self_def)),
         _ => false,
     }
 }
@@ -1349,7 +1355,7 @@ fn emit(
 fn emit_match_arms(
     db: &mut Db,
     scrutinee: StructId,
-    arms: &[(crate::core::Probe, StructId)],
+    arms: &[crate::core::MatchArm],
     it: IntTy,
     result_it: Option<IntTy>,
     block_ty: BlockType,
@@ -1385,7 +1391,7 @@ fn emit_match_arms(
 fn emit_match_arms_tailable(
     db: &mut Db,
     scrutinee: StructId,
-    arms: &[(crate::core::Probe, StructId)],
+    arms: &[crate::core::MatchArm],
     it: IntTy,
     result_it: Option<IntTy>,
     block_ty: BlockType,
@@ -1486,7 +1492,7 @@ fn reusable_scalar_src(
 fn emit_probe_chain(
     db: &mut Db,
     src: OperandSrc,
-    arms: &[(crate::core::Probe, StructId)],
+    arms: &[crate::core::MatchArm],
     it: IntTy,
     result_it: Option<IntTy>,
     block_ty: BlockType,
@@ -1498,83 +1504,150 @@ fn emit_probe_chain(
     out: &mut Vec<Lir>,
     tail: TailPos,
 ) -> Result<(), Reject> {
-    // Emit an arm body at [`TailPos`] `tp`. Every arm produces the match's RESULT type, so a bare-LITERAL
-    // arm body must be grounded to the result's integer width (`result_it`) — otherwise a default-Int64
-    // literal arm beside a narrow-width arm pushes a mismatched machine slot and wasm rejects the block
-    // (the same width-reconciliation `emit_operand` does for a binary op's literal operand). A tail arm
-    // goes through `emit_tail` (a `ConstInt` is never a tail call, so grounding is unaffected by
-    // tail-ness); `tp` carries the self-loop context so a SELF tail-call in the arm iterates the loop.
-    let emit_body = |db: &mut Db,
-                     body: StructId,
-                     base: u32,
-                     high: &mut u32,
-                     scratch_ty: &mut HashMap<u32, ValType>,
-                     out: &mut Vec<Lir>,
-                     tp: TailPos|
-     -> Result<(), Reject> {
-        if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
-            return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
-        }
-        match tp {
-            TailPos::Tail(tl) => {
-                emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl)
-            }
-            TailPos::NonTail => emit(db, body, slots, base, high, scratch_ty, layout, out),
-        }
+    // An arm body is emitted via `emit_arm_body` (grounds a bare-`ConstInt` body to the match's result
+    // width, threads the tail context). The chain dispatches per arm below.
+    let Some((arm, rest)) = arms.split_first() else {
+        // No arm matched and no wildcard — `lower` forbids this for a runtime match, so it is a
+        // compiler bug if reached. Decline rather than emit an undefined fallthrough.
+        return Err(Reject::decline(
+            "match ran off the end with no wildcard arm",
+        ));
     };
-    match arms.split_first() {
-        None => {
-            // No arm matched and no wildcard — `lower` forbids this for a runtime match, so it is a
-            // compiler bug if reached. Decline rather than emit an undefined fallthrough.
-            Err(Reject::decline(
-                "match ran off the end with no wildcard arm",
-            ))
-        }
-        Some(((crate::core::Probe::Wild, body), _rest)) => {
-            // The wildcard is the unconditional tail — its body is the value, no probe, at THIS nesting
-            // (no new `if`). (Any arms after a wildcard are unreachable; `lower` keeps them but they
-            // never emit.)
-            emit_body(db, *body, base, high, scratch_ty, out, tail)
-        }
-        Some(((_probe, body), [])) => {
-            // The LAST arm of a wildcard-less match — its probe is redundant: `lower` admitted this
-            // match only if it is exhaustive (a wildcard tail, or a Bool scrutinee whose `true`+`false`
-            // arms cover the type), so once every earlier probe has failed this arm's value is the ONLY
-            // remaining one. Emit its body unconditionally at THIS nesting, exactly like a wildcard tail.
-            emit_body(db, *body, base, high, scratch_ty, out, tail)
-        }
-        Some(((probe, body), rest)) => {
-            // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`. The
-            // scrutinee is pushed from its resolved SOURCE (a local read or an inline constant) — never
-            // recomputed, even when it was a computation (evaluated once in `emit_match_arms_tailable`).
-            src.push(out);
-            match probe {
-                crate::core::Probe::Int(v) => {
-                    let m = Machine::of(it);
-                    out.push(m.konst(v.to_i64_bits()));
-                    out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
-                }
-                crate::core::Probe::Bool(b) => {
-                    out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
-                    out.push(Lir::I32Eq);
-                }
-                crate::core::Probe::Wild => unreachable!("wildcard handled above"),
+    // An UNGUARDED arm whose probe always matches — a wildcard, or the LAST arm of an exhaustive
+    // wildcard-less match (its probe redundant since every earlier probe failed) — is the unconditional
+    // tail: emit its body at THIS nesting, no `if`. A GUARDED arm is NEVER an unconditional tail (its
+    // guard may fail), so it always emits a test; `lower`'s exhaustiveness guarantees a later UNGUARDED
+    // cover, so the chain still terminates.
+    let probe_redundant = matches!(arm.probe, crate::core::Probe::Wild) || rest.is_empty();
+    if arm.guard.is_none() && probe_redundant {
+        return emit_arm_body(
+            db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, tail,
+        );
+    }
+    // The matched body AND the `else` recursion are both INSIDE this `if` block — so a self-loop `br`
+    // from either must jump one MORE level out to reach the loop top (depth + 1).
+    let inner = deeper_tail(tail);
+    // The arm's TEST: `probe` (scrutinee == literal), AND its `guard` when present. A `Wild` probe has no
+    // literal test — the guard alone gates it. To preserve short-circuit trap semantics (the guard is
+    // evaluated only when the probe matched — a guard MAY contain a trapping op), a literal-probe-plus-
+    // guard nests the guard inside the probe's `if`; the two else-arms both fall through to `rest`.
+    let has_literal_probe = !matches!(arm.probe, crate::core::Probe::Wild);
+    if has_literal_probe {
+        // `if (scrutinee == literal) <guard-gated body> else <rest>`.
+        src.push(out);
+        match &arm.probe {
+            crate::core::Probe::Int(v) => {
+                let m = Machine::of(it);
+                out.push(m.konst(v.to_i64_bits()));
+                out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
             }
+            crate::core::Probe::Bool(b) => {
+                out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
+                out.push(Lir::I32Eq);
+            }
+            crate::core::Probe::Wild => unreachable!("has_literal_probe"),
+        }
+        out.push(Lir::If(block_ty));
+        emit_arm_guarded_body(
+            db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out, inner,
+        )?;
+        out.push(Lir::Else);
+        emit_probe_chain(
+            db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            inner,
+        )?;
+        out.push(Lir::End);
+        Ok(())
+    } else {
+        // A `Wild` probe with a guard: the guard alone gates the arm — `if guard body else rest`.
+        emit_arm_guarded_body(
+            db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out, inner,
+        )
+    }
+}
+
+/// A [`TailPos`] one `if` block deeper — a self-loop `br` from inside a fresh `if` targets one level
+/// further out. Shared by the probe chain and the guarded-body emit (each opens an `if`).
+fn deeper_tail(tail: TailPos) -> TailPos {
+    match tail {
+        TailPos::Tail(tl) => TailPos::Tail(tl.map(|t| TailLoop {
+            depth: t.depth + 1,
+            ..t
+        })),
+        TailPos::NonTail => TailPos::NonTail,
+    }
+}
+
+/// Emit a match-arm BODY at [`TailPos`] `tp`. Every arm produces the match's RESULT type, so a bare
+/// `ConstInt` body is grounded to the result's integer width (`result_it`) — else a default-Int64 literal
+/// arm beside a narrow arm pushes a mismatched slot and wasm rejects the block. A tail body goes through
+/// `emit_tail` (a `ConstInt` is never a tail call); `tp` carries the self-loop context.
+#[allow(clippy::too_many_arguments)]
+fn emit_arm_body(
+    db: &mut Db,
+    body: StructId,
+    result_it: Option<IntTy>,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+    tp: TailPos,
+) -> Result<(), Reject> {
+    if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
+        return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
+    }
+    match tp {
+        TailPos::Tail(tl) => emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl),
+        TailPos::NonTail => emit(db, body, slots, base, high, scratch_ty, layout, out),
+    }
+}
+
+/// Emit a GUARDED arm's body gated on its guard (the caller has already established that the arm's
+/// PROBE matched — for a literal probe, inside its `if`; for a `Wild` probe, unconditionally). Emits
+/// `if guard body else <rest>` — a false guard falls through to the remaining arms, exactly as a
+/// non-matching pattern does (`core-semantics.md` §Matching Is Exhaustive Or Rejected). An UNGUARDED arm
+/// (reached only via a literal probe whose guard is `None`) emits its body directly. The guard is a
+/// boolean value (an i32); it is emitted at `base` (a fresh scratch region, its result consumed by the
+/// `if`).
+#[allow(clippy::too_many_arguments)]
+fn emit_arm_guarded_body(
+    db: &mut Db,
+    arm: &crate::core::MatchArm,
+    src: OperandSrc,
+    rest: &[crate::core::MatchArm],
+    it: IntTy,
+    result_it: Option<IntTy>,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+    inner: TailPos,
+) -> Result<(), Reject> {
+    match arm.guard {
+        None => emit_arm_body(
+            db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, inner,
+        ),
+        Some(g) => {
+            // `if guard body else <rest>`. The guard is a plain boolean value (never a tail call), so it
+            // is emitted with `emit` at `base`; its result is the `if` condition.
+            emit(db, g, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::If(block_ty));
-            // The matched body AND the `else` recursion are both INSIDE this `if` block — so a self-loop
-            // `br` from either must jump one MORE level out to reach the loop top (depth + 1).
-            let inner = match tail {
-                TailPos::Tail(tl) => TailPos::Tail(tl.map(|t| TailLoop {
-                    depth: t.depth + 1,
-                    ..t
-                })),
-                TailPos::NonTail => TailPos::NonTail,
-            };
-            emit_body(db, *body, base, high, scratch_ty, out, inner)?;
+            // Both the body and the fallthrough are one `if` deeper than this arm's nesting.
+            let deeper = deeper_tail(inner);
+            emit_arm_body(
+                db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, deeper,
+            )?;
             out.push(Lir::Else);
             emit_probe_chain(
                 db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-                inner,
+                deeper,
             )?;
             out.push(Lir::End);
             Ok(())

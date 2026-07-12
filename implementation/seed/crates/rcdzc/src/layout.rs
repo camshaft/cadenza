@@ -234,8 +234,11 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         crate::core::Core::Match { scrutinee, arms } => {
             collect_call_callees(db, scrutinee, out);
-            for (_, body) in arms {
-                collect_call_callees(db, body, out);
+            for arm in arms {
+                if let Some(g) = arm.guard {
+                    collect_call_callees(db, g, out);
+                }
+                collect_call_callees(db, arm.body, out);
             }
         }
         crate::core::Core::Record { fields } => {

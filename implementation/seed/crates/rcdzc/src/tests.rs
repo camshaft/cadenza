@@ -2882,6 +2882,79 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guarded_arm_over_a_constant_folds_by_its_guard() {
+        // A guarded arm `(guard x (< x 0))` over a CONSTANT scrutinee folds: the binder `x` binds the
+        // constant, the guard folds, and the arm is selected iff both the (Wild) probe and the guard hold.
+        // `(match -5 ((guard x (< x 0)) -1) (_ 1))` → -1 (guard holds); `(match 5 …)` → 1 (guard fails).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match (- 0 5) ((guard x (< x 0)) (- 0 1)) (_ 1))) (export main))"
+                ),
+                "main"
+            ),
+            -1
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match 5 ((guard x (< x 0)) (- 0 1)) (_ 1))) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_guarded_arm_over_a_runtime_scrutinee_gates_and_falls_through() {
+        // A guarded arm over a RUNTIME scrutinee (an exported param, so no fold): `(classify n)` returns
+        // -1 when n<0, else n's own value via a later guard, else 0. Exercises the runtime probe chain's
+        // guard test + fall-through: classify(-5) = -1 (first guard holds); classify(7) = 7 (first guard
+        // fails → falls to the second, which holds); classify(0) via the unguarded wildcard tail = 0 (both
+        // guards fail). The guard reads the binder (the scrutinee). A scalar Int64 export needs no runtime.
+        let src = "(module m \
+                     (def (classify (: n Int64)) \
+                        (match n \
+                          ((guard x (< x 0)) (- 0 1)) \
+                          ((guard x (> x 0)) x) \
+                          (_ 0))) \
+                     (export classify))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile guards");
+        for (arg, want) in [("-5", "-1"), ("7", "7"), ("0", "0")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("classify".to_string()),
+                args: vec![arg.to_string()],
+                runtime: None,
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("guarded runtime match trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_match_whose_only_arm_is_guarded_is_non_exhaustive() {
+        // A guard does NOT count toward exhaustiveness: a match on Int64 whose sole arm is guarded covers
+        // no value unconditionally, so it is CDZ0210 (core-semantics.md #Matching Is Exhaustive Or
+        // Rejected). Pins that guarded arms are excluded from the coverage check.
+        assert_eq!(
+            reject_code("(module m (def (main) (match 5 ((guard x (< x 0)) 1))) (export main))")
+                .as_deref(),
+            Some("CDZ0210")
+        );
+        // The gate wraps a bare-expression case as `(do (def (main) …) (export main))` — the same
+        // program shape must reject identically (the `(do …)` top-form is scanned like `(module …)`).
+        assert_eq!(
+            reject_code("(do (def (main) (match 5 ((guard x (< x 0)) 1))) (export main))")
+                .as_deref(),
+            Some("CDZ0210")
+        );
+    }
+
+    #[test]
     fn a_computed_constant_scrutinee_folds_by_value() {
         // The scrutinee `(% 4 2)` folds to 0 (empty-magnitude IntValue) — it must match the literal `0`
         // pattern (`[0]` magnitude) BY VALUE, selecting arm 0. Pins the `IntValue::eq_value` fix (a
@@ -4618,7 +4691,9 @@ mod stage1 {
                     "(Option (Option Int64))",
                     "nested generic sum resolves through the direct (round-trip-free) path"
                 );
-                let Ty::Sum { args, .. } = &t else { unreachable!() };
+                let Ty::Sum { args, .. } = &t else {
+                    unreachable!()
+                };
                 assert!(
                     matches!(&args[0], Ty::Sum { .. }),
                     "the outer arg is itself a Ty::Sum"

@@ -453,12 +453,25 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     if let crate::ty::Ty::Sum { .. } = crate::infer::type_of(db, scrutinee) {
         return lower_match_sum(db, scrutinee, arms);
     }
-    // Classify each arm's pattern into a probe + keep its body. A pattern that is not a scalar literal,
-    // binder, or wildcard declines the whole match (a compound pattern needs a heap walk).
-    let mut probes: Vec<(crate::core::Probe, StructId)> = Vec::new();
+    // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
+    // `(guard <inner-pat> <cond>)` — the inner pattern gives the probe, `<cond>` the guard (a boolean the
+    // arm's binder is in scope for, resolve Case 5). A pattern that is not a scalar literal, binder,
+    // wildcard, or such a guarded pattern declines the whole match (a compound needs a heap walk).
+    let mut probes: Vec<(crate::core::Probe, Option<StructId>, StructId)> = Vec::new();
     for &(pat, body) in arms {
-        match classify_probe(db, pat) {
-            Some(p) => probes.push((p, body)),
+        let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+            // `(guard <inner-pat> <cond>)` — a guarded pattern.
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            Some(_) => {
+                return Core::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
+            }
+            None => (pat, None),
+        };
+        match classify_probe(db, inner_pat) {
+            Some(p) => probes.push((p, guard, body)),
             None => {
                 return Core::Poison(Reject::decline(
                     "a match pattern that is not a scalar literal or `_` is not yet supported",
@@ -472,7 +485,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     let scrut_ty = crate::infer::type_of(db, scrutinee);
     //  (1) each LITERAL pattern's type must agree with the scrutinee's — a bool pattern against an
     //      integer scrutinee (or vice-versa) is a shape/type error (CDZ0201), not a never-matching arm.
-    for (probe, _) in &probes {
+    for (probe, _, _) in &probes {
         let pat_ty = match probe {
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
@@ -497,19 +510,22 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     //      covered by BOTH a `true` arm and a `false` arm needs no wildcard (the two values are the
     //      whole type — `core-semantics.md` §Matching Is Exhaustive Or Rejected). This holds EVEN when
     //      the scrutinee is a constant that hits an arm — well-formedness is independent of the value.
+    //      A GUARDED arm does NOT count toward exhaustiveness — its guard may be false, so it covers no
+    //      value unconditionally (`core-semantics.md` §Matching Is Exhaustive Or Rejected: "A guard does
+    //      NOT count toward exhaustiveness"). So only UNGUARDED arms contribute coverage below.
     let has_wild = probes
         .iter()
-        .any(|(p, _)| matches!(p, crate::core::Probe::Wild));
+        .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Wild));
     // A Bool scrutinee's two literals exhaust it. (A definitely-Bool or still-open `Any` scrutinee whose
     // arms are Bool literals — a bare parameter matched with `true`/`false` — is matching over Bool; a
     // definitely-Int scrutinee with a Bool probe already faulted in step (1) and never reaches here.)
     let bool_exhaustive = scrut_ty.agrees_with(&crate::ty::Ty::Bool)
         && probes
             .iter()
-            .any(|(p, _)| matches!(p, crate::core::Probe::Bool(true)))
+            .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Bool(true)))
         && probes
             .iter()
-            .any(|(p, _)| matches!(p, crate::core::Probe::Bool(false)));
+            .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Bool(false)));
     if !has_wild && !bool_exhaustive {
         return Core::Poison(Reject::coded(
             Code::NonExhaustive,
@@ -518,33 +534,58 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 
     // Well-formed. FOLD if the scrutinee is a compile-time constant: select the first arm whose probe
-    // it satisfies and lower THAT body (no runtime match, like the const `if` fold).
-    match core_of(db, scrutinee) {
-        Core::ConstInt(v) => {
-            for (probe, body) in &probes {
-                if probe_matches_int(probe, &v) {
-                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant Int scrutinee)");
+    // it satisfies AND whose guard (if any) folds to `true` (no runtime match, like the const `if` fold).
+    // A guard is folded via `core_of` — the arm's binder resolves to the constant scrutinee (Case 5), so
+    // `(< x 0)` over a constant `x` folds to a `ConstBool`. If a matched arm's guard does NOT fold to a
+    // constant bool (its guard reads a runtime value), the fold ABORTS to the runtime probe chain (we
+    // cannot decide the arm at compile time). A guard that folds `false` skips the arm to the next.
+    let scrut_core = core_of(db, scrutinee);
+    if let Core::Poison(r) = scrut_core {
+        return Core::Poison(r);
+    }
+    let const_scrut = match &scrut_core {
+        Core::ConstInt(v) => Some(GuardFoldScrut::Int(v.clone())),
+        Core::ConstBool(b) => Some(GuardFoldScrut::Bool(*b)),
+        _ => None,
+    };
+    if let Some(sc) = const_scrut {
+        let mut foldable = true;
+        for (probe, guard, body) in &probes {
+            let probe_hit = match &sc {
+                GuardFoldScrut::Int(v) => probe_matches_int(probe, v),
+                GuardFoldScrut::Bool(b) => probe_matches_bool(probe, *b),
+            };
+            if !probe_hit {
+                continue; // this arm's pattern doesn't match the constant — try the next
+            }
+            match guard {
+                None => {
+                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant scrutinee)");
                     return core_of(db, *body);
                 }
+                Some(g) => match core_of(db, *g) {
+                    Core::ConstBool(true) => {
+                        trace!(target: "rcdzc::fold", "match folds to a guarded arm (guard holds over a constant)");
+                        return core_of(db, *body);
+                    }
+                    Core::ConstBool(false) => continue, // guard fails → fall through to the next arm
+                    _ => {
+                        // The guard did not fold to a constant bool (it reads a runtime value). We cannot
+                        // decide this arm at compile time even though the scrutinee is constant → abort
+                        // the fold and emit the runtime probe chain below.
+                        foldable = false;
+                        break;
+                    }
+                },
             }
-            // Unreachable: a wildcard is present (checked above), so some arm always matches.
+        }
+        if foldable {
+            // Every matched arm's guard folded false and no unguarded arm covered — unreachable, because
+            // exhaustiveness requires an unguarded wildcard/literal cover (checked above).
             return Core::Poison(Reject::decline(
                 "match: no arm matched a constant (unreachable)",
             ));
         }
-        Core::ConstBool(b) => {
-            for (probe, body) in &probes {
-                if probe_matches_bool(probe, b) {
-                    trace!(target: "rcdzc::fold", "match folds to a selected arm (constant Bool scrutinee)");
-                    return core_of(db, *body);
-                }
-            }
-            return Core::Poison(Reject::decline(
-                "match: no arm matched a constant (unreachable)",
-            ));
-        }
-        Core::Poison(r) => return Core::Poison(r),
-        _ => {}
     }
     // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
     if !is_scalar(db, scrutinee) {
@@ -555,8 +596,17 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = probes.len(), "match stays runtime (scalar scrutinee → probe chain)");
     Core::Match {
         scrutinee,
-        arms: probes,
+        arms: probes
+            .into_iter()
+            .map(|(probe, guard, body)| crate::core::MatchArm { probe, guard, body })
+            .collect(),
     }
+}
+
+/// A constant scrutinee value for the guarded-match fold — an integer or a boolean.
+enum GuardFoldScrut {
+    Int(IntValue),
+    Bool(bool),
 }
 
 /// Walk a constant-value path from `root` down `steps`, returning the leaf's core if EVERY step lands

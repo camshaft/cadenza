@@ -435,6 +435,13 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(scrutinee) = match_arm_binds(db, form, from, name) {
         return Some(Resolved::Ref { value: scrutinee });
     }
+    // Case 5g: `form` is a GUARD `(guard <binder> <cond>)`, ascended from `<cond>` → the binder is in
+    // scope in the guard (the guard `x < 0` reads the pattern's binder `x`). A guard reference ascends
+    // into the guard form BEFORE reaching the arm, so it is caught here rather than at the arm (where
+    // `from` would be the whole `(guard …)` pattern, not the cond). Binds the scrutinee, like Case 5.
+    if let Some(scrutinee) = guard_cond_binds(db, form, from, name) {
+        return Some(Resolved::Ref { value: scrutinee });
+    }
     // Case 6: `form` is a MATCH ARM whose pattern binds `name` at a variant PAYLOAD, possibly NESTED —
     // `((. Sum V) binder)` (path `[Payload]`) or `(Some (Some binder))` (path `[Payload, Payload]`). The
     // binder binds the sub-value at that path (not the whole scrutinee, unlike Case 5). It resolves to a
@@ -450,23 +457,68 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     None
 }
 
+/// If `form` is a guard `(guard <binder> <cond>)` ascended from its `<cond>`, and `<binder>` is a bare
+/// binder name equal to `name`, and the guard is the pattern of an enclosing match arm, the match's
+/// SCRUTINEE occurrence — the value the binder binds (a guard reads the pattern's binder). `None`
+/// otherwise. Complements `match_arm_binds`: a reference in the guard cond ascends into the `(guard …)`
+/// form (this case) before it would reach the arm.
+fn guard_cond_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
+    // `form` must be `(guard <binder> <cond>)`, ascended from the cond (the third element).
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    // The binder must be a bare name matching `name` (not the wildcard `_`).
+    let pat_name = db.ast.as_name(g[0])?;
+    if pat_name != name || pat_name == "_" {
+        return None;
+    }
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    Some(scrutinee)
+}
+
 /// If `form` is a match ARM `(pattern body)` whose parent is a `(match scrutinee arm…)`, ascended from
-/// the arm's `body`, and `pattern` is a bare BINDER name equal to `name` (not a literal, not the
-/// wildcard `_`), the enclosing match's SCRUTINEE occurrence — the value the binder binds. `None`
-/// otherwise. A binder pattern binds the whole scrutinee for its arm's body; the value is the
-/// scrutinee, so a reference resolves straight to it.
+/// the arm's `body` (or, for a GUARDED arm, its guard cond), and `pattern` is a bare BINDER name equal to
+/// `name` (not a literal, not the wildcard `_`), the enclosing match's SCRUTINEE occurrence — the value
+/// the binder binds. `None` otherwise. A binder pattern binds the whole scrutinee for its arm's body AND
+/// its guard (the guard `x < 0` in `x if x < 0` reads the binder), so a reference in either resolves
+/// straight to the scrutinee. The pattern may itself be a guarded pattern `(guard <binder> <cond>)` — the
+/// binder is `<binder>`; the guard cond `<cond>` is where a guard reference is ascended from.
 fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
-    // `form` must be a 2-element `(pattern body)` list we ascended from its BODY (second element).
+    // `form` must be a 2-element `(pattern body)` list.
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
-    if pb.len() != 2 || pb[1] != from {
+    if pb.len() != 2 {
         return None;
     }
-    let pattern = pb[0];
-    // The pattern must be a bare binder name — matching `name`, and NOT a literal or the wildcard `_`
-    // (those bind nothing). A binder is a plain `Name` other than `_`.
-    let pat_name = db.ast.as_name(pattern)?;
+    let (pattern, body) = (pb[0], pb[1]);
+    // The BINDER-carrying pattern: a bare name directly, or `(guard <binder> <cond>)` where `<binder>` is
+    // the pattern. We ascended into this arm from either the BODY or (for a guarded arm) the guard COND;
+    // in both positions the binder is in scope.
+    let (binder_pat, guard_cond) = match db.ast.as_form(pattern, "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pattern, None),
+    };
+    // `from` must be the body, or the guard cond (a reference under the guard binds the same scrutinee).
+    if from != body && Some(from) != guard_cond {
+        return None;
+    }
+    // The binder must be a bare name — matching `name`, NOT a literal or the wildcard `_`.
+    let pat_name = db.ast.as_name(binder_pat)?;
     if pat_name != name || pat_name == "_" {
         return None;
     }

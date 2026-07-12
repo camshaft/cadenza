@@ -35,6 +35,7 @@ pass	a constant tuple is returned as a program result
 pass	a correctly-annotated function parameter is accepted
 pass	a decimal integer literal
 pass	a deeply nested constant expression compiles or declines without crashing
+pass	a failing guard falls through to a later arm
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
 pass	a field is projected from a record returned across a call boundary
 pass	a field is projected from a record returned by a function
@@ -51,6 +52,8 @@ pass	a function returning a boolean predicate result
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a guard sees the names its pattern binds and arms are tried in order
+pass	a guarded arm is selected when its guard holds
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
 pass	a helper sums two fields of a record parameter
@@ -353,7 +356,6 @@ todo	a division whose divisor folds to zero still traps
 todo	a duplicate export clause for the same name is rejected
 todo	a duplicate export of the entry is rejected
 todo	a factorial that overflows the integer type traps through the recursion
-todo	a failing guard falls through to a later arm
 todo	a field is projected off a record unwrapped from a result with expect
 todo	a field is projected off a record unwrapped from an optional with expect
 todo	a final bytes segment binds the remainder after the sized segments
@@ -373,8 +375,6 @@ todo	a function whose body always diverges has result type Never
 todo	a function-typed parameter annotation is not silently discarded in the body
 todo	a function-typed parameter annotation's result type is checked against the argument
 todo	a generic unwrap helper consumes a fallible Bytes.at result
-todo	a guard sees the names its pattern binds and arms are tried in order
-todo	a guarded arm is selected when its guard holds
 todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a handler arm for an operation the effect does not declare is rejected
 todo	a handler folds a counter across the operations it discharges
