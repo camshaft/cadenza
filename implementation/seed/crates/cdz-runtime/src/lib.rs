@@ -2200,41 +2200,45 @@ fn champ_hash(root: Handle) -> u32 {
 /// and one non-null differ.
 ///
 /// ITERATIVE via an explicit pair worklist; identical pointers (structural sharing) short-circuit.
+/// The worklist is LAZILY allocated — the root pair is processed directly, and the `Vec` is created
+/// only when a COMPOUND node actually needs its children pushed. The dominant map/set case (scalar or
+/// immediate keys, arity 0) therefore allocates NOTHING (this is on the hot `op_map_lookup` /
+/// `set-contains` / insert-overwrite-probe path, once per hash-collision key comparison).
 #[allow(dead_code)]
 fn champ_eq(a: Handle, b: Handle) -> bool {
-    let mut work: Vec<(Handle, Handle)> = vec![(a, b)];
-    while let Some((x, y)) = work.pop() {
+    let mut work: Option<Vec<(Handle, Handle)>> = None;
+    let mut pair = Some((a, b));
+    while let Some((x, y)) = pair {
+        // Process (x, y); `descend` is set to the children to push when both are equal compounds.
+        let mut descend: Option<(&Node, &Node)> = None;
         if x == y {
-            continue; // same pointer (incl. both NULL) ⇒ identical subtree, no descent needed
-        }
-        // If either side is an immediate, its `.0` is NOT a Node pointer — compare by decoded value
-        // (bit-equal was already caught by `x == y`). An immediate has arity 0, so equality reduces
-        // to equal canonical raw bytes and equal (0) arity, which `node_raw_arity` supplies for a
-        // boxed twin too (open-Q#8).
-        if is_immediate(x) || is_immediate(y) {
-            // Compare canonical (raw, arity) WITHOUT allocating a Vec per side (the hot map/set
-            // slot-hit path: small-int/bool keys are always immediates). `with_raw_arity` lends the
-            // bytes; an immediate has arity 0 so equality reduces to equal bytes and equal arity.
-            let equal = with_raw_arity(x, |rx, ax| {
-                with_raw_arity(y, |ry, ay| rx == ry && ax == ay)
-            });
+            // same pointer (incl. both NULL) ⇒ identical subtree, no descent needed
+        } else if is_immediate(x) || is_immediate(y) {
+            // An immediate's `.0` is NOT a Node pointer — compare by decoded value (arity 0, so
+            // equality reduces to equal canonical raw bytes and equal arity), WITHOUT allocating.
+            let equal = with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx == ry && ax == ay));
             if !equal {
                 return false;
             }
-            continue; // arity 0 for an immediate ⇒ no children to descend
-        }
-        match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
-            (None, None) => continue,
-            (Some(nx), Some(ny)) => {
-                if nx.raw != ny.raw || nx.handles.len() != ny.handles.len() {
-                    return false;
+        } else {
+            match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
+                (None, None) => {}
+                (Some(nx), Some(ny)) => {
+                    if nx.raw != ny.raw || nx.handles.len() != ny.handles.len() {
+                        return false;
+                    }
+                    descend = Some((nx, ny)); // equal compound roots — push children below
                 }
-                for i in 0..nx.handles.len() {
-                    work.push((nx.handles[i], ny.handles[i]));
-                }
+                _ => return false, // exactly one null ⇒ differ
             }
-            _ => return false, // exactly one null ⇒ differ
         }
+        if let Some((nx, ny)) = descend {
+            let w = work.get_or_insert_with(Vec::new);
+            for i in 0..nx.handles.len() {
+                w.push((nx.handles[i], ny.handles[i]));
+            }
+        }
+        pair = work.as_mut().and_then(Vec::pop);
     }
     true
 }
@@ -2248,48 +2252,52 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
 /// "no structural difference anywhere"). ITERATIVE via an explicit stack — a DFS pre-order with
 /// children pushed reversed so index 0 is compared (and fully descended) before index 1, which makes
 /// the first difference found the lexicographically-first one. No unbounded recursion (wasm-safe).
+/// The worklist is LAZILY allocated (see `champ_eq`): the root pair is processed directly and the
+/// `Vec` is created only when a compound needs children pushed, so ordering two scalar/immediate keys
+/// (the common collision-canonicalization case) allocates nothing.
 #[allow(dead_code)]
 fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
     use core::cmp::Ordering;
-    let mut work: Vec<(Handle, Handle)> = vec![(a, b)];
-    while let Some((x, y)) = work.pop() {
+    let mut work: Option<Vec<(Handle, Handle)>> = None;
+    let mut pair = Some((a, b));
+    while let Some((x, y)) = pair {
+        let mut descend: Option<(&Node, &Node)> = None;
         if x == y {
-            continue; // same pointer (incl. both NULL) ⇒ identical so far
-        }
-        // If either side is an immediate, its `.0` is NOT a Node pointer. Order by decoded canonical
-        // bytes then arity (0 for an immediate) — the SAME (raw, arity) `champ_eq` compares, so the
-        // two stay consistent (`cmp == Equal` iff `champ_eq`). No children to descend past an immediate.
-        if is_immediate(x) || is_immediate(y) {
-            // Order by canonical (raw bytes, arity) WITHOUT allocating a Vec per side — the SAME
-            // ordering `node_raw_arity` gave (slice `cmp` is byte-lexicographic like `Vec` `cmp`),
-            // so consistency with `champ_eq` is preserved. An immediate has arity 0, no children.
-            let ord = with_raw_arity(x, |rx, ax| {
-                with_raw_arity(y, |ry, ay| rx.cmp(ry).then(ax.cmp(&ay)))
-            });
-            match ord {
-                Ordering::Equal => continue,
-                ord => return ord,
+            // same pointer (incl. both NULL) ⇒ identical so far
+        } else if is_immediate(x) || is_immediate(y) {
+            // Order by canonical (raw bytes, arity) WITHOUT allocating — the SAME (raw, arity) ordering
+            // `champ_eq` compares (slice `cmp` is byte-lexicographic like `Vec` `cmp`), keeping the two
+            // consistent (`cmp == Equal` iff `champ_eq`). An immediate has arity 0, no children.
+            let ord = with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx.cmp(ry).then(ax.cmp(&ay))));
+            if ord != Ordering::Equal {
+                return ord;
             }
-        }
-        match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
-            (None, None) => continue,           // both null (unreachable given x==y, but total)
-            (None, Some(_)) => return Ordering::Less, // null orders before non-null
-            (Some(_), None) => return Ordering::Greater,
-            (Some(nx), Some(ny)) => {
-                match nx.raw.cmp(&ny.raw) {
-                    Ordering::Equal => {}
-                    ord => return ord, // raw bytes lexicographically
-                }
-                match nx.handles.len().cmp(&ny.handles.len()) {
-                    Ordering::Equal => {}
-                    ord => return ord, // then arity
-                }
-                // Equal so far: descend children in index order (push reversed for LIFO).
-                for i in (0..nx.handles.len()).rev() {
-                    work.push((nx.handles[i], ny.handles[i]));
+        } else {
+            match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
+                (None, None) => {}                        // both null (unreachable given x==y, but total)
+                (None, Some(_)) => return Ordering::Less, // null orders before non-null
+                (Some(_), None) => return Ordering::Greater,
+                (Some(nx), Some(ny)) => {
+                    match nx.raw.cmp(&ny.raw) {
+                        Ordering::Equal => {}
+                        ord => return ord, // raw bytes lexicographically
+                    }
+                    match nx.handles.len().cmp(&ny.handles.len()) {
+                        Ordering::Equal => {}
+                        ord => return ord, // then arity
+                    }
+                    descend = Some((nx, ny)); // equal so far — descend children
                 }
             }
         }
+        if let Some((nx, ny)) = descend {
+            // Descend children in index order: push reversed so index 0 pops (and fully descends) first.
+            let w = work.get_or_insert_with(Vec::new);
+            for i in (0..nx.handles.len()).rev() {
+                w.push((nx.handles[i], ny.handles[i]));
+            }
+        }
+        pair = work.as_mut().and_then(Vec::pop);
     }
     Ordering::Equal
 }
@@ -3819,9 +3827,10 @@ mod tests {
     /// including transient Vecs freed immediately, which the `live-objects` node counter does NOT see —
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
-    /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor work
-    /// (insert 3907, remove 2953, iterate 2248, push 197, get 0); they are UPPER BOUNDS so ordinary
-    /// noise never trips them but a regression toward the old 6779/8397/5248 does.
+    /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
+    /// champ_eq/cmp worklist work (insert 3589, remove 1953, iterate 2248, push 197, get 0, lookup 0);
+    /// they are UPPER BOUNDS so ordinary noise never trips them but a regression toward the old
+    /// 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -3848,7 +3857,7 @@ mod tests {
             }
         });
         println!("ALLOC map_insert x{N}: {insert}");
-        assert!(insert <= 5000, "unique map_insert x{N} allocs {insert} exceeds ceiling 5000 (was 6779 before champ_become_hdr + in-place slot)");
+        assert!(insert <= 4200, "unique map_insert x{N} allocs {insert} exceeds ceiling 4200 (6779 → 3907 champ_become_hdr+in-place → ~3589 lazy champ_eq worklist)");
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
@@ -3875,7 +3884,7 @@ mod tests {
             }
         });
         println!("ALLOC map_remove x{N}: {remove}");
-        assert!(remove <= 3500, "unique map_remove x{N} allocs {remove} exceeds ceiling 3500 (was 8397, then 5207 after champ_become_hdr, now ~2953 after allocation-lazy champ_remove_fbip)");
+        assert!(remove <= 2400, "unique map_remove x{N} allocs {remove} exceeds ceiling 2400 (8397 → 5207 champ_become_hdr → 2953 lazy-remove → ~1953 lazy champ_eq worklist)");
         op_drop(m2);
 
         // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
@@ -3896,6 +3905,24 @@ mod tests {
         println!("ALLOC vec_get x{N}: {get}");
         assert_eq!(get, 0, "vec_get is a pure read — zero allocations");
         op_drop(v);
+
+        // (F) map lookup — a pure read on scalar keys must allocate NOTHING. Guards the lazy champ_eq
+        // worklist (it used to allocate a `vec![(a,b)]` per key comparison even when the scalar keys
+        // resolved with no child descent — 1 alloc per lookup on the hot path).
+        let mut mm = op_map_empty();
+        for k in 0..N {
+            mm = op_map_insert(mm, op_box_int(k), op_box_int(k));
+        }
+        let lookup = measure(&mut || {
+            for k in 0..N {
+                let p = op_box_int(k); // small int ⇒ immediate, no box alloc
+                let _ = op_map_lookup(mm, p);
+                op_drop(p);
+            }
+        });
+        println!("ALLOC map_lookup x{N}: {lookup}");
+        assert_eq!(lookup, 0, "map_lookup on scalar keys is a pure read — zero allocations (was 1/op via champ_eq's eager worklist)");
+        op_drop(mm);
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
@@ -6706,6 +6733,47 @@ mod tests {
         op_drop(c);
         op_drop(d);
         assert_eq!(live_nodes(), before, "eq test reclaimed all nodes");
+    }
+
+    #[test]
+    fn champ_eq_and_cmp_descend_nested_compounds_via_lazy_worklist() {
+        reset();
+        let before = live_nodes();
+        // Guards the LAZY worklist in champ_eq/champ_key_cmp (the root pair is handled with no Vec; the
+        // worklist is allocated only when a compound pushes children). This test exercises the path the
+        // scalar fast case does NOT: deep NESTED compounds that force the worklist to be created and to
+        // drive multi-level descent. Build a 4-level nest [[[[leaf]]]] two ways, differing only at the
+        // DEEPEST leaf, and confirm eq/cmp find the difference (proving descent reaches the bottom) and
+        // that identical nests compare Equal / eq. Also check cmp is consistent with eq and antisymmetric.
+        fn nest(leaf: i64) -> Handle {
+            // arity-1 compound chain: node -> node -> node -> node -> boxed-leaf. Use out-of-window ints
+            // so the leaves are real (boxed) nodes, making every level a genuine compound descent.
+            let mut h = boxed_int_leaf(leaf);
+            for _ in 0..4 {
+                h = alloc(vec![h], Vec::new()); // arity-1 compound (empty raw)
+            }
+            h
+        }
+        let big = (1i64 << 40) + 7; // out-of-fixnum-window ⇒ boxed leaf
+        let x = nest(big);
+        let y = nest(big); // structurally identical, distinct pointers all the way down
+        let z = nest(big + 1); // differs ONLY at the deepest leaf
+
+        // Identical nests: eq true, cmp Equal — the worklist must fully descend all 4 levels to confirm.
+        assert!(champ_eq(x, y), "identical 4-level nests are eq (full descent)");
+        assert_eq!(champ_key_cmp(x, y), core::cmp::Ordering::Equal, "identical nests cmp Equal");
+        // Differ only at the deepest leaf: eq false, cmp non-Equal, and antisymmetric.
+        assert!(!champ_eq(x, z), "nests differing at the deepest leaf are not eq");
+        let ord = champ_key_cmp(x, z);
+        assert_ne!(ord, core::cmp::Ordering::Equal, "deep-leaf difference is found by cmp");
+        assert_eq!(champ_key_cmp(z, x), ord.reverse(), "cmp is antisymmetric across the deep difference");
+        // eq/cmp consistency at depth.
+        assert_eq!(champ_eq(x, z), champ_key_cmp(x, z) == core::cmp::Ordering::Equal);
+
+        op_drop(x);
+        op_drop(y);
+        op_drop(z);
+        assert_eq!(live_nodes(), before, "nested-compound eq/cmp test reclaimed all nodes");
     }
 
     /// Guard the alloc-free `with_raw_arity` fast path in `champ_eq`/`champ_key_cmp` against the naive
