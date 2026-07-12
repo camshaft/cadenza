@@ -1454,6 +1454,14 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // runtime (the binding is opaque to the fold via `reduce_to_tuple_elems`) — the H2b round-trip.
             | Core::Tuple { .. }
             | Core::Proj { .. }
+            // A list construction (`vec-empty` + a `vec-push` per element) is a genuine runtime
+            // computation — an allocation per element — so a `let`-bound list used more than once is
+            // worth NAMING (built once, the handle read by each use) rather than rebuilt at every use.
+            // Unlike a tuple, a list has NO fold-through projection (a runtime-indexed `List.at` can't
+            // fold to an element the way `(. t 0)` does), so `is_compound_value` deliberately does NOT
+            // list `ListNew` — a list binding is always a whole-value use and simply keeps under the
+            // >= 2-use rule below. (A single-use list still inlines: `n < 2`.)
+            | Core::ListNew { .. }
     )
 }
 

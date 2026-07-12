@@ -3404,6 +3404,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_multi_use_let_bound_list_is_built_once() {
+        // A `let`-bound list used at MORE THAN ONE site is a runtime computation worth naming: it is
+        // built ONCE (`vec-empty` + the per-element `vec-push`es) and the handle reused, not rebuilt at
+        // every use. Asserted at the Lir level: the emitted body contains exactly ONE `vec-empty`
+        // (`CallImport("vec-empty")`) despite `xs` being read at two `List.at` sites. (Before this fix a
+        // list binding was not kept, so each use rebuilt it → two `vec-empty`s.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: i Int64) (: j Int64)) \
+               (let ((xs (list 10 20 30))) \
+                  (match (List.at xs i) \
+                    ((Some x) (match (List.at xs j) ((Some y) (+ x y)) (None x))) \
+                    (None -1)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        let empties = code
+            .iter()
+            .filter(|i| matches!(i, Lir::CallImport("vec-empty")))
+            .count();
+        assert_eq!(
+            empties, 1,
+            "a multi-use let-bound list is built once (one vec-empty), got: {code:?}"
+        );
+    }
+
+    #[test]
     fn a_list_update_index_that_wraps_below_the_length_traps() {
         // SAFETY: `List.update`'s Int64 index is wrapped i64→i32 to feed the runtime's u32 index, but the
         // wrap discards the high 32 bits BEFORE the runtime's length check — so a huge index `>= 2^32`
