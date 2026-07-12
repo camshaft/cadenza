@@ -382,7 +382,7 @@ pub fn lambda_body(db: &mut Db, head: StructId) -> Option<StructId> {
 /// declined, not inlined without end). `None` for a head that is not a nullary-def reference.
 pub fn lambda_body_of_nullary(db: &mut Db, head: StructId) -> Option<StructId> {
     match resolved_of(db, head) {
-        Resolved::Ref { value } if db.defs.iter().any(|d| d.body == Some(value)) => Some(value),
+        Resolved::Ref { value } if db.def_index_by_body(value).is_some() => Some(value),
         Resolved::Ref { value } => lambda_body_of_nullary(db, value),
         _ => None,
     }
@@ -425,8 +425,10 @@ pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
 
     // Seed the frontier with `body`'s direct callees; then expand each not-yet-seen callee. A frontier
     // entry equal to `body` closes the cycle. (`body` itself is never inserted into `visited`, so a
-    // path returning to it is detected on pop.)
-    collect_callees(db, body, &mut worklist);
+    // path returning to it is detected on pop.) Each node's edges come from the memoized `callees_of`,
+    // so a body reached from many ancestors is walked (and `resolved_of`-cloned) only ONCE overall.
+    ensure_callees(db, body);
+    worklist.extend_from_slice(&db.callee_edges[&body]);
     let mut result = false;
     while let Some(node) = worklist.pop() {
         if node == body {
@@ -434,7 +436,11 @@ pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
             break;
         }
         if visited.insert(node) {
-            collect_callees(db, node, &mut worklist);
+            // Compute-then-read: `ensure_callees` fills the memo (needs `&mut db`), then the cached
+            // slice is pushed into the local `worklist` (which was taken out of `db`, so borrowing
+            // `db.callee_edges` immutably here does not conflict). No per-visit allocation.
+            ensure_callees(db, node);
+            worklist.extend_from_slice(&db.callee_edges[&node]);
         }
     }
 
@@ -446,6 +452,21 @@ pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
     result
 }
 
+/// ENSURE `node`'s direct callee edges are computed and cached in `db.callee_edges`, MEMOIZED. The
+/// edge set is a pure function of the fixed resolved structure, so it is computed once — via
+/// [`collect_callees`] — and cached; the recursion DFS then reads the cached slice directly (no clone,
+/// no re-walk). Computing the walk re-`resolved_of`s the subtree and clones a `Resolved` per node, so
+/// doing it once per body — rather than once per ancestor that reaches the body — is the O(N²)→O(N)
+/// churn removal. Returns nothing: the caller reads `db.callee_edges[&node]` after this returns.
+fn ensure_callees(db: &mut Db, node: StructId) {
+    if db.callee_edges.contains_key(&node) {
+        return;
+    }
+    let mut edges = Vec::new();
+    collect_callees(db, node, &mut edges);
+    db.callee_edges.insert(node, edges);
+}
+
 /// Collect the callee bodies of the function whose body expression is (rooted at) `node` — a LOCAL,
 /// NON-REDUCING syntactic walk of one function's body. For each application, the head's statically-known
 /// callee body (via [`callee_body`], following refs to a lambda WITHOUT reducing) is one edge; the walk
@@ -454,6 +475,10 @@ pub fn is_recursive(db: &mut Db, body: StructId) -> bool {
 /// from IT, explored only if IT is called), so descending into it would conflate two nodes. This keeps
 /// the graph precise: over-reporting would decline a terminating fold, under-reporting would let a
 /// recursive one reach the (slow, exponential) depth backstop.
+///
+/// This is the UNCACHED walk; callers in the recursion analysis go through [`callees_of`] to memoize
+/// per node. (`collect_callees` recurses into sub-expressions of the SAME body, accumulating into
+/// `out`; the memo keys only whole body/callee nodes the DFS visits, not every interior node.)
 fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
     match resolved_of(db, node) {
         Resolved::Apply { head, args } => {
@@ -535,7 +560,7 @@ fn callee_body(db: &mut Db, head: StructId) -> Option<StructId> {
             // self-call edge). Without this a nullary self-recursion `(def (f) (f))` is not detected as
             // recursive, so the call inlines without end. A `Ref` to anything else (a `let`-bound
             // function, a nested ref) still follows through.
-            if db.defs.iter().any(|d| d.body == Some(value)) {
+            if db.def_index_by_body(value).is_some() {
                 Some(value)
             } else {
                 callee_body(db, value)

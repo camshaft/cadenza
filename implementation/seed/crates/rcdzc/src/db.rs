@@ -157,6 +157,18 @@ pub struct Db {
     /// per reference — O(n²); with it, each ascent is O(1).
     child_ix: Vec<u32>,
 
+    /// For each def BODY occurrence, its index in [`defs`]. Built once at load from the top-level scan.
+    /// It answers "is this occurrence a def's body, and which def?" — the question the recursion
+    /// analysis asks of EVERY callee edge (`eval::callee_body`) and lowering/inference ask per call — in
+    /// O(1), replacing an `db.defs.iter().any(|d| d.body == Some(v))` / `.position(…)` LINEAR scan. On a
+    /// def-call chain `g0→g1→…→gN` the recursion walk traverses O(N) edges for each of N bodies and each
+    /// edge did that O(N) scan — O(N³); with this map each edge is O(1), so the walk is O(N²) and, being
+    /// memoized per body in `recursive`, the whole compile is O(N). A def with no body (malformed) or a
+    /// synthesized body contributes no entry.
+    ///
+    /// [`defs`]: Db::defs
+    def_by_body: std::collections::HashMap<StructId, usize>,
+
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
     /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
@@ -198,6 +210,16 @@ pub struct Db {
     /// specialization), which is what keeps a self-calling function from inlining without end / from
     /// exploding exponentially in appended nodes when its body branches.
     pub(crate) recursive: std::collections::HashMap<StructId, bool>,
+
+    /// Memo of one function body's DIRECT callee edges (`eval::collect_callees`): for a body/callee
+    /// occurrence, the list of callee bodies its code calls (excluding nested `fn` boundaries). A pure
+    /// function of the fixed resolved structure — the same node's edges never change — so it caches by
+    /// occurrence `StructId` like `recursive`. The recursion DFS (`is_recursive`) expands the SAME
+    /// bodies once per ancestor that reaches them; without this memo each expansion re-runs
+    /// `collect_callees`, which re-`resolved_of`s the whole subtree and clones a `Resolved` (owning a
+    /// `Vec`) per node — an O(N²) clone/drop churn on a def-call chain. Memoized, each body's edges are
+    /// computed once and the DFS just reads the cached slice.
+    pub(crate) callee_edges: std::collections::HashMap<StructId, Vec<StructId>>,
 
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
@@ -281,6 +303,15 @@ impl Db {
         let prelude = crate::prelude::install(&mut ast);
         let (defs, exports, type_decls) = scan_top_level(&ast);
         let (parent, child_ix) = parent_index(&ast);
+        // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
+        // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
+        // contributes no entry; a body occurrence is unique to one def, so no collision.
+        let mut def_by_body = std::collections::HashMap::new();
+        for (i, d) in defs.iter().enumerate() {
+            if let Some(body) = d.body {
+                def_by_body.insert(body, i);
+            }
+        }
         Db {
             ast,
             defs,
@@ -288,12 +319,14 @@ impl Db {
             type_decls,
             parent,
             child_ix,
+            def_by_body,
             prelude,
             user_node_count,
             reduce_depth: 0,
             descent_depth: 0,
             build_cache: std::collections::HashMap::new(),
             recursive: std::collections::HashMap::new(),
+            callee_edges: std::collections::HashMap::new(),
             rec_visited: std::collections::HashSet::new(),
             rec_worklist: Vec::new(),
             kept_bindings: std::collections::HashSet::new(),
@@ -405,6 +438,16 @@ impl Db {
             i += 1;
         }
         None
+    }
+
+    /// The index in [`defs`] of the def whose body is the occurrence `body`, if any — an O(1) reverse
+    /// lookup of `defs[i].body`, built at load. This is the hot query the recursion analysis makes of
+    /// every callee edge and lowering/inference make per call; it replaces the equivalent linear
+    /// `defs.iter().position(|d| d.body == Some(body))` scan.
+    ///
+    /// [`defs`]: Db::defs
+    pub fn def_index_by_body(&self, body: StructId) -> Option<usize> {
+        self.def_by_body.get(&body).copied()
     }
 }
 

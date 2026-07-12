@@ -665,7 +665,7 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
         crate::resolved::Resolved::Ref { value } => return callee_def_index_for_infer(db, value),
         _ => return None,
     };
-    db.defs.iter().position(|d| d.body == Some(body))
+    db.def_index_by_body(body)
 }
 
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and

@@ -497,7 +497,7 @@ fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
         Resolved::Ref { value } => return callee_def_index(db, value),
         _ => return None,
     };
-    db.defs.iter().position(|d| d.body == Some(body))
+    db.def_index_by_body(body)
 }
 
 /// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding
