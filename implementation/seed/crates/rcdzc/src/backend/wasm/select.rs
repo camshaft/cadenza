@@ -36,6 +36,10 @@ const OP_BOX_INT: &str = "box-int";
 const OP_GET_INT: &str = "get-int";
 const OP_BOX_BOOL: &str = "box-bool";
 const OP_GET_BOOL: &str = "get-bool";
+/// `sum-new(disc, payload) -> handle` — build a sum value from its discriminant and a single payload
+/// handle (`value-heap-runtime.md` §Sum). The payload is: an empty array for a nullary variant, the
+/// boxed value for a one-payload variant, or a tuple handle for a multi-payload variant.
+const OP_SUM_NEW: &str = "sum-new";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
@@ -46,7 +50,7 @@ const OP_DROP: &str = "drop";
 /// heap cell, so it is never dup'd/drop'd. This is what decides which `let` bindings get a closing
 /// `drop`.
 fn is_heap_type(ty: &Ty) -> bool {
-    matches!(ty, Ty::Tuple(_) | Ty::Record(_))
+    matches!(ty, Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. })
 }
 
 /// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
@@ -96,6 +100,10 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Record { fields } => fields
             .values()
             .any(|&v| binding_escapes(db, v, binder, false)),
+        // A sum construction CONSUMES each payload (it becomes part of the heap sum value).
+        Core::SumNew { payloads, .. } => payloads
+            .iter()
+            .any(|&p| binding_escapes(db, p, binder, false)),
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -254,6 +262,34 @@ pub fn collect_used_ops(
                     out.insert(op);
                 }
                 collect_used_ops(db, *value, out);
+            }
+        }
+        // A sum construction always calls `sum-new`; the payload build mirrors `emit`'s `Core::SumNew`:
+        //  - nullary → an empty array `arr-alloc(0)` (the unit payload);
+        //  - single → `box-*` the one payload (a compound payload is already a handle, no box);
+        //  - multi → a tuple handle (`arr-alloc` + per-payload `box-*`/`arr-set`).
+        Core::SumNew { payloads, .. } => {
+            out.insert(OP_SUM_NEW);
+            match payloads.len() {
+                0 => {
+                    out.insert(OP_ARR_ALLOC);
+                }
+                1 => {
+                    if let Ok(Some(op)) = box_op(db, payloads[0]) {
+                        out.insert(op);
+                    }
+                    collect_used_ops(db, payloads[0], out);
+                }
+                _ => {
+                    out.insert(OP_ARR_ALLOC);
+                    out.insert(OP_ARR_SET);
+                    for p in &payloads {
+                        if let Ok(Some(op)) = box_op(db, *p) {
+                            out.insert(op);
+                        }
+                        collect_used_ops(db, *p, out);
+                    }
+                }
             }
         }
         // Leaves and references emit no runtime op.
@@ -611,6 +647,60 @@ fn emit(
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
             Ok(()) // leaves [arr] — the tuple handle
+        }
+        // A runtime SUM construction — `(Option.Some 5)` or a nullary `None`. Build the PAYLOAD handle,
+        // then `sum-new(disc, payload)`. The payload is (`value-heap-runtime.md` §Sum):
+        //  - NULLARY (no payloads) → the unit value, an empty array `arr-alloc(0)`;
+        //  - SINGLE payload → the value boxed to a handle (`box-int`/`box-bool`; a compound payload is
+        //    already a handle, no box) — a NARROW int extends i32→i64 first, as `box-int` takes an i64;
+        //  - MULTIPLE payloads → a tuple handle built exactly as `Core::Tuple` (`arr-alloc(n)` + per-
+        //    payload box + `arr-set`).
+        // Leaves the sum's u32 handle on the stack.
+        Core::SumNew { disc, payloads } => {
+            out.push(Lir::ConstI32(disc as i32)); // [disc]
+            match payloads.len() {
+                0 => {
+                    // Unit payload: an empty array.
+                    out.push(Lir::ConstI32(0)); // [disc, 0]
+                    out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc, payload]
+                }
+                1 => {
+                    let p = payloads[0];
+                    emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value]
+                    if let Some(op) = box_op(db, p)? {
+                        if let Some(m) = is_narrow_int(db, p) {
+                            out.push(if m.signed {
+                                Lir::I64ExtendI32S
+                            } else {
+                                Lir::I64ExtendI32U
+                            });
+                        }
+                        out.push(Lir::CallImport(op)); // [disc, payload-handle]
+                    }
+                }
+                n => {
+                    // Multiple payloads: build a tuple `arr` and box each into its position.
+                    out.push(Lir::ConstI32(n as i32)); // [disc, n]
+                    out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc, arr]
+                    for (i, &p) in payloads.iter().enumerate() {
+                        out.push(Lir::ConstI32(i as i32)); // [disc, arr, i]
+                        emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, arr, i, value]
+                        if let Some(op) = box_op(db, p)? {
+                            if let Some(m) = is_narrow_int(db, p) {
+                                out.push(if m.signed {
+                                    Lir::I64ExtendI32S
+                                } else {
+                                    Lir::I64ExtendI32U
+                                });
+                            }
+                            out.push(Lir::CallImport(op)); // [disc, arr, i, handle]
+                        }
+                        out.push(Lir::CallImport(OP_ARR_SET)); // [disc, arr]
+                    }
+                }
+            }
+            out.push(Lir::CallImport(OP_SUM_NEW)); // → [sum-handle]
+            Ok(())
         }
         // A runtime PROJECTION `(. t i)` — read element `i` off the operand's array handle and UNBOX it
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this

@@ -75,6 +75,14 @@ pub enum Core {
     /// `get-*`. The `index` is within the operand's static arity (checked in `type_errors` before
     /// selection — an out-of-arity index is a compile-time reject, never a runtime trap).
     Proj { operand: StructId, index: usize },
+    /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
+    /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
+    /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the
+    /// payload handle is: an empty array `arr-alloc(0)` for a nullary variant (`value-heap-runtime.md`
+    /// §Sum: "a nullary variant carries the unit value — an arr of length 0"), the single boxed payload
+    /// for a one-payload variant, or a tuple handle built from the payloads for a multi-payload variant.
+    /// The nominal tag is compile-time only — the runtime holds only `(disc, payload)`.
+    SumNew { disc: u32, payloads: Vec<StructId> },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If {
         cond: StructId,

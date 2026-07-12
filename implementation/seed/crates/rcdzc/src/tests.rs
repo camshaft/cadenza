@@ -862,7 +862,9 @@ fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
         cdz_run::Outcome::Value(s) => {
             assert_eq!(s, "41", "get-x (mk 41) projects field x = the argument")
         }
-        cdz_run::Outcome::Trap(t) => panic!("projected-parameter helper trapped (miscompile?): {t}"),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("projected-parameter helper trapped (miscompile?): {t}")
+        }
     }
 }
 
@@ -1070,22 +1072,31 @@ fn a_let_binder_shadowing_a_parameter_is_not_substituted() {
     use crate::testkit::parse;
     // Bool shadow: the inner binding's type differs from the parameter — the worst case (was an invalid
     // component). `(f 99)` returns the inner `x = true`.
-    let bool_shadow =
-        "(module m (def (f x) (let ((x true)) x)) (def (main) (f 99)) (export main))";
+    let bool_shadow = "(module m (def (f x) (let ((x true)) x)) (def (main) (f 99)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(bool_shadow))).expect("compile");
-    assert!(run_returns::<bool>(&bytes, "main"), "Bool shadow of an Int64 param returns true");
+    assert!(
+        run_returns::<bool>(&bytes, "main"),
+        "Bool shadow of an Int64 param returns true"
+    );
 
     // Same-type shadow: `(let ((x 7)) x)` over Int64 param `x` — `(f 99)` returns the inner `x = 7`.
     let int_shadow = "(module m (def (f x) (let ((x 7)) x)) (def (main) (f 99)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(int_shadow))).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 7, "same-type shadow returns the inner binding");
+    assert_eq!(
+        run_returns::<i64>(&bytes, "main"),
+        7,
+        "same-type shadow returns the inner binding"
+    );
 
     // A match-arm pattern binder that shadows the param is likewise a binder, not a reference:
     // `(match 5 (x x))` binds `x` to the scrutinee 5 for the arm, shadowing the param `x`.
-    let arm_shadow =
-        "(module m (def (f x) (match 5 (x x))) (def (main) (f 99)) (export main))";
+    let arm_shadow = "(module m (def (f x) (match 5 (x x))) (def (main) (f 99)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(arm_shadow))).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 5, "match-arm binder shadow binds the scrutinee");
+    assert_eq!(
+        run_returns::<i64>(&bytes, "main"),
+        5,
+        "match-arm binder shadow binds the scrutinee"
+    );
 }
 
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
@@ -2708,14 +2719,25 @@ mod match_engine {
             "(module m (def (negate (: b Bool)) (match b (true false) (false true))) \
                (def (main (: b Bool)) (negate b)) (export main))",
         );
-        assert!(!run_returns_with::<bool>(&negate, "main", &[Val::Bool(true)])); // true → false
-        assert!(run_returns_with::<bool>(&negate, "main", &[Val::Bool(false)])); // false → true
+        assert!(!run_returns_with::<bool>(
+            &negate,
+            "main",
+            &[Val::Bool(true)]
+        )); // true → false
+        assert!(run_returns_with::<bool>(
+            &negate,
+            "main",
+            &[Val::Bool(false)]
+        )); // false → true
         // Order-independent: the arms reversed still cover both values.
         let rev = component(
             "(module m (def (main (: b Bool)) (match b (false 2) (true 1))) (export main))",
         );
         assert_eq!(run_returns_with::<i64>(&rev, "main", &[Val::Bool(true)]), 1);
-        assert_eq!(run_returns_with::<i64>(&rev, "main", &[Val::Bool(false)]), 2);
+        assert_eq!(
+            run_returns_with::<i64>(&rev, "main", &[Val::Bool(false)]),
+            2
+        );
     }
 
     #[test]
@@ -2736,8 +2758,10 @@ mod match_engine {
         );
         // Two of the SAME literal do not cover the other value.
         assert_eq!(
-            reject_code("(module m (def (main (: b Bool)) (match b (true 1) (true 2))) (export main))")
-                .as_deref(),
+            reject_code(
+                "(module m (def (main (: b Bool)) (match b (true 1) (true 2))) (export main))"
+            )
+            .as_deref(),
             Some("CDZ0210")
         );
         // An Int64 match without a wildcard stays rejected — the relaxation is Bool-specific.
@@ -4053,6 +4077,113 @@ mod stage1 {
         );
         // A sum agrees with ITSELF (same declaration).
         assert!(ty0.agrees_with(&ty0));
+    }
+
+    #[test]
+    fn a_variant_construction_lowers_to_sum_new() {
+        // `(Some a)` with a RUNTIME payload `a` (a parameter, so it cannot fold) lowers to
+        // `Core::SumNew { disc: 0, payloads: [a] }` — the variant application dispatched by the ctor's
+        // `(meta apply)` = `sum-new`, its discriminant read off `(meta variant)`. A NULLARY `None` used
+        // bare lowers to `Core::SumNew { disc: 1, payloads: [] }` (the sum's second variant). This pins
+        // that construction routes to the heap builder without needing escape/match (later ticks).
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                   (def (mk (: a Int64)) (Option.Some a)) \
+                   (def (none) Option.None) \
+                   (def (main) 0) (export main))";
+        let mut db = Db::load(parse(src));
+        let mk_body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "mk")
+            .and_then(|d| d.body)
+            .expect("mk");
+        match core_of(&mut db, mk_body) {
+            Core::SumNew { disc, payloads } => {
+                assert_eq!(disc, 0, "Some is variant 0");
+                assert_eq!(payloads.len(), 1, "Some carries one payload");
+            }
+            other => panic!("expected Core::SumNew, got {other:?}"),
+        }
+        let none_body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "none")
+            .and_then(|d| d.body)
+            .expect("none");
+        match core_of(&mut db, none_body) {
+            Core::SumNew { disc, payloads } => {
+                assert_eq!(disc, 1, "None is variant 1");
+                assert!(payloads.is_empty(), "None is nullary");
+            }
+            other => panic!("expected Core::SumNew for None, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_variant_construction_emits_the_heap_build_ops() {
+        // Construction lowers to the right value-heap OPS — `collect_used_ops` reports exactly what
+        // `emit` lays down (they must agree, or the import section omits a called op). A single-payload
+        // `(Some a)` uses `sum-new` + `box-int` (box the Int64 payload); a nullary `None` uses `sum-new`
+        // + `arr-alloc` (the empty-array unit payload). This proves construction reaches the heap builder
+        // without needing the sum to escape (next tick) or a composed run (a dead sum folds away — a sum
+        // is only observable once it escapes or is matched).
+        use crate::backend::wasm::select::collect_used_ops;
+        use crate::db::Db;
+        use crate::testkit::parse;
+        // A payload variant: `sum-new` + `box-int`.
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (mk (: a Int64)) (Option.Some a)) (export mk))";
+        let mut db = Db::load(parse(src));
+        let mk = db
+            .defs
+            .iter()
+            .find(|d| d.name == "mk")
+            .and_then(|d| d.body)
+            .expect("mk");
+        let mut ops = std::collections::BTreeSet::new();
+        collect_used_ops(&mut db, mk, &mut ops);
+        assert!(ops.contains("sum-new"), "Some emits sum-new; got {ops:?}");
+        assert!(
+            ops.contains("box-int"),
+            "Some boxes its Int64 payload; got {ops:?}"
+        );
+        // A nullary variant: `sum-new` + `arr-alloc` (the empty-array unit payload).
+        let src2 = "(module m (type Option (Some Int64) None) \
+                      (def (none) Option.None) (export none))";
+        let mut db2 = Db::load(parse(src2));
+        let none = db2
+            .defs
+            .iter()
+            .find(|d| d.name == "none")
+            .and_then(|d| d.body)
+            .expect("none");
+        let mut ops2 = std::collections::BTreeSet::new();
+        collect_used_ops(&mut db2, none, &mut ops2);
+        assert!(ops2.contains("sum-new"), "None emits sum-new; got {ops2:?}");
+        assert!(
+            ops2.contains("arr-alloc"),
+            "None's unit payload is an empty array; got {ops2:?}"
+        );
+    }
+
+    #[test]
+    fn a_sum_returning_export_declines_until_escape_lands() {
+        // A sum has no component-boundary representation YET (its host-escape `encode()` walk is the next
+        // tick), so EXPORTING a function that returns a sum DECLINES cleanly — it does not miscompile to
+        // an invalid component. (Internally the sum builds fine, as the reclaim test shows; only crossing
+        // the host boundary is not yet wired.)
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (mk (: a Int64)) (Option.Some a)) (export mk))";
+        let result = compile_component(&crate::codec::encode(&parse(src)));
+        assert!(
+            result.is_err(),
+            "a sum-returning export must decline (no boundary form yet), not miscompile"
+        );
     }
 
     #[test]

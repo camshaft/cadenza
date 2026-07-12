@@ -304,6 +304,12 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
         }
         Core::Proj { operand, .. } => collect_reached_poisons(db, operand, out),
+        // A sum construction's payloads are all unconditionally part of the value — descend into each.
+        Core::SumNew { payloads, .. } => {
+            for p in payloads {
+                collect_reached_poisons(db, p, out);
+            }
+        }
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }

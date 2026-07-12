@@ -73,6 +73,19 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Ref { value } => type_of(db, value),
         // A `let`'s type is its body's type (the bindings are compile-time structure that folds away).
         Resolved::Let { body, .. } => type_of(db, body),
+        // A VARIANT CONSTRUCTOR record carrying `(meta variant)` is a sum value/constructor, not a plain
+        // data record. Its type is the constructor's `(meta t)`: for a NULLARY variant that is the sum
+        // itself (a bare `None` is a VALUE of the sum — `Ty::Sum`), for a PAYLOAD variant it is the
+        // curried arrow `(-> P Sum)` (a function value, applied to construct). Reading `(meta t)` as the
+        // scheme and taking its type is the same path an operator value would take. This case comes
+        // BEFORE the type-value check so a nullary variant is not misread as `Ty::Type`.
+        Resolved::Record { .. } if crate::eval::variant_disc_of(db, id).is_some() => {
+            let mut fresh = crate::unify::Fresh::new();
+            match crate::eval::scheme_of(db, id, &mut fresh) {
+                Some(scheme) => scheme.ty,
+                None => Ty::Any,
+            }
+        }
         // A record that IS a type — a ground-type record (`Bool`), a built integer module, or any
         // record carrying a `(meta t)` — is a type VALUE, so its type is `Type`. Otherwise a plain
         // data record's type is the record of its fields' types (each a lazy `type_of`).

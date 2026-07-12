@@ -246,6 +246,12 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             }
         }
         crate::core::Core::Proj { operand, .. } => collect_call_callees(db, operand, out),
+        // A sum construction's payloads are unconditionally evaluated — descend for their calls.
+        crate::core::Core::SumNew { payloads, .. } => {
+            for p in payloads {
+                collect_call_callees(db, p, out);
+            }
+        }
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)

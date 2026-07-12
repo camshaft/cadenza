@@ -117,6 +117,13 @@ pub enum Prim {
     /// resolve to a record whose `(meta t)` holds one of these).
     BoolTy,
     UnitTy,
+    /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
+    /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
+    /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
+    /// baked into this prim — one `SumNew` serves every variant, like the one `Wrap` serves every target
+    /// width, reading the target off the solved type). A NULLARY variant used bare is this prim applied
+    /// to no arguments. The result is the owning sum type, read off the ctor's `(meta t)`.
+    SumNew,
 }
 
 impl Prim {
@@ -148,6 +155,7 @@ impl Prim {
             "Record" => Some(Prim::RecordCtor),
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
+            "sum-new" => Some(Prim::SumNew),
             _ => None,
         }
     }

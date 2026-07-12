@@ -629,6 +629,22 @@ pub fn meta_apply_of(db: &mut Db, id: StructId) -> Option<Prim> {
     prim_of(db, field)
 }
 
+/// The DISCRIMINANT of the sum variant the value at `id` is a constructor for, if it is one — read off
+/// the record's `(meta variant)` channel (an integer literal the sum synthesis wrote). `None` for any
+/// value that is not a variant constructor (no `(meta variant)`). This is what a variant application
+/// reads at lowering to know which variant it builds (the analogue of a conversion reading its target
+/// width off the solved type) — the discriminant lives in the metadata, not in the shared `SumNew`
+/// prim. It also MARKS a record as a variant value/constructor, distinguishing a nullary variant
+/// (`None` — a value) from a genuine type-value record (both carry `(meta t)`; only a variant carries
+/// `(meta variant)`).
+pub fn variant_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
+    let field = project_meta(db, id, "variant")?;
+    match resolved_of(db, field) {
+        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()),
+        _ => None,
+    }
+}
+
 /// Project a meta-channel field named `key` from the record value at `id`, following a `Ref` to the
 /// record. Returns the field's value occurrence, or `None` if the value is not a record or has no such
 /// field. The one generic projection, restricted to the `meta` namespace.
@@ -890,6 +906,16 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
     match resolved_of(db, id) {
         // A ground-type record: read its `(meta t)`, which holds the type-value.
         Resolved::Record { .. } | Resolved::Ref { .. } => {
+            // A VARIANT-CONSTRUCTOR record is NOT a type-value even though it carries a `(meta t)` — its
+            // `(meta t)` is the constructor's own type (`(-> P Sum)` or, for a nullary variant, the sum
+            // `Sum`), and a NULLARY variant used bare (`None`) is a VALUE of the sum, not the sum TYPE.
+            // Its `(meta variant)` channel is the mark that distinguishes it: a record carrying it is a
+            // sum value/constructor, so it does not reduce to a type here (a bare `None` types as the
+            // sum via `type_of`, not as `Ty::Type`; `(: x Option)` still reduces `Option` — the SUM
+            // record — because that record has no `(meta variant)`).
+            if variant_disc_of(db, id).is_some() {
+                return None;
+            }
             // Either a `(meta t)` ground-type record, OR an already-built `(typeval …)` record.
             if let Some(t_field) = project_meta(db, id, "t") {
                 return typeval_of(db, t_field);

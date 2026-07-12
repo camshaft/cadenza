@@ -66,23 +66,48 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
     children.push(meta_field(ast, "t", sum_ty));
 
     // One field per variant, its value the constructor record. `decl.variants` carries each variant's
-    // payload TYPE occurrences (from the scan), so the constructor's arrow type reads them directly.
-    for variant in &decl.variants {
-        let ctor = variant_ctor(ast, decl, variant);
+    // payload TYPE occurrences (from the scan), so the constructor's arrow type reads them directly. The
+    // variant's INDEX in declaration order is its DISCRIMINANT (`value-heap-runtime.md` §Sum).
+    for (disc, variant) in decl.variants.iter().enumerate() {
+        let ctor = variant_ctor(ast, decl, variant, disc as u32);
         let k = push_atom(ast, Leaf::Name(variant.name.clone()));
         children.push(push_list(ast, vec![k, ctor]));
     }
     push_list(ast, children)
 }
 
-/// A variant constructor record `(record ((meta t) <ctor-type>))`. The constructor's TYPE is the
-/// curried arrow over its payloads ending in the sum, or the bare sum for a nullary variant. (Its
-/// `(meta apply)`/`(meta variant)` construction channels are a later tick — see the module doc.)
-fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId {
+/// A variant constructor record. It carries THREE meta channels — the SAME shape an operator record
+/// has, so a variant application rides the ordinary `(meta apply)` dispatch:
+///  - `(meta t)` — the constructor's TYPE, the curried arrow `(-> payload… Sum)` (bare `Sum` for a
+///    nullary variant). Read by `apply_type` when the constructor is applied.
+///  - `(meta apply)` — the `(intrinsic sum-new)` builder (`Prim::SumNew`). Applying the constructor
+///    projects this and lowers to `sum-new(disc, payload)`.
+///  - `(meta variant)` — the DISCRIMINANT (an integer literal), the one datum the shared `sum-new`
+///    intrinsic reads at lowering to know WHICH variant it is building (the analogue of `Wrap` reading
+///    its target width off the solved type — one prim, the specific value in the metadata, no
+///    per-variant prim). The owning sum + payload arity are recovered from the ctor's `(meta t)`, so
+///    the discriminant is all this channel needs.
+fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant, disc: u32) -> StructId {
     let head = push_atom(ast, Leaf::Name("record".to_string()));
     let ctor_ty = ctor_type(ast, decl, variant);
     let t_field = meta_field(ast, "t", ctor_ty);
-    push_list(ast, vec![head, t_field])
+    // `(meta apply)` = the shared sum-new intrinsic.
+    let builder = {
+        let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
+        let who = push_atom(ast, Leaf::Name("sum-new".to_string()));
+        push_list(ast, vec![ih, who])
+    };
+    let apply_field = meta_field(ast, "apply", builder);
+    // `(meta variant)` = the discriminant, an integer literal.
+    let disc_node = push_atom(
+        ast,
+        Leaf::Int {
+            value: IntValue::from_i64(disc as i64),
+            radix: Radix::Dec,
+        },
+    );
+    let variant_field = meta_field(ast, "variant", disc_node);
+    push_list(ast, vec![head, t_field, apply_field, variant_field])
 }
 
 /// The constructor's type expression. A NULLARY variant (no payloads) constructs the sum directly —

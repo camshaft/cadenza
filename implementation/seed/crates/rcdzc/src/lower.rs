@@ -87,6 +87,28 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // So naming adds no cost and the emitted bytes are unchanged for a program with no multi-use
         // runtime binding (`reference-compiler.md` §The Core Representation Is In A-Normal Form).
         Resolved::Let { bindings, body } => lower_let(db, &bindings, body),
+        // A NULLARY VARIANT used as a value (`None`) — its ctor record carries `(meta variant)` and its
+        // type is the sum (no payload arrow). It constructs `sum-new(disc, unit)` with no payloads. A
+        // PAYLOAD variant record used WITHOUT being applied (`Some` bare) is a function value with no
+        // runtime form yet — decline (a variant constructor is applied to construct; a bare partial
+        // application needs closures). This is checked before the plain-record arm so a variant is not
+        // lowered as a data record of its meta fields.
+        Resolved::Record { .. } if crate::eval::variant_disc_of(db, id).is_some() => {
+            match crate::infer::type_of(db, id) {
+                // Nullary variant value — its type is the sum directly.
+                crate::ty::Ty::Sum { .. } => {
+                    let disc = crate::eval::variant_disc_of(db, id).unwrap_or(0);
+                    Core::SumNew {
+                        disc,
+                        payloads: Vec::new(),
+                    }
+                }
+                // A payload variant used bare is a partial application (a function value).
+                _ => Core::Poison(Reject::decline(
+                    "a variant constructor with payloads must be applied to its arguments",
+                )),
+            }
+        }
         // A record value — kept as a compound; folds away only when a member reads a field of it.
         // (Materialize the shared `Arc` map into the `Core::Record` owned map — a single O(fields)
         // copy per record NODE, not per access, so it does not reintroduce the O(N²) the Arc removed.)
@@ -236,6 +258,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(prim) if prim.is_conversion() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: conversion prim");
                     lower_conversion(db, id, prim, &args)
+                }
+                // A sum VARIANT CONSTRUCTOR applied — `(Option.Some 5)`. The discriminant is read off
+                // the head's `(meta variant)` channel (the value the shared `sum-new` prim needs); the
+                // args are the payloads. Build `Core::SumNew{disc, payloads}` the backend lowers to
+                // `sum-new(disc, payload)`.
+                Some(Prim::SumNew) => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: sum variant constructor");
+                    lower_sum_new(db, head, &args)
                 }
                 Some(prim) => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: type-constructor prim");
@@ -1048,7 +1078,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TupleCtor
         | Prim::RecordCtor
         | Prim::BoolTy
-        | Prim::UnitTy => {
+        | Prim::UnitTy
+        | Prim::SumNew => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -1157,6 +1188,22 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
 /// solved type (`type_of(db, id)`), read here so the fold and the runtime path agree on the width. A
 /// constant operand FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width; a runtime
 /// operand becomes a `Core::Convert` the backend emits as a mask-and-reinterpret. A poison propagates.
+/// Lower a sum variant CONSTRUCTOR application `(Option.Some 5)`. The discriminant is read off the
+/// head's `(meta variant)` channel; the args are the payloads (an empty payload for a nullary variant,
+/// which normally reaches here bare — handled in the `Resolved::Record` arm — but an explicit `(None)`
+/// application is fine too). Produces `Core::SumNew` the backend builds as `sum-new(disc, payload)`.
+fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
+    let Some(disc) = crate::eval::variant_disc_of(db, head) else {
+        return Core::Poison(Reject::decline(
+            "a sum constructor has no discriminant metadata",
+        ));
+    };
+    Core::SumNew {
+        disc,
+        payloads: args.to_vec(),
+    }
+}
+
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
@@ -1251,6 +1298,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RecordCtor => "Record",
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
+        Prim::SumNew => "sum-new",
     }
 }
 
@@ -1360,8 +1408,9 @@ mod tests {
             render(&ty3, &V::Tuple(vec![V::Int(10), V::Int(11), V::Int(12)])),
             "(: (tuple 10 11 12) (Tuple Int64 Int64 Int64))"
         );
-        let nested =
-            crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Tuple(vec![t_int(), t_int()].into())].into());
+        let nested = crate::ty::Ty::Tuple(
+            vec![t_int(), crate::ty::Ty::Tuple(vec![t_int(), t_int()].into())].into(),
+        );
         assert_eq!(
             render(
                 &nested,
