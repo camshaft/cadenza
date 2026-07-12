@@ -16,12 +16,13 @@
 //! `.sexp`/`.sexpr` → sexpr, `.bin`/`.cdzb` → binary); `--to` defaults to `sexpr`. With no FILE (or
 //! `-`), input is read from stdin (then `--from` is required). Output goes to stdout.
 //!
-//! `query`/`rewrite` are the structural-editing codemod prototype (see the `query` module and
-//! `implementation/DESIGN-query-engine.md`). A PATTERN/TEMPLATE is s-expression text with `,x`
-//! (bind one node) and `,@xs` (bind a run of siblings) metavariables — the same shape as the code it
-//! matches. A `rewrite` re-parses its result and rejects it if it does not round-trip through the ML
-//! surface (a validated transaction — never a half-applied edit). This bin is the only place in the
-//! crate that touches the filesystem/stdio.
+//! `query`/`rewrite`/`diff`/`lint`/`clones` are the structural-editing codemod tool — Rung 2 of
+//! `implementation/DESIGN-query-engine.md` (a built-in transform set run by a Rust driver), which
+//! stands in for the eventual self-hosted sidecar (Rung 3; see the `query` module). A PATTERN/TEMPLATE
+//! is s-expression text with `,x` (bind one node) and `,@xs` (bind a run of siblings) metavariables —
+//! the same shape as the code it matches. A `rewrite` re-parses its result and rejects it if it does
+//! not round-trip through the ML surface (a validated transaction — never a half-applied edit). This
+//! bin is the only place in the crate that touches the filesystem/stdio.
 
 use cadenza_syntax::convert::{self, Format, Options};
 use cadenza_syntax::query::clones;
