@@ -54,16 +54,63 @@ pub struct Layout {
     /// function's emission position to get its absolute wasm function index. `0` for a program that
     /// imports nothing (a scalar program), which is then byte-identical to a runtime-free build.
     pub import_base: u32,
+    /// `def → its position in `order``, the O(1) inverse of the `order` sequence. `abs` (called once
+    /// per `Core::Call` during selection AND per export during serialization) needs a def's emission
+    /// position; without this map it did an O(len) `order.position()` scan, making a call-heavy or
+    /// export-heavy program O(N²) in the backend. Built once alongside `order` by [`Layout::new`], so
+    /// it cannot drift; the backend's `import_base` reshuffle preserves it via [`Layout::with_import_base`].
+    order_pos: std::collections::HashMap<usize, usize>,
+    /// `def → its index in `exports``, for the def→ExportPlan lookup the emit loop does once per
+    /// emitted function (an export's params come from its plan). Without it that was an O(exports)
+    /// `exports.iter().find()` per func — O(N²) on a many-export program. `None`-absent means the def
+    /// is not an export (an internal reachable callee), which reads its params via `def_params`.
+    export_of_def: std::collections::HashMap<usize, usize>,
 }
 
 impl Layout {
+    /// Assemble a `Layout` from its emission plan, deriving the two O(1) inverse indices (`order_pos`,
+    /// `export_of_def`) so they can never drift from `order`/`exports`. The one way to build a `Layout`
+    /// — `compute` and the backend's `import_base` reshuffle both go through it — so the indices are a
+    /// maintained invariant, not a field a caller could forget or set inconsistently.
+    pub fn new(exports: Vec<ExportPlan>, order: Vec<usize>, import_base: u32) -> Layout {
+        let order_pos = order.iter().enumerate().map(|(k, &d)| (d, k)).collect();
+        let export_of_def = exports
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.def, i))
+            .collect();
+        Layout {
+            exports,
+            order,
+            import_base,
+            order_pos,
+            export_of_def,
+        }
+    }
+
+    /// A copy of this layout with a different `import_base` (the backend shifts the base once the
+    /// runtime-import count is known). The inverse indices are unchanged by the shift, so they carry
+    /// over without a rebuild.
+    pub fn with_import_base(&self, import_base: u32) -> Layout {
+        Layout {
+            import_base,
+            ..self.clone()
+        }
+    }
+
     /// The absolute wasm-function index of definition `def`, or `None` if it is not emitted. Imports
     /// occupy `0..import_base`, so a defined function's index is `import_base + its position in order`.
+    /// O(1) via the `order_pos` index (the emission-position map built in `compute`).
     pub fn abs(&self, def: usize) -> Option<u32> {
-        self.order
-            .iter()
-            .position(|&d| d == def)
-            .map(|k| self.import_base + k as u32)
+        self.order_pos
+            .get(&def)
+            .map(|&k| self.import_base + k as u32)
+    }
+
+    /// The [`ExportPlan`] for definition `def`, or `None` if `def` is not an export — an O(1) lookup
+    /// (via `export_of_def`) replacing an `exports.iter().find(|e| e.def == def)` scan.
+    pub fn export_plan(&self, def: usize) -> Option<&ExportPlan> {
+        self.export_of_def.get(&def).map(|&i| &self.exports[i])
     }
 }
 
@@ -118,9 +165,15 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     // that a recursive function reaches. A worklist closes the reachable set: for each def in `order`,
     // lower its body and append any `Core::Call` callee not already present. (Non-recursive calls
     // inline, so they add nothing here — only a `Core::Call` grows the set.)
+    // `order` keeps the emission SEQUENCE (exports first, then reachable callees); `in_order` is the
+    // O(1) membership check that goes with it. A plain `order.contains(&x)` here is an O(len) scan, and
+    // it runs once per export AND once per discovered callee — O(N²) on a program with many exports or
+    // a wide call fan-out (a 3200-export program spent ~all its layout time in these scans + the Vec
+    // regrowth they drove). The set keeps each "already queued?" test O(1).
     let mut order: Vec<usize> = Vec::new();
+    let mut in_order: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for e in &exports {
-        if !order.contains(&e.def) {
+        if in_order.insert(e.def) {
             order.push(e.def);
         }
     }
@@ -131,7 +184,7 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
             let mut callees = Vec::new();
             collect_call_callees(db, body, &mut callees);
             for c in callees {
-                if !order.contains(&c) {
+                if in_order.insert(c) {
                     trace!(target: "rcdzc::layout", def = c, "reachable via a runtime call — added to emission order");
                     order.push(c);
                 }
@@ -143,11 +196,7 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     // `import_base` is 0 until a program uses a runtime op: the per-program runtime-import set is
     // computed by the backend when a `Core` compound op lowers to a heap call (value-heap H2). A
     // program that imports nothing keeps base 0 and is byte-identical to a runtime-free build.
-    Ok(Layout {
-        exports,
-        order,
-        import_base: 0,
-    })
+    Ok(Layout::new(exports, order, 0))
 }
 
 /// Collect the `db.defs` indices a body CALLS at runtime — the `Core::Call` callees reached from the

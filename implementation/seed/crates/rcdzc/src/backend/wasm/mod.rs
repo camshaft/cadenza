@@ -97,10 +97,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // is `import_base + its emission position` (imports occupy `0..import_base`). `layout` is otherwise
     // as computed; clone-with-base so `abs` (read by both the export section and every `Lir::Call`)
     // accounts for the shift.
-    let layout = Layout {
-        import_base: imports.len() as u32,
-        ..layout.clone()
-    };
+    let layout = layout.with_import_base(imports.len() as u32);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
@@ -112,7 +109,7 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let mut funcs: Vec<SelectedFunc> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
-        let params = match layout.exports.iter().find(|e| e.def == def) {
+        let params = match layout.export_plan(def) {
             Some(e) => e.params.clone(),
             None => crate::layout::def_params(db, def),
         };
@@ -210,10 +207,7 @@ fn emit_runtime_resource(
     // Defined funcs' absolute indices are shifted past the `k` ops + the two resource intrinsics
     // (`resource-new`, `resource-rep`), so `import_base = k + 2`.
     let k = imports.len() as u32;
-    let layout = Layout {
-        import_base: k + 2,
-        ..layout.clone()
-    };
+    let layout = layout.with_import_base(k + 2);
     let layout = &layout;
 
     // Select every reachable body (the export + its call-graph). The export body returns the compound's
@@ -222,7 +216,7 @@ fn emit_runtime_resource(
     let mut funcs: Vec<SelectedFunc> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
-        let params = match layout.exports.iter().find(|e| e.def == def) {
+        let params = match layout.export_plan(def) {
             Some(e) => e.params.clone(),
             None => crate::layout::def_params(db, def),
         };

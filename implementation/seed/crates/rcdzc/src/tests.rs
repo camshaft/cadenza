@@ -369,17 +369,17 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         code: vec![Lir::ConstI64(42)],
         declared: vec![],
     };
-    let layout = Layout {
-        exports: vec![ExportPlan {
+    let layout = Layout::new(
+        vec![ExportPlan {
             name: "main".to_string(),
             def: 0,
             body: crate::ast::StructId(0),
             params: vec![],
             result: Ty::int64(),
         }],
-        order: vec![0],
-        import_base: 1,
-    };
+        vec![0],
+        1,
+    );
     let ours = core_module(&[func], &[OPS.arr_alloc], &layout).expect("core module");
 
     // The oracle: a core module importing `heap."arr-alloc" : (i32) -> i32`, then one defined

@@ -537,11 +537,17 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
 
     // Resolve each export's target index by name against the gathered defs (a signature read, not a
     // body read).
-    let mut i = 0;
-    while i < exports.len() {
-        let target = defs.iter().position(|d| d.name == exports[i].name);
-        exports[i].def = target;
-        i += 1;
+    // Resolve each export to the def it names. A per-export `defs.iter().position(|d| d.name == …)`
+    // is an O(defs) STRING-comparison scan, so N exports over N defs is O(N²) memcmp (the dominant
+    // cost of loading a many-export program). Build a `name → first def index` map once, then each
+    // export resolves in O(1). First-wins matches `position`'s first-match (a duplicate def name keeps
+    // the earlier def, which the well-formedness pass reports separately).
+    let mut def_of_name: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, d) in defs.iter().enumerate() {
+        def_of_name.entry(d.name.as_str()).or_insert(i);
+    }
+    for e in &mut exports {
+        e.def = def_of_name.get(e.name.as_str()).copied();
     }
 
     (defs, exports, types)
