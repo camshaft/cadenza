@@ -3720,6 +3720,22 @@ fn emit_shift(
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
+    // The count read once here to fold a compile-time-constant count (see the count-guard below).
+    let const_count = match core_of(db, rhs) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    // An OUT-OF-RANGE constant count (`k >= N`, or negative — which reads unsigned as `>= N`) makes the
+    // shift ALWAYS trap: emit a bare `unreachable` (one instruction) and nothing else — no operand
+    // evaluation, no shift. `unreachable` is stack-polymorphic, so it satisfies the function's result
+    // type. (A constant OOR count is a defined runtime trap for the shift's count, not a compile-time
+    // reject — so it stays a trap, just emitted directly instead of as a dead comparison + `if`.)
+    if let Some(k) = const_count
+        && (k < 0 || k >= m.width as i64)
+    {
+        out.push(Lir::Unreachable);
+        return Ok(());
+    }
     // The value `$a` and the count `$b` are read several times (count guard, the shift, the round-trip
     // check), so — like `emit_checked_arith` — a reusable operand (a matching local or a constant) is
     // pushed directly at each use (no scratch), and only a nested computation is stashed in a scratch
@@ -3790,10 +3806,15 @@ fn emit_shift(
     }
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.
-    sb.push(out);
-    out.push(m.konst(m.width as i64));
-    out.push(m.ge_u());
-    out.push(Lir::IfUnreachableEnd);
+    // ELIDED for a VALID constant count (`0 <= k < N`, established above): the guard's condition is a
+    // compile-time `false`, so it is dead (mirrors `lower`'s const-`if` fold). Only a RUNTIME count needs
+    // the runtime test. (An OOR constant count already returned a bare `unreachable` at the top.)
+    if const_count.is_none() {
+        sb.push(out);
+        out.push(m.konst(m.width as i64));
+        out.push(m.ge_u());
+        out.push(Lir::IfUnreachableEnd);
+    }
     // push$a push$b <machine-shift> local.set $r
     sa.push(out);
     sb.push(out);

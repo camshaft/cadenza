@@ -2085,6 +2085,33 @@ mod runtime_ops {
     }
 
     #[test]
+    fn constant_count_shift_folds_the_count_guard() {
+        // A shift by a COMPILE-TIME-CONSTANT count folds the runtime `count >= width` guard (the
+        // condition is decided at compile time). It must behave IDENTICALLY to the runtime-count form:
+        //   - a valid count (0 <= k < N): the guard is elided but the << overflow round-trip stays, so
+        //     the value computes and an overflowing shift still traps;
+        //   - an out-of-range constant count (k >= N or negative): the shift ALWAYS traps (a bare
+        //     `unreachable`), exactly as the runtime guard would.
+        // `a` is a runtime param so the shift is not fully folded; only the COUNT is constant.
+        assert_eq!(run::<i64>("(: a Int64)", "(<< a 7)", &[Val::S64(1)]), 128);
+        assert_eq!(run::<i64>("(: a Int64)", "(<< a 3)", &[Val::S64(5)]), 40);
+        assert_eq!(run::<i64>("(: a Int64)", "(>> a 2)", &[Val::S64(40)]), 10);
+        // -1 << 63 = Int64.min (in range, computes); 1 << 63 = +2^63 (overflow, traps) — same edge the
+        // runtime test pins, now on the constant-count path.
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(<< a 63)", &[Val::S64(-1)]),
+            i64::MIN
+        );
+        assert!(traps("(: a Int64)", "(<< a 63)", &[Val::S64(1)]));
+        // Overflow with a small constant count still traps (round-trip guard survives the elision).
+        assert!(traps("(: a Int64)", "(<< a 2)", &[Val::S64(1i64 << 62)]));
+        // Out-of-range constant count → unconditional trap (the shift can never be valid).
+        assert!(traps("(: a Int64)", "(<< a 64)", &[Val::S64(1)]));
+        assert!(traps("(: a Int64)", "(<< a 100)", &[Val::S64(0)]));
+        assert!(traps("(: a Int64)", "(<< a -1)", &[Val::S64(1)]));
+    }
+
+    #[test]
     fn runtime_shift_with_a_nested_value_operand() {
         // `(<< (+ a b) c)` — the shift's VALUE operand is a nested checked add, so `emit_operand_into`
         // routes it through `emit_checked_arith_to` writing the shift's value slot directly. Both the
