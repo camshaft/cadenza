@@ -18,6 +18,61 @@
   (input  (: 42 Bool))
   (error  CDZ0203))
 
+; The TYPE OPERAND of an annotation `(: expr T)` must itself DENOTE A TYPE — validating what stands in
+; type position is the dual of checking it against the value. A non-type there (an unbound name, an
+; integer/compound VALUE, an arbitrary expression, a non-constructor type applied to arguments) is
+; MEANINGLESS and MUST be REJECTED, not silently accepted-and-ignored (which would let a typo'd or
+; garbage annotation pass — the opposite of the reject-don't-accept-garbage discipline the checker
+; applies everywhere else). An UNBOUND NAME rejects the same CDZ0101 it gets in value position (`(+ foo
+; 1)`); a well-formed non-type rejects CDZ0203 ("expected a type"). This holds for a PARAMETER annotation
+; `(: name T)` too, not only a value annotation.
+
+(case "an unbound name in a type annotation's type position is rejected"
+  (doc    "`(: 5 foo)` puts the unbound name `foo` in TYPE position. `foo` names no type, and the same
+           `foo` in VALUE position is a hard CDZ0101 'unbound name', so it must reject identically here —
+           an annotation whose type is a typo or a non-type is meaningless (type-system.md #Annotations
+           Constrain, Never Contradict). A generation that resolved the operand, found it not a type, and
+           dropped the annotation ACCEPTED this and ran to 5; the type position must reject a non-type.")
+  (input  (do (def (main) (: 5 foo)) (export main)))
+  (error  CDZ0101))
+
+(case "an integer literal in a type annotation's type position is rejected"
+  (doc    "`(: 5 42)` puts the integer literal `42` — a VALUE, not a type — in type position. A value is
+           not a type, so the annotation is meaningless and rejects (CDZ0203, 'expected a type'). Pins
+           the non-name facet of the same missing validation: any non-type operand rejects, not just an
+           unbound name. Accepted-and-ignored (ran to 5) before the type-operand check.")
+  (input  (do (def (main) (: 5 42)) (export main)))
+  (error  CDZ0203))
+
+(case "a non-constructor type applied to arguments in type position is rejected"
+  (doc    "`(: true (Int64 Int64))` applies `Int64` — which is NOT a type constructor (it takes no
+           arguments) — to an argument, a malformed type expression. Were the operand simply `Int64`, the
+           annotation would reject the Bool value `true`; instead the malformed application resolved to a
+           non-type and was silently dropped, so `(: true (Int64 Int64))` ran to true. A non-constructor
+           type applied to arguments must reject (CDZ0203, 'expected a type'). (An over/under-applied
+           GENERIC type rejects via unification when the value forces it; this is the non-generic case.)")
+  (input  (do (def (main) (: true (Int64 Int64))) (export main)))
+  (error  CDZ0203))
+
+(case "an unbound name as a parameter's annotation type is rejected"
+  (doc    "The PARAMETER-annotation companion: `(def (f (: x foo)) x)` annotates the parameter `x` with
+           the unbound `foo` in type position. A parameter's type operand must denote a type exactly as a
+           value annotation's does, so the unbound `foo` rejects CDZ0101 (was accepted, `(f 7)` ran to 7
+           — the garbage parameter type silently typed `x` as unconstrained). Pins that the type-operand
+           validation covers a signature parameter, not only a value annotation.")
+  (input  (do (def (f (: x foo)) x) (def (main) (f 7)) (export main)))
+  (error  CDZ0101))
+
+(case "a well-formed annotation still checks and accepts a matching type (the control)"
+  (doc    "The control pinning the rejects above are about VALIDATING the type operand, not annotations
+           in general: `(: 5 Int64)` matches the value's type and is accepted (5); a mismatch `(: 5 Bool)`
+           still rejects CDZ0203; and a real parameter annotation `(: n Int64)` compiles. So the
+           annotation machinery works for real types — the gap was specifically a NON-type operand
+           accepted-and-ignored.")
+  (input  (do (def (main) (: 5 Int64)) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 ; The annotation-contradiction check must hold for a COMPOUND value too, not only a scalar. A tuple /
 ; sum / record / list is not a scalar type, so annotating one with a scalar type (Int64, Bool, …)
 ; contradicts the value's type and MUST be rejected (CDZ0203, type-system.md #Annotations Constrain,

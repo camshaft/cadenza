@@ -291,6 +291,46 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     crate::eval::typeval_of(db, ty_expr)
 }
 
+/// Faults in a DEF PARAMETER's annotation `(: name T)` — the signature-side companion of the value
+/// annotation checked in `collect_node`. A parameter's TYPE OPERAND `T` must denote a TYPE; a non-type
+/// (an unbound name, a value, a malformed type application `(Int64 Int64)`) is REJECTED, not
+/// dropped-and-typed-`Any` (the same drop-instead-of-reject gap the value-annotation form had). `param`
+/// is a signature parameter occurrence — a bare name (no annotation, no fault) or a `(: name T)` binder.
+/// Reported from `compile::collect_faults` (which walks each def's params); a def's body is checked
+/// separately, and a bare param never reaches here with a fault.
+pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Reject>) {
+    // Only an ANNOTATED param `(: name T)` has a type operand to validate.
+    let Some(tail) = db.ast.as_form(param, ":").map(|t| t.to_vec()) else {
+        return;
+    };
+    if tail.len() != 2 {
+        return;
+    }
+    let ty_expr = tail[1];
+    // A RUNTIME WIDTH `(: n (UInt m))` with a runtime `m` is its own CDZ0302 (surfaced where the
+    // annotation is used in the body); do not also fault it here as "not a type".
+    if crate::eval::is_runtime_width_type(db, ty_expr) {
+        return;
+    }
+    // The operand denotes a type → fine. Otherwise reject, exactly as the value-annotation form does:
+    // collect the operand's OWN faults (an unbound name → CDZ0101), and if none surfaced (a well-formed
+    // non-type: a literal, a compound, `(Int64 Int64)`), add an "expected a type" TypeMismatch (CDZ0203).
+    if crate::eval::typeval_of(db, ty_expr).is_none() {
+        let before = out.len();
+        collect(db, ty_expr, out);
+        if out.len() == before {
+            trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type (CDZ0203)");
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    "a parameter's annotation requires a type, but found a non-type",
+                )
+                .at(ty_expr),
+            );
+        }
+    }
+}
+
 /// The inferred type of an unannotated RECURSIVE-def parameter whose name occurrence is `binder`, or
 /// `None` if `binder` is not such a parameter (a non-recursive def's param inlines at its call site and
 /// stays `Any`; an annotated param is handled by `param_annot_ty`). Locates `binder`'s def, and — if
@@ -1333,7 +1373,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // runtime data). This is checked on the ANNOTATION's un-inlined body, so `(def (mk n) (: 5
             // (UInt n)))` rejects (CDZ0302) even though a constant call site `(mk 8)` would fold `n` — a
             // width must be non-dependent regardless of how it happens to be called.
-            if crate::eval::is_runtime_width_type(db, ty_expr) {
+            let runtime_width = crate::eval::is_runtime_width_type(db, ty_expr);
+            if runtime_width {
                 trace!(target: "rcdzc::infer", node = id.0, "fault: integer width from runtime data (CDZ0302)");
                 out.push(Reject::coded(
                     Code::IntOutOfRange,
@@ -1376,6 +1417,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ),
                         ));
                     }
+                }
+            } else if !runtime_width {
+                // The TYPE OPERAND does not denote a type — an unbound name, an integer/compound VALUE,
+                // an arbitrary expression, or a non-constructor type applied to arguments (`(Int64 Int64)`).
+                // The type position REQUIRES a type, so this is REJECTED, not dropped-and-ignored (the
+                // drop-instead-of-reject gap: `typeval_of` → None was treated as "no constraint"). First
+                // collect the operand's OWN faults — an UNBOUND NAME surfaces as CDZ0101 there (the same
+                // code it gets in value position, `(+ foo 1)`), so a typo in a type is not swallowed. If
+                // the operand is well-formed but simply not a type (a literal, a compound, `(Int64 Int64)`),
+                // no fault surfaces from that collect, so add an "expected a type" TypeMismatch (CDZ0203).
+                // (A RUNTIME WIDTH also makes `typeval_of` return None but is already reported CDZ0302
+                // above — excluded here so it is not double-faulted.)
+                let before = out.len();
+                collect(db, ty_expr, out);
+                if out.len() == before {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        "the type position of an annotation requires a type, but found a non-type",
+                    ));
                 }
             }
             collect(db, expr, out);

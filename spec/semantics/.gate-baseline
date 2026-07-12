@@ -169,6 +169,7 @@ pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary function called from another function's body
@@ -271,6 +272,7 @@ pass	a type-value in integer-width position is rejected
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
+pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-bit integer width is rejected
@@ -297,6 +299,7 @@ pass	an if with a narrow branch and a bare-literal branch computes at the narrow
 pass	an inner binding shadows an outer one only within its scope
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
+pass	an integer literal in a type annotation's type position is rejected
 pass	an integer literal pattern against a boolean scrutinee is a type error
 pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
@@ -309,9 +312,11 @@ pass	an ordering operator with a single operand is rejected, not a crash
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated program with a valid typing type-checks and runs
+pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
 pass	an unbound name in a short-circuited boolean operand is still rejected
+pass	an unbound name in a type annotation's type position is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected
 pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected

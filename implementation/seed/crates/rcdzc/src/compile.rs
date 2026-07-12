@@ -230,6 +230,15 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
             }
         }
     }
+    // Validate every definition's PARAMETER ANNOTATIONS — a garbage type in a `(: name T)` parameter
+    // (an unbound name, a value, a malformed type application) is rejected, not silently typed `Any`.
+    // The signature-side companion of the value-annotation check in `infer::collect_node`; walked here
+    // because a signature parameter is not part of the def's body (which `type_errors` walks). Collected
+    // per param across ALL defs so a garbage parameter type is caught whether or not the def is called.
+    let all_params: Vec<StructId> = db.defs.iter().flat_map(|d| d.params.clone()).collect();
+    for p in all_params {
+        crate::infer::param_annotation_faults(db, p, &mut faults);
+    }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)
     let bodies: Vec<(StructId, bool)> = db
