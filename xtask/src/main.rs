@@ -437,8 +437,12 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
 enum Ran {
     /// Ran to a value, rendered to canonical text.
     Value(String),
-    /// The compiler rejected/declined the program.
-    Declined,
+    /// The compiler rejected/declined the program. `code` is the diagnostic CODE the compiler emitted
+    /// (`Some("CDZ0210")`) — a TYPED rejection the corpus can match against `(error CODE)` — or `None`
+    /// for a codeless DECLINE (an unimplemented construct: `Reject::decline`), which grades as `todo`
+    /// (not-yet-built), never a disagreement. This is the "grade by what the compiler DOES" rule applied
+    /// to rejections: a coded reject is a decision to check, a codeless decline is a gap to fill.
+    Declined { code: Option<String> },
     /// The component ran but trapped.
     Trap(String),
 }
@@ -478,7 +482,12 @@ fn run_program(tools: &Tools, store: &Option<PathBuf>, program: &str, call: Opti
     let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
     let _ = syntax.wait();
     if !rcdzc_out.status.success() {
-        return Ran::Declined;
+        // A rejection: recover the diagnostic CODE from the first `error [CODE]` line rcdzc printed to
+        // stderr (`rcdzc: error [CDZ0210] (node …): …`). A TYPED rejection carries a code; a codeless
+        // DECLINE (unimplemented construct) carries none. `grade_ran` uses this to match `(error CODE)`.
+        return Ran::Declined {
+            code: first_error_code(&rcdzc_out.stderr),
+        };
     }
 
     // Stage 3: run the component (its stdout is the value; a trap goes to stderr with exit 1).
@@ -520,6 +529,23 @@ fn first_line(bytes: &[u8]) -> String {
         .next()
         .unwrap_or("")
         .to_string()
+}
+
+/// The FIRST diagnostic CODE in rcdzc's stderr — the `CDZ####` inside the first `error [CODE]` line
+/// (`rcdzc: error [CDZ0210] (node 3): …`). `None` if no line carries a bracketed code (a codeless
+/// decline, or a warning-only run). Scans line-by-line for the first `error [` so a later warning's
+/// code cannot shadow the error the corpus expects.
+fn first_error_code(stderr: &[u8]) -> Option<String> {
+    for line in String::from_utf8_lossy(stderr).lines() {
+        // Match `… error [CODE]…` — a typed ERROR (not a warning). The code is between `[` and `]`.
+        if let Some(rest) = line.split_once("error [").map(|(_, r)| r)
+            && let Some(code) = rest.split(']').next()
+            && !code.is_empty()
+        {
+            return Some(code.trim().to_string());
+        }
+    }
+    None
 }
 
 /// Options for `gate` (grows without re-threading a widening arg list).
@@ -698,7 +724,10 @@ fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], need
                 }
                 let actual = match ran {
                     Ran::Value(v) => format!("value {v}"),
-                    Ran::Declined => "declined (compiler can't compile it yet)".to_string(),
+                    Ran::Declined { code: Some(c) } => format!("rejected [{c}]"),
+                    Ran::Declined { code: None } => {
+                        "declined (compiler can't compile it yet)".to_string()
+                    }
                     Ran::Trap(t) => format!("trap: {t}"),
                 };
                 println!("expect:   {}", trial.expect);
@@ -882,17 +911,33 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             match ran {
                 Ran::Value(v) if *v == expected_val || *v == expected_full => Grade::Pass,
                 Ran::Value(v) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
-                Ran::Declined => Grade::Todo, // compiler can't compile it yet
+                Ran::Declined { .. } => Grade::Todo, // compiler can't compile it yet
                 Ran::Trap(t) => Grade::Fail(format!("expected {expected_full}, trapped: {t}")),
             }
         }
-        // `error CODE` / `trap …`: matching a rejection code or a trap reason needs machinery not yet
-        // wired (rcdzc's diagnostics aren't coded yet, traps need the runtime). Count as todo unless a
-        // clear disagreement — a program the corpus says is REJECTED that instead ran to a value.
-        "error" => match ran {
-            Ran::Value(v) => Grade::Fail(format!("expected rejection {payload}, ran → {v}")),
-            _ => Grade::Todo,
-        },
+        // `error CODE`: the corpus says this program is REJECTED with diagnostic `CODE`. Grade by what
+        // the compiler DID (the same rule as `output`, applied to rejections):
+        //  - rejected with the MATCHING code  → Pass (the check fired, correctly coded);
+        //  - ran to a VALUE (accepted an ill-formed program) → Fail (the miscompile the check must catch —
+        //    the honest signal, the analogue of a wrong `output` value);
+        //  - rejected with a DIFFERENT code / a CODELESS decline / a trap → Todo.
+        // A different code is NOT a Fail: the ill-formed program was still correctly REFUSED (no
+        // miscompile — nothing ran), the code TAXONOMY merely differs (the check isn't built yet and a
+        // name goes unbound → CDZ0101, or the compiler picks a defensibly-different code — CDZ0203 "type
+        // mismatch" where the corpus reference says CDZ0201 "malformed"). Aligning those codes (compiler
+        // or corpus) turns each Todo into a Pass; treating them as Fail would swamp the honest
+        // accepted-ill-formed signal with taxonomy noise. Only running an ill-formed program is a Fail.
+        "error" => {
+            let want = payload.trim();
+            match ran {
+                Ran::Value(v) => Grade::Fail(format!("expected rejection {want}, ran → {v}")),
+                Ran::Declined { code: Some(got) } if got == want => Grade::Pass,
+                // Rejected (a different code), a codeless decline, or a trap — refused, not miscompiled.
+                Ran::Declined { .. } | Ran::Trap(_) => Grade::Todo,
+            }
+        }
+        // `trap …`: matching a trap reason needs machinery not yet wired (the runtime message). Count as
+        // todo unless a clear disagreement — a program the corpus says TRAPS that instead ran to a value.
         "trap" => match ran {
             Ran::Value(v) => Grade::Fail(format!("expected a trap, ran → {v}")),
             _ => Grade::Todo,
