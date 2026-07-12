@@ -60,14 +60,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "a06a39a51113f870a6fa08c54988fff83e837bcf062664caf22476ba8a404418";
+    "bbb0c9bc2cffbd5520a555ff1fe168cffd8edb8a0ffe5b3a347ad2c7378969ab";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "b733adc2130a84167d7b773b1841aaaafc9e8f1ec539f8896a8d76e8dad19fae";
+    "b4964dd7b44b10a86f817823ca5590822d782cce1a11bba68151df10a3b64c2d";
 /// Every op the runtime `heap` interface declares, as structured signature data (sorted).
 pub const RUNTIME_OPS: &[RtOp] = &[
     RtOp {

@@ -2657,16 +2657,24 @@ fn champ_insert_node(node: Handle, entry: Vec<Handle>, hash: u32, level: u32, st
 // (the same pattern as `vec_push_fbip`). A subnode with rc==1 reached THROUGH a shared ancestor is
 // still shared, which is why `mine` never turns back true once false.
 
-/// In-place shell reuse: uniquely-owned (`rc == 1`) `node` BECOMES the `(handles, raw)` node — no new
-/// allocation and no self-drop. Carried children were moved into `handles` WITHOUT a dup (each single
-/// owned reference relocates); the caller must have already `op_drop`ed any REMOVED children. Dropping
-/// the old `handles` Vec changes no refcount (`Handle` is a plain `Copy` pointer with no `Drop`), so a
-/// carried child that lives in BOTH the old and new Vec ends with its refcount intact. SAFETY: the
-/// caller verified `node_rc(node) == 1`.
-fn champ_become(node: Handle, handles: Vec<Handle>, raw: Vec<u8>) -> Handle {
+/// In-place shell reuse for a uniquely-owned (`rc == 1`) CHAMP `node`: install `handles` and WRITE the
+/// 3-u32 header (`[datamap][nodemap][size]`) into the node's EXISTING `raw` buffer in place, rather
+/// than taking a freshly-allocated `champ_header` Vec — saving a 12-byte Vec allocation per rebuilt
+/// spine node (the profiler's dominant FBIP-insert/remove cost). Carried children were moved into
+/// `handles` WITHOUT a dup (each single owned reference relocates); the caller must have already
+/// `op_drop`ed any REMOVED children. Dropping the old `handles` Vec changes no refcount (`Handle` is a
+/// `Copy` pointer with no `Drop`), so a carried child in BOTH the old and new Vec keeps its rc intact.
+/// A CHAMP node's `raw` is always exactly `CHAMP_HEADER_SIZE`, so the header write never grows/reallocs;
+/// a defensively short/absent `raw` is resized to fit. SAFETY: caller verified `node_rc(node) == 1`.
+fn champ_become_hdr(node: Handle, handles: Vec<Handle>, datamap: u32, nodemap: u32, size: u32) -> Handle {
     if let Some(n) = unsafe { node.0.as_mut() } {
         n.handles = handles;
-        n.raw = raw;
+        if n.raw.len() != CHAMP_HEADER_SIZE {
+            n.raw.resize(CHAMP_HEADER_SIZE, 0); // defensive; a real CHAMP node is already 12 bytes
+        }
+        n.raw[0..4].copy_from_slice(&datamap.to_le_bytes());
+        n.raw[4..8].copy_from_slice(&nodemap.to_le_bytes());
+        n.raw[8..12].copy_from_slice(&size.to_le_bytes());
     }
     node
 }
@@ -2701,7 +2709,7 @@ fn champ_insert_fbip(
     if datamap == 0 && nodemap == 0 {
         if arity == 0 {
             let i = level_index(hash, level);
-            return champ_become(node, entry, champ_header(1 << i, 0, 1)); // entry owned, moved in
+            return champ_become_hdr(node, entry, 1 << i, 0, 1); // entry owned, moved in
         }
         // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
         // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
@@ -2712,9 +2720,11 @@ fn champ_insert_fbip(
     // Normal (bitmap) node on a UNIQUE spine: TAKE its handle vector instead of cloning it. `node` is
     // `rc == 1` (the `mine` gate + monotone-false descent), so no other reference exists; the take is
     // a pointer swap (zero alloc, vs the clone's O(arity) copy on every spine node, every level). Every
-    // path below rebuilds a fresh `new_handles` and `champ_become(node, …)` REINSTALLS it before this
+    // path below rebuilds a fresh `new_handles` and `champ_become_hdr(node, …)` REINSTALLS it before this
     // function returns, so `node` is never observed in the transient empty state (single-threaded).
-    let handles = match unsafe { node.0.as_mut() } {
+    // `mut` because the arity-preserving branches (OVERWRITE, DESCEND) mutate a slot in place and
+    // reinstall this same vector rather than allocating a fresh one.
+    let mut handles = match unsafe { node.0.as_mut() } {
         Some(n) => std::mem::take(&mut n.handles),
         None => Vec::new(),
     };
@@ -2730,20 +2740,15 @@ fn champ_insert_fbip(
         let base = stride * eidx;
         let stored_key = handles[base];
         if champ_eq(stored_key, key) {
-            // OVERWRITE: keep stored key, take the incoming value columns, drop the old ones. Size same.
-            let mut new_handles = Vec::with_capacity(handles.len());
-            for (idx, &h) in handles.iter().enumerate() {
-                if idx > base && idx < base + stride {
-                    new_handles.push(entry[idx - base]); // incoming value column (owned)
-                } else {
-                    new_handles.push(h); // carried WITHOUT dup (single ref relocates)
-                }
-            }
+            // OVERWRITE: keep stored key, take the incoming value columns, drop the old ones. Size same,
+            // arity unchanged — so mutate the taken `handles` IN PLACE (swap the value columns) and
+            // reinstall it, rather than allocating a fresh `new_handles` (saves one Vec per spine node).
             for t in 1..stride {
-                op_drop(handles[base + t]); // old value columns, replaced
+                op_drop(handles[base + t]); // old value column, replaced
+                handles[base + t] = entry[t]; // incoming value column (owned)
             }
             op_drop(entry[0]); // incoming duplicate key unused
-            return champ_become(node, new_handles, champ_header(datamap, nodemap, size));
+            return champ_become_hdr(node, handles, datamap, nodemap, size);
         }
         // SPLIT: fold the inline entry + newcomer into a subnode. Move the stored entry (no dup) into
         // the merge; carry other entries/subnodes without dup.
@@ -2771,7 +2776,7 @@ fn champ_insert_fbip(
         }
         subs.insert(new_sidx, sub);
         new_handles.extend(subs);
-        return champ_become(node, new_handles, champ_header(new_datamap, new_nodemap, size + 1));
+        return champ_become_hdr(node, new_handles, new_datamap, new_nodemap, size + 1);
     }
 
     if nodemap & bit != 0 {
@@ -2783,15 +2788,12 @@ fn champ_insert_fbip(
         let child_mine = node_rc(child) == 1;
         let new_child = champ_insert_fbip(child, entry, hash, level + 1, stride, child_mine);
         let delta = champ_size_of(new_child) - old_child_size; // 0 (overwrite) or 1 (new key)
-        let mut new_handles = Vec::with_capacity(handles.len());
-        for (idx, &h) in handles.iter().enumerate() {
-            if idx == subbase + sidx {
-                new_handles.push(new_child); // reused-in-place (== child) OR fresh copy; owned either way
-            } else {
-                new_handles.push(h); // carried, no dup
-            }
-        }
-        return champ_become(node, new_handles, champ_header(datamap, nodemap, size + delta));
+        // Arity unchanged — swap the one child slot in the taken `handles` IN PLACE and reinstall,
+        // rather than rebuilding a fresh Vec (saves one alloc per descended level, the common path).
+        // The recursion CONSUMED `child` (the reference at this slot); writing `new_child` here is a
+        // no-op when it reused the shell (`new_child == child`) and installs the fresh node otherwise.
+        handles[subbase + sidx] = new_child;
+        return champ_become_hdr(node, handles, datamap, nodemap, size + delta);
     }
 
     // EMPTY slot: place a new inline entry in canonical (ascending-bit) order.
@@ -2809,7 +2811,7 @@ fn champ_insert_fbip(
     for s in 0..scount {
         new_handles.push(handles[subbase + s]); // carried, no dup
     }
-    champ_become(node, new_handles, champ_header(new_datamap, nodemap, size + 1))
+    champ_become_hdr(node, new_handles, new_datamap, nodemap, size + 1)
 }
 
 /// Insert `key => val`, returning the new map. CONSUMES `m`, `key`, `val`. Inserting an existing key
@@ -3064,7 +3066,7 @@ fn champ_remove_fbip(
             }
         }
         return (
-            champ_become(node, new_handles, champ_header(0, 0, entries_after)),
+            champ_become_hdr(node, new_handles, 0, 0, entries_after),
             true,
         );
     }
@@ -3097,7 +3099,7 @@ fn champ_remove_fbip(
             new_handles.push(handles[subbase + s]); // carried, no dup
         }
         return (
-            champ_become(node, new_handles, champ_header(new_datamap, nodemap, size - 1)),
+            champ_become_hdr(node, new_handles, new_datamap, nodemap, size - 1),
             true,
         );
     }
@@ -3138,21 +3140,19 @@ fn champ_remove_fbip(
                 new_handles.push(handles[subbase + s]); // carried, no dup
             }
             return (
-                champ_become(node, new_handles, champ_header(new_datamap, new_nodemap, size - 1)),
+                champ_become_hdr(node, new_handles, new_datamap, new_nodemap, size - 1),
                 true,
             );
         }
         // Subnode still holds ≥2 entries: keep it, swap in the rebuilt child (== child if in-place).
-        let mut new_handles = Vec::with_capacity(handles.len());
-        for (idx, &h) in handles.iter().enumerate() {
-            if idx == subbase + sidx {
-                new_handles.push(new_child);
-            } else {
-                new_handles.push(h); // carried, no dup
-            }
-        }
+        // Arity unchanged — mutate the one child slot in the owned `handles` and reinstall, rather than
+        // rebuilding a fresh Vec. `handles` is this call's own clone; the recursion consumed the old
+        // child reference at this slot, so overwriting it with `new_child` is correct (a no-op when the
+        // child was refit in place, i.e. `new_child == child`).
+        let mut handles = handles;
+        handles[subbase + sidx] = new_child;
         return (
-            champ_become(node, new_handles, champ_header(datamap, nodemap, size - 1)),
+            champ_become_hdr(node, handles, datamap, nodemap, size - 1),
             true,
         );
     }
@@ -3745,6 +3745,27 @@ fn op_set_difference(a: Handle, b: Handle) -> Handle {
 
 // ─── Native tests: exercise the Handle-typed heap+accessor core ─────────────────────────
 
+// TEMP PROFILER (removed after measurement): a process-wide counting allocator for the native test
+// build only, so a probe can measure GROSS heap allocations (including transient Vecs freed at once —
+// the target of the clone-elimination work) per runtime operation. Counting only; correctness intact.
+#[cfg(test)]
+struct CountingAlloc;
+#[cfg(test)]
+static ALLOC_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        ALLOC_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+}
+#[cfg(test)]
+#[global_allocator]
+static PROFILER_ALLOC: CountingAlloc = CountingAlloc;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3752,6 +3773,94 @@ mod tests {
     /// No shared table to clear — every value is its own allocation and every test holds the handles
     /// it builds. Kept as a documented no-op so each test reads as a self-contained scenario.
     fn reset() {}
+
+    fn alloc_calls() -> u64 {
+        ALLOC_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Allocation-ceiling regression guard for the hot CHAMP/RRB ops, run SINGLE-THREADED (see below).
+    /// Uses the process-wide `CountingAlloc` (test build only) to count GROSS heap allocations —
+    /// including transient Vecs freed immediately, which the `live-objects` node counter does NOT see —
+    /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
+    /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
+    /// after the champ_become_hdr + in-place-slot work (insert 3907, remove 5207, iterate 5248, push
+    /// 197, get 0); they are UPPER BOUNDS so ordinary noise never trips them but a regression to the
+    /// old 6779/8397 does.
+    ///
+    /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
+    /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
+    /// `#[ignore]`d in the normal run (and in `cargo test`/`cargo xtask check`) and exercised on demand:
+    ///   `cargo test -p cdz-runtime hot_op_allocation_ceilings -- --ignored --test-threads=1 --nocapture`
+    /// Correctness of these ops is covered independently by the FBIP canonical-shape / reference tests,
+    /// which DO run in the normal suite; this test guards only the allocation budget.
+    #[test]
+    #[ignore] // process-wide counter — run alone with --ignored --test-threads=1 (see doc)
+    fn hot_op_allocation_ceilings() {
+        reset();
+        let measure = |f: &mut dyn FnMut()| -> u64 {
+            let start = alloc_calls();
+            f();
+            alloc_calls() - start
+        };
+        const N: i64 = 1000;
+
+        // (A) map insert (unique, FBIP) — N fresh keys.
+        let mut m = op_map_empty();
+        let insert = measure(&mut || {
+            for k in 0..N {
+                m = op_map_insert(m, op_box_int(k), op_box_int(k * 2));
+            }
+        });
+        println!("ALLOC map_insert x{N}: {insert}");
+        assert!(insert <= 5000, "unique map_insert x{N} allocs {insert} exceeds ceiling 5000 (was 6779 before champ_become_hdr + in-place slot)");
+
+        // (B) full iteration (unique cursor walk).
+        let iterate = measure(&mut || {
+            let mut c = op_map_iter(m);
+            while op_map_iter_key(c) != Handle::NULL {
+                c = op_map_iter_next(c);
+            }
+            op_drop(c);
+        });
+        println!("ALLOC map_iterate x{N}: {iterate}");
+        assert!(iterate <= 6000, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 6000");
+        op_drop(m);
+
+        // (C) map remove (unique) — remove all N.
+        let mut m2 = op_map_empty();
+        for k in 0..N {
+            m2 = op_map_insert(m2, op_box_int(k), op_box_int(k));
+        }
+        let remove = measure(&mut || {
+            for k in 0..N {
+                let p = op_box_int(k);
+                m2 = op_map_remove(m2, p);
+                op_drop(p);
+            }
+        });
+        println!("ALLOC map_remove x{N}: {remove}");
+        assert!(remove <= 6500, "unique map_remove x{N} allocs {remove} exceeds ceiling 6500 (was 8397 before champ_become_hdr + in-place slot)");
+        op_drop(m2);
+
+        // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
+        let mut v = op_vec_empty();
+        let push = measure(&mut || {
+            for k in 0..N {
+                v = op_vec_push(v, op_box_int(k));
+            }
+        });
+        println!("ALLOC vec_push x{N}: {push}");
+        assert!(push <= 400, "unique vec_push x{N} allocs {push} exceeds ceiling 400");
+        // (E) vec get — a pure read must allocate NOTHING.
+        let get = measure(&mut || {
+            for k in 0..N as u32 {
+                let _ = op_vec_get(v, k % N as u32);
+            }
+        });
+        println!("ALLOC vec_get x{N}: {get}");
+        assert_eq!(get, 0, "vec_get is a pure read — zero allocations");
+        op_drop(v);
+    }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
     /// tag, so the renderer is driven ENTIRELY by this compile-time knowledge: the SAME heap node
