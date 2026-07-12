@@ -368,6 +368,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         ret: Ty::int64(),
         code: vec![Lir::ConstI64(42)],
         declared: vec![],
+        src_body: None,
     };
     let layout = Layout::new(
         vec![ExportPlan {
@@ -10236,6 +10237,99 @@ mod debug_info {
             with_spans.artifact("component").expect("component"),
             without.as_slice(),
             "a spans input must not change the plain (non-debug) component's bytes"
+        );
+    }
+
+    // ── D1b: the offset→StructId line-table primitive (§2.1b) ──────────────────────────────────────
+
+    #[test]
+    fn code_ranges_partition_the_code_section_payload_and_carry_src() {
+        // The D1b primitive: `code_ranges` gives each function's byte range within the code-section
+        // PAYLOAD, paired with its source occurrence. Verify (a) the ranges are contiguous, start past
+        // the function-count prefix, and cover exactly the payload; (b) each range's bytes ARE that
+        // function's `code_entry` (byte-identical); (c) `src` round-trips. Two functions with distinct
+        // source ids exercise the pairing.
+        use crate::ast::StructId;
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{code_entry_bytes, code_ranges, core_module};
+        use crate::layout::{ExportPlan, Layout};
+        use crate::ty::Ty;
+
+        let funcs = vec![
+            SelectedFunc {
+                params: vec![],
+                ret: Ty::int64(),
+                code: vec![Lir::ConstI64(7)],
+                declared: vec![],
+                src_body: Some(StructId(11)),
+            },
+            SelectedFunc {
+                params: vec![],
+                ret: Ty::int64(),
+                code: vec![Lir::ConstI64(1000), Lir::ConstI64(2), Lir::I64Add],
+                declared: vec![],
+                src_body: Some(StructId(22)),
+            },
+        ];
+        // One import so the layout mirrors the oracle shape; ranges are import-independent.
+        let imports = [OPS.arr_alloc];
+        let layout = Layout::new(
+            vec![ExportPlan {
+                name: "main".to_string(),
+                def: 0,
+                body: StructId(11),
+                params: vec![],
+                result: Ty::int64(),
+            }],
+            vec![0, 1],
+            1,
+        );
+
+        let ranges = code_ranges(&funcs, &imports);
+        assert_eq!(ranges.len(), 2);
+        // (c) src round-trips, in emission order.
+        assert_eq!(ranges[0].src, Some(StructId(11)));
+        assert_eq!(ranges[1].src, Some(StructId(22)));
+
+        // (a) contiguous + starts past the count prefix (a 2-function module: count = 1 byte).
+        assert_eq!(
+            ranges[0].code_start, 1,
+            "starts past the 1-byte function count"
+        );
+        assert_eq!(
+            ranges[0].code_end, ranges[1].code_start,
+            "ranges are contiguous"
+        );
+
+        // (b) each range's bytes ARE that function's code entry.
+        let entry0 = code_entry_bytes(&funcs[0], &imports);
+        let entry1 = code_entry_bytes(&funcs[1], &imports);
+        assert_eq!(
+            (ranges[0].code_end - ranges[0].code_start) as usize,
+            entry0.len()
+        );
+        assert_eq!(
+            (ranges[1].code_end - ranges[1].code_start) as usize,
+            entry1.len()
+        );
+
+        // Cross-check the payload total: count prefix + both entries == last range end.
+        let count_prefix = 1u32; // uleb(2) is one byte
+        assert_eq!(
+            ranges[1].code_end,
+            count_prefix + entry0.len() as u32 + entry1.len() as u32
+        );
+
+        // And the whole thing is consistent with a real `core_module`: the module must contain the two
+        // entries' bytes consecutively at the payload region the ranges describe.
+        let core = core_module(&funcs, &imports, &layout, None).expect("core module");
+        let mut concat = entry0.clone();
+        concat.extend_from_slice(&entry1);
+        assert!(
+            core.windows(concat.len()).any(|w| w == concat.as_slice()),
+            "the emitted core module must contain both code entries consecutively"
         );
     }
 }

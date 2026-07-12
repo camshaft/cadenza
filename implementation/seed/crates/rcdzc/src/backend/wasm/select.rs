@@ -287,6 +287,14 @@ pub struct SelectedFunc {
     pub ret: Ty,
     pub code: Vec<Lir>,
     pub declared: Vec<ValType>,
+    /// The AST occurrence this function's body was selected from — the source-attribution anchor for
+    /// debug info (`DESIGN-debug-info-rcdzc.md` §2.1b). Carried so `serialize` can pair each function's
+    /// emitted code byte range with the source `StructId` (→ span, via the `spans` sidecar), which is
+    /// what a DWARF `DW_TAG_subprogram`'s `low_pc`/`high_pc` + line-program rows need. This is
+    /// FUNCTION-granularity attribution; per-statement (per-`Lir`-run) is a later refinement that needs
+    /// threading the current node through the emit family. `None` for a synthesized function (an escape
+    /// walker) with no single source body.
+    pub src_body: Option<StructId>,
 }
 
 /// Select one NULLARY definition body (rooted at AST occurrence `body`) into its flat instruction
@@ -718,6 +726,8 @@ pub fn select_function_of(
         ret,
         code,
         declared,
+        // The body occurrence is this function's source anchor for debug info (§2.1b).
+        src_body: Some(body),
     })
 }
 

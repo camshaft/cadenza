@@ -239,6 +239,70 @@ pub struct DebugInfo<'a> {
     pub func_names: &'a [(u32, String)],
 }
 
+/// One defined function's emitted CODE byte range, paired with the source occurrence it derives from —
+/// the D1b line-table primitive (`DESIGN-debug-info-rcdzc.md` §2.1b). `code_start`/`code_end` are byte
+/// offsets of the function's `code_entry` (its `<size><locals><instrs>end` bytes) RELATIVE TO THE START
+/// OF THE CODE-SECTION PAYLOAD — i.e. relative to the first byte after the code section's id + length
+/// prefix. `src` is the function's `src_body` occurrence (`None` for a synthesized escape walker). The
+/// compose chain the DWARF line program needs is `code_offset → src → span → (file, line, col)`, where
+/// `span` comes from the `spans` sidecar and the ABSOLUTE code offset is `code_section_base +
+/// code_start` (D2 adds the base; the base is the code-section-payload's offset in the module, known
+/// once the earlier sections are laid). Computed by a PURE re-derivation of `core_module`'s code
+/// layout, so it stays exactly in sync without threading state through the emit family or touching the
+/// executed-section bytes.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FuncCodeRange {
+    pub src: Option<crate::ast::StructId>,
+    pub code_start: u32,
+    pub code_end: u32,
+}
+
+/// The per-function code byte ranges within the code-section payload — the D1b `code_offset → StructId`
+/// line table (§2.1b). A PURE function of the same `funcs`/`imports` slice `core_module` serializes,
+/// re-deriving each function's `code_entry` size in emission order so the ranges match the emitted code
+/// section byte-for-byte. `imports` is unused for offsets (the code section holds only DEFINED bodies)
+/// but taken for signature symmetry with `core_module` and to make the "same inputs" contract explicit.
+/// This is the inert internal value D1b lands: nothing in the executed bytes changes, and D2 turns these
+/// ranges (+ the `spans` sidecar) into the `.debug_line` program. A body whose `functype` has no machine
+/// rep would have already declined in `core_module`, so `code_entry` here never faults.
+/// One function's code-section entry bytes (`<size><locals><instrs>end`) — the public witness of the
+/// per-function byte length [`code_ranges`] and `core_module` both derive from `code_entry`. Exposed so
+/// tests (and D2's line-program builder) can assert a range's length against the real entry. `imports`
+/// fixes the `import_index` a `CallImport` resolves against (same as `core_module`).
+pub fn code_entry_bytes(f: &SelectedFunc, imports: &[&RtOp]) -> Vec<u8> {
+    let import_index: std::collections::HashMap<&str, u32> = imports
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (o.name, i as u32))
+        .collect();
+    code_entry(f, &import_index)
+}
+
+pub fn code_ranges(funcs: &[SelectedFunc], imports: &[&RtOp]) -> Vec<FuncCodeRange> {
+    // The code-section PAYLOAD begins with the function COUNT (a `wasm_vec` count uleb), then each
+    // function's `code_entry` bytes concatenated. So the first entry starts past that count prefix.
+    let _ = imports; // offsets depend only on the defined bodies; imports affect call INDICES, not sizes
+    let import_index: std::collections::HashMap<&str, u32> = imports
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (o.name, i as u32))
+        .collect();
+    let mut offset = uleb_bytes(funcs.len() as u64).len() as u32;
+    let mut ranges = Vec::with_capacity(funcs.len());
+    for f in funcs {
+        let entry = code_entry(f, &import_index);
+        let code_start = offset;
+        let code_end = offset + entry.len() as u32;
+        ranges.push(FuncCodeRange {
+            src: f.src_body,
+            code_start,
+            code_end,
+        });
+        offset = code_end;
+    }
+    ranges
+}
+
 /// A length-prefixed name string, the wasm `name` section's string form: `<uleb len> <utf8 bytes>`.
 fn name_string(s: &str) -> Vec<u8> {
     let mut out = uleb_bytes(s.len() as u64);
