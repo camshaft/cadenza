@@ -367,6 +367,33 @@
   (call   main (: true Bool))
   (output (: 2 Int64)))
 
+(case "projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling"
+  (doc    "`(. (if b (tuple 5 6) (tuple (/ 1 x) 8)) 0)` projects element 0 of a tuple chosen by the runtime
+           Bool `b`. With `b` = true the FIRST tuple is selected, so the result is 5; the SECOND tuple's
+           element 0 is `(/ 1 x)` with x = 0 — a division by zero — but it is in the UNTAKEN branch AND is
+           an unprojected sibling of the selected side, so it is doubly unobserved and its trap must not
+           occur. A compiler that sinks the projection into each branch — `(if b 5 (/ 1 x))` — preserves
+           exactly this: only the taken branch's projected element is evaluated. Pins that the
+           projection-into-if rewrite keeps the untaken branch's trap shielded (core-semantics.md §A Trap
+           Occurs Only Where Its Computation Is Observed).")
+  (input  (do
+            (def (main (: b Bool) (: x Int64)) (. (if b (tuple 5 6) (tuple (/ 1 x) 8)) 0))
+            (export main)))
+  (call   main (: true Bool) (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs"
+  (doc    "The anchor to the shielding case: `(. (if b (tuple (/ 1 x) 6) (tuple 3 4)) 0)` with `b` = true and
+           x = 0 projects element 0 of the TAKEN first tuple — `(/ 1 x)` — whose value IS the result, so it
+           is observed and the division by zero traps. Contrast the sibling above where the trapping element
+           is in the untaken branch. Confirms the projection-into-if rewrite evaluates precisely the taken
+           branch's projected element — not too little (the shielded case) and not too much.")
+  (input  (do
+            (def (main (: b Bool) (: x Int64)) (. (if b (tuple (/ 1 x) 6) (tuple 3 4)) 0))
+            (export main)))
+  (call   main (: true Bool) (: 0 Int64))
+  (trap   "division by zero"))
+
 ; --- Positional access on a RUNTIME tuple bound by `let` -------------------------------------------
 ; A tuple returned from a function and BOUND BY `let` is a genuine runtime value (a value-heap
 ; positional array), not a compile-time structure. `(. x N)` on such a bound name reads element N from
