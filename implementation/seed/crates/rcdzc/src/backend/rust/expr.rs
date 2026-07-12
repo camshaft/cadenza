@@ -725,7 +725,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }
         | Core::Closure { .. }
-        | Core::CallClosure { .. } => Err(Reject::decline(
+        | Core::CallClosure { .. }
+        // Runtime structural equality is a value-heap walk — the Rust backend's scalar slice does not
+        // emit heap ops, so it declines (decline-don't-miscompile), as it does every compound op.
+        | Core::ValueEq { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),
     }

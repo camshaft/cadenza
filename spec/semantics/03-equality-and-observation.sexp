@@ -180,12 +180,14 @@
 ; component-wise cases above compare compound values built from LITERALS (folded at compile time). The
 ; demanding shape is two compound values BUILT AT RUN TIME — a sum/record/tuple whose contents come
 ; from a parameter or a call — so the comparison is a walk over two heap values, not a constant fold.
-; The seed declines this ("runtime compound equality (heap walk) not yet emitted") — the same
-; not-yet-emitted runtime path the two-runtime-string case above hits (a String is itself a
-; Bytes-backed heap value, so the two declines share one root). A program that compares two runtime AST
-; nodes / proof terms / records for structural equality hits this; the recorded oracle is what a
-; generation emitting the heap-walk comparison reproduces. Until then a program routes around it with a
-; hand-written recursive comparator (scalar `=` on the leaves, which IS emitted).
+; The compiler emits this as the runtime `value-eq` op (the tagless `champ_eq` walk the map/set key path
+; already uses): equal iff same shape AND equal component-wise, discriminant before payload. It is
+; realized for a compound whose LEAVES are all SCALAR (Int/Bool/Unit) — canonical by construction — so a
+; program comparing two runtime AST nodes / proof terms / records for structural equality runs; a
+; compound carrying a collection/text leaf (a List/Bytes/String, whose canonical form needs a
+; compaction) still declines (a later increment). The first two cases below `(= (mk 1) (mk 1))` INLINE
+; their tiny builder and fold to a constant (so they pass by the fold, not the walk); the recursion-built
+; cases that follow defeat the fold and genuinely exercise `value-eq`.
 
 (case "two runtime sum values compare equal by a heap walk"
   (doc    "`mk` builds a runtime sum `(N.I n)` from its parameter, so both operands of `(= (mk 1) (mk
@@ -213,6 +215,103 @@
             (def (mk n) (N.I n))
             (def (main) (if (= (mk 1) (mk 2)) 1 0)) (export main)))
   (output (: 0 Int64)))
+
+(case "a runtime sum whose payload comes from recursion compares equal by a heap walk"
+  (doc    "The GENUINELY non-foldable sum-equality shape — the two `mk`/`if`-shaped cases above inline
+           their tiny builder and reduce to a CONSTANT compound the compiler folds, so they never reach
+           the runtime `value-eq` path. Here one operand's payload is `(sumto 3)` = 3+2+1 = 6, a value
+           produced by RECURSION the compiler cannot fold to a literal, so `(N.I (sumto 3))` is a genuine
+           heap value; comparing it to `(N.I 6)` walks the two heap sums. Equal discriminant AND equal
+           payload → true → 1 (core-semantics.md #Equality Is Structural). Pins that `=` emits the
+           runtime structural comparison (`value-eq`), not only the compile-time fold — the observable
+           of the heap walk the two cases above document but do not exercise.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
+            (def (main) (if (= (N.I (sumto 3)) (N.I 6)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime sum whose payload comes from recursion compares unequal by a heap walk"
+  (doc    "The unequal companion of the recursion-built heap walk: `(sumto 3)` = 6, so `(N.I (sumto 3))`
+           carries 6 while `(N.I 7)` carries 7 — the heap walk finds the payloads differ and the
+           comparison is false → 0. Confirms `value-eq` is a genuine content test on the recursion-built
+           (unfoldable) operand, not a fold that happened to say true. The discriminant agrees (both `I`),
+           so this isolates the PAYLOAD comparison.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
+            (def (main) (if (= (N.I (sumto 3)) (N.I 7)) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
+(case "two recursion-built linked lists compare equal by a deep heap walk"
+  (doc    "The RECURSIVE-SUM heap walk: `build n` constructs a descending cons-list `[n, n-1, …, 1]`
+           whose length and spine are decided at run time (no fixed literal spine to fold), so `(build
+           3)` is a genuine multi-node heap value. `(= (build 3) (build 3))` walks BOTH cons-lists
+           node-by-node — each `Cons` tuple's head and tail, recursively to `Nil` — and finds them
+           structurally equal → 1. This is the deep-structure shape a self-hosted compiler comparing two
+           AST subtrees takes; it CANNOT fold (the spine is runtime-built). Pins that `value-eq` recurses
+           through a nested recursive sum, not just a one-level payload. Both operands are OWNED
+           temporaries the borrowing compare must reclaim (no leak).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
+            (def (build n) (if (< n 1) (IntList.Nil ())
+                               (IntList.Cons (tuple n (build (- n 1))))))
+            (def (main) (if (= (build 3) (build 3)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "two recursion-built linked lists of different lengths compare unequal by a heap walk"
+  (doc    "The unequal companion of the deep list walk: `(build 3)` = `[3,2,1]` and `(build 2)` =
+           `[2,1]` differ at the FIRST node (head 3 vs 2, and different spine length), so the heap walk
+           returns false → 0 without needing to prove the whole structure. Confirms the recursive
+           `value-eq` is a genuine structural comparison over the runtime-built spine, not a fold.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
+            (def (build n) (if (< n 1) (IntList.Nil ())
+                               (IntList.Cons (tuple n (build (- n 1))))))
+            (def (main) (if (= (build 3) (build 2)) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
+(case "two runtime sums with the same payload but different variants compare unequal by a heap walk"
+  (doc    "The discriminant half of the runtime heap walk: `pick` builds `(N.I n)` or `(N.J n)` from a
+           runtime boolean, so `(pick true 5)` = `(N.I 5)` and `(pick false 5)` = `(N.J 5)` are two
+           genuine heap sums carrying the SAME payload 5 under DIFFERENT variants. The heap walk compares
+           the discriminant BEFORE the payload (core-semantics.md #Equality Is Structural), so they are
+           unequal → 0 even though their payloads match. Pins that runtime `value-eq` — like the constant
+           fold — distinguishes `I 5` from `J 5`; an implementation comparing only payloads would wrongly
+           report equal.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (pick b n) (if b (N.I n) (N.J n)))
+            (def (main) (if (= (pick true 5) (pick false 5)) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
+(case "two runtime tuples compare equal by a heap walk"
+  (doc    "The TUPLE companion of the runtime sum heap walk: `mk` builds `(tuple n (+ n 1))` from its
+           parameter, so `(mk 3)` = `(tuple 3 4)` is a runtime heap tuple, not a folded constant.
+           `(= (mk 3) (mk 3))` walks both tuples element-wise and finds them equal → 1. Pins that
+           `value-eq` handles a runtime tuple (a positional product) the same as a sum — the structural
+           equality is over ANY compound, not sum-specific.")
+  (input  (do
+            (def (mk n) (tuple n (+ n 1)))
+            (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "two runtime records compare equal by a heap walk"
+  (doc    "The RECORD companion: `mk` builds `(record (x n) (y (+ n 1)))` from its parameter, a runtime
+           heap record. `(= (mk 3) (mk 3))` walks both by field and finds them equal → 1. Records
+           canonicalize their field order before the walk (deterministic-value-form.md #A Value Has One
+           Canonical Byte Form), so the comparison is over the canonical form, not the written order.
+           Together with the tuple and sum cases this pins runtime `value-eq` across every scalar-leaf
+           compound shape.")
+  (input  (do
+            (def (mk n) (record (x n) (y (+ n 1))))
+            (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
+  (output (: 1 Int64)))
 
 (case "two constant sums with the same payload but different variants are not equal"
   (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and

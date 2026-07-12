@@ -1601,6 +1601,83 @@ fn perceus_balance_leaves_no_live_objects() {
     );
 }
 
+/// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
+/// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
+/// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
+/// lists leak). `main` returns a scalar (`if (= …) 1 0`), so the ONLY heap traffic is the two built
+/// operands; after the run `live-objects` must be 0. Guards the ownership/drop discipline of the
+/// `Core::ValueEq` emit (the exact refcount hazard the feature introduces). `#[ignore]` — needs
+/// `xtask build` to have populated the store (run with `-- --ignored`).
+#[test]
+#[ignore]
+fn runtime_value_eq_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[value-eq] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // Two OWNED cons-list operands (recursion-built, so neither folds); `value-eq` borrows both, the
+    // emit drops both. `main` returns a scalar so nothing else touches the heap.
+    let src = "(module m \
+                 (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                 (def (build n) (if (< n 1) (IntList.Nil ()) \
+                    (IntList.Cons (tuple n (build (- n 1)))))) \
+                 (def (main) (if (= (build 3) (build 3)) 1 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "the two equal runtime lists compare equal → 1"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "value-eq leak: the two built operands' heap cells are still live after the compare (expected \
+         0 — the borrowing value-eq must drop each owned operand)"
+    );
+}
+
+/// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves
+/// no cell leaked or double-freed. `xs = (build 3)` is compared to a fresh `(build 3)` (an OWNED
+/// temporary `value-eq` drops); the result is a scalar `1`, so `xs` is used ONLY as the borrowed
+/// operand. `value-eq` must NOT drop `xs` (it only borrows) — the enclosing `let` drops it exactly once.
+/// So `live-objects` is 0: the fresh operand reclaimed by `value-eq`, `xs` by the `let`, neither leaked
+/// nor doubly-freed. The borrowed-vs-owned companion of `runtime_value_eq_leaves_no_live_objects`
+/// (avoids a recursive fold, whose own reclamation is a separate concern). `#[ignore]` — needs the
+/// store populated.
+#[test]
+#[ignore]
+fn runtime_value_eq_borrowed_operand_survives_and_balances() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[value-eq] debug-counters runtime not in the store; skipping borrow probe");
+        return;
+    };
+    let src = "(module m \
+                 (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                 (def (build n) (if (< n 1) (IntList.Nil ()) \
+                    (IntList.Cons (tuple n (build (- n 1)))))) \
+                 (def (main) (let ((xs (build 3))) (if (= xs (build 3)) 1 0))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "the two equal lists compare equal → 1"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "value-eq borrow leak/double-free: `xs` (borrowed by `=`, dropped by the `let`) plus the owned \
+         `(build 3)` operand (dropped by value-eq) must net to 0 live cells"
+    );
+}
+
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
 /// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
 /// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
@@ -2829,6 +2906,86 @@ mod runtime_ops {
         ));
     }
 
+    /// A narrow signed division's range-check needs ONLY its upper bound: a signed quotient can overflow
+    /// the type solely UPWARD (`MIN/-1 = 2^(N-1) > max`). It can never fall below `min` — `|q| = |a|/|b|
+    /// <= |a| <= 2^(N-1)`, so the most-negative reachable quotient is `-2^(N-1) = MIN` itself (in range,
+    /// `MIN / 1 = MIN`). So the `r < min` half is dead and dropped. This test pins BOTH that the upper
+    /// overflow still traps AND that the MIN quotient (the edge the dropped lower check would have
+    /// guarded) does NOT spuriously trap.
+    #[test]
+    fn a_narrow_signed_division_range_check_is_upper_bound_only() {
+        // MIN / 1 = MIN — the exact lower edge. It must compute (not trap): the dropped `r < min` check
+        // was provably unreachable, so removing it must not have removed a real guard.
+        assert_eq!(
+            run::<i8>(
+                "(: a Int8) (: b Int8)",
+                "(/ a b)",
+                &[Val::S8(-128), Val::S8(1)]
+            ),
+            -128
+        );
+        assert_eq!(
+            run::<i16>(
+                "(: a Int16) (: b Int16)",
+                "(/ a b)",
+                &[Val::S16(-32768), Val::S16(1)]
+            ),
+            -32768
+        );
+        // A large-magnitude negative quotient (still >= MIN) computes.
+        assert_eq!(
+            run::<i8>(
+                "(: a Int8) (: b Int8)",
+                "(/ a b)",
+                &[Val::S8(-128), Val::S8(2)]
+            ),
+            -64
+        );
+        // The one real overflow (MIN / -1 → +2^(N-1), above max) still traps — the upper bound stands.
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(/ a b)",
+            &[Val::S8(-128), Val::S8(-1)]
+        ));
+        assert!(traps(
+            "(: a Int16) (: b Int16)",
+            "(/ a b)",
+            &[Val::S16(-32768), Val::S16(-1)]
+        ));
+        // The Lir has ONE range compare (the upper `gt_s`), not two — the dead lower `lt_s` is gone.
+        let code = {
+            use crate::db::Db;
+            let ast = crate::testkit::parse(
+                "(module m (def (f (: a Int8) (: b Int8)) (/ a b)) (def (main) 0) (export main))",
+            );
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        use crate::backend::wasm::lir::Lir;
+        assert!(
+            code.contains(&Lir::I32GtS) && !code.contains(&Lir::I32LtS),
+            "narrow signed div keeps only the upper (gt_s) range bound, got: {code:?}"
+        );
+    }
+
     #[test]
     fn runtime_narrow_left_shift_range_checks() {
         // UInt8 shift: 1<<7=128 fits, 1<<8 traps (count ≥ N=8). And 3<<7=384 overflows UInt8 (the count
@@ -3978,6 +4135,51 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_bytes_slice_folds_to_some_of_the_sub_range() {
+        // `(Bytes.slice (Bytes.of …) start len)` on constant operands FOLDS: an in-range slice → a
+        // constant `Some(Bytes.of <sub>)` (its bytes then compare structurally via the constant-compound
+        // equality fold), a zero-length slice → `Some(<empty>)` (present, not None), out-of-range → None.
+        // Each returns a scalar (1/0 via `if (= …)`) so `main` needs no bytes escape. Was declined
+        // "comparison of a compound value needs a heap walk" / the runtime slice path before the fold.
+        for (body, want) in [
+            // in-range: bytes [1,2] of (10 20 30 40) == (20 30)
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) \"x\") (Bytes.of (list 20 30))) 1 0)) (export main))",
+                1,
+            ),
+            // zero-length in-range slice == empty
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) \"x\") (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            // slice across a folded concat seam: [1,2] of (1 2 3 4) == (2 3)
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2) \"x\") (Bytes.of (list 2 3))) 1 0)) (export main))",
+                1,
+            ),
+            // a wrong expected sub-range → false (the fold really compares the bytes, not just Some-ness)
+            (
+                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) \"x\") (Bytes.of (list 20 99))) 1 0)) (export main))",
+                0,
+            ),
+            // out of range (start 2 + len 5 > 4) → None (not Some), so it is not the empty-Some
+            (
+                "(module m (def (main) (if (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 5) (None unit)) 1 0)) (export main))",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant Bytes.slice folds: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
@@ -4579,6 +4781,30 @@ mod match_engine {
                 run_returns::<i64>(&component(&src), "main"),
                 want,
                 "String.to-bytes {s:?} byte count"
+            );
+        }
+    }
+
+    #[test]
+    fn string_from_bytes_decodes_utf8_totally() {
+        // `String.from-bytes : Bytes → (Option String)` — the TOTAL UTF-8 decode. A constant `Bytes.of`
+        // FOLDS by strict UTF-8: well-formed → `(Some s)`, ill-formed/overlong/surrogate → `None`, never a
+        // trap. Consumed by a match to a scalar. `[99 97 102 195 169]` = "café" → Some (matched to 1);
+        // `[255]` invalid, `[192 128]` overlong C0 80, `[237 160 128]` surrogate ED A0 80 → None (→ -1).
+        for (bytes, want) in [
+            ("99 97 102 195 169", 1), // café — well-formed
+            ("255", -1),              // 0xFF — invalid
+            ("192 128", -1),          // C0 80 — overlong NUL
+            ("237 160 128", -1),      // ED A0 80 — surrogate U+D800
+        ] {
+            let src = format!(
+                "(module m (def (main) (match (String.from-bytes (Bytes.of (list {bytes}))) \
+                   ((Some _) 1) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "String.from-bytes [{bytes}] decode"
             );
         }
     }
@@ -6683,7 +6909,7 @@ mod stage1 {
     }
 
     #[test]
-    fn constant_compound_equality_folds_but_a_runtime_one_declines() {
+    fn constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk() {
         // Equality of two CONSTANT compounds folds STRUCTURALLY (core-semantics.md §Equality Is
         // Structural: same type + component-wise equal). `(= (Some 1) (Some 1))` → true; `(= (Some 1)
         // (Some 2))` → false; `(= None None)` → true; `(= (tuple 1 2) (tuple 1 2))` → true; a nested
@@ -6751,17 +6977,22 @@ mod stage1 {
                 "constant compound equality folds: {body}"
             );
         }
-        // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) still
-        // DECLINES — the heap-walk equality is a later stage. `dn 3` recurses (cannot fold), so `(= (dn 3)
-        // (Some 0))` reaches the compound-comparison boundary.
+        // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) now
+        // COMPILES to a `value-eq` heap walk (a scalar-leaf compound is canonical by construction, so the
+        // tagless `champ_eq` walk is exact). `dn 3` recurses (cannot fold), so `(= (dn 3) (Some 0))`
+        // reaches the runtime structural-equality path — it must build a component (not decline) and
+        // IMPORT the runtime (the walk is a runtime call). The RESULT VALUE (true → 1) is verified end to
+        // end by the corpus heap-walk cases (03-equality-and-observation), which run against the composed
+        // runtime; here we assert the compile succeeds AND pulls in the runtime import.
         let runtime = "(module m (def (dn n) (if (< n 1) (Some 0) (dn (- n 1)))) \
                         (def (main) (if (= (dn 3) (Some 0)) 1 0)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(runtime)))
-            .expect_err("a runtime compound comparison must still decline")
-            .message;
+        let program = compile_component(&crate::codec::encode(&parse(runtime)))
+            .expect("a runtime scalar-leaf compound equality now compiles to a value-eq heap walk");
         assert!(
-            msg.contains("compound") || msg.contains("heap walk"),
-            "a runtime compound comparison declines (heap walk not yet built); got: {msg}"
+            cdz_run::required_runtime(&program)
+                .expect("valid component")
+                .is_some(),
+            "a runtime compound equality imports the value-heap runtime (the value-eq walk is a runtime call)"
         );
     }
 
@@ -7722,6 +7953,47 @@ mod stage1 {
                 "main"
             ),
             42
+        );
+    }
+
+    #[test]
+    fn a_recursive_effectful_function_is_specialized_per_context() {
+        // E3: a recursive function that performs a discharged op is SPECIALIZED under its handler context
+        // — the handler's state threads as a trailing parameter (`DESIGN-effects-rcdzc.md` §4.3).
+        // `loop` performs `(Countdown.tick)` and recurses; the arm resumes the current counter and
+        // threads `s-1`, so ticks read 3,2,1,0 and `loop` returns `1+1+1+0` = 3. `loop#ctx(s)` becomes
+        // `(if (= s 0) 0 (+ 1 (loop#ctx (- s 1))))` — a single-return recursive fn, no multi-value.
+        let src = "(do (effect Countdown (op tick (-> Unit Int64))) \
+                   (def (loop) (if (= (Countdown.tick) 0) 0 (+ 1 (loop)))) \
+                   (def (main) (handle 3 ((Countdown.tick (u) s (resume s (- s 1)))) (loop))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a recursive effectful function is specialized and runs"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn a_recursive_effectful_case_the_fold_cannot_serve_declines_not_hangs() {
+        // E3 boundary: a recursive effectful walk the single-state fast path cannot serve (a 2-arm
+        // handler over a compound list state) must DECLINE cleanly — NOT hang. Regression guard for the
+        // unbounded-inline loop (a recursive callee β-reduced to a fresh non-self-referential copy each
+        // level would unroll forever without `THREAD_INLINE_LIMIT`). It compiles (declines) in bounded
+        // time; the point is the compiler returns rather than spinning.
+        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+                   (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
+                   (def (main) (handle (list) \
+                     ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
+                     (List.len (walk 3)))) (export main))";
+        // Declines (not yet served) — but crucially TERMINATES (no hang). `is_err` = the decline; the
+        // test would time out (not fail) if the fold looped, so reaching this assertion IS the guard.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a not-yet-served recursive effectful case must decline (and must terminate, not hang)"
         );
     }
 

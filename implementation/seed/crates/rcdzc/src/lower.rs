@@ -687,6 +687,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `String.to-bytes` — the UTF-8 encoding. FOLD a constant string to a `Core::BytesOf` of
                 // its UTF-8 bytes; a runtime string declines.
                 Some(Prim::StrToBytes) if args.len() == 1 => lower_str_to_bytes(db, args[0]),
+                // `String.from-bytes` — the TOTAL UTF-8 decode → `(Option String)`. FOLD a constant Bytes
+                // via strict UTF-8; a runtime Bytes declines.
+                Some(Prim::StrFromBytes) if args.len() == 1 => {
+                    lower_str_from_bytes(db, id, args[0])
+                }
                 // `Option.expect` / `Result.expect` — the unwrap-or-trap accessor. `args[0]` is the sum,
                 // `args[1]` the message (dropped — the wasm trap is textless). FOLD a constant PRESENT
                 // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
@@ -3200,6 +3205,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrConcat
         | Prim::StrSlice
         | Prim::StrToBytes
+        | Prim::StrFromBytes
         | Prim::SumExpect
         | Prim::CheckedAdd
         | Prim::CheckedMul
@@ -3432,6 +3438,22 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Eq) && compound_eq_heap_walkable(db, args[0]) {
+                // RUNTIME STRUCTURAL EQUALITY — a `=` on two COMPOUND heap values neither of which folded
+                // (a sum/tuple/record built from a parameter or a recursive call). Emit a `value-eq`
+                // runtime call (the tagless `champ_eq` walk): equal iff same shape + component-wise equal
+                // (core-semantics.md §Equality Is Structural). Restricted to a value whose leaves are all
+                // SCALAR (Int/Bool/Unit) — such a value is canonical BY CONSTRUCTION (no embedded RRB
+                // vector / CHAMP map / Bytes rope, whose byte form is canonical only after a compaction
+                // the compiler would first have to emit), so the walk's result is exact. A compound with a
+                // collection/bytes leaf still declines (that canonicalization is a later increment). The
+                // type checker already unified the two operands' types before lowering, so a single-side
+                // walkability check suffices — both sides share the shape.
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime structural equality → value-eq heap walk");
+                Core::ValueEq {
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
                 Core::Poison(Reject::decline(
@@ -3527,6 +3549,85 @@ fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
         }
         // Any other pairing includes a runtime operand (not a constant compound) — decline the fold.
         _ => None,
+    }
+}
+
+/// Whether the operand at `id` has a type the runtime `value-eq` heap walk (`champ_eq`) compares
+/// CORRECTLY — a compound whose leaves are all SCALAR (Int/Bool/Unit), reached through tuples, records,
+/// and sum variants. Such a value is CANONICAL BY CONSTRUCTION: it holds no embedded RRB vector, CHAMP
+/// map/set, or Bytes/String rope, each of whose byte form is canonical only AFTER a compaction the
+/// compiler would have to emit first (`deterministic-value-form.md` §A Value Has One Canonical Byte
+/// Form). Restricting the runtime `=` to this class keeps the walk EXACT without that extra machinery;
+/// a compound carrying a collection/text leaf still declines (a later increment). Recurses structurally:
+/// a sum is walkable iff EVERY variant's payload type is (read via `payload_ty_at_instantiation`, so a
+/// generic sum's payload is checked at its actual instantiation). A cyclic type (a recursive sum whose
+/// payload mentions itself — a cons list) terminates because the recursion is bounded by the DISTINCT
+/// declaration occurrences visited, tracked in `seen`.
+fn compound_eq_heap_walkable(db: &mut Db, id: StructId) -> bool {
+    let ty = crate::infer::type_of(db, id);
+    ty_heap_walkable(db, &ty, &mut Vec::new())
+}
+
+/// The type-level recursion behind [`compound_eq_heap_walkable`]. `seen` holds the sum declarations
+/// currently on the recursion stack, so a recursive sum (`(type IntList (Cons (Tuple Int64 IntList))
+/// Nil)`) does not loop: re-entering a decl already in progress is treated as walkable (its scalar-leaf
+/// obligation is discharged by the OTHER variants / the outer visit — a purely self-referential cycle
+/// carries no non-scalar leaf of its own).
+fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        // Scalar leaves — the base case the walk compares directly (equal canonical raw bytes).
+        Ty::Int(_) | Ty::Bool | Ty::Unit => true,
+        // A tuple/record — walkable iff every element/field is. (An empty tuple is unit, trivially so.)
+        Ty::Tuple(elems) => {
+            let elems: Vec<Ty> = elems.to_vec();
+            elems.iter().all(|e| ty_heap_walkable(db, e, seen))
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().all(|v| ty_heap_walkable(db, v, seen))
+        }
+        // A sum — walkable iff every variant's payload type is. A recursive sum is broken by `seen`.
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return true;
+            }
+            seen.push(*decl);
+            let Some(variant_count) = db.type_decl_by_occ(*decl).map(|t| t.variants.len()) else {
+                seen.pop();
+                return false;
+            };
+            let mut ok = true;
+            for disc in 0..variant_count {
+                let ctor = db
+                    .type_decl_by_occ(*decl)
+                    .and_then(|t| t.variants.get(disc))
+                    .and_then(|v| v.ctor);
+                // A NULLARY variant (no ctor arrow → no payload) carries only its discriminant — a scalar
+                // leaf, walkable. A payload-carrying variant's payload type must itself be walkable.
+                if let Some(ctor) = ctor
+                    && let Some(payload_ty) =
+                        crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                    && !ty_heap_walkable(db, &payload_ty, seen)
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            seen.pop();
+            ok
+        }
+        // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
+        // canonical form needs machinery this increment does not emit, or it is not a runtime value that
+        // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
+        Ty::List(_)
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Float
+        | Ty::Fn(_, _)
+        | Ty::Var(_)
+        | Ty::Type
+        | Ty::Any => false,
     }
 }
 
@@ -3776,6 +3877,70 @@ fn lower_str_to_bytes(db: &mut Db, string: StructId) -> Core {
         _ => Core::Poison(Reject::decline(
             "String.to-bytes of a runtime string is not yet computed (constant strings only)",
         )),
+    }
+}
+
+/// Lower `(String.from-bytes b)` — the TOTAL UTF-8 decode `Bytes → (Option String)`. FOLD a
+/// compile-time-visible constant `Bytes.of` (each element a constant `UInt8`) by strict UTF-8
+/// (`std::str::from_utf8`, which rejects INVALID bytes, OVERLONG encodings, AND surrogate code points —
+/// exactly the three failure modes the spec pins): well-formed → `(Some "<decoded>")` (a fresh
+/// `Core::ConstStr` payload), ill-formed → `(None unit)` — built as a `Core::SumNew` at the result
+/// Option's discs (`option_discs`, like `List.at`/`String.at`), riding the ordinary sum fold/escape/
+/// match, no string heap. A runtime `Bytes` declines; a poison operand propagates. Never a trap — an
+/// ill-formed sequence is DATA (`None`), the whole point of the total decode.
+fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, bytes) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.from-bytes result is not the built-in Option sum",
+        ));
+    };
+    // Collect the raw bytes of a compile-time-visible `Bytes.of`; a runtime Bytes declines.
+    let Core::BytesOf { elems } = core_of(db, bytes) else {
+        return Core::Poison(Reject::decline(
+            "String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
+        ));
+    };
+    let mut raw = Vec::with_capacity(elems.len());
+    for e in elems {
+        match core_of(db, e) {
+            Core::ConstInt(v) => match v.to_i64() {
+                Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
+                // A non-UInt8 element can't occur in a well-formed `Bytes.of` (range-checked at build),
+                // but be defensive — decline rather than mis-decode.
+                _ => {
+                    return Core::Poison(Reject::decline(
+                        "String.from-bytes: a byte element is not a UInt8",
+                    ));
+                }
+            },
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "String.from-bytes of a non-constant byte element is not yet computed",
+                ));
+            }
+        }
+    }
+    // Strict UTF-8 decode: `from_utf8` yields the string iff every byte forms a shortest-form, non-
+    // surrogate scalar sequence — the spec's well-formedness. Otherwise `None`.
+    match std::str::from_utf8(&raw) {
+        Ok(s) => {
+            trace!(target: "rcdzc::fold", node = id.0, "String.from-bytes folds well-formed UTF-8 to Some");
+            let payload = db.push_atom(crate::ast::Leaf::Str(s.to_string()));
+            Core::SumNew {
+                disc: disc_some,
+                payloads: vec![payload],
+            }
+        }
+        Err(_) => {
+            trace!(target: "rcdzc::fold", node = id.0, "String.from-bytes folds ill-formed UTF-8 to None");
+            Core::SumNew {
+                disc: disc_none,
+                payloads: Vec::new(),
+            }
+        }
     }
 }
 
@@ -4034,11 +4199,12 @@ fn lower_bytes_concat(db: &mut Db, lhs: StructId, rhs: StructId) -> Core {
 /// Lower `(Bytes.slice bytes start len)` — the fallible sub-range read. Emits the runtime
 /// `Core::BytesSlice`, which bounds-checks (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) and
 /// yields `Some(bytes-slice)` in range / `None` out — never trapping (the runtime `bytes-slice` traps on
-/// OOB, so the emit guards first). A provably-out-of-range CONSTANT slice folds to `None` here (a cheap
-/// safe fold); an in-range constant slice does NOT fold to a baked `Some(Bytes)` — its payload is a
-/// sub-sequence, which would need a synthesized `Core::BytesOf` payload occurrence — so it takes the
-/// runtime path (correct, just imports the runtime). The `Some(Bytes)` payload is a Bytes HANDLE, used
-/// directly (no box). Mirrors `lower_bytes_at`'s shape; the constant-Some fold is a later refinement.
+/// OOB, so the emit guards first). A CONSTANT slice (`Bytes.of` sliced by constant `start`/`len`) FOLDS:
+/// out-of-range → `None`; in-range → `Some(Bytes.of <sub-range>)`, a synthesized `Core::BytesOf` carrying
+/// the selected element occurrences (its core + type PRE-FILLED so it lowers/types/escapes/compares like
+/// any constant `Bytes.of` — same shape `String.slice`/`String.to-bytes` synthesize a folded payload). A
+/// runtime bytes/start/len takes the runtime path; the runtime `Some(Bytes)` payload is a Bytes HANDLE
+/// (no box). Mirrors `lower_bytes_at`, extended to the compound `Some` payload.
 fn lower_bytes_slice(
     db: &mut Db,
     id: StructId,
@@ -4056,21 +4222,51 @@ fn lower_bytes_slice(
             "Bytes.slice result is not the built-in Option sum",
         ));
     };
-    // A provably-out-of-range CONSTANT slice folds to `None` (safe, no synthesized payload needed).
+    // A CONSTANT slice — a visible `Bytes.of` sliced by constant `start`/`len` — folds at compile time.
     if let (Core::BytesOf { elems }, Core::ConstInt(s), Core::ConstInt(l)) =
         (core_of(db, bytes), core_of(db, start), core_of(db, len))
     {
         let n = elems.len() as i128;
-        let in_range = match (s.to_i64(), l.to_i64()) {
-            (Some(s), Some(l)) if s >= 0 && l >= 0 => (s as i128) + (l as i128) <= n,
-            _ => false,
-        };
-        if !in_range {
-            trace!(target: "rcdzc::fold", node = id.0, "Bytes.slice folds to None (out-of-range constant)");
-            return Core::SumNew {
-                disc: disc_none,
-                payloads: Vec::new(),
-            };
+        match (s.to_i64(), l.to_i64()) {
+            // In range (`start >= 0`, `len >= 0`, `start + len <= bytes-len`) → `Some(Bytes.of <sub>)`.
+            // The payload is a synthesized node whose core is a `Core::BytesOf` of the selected element
+            // occurrences (already range-checked constant bytes) — its `core`/`ty` are pre-filled so it
+            // rides the ordinary constant-`Bytes.of` fold/escape/equality (both `core_of` and `type_of`
+            // short-circuit on a filled memo slot), no runtime op. `start == len == 0` yields the empty
+            // sequence (present, not None).
+            (Some(s), Some(l)) if s >= 0 && l >= 0 && (s as i128) + (l as i128) <= n => {
+                let sub: Vec<StructId> = elems[s as usize..(s + l) as usize].to_vec();
+                // A fresh occurrence to carry the folded sub-sequence. Its leaf is a placeholder (a
+                // `Leaf::Bytes` of the raw sub-bytes, purely so an inspected node is self-consistent);
+                // the `core`/`ty` pre-fill below is authoritative — `core_of`/`type_of` short-circuit on
+                // a filled slot, so the node never re-resolves through the leaf.
+                let raw: Vec<u8> = elems[s as usize..(s + l) as usize]
+                    .iter()
+                    .filter_map(|&e| match core_of(db, e) {
+                        Core::ConstInt(v) => v
+                            .to_i64()
+                            .filter(|n| (0..=255).contains(n))
+                            .map(|n| n as u8),
+                        _ => None,
+                    })
+                    .collect();
+                let payload = db.push_atom(crate::ast::Leaf::Bytes(raw));
+                db.core.fill(payload, Core::BytesOf { elems: sub });
+                db.types.fill(payload, crate::ty::Ty::Bytes);
+                trace!(target: "rcdzc::fold", node = id.0, start = s, len = l, "Bytes.slice folds to Some (in-range constant)");
+                return Core::SumNew {
+                    disc: disc_some,
+                    payloads: vec![payload],
+                };
+            }
+            // Provably out of range → `None`.
+            _ => {
+                trace!(target: "rcdzc::fold", node = id.0, "Bytes.slice folds to None (out-of-range constant)");
+                return Core::SumNew {
+                    disc: disc_none,
+                    payloads: Vec::new(),
+                };
+            }
         }
     }
     Core::BytesSlice {
@@ -4202,6 +4398,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
         Prim::StrToBytes => "str-to-bytes",
+        Prim::StrFromBytes => "str-from-bytes",
         Prim::SumExpect => "sum-expect",
         Prim::CheckedAdd => "checked-add",
         Prim::CheckedMul => "checked-mul",

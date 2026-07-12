@@ -305,6 +305,14 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let to_bytes_op = list_op_record(ast, "str-to-bytes", to_bytes_ty);
     let to_bytes_key = push_atom(ast, Leaf::Name("to-bytes".to_string()));
     children.push(push_list(ast, vec![to_bytes_key, to_bytes_op]));
+    // `from-bytes : Bytes → (Option String)` — the TOTAL UTF-8 DECODE (the inverse of `to-bytes`): a
+    // well-formed byte sequence → `Some string`, ill-formed (invalid/overlong/surrogate) → `None`, never
+    // a trap (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping). A constant
+    // `Bytes` FOLDS via strict UTF-8 validation.
+    let from_bytes_ty = string_from_bytes_type(ast);
+    let from_bytes_op = list_op_record(ast, "str-from-bytes", from_bytes_ty);
+    let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".to_string()));
+    children.push(push_list(ast, vec![from_bytes_key, from_bytes_op]));
     push_list(ast, children)
 }
 
@@ -316,6 +324,23 @@ fn string_to_bytes_type(ast: &mut Arenas) -> StructId {
     let string = intrinsic_node(ast, "String");
     let bytes = intrinsic_node(ast, "bytes-ty");
     let body = arrow_type(ast, string, bytes); // (-> String Bytes)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> Bytes (Option String)))` for `String.from-bytes` — the fallible UTF-8 DECODE.
+/// A zero-param `fn` wrapper (see `string_to_bytes_type`). The `Bytes` param is `(intrinsic bytes-ty)`
+/// (→ `Ty::Bytes`); the result `(Option String)` — `Option` an ordinary prelude name applied to the
+/// `(intrinsic "String")` type node, reducing to `Ty::Sum{Option, [String]}` when the scheme is read.
+fn string_from_bytes_type(ast: &mut Arenas) -> StructId {
+    let option_string = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let string = intrinsic_node(ast, "String");
+        push_list(ast, vec![option, string])
+    };
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    let body = arrow_type(ast, bytes, option_string); // (-> Bytes (Option String))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
