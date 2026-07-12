@@ -1026,7 +1026,9 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "handle").unwrap_or(&[]);
     let init = match tail.first() {
         Some(&s) => s,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no init state")),
+        None => {
+            return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no init state"));
+        }
     };
     let arms_occ = match tail.get(1) {
         Some(&a) => a,
@@ -1107,7 +1109,12 @@ fn resolve_host(db: &Db, id: StructId) -> Resolved {
     };
     let effects = match db.ast.get(effects_occ) {
         Struct::List(es) => es.clone(),
-        _ => return Resolved::Poison(Reject::coded(Code::Malformed, "host effects must be a list")),
+        _ => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "host effects must be a list",
+            ));
+        }
     };
     Resolved::Host { effects, body }
 }

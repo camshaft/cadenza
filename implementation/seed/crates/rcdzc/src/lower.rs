@@ -1820,7 +1820,11 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         }
         // Effect control forms: a reference to `init` as a whole value can appear in a handler's init,
         // any arm body, a resumption's value/next-state, or the handled/delegated body — recurse each.
-        Resolved::Handle { init: seed, arms, body } => {
+        Resolved::Handle {
+            init: seed,
+            arms,
+            body,
+        } => {
             ref_escapes_whole(db, seed, init)
                 || arms.iter().any(|a| ref_escapes_whole(db, a.body, init))
                 || ref_escapes_whole(db, body, init)
@@ -2540,7 +2544,11 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::SumPayload { scrutinee, .. } => usize::from(scrutinee == init) as u32,
         // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
         // resumption's value/next-state, or the handled/delegated body — count each position.
-        Resolved::Handle { init: seed, arms, body } => {
+        Resolved::Handle {
+            init: seed,
+            arms,
+            body,
+        } => {
             let mut n = uses_in(db, seed, init);
             for arm in &arms {
                 n += uses_in(db, arm.body, init);

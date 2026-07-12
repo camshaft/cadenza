@@ -941,10 +941,7 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
     // reference to a param/state binder would be spuriously unbound (the `is_binding_candidate` trap:
     // every binding form MUST be listed here).
     if let Some(pp) = parent.get(p.0 as usize).copied().flatten()
-        && ast
-            .as_form(pp, "handle")
-            .and_then(|t| t.get(1).copied())
-            == Some(p)
+        && ast.as_form(pp, "handle").and_then(|t| t.get(1).copied()) == Some(p)
     {
         return true;
     }

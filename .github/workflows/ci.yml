@@ -6,9 +6,9 @@ name: ci
 
 on:
   push:
-    branches: [spec, main]
+    branches: [main]
   pull_request:
-    branches: [spec, main]
+    branches: [main]
 
 # Cancel superseded runs on the same ref — a new push to a PR obsoletes the in-flight one.
 concurrency:
