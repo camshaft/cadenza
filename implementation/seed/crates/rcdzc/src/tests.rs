@@ -6937,6 +6937,22 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handler_form_is_recognized_and_declines_cleanly() {
+        // E1a: `handle`/`resume` are recognized grammar with resolved node shapes, but handler lowering
+        // is not built yet — so a handled program DECLINES (does not crash, does not miscompile, does not
+        // run to a wrong value). The point is that the surface parses and the compiler declines rather
+        // than aborting (decline-don't-miscompile). Full handler resolution (this case running to 6)
+        // arrives in E1b+.
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle unit (((. Choose pick) () s (resume 5 s))) \
+                   (+ ((. Choose pick)) 1))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a handler is recognized but not yet lowered → it must decline, not compile"
+        );
+    }
+
+    #[test]
     fn a_runtime_integer_width_is_rejected() {
         // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
         // width must be a compile-time natural (`numeric-model.md §An Integer Type Is Indexed By A

@@ -661,6 +661,23 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         Resolved::Proj { operand, .. } => collect_callees(db, operand, out),
         // An annotation is transparent — a call inside `(: (f x) T)` is a real edge of this body.
         Resolved::Annot { expr, .. } => collect_callees(db, expr, out),
+        // A handler's init, each arm body, and the handled body all run when this body runs — a self-call
+        // inside any is a real recursion edge, so descend into each. (The arm's op projection and its
+        // param/state binders are not executed code — they contribute no callee.)
+        Resolved::Handle { init, arms, body } => {
+            collect_callees(db, init, out);
+            for arm in &arms {
+                collect_callees(db, arm.body, out);
+            }
+            collect_callees(db, body, out);
+        }
+        // A resumption's value and next-state run when the arm runs — descend both.
+        Resolved::Resume { value, next_state } => {
+            collect_callees(db, value, out);
+            collect_callees(db, next_state, out);
+        }
+        // A host delegation's body runs when this body runs — descend (the effect names are not code).
+        Resolved::Host { body, .. } => collect_callees(db, body, out),
         // A nested `fn` is a separate node — do NOT descend (its calls are its own edges). A bare ref,
         // a leaf, a prim, a param, a type value, a poison have no callees of THIS body.
         // A `SumPayload` reads the scrutinee's payload; the scrutinee's own callees are collected via the

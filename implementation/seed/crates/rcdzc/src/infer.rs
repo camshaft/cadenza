@@ -245,6 +245,14 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
+        // EFFECT CONTROL FORMS (E1a: surface recognized, lowering declines). A `handle`/`host` evaluates
+        // to its body's value, so its type is its body's type — typed through now so a handled/delegated
+        // expression used in a typed context (e.g. `(+ (handle …) 1)`) does not spuriously fault while
+        // lowering is still declined. A `resume`'s value is handed back at the perform site; outside the
+        // tail-rewrite it has no independent type, so `Any` (it is consumed by the arm's lowering, E1c).
+        Resolved::Handle { body, .. } => type_of(db, body),
+        Resolved::Host { body, .. } => type_of(db, body),
+        Resolved::Resume { .. } => Ty::Any,
         // A lambda/def parameter used as a value — a formal. If its binder is ANNOTATED (`(: a T)`),
         // its type is that annotation `T` — so the body type-checks against a definite parameter type
         // (`(: a Bool)` used as an integer operand is caught). Otherwise, for the parameter of a
@@ -1459,6 +1467,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
             }
             collect(db, expr, out);
+        }
+        // EFFECT CONTROL FORMS: descend into every executed sub-expression so a fault inside is caught
+        // regardless of whether lowering can yet run the form. A handler's init, each arm's PERFORM
+        // (the op projection — a perform-argument type mismatch surfaces here as an ordinary application
+        // check via the op value's `(meta t)` arrow) and body, and the handled body all participate in
+        // well-formedness. The arm's param/state binders are binder occurrences (not collected as
+        // values). This is what makes a wrong-type perform argument a CDZ0203 even while the handler
+        // itself declines to run (E1a).
+        Resolved::Handle { init, arms, body } => {
+            collect(db, init, out);
+            for arm in &arms {
+                collect(db, arm.op, out);
+                collect(db, arm.body, out);
+            }
+            collect(db, body, out);
+        }
+        Resolved::Resume { value, next_state } => {
+            collect(db, value, out);
+            collect(db, next_state, out);
+        }
+        Resolved::Host { body, .. } => {
+            // The effect names are label occurrences (an effect name resolves to its record); descend
+            // into the delegated body for its faults.
+            collect(db, body, out);
         }
         // A scope-error poison (an unbound name) is UNCONDITIONAL well-formedness — report it here,
         // where the walk descends into EVERY position (including an `if`'s branches), so an unbound

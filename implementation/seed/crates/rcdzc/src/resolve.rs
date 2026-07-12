@@ -34,7 +34,7 @@ use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Reject};
-use crate::resolved::{Prim, Resolved, Symbol};
+use crate::resolved::{HandleArm, Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 use tracing::trace;
 
@@ -74,6 +74,12 @@ const GRAMMAR: &[&str] = &[
     "fn",
     "typeval",
     ":",
+    // Effect control forms — `handle` installs an in-program handler, `host` delegates to the boundary,
+    // `resume` hands a value back inside a handler arm. Control flow (like `if`/`match`), reduced away by
+    // the compile-time evaluator, NOT prelude records — so they are grammar (`DESIGN-effects-rcdzc.md`).
+    "handle",
+    "host",
+    "resume",
 ];
 
 /// Whether `head` is a recognized GRAMMAR head — a binding/control/declaration form the resolver
@@ -181,6 +187,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(h @ ("and" | "or")) => resolve_connective(db, id, h == "and"),
                 Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
+                Some("handle") => resolve_handle(db, id),
+                Some("resume") => resolve_resume(db, id),
+                Some("host") => resolve_host(db, id),
                 Some("let") => resolve_let(db, id),
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
@@ -951,6 +960,101 @@ fn resolve_match(db: &Db, id: StructId) -> Resolved {
         return Resolved::Poison(Reject::coded(Code::Malformed, "match has no arms"));
     }
     Resolved::Match { scrutinee, arms }
+}
+
+/// Resolve `(handle INIT (ARM…) BODY)` into its resolved form. Each arm is `(op-proj (params…) state
+/// body)` — the operation projection, a parenthesized parameter list, the state binder, and the arm
+/// body. Scope for the params/state binders is handled by the ordinary parent-walk (a reference in the
+/// arm body finds its binder), so here we only record the shape. A malformed arm or a missing
+/// init/body is a `Poison`.
+fn resolve_handle(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "handle").unwrap_or(&[]);
+    let init = match tail.first() {
+        Some(&s) => s,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no init state")),
+    };
+    let arms_occ = match tail.get(1) {
+        Some(&a) => a,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms")),
+    };
+    let body = match tail.get(2) {
+        Some(&b) => b,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no body")),
+    };
+    // The arms list `((E.op (p…) s body) …)`. Each arm has FOUR parts: op projection, param list, state
+    // binder, arm body.
+    let Struct::List(arm_nodes) = db.ast.get(arms_occ) else {
+        return Resolved::Poison(Reject::coded(Code::Malformed, "handle arms must be a list"));
+    };
+    let mut arms = Vec::new();
+    for &arm in arm_nodes {
+        let Struct::List(parts) = db.ast.get(arm) else {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a handle arm must be (op (params…) state body)",
+            ));
+        };
+        if parts.len() != 4 {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a handle arm must be (op (params…) state body)",
+            ));
+        }
+        let op = parts[0];
+        let params = match db.ast.get(parts[1]) {
+            Struct::List(ps) => ps.clone(),
+            // A single bare param (no parens) — treat as one param. `()` is the empty list (nullary).
+            _ => vec![parts[1]],
+        };
+        arms.push(HandleArm {
+            op,
+            params,
+            state: parts[2],
+            body: parts[3],
+        });
+    }
+    if arms.is_empty() {
+        return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms"));
+    }
+    Resolved::Handle { init, arms, body }
+}
+
+/// Resolve `(resume VALUE NEXT-STATE)` into its resolved form. The two children are AST occurrences
+/// resolved on demand. Meaningful only inside a handler arm (the enclosing arm's lowering consumes it);
+/// a stray `resume` declines at lowering. A missing value or next-state is a `Poison`.
+fn resolve_resume(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "resume").unwrap_or(&[]);
+    let value = match tail.first() {
+        Some(&v) => v,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no value")),
+    };
+    let next_state = match tail.get(1) {
+        Some(&s) => s,
+        None => {
+            return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no next state"));
+        }
+    };
+    Resolved::Resume { value, next_state }
+}
+
+/// Resolve `(host (EFFECT…) BODY)` into its resolved form — an entrypoint delegation. `effects` are the
+/// delegated effects' name occurrences; `body` the delegated computation. A missing effect list or body
+/// is a `Poison`.
+fn resolve_host(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "host").unwrap_or(&[]);
+    let effects_occ = match tail.first() {
+        Some(&e) => e,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no effect list")),
+    };
+    let body = match tail.get(1) {
+        Some(&b) => b,
+        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no body")),
+    };
+    let effects = match db.ast.get(effects_occ) {
+        Struct::List(es) => es.clone(),
+        _ => return Resolved::Poison(Reject::coded(Code::Malformed, "host effects must be a list")),
+    };
+    Resolved::Host { effects, body }
 }
 
 /// Resolve `(let (BINDINGS) BODY)` into its resolved form. The bindings are `(name init)` pairs; scope

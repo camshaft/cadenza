@@ -517,7 +517,57 @@ pub enum Resolved {
         params: std::sync::Arc<[StructId]>,
         body: StructId,
     },
+    /// A `(handle INIT (ARM…) BODY)` — an in-program effect handler establishing a context for `body`
+    /// (`capabilities-and-effects.md` §An Effect That Does Not Escape Is Discharged By A Handler). `init`
+    /// is the seed state (evaluated where the handle is installed); each arm discharges one operation; the
+    /// whole form's value is `body`'s value, with the accumulated state observable only through the
+    /// operations. Children are AST occurrences resolved on demand. The compile-time evaluator reduces a
+    /// `handle` away — resolving each enclosed performance to a concrete arm (a compile-time constant) and,
+    /// for the tail-resumptive shipping surface, rewriting it to plain code (`reference-compiler.md`
+    /// §Effects Are Classified First And Resolved By Monomorphization). Until that lowering lands, a
+    /// `handle` DECLINES (the surface is recognized so a handled perform stops erroring on unbound
+    /// `resume`; it does not yet run).
+    Handle {
+        init: StructId,
+        arms: Vec<HandleArm>,
+        body: StructId,
+    },
+    /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that
+    /// performed the operation and thread `next_state` forward as the state the rest of the handled region
+    /// sees (`capabilities-and-effects.md` §A Handler Threads State`). Modeled as a NODE (not a
+    /// fold-time-only rewrite marker) so the tail-resumptive rewrite (`Resume{v,s'}` → `v`, thread `s'`) is
+    /// a structural classification, and so an abortive arm (no `Resume`) and a general arm (a non-tail
+    /// `Resume`, or `k` captured as a value) are representable without an IR migration
+    /// (`DESIGN-effects-rcdzc.md` §2.3). Outside a handler arm, `resume` is meaningless — a `Resume` that
+    /// is not consumed by an enclosing arm's lowering is a decline.
+    Resume {
+        value: StructId,
+        next_state: StructId,
+    },
+    /// A `(host (EFFECT…) BODY)` — an ENTRYPOINT delegation routing its listed effects to the component
+    /// boundary (`capabilities-and-effects.md` §Host-Binding Is A Routing Decision Made At The Entrypoint).
+    /// `effects` are the delegated effects' name occurrences; `body` is the delegated computation. Admitted
+    /// only at an entrypoint; its manifest contribution is handled at serialization (E2). Until host
+    /// lowering lands, a `host` DECLINES (surface recognized, not yet run).
+    Host {
+        effects: Vec<StructId>,
+        body: StructId,
+    },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),
+}
+
+/// One arm of a [`Resolved::Handle`] — the discharge of a single operation `(E.op (params…) state body)`.
+/// `op` is the operation's projection occurrence (`(. E op)`), which carries the op's identity via its
+/// `(meta effect-op)` channel; `params` are the operation's parameter binders (bound in `body`); `state`
+/// is the current-state binder (the left-fold accumulator, bound in `body`); `body` is the arm body,
+/// containing the `Resume` node(s). Children are AST occurrences; scope for `params`/`state` is handled by
+/// the ordinary parent-walk (a reference in `body` finds its binder), so the arm records only the shape.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HandleArm {
+    pub op: StructId,
+    pub params: Vec<StructId>,
+    pub state: StructId,
+    pub body: StructId,
 }

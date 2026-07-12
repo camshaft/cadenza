@@ -644,6 +644,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
             "a type value or compile-time lambda has no runtime form",
         )),
+        // EFFECT CONTROL FORMS (E1a: surface recognized, lowering not yet built). The compile-time
+        // evaluator will REDUCE a `handle` away — resolving each enclosed perform to a concrete arm and
+        // rewriting the tail-resumptive case to plain code — but that handler-context-aware fold is E1b+.
+        // Until then a `handle`/`host`/`resume` DECLINES: the program TYPES (so a handled expression in a
+        // typed context does not fault) but does not RUN.
+        Resolved::Handle { .. } => Core::Poison(Reject::decline(
+            "an effect handler is not yet lowered (handler resolution arrives in E1)",
+        )),
+        Resolved::Host { .. } => Core::Poison(Reject::decline(
+            "a host delegation is not yet lowered (the boundary import arrives in E2)",
+        )),
+        Resolved::Resume { .. } => Core::Poison(Reject::decline(
+            "resume outside a lowered handler arm is not yet realized",
+        )),
     }
 }
 
@@ -1778,6 +1792,17 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
             ref_escapes_whole(db, scrutinee, init)
                 || arms.iter().any(|(_, b)| ref_escapes_whole(db, *b, init))
         }
+        // Effect control forms: a reference to `init` as a whole value can appear in a handler's init,
+        // any arm body, a resumption's value/next-state, or the handled/delegated body — recurse each.
+        Resolved::Handle { init: seed, arms, body } => {
+            ref_escapes_whole(db, seed, init)
+                || arms.iter().any(|a| ref_escapes_whole(db, a.body, init))
+                || ref_escapes_whole(db, body, init)
+        }
+        Resolved::Resume { value, next_state } => {
+            ref_escapes_whole(db, value, init) || ref_escapes_whole(db, next_state, init)
+        }
+        Resolved::Host { body, .. } => ref_escapes_whole(db, body, init),
         // A `SumPayload` reads a PIECE of the scrutinee (`sum-payload`), not the whole value — like a
         // projection operand, it is not a whole-value escape of `init`.
         Resolved::SumPayload { .. }
@@ -2487,6 +2512,19 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         // A `SumPayload` reads the scrutinee at run time (`sum-payload`); if the scrutinee is `init`,
         // that is a use of the binding.
         Resolved::SumPayload { scrutinee, .. } => usize::from(scrutinee == init) as u32,
+        // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
+        // resumption's value/next-state, or the handled/delegated body — count each position.
+        Resolved::Handle { init: seed, arms, body } => {
+            let mut n = uses_in(db, seed, init);
+            for arm in &arms {
+                n += uses_in(db, arm.body, init);
+            }
+            n + uses_in(db, body, init)
+        }
+        Resolved::Resume { value, next_state } => {
+            uses_in(db, value, init) + uses_in(db, next_state, init)
+        }
+        Resolved::Host { body, .. } => uses_in(db, body, init),
         // Leaves and non-referencing forms contribute nothing.
         Resolved::Int(_)
         | Resolved::Bool(_)

@@ -650,6 +650,11 @@ fn walk_for_dead_traps(
         // negation's single operand is unconditionally evaluated.
         Resolved::And { lhs, .. } => walk_for_dead_traps(db, lhs, out, seen),
         Resolved::Not { operand } => walk_for_dead_traps(db, operand, out, seen),
+        // Effect control forms decline at lowering (E1a), so no `handle`/`host`/`resume` reaches
+        // emission — the dead-trap walk over one is moot (it emits nothing). Treated as non-descending,
+        // like any form that lowers to a poison; when E1 lowers them, revisit whether an unconditionally-
+        // evaluated sub-position (a handler's init/body) warrants descent.
+        Resolved::Handle { .. } | Resolved::Host { .. } | Resolved::Resume { .. } => {}
         // Leaves and non-descending forms.
         Resolved::Int(_)
         | Resolved::Bool(_)
