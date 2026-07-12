@@ -74,6 +74,7 @@ pass	a consumed bare None type-checks without annotation (ambiguity is escape-on
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
+pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
@@ -98,6 +99,7 @@ pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a float in integer-width position is rejected
+pass	a floating-point literal
 pass	a function applied to an argument
 pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
@@ -129,6 +131,7 @@ pass	a helper sums two fields of a record parameter
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal with digit separators
+pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later let binding sees an earlier one in the same let
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
@@ -181,7 +184,9 @@ pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
+pass	a named function is partially applied, bound, and used
 pass	a named higher-order function receives a lambda argument
+pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a narrow match binder used in arithmetic with the scrutinee
@@ -209,6 +214,7 @@ pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
+pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested match on a runtime scrutinee
 pass	a nested option value annotated with the wrong inner payload type is rejected
@@ -458,6 +464,7 @@ pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating with the empty list on the right is identity
+pass	conditional propagation respects a shadowing rebind of the condition variable
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
 pass	constructing a byte sequence with a negative value is a type error
@@ -475,6 +482,7 @@ pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
+pass	functions are single-arity and curried
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
@@ -532,6 +540,7 @@ pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	negation inverts a boolean
+pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
 pass	one generic sum instantiated at two different types in one program
@@ -692,7 +701,6 @@ todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
 todo	a constructor pattern nested under Some matches a runtime list element
-todo	a curried function can be partially applied
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a declaration in a do block shadows an outer binding
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
@@ -709,7 +717,6 @@ todo	a factorial that overflows the integer type traps through the recursion
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
-todo	a floating-point literal
 todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
@@ -720,7 +727,6 @@ todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a header of packed nibbles and a length-prefixed body round-trips
 todo	a helper decodes bytes to a string and consumes the fallible result
 todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
-todo	a large whole-valued float renders its full value, not an integer saturation
 todo	a later declaration in a do block sees an earlier one
 todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a length-prefixed frame is built from a size segment and a bytes segment
@@ -762,8 +768,6 @@ todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a name bound to a string keys a map by its value, not the literal name
-todo	a named function is partially applied, bound, and used
-todo	a named multi-argument function applies in explicit curried form
 todo	a nearer handler on the call chain shadows an outer one
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
@@ -978,7 +982,6 @@ todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
 todo	floating-point uses the fixed rounding mode
-todo	functions are single-arity and curried
 todo	host calls are observed in the order they were made
 todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
@@ -1006,7 +1009,6 @@ todo	merging two records with disjoint fields unions their fields
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
 todo	negative integer to byte uses two's complement
-todo	negative zero is distinct in the canonical value form
 todo	nested patterns with literals
 todo	nullary constructor patterns are uniform with unary
 todo	ordering a string against an integer is a type error regardless of operand order

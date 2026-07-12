@@ -8781,6 +8781,43 @@ mod stage1 {
     }
 
     #[test]
+    fn partial_application_curries_at_compile_time() {
+        // `core-semantics.md` §Functions Are Single-Arity: applying a curried function to fewer args
+        // than its arity returns a closure awaiting the rest. Under-application β-reduces the leading
+        // params into a RESIDUAL lambda, so the whole chain folds when fully applied — no runtime
+        // function survives.
+        // A lambda applied to ONE of two args, then the residual applied to the second → `(+ 3 4)` = 7.
+        assert_eq!(run_main("(((fn (x y) (+ x y)) 3) 4)"), 7);
+        // The residual bound and applied later: `(let ((add3 ((fn (x y) (+ x y)) 3))) (add3 7))` = 10.
+        assert_eq!(
+            run_main("(let ((add3 ((fn (x y) (+ x y)) 3))) (add3 7))"),
+            10
+        );
+        // Through a NAMED def, both the explicit-curried `((add 3) 4)` and the let-bound `inc` shapes.
+        let curried = "(module m (def (add x y) (+ x y)) (def (main) ((add 3) 4)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(curried))).expect("compile"),
+                "main"
+            ),
+            7
+        );
+        let letbound = "(module m (def (add x y) (+ x y)) (def (main) (let ((inc (add 3))) (inc 4))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(letbound))).expect("compile"),
+                "main"
+            ),
+            7
+        );
+        // THREE params, applied one-then-two: the residual itself partially applies again.
+        assert_eq!(
+            run_main("(let ((f (fn (a b c) (+ (+ a b) c)))) (let ((g (f 1))) (g 2 3)))"),
+            6
+        );
+    }
+
+    #[test]
     fn a_let_bound_variable_passed_as_a_call_argument_resolves_at_the_call_site() {
         // `(let ((k 10)) (inc k))` = 11: β-reduction splices the CALL-SITE argument `k` into a copy of
         // `inc`'s body, and `push_list` re-parents the splice — so without pinning the argument's scope

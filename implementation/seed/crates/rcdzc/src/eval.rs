@@ -445,7 +445,31 @@ fn apply_lambda_uncached(
     }
     trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
     if args.len() < params.len() {
-        return Err("partial application of a function is not yet supported".to_string());
+        // PARTIAL APPLICATION — compile-time currying (`core-semantics.md` §Functions Are
+        // Single-Arity: "applying a curried function to fewer arguments than its full chain returns a
+        // closure awaiting the remaining arguments"). Substitute the provided args for the leading
+        // parameters, then wrap the remaining parameters in a fresh residual lambda
+        // `(fn (remaining…) reduced-body)`. Applying that residual to the rest of the arguments
+        // β-reduces it the same way, so `((add 3) 4)` folds to `(+ 3 4)` → 7 with no residual
+        // function surviving to run time. The residual's parameter binders are FRESH copies (same
+        // spelling) so the original lambda is untouched (its param occurrences keep their parent under
+        // the original `fn`/`def`); a body reference to a remaining parameter re-resolves, by name,
+        // against the residual's scope to the residual's binder — exactly how `beta_reduce` re-resolves
+        // a `let`-local across the copy.
+        let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
+        for (p, a) in params.iter().zip(args.iter()) {
+            crate::resolve::resolve_subtree(db, *a);
+            arg_of.insert(param_name_occ(db, *p), *a);
+        }
+        let reduced_body = beta_reduce(db, body, &arg_of);
+        let remaining: Vec<StructId> = params[args.len()..]
+            .iter()
+            .map(|&p| copy_param(db, p))
+            .collect();
+        let params_list = db.push_list(remaining);
+        let fn_head = db.push_name("fn");
+        let residual = db.push_list(vec![fn_head, params_list, reduced_body]);
+        return Ok(Some(residual));
     }
     let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
     for (p, a) in params.iter().zip(args.iter()) {
@@ -473,6 +497,16 @@ fn apply_lambda_uncached(
             None => Err("applied more arguments than the function accepts".to_string()),
         }
     }
+}
+
+/// Copy a lambda PARAMETER occurrence into a fresh binder for a residual (partially-applied) lambda —
+/// a bare name atom becomes a fresh atom of the same name, an annotated `(: name T)` binder becomes a
+/// fresh list of freshly-copied children. Fresh occurrences so the residual's binders are distinct from
+/// the original lambda's (a body reference re-resolves by name to the residual's binder across the copy,
+/// as in `beta_reduce`); the empty `arg_of` means nothing is substituted, only re-parented.
+fn copy_param(db: &mut Db, param: StructId) -> StructId {
+    let empty: HashMap<StructId, StructId> = HashMap::default();
+    copy_structural(db, param, &empty)
 }
 
 /// The NAME occurrence a parameter binds — seeing through a `(: name T)` annotated binder to `name`,
