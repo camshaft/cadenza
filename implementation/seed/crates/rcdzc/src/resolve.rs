@@ -298,7 +298,8 @@ fn lookup_scope(db: &Db, id: StructId, name: &str) -> Option<StructId> {
 ///  - `form` is the let's BINDINGS-LIST and `from` is pair k → bindings 0..k visible (binding k's
 ///    initializer sees the earlier bindings, not itself — §"A later let binding sees an earlier one").
 ///
-/// A `def` parameter would bind in the body here too; Stage 1 defs are nullary, so nothing yet.
+/// A `def`'s parameters bind in its body too — Case 4 below, exactly as a `fn` body sees its own
+/// parameters (a def-with-params is no longer nullary-only).
 fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<StructId> {
     // Case 1: `form` is a `let`, ascended from its body → all bindings visible.
     if let Some(tail) = db.ast.as_form(form, "let") {
