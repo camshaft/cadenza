@@ -414,6 +414,43 @@
             (def (main) (even 7)) (export main)))
   (output (: false Bool)))
 
+; --- A TAIL call runs in constant stack ---------------------------------------------------------
+; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
+; caller's stack frame rather than pushing a new one — otherwise a tail-recursive loop over a RUNTIME
+; count grows the wasm call stack one frame per iteration and TRAPS (stack exhausted) on a valid,
+; finite input, which the emitted component must be able to complete. The cases above recurse over
+; CONSTANT arguments (folded away at compile time, so no runtime frame is ever emitted); these run the
+; SAME shapes over a `(call …)` runtime argument, where the self-call is a real emitted call. A
+; tail-recursive accumulator counting a million down, and a mutually-tail-recursive even/odd at 100000,
+; both complete in O(1) stack — the self-recursive and the cross-function (mutual) tail-call shapes.
+
+(case "a tail-recursive accumulator over a large runtime count iterates in constant stack"
+  (doc    "`(def (f n acc) (if (= n 0) acc (f (- n 1) (+ acc 1))))` counted down from a runtime `n` =
+           1000000, accumulating +1 each step. The self-call is in TAIL position (it is the `if`'s
+           result), so it reuses the frame and the loop runs in constant stack, yielding 1000000. A
+           frame-per-iteration recursive call would trap by stack exhaustion well before a million —
+           the recorded outcome is the value, not a trap.")
+  (input  (do
+            (def (f n acc) (if (= n 0) acc (f (- n 1) (+ acc 1))))
+            (def (main (: n Int64)) (f n 0))
+            (export main)))
+  (call   main (: 1000000 Int64))
+  (output (: 1000000 Int64)))
+
+(case "a mutually tail-recursive even/odd over a large runtime count iterates in constant stack"
+  (doc    "The cross-function shape: `even` and `odd` each end in a tail call to the OTHER. At a runtime
+           depth of 100000 the alternating tail calls run in constant stack and yield 1 (100000 is
+           even). A self-tail-call→loop optimization would not cover this — the tail calls cross between
+           two functions — so this pins that a genuine cross-function tail call reuses the frame, not
+           only direct self-recursion.")
+  (input  (do
+            (def (even n) (if (= n 0) 1 (odd (- n 1))))
+            (def (odd n)  (if (= n 0) 0 (even (- n 1))))
+            (def (main (: n Int64)) (even n))
+            (export main)))
+  (call   main (: 100000 Int64))
+  (output (: 1 Int64)))
+
 (case "a self-recursive Bool-returning function whose recursive call is the then-branch"
   (doc    "A self-recursive function that returns Bool, whose `if` body puts the recursive SELF-CALL in
            the THEN branch and a Bool literal in the ELSE — the `all …` / `every-so-far` shape a reader's

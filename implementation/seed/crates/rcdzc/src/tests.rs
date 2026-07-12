@@ -1900,7 +1900,7 @@ mod runtime_ops {
 // recursion terminates. (The corpus's UNANNOTATED recursive functions stay `todo` until the connected
 // parameter solve, A2; an annotated signature is determined by absorption — see `infer::def_scheme`.)
 mod recursion {
-    use super::run_returns;
+    use super::{run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -1951,6 +1951,29 @@ mod recursion {
             "(module m (def (is-even (: n Int64)) (if (= n 0) true (is-odd (+ n -1)))) (def (is-odd (: n Int64)) (if (= n 0) false (is-even (+ n -1)))) (def (main) (if (is-even 10) 1 0)) (export main))",
         );
         assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+    }
+
+    #[test]
+    fn a_tail_recursive_loop_runs_in_constant_stack() {
+        use wasmtime::component::Val;
+        // A tail-recursive accumulator over a RUNTIME count: the self-call is in tail position, so it
+        // emits as `return_call` and reuses the frame — a million iterations complete in O(1) stack.
+        // A frame-per-iteration recursive call would trap (stack exhausted) far below a million.
+        let f = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: n Int64) (: acc Int64)) (if (= n 0) acc (f (- n 1) (+ acc 1)))) (def (main (: n Int64)) (f n 0)) (export main))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&f, "main", &[Val::S64(1_000_000)]),
+            1_000_000
+        );
+        // MUTUAL tail recursion (cross-function tail calls) also runs in constant stack — even/odd at
+        // depth 100000 (a self-tail-call→loop optimization would not cover this; `return_call` does).
+        let eo = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1)))) (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1)))) (def (main (: n Int64)) (even n)) (export main))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&eo, "main", &[Val::S64(100_000)]), 1);
     }
 
     #[test]

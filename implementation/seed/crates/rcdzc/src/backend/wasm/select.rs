@@ -260,7 +260,11 @@ pub fn select_function(
     let base = param_vts.len() as u32;
     let mut high = base;
     let mut scratch_ty: HashMap<u32, ValType> = HashMap::new();
-    emit(
+    // The body is emitted in TAIL position: a `Core::Call` in the body's result position becomes a
+    // `return_call`, so a tail-recursive function iterates in O(1) stack instead of trapping by stack
+    // exhaustion. `emit_tail` propagates tail-ness through `if`/`match`/`let` result positions and
+    // delegates every non-tail position to `emit`.
+    emit_tail(
         db,
         body,
         &slot_of,
@@ -281,6 +285,119 @@ pub fn select_function(
         code,
         declared,
     })
+}
+
+/// Emit the node at `id` in TAIL position — the body's result, whose value becomes the function's
+/// return. A `Core::Call` here is emitted as `return_call` (a TAIL call: it replaces the caller's frame
+/// rather than pushing a new one), so a tail-recursive loop runs in O(1) stack instead of trapping by
+/// stack exhaustion at ~35k frames. Tail-ness PROPAGATES through the result-producing sub-positions: an
+/// `if`'s two branches, a `let`'s body (only when no heap `drop` must run AFTER it — a drop is code that
+/// executes on return, so the call can't be the last instruction), and a `match`'s arm bodies. Every
+/// other node (an operand, an operation, a plain value) is not a tail call, so it delegates to `emit`.
+/// This mirrors `emit`'s structure for exactly the propagating cases; everything else is one delegation.
+#[allow(clippy::too_many_arguments)]
+fn emit_tail(
+    db: &mut Db,
+    id: StructId,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    match core_of(db, id) {
+        // A tail call → `return_call`. Push the arguments (each in NON-tail operand position via
+        // `emit`), then the tail call to the resolved function index.
+        Core::Call { callee, args } => {
+            for &arg in &args {
+                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            }
+            match layout.abs(callee) {
+                Some(idx) => {
+                    trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
+                    out.push(Lir::ReturnCall(idx));
+                    Ok(())
+                }
+                None => Err(Reject::decline("tail call to a definition with no emission index")),
+            }
+        }
+        // An `if` in tail position: its condition is not tail (a value the branch selects on), but BOTH
+        // branches are — a tail call in either branch is the function's result.
+        Core::If { cond, then_, else_ } => {
+            emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "if result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            out.push(Lir::If(block_ty));
+            emit_tail(db, then_, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::Else);
+            emit_tail(db, else_, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::End);
+            Ok(())
+        }
+        // A `let` in tail position: its body is tail — BUT only if no heap binding must be `drop`ped
+        // AFTER the body. A drop is code that runs on the way out, so a `return_call` (which does not
+        // return here) would skip it; when a drop is pending, fall back to the non-tail `emit` (the
+        // body's call pushes an ordinary frame that returns, then the drops run). A body with no
+        // pending drop (every heap binding escapes, or there are none) keeps the tail position.
+        Core::Let { bindings, body } => {
+            let any_drop = bindings.iter().any(|(binder, _)| {
+                is_heap_type(&type_of(db, *binder)) && !binding_escapes(db, body, *binder, false)
+            });
+            if any_drop {
+                return emit(db, id, slots, base, high, scratch_ty, layout, out);
+            }
+            // Re-emit the bindings exactly as `emit` does, then the body in TAIL position. (No drop
+            // epilogue is needed — the `any_drop` check above guaranteed none.)
+            let mut extended = slots.clone();
+            let mut floor = base;
+            for (binder, value) in &bindings {
+                let slot = floor;
+                let ty = type_of(db, *binder);
+                let vt = valtype_of(&ty).ok_or_else(|| {
+                    Reject::decline("a let binding's type has no machine representation")
+                })?;
+                emit(db, *value, &extended, slot + 1, high, scratch_ty, layout, out)?;
+                out.push(Lir::LocalSet(slot));
+                scratch_ty.insert(slot, vt);
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
+                extended.insert(*binder, slot);
+                floor = slot + 1;
+            }
+            emit_tail(db, body, &extended, floor, high, scratch_ty, layout, out)
+        }
+        // A `match` in tail position: each arm body is tail. Delegated with a tail-aware arm emitter.
+        Core::Match { scrutinee, arms } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let it = int_ty_of(db, scrutinee);
+            emit_match_arms_tailable(
+                db, scrutinee, &arms, it, block_ty, slots, base, high, scratch_ty, layout, out, true,
+            )
+        }
+        // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
+        _ => emit(db, id, slots, base, high, scratch_ty, layout, out),
+    }
 }
 
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
@@ -611,6 +728,44 @@ fn emit_match_arms(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
+    emit_match_arms_tailable(
+        db, scrutinee, arms, it, block_ty, slots, base, high, scratch_ty, layout, out, false,
+    )
+}
+
+/// `emit_match_arms`, but with a `tail` flag: when the match is in TAIL position, each ARM BODY is a
+/// tail position too (a tail call in an arm becomes `return_call`), so arm bodies emit via `emit_tail`.
+/// The scrutinee and the probe comparisons are never tail (they are values the dispatch reads). With
+/// `tail = false` this is the ordinary chain (`emit` for the bodies) — the non-tail entry point above.
+#[allow(clippy::too_many_arguments)]
+fn emit_match_arms_tailable(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(crate::core::Probe, StructId)],
+    it: IntTy,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+    tail: bool,
+) -> Result<(), Reject> {
+    // Emit an arm body in tail position when the match is tail, else normally.
+    let emit_body = |db: &mut Db,
+                     body: StructId,
+                     base: u32,
+                     high: &mut u32,
+                     scratch_ty: &mut HashMap<u32, ValType>,
+                     out: &mut Vec<Lir>|
+     -> Result<(), Reject> {
+        if tail {
+            emit_tail(db, body, slots, base, high, scratch_ty, layout, out)
+        } else {
+            emit(db, body, slots, base, high, scratch_ty, layout, out)
+        }
+    };
     match arms.split_first() {
         None => {
             // No arm matched and no wildcard — `lower` forbids this for a runtime match, so it is a
@@ -622,7 +777,7 @@ fn emit_match_arms(
         Some(((crate::core::Probe::Wild, body), _rest)) => {
             // The wildcard is the unconditional tail — its body is the value, no probe. (Any arms after
             // a wildcard are unreachable; `lower` keeps them but they never emit.)
-            emit(db, *body, slots, base, high, scratch_ty, layout, out)
+            emit_body(db, *body, base, high, scratch_ty, out)
         }
         Some(((probe, body), rest)) => {
             // A literal probe: `scrutinee == literal`, then `if (block_ty) body else <rest>`.
@@ -640,10 +795,10 @@ fn emit_match_arms(
                 crate::core::Probe::Wild => unreachable!("wildcard handled above"),
             }
             out.push(Lir::If(block_ty));
-            emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
+            emit_body(db, *body, base, high, scratch_ty, out)?;
             out.push(Lir::Else);
-            emit_match_arms(
-                db, scrutinee, rest, it, block_ty, slots, base, high, scratch_ty, layout, out,
+            emit_match_arms_tailable(
+                db, scrutinee, rest, it, block_ty, slots, base, high, scratch_ty, layout, out, tail,
             )?;
             out.push(Lir::End);
             Ok(())

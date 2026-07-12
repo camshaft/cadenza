@@ -38,6 +38,7 @@ pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
+pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named higher-order function receives a lambda argument
@@ -81,6 +82,7 @@ pass	a signed narrow-width parameter plus a bare literal computes at the paramet
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
+pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a type annotation consistent with the value is transparent
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary

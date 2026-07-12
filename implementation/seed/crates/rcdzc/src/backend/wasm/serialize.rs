@@ -81,6 +81,10 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::CALL);
             uleb128(*func as u64, out);
         }
+        Lir::ReturnCall(func) => {
+            out.push(op::RETURN_CALL);
+            uleb128(*func as u64, out);
+        }
         Lir::CallImport(name) => {
             // Resolve the op name to its import function index (its position in the import section).
             // A `CallImport` for an op not in the import set is a compiler bug — `collect_used_ops`

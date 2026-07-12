@@ -73,6 +73,11 @@ pub enum Lir {
     /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
     /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
     Call(u32),
+    /// `return_call F` — a TAIL call to wasm function index `F` (arguments already pushed). Replaces the
+    /// caller's frame instead of pushing a new one, so a tail-recursive loop runs in O(1) stack (a
+    /// self-call in tail position no longer traps by stack exhaustion). Emitted for a `Core::Call` in
+    /// TAIL position; the callee's result type equals the caller's, so it is the caller's return value.
+    ReturnCall(u32),
     /// `call <import-index>` — call a value-heap runtime op by NAME (`arr-alloc`, `box-int`, …). The op
     /// name is carried symbolically because its concrete core function index (its position `0..k` in the
     /// program's sorted used-set) is only fixed once the whole used-set is known; `serialize` resolves
