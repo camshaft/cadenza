@@ -236,8 +236,37 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
     // because a signature parameter is not part of the def's body (which `type_errors` walks). Collected
     // per param across ALL defs so a garbage parameter type is caught whether or not the def is called.
     let all_params: Vec<StructId> = db.defs.iter().flat_map(|d| d.params.clone()).collect();
-    for p in all_params {
-        crate::infer::param_annotation_faults(db, p, &mut faults);
+    for p in &all_params {
+        crate::infer::param_annotation_faults(db, *p, &mut faults);
+    }
+    // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
+    // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at
+    // most once … rather than silently shadowing an earlier binder"). `(def (f x x) …)` binds `x` twice;
+    // accepting it last-wins makes the FIRST parameter — and any argument passed to it — silently
+    // unreachable (its value, and any trap it would raise, dropped). Reject the SECOND+ occurrence of a
+    // name (CDZ0102, the non-linear-binder code the spec assigns), anchored at the repeated binder. Per
+    // def (a name may of course repeat ACROSS defs); the binder NAME sees through a `(: name T)` binder.
+    let param_lists: Vec<Vec<StructId>> = db.defs.iter().map(|d| d.params.clone()).collect();
+    for params in &param_lists {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for &p in params {
+            let name_occ = crate::eval::param_name_occ(db, p);
+            let Some(name) = db.ast.as_name(name_occ).map(|s| s.to_string()) else {
+                continue; // a param with no extractable name (a malformed binder) — not a dup check
+            };
+            if !seen.insert(name.clone()) {
+                faults.push(
+                    Reject::coded(
+                        Code::NonLinearBinder,
+                        format!(
+                            "parameter `{name}` is bound more than once (a parameter list must be \
+                             linear, like a pattern)"
+                        ),
+                    )
+                    .at(name_occ),
+                );
+            }
+        }
     }
     // Check EVERY definition's body — reachable or not. (The demand is still lazy per node; this just
     // demands each definition once, which is what well-formedness requires.)

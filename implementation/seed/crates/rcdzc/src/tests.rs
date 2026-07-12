@@ -5519,6 +5519,55 @@ mod stage1 {
     }
 
     #[test]
+    fn a_duplicate_parameter_name_is_rejected_as_nonlinear() {
+        // A function's parameter list is a BINDER POSITION, linear like a pattern (core-semantics.md
+        // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing
+        // an earlier binder"). `(def (f x x) …)` binds `x` twice — accepting it last-wins made the FIRST
+        // parameter (and any argument passed to it, including a trap) silently unreachable. Reject
+        // CDZ0102, anchored at the repeated binder.
+        let code = |src: &str| -> Option<String> {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out.artifact(crate::backend::Target::Wasm.artifact_kind()).is_some() {
+                return None; // compiled — no rejection
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // A bare, an annotated, and a mid-list duplicate parameter all reject CDZ0102.
+        assert_eq!(
+            code("(module m (def (f x x) x) (def (main) (f 1 2)) (export main))").as_deref(),
+            Some("CDZ0102")
+        );
+        assert_eq!(
+            code("(module m (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main))")
+                .as_deref(),
+            Some("CDZ0102")
+        );
+        assert_eq!(
+            code("(module m (def (f a b a) a) (def (main) (f 1 2 3)) (export main))").as_deref(),
+            Some("CDZ0102")
+        );
+        // NO OVER-REJECTION: distinct params compile, and the SAME name in DIFFERENT defs is not a dup.
+        assert_eq!(
+            code("(module m (def (f x y) (+ x y)) (def (main) (f 3 4)) (export main))"),
+            None
+        );
+        assert_eq!(
+            code("(module m (def (f x) x) (def (g x) x) (def (main) (+ (f 1) (g 2))) (export main))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_duplicate_export_is_rejected_not_miscompiled() {
         // A module's exports are a record whose fields are the exported names — exporting `a` twice is
         // the same CDZ0201 duplicate-field ill-formedness as a duplicate definition. It MUST reject

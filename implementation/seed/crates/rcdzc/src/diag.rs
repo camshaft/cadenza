@@ -22,6 +22,12 @@ pub enum Code {
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
     /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
     Unbound,
+    /// A binder position binds the same name more than once — a non-linear binder. A pattern
+    /// (`core-semantics.md` §Patterns Compose: "A pattern MUST bind each name at most once … rather than
+    /// silently shadowing an earlier binder") and a function's PARAMETER LIST are the same binder-linearity
+    /// surface, so `(def (f x x) …)` (or `(tuple a a)` in a pattern) is this error rather than a last-wins
+    /// shadow that makes the first binder unreachable.
+    NonLinearBinder,
     /// A malformed or ill-typed construct that the compiler positively proves ill-formed.
     Malformed,
     /// A type mismatch (e.g. an `if` condition that is not a boolean; branches of differing type).
@@ -55,6 +61,7 @@ impl Code {
     pub fn code(self) -> &'static str {
         match self {
             Code::Unbound => "CDZ0101",
+            Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",
             Code::TypeMismatch => "CDZ0203",
             Code::NumericMismatch => "CDZ0301",

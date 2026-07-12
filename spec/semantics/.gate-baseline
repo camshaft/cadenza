@@ -81,6 +81,7 @@ pass	a field read follows the record's SORTED field order, not its written order
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a float in integer-width position is rejected
 pass	a function applied to an argument
+pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result

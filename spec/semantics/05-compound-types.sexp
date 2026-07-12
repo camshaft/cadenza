@@ -3008,6 +3008,24 @@
   (input  (match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) (_ 0)))
   (error  CDZ0102))
 
+; A function's PARAMETER LIST is a binder position too, linear like a pattern (core-semantics.md
+; #Patterns Compose: the same "bind each name at most once" surface). So `(def (f x x) …)` — binding `x`
+; twice in the signature — is the SAME CDZ0102 non-linear-binder error as `(tuple x x)`, rather than a
+; last-wins shadow that makes the first parameter (and any argument passed to it, including a trap it
+; would raise) silently unreachable. The parameter companion of the pattern cases above; unlike them it
+; needs no `(needs …)` gate — the seed enforces parameter linearity.
+
+(case "a function binding the same parameter name twice is rejected"
+  (doc    "`(def (f x x) x)` declares the parameter `x` twice. A parameter list must be LINEAR, like a
+           pattern (core-semantics.md #Patterns Compose), so a repeated parameter is CDZ0102 — not a
+           last-wins shadow. Accepting it made the first `x` (and any argument passed to it) unreachable:
+           `(f (/ 1 d) 7)` with d=0 returned 7, silently dropping the first argument's division-by-zero
+           trap. Rejected at the repeated binder. A distinct-parameter signature `(def (f x y) …)` and
+           the same name across DIFFERENT defs are unaffected (only one signature's own repeat is the
+           error).")
+  (input  (do (def (f x x) x) (def (main (: d Int64)) (f (/ 1 d) 7)) (export main)))
+  (error  CDZ0102))
+
 (case "a recursive sum type works with pattern matching"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: sum types can be recursive — a variant
            can carry the type itself. (type IntList (Cons (Tuple Int64 IntList)) Nil) is a linked list.
