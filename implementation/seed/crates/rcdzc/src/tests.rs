@@ -2954,7 +2954,6 @@ mod runtime_ops {
         ));
         // The Lir has ONE range compare (the upper `gt_s`), not two — the dead lower `lt_s` is gone.
         let code = {
-            use crate::backend::wasm::lir::Lir;
             use crate::db::Db;
             let ast = crate::testkit::parse(
                 "(module m (def (f (: a Int8) (: b Int8)) (/ a b)) (def (main) 0) (export main))",

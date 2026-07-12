@@ -2873,9 +2873,9 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         Core::If { then_, else_, .. } => {
             let t = value_eq_operand_ownership(db, then_)?;
             let e = value_eq_operand_ownership(db, else_)?;
-            (t == e).then_some(t).ok_or_else(|| {
-                Reject::decline("value-eq operand's branches disagree on ownership")
-            })
+            (t == e)
+                .then_some(t)
+                .ok_or_else(|| Reject::decline("value-eq operand's branches disagree on ownership"))
         }
         Core::Let { body, .. } => value_eq_operand_ownership(db, body),
         _ => Err(Reject::decline(

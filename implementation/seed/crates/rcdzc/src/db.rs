@@ -930,7 +930,12 @@ impl Db {
     /// Fill a reserved specialized def's parameters + body (see [`push_specialized_def`]) — the two-step
     /// build a self-referential specialization needs: reserve the name, thread the body (which may call
     /// the name), then fill. Updates the body index so `def_index_by_body` finds it.
-    pub(crate) fn fill_specialized_def(&mut self, idx: usize, params: Vec<StructId>, body: StructId) {
+    pub(crate) fn fill_specialized_def(
+        &mut self,
+        idx: usize,
+        params: Vec<StructId>,
+        body: StructId,
+    ) {
         self.defs[idx].params = params;
         self.defs[idx].body = Some(body);
         self.def_by_body.insert(body, idx);
