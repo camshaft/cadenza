@@ -64,17 +64,17 @@
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field
 ; is. The compiler resolves a function through record member access `.` (the control below runs); the
-; same projection-to-lambda resolution must extend to the positional/indexed accessors `tuple.N` and
+; same projection-to-lambda resolution must extend to the positional/indexed accessors `(. x N)` and
 ; `List.at`. A generation that does not yet resolve a stored lambda through those accessors declines
 ; rather than running the program (reject-don't-miscompile).
 
 (case "a function stored in a tuple element is called after extraction"
   (doc    "A function is a first-class value storable in any data structure. `(tuple (fn (x) (+ x 1))
-           9)` stores a function as element 0; `(tuple.0 …)` extracts it and applying it to 5 yields 6.
+           9)` stores a function as element 0; `(. … 0)` extracts it and applying it to 5 yields 6.
            This must behave exactly as the record-field companion below — a tuple is a data structure
-           like a record. A generation that does not yet resolve the stored lambda through `tuple.N`
+           like a record. A generation that does not yet resolve the stored lambda through `(. x N)`
            the way it does through `.` declines rather than running the program.")
-  (input  ((tuple.0 (tuple (fn (x) (+ x 1)) 9)) 5))
+  (input  ((. (tuple (fn (x) (+ x 1)) 9) 0) 5))
   (output (: 6 Int64)))
 
 (case "a function stored in a record field is called after extraction"
@@ -99,7 +99,7 @@
 (case "an element is projected from a tuple returned by a function"
   (doc    "The tuple companion: `((fn (x) (tuple x 9)) 7)` returns the pair (7, 9); projecting element 0
            yields 7. A positional access on a function's tuple result must project it, not trap.")
-  (input   (tuple.0 ((fn (x) (tuple x 9)) 7)))
+  (input   (. ((fn (x) (tuple x 9)) 7) 0))
   (output  (: 7 Int64)))
 
 (case "a field is projected from a record returned by a let-bound function"
@@ -150,13 +150,13 @@
 ; a projected compound result traps.)
 
 (case "an element is projected from a tuple returned by a nullary function"
-  (doc    "`mk` is a nullary function returning the pair (7, 9); `(mk)` calls it and `(tuple.1 (mk))`
+  (doc    "`mk` is a nullary function returning the pair (7, 9); `(mk)` calls it and `(. (mk) 1)`
            projects element 1, yielding 9. A positional access on a nullary function's tuple result
            must project it, exactly as it does for a unary function's result (above) — not trap. The
            seed traps: it does not reduce the nullary call `(mk)` to its tuple body for the access.")
   (input   (do
              (def (mk) (tuple 7 9))
-             (def (main) (tuple.1 (mk))) (export main)))
+             (def (main) (. (mk) 1)) (export main)))
   (output  (: 9 Int64)))
 
 (case "a field is projected from a record returned by a nullary function"

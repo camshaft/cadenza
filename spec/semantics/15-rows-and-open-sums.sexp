@@ -177,7 +177,7 @@
 ; companions: `Tuple.cat` concatenates, `Tuple.split-at` splits at a static position, `Tuple.pop` takes
 ; element 0 off. A tuple's arity is part of its type, so every result arity is fixed statically and there
 ; is no disjointness constraint (positions are anonymous). `k` is a compile-time position written as a
-; literal, exactly as `tuple.N` writes its index; a split outside `0..=len` is a type error, the `tuple.N`
+; literal, exactly as `(. x N)` writes its index; a split outside `0..=len` is a type error, the `(. x N)`
 ; static-bounds rule (05-compound-types "tuple elements are accessed by index"). `(needs rows)`: these ride
 ; the same later-generation layer and `Tuple.*` is an unbound name to the seed.
 
@@ -221,7 +221,7 @@
 (case "splitting a tuple beyond its arity is rejected"
   (doc    "Witnesses type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix (2nd
            sentence): a split position outside the operand's static arity range is a type error (CDZ0201),
-           consistent with an out-of-arity positional access `tuple.N` being rejected. `(tuple 1 2)` has
+           consistent with an out-of-arity positional access `(. x N)` being rejected. `(tuple 1 2)` has
            arity 2, so a split at 5 names a position it does not have — rejected rather than producing a
            short suffix.")
   (needs  rows)
@@ -230,7 +230,7 @@
 
 (case "popping a tuple yields element zero and the remaining tuple"
   (doc    "Witnesses type-system.md #A Tuple Is Reshaped Positionally: `Tuple.pop` takes element 0 off,
-           `(tuple (tuple.0 t) <rest>)` — the positional analogue of `Record.pop`. `(Tuple.pop (tuple 1 2
+           `(tuple (. t 0) <rest>)` — the positional analogue of `Record.pop`. `(Tuple.pop (tuple 1 2
            3))` yields `(tuple 1 (tuple 2 3))`. It is `(Tuple.split-at t 1)` with the singleton prefix
            unwrapped to its element.")
   (needs  rows)

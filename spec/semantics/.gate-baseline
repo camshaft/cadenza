@@ -8,6 +8,7 @@ pass	a boolean is less-than-or-equal to itself
 pass	a boolean parameter forwarded to a conditional result
 pass	a boolean result propagates through a three-deep chain of forwarding functions
 pass	a boolean result threaded through a second function
+pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a comparison-predicate function returns its boolean result
@@ -39,6 +40,7 @@ pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
+pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -79,6 +81,8 @@ pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation of a negative value uses two's complement and never traps
 pass	a runtime truncation to an unsigned byte keeps the low bits
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
+pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
@@ -88,6 +92,9 @@ pass	a strict less-than of equal operands is false
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a type annotation consistent with the value is transparent
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
+pass	an element is projected from a runtime-constructed tuple
+pass	an element is projected from a tuple returned by a function
+pass	an element is projected from a tuple returned by a nullary function
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
@@ -152,6 +159,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	true is greater than false
 pass	true is not less than false
+pass	tuple access on a tuple chosen by a conditional projects the element
 pass	two functions defined by mutual recursion compute a result
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
@@ -201,7 +209,6 @@ todo	a boolean in integer-width position is rejected
 todo	a boolean literal pattern against an integer scrutinee is a type error
 todo	a boolean literal pattern matches a runtime scrutinee
 todo	a boolean record field is projected as the program result
-todo	a boolean tuple element is projected as the program result
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
@@ -339,7 +346,6 @@ todo	a map with values of two different types is a type error
 todo	a match arm binds a nested tuple inside a sum payload
 todo	a match arm building a fresh runtime compound infers its shape
 todo	a match not covering the scrutinee is a compile-time rejection
-todo	a match on a tuple-element-access scrutinee dispatches on the element value
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
@@ -487,8 +493,6 @@ todo	a runtime three-variant classifier dispatches to the negative arm
 todo	a runtime tuple with a boolean element is returned as a result
 todo	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 todo	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
-todo	a scalar element is projected DIRECTLY from a named function's runtime tuple result
-todo	a scalar element is projected directly from a function's runtime tuple result
 todo	a scalar element is projected from a let-bound runtime tuple
 todo	a sequencing block discards a pure compound intermediate
 todo	a sequencing block discards a pure list intermediate
@@ -539,7 +543,6 @@ todo	a truncating conversion keeps the low bits rather than trapping
 todo	a truncating conversion of a negative value uses two's complement
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple access out of arity on a function-returned tuple is a type error, not a trap
-todo	a tuple accessor with no operand is rejected, not a crash
 todo	a tuple annotated as a scalar type is rejected
 todo	a tuple annotated with the wrong arity is rejected
 todo	a tuple is constructed with positional elements
@@ -596,9 +599,6 @@ todo	an effect performed in a callee is discharged by the caller's handler
 todo	an effect resolves past an intermediate frame that installs no handler
 todo	an effect resolves through a deep chain of intermediate functions
 todo	an effect that declares an operation name twice is rejected
-todo	an element is projected from a runtime-constructed tuple
-todo	an element is projected from a tuple returned by a function
-todo	an element is projected from a tuple returned by a nullary function
 todo	an element pattern matches a list by its length and elements
 todo	an element read across a concatenation boundary is the right value
 todo	an empty binary form is the empty byte sequence
@@ -943,7 +943,6 @@ todo	the value-yielding remove reports the value it dropped
 todo	the width-indexed and aliased annotations of one value do not conflict
 todo	tuple access on a non-tuple is a type error
 todo	tuple access on a record is a type error
-todo	tuple access on a tuple chosen by a conditional projects the element
 todo	tuple elements are accessed by index
 todo	tuples are deconstructed by pattern matching
 todo	two dependent-size segments each bind the count a preceding segment named

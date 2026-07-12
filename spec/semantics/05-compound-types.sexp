@@ -101,7 +101,7 @@
 
 (case "member access on a tuple is a type error"
   (doc    "A tuple is not a record — it has positional elements, not named fields (accessed by
-           `tuple.N`, not `.field`). So `(. (tuple 1 2) f)` is member access on a non-record: a type
+           `(. x N)`, not `.field`). So `(. (tuple 1 2) f)` is member access on a non-record: a type
            error the compiler rejects (CDZ0201).")
   (input     (. (tuple 1 2) f))
   (error     CDZ0201))
@@ -152,25 +152,25 @@
             (def (main) (. (mk) z)) (export main)))
   (error  CDZ0201))
 
-; The positional tuple accessor `tuple.N` requires a TUPLE operand, exactly as member access `.`
-; requires a record operand (above). Applying `tuple.N` to a non-tuple — a scalar, a record, a sum —
+; The positional tuple accessor `(. x N)` requires a TUPLE operand, exactly as member access `.`
+; requires a record operand (above). Applying `(. x N)` to a non-tuple — a scalar, a record, a sum —
 ; has no defined result, so the compiler MUST reject it (CDZ0201) rather than emit a component that
 ; traps: the same projection-on-the-wrong-kind class as member access, for positional access.
 
 (case "tuple access on a non-tuple is a type error"
-  (doc    "`(tuple.0 5)` projects positional element 0 of the Int64 `5`, which is not a tuple — a type
+  (doc    "`(. 5 0)` projects positional element 0 of the Int64 `5`, which is not a tuple — a type
            error the compiler rejects (CDZ0201), just as `(. 5 x)` (member access on a non-record) is
            rejected above.")
-  (input     (tuple.0 5))
+  (input     (. 5 0))
   (error     CDZ0201))
 
 (case "tuple access on a record is a type error"
   (doc    "The record-operand companion: a record has named fields, not positional elements, so
-           `(tuple.0 (record (a 1)))` applies a positional accessor to a non-tuple — a type error
+           `(. (record (a 1)) 0)` applies a positional accessor to a non-tuple — a type error
            (CDZ0201), the mirror of `(. (tuple 1 2) f)` (member access on a tuple) above. Pins that
-           `tuple.N` requires a tuple, rejecting a record operand.")
+           `(. x N)` requires a tuple, rejecting a record operand.")
   (needs     collections)
-  (input     (tuple.0 (record (a 1))))
+  (input     (. (record (a 1)) 0))
   (error     CDZ0201))
 
 ; The index of a positional tuple access must be WITHIN the operand tuple's static arity, not only a
@@ -179,34 +179,34 @@
 ; type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix: "a positional tuple access
 ; whose index is out of the tuple's static arity [MUST be] rejected" at compile time, "so that a split
 ; can never name a position the tuple does not have." This is the arity companion of the non-tuple-operand
-; cases above: `(tuple.3 (tuple 10 20 30))` accesses index 3 of a statically-3-element tuple (valid
+; cases above: `(. (tuple 10 20 30) 3)` accesses index 3 of a statically-3-element tuple (valid
 ; indices 0..2), so the compiler MUST reject it (CDZ0201) rather than emit a component that traps at
 ; run time — a compile-time-knowable ill-typing must not be deferred to a runtime trap, exactly as
-; `(tuple.0 5)` (non-tuple operand) is rejected rather than trapped. (This is DISTINCT from member
+; `(. 5 0)` (non-tuple operand) is rejected rather than trapped. (This is DISTINCT from member
 ; access of a missing record field, which traps: a record's field set can be runtime-dependent, but a
 ; tuple's arity is static.) A generation that does not yet check the index range declines rather than
 ; emitting the trapping access.
 
 (case "a positional tuple access out of the tuple's static arity is a type error"
-  (doc    "`(tuple.3 (tuple 10 20 30))` projects position 3 of a three-element tuple, whose valid
+  (doc    "`(. (tuple 10 20 30) 3)` projects position 3 of a three-element tuple, whose valid
            positions are 0..2 — an index outside the tuple's static arity, which names an element the
            tuple does not have. The tuple's arity is part of its type (type-system.md #A Tuple Is Split
            At A Position Into A Prefix And A Suffix), so the compiler knows this statically and MUST reject
-           it (CDZ0201) rather than emit a component that traps at run time, exactly as `(tuple.0 5)`
+           it (CDZ0201) rather than emit a component that traps at run time, exactly as `(. 5 0)`
            (a non-tuple operand) is rejected rather than trapped. A compile-time-knowable ill-typing
            must not be deferred to a runtime trap. A generation that does not yet range-check the index
            declines rather than emitting the trapping access.")
-  (input     (tuple.3 (tuple 10 20 30)))
+  (input     (. (tuple 10 20 30) 3))
   (error     CDZ0201))
 
 ; The static-arity range check must reach a tuple whose arity is known through a FUNCTION RETURN, not only
 ; a directly-written tuple literal. `mk` returns `(tuple 1 2)`, so `(mk)`'s result is a two-element tuple —
 ; its arity (2, valid positions 0..1) is statically known at the projection site (the same shape recovery
-; that lets `(tuple.1 (mk))` project element 1). So `(tuple.2 (mk))` names position 2, outside the arity,
+; that lets `(. (mk) 1)` project element 1). So `(. (mk) 2)` names position 2, outside the arity,
 ; a compile-time-knowable ill-typing the compiler MUST reject (CDZ0201) — exactly as the literal
-; `(tuple.3 (tuple 10 20 30))` above and the let-bound `(let ((p (tuple 1 2))) (tuple.2 p))` are. A compiler
+; `(. (tuple 10 20 30) 3)` above and the let-bound `(let ((p (tuple 1 2))) (. p 2))` are. A compiler
 ; that range-checks the index for a literal and a let-bound tuple but NOT for a fn-return tuple emits a
-; component that TRAPS at run time on `(tuple.2 (mk))` — deferring a compile-time-knowable ill-typing to a
+; component that TRAPS at run time on `(. (mk) 2)` — deferring a compile-time-knowable ill-typing to a
 ; runtime trap, the very thing the case above forbids. (Distinct from a tuple reached through a PARAMETER,
 ; whose arity is genuinely unknown in the callee's body and which correctly declines "unknown tuple shape";
 ; here the arity IS known from the callee's return.) A generation that does not yet range-check the index on
@@ -214,11 +214,11 @@
 
 (case "a tuple access out of arity on a function-returned tuple is a type error, not a trap"
   (doc    "`mk` returns `(tuple 1 2)`, so `(mk)` is a two-element tuple whose arity is statically known at
-           the projection site (as the valid `(tuple.1 (mk))` shows). `(tuple.2 (mk))` names position 2,
+           the projection site (as the valid `(. (mk) 1)` shows). `(. (mk) 2)` names position 2,
            outside the arity 0..1 — a compile-time-knowable ill-typing the compiler MUST reject (CDZ0201,
            type-system.md #A Tuple Is Split At A Position Into A Prefix And A Suffix: a positional access
-           out of the static arity is rejected), exactly as the literal `(tuple.3 (tuple 10 20 30))` and the
-           let-bound `(let ((p (tuple 1 2))) (tuple.2 p))` are. Pins that the arity range check reaches a
+           out of the static arity is rejected), exactly as the literal `(. (tuple 10 20 30) 3)` and the
+           let-bound `(let ((p (tuple 1 2))) (. p 2))` are. Pins that the arity range check reaches a
            tuple whose arity is known through a function return, not only a literal or let-bound tuple. A
            compiler that checks the literal/let cases but emits a runtime trap for the fn-return case defers
            a compile-time-knowable ill-typing to a trap — the very thing the literal case forbids. (A tuple
@@ -228,36 +228,36 @@
   (needs     sum-type-declaration)
   (input     (do
                (def (mk) (tuple 1 2))
-               (def (main) (tuple.2 (mk))) (export main)))
+               (def (main) (. (mk) 2)) (export main)))
   (error     CDZ0201))
 
 ; Projecting a tuple that arrives as a FUNCTION PARAMETER (a runtime tuple whose shape is not the
 ; inline literal at the projection site) must either compute the projection or DECLINE — never emit an
-; invalid component. `(def (fst t) (tuple.0 t))` applied to `(tuple 7 8)` is well-typed and its value is
-; 7 (the inline `(let ((t (tuple 7 8))) (tuple.0 t))` and the beta-reducing `((fn (t) (tuple.0 t)) (tuple
+; invalid component. `(def (fst t) (. t 0))` applied to `(tuple 7 8)` is well-typed and its value is
+; 7 (the inline `(let ((t (tuple 7 8))) (. t 0))` and the beta-reducing `((fn (t) (. t 0)) (tuple
 ; 7 8))` both yield 7). self-hosting-and-bootstrap.md #An Unsupported Construct Is Declined, Not
 ; Miscompiled: "A generation whose compiler does not yet compile a construct a program uses MUST decline
 ; to derive a component … rather than emit a component whose observable behavior diverges" — and emitting
 ; a component that FAILS wasm validation is neither a decline nor a valid component, the worst outcome.
 ; The record accessor already takes the correct path on the analogous named-parameter case (`(def (geta
-; r) (. r a))` DECLINES "runtime member access on a value of unknown record shape"); `tuple.N` on a
+; r) (. r a))` DECLINES "runtime member access on a value of unknown record shape"); `(. x N)` on a
 ; parameter must at least do the same rather than emit invalid bytes. The recorded oracle is the value 7;
 ; a generation that cannot yet thread the parameter tuple's shape declines (scored todo), and a generation
 ; that emits an invalid component FAILs this case.
 
 (case "projecting a tuple passed as a function parameter yields the element, never an invalid component"
-  (doc    "`(def (fst t) (tuple.0 t))` applied to `(tuple 7 8)` projects element 0 of a tuple that
+  (doc    "`(def (fst t) (. t 0))` applied to `(tuple 7 8)` projects element 0 of a tuple that
            arrives as a parameter — a well-typed program whose value is 7 (the inline and lambda forms
            both compute 7). The compiler MUST either compute the projection or DECLINE
            (self-hosting-and-bootstrap.md #An Unsupported Construct Is Declined, Not Miscompiled), never
            emit a component that fails wasm validation — the worst outcome, neither a decline nor a valid
            component. The record accessor already declines the analogous named-parameter case (`(. r a)`
-           on a record parameter → 'unknown record shape'); `tuple.N` on a parameter must not emit invalid
+           on a record parameter → 'unknown record shape'); `(. x N)` on a parameter must not emit invalid
            bytes where the record accessor cleanly declines. A generation that cannot yet thread the
            parameter tuple's shape declines rather than emitting an invalid component.")
   (needs     collections)
   (input     (do
-               (def (fst t) (tuple.0 t))
+               (def (fst t) (. t 0))
                (def (main)  (fst (tuple 7 8))) (export main)))
   (output    (: 7 Int64)))
 
@@ -295,40 +295,40 @@
 
 (case "tuple access on a tuple chosen by a conditional projects the element"
   (doc    "Witnesses core-semantics.md tuple positional access with a tuple value SELECTED at run time
-           by a conditional. Both branches yield a 2-tuple; `(tuple.0 <if…>)` projects element 0 of
+           by a conditional. Both branches yield a 2-tuple; `(. <if…> 0)` projects element 0 of
            whichever tuple the condition selects. With n=0 the first tuple is chosen, so element 0 is
            1 — the access must project it, not trap. Same requirement as the record case: a positional
            access works on a tuple however it was produced.")
   (input  (do
-            (def (f n) (tuple.0 (if (= n 0) (tuple 1 9) (tuple 2 9))))
+            (def (f n) (. (if (= n 0) (tuple 1 9) (tuple 2 9)) 0))
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
 ; --- Positional access on a RUNTIME tuple bound by `let` -------------------------------------------
 ; A tuple returned from a function and BOUND BY `let` is a genuine runtime value (a value-heap
-; positional array), not a compile-time structure. `tuple.N` on such a bound name reads element N from
+; positional array), not a compile-time structure. `(. x N)` on such a bound name reads element N from
 ; the heap array (`arr-get`), unboxing a scalar element to its kind and keeping a compound element as a
 ; handle. This is the shape a recursive-descent decoder takes — threading a `(node, next-index)` pair
 ; through `let` — so it must both project a scalar element and yield a compound element a `match`
-; consumes. (Without the runtime path a `tuple.N` on a let-bound runtime tuple emitted an unreachable
+; consumes. (Without the runtime path a `(. x N)` on a let-bound runtime tuple emitted an unreachable
 ; that trapped; these pin the arr-get lowering.)
 
 (case "a scalar element is projected from a let-bound runtime tuple"
   (doc    "`mk` returns a runtime tuple `(tuple (NLit 5) 9)` — a genuine value-heap value because its
-           first element is a runtime sum. Bound by `let`, `tuple.1` reads its second element, the Int64
+           first element is a runtime sum. Bound by `let`, positional access `1` reads its second element, the Int64
            `9`. Pins that positional access on a materialized runtime tuple reads and unboxes a scalar
            element (`arr-get` + `get-int`), the index half of a decoder threading `(node, index)`.")
   (needs  sum-type-declaration)
   (input  (do
             (type Node (NLit Int64) (NAdd (Tuple Node Node)))
             (def (mk) (tuple (NLit 5) 9))
-            (def (main) (let ((l (mk))) (tuple.1 l))) (export main)))
+            (def (main) (let ((l (mk))) (. l 1))) (export main)))
   (output (: 9 Int64)))
 
 (case "a compound element projected from a let-bound runtime tuple is matched"
-  (doc    "The companion where the projected element is itself a runtime compound: `tuple.0` of the
+  (doc    "The companion where the projected element is itself a runtime compound: positional access `0` of the
            let-bound tuple is the `Node` sum `(NLit 5)`, which a `match` then consumes to its scalar
-           payload 5. Pins that a runtime `tuple.N` yields a heap element a `match` can dispatch on —
+           payload 5. Pins that a runtime `(. x N)` yields a heap element a `match` can dispatch on —
            the node half of a decoder's `(node, index)` pair (the exact shape a `bytes → AST` reader
            threads through `let`).")
   (needs  sum-type-declaration)
@@ -336,28 +336,28 @@
             (type Node (NLit Int64) (NAdd (Tuple Node Node)))
             (def (mk) (tuple (NLit 5) 9))
             (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd (tuple a b)) (+ (ev a) (ev b)))))
-            (def (main) (let ((l (mk))) (ev (tuple.0 l)))) (export main)))
+            (def (main) (let ((l (mk))) (ev (. l 0)))) (export main)))
   (output (: 5 Int64)))
 
 (case "a scalar element is projected directly from a function's runtime tuple result"
-  (doc    "The `let`-free companion of the projected-element cases above: `tuple.N` applied DIRECTLY to a
+  (doc    "The `let`-free companion of the projected-element cases above: `(. x N)` applied DIRECTLY to a
            NAMED-def call that returns a runtime tuple, with no intervening `let`. `(dec 4)` returns
-           `(tuple 40 5)`; `(tuple.0 (dec 4))` projects 40. Pins that positional access on a runtime
+           `(tuple 40 5)`; `(. (dec 4) 0)` projects 40. Pins that positional access on a runtime
            tuple does not depend on the tuple first being `let`-bound — the `let`-bound cases above
            compile, and so must the direct projection (the shape a reader takes to read just one half of
-           a returned pair). Distinct from the inline-tuple case `(tuple.1 (tuple n (+ n 1)))` (a tuple
-           built right at the projection) and the lambda case `(tuple.0 ((fn …) …))` (compile-time
+           a returned pair). Distinct from the inline-tuple case `(. (tuple n (+ n 1)) 1)` (a tuple
+           built right at the projection) and the lambda case `(. ((fn …) …) 0)` (compile-time
            reduced): here the tuple comes from a NAMED def, which the compiler does not reduce, so the
            projection must recover the operand's shape at the projection site — earlier this emitted an
            invalid component (a decline-don't-miscompile violation), now fixed.")
   (input  (do
             (def (dec i) (tuple (* i 10) (+ i 1)))
-            (def (main) (tuple.0 (dec 4))) (export main)))
+            (def (main) (. (dec 4) 0)) (export main)))
   (output (: 40 Int64)))
 
 (case "a scalar element is projected DIRECTLY from a named function's runtime tuple result"
-  (doc    "The `let`-free companion: `tuple.0` applied DIRECTLY to a named-def function's runtime-tuple
-           result — `(tuple.0 (dec 4))` with no intervening `let` — projects the scalar element. `dec`
+  (doc    "The `let`-free companion: positional access `0` applied DIRECTLY to a named-def function's runtime-tuple
+           result — `(. (dec 4) 0)` with no intervening `let` — projects the scalar element. `dec`
            builds a runtime tuple `(tuple (* n 10) 9)`; element 0 is `(* 4 10)` = 40. Pins that the
            projection recovers the operand's shape at the PROJECTION site, not only at a `let`-binding
            site, so a named-def result is projectable like a `let`-bound one. (This directly built a
@@ -366,7 +366,7 @@
            decline-don't-miscompile, then compile.)")
   (input  (do
             (def (dec n) (tuple (* n 10) 9))
-            (def (main) (tuple.0 (dec 4))) (export main)))
+            (def (main) (. (dec 4) 0)) (export main)))
   (output (: 40 Int64)))
 
 (case "a recursive resolver whose trapping arm builds a compound compiles"
@@ -580,12 +580,12 @@
   (output (: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
 
 (case "an element is projected from a runtime-constructed tuple"
-  (doc    "`(tuple.1 (tuple n (+ n 1)))` with n=5 projects element 1 of a runtime-built tuple, yielding
+  (doc    "`(. (tuple n (+ n 1)) 1)` with n=5 projects element 1 of a runtime-built tuple, yielding
            6. Pins that positional access reads the correct element of a heap-allocated runtime tuple —
            a layout or offset error would return the wrong element (5) or a garbage value. Companion of
            the constant tuple-access cases, on the runtime construction path.")
   (input  (do
-            (def (f n) (tuple.1 (tuple n (+ n 1))))
+            (def (f n) (. (tuple n (+ n 1)) 1))
             (def (main) (f 5)) (export main)))
   (output (: 6 Int64)))
 
@@ -1380,7 +1380,7 @@
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
 ; above project fields, index lists, and re-match variants inside the arm). But when the payload
 ; compound is RETURNED FROM A HELPER — `(def (unbox b) (match b ((Box.B t) t)))` — and the caller then
-; applies a positional accessor `tuple.N` to the returned value, the shape is not recovered at the
+; applies a positional accessor `(. x N)` to the returned value, the shape is not recovered at the
 ; projection site. WORSE THAN A DECLINE: the seed does not refuse to derive a component (which the gate
 ; would score `todo`); it REJECTS the program with a type-error code (CDZ0201 "tuple access on a
 ; non-tuple"), asserting a VALID program is ill-typed — a decline-don't-miscompile violation
@@ -1395,9 +1395,8 @@
 ; not-yet-covered behavior is to DECLINE (todo), never to reject a valid program as a type error.
 
 (case "a tuple payload extracted through a helper return must not be rejected as a type error"
-  (doc    "`unbox` returns the `Box.B` payload tuple to its caller, which then applies `tuple.1`.
-           `(unbox (Box.B (tuple (list) (Term.Var 7))))` is a `(List Int64, Term)` pair, so `(tuple.1
-           …)` projects the `Term` and `is-var` of it is 1 — a WELL-TYPED program. The seed does not
+  (doc    "`unbox` returns the `Box.B` payload tuple to its caller, which then applies positional access `1`.
+           `(unbox (Box.B (tuple (list) (Term.Var 7))))` is a `(List Int64, Term)` pair, so `(.            … 1)` projects the `Term` and `is-var` of it is 1 — a WELL-TYPED program. The seed does not
            recover the tuple shape at the projection site and REJECTS with CDZ0201 (\"tuple access on a
            non-tuple\"), asserting a valid program is ill-typed — a decline-don't-miscompile violation:
            for a shape it cannot yet thread through a function return it MUST decline (scored todo), not
@@ -1413,7 +1412,7 @@
             (def (unbox bx) (match bx ((Box.B t) t)))
             (def (main)
               (let ((p (unbox (Box.B (tuple (list) (Term.Var 7))))))
-                (is-var (tuple.1 p)))) (export main)))
+                (is-var (. p 1)))) (export main)))
   (output (: 1 Int64)))
 
 (case "a tuple payload consumed INLINE in the sum arm projects and re-matches"
@@ -1438,19 +1437,19 @@
 ; The same payload-through-a-return gap on the BUILT-IN `Option` takes a WORSE form than on a declared
 ; sum: where `(unbox …)` on a declared `Box` REJECTS the projection (CDZ0201, above — bad, but a refusal),
 ; a helper that returns a built-in `Some`'s tuple payload emits a VALID component that TRAPS at run time.
-; `get` binds `(Some p)`'s payload `p` and returns it; the caller applies `tuple.0`. The program is
+; `get` binds `(Some p)`'s payload `p` and returns it; the caller applies positional access `0`. The program is
 ; well-typed — `(Some (tuple 7 8))`'s payload is a two-tuple, and both inline routes below yield 7 — so
 ; the recorded outcome is 7. But the seed does not thread the payload's tuple shape through `get`'s return,
-; and instead of DECLINING (scored todo) it emits a component whose `tuple.0` traps: a decline-don't-
+; and instead of DECLINING (scored todo) it emits a component whose positional access `0` traps: a decline-don't-
 ; miscompile violation of the emit-a-broken-component kind (worse than the declared-sum rejection, which
 ; at least refuses). The correct not-yet-covered behavior is to decline; running to a trap where the
 ; program has a value is the failure this case pins.
 
 (case "a tuple payload returned through a helper from a built-in Option must not trap"
-  (doc    "`get` binds the payload `p` of `(Some p)` and returns it; `(tuple.0 (get (Some (tuple 7 8))))`
+  (doc    "`get` binds the payload `p` of `(Some p)` and returns it; `(. (get (Some (tuple 7 8))) 0)`
            projects element 0 of that two-tuple payload — a well-typed program whose value is 7 (both
            inline routes below confirm it). The seed does not recover the payload's tuple shape through
-           `get`'s bare return and emits a VALID component that TRAPS at `tuple.0`, rather than declining
+           `get`'s bare return and emits a VALID component that TRAPS at positional access `0`, rather than declining
            — a decline-don't-miscompile violation of the emit-a-broken-component kind. This is the
            built-in-`Option` companion of the declared-sum `Box` case above, and WORSE: the declared sum
            rejects the projection (CDZ0201) while the built-in one runs to a trap. A generation that
@@ -1458,38 +1457,37 @@
            todo), never emit a component that traps on a valued program.")
   (input  (do
             (def (get o) (match o ((Some p) p) (None (tuple 0 0))))
-            (def (main) (tuple.0 (get (Some (tuple 7 8))))) (export main)))
+            (def (main) (. (get (Some (tuple 7 8))) 0)) (export main)))
   (output (: 7 Int64)))
 
 (case "a built-in Option tuple payload consumed INLINE in the Some arm projects"
   (doc    "The control the trap case above must be distinguished from: consume the `Some` payload's tuple
-           INLINE in the arm — project `(tuple.0 p)` where `p` is bound in the `Some` arm — rather than
-           returning it for a caller. `(match (Some (tuple 7 8)) ((Some p) (tuple.0 p)) (None 0))` yields
+           INLINE in the arm — project `(. p 0)` where `p` is bound in the `Some` arm — rather than
+           returning it for a caller. `(match (Some (tuple 7 8)) ((Some p) (. p 0)) (None 0))` yields
            7. Pins that the payload's shape IS available where it is bound; the gap is threading it through
            a bare function RETURN, exactly as for the declared-sum `Box` pair above.")
   (input  (do
-            (def (main) (match (Some (tuple 7 8)) ((Some p) (tuple.0 p)) (None 0))) (export main)))
+            (def (main) (match (Some (tuple 7 8)) ((Some p) (. p 0)) (None 0))) (export main)))
   (output (: 7 Int64)))
 
 ; Projecting the RESULT of a call to a function that TAKES and RETURNS a tuple parameter must compute or
-; decline, never trap. `(def (go t) t)` is the identity on a tuple; `(tuple.0 (go (tuple 5 0)))` is a
-; well-typed projection of a two-tuple, value 5. When `go`'s body PROJECTS its tuple parameter (`(tuple.0
-; t)`) — which `tuple.N`-on-a-parameter declines as "unknown tuple shape" — that decline shape appears to
-; poison `go`'s return type, so the CALLER'S `(tuple.0 (go …))` emits a VALID component that TRAPS instead
+; decline, never trap. `(def (go t) t)` is the identity on a tuple; `(. (go (tuple 5 0)) 0)` is a
+; well-typed projection of a two-tuple, value 5. When `go`'s body PROJECTS its tuple parameter (`(. ; t 0)`) — which `(. x N)`-on-a-parameter declines as "unknown tuple shape" — that decline shape appears to
+; poison `go`'s return type, so the CALLER'S `(. (go …) 0)` emits a VALID component that TRAPS instead
 ; of computing 5. The trap is not depth-dependent: it happens even at recursion depth 0 (the base arm
 ; returns the tuple immediately). Contrast: a function returning a FRESH tuple (`(def (mk n) (tuple n (+ n
-; 1)))`) has its result projected fine (`(tuple.0 (mk 5))` = 5), and a SCALAR accumulator threaded through
+; 1)))`) has its result projected fine (`(. (mk 5) 0)` = 5), and a SCALAR accumulator threaded through
 ; the same recursion computes correctly — so the program is well-typed and the value is representable; only
 ; a tuple-typed parameter threaded and returned, then projected at the call site, traps. self-hosting-and-
 ; bootstrap.md #An Unsupported Construct Is Declined, Not Miscompiled: a shape the compiler cannot thread
 ; through the call MUST decline, never emit a component that traps on a valued program.
 
 (case "projecting the result of a function that threads a tuple parameter must not trap"
-  (doc    "`(def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (tuple.0 t) n) (tuple.1 t)))))` threads a
-           tuple accumulator `t`, projecting `(tuple.0 t)`/`(tuple.1 t)` in its body and returning a tuple;
-           `(tuple.0 (go 3 (tuple 0 0)))` is well-typed with value 6 (the scalar-accumulator analogue
+  (doc    "`(def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1)))))` threads a
+           tuple accumulator `t`, projecting `(. t 0)`/`(. t 1)` in its body and returning a tuple;
+           `(. (go 3 (tuple 0 0)) 0)` is well-typed with value 6 (the scalar-accumulator analogue
            computes, and a fresh-tuple-returning helper's result projects fine). The seed emits a VALID
-           component that TRAPS at the caller's `tuple.0` — the tuple parameter's shape, which `tuple.N` on
+           component that TRAPS at the caller's positional access `0` — the tuple parameter's shape, which `(. x N)` on
            a parameter declines as unknown, is not threaded through `go`'s return, so the call-result
            projection traps rather than computing or declining (a decline-don't-miscompile violation; the
            trap happens even at recursion depth 0). Companion of the built-in-Option payload-return case
@@ -1497,8 +1495,8 @@
            A generation that cannot yet thread a tuple parameter's shape through the return declines rather
            than emitting a component that traps.")
   (input  (do
-            (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (tuple.0 t) n) (tuple.1 t)))))
-            (def (main) (tuple.0 (go 3 (tuple 0 0)))) (export main)))
+            (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1)))))
+            (def (main) (. (go 3 (tuple 0 0)) 0)) (export main)))
   (output (: 6 Int64)))
 
 (case "an association list is searched by key with a tuple-carrying Option match"
@@ -2213,7 +2211,7 @@
 ; 1 2 3))` applies it to a THREE-element tuple where a two-element one is declared — a type mismatch
 ; (CDZ0201), since a tuple's length is part of its type (type-system.md #A Tuple Is Reshaped Positionally,
 ; whose length is part of its type). A compiler that checks a scalar/String/List/Record payload (those
-; landed) but not a Tuple payload constructs `(T.Pair (tuple 1 2 3))` and lets a downstream `(tuple.2 p)`
+; landed) but not a Tuple payload constructs `(T.Pair (tuple 1 2 3))` and lets a downstream `(. p 2)`
 ; project position 2 — a position the DECLARED two-element payload type does not have — yielding 3, a
 ; wrong value the declared arity forbids. `(T.Pair 5)` (a scalar where the tuple payload is declared) slips
 ; through the same way. This is the Tuple-payload sibling of the scalar unary-variant case above: the
@@ -2228,7 +2226,7 @@
            And Sum), so the arities do not unify, exactly as the scalar unary-variant case (`(T.Mk \"x\")`)
            above. Pins that the unary-variant payload-type check covers a COMPOUND (tuple) payload, not
            only scalars/String/List/Record: a compiler that skips the tuple payload constructs `(T.Pair
-           (tuple 1 2 3))` and lets a downstream `(tuple.2 p)` project a position the declared two-element
+           (tuple 1 2 3))` and lets a downstream `(. p 2)` project a position the declared two-element
            payload lacks, yielding 3 — a wrong value the declared arity forbids. A generation that does not
            yet check a tuple-typed payload declines rather than constructing the mistyped value.")
   (needs     sum-type-declaration)
@@ -2522,12 +2520,12 @@
   (output (: (tuple 1 true) (Tuple Int64 Bool))))
 
 (case "tuple elements are accessed by index"
-  (doc    "Witnesses core-semantics.md: tuple elements are accessed positionally. (tuple.0 t) gets
-           the first element, (tuple.1 t) the second, etc. Access is bounds-checked against the
+  (doc    "Witnesses core-semantics.md: tuple elements are accessed positionally. (. t 0) gets
+           the first element, (. t 1) the second, etc. Access is bounds-checked against the
            tuple's statically-known arity — an out-of-bounds index is a type error the compiler
            rejects.")
   (input  (let ((t (tuple 1 "hello" true)))
-            (tuple.1 t)))
+            (. t 1)))
   (output (: "hello" String)))
 
 (case "a boolean tuple element is projected as the program result"
@@ -2536,7 +2534,7 @@
            Bool across the run boundary — a tuple element's type is whatever that position holds, not
            uniformly Int64. (Element 0, an Int64, already works; this pins that a Bool element does
            too.)")
-  (input  (tuple.1 (tuple 42 true)))
+  (input  (. (tuple 42 true) 1))
   (output (: true Bool)))
 
 (case "tuples are deconstructed by pattern matching"
@@ -2913,7 +2911,7 @@
            optional. Adding a NEW key would report `(None unit)`.")
   (needs  maps)
   (input  (do
-            (def (main) (tuple.0 (Map.swap (Map.insert Map.empty 1 10) 1 99))) (export main)))
+            (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 1 99) 0)) (export main)))
   (output (: (Some 10) (Option Int64))))
 
 (case "the value-yielding remove reports the value it dropped"
@@ -2923,7 +2921,7 @@
            the reported optional.")
   (needs  maps)
   (input  (do
-            (def (main) (tuple.0 (Map.take (Map.insert Map.empty 1 10) 1))) (export main)))
+            (def (main) (. (Map.take (Map.insert Map.empty 1 10) 1) 0)) (export main)))
   (output (: (Some 10) (Option Int64))))
 
 ; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed

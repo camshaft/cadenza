@@ -1281,11 +1281,11 @@
   (output (: 100 Int64)))
 
 (case "a match on a tuple-element-access scrutinee dispatches on the element value"
-  (doc    "The tuple companion of the case above: the scrutinee `(tuple.0 t)` projects element 0 (value
+  (doc    "The tuple companion of the case above: the scrutinee `(. t 0)` projects element 0 (value
            5), which the literal arm 5 must match, yielding 100. A positional access is a scrutinee
            value like any other.")
   (input  (let ((t (tuple 5 9)))
-            (match (tuple.0 t)
+            (match (. t 0)
               (5 100)
               (_ 200))))
   (output (: 100 Int64)))

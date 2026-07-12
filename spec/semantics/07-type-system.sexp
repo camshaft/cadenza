@@ -333,10 +333,11 @@
   (error  CDZ0201))
 
 (case "a member access with no field operand is rejected, not a crash"
-  (doc    "`(. 5)` supplies the record operand but no field name: member access `(. <record> <field>)`
-           takes exactly two operands. The compiler rejects it (CDZ0201), never panicking reaching for
-           the absent field node — the member-access companion of the `(tuple.0)` accessor-with-no-operand
-           case below.")
+  (doc    "`(. 5)` supplies the record operand but no key: member access `(. <operand> <key>)` takes
+           exactly two operands — a NAME key projects a record field, an INTEGER key projects a
+           positional tuple element (`(. t 0)`), so this one form serves both. With no key it is
+           ill-formed; the compiler rejects it (CDZ0201), never panicking reaching for the absent key
+           node.")
   (input  (. 5))
   (error  CDZ0201))
 
@@ -366,13 +367,6 @@
            it denotes. The compiler rejects it (CDZ0201), never panicking reaching for the absent
            quoted node.")
   (input  (quote))
-  (error  CDZ0201))
-
-(case "a tuple accessor with no operand is rejected, not a crash"
-  (doc    "`(tuple.0)` names a positional tuple accessor but supplies no tuple to project from.
-           Ill-formed: the accessor takes exactly one operand. The compiler rejects it (CDZ0201), never
-           panicking reaching for the absent tuple argument.")
-  (input  (tuple.0))
   (error  CDZ0201))
 
 (case "a record field with no value expression is rejected, not a crash"
