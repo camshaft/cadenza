@@ -25,6 +25,7 @@ pub mod op {
     pub const GLOBAL_SET: u8 = 0x24;
     pub const CALL: u8 = 0x10;
     pub const RETURN_CALL: u8 = 0x12;
+    pub const RETURN: u8 = 0x0f;
     pub const UNREACHABLE: u8 = 0x00;
     pub const I32_ADD: u8 = 0x6a;
     pub const I32_SUB: u8 = 0x6b;

@@ -569,6 +569,7 @@ mod wasm_abi {
             op("GLOBAL_SET", Instruction::GlobalSet(0)),
             op("CALL", Instruction::Call(0)),
             op("RETURN_CALL", Instruction::ReturnCall(0)),
+            op("RETURN", Instruction::Return),
             op("UNREACHABLE", Instruction::Unreachable),
             op("I32_ADD", Instruction::I32Add),
             op("I32_SUB", Instruction::I32Sub),

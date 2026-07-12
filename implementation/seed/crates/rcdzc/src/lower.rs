@@ -737,6 +737,13 @@ pub struct RuntimeLeaf {
     pub path: Vec<u32>,
     /// How the leaf's runtime value fills its hole.
     pub kind: LeafFill,
+    /// Whether the walk starts by recovering the SUM PAYLOAD: when this leaf lives inside a sum
+    /// variant's payload, the walker first calls `sum-payload(rep)` to get the payload handle, THEN
+    /// applies `path`. A single-payload variant leaves `path` empty (the payload handle IS the boxed
+    /// leaf); a multi-payload variant's `path` indexes into the payload tuple. `false` for a plain
+    /// tuple/record leaf (the walk starts at the root handle directly). Set on the per-variant templates
+    /// a [`SumFormTemplate`] holds.
+    pub via_sum_payload: bool,
 }
 
 /// How a runtime leaf's value fills its template hole.
@@ -786,12 +793,122 @@ pub struct ValueFormTemplate {
     pub leaves: Vec<RuntimeLeaf>,
 }
 
+/// The escape template for a SUM result — one complete value-form template per variant (its rendered
+/// `(: (VariantName payload…) SumType)` bytes + holes), indexed by DISCRIMINANT. Unlike a tuple/record
+/// (one static shape, one template), a sum renders DIFFERENTLY per variant (`(Some 5)` vs `(None unit)`
+/// — different name, different payload), so the walker must switch on the runtime discriminant
+/// (`sum-disc`) and emit the matching variant's template. Each variant's payload leaves carry
+/// `via_sum_payload` (they are reached through `sum-payload` first). `type-system.md §A Match Is
+/// Exhaustive Against The Sum Type's Variant Set` — the variant set is closed, so the switch is total.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SumFormTemplate {
+    /// One template per variant, in DISCRIMINANT (declaration) order — `variants[disc]` renders the
+    /// value with that discriminant.
+    pub variants: Vec<ValueFormTemplate>,
+}
+
+/// Build the [`SumFormTemplate`] for a `Ty::Sum` result: one value-form template per variant. Each
+/// variant's template renders `(: (VariantName payload…) SumType)` with the payload leaves left as
+/// holes reached through `sum-payload`. A NULLARY variant renders `(VariantName unit)` (no holes) — the
+/// corpus form (`(None unit)`). A SINGLE-payload variant renders `(VariantName <scalar-hole>)`, the
+/// hole reached directly off the payload handle (`via_sum_payload`, empty `path`). A MULTI-payload
+/// variant renders `(VariantName p0 p1 …)`, the holes reached by `arr-get` into the payload tuple. A
+/// payload whose type has no value-form surface (a function/nested-sum for now) makes the whole thing
+/// `None` — the escape declines. Needs `db` to read the variant names + payload types from
+/// `db.type_decls` (found by the sum's `decl` occurrence).
+pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTemplate> {
+    let crate::ty::Ty::Sum { decl, name } = ty else {
+        return None;
+    };
+    // Recover the variant set from the declaration occurrence (the nominal identity).
+    let decl_ref = db.type_decl_by_occ(*decl)?;
+    // Clone the shape out so we can reduce payload types with `&mut db` below.
+    let variants: Vec<(String, Vec<StructId>)> = decl_ref
+        .variants
+        .iter()
+        .map(|v| (v.name.clone(), v.payloads.clone()))
+        .collect();
+    let mut out = Vec::with_capacity(variants.len());
+    for (vname, payload_occs) in &variants {
+        // Resolve each payload TYPE occurrence to a `Ty` (the constructor's declared payload types).
+        let mut payload_tys = Vec::with_capacity(payload_occs.len());
+        for &p in payload_occs {
+            payload_tys.push(crate::eval::typeval_of(db, p)?);
+        }
+        out.push(variant_form_template(vname, &payload_tys, name)?);
+    }
+    Some(SumFormTemplate { variants: out })
+}
+
+/// One variant's value-form template: `(: (VariantName payload…) SumType)`, payload leaves as holes
+/// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]).
+fn variant_form_template(
+    vname: &str,
+    payloads: &[crate::ty::Ty],
+    sum_name: &str,
+) -> Option<ValueFormTemplate> {
+    let mut b = crate::ast::Builder::new();
+    let colon = b.name(":");
+    let mut leaves: Vec<PendingLeaf> = Vec::new();
+    // The VALUE: `(VariantName payload…)`.
+    let value = {
+        let head = b.name(vname);
+        let mut children = vec![head];
+        match payloads.len() {
+            // Nullary: `(VariantName unit)` — the corpus form (`(None unit)`), no holes.
+            0 => {
+                children.push(b.name("unit"));
+            }
+            // Single payload: reached DIRECTLY off the payload handle — `via_sum_payload`, empty path.
+            1 => {
+                let mut path = Vec::new();
+                children.push(template_value_ast_flagged(
+                    &mut b,
+                    &payloads[0],
+                    &mut path,
+                    &mut leaves,
+                    true,
+                )?);
+            }
+            // Multiple payloads: the payload is a tuple handle — `arr-get(i)` into it, `via_sum_payload`.
+            _ => {
+                for (i, pty) in payloads.iter().enumerate() {
+                    let mut path = vec![i as u32];
+                    children.push(template_value_ast_flagged(
+                        &mut b,
+                        pty,
+                        &mut path,
+                        &mut leaves,
+                        true,
+                    )?);
+                }
+            }
+        }
+        b.list(children)
+    };
+    // The TYPE node: for now, the sum's bare nominal name (matching `type_ast`'s `Ty::Sum` arm). The
+    // corpus writes `(Option Int64)` for a parameterized sum, but Stage-1 sums are monomorphic and
+    // render by their declared name — the payload-parameter surface arrives with generic sums.
+    let type_ast = b.name(sum_name);
+    let root = b.list(vec![colon, value, type_ast]);
+    let arenas = b.finish(root);
+    let bytes = crate::codec::encode(&arenas);
+    let holes = resolve_leaf_offsets(&bytes, &arenas, &leaves)?;
+    Some(ValueFormTemplate {
+        bytes,
+        leaves: holes,
+    })
+}
+
 /// A leaf recorded during template construction, before its byte offset is resolved: its arena `LeafId`
 /// (to locate it in the encoded pool) plus the runtime info the hole carries.
 struct PendingLeaf {
     leaf_id: crate::ast::LeafId,
     path: Vec<u32>,
     kind: LeafFill,
+    /// Whether this leaf is reached through `sum-payload` first (a sum variant payload leaf) — carried
+    /// onto the resolved [`RuntimeLeaf`]. `false` for a plain tuple/record leaf.
+    via_sum_payload: bool,
 }
 
 /// Build the VALUE s-expression for a type with PLACEHOLDER leaves, recording each scalar leaf's walk
@@ -803,6 +920,19 @@ fn template_value_ast(
     ty: &crate::ty::Ty,
     path: &mut Vec<u32>,
     out: &mut Vec<PendingLeaf>,
+) -> Option<StructId> {
+    template_value_ast_flagged(b, ty, path, out, false)
+}
+
+/// The core of [`template_value_ast`] with the `via_sum_payload` flag threaded onto each recorded leaf
+/// — set when building a sum VARIANT PAYLOAD's sub-template (the leaves are reached through
+/// `sum-payload` first). The flat tuple/record path passes `false`.
+fn template_value_ast_flagged(
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+    path: &mut Vec<u32>,
+    out: &mut Vec<PendingLeaf>,
+    via_sum_payload: bool,
 ) -> Option<StructId> {
     use crate::ast::{Leaf, Radix};
     use crate::ty::Ty;
@@ -825,6 +955,7 @@ fn template_value_ast(
                 leaf_id,
                 path: path.clone(),
                 kind: LeafFill::Int,
+                via_sum_payload,
             });
             Some(atom)
         }
@@ -837,6 +968,7 @@ fn template_value_ast(
                 leaf_id,
                 path: path.clone(),
                 kind: LeafFill::Bool,
+                via_sum_payload,
             });
             Some(atom)
         }
@@ -845,7 +977,13 @@ fn template_value_ast(
             let mut children = vec![head];
             for (i, e) in elems.iter().enumerate() {
                 path.push(i as u32);
-                children.push(template_value_ast(b, e, path, out)?);
+                children.push(template_value_ast_flagged(
+                    b,
+                    e,
+                    path,
+                    out,
+                    via_sum_payload,
+                )?);
                 path.pop();
             }
             Some(b.list(children))
@@ -858,7 +996,7 @@ fn template_value_ast(
             for (i, (name, t)) in fields.iter().enumerate() {
                 let fname = b.name(&name.name);
                 path.push(i as u32);
-                let fval = template_value_ast(b, t, path, out)?;
+                let fval = template_value_ast_flagged(b, t, path, out, via_sum_payload)?;
                 path.pop();
                 children.push(b.list(vec![fname, fval]));
             }
@@ -914,6 +1052,7 @@ fn resolve_leaf_offsets(
             offset: *offset,
             path: p.path.clone(),
             kind: p.kind,
+            via_sum_payload: p.via_sum_payload,
         });
     }
     Some(holes)

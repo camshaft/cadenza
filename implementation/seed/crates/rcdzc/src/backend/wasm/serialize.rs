@@ -537,6 +537,29 @@ pub fn runtime_resource_core_module(
     export_abs: u32,
     template: &crate::lower::ValueFormTemplate,
 ) -> Result<Vec<u8>, String> {
+    runtime_resource_core_module_form(funcs, imports, export_abs, EscapeForm::Flat(template))
+}
+
+/// The value-form the escape `t-encode` walker renders — a single flat template (a tuple/record, ONE
+/// shape) or a per-variant sum template (a disc-switch over N shapes). Both share the identical
+/// type/import/func/memory/export envelope; only the data layout + the `t-encode` body differ.
+pub enum EscapeForm<'a> {
+    Flat(&'a crate::lower::ValueFormTemplate),
+    Sum(&'a crate::lower::SumFormTemplate),
+}
+
+/// The escape core module for either a flat compound or a sum result (see [`EscapeForm`]). Everything
+/// but the data section and the `t-encode` body is common — the resource shape (`make`/`t-encode`/
+/// `cabi_realloc` + memory), the imports (`k` ops + `resource-new`/`resource-rep`), and the defined
+/// bodies. The data section lays the value-form bytes (one template, or every variant's template
+/// consecutively) as the output buffer; `t-encode` recovers the heap rep and either walks the one
+/// template's holes or switches on `sum-disc` and walks the matching variant's.
+pub fn runtime_resource_core_module_form(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    form: EscapeForm,
+) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
     let n = funcs.len();
@@ -636,14 +659,29 @@ pub fn runtime_resource_core_module(
         section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(4, &items))
     };
 
-    // ── Data section ── the template bytes at offset 0 (double as the output buffer), then the (ptr,len)
-    // return area 4-aligned after: ptr=0, len=template length.
-    let tpl_len = template.bytes.len();
-    let ret_off = (tpl_len + 3) & !3;
-    let mut data_bytes = template.bytes.clone();
-    data_bytes.resize(ret_off, 0);
-    data_bytes.extend_from_slice(&0u32.to_le_bytes());
-    data_bytes.extend_from_slice(&(tpl_len as u32).to_le_bytes());
+    // ── Data section ── lay the value-form bytes as the output buffer, then each template's (ptr,len)
+    // return area 4-aligned after it. A FLAT compound is one template at offset 0 + one ret area. A SUM
+    // lays every variant's template CONSECUTIVELY (each 4-aligned), each with its own (ptr,len) area —
+    // the walker switches on `sum-disc` to pick which region to fill + return. `placed` records each
+    // template's `(byte_off, ret_off)` for the encode body.
+    let mut data_bytes: Vec<u8> = Vec::new();
+    let mut placed: Vec<Placed> = Vec::new();
+    let templates: Vec<&crate::lower::ValueFormTemplate> = match &form {
+        EscapeForm::Flat(t) => vec![*t],
+        EscapeForm::Sum(s) => s.variants.iter().collect(),
+    };
+    for t in &templates {
+        // 4-align the start of this template's bytes.
+        let byte_off = (data_bytes.len() + 3) & !3;
+        data_bytes.resize(byte_off, 0);
+        data_bytes.extend_from_slice(&t.bytes);
+        // Its (ptr,len) return area, 4-aligned after the bytes: ptr = byte_off, len = template length.
+        let ret_off = (data_bytes.len() + 3) & !3;
+        data_bytes.resize(ret_off, 0);
+        data_bytes.extend_from_slice(&(byte_off as u32).to_le_bytes());
+        data_bytes.extend_from_slice(&(t.bytes.len() as u32).to_le_bytes());
+        placed.push(Placed { byte_off, ret_off });
+    }
     let data_sec = {
         let mut item = vec![0x00]; // active, memory 0
         item.push(op::I32_CONST);
@@ -672,8 +710,21 @@ pub fn runtime_resource_core_module(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    // t-encode(handle): recover the heap rep, then walk each hole.
-    code_items.extend_from_slice(&encode_walk_body(template, ret_off, f_rrep, &import_index));
+    // t-encode(handle): recover the heap rep, then either walk the one template's holes (flat) or
+    // switch on `sum-disc` and walk the matching variant's (sum).
+    let encode_body = match &form {
+        EscapeForm::Flat(t) => encode_walk_body(
+            t,
+            placed[0].byte_off,
+            placed[0].ret_off,
+            f_rrep,
+            &import_index,
+        ),
+        EscapeForm::Sum(s) => {
+            encode_sum_walk_body(&s.variants, &placed_pairs(&placed), f_rrep, &import_index)
+        }
+    };
+    code_items.extend_from_slice(&encode_body);
     // cabi_realloc: stub (never called for a nullary-input list result).
     {
         let mut inner = uleb_bytes(0);
@@ -706,6 +757,7 @@ pub fn runtime_resource_core_module(
 /// walk ops resolve by name through `import_index` (the same map the defined bodies use).
 fn encode_walk_body(
     template: &crate::lower::ValueFormTemplate,
+    byte_off: usize,
     ret_off: usize,
     f_rrep: u32,
     import_index: &std::collections::HashMap<&str, u32>,
@@ -714,11 +766,6 @@ fn encode_walk_body(
     let call_op = |name: &str, out: &mut Vec<u8>| {
         out.push(op::CALL);
         uleb128(import_index[name] as u64, out);
-    };
-    let store8 = |out: &mut Vec<u8>| {
-        out.push(op::I32_STORE8);
-        out.push(0x00); // align 0
-        out.push(0x00); // offset 0
     };
     let mut body = Vec::new();
     // Locals: 1 group of i32 (the rep), 1 group of i64 (scratch).
@@ -738,72 +785,7 @@ fn encode_walk_body(
     uleb128(rep as u64, &mut body);
 
     for hole in &template.leaves {
-        let out_off = hole.offset as u64;
-        match hole.kind {
-            crate::lower::LeafFill::Int => {
-                // scratch = get-int(walk(rep, path)).
-                body.push(op::LOCAL_GET);
-                uleb128(rep as u64, &mut body);
-                for &idx in &hole.path {
-                    body.push(op::I32_CONST);
-                    crate::backend::wasm::encode::sleb128(idx as i64, &mut body);
-                    call_op("arr-get", &mut body);
-                }
-                call_op("get-int", &mut body);
-                body.push(op::LOCAL_SET);
-                uleb128(scratch as u64, &mut body);
-                // if scratch < 0 { store NEG_DEC kind at out_off-2; scratch = 0 - scratch }.
-                body.push(op::LOCAL_GET);
-                uleb128(scratch as u64, &mut body);
-                body.push(op::I64_CONST);
-                crate::backend::wasm::encode::sleb128(0, &mut body);
-                body.push(op::I64_LT_S);
-                body.push(op::IF);
-                body.push(wasm_abi::BLOCK_EMPTY);
-                body.push(op::I32_CONST);
-                crate::backend::wasm::encode::sleb128((out_off as i64) - 2, &mut body);
-                body.push(op::I32_CONST);
-                crate::backend::wasm::encode::sleb128(3, &mut body); // KIND_INT_NEG_DEC
-                store8(&mut body);
-                body.push(op::I64_CONST);
-                crate::backend::wasm::encode::sleb128(0, &mut body);
-                body.push(op::LOCAL_GET);
-                uleb128(scratch as u64, &mut body);
-                body.push(op::I64_SUB);
-                body.push(op::LOCAL_SET);
-                uleb128(scratch as u64, &mut body);
-                body.push(op::END);
-                // write 8 big-endian magnitude bytes at out_off.
-                for byte in 0..8u64 {
-                    body.push(op::I32_CONST);
-                    crate::backend::wasm::encode::sleb128((out_off + byte) as i64, &mut body);
-                    body.push(op::LOCAL_GET);
-                    uleb128(scratch as u64, &mut body);
-                    body.push(op::I64_CONST);
-                    crate::backend::wasm::encode::sleb128((8 * (7 - byte)) as i64, &mut body);
-                    body.push(op::I64_SHR_U);
-                    body.push(op::I32_WRAP_I64);
-                    store8(&mut body);
-                }
-            }
-            crate::lower::LeafFill::Bool => {
-                // write kind byte (8 + get-bool) at out_off.
-                body.push(op::I32_CONST);
-                crate::backend::wasm::encode::sleb128(out_off as i64, &mut body);
-                body.push(op::LOCAL_GET);
-                uleb128(rep as u64, &mut body);
-                for &idx in &hole.path {
-                    body.push(op::I32_CONST);
-                    crate::backend::wasm::encode::sleb128(idx as i64, &mut body);
-                    call_op("arr-get", &mut body);
-                }
-                call_op("get-bool", &mut body);
-                body.push(op::I32_CONST);
-                crate::backend::wasm::encode::sleb128(8, &mut body);
-                body.push(op::I32_ADD);
-                store8(&mut body);
-            }
-        }
+        emit_hole_fill(hole, byte_off, rep, scratch, import_index, &mut body);
     }
     // RELEASE the compound's heap handle: `encode` takes `self: own<t>` (the canonical ABI transfers
     // ownership INTO encode), so encode owns the last reference — call `heap.drop(rep)` to reclaim it
@@ -819,6 +801,193 @@ fn encode_walk_body(
     // return the (ptr,len) area.
     body.push(op::I32_CONST);
     crate::backend::wasm::encode::sleb128(ret_off as i64, &mut body);
+    body.push(op::END);
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
+/// Emit the instructions that WALK to one hole's leaf and WRITE its bytes into the output buffer (at the
+/// hole's absolute `offset`). Shared by the flat tuple/record walker and the per-variant sum walker.
+/// `rep` is the local holding the root heap handle; `scratch` an i64 scratch local. The walk starts at
+/// `rep`, calls `sum-payload` first if the hole is `via_sum_payload` (a sum variant payload leaf), then
+/// applies the `arr-get` path; the leaf read + byte writes match `LeafFill`. Ops resolve by name.
+fn emit_hole_fill(
+    hole: &crate::lower::RuntimeLeaf,
+    byte_off: usize,
+    rep: u32,
+    scratch: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+    body: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let store8 = |out: &mut Vec<u8>| {
+        out.push(op::I32_STORE8);
+        out.push(0x00); // align 0
+        out.push(0x00); // offset 0
+    };
+    // Push `rep`, then descend to the leaf's boxed handle: a sum variant payload is recovered by
+    // `sum-payload(rep)` first, then any `arr-get` path (a multi-payload tuple index); a plain
+    // tuple/record leaf just walks the `arr-get` path from `rep`.
+    let push_walk = |body: &mut Vec<u8>| {
+        body.push(op::LOCAL_GET);
+        uleb128(rep as u64, body);
+        if hole.via_sum_payload {
+            call_op("sum-payload", body);
+        }
+        for &idx in &hole.path {
+            body.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(idx as i64, body);
+            call_op("arr-get", body);
+        }
+    };
+    // The hole's offset is relative to its template's start; add the template's placement `byte_off`
+    // (0 for a flat compound, the variant's data-section offset for a sum).
+    let out_off = (hole.offset + byte_off) as u64;
+    match hole.kind {
+        crate::lower::LeafFill::Int => {
+            // scratch = get-int(walk(rep, path)).
+            push_walk(body);
+            call_op("get-int", body);
+            body.push(op::LOCAL_SET);
+            uleb128(scratch as u64, body);
+            // if scratch < 0 { store NEG_DEC kind at out_off-2; scratch = 0 - scratch }.
+            body.push(op::LOCAL_GET);
+            uleb128(scratch as u64, body);
+            body.push(op::I64_CONST);
+            crate::backend::wasm::encode::sleb128(0, body);
+            body.push(op::I64_LT_S);
+            body.push(op::IF);
+            body.push(wasm_abi::BLOCK_EMPTY);
+            body.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128((out_off as i64) - 2, body);
+            body.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(3, body); // KIND_INT_NEG_DEC
+            store8(body);
+            body.push(op::I64_CONST);
+            crate::backend::wasm::encode::sleb128(0, body);
+            body.push(op::LOCAL_GET);
+            uleb128(scratch as u64, body);
+            body.push(op::I64_SUB);
+            body.push(op::LOCAL_SET);
+            uleb128(scratch as u64, body);
+            body.push(op::END);
+            // write 8 big-endian magnitude bytes at out_off.
+            for byte in 0..8u64 {
+                body.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128((out_off + byte) as i64, body);
+                body.push(op::LOCAL_GET);
+                uleb128(scratch as u64, body);
+                body.push(op::I64_CONST);
+                crate::backend::wasm::encode::sleb128((8 * (7 - byte)) as i64, body);
+                body.push(op::I64_SHR_U);
+                body.push(op::I32_WRAP_I64);
+                store8(body);
+            }
+        }
+        crate::lower::LeafFill::Bool => {
+            // write kind byte (8 + get-bool) at out_off.
+            body.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(out_off as i64, body);
+            push_walk(body);
+            call_op("get-bool", body);
+            body.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(8, body);
+            body.push(op::I32_ADD);
+            store8(body);
+        }
+    }
+}
+
+/// Where one value-form template sits in the escape core's data section: the offset of its bytes
+/// (which double as the output buffer the walker fills) and the offset of its 8-byte `(ptr,len)` return
+/// area. A flat compound has one; a sum has one per variant, in discriminant order.
+struct Placed {
+    byte_off: usize,
+    ret_off: usize,
+}
+
+/// Flatten the placed templates to `(byte_off, ret_off)` pairs in variant/discriminant order — the
+/// layout the sum walker needs (where each variant's bytes + return area sit in the data section).
+fn placed_pairs(placed: &[Placed]) -> Vec<(usize, usize)> {
+    placed.iter().map(|p| (p.byte_off, p.ret_off)).collect()
+}
+
+/// The SUM `t-encode(handle) -> i32` walker. Locals: 0 = resource handle, 1 = i32 rep, 2 = i64 scratch,
+/// 3 = i32 discriminant. Recovers the rep, reads `sum-disc(rep)` into `disc`, then an if-chain: for each
+/// variant `k`, `if disc == k` fill variant `k`'s holes (each reached through `sum-payload`), `drop` the
+/// rep, and return variant `k`'s `(ptr,len)` area (`ret_off`). A trailing `unreachable` closes the chain
+/// (the discriminant is always one of the closed variant set). Each variant's holes are written at its
+/// own `byte_off` region (its template bytes double as that region's output buffer).
+fn encode_sum_walk_body(
+    variants: &[crate::lower::ValueFormTemplate],
+    placed: &[(usize, usize)],
+    f_rrep: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let mut body = Vec::new();
+    // Locals: i32 rep, i64 scratch, i32 disc — 3 groups (i32, i64, i32).
+    uleb128(3, &mut body);
+    uleb128(1, &mut body);
+    body.push(wasm_abi::CORE_I32); // local 1: rep
+    uleb128(1, &mut body);
+    body.push(wasm_abi::CORE_I64); // local 2: scratch
+    uleb128(1, &mut body);
+    body.push(wasm_abi::CORE_I32); // local 3: disc
+    let rep = 1u32;
+    let scratch = 2u32;
+    let disc = 3u32;
+    // rep = resource.rep(handle).
+    body.push(op::LOCAL_GET);
+    uleb128(0, &mut body);
+    body.push(op::CALL);
+    uleb128(f_rrep as u64, &mut body);
+    body.push(op::LOCAL_SET);
+    uleb128(rep as u64, &mut body);
+    // disc = sum-disc(rep).
+    body.push(op::LOCAL_GET);
+    uleb128(rep as u64, &mut body);
+    call_op("sum-disc", &mut body);
+    body.push(op::LOCAL_SET);
+    uleb128(disc as u64, &mut body);
+    // For each variant: if disc == k { fill; drop; return ret_off }.
+    for (k, (tpl, (byte_off, ret_off))) in variants.iter().zip(placed).enumerate() {
+        // disc == k ?
+        body.push(op::LOCAL_GET);
+        uleb128(disc as u64, &mut body);
+        body.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(k as i64, &mut body);
+        body.push(op::I32_EQ);
+        // if (empty) { fill; drop; return ptr } — an EMPTY-result block: the true path RETURNs from the
+        // function (so it yields nothing to the block), and the false path falls through to the next
+        // variant's test. (A typed `(result i32)` if would require the false path to also yield an i32,
+        // which it does not — control flows to the next arm.)
+        body.push(op::IF);
+        body.push(wasm_abi::BLOCK_EMPTY);
+        for hole in &tpl.leaves {
+            emit_hole_fill(hole, *byte_off, rep, scratch, import_index, &mut body);
+        }
+        // drop the rep (encode owns it), then return this variant's ret area pointer.
+        body.push(op::LOCAL_GET);
+        uleb128(rep as u64, &mut body);
+        call_op("drop", &mut body);
+        body.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(*ret_off as i64, &mut body);
+        body.push(op::RETURN);
+        body.push(op::END); // end if
+    }
+    // The discriminant is always one of the closed variant set, so the chain is total; a fall-through is
+    // impossible. Emit `unreachable` to satisfy the validator (the function must yield an i32).
+    body.push(op::UNREACHABLE);
     body.push(op::END);
     let mut e = uleb_bytes(body.len() as u64);
     e.extend_from_slice(&body);
@@ -841,6 +1010,14 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
         // handing the host a raw handle would misreport the value. Reject-don't-miscompile, not a leak.
         Ty::Tuple(_) | Ty::Record(_) => Err(format!(
             "returning a {} on the multi-export boundary is not supported (use a single compound export, which escapes as a resource)",
+            ret.render_name()
+        )),
+        // A sum crosses ONLY via the single-nullary-export escape path (handled in `emit` before this is
+        // reached); a sum in any OTHER boundary position — a multi-export result, a parameter — has no
+        // scalar boundary form and declines here (the escape's disc-switch renderer applies only to the
+        // lone-export case).
+        Ty::Sum { .. } => Err(format!(
+            "a `{}` sum crosses the host boundary only as a single nullary export's result",
             ret.render_name()
         )),
         other => match comp_valtype_of(other) {

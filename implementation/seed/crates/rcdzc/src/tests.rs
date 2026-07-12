@@ -4188,19 +4188,83 @@ mod stage1 {
     }
 
     #[test]
-    fn a_sum_returning_export_declines_until_escape_lands() {
-        // A sum has no component-boundary representation YET (its host-escape `encode()` walk is the next
-        // tick), so EXPORTING a function that returns a sum DECLINES cleanly — it does not miscompile to
-        // an invalid component. (Internally the sum builds fine, as the reclaim test shows; only crossing
-        // the host boundary is not yet wired.)
+    fn a_parameterized_sum_returning_export_declines() {
+        // A sum crosses the host boundary ONLY as a single NULLARY export's result (the resource escape
+        // path, `emit`). A PARAMETERIZED sum-returning export (`mk` takes `a`) is not that shape — it has
+        // no scalar boundary form — so it DECLINES cleanly (not a miscompile). The nullary escape is
+        // exercised by `a_nullary_sum_export_escapes_to_the_host` below.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (mk (: a Int64)) (Option.Some a)) (export mk))";
         let result = compile_component(&crate::codec::encode(&parse(src)));
         assert!(
             result.is_err(),
-            "a sum-returning export must decline (no boundary form yet), not miscompile"
+            "a parameterized sum-returning export must decline (not the nullary escape shape)"
         );
+    }
+
+    #[test]
+    fn a_nullary_sum_export_escapes_to_the_host() {
+        // The R2 sum escape: a single NULLARY export returning a sum crosses as a resource whose
+        // `encode()` SWITCHES on `sum-disc` and renders the matching variant's `(: (Variant payload)
+        // SumType)` bytes. `(Some 5)` → `(: (Some 5) Option)`; the walker builds the sum on the heap
+        // (`sum-new`), reads its disc (0 → the `Some` arm), walks `sum-payload` → `get-int` → 5, and
+        // returns the rendered bytes. Composed + run through `cdz-run` (the canonical host).
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (main) (Option.Some 5)) (export main))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile a sum escape");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a sum escape imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping composed sum-escape run"
+            );
+            return;
+        };
+        // `export: None` — a sum escape is a RESOURCE component (`make`/`encode`), auto-detected by
+        // `cdz_run`, not a bare function export.
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "(: (Some 5) Option)", "sum escape renders the variant")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("composed sum-escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_nullary_variant_export_escapes_as_unit_payload() {
+        // The nullary arm of the disc-switch: `None` → `(: (None unit) Option)` (the corpus form — a
+        // nullary variant carries the unit value). The walker reads disc 1 (the `None` arm), whose
+        // template has NO holes (the `unit` payload is static), and returns its bytes.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (main) Option.None) (export main))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile None escape");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed None-escape run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "(: (None unit) Option)", "nullary variant escape")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("composed None-escape run trapped: {t}"),
+        }
     }
 
     #[test]

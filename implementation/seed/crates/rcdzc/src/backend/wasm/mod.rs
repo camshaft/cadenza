@@ -54,7 +54,10 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // other compound host-return (multi-export, parameterized) falls through and declines below.
     if let [e] = &layout.exports[..]
         && e.params.is_empty()
-        && matches!(e.result, crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_))
+        && matches!(
+            e.result,
+            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) | crate::ty::Ty::Sum { .. }
+        )
     {
         let body = def_body(db, e.def)?;
         if let Some(value_bytes) = crate::lower::constant_value_form(db, body) {
@@ -62,13 +65,19 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
             let dtor_core = serialize::resource_dtor_module();
             return Ok(envelope::assemble_resource(&main_core, &dtor_core));
         }
-        // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is built on
-        // the heap) crosses through the SAME resource shape, but its `encode()` WALKS the live handle
-        // rather than baking constant bytes (R2). Build the value-form TEMPLATE for the result type; if
-        // it has one, route through `assemble_runtime_resource` (the combined runtime-import + resource
-        // envelope). `None` (a compound with a non-value-form element — a function/type) falls through to
-        // decline at `export_result` below.
-        if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
+        // A SUM result crosses through the resource shape but its `encode()` SWITCHES on the runtime
+        // discriminant (`sum-disc`) and renders the matching variant — a per-variant template, not a
+        // single flat one. Route through the sum escape when the sum has a value-form (`None` — a
+        // variant with a non-renderable payload — falls through to decline below).
+        if let crate::ty::Ty::Sum { .. } = &e.result {
+            if let Some(sum_tpl) = crate::lower::sum_form_template(db, &e.result) {
+                return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl);
+            }
+        } else if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
+            // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
+            // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
+            // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
+            // result type; if it has one, route through `assemble_runtime_resource`.
             return emit_runtime_resource(db, layout, e.def, &tpl);
         }
     }
@@ -233,6 +242,94 @@ fn emit_runtime_resource(
         .map_err(Reject::decline)?;
     // The RUNTIME escape uses the drop-calling dtor (releases the live rc handle), NOT the constant-path
     // stub — its handle is a genuine heap allocation the host must reclaim.
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_runtime_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+    ))
+}
+
+/// Emit the runtime-import + resource escape component for a single nullary export returning a SUM. The
+/// sum builds on the value heap (`sum-new`), crosses as a monomorphized resource, and its `encode()`
+/// switches on `sum-disc` to render the matching variant (`tpl` — one value-form template per variant).
+/// Mirrors [`emit_runtime_resource`] but the walker's ops include `sum-disc` (always) + `sum-payload`
+/// (whenever any variant carries a payload leaf) alongside the per-leaf `get-*`/`arr-get`.
+fn emit_runtime_sum_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    tpl: &crate::lower::SumFormTemplate,
+) -> Result<Vec<u8>, Reject> {
+    // Ops the reachable bodies emit (construction: sum-new/arr-alloc/box-*), PLUS the ops the sum walker
+    // calls: `sum-disc` (always), `sum-payload` (to reach a variant's payload), `arr-get` (a
+    // multi-payload tuple index), and per leaf its `get-*`; and `drop` (the dtor + encode release).
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    used.insert("sum-disc");
+    let mut any_payload_leaf = false;
+    let mut any_nested_path = false;
+    for variant in &tpl.variants {
+        for leaf in &variant.leaves {
+            if leaf.via_sum_payload {
+                any_payload_leaf = true;
+            }
+            if !leaf.path.is_empty() {
+                any_nested_path = true;
+            }
+            match leaf.kind {
+                crate::lower::LeafFill::Int => used.insert("get-int"),
+                crate::lower::LeafFill::Bool => used.insert("get-bool"),
+            };
+        }
+    }
+    if any_payload_leaf {
+        used.insert("sum-payload");
+    }
+    if any_nested_path {
+        used.insert("arr-get");
+    }
+    used.insert("drop");
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    // Same index-space shift as the flat runtime resource: `k` ops + `resource-new` + `resource-rep`.
+    let k = imports.len() as u32;
+    let layout = layout.with_import_base(k + 2);
+    let layout = &layout;
+
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.export_plan(def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function(db, body, &params, layout)?);
+    }
+    let export_abs = layout
+        .abs(export_def)
+        .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
+
+    let main_core = serialize::runtime_resource_core_module_form(
+        &funcs,
+        &imports,
+        export_abs,
+        serialize::EscapeForm::Sum(tpl),
+    )
+    .map_err(Reject::decline)?;
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
     Ok(envelope::assemble_runtime_resource(

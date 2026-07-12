@@ -531,6 +531,13 @@ impl Db {
             .find(|t| t.name == name)
             .and_then(|t| t.synth)
     }
+
+    /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
+    /// nominal identity a `Ty::Sum { decl }` carries. Used by the escape renderer to recover a sum's
+    /// variant names + payload types from its type-value. `None` if `occ` names no declaration.
+    pub fn type_decl_by_occ(&self, occ: StructId) -> Option<&TypeDecl> {
+        self.type_decls.iter().find(|t| t.occ == occ)
+    }
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
