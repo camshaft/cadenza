@@ -808,9 +808,28 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
     if crate::eval::variant_disc_of(db, head).is_some()
         && crate::eval::variant_payload_type(db, head).is_none()
     {
-        // Descend into the argument(s) for their OWN faults (an unbound name in `(None (frob))`), but do
-        // not apply the non-function ctor to them.
+        // A nullary variant's argument type IS Unit (core-semantics.md §A Sum Type Constructor Is A
+        // Single-Arity Function: "A nullary variant MUST be a constructor whose argument type is Unit").
+        // So the ONE argument must be `unit`; a NON-unit payload — `(None 5)`, `(Opt.Nn (tuple 1 2))` —
+        // is a malformed construction, NOT a silently-discarded payload. Without this check the argument
+        // vanished and the value rendered `(Nn unit)`, fabricating a variant (a soundness hole — an
+        // ill-typed program accepted). Reject CDZ0201, the SAME code the corpus assigns a constructor
+        // applied to a wrong-type payload (the nullary-Unit and the unary declared-payload cases in
+        // 05-compound-types both pin CDZ0201 — a malformed construction, not a plain type mismatch).
+        // Check the supplied argument's type against Unit, then descend for the argument's own faults.
         for &arg in args {
+            let at = type_of(db, arg);
+            if !at.agrees_with(&Ty::Unit) {
+                trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, at = %at.render_name(), "fault: nullary variant applied to a non-unit payload (CDZ0201)");
+                out.push(Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "a nullary variant takes the unit value, but a payload of type {} was applied",
+                        at.render_name()
+                    ),
+                ));
+            }
+            // Descend for the argument's OWN faults (an unbound name in `(None (frob))`).
             collect(db, arg, out);
         }
         return;

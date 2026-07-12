@@ -154,9 +154,13 @@ pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
+pass	a nullary variant applied to a non-unit payload is a type error
+pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
+pass	a nullary variant applied to unit constructs correctly through the application path
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
@@ -560,9 +564,7 @@ todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a non-final unsized bytes segment is ill-formed
 todo	a non-matching literal inside a constructor pattern binds the runtime payload
-todo	a nullary Sign variant applied to a non-unit payload is a type error
 todo	a nullary constructor is a single-arity function taking unit
-todo	a nullary variant applied to a non-unit payload is a type error
 todo	a one-element tuple pattern against a two-tuple is a type error
 todo	a pattern that binds the same name across nested sub-patterns is rejected
 todo	a pattern that binds the same name twice is rejected

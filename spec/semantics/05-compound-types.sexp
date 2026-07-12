@@ -2404,24 +2404,52 @@
 ; core-semantics.md #A Sum Type Constructor Is A Single-Arity Function (2nd sentence): "A nullary
 ; variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value." So a
 ; nullary variant is applied to `unit` — `(None unit)`, `(Sign.Pos unit)` — and applying it to any
-; NON-unit value is a type error (the argument type is Unit, and Int64/Bool/etc. do not match), which
-; the compiler REJECTS (CDZ0201) — the same class as heterogeneous-list and constructor-over-application.
+; NON-unit value is a MALFORMED construction (the argument type is Unit, and Int64/Bool/etc. do not
+; match), which the compiler REJECTS (CDZ0201) — the same class as heterogeneous-list and
+; constructor-over-application, and the same code the unary declared-payload mismatch below assigns.
+; ⚠ Before the check the payload was SILENTLY DISCARDED and the value fabricated as `(V unit)` — a
+; soundness hole (`@b4a9e35` added nullary construction `(V unit)` but did not verify the argument is
+; Unit); the fix unifies the supplied argument against Unit in the nullary-construction fault path.
 
 (case "a nullary variant applied to a non-unit payload is a type error"
   (doc    "`None`'s argument type is Unit (it is Option's nullary variant), so `(None 5)` applies it to
-           an Int64 — a type mismatch the compiler rejects (CDZ0201), or declines if it does not yet
-           check the nullary variant's Unit argument type. A malformed `(None 5)` would be observable
-           (matching `(None n)` binding n=5), a payload a nullary variant must never carry — the
-           reason to reject at compile time.")
+           an Int64 — a malformed construction the compiler rejects (CDZ0201). A malformed `(None 5)`
+           would otherwise be observable (matching `(None n)` binding n=5), a payload a nullary variant
+           must never carry; before the check the payload was SILENTLY DISCARDED, rendering `(None unit)`
+           — a fabricated variant (a soundness hole). The nullary-construction path unifies the supplied
+           argument against Unit and rejects a non-unit payload.")
   (input     (None 5))
   (error     CDZ0201))
 
 (case "a nullary Sign variant applied to a non-unit payload is a type error"
-  (doc    "The companion for a user-facing sum: `Sign.Pos` is a nullary variant of Sign (Neg | Zero |
-           Pos), so its argument type is Unit and `(Sign.Pos 5)` is a type error (CDZ0201). Pins that
-           the Unit argument-type rule for nullary variants holds for every sum, not only Option.")
-  (input     (Sign.Pos 5))
+  (doc    "The companion for a user-declared sum: `Sign.Pos` is a nullary variant of `(type Sign Neg
+           Zero Pos)`, so its argument type is Unit and `(Sign.Pos 5)` is a malformed construction
+           (CDZ0201). Pins that the Unit argument-type rule for nullary variants holds for every sum, not
+           only Option.")
+  (input  (do (type Sign Neg Zero Pos) (def (main) (Sign.Pos 5)) (export main)))
   (error     CDZ0201))
+
+(case "a nullary variant applied to a non-unit payload rejects even when constructed via application"
+  (doc    "The regression guard for the `(V unit)` nullary-construction path: `(Opt.Nn 5)` applies the
+           nullary variant `Nn` to a payload `5`. `@b4a9e35` (nullary construction via application) added
+           `(V unit)` construction but did not check the argument is Unit, so `(Opt.Nn 5)` was ACCEPTED
+           and the 5 SILENTLY DISCARDED, rendering `(Nn unit)` — a fabricated variant (an ill-typed
+           program accepted, a soundness hole). It must reject CDZ0201, exactly as `(None 5)` above, by
+           unifying the supplied argument against Unit. Uses a user-declared sum reached through the
+           construct-by-application path the regression opened.")
+  (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Nn 5)) (export main)))
+  (error  CDZ0201))
+
+(case "a nullary variant applied to unit constructs correctly through the application path"
+  (doc    "The control pinning the reject above is the NON-unit payload, not nullary construction in
+           general: `(Opt.Nn unit)` applies the nullary variant to its canonical `unit` value and
+           constructs correctly (the form `@b4a9e35` enabled). Consumed by a match to a scalar so it does
+           not depend on the sum-escape path; the `Nn` arm yields 7. Must keep working while `(Opt.Nn 5)`
+           rejects.")
+  (input  (do (type Opt (Sm Int64) (Nn))
+              (def (main) (match (Opt.Nn unit) ((Opt.Sm x) x) ((Opt.Nn _) 7))) (export main)))
+  (call   main)
+  (output (: 7 Int64)))
 
 ; The dual of the nullary-variant rule: a UNARY variant with a DECLARED payload type checks its argument
 ; against that type, exactly as the nullary variant checks its argument is Unit. core-semantics.md #A Sum
