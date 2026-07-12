@@ -2564,6 +2564,36 @@ mod runtime_ops {
         ));
     }
 
+    /// A NARROW signed `+`/`-` by a compile-time CONSTANT drops the provably-unreachable range-check
+    /// bound: the exact result moves in ONE direction from an in-range operand, so only that bound can
+    /// be exceeded. `(+ a 1)` Int8 can only exceed `max` (127) — the `r < min` check is dead; `(- a 1)`
+    /// can only fall below `min` (-128) — the `r > max` check is dead. The surviving check must still
+    /// trap at the exact edge, and dropping the dead one must never mask a real overflow or admit a wrap.
+    /// (The general two-runtime-operand case keeps both bounds — see the tests above.)
+    #[test]
+    fn a_narrow_constant_operand_addsub_drops_the_dead_range_bound() {
+        // (+ a 1) Int8: 126→127 fits; 127→128 traps the UPPER edge; MIN(-128)+1=-127 must NOT trap
+        // (the dropped lower check would have been the only risk of a false trap here).
+        assert_eq!(run::<i8>("(: a Int8)", "(+ a 1)", &[Val::S8(126)]), 127);
+        assert!(traps("(: a Int8)", "(+ a 1)", &[Val::S8(127)]));
+        assert_eq!(
+            run::<i8>("(: a Int8)", "(+ a 1)", &[Val::S8(-128)]),
+            -127,
+            "adding 1 to Int8.min stays in range — the dropped lower-bound check must not trap"
+        );
+        // (- a 1) Int8: -127→-128 fits; -128→-129 traps the LOWER edge; MAX(127)-1=126 must NOT trap.
+        assert_eq!(run::<i8>("(: a Int8)", "(- a 1)", &[Val::S8(-127)]), -128);
+        assert!(traps("(: a Int8)", "(- a 1)", &[Val::S8(-128)]));
+        assert_eq!(
+            run::<i8>("(: a Int8)", "(- a 1)", &[Val::S8(127)]),
+            126,
+            "subtracting 1 from Int8.max stays in range — the dropped upper-bound check must not trap"
+        );
+        // A negative constant flips the direction: (+ a -1) moves DOWN → traps only the LOWER edge.
+        assert!(traps("(: a Int8)", "(+ a -1)", &[Val::S8(-128)]));
+        assert_eq!(run::<i8>("(: a Int8)", "(+ a -1)", &[Val::S8(127)]), 126);
+    }
+
     #[test]
     fn runtime_narrow_unsigned_addition_and_subtraction() {
         // UInt8: 200+55=255 fits, 200+56=256 traps (range-check to [0,255]); 0-1 traps below zero.
@@ -4245,6 +4275,43 @@ mod match_engine {
             return;
         };
         assert_eq!(out, "(: b\"ABC\" Bytes)", "printable bytes escape");
+    }
+
+    #[test]
+    fn a_runtime_built_bytes_escapes_via_the_looping_walker() {
+        // L2b — the FIRST looping `encode()`. A RUNTIME-built `Bytes` (a `concat`/recursion result, NOT a
+        // compile-time constant) escapes through the resource shape whose `encode()` LOOPS: it writes the
+        // static value-form prefix, the runtime `bytes-len` as a LEB, a `bytes-get` copy loop, then the
+        // static suffix (`DESIGN-runtime-bytes-escape-walker.md`). The canonical customer is the LEB128
+        // encoder — `(uleb 624485)` = `E5 8E 26` (`b"\xe5\x8e&"`, byte 0x26 = `&`), built by recursion +
+        // `Bytes.concat` + `(UInt8.wrap …)` on runtime values; and the base case `(uleb 100)` = `b"d"`.
+        let uleb = "(def (uleb n) (if (< n 128) \
+                        ((. Bytes of) (list ((. UInt8 wrap) n))) \
+                        ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))";
+        let Some(out) = escape_render(&format!(
+            "(module m {uleb} (def (main) (uleb 624485)) (export main))"
+        )) else {
+            eprintln!("runtime wasm not found; skipping composed runtime-bytes-escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: b\"\\xe5\\x8e&\" Bytes)",
+            "runtime LEB128 multibyte escape"
+        );
+
+        let out = escape_render(&format!(
+            "(module m {uleb} (def (main) (uleb 100)) (export main))"
+        ))
+        .expect("runtime present");
+        assert_eq!(out, "(: b\"d\" Bytes)", "runtime LEB128 single-byte escape");
+
+        // A direct runtime concat (no recursion): (concat b"AB" b"C") built from runtime bytes → b"ABC".
+        let out = escape_render(
+            "(module m (def (mk n) ((. Bytes of) (list ((. UInt8 wrap) n) 66))) \
+                       (def (main) ((. Bytes concat) (mk 65) ((. Bytes of) (list 67)))) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(out, "(: b\"ABC\" Bytes)", "runtime concat escape");
     }
 
     #[test]
@@ -8781,6 +8848,43 @@ mod stage1 {
     }
 
     #[test]
+    fn partial_application_curries_at_compile_time() {
+        // `core-semantics.md` §Functions Are Single-Arity: applying a curried function to fewer args
+        // than its arity returns a closure awaiting the rest. Under-application β-reduces the leading
+        // params into a RESIDUAL lambda, so the whole chain folds when fully applied — no runtime
+        // function survives.
+        // A lambda applied to ONE of two args, then the residual applied to the second → `(+ 3 4)` = 7.
+        assert_eq!(run_main("(((fn (x y) (+ x y)) 3) 4)"), 7);
+        // The residual bound and applied later: `(let ((add3 ((fn (x y) (+ x y)) 3))) (add3 7))` = 10.
+        assert_eq!(
+            run_main("(let ((add3 ((fn (x y) (+ x y)) 3))) (add3 7))"),
+            10
+        );
+        // Through a NAMED def, both the explicit-curried `((add 3) 4)` and the let-bound `inc` shapes.
+        let curried = "(module m (def (add x y) (+ x y)) (def (main) ((add 3) 4)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(curried))).expect("compile"),
+                "main"
+            ),
+            7
+        );
+        let letbound = "(module m (def (add x y) (+ x y)) (def (main) (let ((inc (add 3))) (inc 4))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(letbound))).expect("compile"),
+                "main"
+            ),
+            7
+        );
+        // THREE params, applied one-then-two: the residual itself partially applies again.
+        assert_eq!(
+            run_main("(let ((f (fn (a b c) (+ (+ a b) c)))) (let ((g (f 1))) (g 2 3)))"),
+            6
+        );
+    }
+
+    #[test]
     fn a_let_bound_variable_passed_as_a_call_argument_resolves_at_the_call_site() {
         // `(let ((k 10)) (inc k))` = 11: β-reduction splices the CALL-SITE argument `k` into a copy of
         // `inc`'s body, and `push_list` re-parents the splice — so without pinning the argument's scope
@@ -8799,6 +8903,27 @@ mod stage1 {
         // name and a call's own result, each passed as an argument to another user call.
         assert_eq!(run_main("(let ((k 10) (f (fn (x) (+ x 1)))) (f k))"), 11);
         assert_eq!(run_main("(let ((f (fn (x) (+ x 1)))) (f (f 0)))"), 2);
+    }
+
+    #[test]
+    fn a_stored_or_captured_lambda_applies_through_the_fold() {
+        // `core-semantics.md` §A Function Is A First-Class Value — a function stored in a data
+        // structure is extractable and callable, and a function value captures its CREATION scope.
+        // The fold reduces THROUGH a projection / a `let` body to reach the lambda, so these all fold
+        // to a scalar with no runtime function surviving.
+        // Stored in a tuple element, projected, applied: `((. (tuple (fn (x) (+ x 1)) 9) 0) 5)` = 6.
+        assert_eq!(run_main("((. (tuple (fn (x) (+ x 1)) 9) 0) 5)"), 6);
+        // Stored in a record field, projected, applied.
+        assert_eq!(run_main("((. (record (f (fn (x) (+ x 1)))) f) 5)"), 6);
+        // Captured over a `let` binding, applied immediately: `((let ((y 3)) (fn (x) (+ x y))) 4)` = 7.
+        assert_eq!(run_main("((let ((y 3)) (fn (x) (+ x y))) 4)"), 7);
+        // Capture is by the CREATION scope, NOT the application scope — a `y=100` shadow at the call
+        // site must NOT be observed; the captured `y=3` wins (`core-semantics.md` §A Function Value
+        // Captures The Bindings In Scope Where It Is Created).
+        assert_eq!(
+            run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
+            7
+        );
     }
 
     #[test]
