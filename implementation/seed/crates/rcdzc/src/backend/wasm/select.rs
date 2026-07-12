@@ -961,9 +961,7 @@ fn emit_tail(
                 )?;
                 return Ok(());
             }
-            for &arg in &args {
-                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
-            }
+            emit_call_args(db, callee, &args, slots, base, high, scratch_ty, layout, out)?;
             match layout.abs(callee) {
                 Some(idx) => {
                     trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
@@ -1791,9 +1789,7 @@ fn emit(
         // layout's emission order). The callee is reachable (`layout` added it), so its index exists; a
         // callee not in the emission order is a compiler bug (reachability missed it) → decline.
         Core::Call { callee, args } => {
-            for &arg in &args {
-                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
-            }
+            emit_call_args(db, callee, &args, slots, base, high, scratch_ty, layout, out)?;
             match layout.abs(callee) {
                 Some(idx) => {
                     trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit runtime call");
@@ -3902,6 +3898,60 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
         Ty::Int(it) => it,
         _ => IntTy::i64(),
     }
+}
+
+/// The INTEGER type of each parameter of the def at index `callee` — `Some(it)` for an integer
+/// parameter, `None` for a non-integer one. This lets a `Core::Call` GROUND a bare-literal integer
+/// argument to its parameter's machine width via `emit_operand`: a narrow parameter (UInt8/Int8/…) is
+/// an i32 slot, so a bare-literal argument that would otherwise default to i64 (`(f n 0)` — the `0` for
+/// a UInt8 `acc`) must be emitted as i32, else the call pushes an i64 into an i32 param slot and the
+/// module fails wasm validation. This is the narrow-normalization discipline (an operator operand / an
+/// `if` branch already grounds via `emit_operand`) applied at the recursive/ordinary CALL boundary.
+fn callee_param_int_tys(db: &mut Db, callee: usize) -> Vec<Option<IntTy>> {
+    let Some(d) = db.defs.get(callee) else {
+        return Vec::new();
+    };
+    let params = d.params.clone();
+    params
+        .into_iter()
+        .map(|p| {
+            // The name occurrence a reference binds to — bare `a` or the inner name of `(: a T)`.
+            let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => name_occ,
+                None => p,
+            };
+            match type_of(db, binder) {
+                Ty::Int(it) => Some(it),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Emit a `Core::Call`'s arguments, GROUNDING each bare-literal integer argument to its parameter's
+/// machine width (`emit_operand`), so a narrow (i32-slot) parameter never receives a default-i64 literal.
+/// A non-integer parameter, or an argument past the known parameters, emits normally. Shared by the
+/// tail (`return_call`) and non-tail (`call`) emit paths.
+#[allow(clippy::too_many_arguments)]
+fn emit_call_args(
+    db: &mut Db,
+    callee: usize,
+    args: &[StructId],
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    let param_its = callee_param_int_tys(db, callee);
+    for (i, &arg) in args.iter().enumerate() {
+        match param_its.get(i).copied().flatten() {
+            Some(it) => emit_operand(db, arg, it, slots, base, high, scratch_ty, layout, out)?,
+            None => emit(db, arg, slots, base, high, scratch_ty, layout, out)?,
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -481,6 +481,41 @@
   (call   main (: 1000000 Int64))
   (output (: 1000000 Int64)))
 
+; A recursive function with TWO OR MORE NARROW-WIDTH parameters (UInt8/Int8/UInt16/…) threading a narrow
+; accumulator through the recursive call. A narrow value lives in an i32 machine slot (a wide Int64 is
+; i64); a bare-literal argument (`(f n 0)` — the `0` for a UInt8 `acc`) defaults to Int64, so passing it
+; unnormalized pushed an i64 into the i32 parameter slot and rcdzc emitted a STRUCTURALLY INVALID wasm
+; module ("expected i32, found i64"). Every call argument must be grounded to its PARAMETER's machine
+; width — the same narrow-normalization the operator/if-branch sites already apply, at the call boundary.
+; A single narrow parameter and an Int64 two-parameter recursion both worked; the gap was a narrow value
+; threaded as the 2nd+ recursive argument. A well-typed narrow-accumulator recursion must never emit
+; invalid wasm.
+
+(case "a narrow-width two-parameter recursion compiles to valid wasm and computes"
+  (doc    "`(def (f (: n UInt8) (: acc UInt8)) (if (= n 0) acc (f (- n 1) (+ acc 1))))` — a UInt8
+           accumulator counting n down while adding 1 to acc. `f(10, 0)` = 10. The narrow `acc`'s
+           bare-literal seed `0` (and each recursive `(+ acc 1)`) must be emitted at the parameter's i32
+           width, not the default i64, or the call pushes a mismatched slot and the module fails wasm
+           validation. The Int64 control above compiles at i64 slots; this pins the narrow width threads
+           a recursive argument correctly. Expected: 10.")
+  (input  (do
+            (def (f (: n UInt8) (: acc UInt8)) (if (= n 0) acc (f (- n 1) (+ acc 1))))
+            (def (go (: n UInt8)) (f n 0)) (export go)))
+  (call   go (: 10 UInt8))
+  (output (: 10 UInt8)))
+
+(case "a narrow-width accumulator that never changes threads through the recursion"
+  (doc    "The minimal narrow-threading shape: the accumulator is passed UNCHANGED — `(f (- n 1) acc)` —
+           so the only narrow argument at the recursive call is the parameter `acc` itself (no `(+ acc
+           1)` to widen it). `f(10, 0)` = 0 (acc starts 0, never incremented). Pins that even a bare
+           narrow PARAMETER reference threaded as a recursive argument is emitted at its i32 slot, not
+           widened to i64. Expected: 0.")
+  (input  (do
+            (def (f (: n UInt8) (: acc UInt8)) (if (= n 0) acc (f (- n 1) acc)))
+            (def (go (: n UInt8)) (f n 0)) (export go)))
+  (call   go (: 10 UInt8))
+  (output (: 0 UInt8)))
+
 (case "a mutually tail-recursive even/odd over a large runtime count iterates in constant stack"
   (doc    "The cross-function shape: `even` and `odd` each end in a tail call to the OTHER. At a runtime
            depth of 100000 the alternating tail calls run in constant stack and yield 1 (100000 is

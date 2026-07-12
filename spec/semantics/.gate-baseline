@@ -145,9 +145,11 @@ pass	a named multi-argument function applies to all its arguments at once
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
+pass	a narrow-width accumulator that never changes threads through the recursion
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
+pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
