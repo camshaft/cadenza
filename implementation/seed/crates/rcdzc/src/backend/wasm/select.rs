@@ -50,7 +50,6 @@ const OP_SUM_PAYLOAD: &str = "sum-payload";
 /// Persistent-vector (list) ops. `vec-empty() -> handle` — a fresh empty list; `vec-push(handle, elem)
 /// -> handle` — append an element (returns the new list, threading the handle); `vec-len(handle) -> u32`
 /// — the length. A list value is built `vec-empty` then a `vec-push` per element.
-const OP_VEC_EMPTY: &str = "vec-empty";
 const OP_VEC_PUSH: &str = "vec-push";
 const OP_VEC_LEN: &str = "vec-len";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
@@ -61,6 +60,11 @@ const OP_VEC_UPDATE: &str = "vec-update";
 /// `vec-get(v, index) -> handle` — the element at `index`, BORROWED (rc unchanged; the list still owns
 /// it). An out-of-bounds index TRAPS, so `List.at` bounds-checks BEFORE calling it.
 const OP_VEC_GET: &str = "vec-get";
+/// `vec-of-arr(arr) -> handle` — build a persistent vector from an already-built flat `arr` in ONE call
+/// (CONSUMES the arr). The bulk-construct lowering target for a `(list …)` literal: `arr-alloc N` + N×
+/// `arr-set` then one `vec-of-arr`, instead of `vec-empty` + N× consuming `vec-push`. `arr-len 0` yields
+/// the empty vector, so it covers `(list)` too.
+const OP_VEC_OF_ARR: &str = "vec-of-arr";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
@@ -308,10 +312,13 @@ pub fn collect_used_ops(
             }
             collect_used_ops(db, operand, out);
         }
-        // A list construction uses `vec-empty` + a `vec-push` per element (each scalar element boxed).
+        // A list construction is a BULK build: a flat `arr` (`arr-alloc` + a boxed `arr-set` per element,
+        // like a tuple) then one `vec-of-arr`. So it imports the arr ops + `vec-of-arr`, not the old
+        // `vec-empty`/`vec-push` chain.
         Core::ListNew { elems } => {
-            out.insert(OP_VEC_EMPTY);
-            out.insert(OP_VEC_PUSH);
+            out.insert(OP_ARR_ALLOC);
+            out.insert(OP_ARR_SET);
+            out.insert(OP_VEC_OF_ARR);
             for elem in &elems {
                 if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
@@ -1454,15 +1461,20 @@ fn emit(
             }
             Ok(()) // leaves [arr] — the tuple handle
         }
-        // A runtime LIST — build it on the persistent `vec-*` heap: `vec-empty` leaves the list handle,
-        // then for each element push `(handle, boxed-elem)` and `vec-push` (which RETURNS the new handle,
-        // threading it to the next element — like `arr-set` threads the tuple handle). Each element is
-        // BOXED to a u32 handle by its type (`box-int`/`box-bool`, a narrow int extended i32→i64 first);
-        // the list itself is a u32 handle. Empty `(list)` is just `vec-empty`.
+        // A runtime LIST — BULK BUILD: lay the elements into a flat `arr` (exactly as a tuple:
+        // `arr-alloc N` + a boxed `arr-set` per element), then ONE `vec-of-arr` to turn that array into
+        // the persistent vector. This replaces the old `vec-empty` + N× `vec-push` — N persistent-trie
+        // CONSTRUCTORS each consuming+rebuilding the whole vector (O(N) handle allocs) — with a single
+        // bulk build (`vec-of-arr` is zero-copy for a ≤32-element list: the arr node IS the trie leaf,
+        // reused by move). Each scalar element is BOXED to a u32 handle (a narrow int extended i32→i64
+        // first); a nested compound is already a handle. `arr-len 0` yields the empty vector, so `(list)`
+        // is `arr-alloc 0` + `vec-of-arr` (no push-chain special case).
         Core::ListNew { elems } => {
-            out.push(Lir::CallImport(OP_VEC_EMPTY)); // → [list]
-            for &elem in &elems {
-                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, elem]
+            out.push(Lir::ConstI32(elems.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            for (i, &elem) in elems.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [arr, i]
+                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 if let Some(op) = box_op(db, elem)? {
                     if let Some(m) = is_narrow_int(db, elem) {
                         out.push(if m.signed {
@@ -1471,10 +1483,11 @@ fn emit(
                             Lir::I64ExtendI32U
                         });
                     }
-                    out.push(Lir::CallImport(op)); // [list, handle]
+                    out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
-                out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list]
+                out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
+            out.push(Lir::CallImport(OP_VEC_OF_ARR)); // [arr] → [list]
             Ok(()) // leaves [list] — the list handle
         }
         // `List.len` — emit the list handle, then `vec-len` (→ u32 length, an i32 slot). `List.len`'s

@@ -3244,6 +3244,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_list_literal_bulk_builds_via_vec_of_arr() {
+        // A runtime list literal `(list …)` builds in ONE bulk call: a flat `arr` (`arr-alloc` + a boxed
+        // `arr-set` per element) then a single `vec-of-arr` — NOT `vec-empty` + N× consuming `vec-push`.
+        // Asserted at the Lir level: exactly one `vec-of-arr`, N `arr-set`s, and ZERO `vec-push`/
+        // `vec-empty`. (The list has a runtime element so it is not folded/baked away.) Behavioral value
+        // parity is covered by the composed `List.at`/`List.len` runtime tests.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: n Int64)) \
+               (match (List.at (list a (+ a 1) (+ a 2)) n) ((Some x) x) (None -1))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        let count = |name| {
+            code.iter()
+                .filter(|i| matches!(i, Lir::CallImport(n) if *n == name))
+                .count()
+        };
+        assert_eq!(count("vec-of-arr"), 1, "one bulk build, got: {code:?}");
+        assert_eq!(count("arr-set"), 3, "three elements laid into the arr");
+        assert_eq!(count("vec-push"), 0, "no per-element push chain");
+        assert_eq!(count("vec-empty"), 0, "no vec-empty seed");
+    }
+
+    #[test]
     fn a_mixed_element_list_is_rejected() {
         // A list is HOMOGENEOUS (collections-and-text.md §A List Is A Homogeneous Sequence): every element
         // shares one type. `(list 1 true)` mixes Int64 and Bool — a type mismatch (CDZ0203), the same
@@ -3305,8 +3349,8 @@ mod match_engine {
         // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. The result
         // is NOT a compile-time-visible literal (it is a `Core::ListPush`), so `List.len` of it does NOT
         // fold — it emits the runtime `vec-len`. So `(List.len (List.push (list 1 2 3) 4))` exercises the
-        // full runtime path: `vec-empty` + 3 boxed `vec-push` (the literal) + one more `vec-push` (the
-        // appended 4) + `vec-len` → 4.
+        // full runtime path: the literal `(list 1 2 3)` bulk-builds (a flat `arr` + one `vec-of-arr`),
+        // then `vec-push` appends the 4, then `vec-len` → 4.
         let Some(out) = run_on_heap(
             "(module m (def (main) ((. List len) ((. List push) (list 1 2 3) 4))) (export main))",
         ) else {
@@ -3457,10 +3501,10 @@ mod match_engine {
     #[test]
     fn a_multi_use_let_bound_list_is_built_once() {
         // A `let`-bound list used at MORE THAN ONE site is a runtime computation worth naming: it is
-        // built ONCE (`vec-empty` + the per-element `vec-push`es) and the handle reused, not rebuilt at
-        // every use. Asserted at the Lir level: the emitted body contains exactly ONE `vec-empty`
-        // (`CallImport("vec-empty")`) despite `xs` being read at two `List.at` sites. (Before this fix a
-        // list binding was not kept, so each use rebuilt it → two `vec-empty`s.)
+        // built ONCE (a flat `arr` + one `vec-of-arr`) and the handle reused, not rebuilt at every use.
+        // Asserted at the Lir level: the emitted body contains exactly ONE `vec-of-arr` (the list-build
+        // op) despite `xs` being read at two `List.at` sites. (Before the keep-binding fix a list binding
+        // was not kept, so each use rebuilt it → two builds.)
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
         let ast = crate::testkit::parse(
@@ -3490,13 +3534,13 @@ mod match_engine {
         let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
             .expect("select")
             .code;
-        let empties = code
+        let builds = code
             .iter()
-            .filter(|i| matches!(i, Lir::CallImport("vec-empty")))
+            .filter(|i| matches!(i, Lir::CallImport("vec-of-arr")))
             .count();
         assert_eq!(
-            empties, 1,
-            "a multi-use let-bound list is built once (one vec-empty), got: {code:?}"
+            builds, 1,
+            "a multi-use let-bound list is built once (one vec-of-arr), got: {code:?}"
         );
     }
 
