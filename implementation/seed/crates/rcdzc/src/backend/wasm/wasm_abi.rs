@@ -73,6 +73,8 @@ pub mod op {
     pub const I32_WRAP_I64: u8 = 0xa7;
     pub const I64_EXTEND_I32_S: u8 = 0xac;
     pub const I64_EXTEND_I32_U: u8 = 0xad;
+    pub const I32_STORE: u8 = 0x36;
+    pub const I32_STORE8: u8 = 0x3a;
 }
 /// core valtype `i32` — a ≤32-bit scalar's machine slot.
 pub const CORE_I32: u8 = 0x7f;
@@ -110,7 +112,9 @@ pub const COMP_F64: u8 = 0x75;
 pub const CORE_SEC_TYPE: u8 = 0x01;
 /// core FUNCTION section id.
 pub const CORE_SEC_FUNCTION: u8 = 0x03;
-/// core GLOBAL section id (a build-once static compound's handle global).
+/// core MEMORY section id (the linear memory a `list<u8>`/`string` return lifts through).
+pub const CORE_SEC_MEMORY: u8 = 0x05;
+/// core GLOBAL section id (a build-once static compound's handle global; the bump-allocator cursor).
 pub const CORE_SEC_GLOBAL: u8 = 0x06;
 /// core EXPORT section id.
 pub const CORE_SEC_EXPORT: u8 = 0x07;

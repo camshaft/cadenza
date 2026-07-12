@@ -172,7 +172,7 @@ fn oracle_core(names: &[&str]) -> Vec<u8> {
 /// encoder in the byte path).
 #[test]
 fn envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     for names in [&["run"][..], &["run", "double"][..]] {
         let core = oracle_core(names);
         let exports: Vec<BoundaryExport> = names
@@ -180,7 +180,7 @@ fn envelope_matches_wasm_encoder_oracle() {
             .map(|n| BoundaryExport {
                 name: n.to_string(),
                 params: Vec::new(),
-                result: Some(0x78),
+                result: BoundaryResult::Primitive(0x78),
             })
             .collect();
         let ours = assemble(&core, &exports, &[], "");
@@ -197,7 +197,7 @@ fn envelope_matches_wasm_encoder_oracle() {
 /// runtime function needs.
 #[test]
 fn parameterized_envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     // A core module with one `(i64, i64) -> i64` function returning param 0 + param 1.
     let core = {
         use wasm_encoder::*;
@@ -262,7 +262,7 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
         &[BoundaryExport {
             name: "add".to_string(),
             params: vec![0x78, 0x78], // two s64 params
-            result: Some(0x78),
+            result: BoundaryResult::Primitive(0x78),
         }],
         &[],
         "",
@@ -276,7 +276,7 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
 /// `(p0: u8, p1: s16) -> s8` over a `(i32, i32) -> i32` core covers three of the four narrow primitives.
 #[test]
 fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     // A minimal `(i32, i32) -> i32` core — the machine signature a narrow-width export lowers to (a
     // ≤32-bit value occupies an i32 slot; the ABI lifts it to the narrow primitive at the edge).
     let core = {
@@ -339,8 +339,8 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
         &core,
         &[BoundaryExport {
             name: "f".to_string(),
-            params: vec![0x7D, 0x7C], // u8, s16
-            result: Some(0x7E),       // s8
+            params: vec![0x7D, 0x7C],                // u8, s16
+            result: BoundaryResult::Primitive(0x7E), // s8
         }],
         &[],
         "",
@@ -483,14 +483,14 @@ fn import_oracle_component(core: &[u8], import_name: &str) -> Vec<u8> {
 /// the SAME versioned import name and the GENERATED `OPS.arr_alloc` signature on our side.
 #[test]
 fn import_envelope_matches_component_builder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     use crate::backend::wasm::runtime_abi::OPS;
     let core = import_oracle_core();
     let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
     let exports = vec![BoundaryExport {
         name: "main".to_string(),
         params: Vec::new(),
-        result: Some(0x78), // s64
+        result: BoundaryResult::Primitive(0x78), // s64
     }];
     let ours = assemble(&core, &exports, &[OPS.arr_alloc], import_name);
     let oracle = import_oracle_component(&core, import_name);
@@ -504,14 +504,14 @@ fn import_envelope_matches_component_builder_oracle() {
 /// validity/type only — the end-to-end run lands in H2 with a real compound op + the composed runtime.)
 #[test]
 fn import_envelope_is_a_valid_component_with_the_versioned_import() {
-    use crate::backend::wasm::envelope::{BoundaryExport, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
     use crate::backend::wasm::runtime_abi::{OPS, REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
     let core = import_oracle_core();
     let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
     let exports = vec![BoundaryExport {
         name: "main".to_string(),
         params: Vec::new(),
-        result: Some(0x78),
+        result: BoundaryResult::Primitive(0x78),
     }];
     let bytes = assemble(&core, &exports, &[OPS.arr_alloc], &import_name);
 
@@ -3140,5 +3140,482 @@ mod stage1 {
         });
         let c = reduce_ctor(&mut db, p, &[w8]).expect("build");
         assert_ne!(a, c, "different widths are different modules");
+    }
+}
+
+// ── value-heap R0: the canonical `list<u8>` ABI (memory + cabi_realloc + list<u8> lift) ────────────
+//
+// The escape path (a compound crossing to the host) returns the value's CANONICAL BINARY VALUE FORM as
+// `list<u8>` (`contracts/deterministic-value-form.md`; the resource `encode()` method's return — R1+).
+// R0 is the ABI substrate beneath it: a core module with a linear memory + `cabi_realloc`, and a
+// `-> list<u8>` component lift that reads the canonical-ABI `(ptr, len)` return area out of that
+// memory. Proven two ways, exactly as the H1b import envelope was: the hand-emitted envelope is
+// byte-identical to the `ComponentBuilder` oracle, AND it RUNS under wasmtime, returning the bytes.
+//
+// The core module here is a hand-built `wasm-encoder` fixture (a nullary entry returning a retptr to
+// constant bytes) — R0 proves the ENVELOPE's list-lift byte layer independently of the serializer that
+// will emit the real renderer core (R1/R2). This mirrors H1b, whose oracle used `import_oracle_core`.
+mod r0 {
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
+
+    /// A minimal core module returning a constant `list<u8>` by the canonical ABI: exports `memory`, a
+    /// stub `cabi_realloc`, and `main : () -> i32` returning a pointer to an 8-byte return area holding
+    /// `[data-ptr:i32, data-len:i32]`. The payload bytes and the return area are preloaded via a data
+    /// segment (so `main` is just `i32.const <retarea>`), which is enough to RUN — the host reads the
+    /// result out of guest memory and never calls realloc for a nullary result. Payload = `[1,2,3]`.
+    /// The exact core the R0 serializer will emit (a real renderer writing bytes + the return area) is
+    /// R1/R2; this fixture isolates the envelope's list-lift byte layer.
+    pub(super) fn working_list_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // Types: main `()->i32`, cabi_realloc `(i32×4)->i32`.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![], vec![ValType::I32]); // 0: main
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        ); // 1: cabi_realloc
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0); // main
+        funcs.function(1); // cabi_realloc
+        m.section(&funcs);
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("main", ExportKind::Func, 0);
+        exports.export("cabi_realloc", ExportKind::Func, 1);
+        m.section(&exports);
+        // Data: payload [1,2,3] at offset 0; return area [ptr=0, len=3] at offset 8.
+        let mut data = DataSection::new();
+        let bytes = [
+            1u8, 2, 3, 0, 0, 0, 0, 0, /* retarea@8 */ 0, 0, 0, 0, 3, 0, 0, 0,
+        ];
+        data.active(0, &ConstExpr::i32_const(0), bytes.iter().copied());
+        // Code.
+        let mut code = CodeSection::new();
+        let mut main = Function::new(vec![]);
+        main.instruction(&Instruction::I32Const(8)); // return the retarea pointer
+        main.instruction(&Instruction::End);
+        code.function(&main);
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0)); // stub (never called for a nullary result)
+        realloc.instruction(&Instruction::End);
+        code.function(&realloc);
+        m.section(&code);
+        m.section(&data);
+        m.finish()
+    }
+
+    /// Wrap `core` in a `() -> list<u8>` component with `ComponentBuilder` — the authoritative reference
+    /// the hand-emitted list-lift envelope is diffed against (memory + realloc aliases + the `list u8`
+    /// defined type + the Memory/Realloc canon-lift options). No runtime import (the bare shape).
+    fn oracle_list_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let module_idx = c.core_module_raw(core); // core module 0
+        let prog_inst = c.core_instantiate(module_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let main_core = c.core_alias_export(prog_inst, "main", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (main_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let main_comp = c.lift_func(
+            main_core,
+            main_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        c.export("main", ComponentExportKind::Func, main_comp, None);
+        c.finish()
+    }
+
+    /// The hand-emitted `() -> list<u8>` bare-escape envelope is BYTE-IDENTICAL to the `ComponentBuilder`
+    /// oracle — the anchor that licenses hand-emitting the memory/realloc-aliasing + list-lift plumbing
+    /// with no external encoder in the compile path (`reference-compiler.md` §Emission Is Validated
+    /// Byte-Identical To An Independent Encoder). This is R0's byte gate.
+    #[test]
+    fn list_u8_envelope_matches_component_builder_oracle() {
+        let core = working_list_core();
+        let exports = vec![BoundaryExport {
+            name: "main".to_string(),
+            params: Vec::new(),
+            result: BoundaryResult::Bytes,
+        }];
+        let ours = assemble(&core, &exports, &[], "");
+        let oracle = oracle_list_component(&core);
+        assert_eq!(
+            ours, oracle,
+            "list<u8> envelope mismatch vs ComponentBuilder"
+        );
+    }
+
+    /// The hand-emitted `() -> list<u8>` component RUNS under wasmtime and returns the bytes — R0's
+    /// behavior gate (the byte-identity check alone can't prove the canonical-ABI `(ptr, len)` return
+    /// area is read correctly). Observed by execution: `main()` returns `[1, 2, 3]`.
+    #[test]
+    fn list_u8_envelope_runs_and_returns_the_bytes() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+
+        let core = working_list_core();
+        let exports = vec![BoundaryExport {
+            name: "main".to_string(),
+            params: Vec::new(),
+            result: BoundaryResult::Bytes,
+        }];
+        let comp = assemble(&core, &exports, &[], "");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let func = instance
+            .get_func(&mut store, "main")
+            .expect("export present");
+        let mut results = [Val::Bool(false)];
+        func.call(&mut store, &[], &mut results).expect("call");
+        func.post_return(&mut store).expect("post_return");
+        match &results[0] {
+            Val::List(items) => {
+                let got: Vec<u8> = items
+                    .iter()
+                    .map(|v| match v {
+                        Val::U8(b) => *b,
+                        other => panic!("list element not u8: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(got, vec![1, 2, 3], "list<u8> round-trip");
+            }
+            other => panic!("expected a list result, got {other:?}"),
+        }
+    }
+}
+
+// ── value-heap R1: monomorphized resource + encode() -> list<u8> (the ComponentBuilder reference) ──
+//
+// The escape path exports a compound as a monomorphized component-model RESOURCE whose `encode() ->
+// list<u8>` returns the canonical binary value form. This module builds that shape with the
+// authoritative `ComponentBuilder` encoder + RUNS it under wasmtime (make → resource handle → encode
+// → bytes), the reference the hand-emitted `envelope.rs` R1 path mirrors — the H1b method (validate a
+// ComponentBuilder oracle first, then hand-emit byte-identical). It exercises: the core module imports
+// + calls `resource.new` (a raw rep is NOT auto-wrapped by the lift), the resource carries a dtor (the
+// rc-handle release, stubbed for the constant-bytes proof), and an inner re-export component publishes
+// the abstracted resource + funcs as the `cadenza:run/run` instance.
+//
+// A LEANER shape than wit-bindgen's: the dtor lives in its OWN core module (importing nothing), so it
+// can be instantiated first — the resource type gets a real dtor core-func before `resource.new` (and
+// the main module) need the resource type. This dissolves the resource↔dtor↔`resource.new` circular
+// dependency WITHOUT the shim/fixup trampoline+table+elem dance wit-bindgen needs (wit-bindgen only
+// needs the shim because it puts the dtor in the same module that imports `resource.new`). Simpler to
+// hand-emit AND a cleaner integration story (a self-contained dtor unit).
+mod r1_reference {
+    /// The DTOR core module — a standalone unit exporting `t-dtor : (i32 rep) -> ()`, the destructor
+    /// the component invokes on host-drop. The resource wraps an rc handle to the runtime heap, so the
+    /// dtor must release it (call the runtime's `drop`); for R1's constant-bytes proof the BODY is a
+    /// stub, but the SLOT is wired end-to-end (R2 fills it with the real drop call). KEY: keeping the
+    /// dtor in its OWN module (which imports nothing) is what lets us avoid the wit-bindgen shim/fixup
+    /// — this module can be instantiated FIRST, so the resource type has a real dtor core-func before
+    /// `resource.new` (and hence the main module) needs the resource type. No circular dependency.
+    fn dtor_module() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![]); // 0: (i32)->()
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("t-dtor", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut dtor = Function::new(vec![]);
+        dtor.instruction(&Instruction::End); // stub: release the rep (real `drop` is R2)
+        code.function(&dtor);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The MAIN core module for the resource oracle. IMPORTS `heap.resource-new : (i32 rep) -> i32
+    /// handle` (the `resource.new` intrinsic the component threads in — a raw rep is NOT auto-wrapped
+    /// by the lift; `make` MUST register it, else "unknown handle index"). Exports `memory`,
+    /// `cabi_realloc`, `make : () -> i32 handle` (dummy rep `7` → resource-new → a handle), and
+    /// `t-encode : (i32 handle-rep) -> i32 retptr` (retptr to constant `list<u8>` `[1,2,3]`). The dtor
+    /// lives in [`dtor_module`] (separate → no cycle).
+    fn resource_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32 (resource-new / encode)
+        types.ty().function(vec![], vec![ValType::I32]); // 1: make ()->i32
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        ); // 2: cabi_realloc
+        m.section(&types);
+        // Import resource-new : (rep)->handle (type 0), from module "heap".
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        m.section(&imports);
+        // Defined funcs start at index 1 (import is func 0): make=1, encode=2, realloc=3.
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // make ()->i32
+        funcs.function(0); // encode (i32)->i32 (reuse type 0 shape)
+        funcs.function(2); // cabi_realloc
+        m.section(&funcs);
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("make", ExportKind::Func, 1);
+        exports.export("t-encode", ExportKind::Func, 2);
+        exports.export("cabi_realloc", ExportKind::Func, 3);
+        m.section(&exports);
+        let mut data = DataSection::new();
+        // payload [1,2,3] @0; return area [ptr=0, len=3] @8.
+        let bytes = [1u8, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0];
+        data.active(0, &ConstExpr::i32_const(0), bytes.iter().copied());
+        let mut code = CodeSection::new();
+        // make: rep 7 → resource-new(7) → handle.
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(7));
+        make.instruction(&Instruction::Call(0)); // call the imported resource-new
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // encode: ignore the rep, return the retptr.
+        let mut encode = Function::new(vec![]);
+        encode.instruction(&Instruction::I32Const(8));
+        encode.instruction(&Instruction::End);
+        code.function(&encode);
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End);
+        code.function(&realloc);
+        m.section(&code);
+        m.section(&data);
+        m.finish()
+    }
+
+    /// The INNER re-export component (a real nested component, not a type): it IMPORTS an abstract
+    /// resource + the two funcs typed against it, and RE-EXPORTS the resource (making its identity
+    /// public) + the funcs typed against the EXPORTED resource. This is the wit-bindgen mechanism that
+    /// converts a rep-carrying internal resource identity into an exported abstract one — the ONLY way
+    /// to export a resource-with-methods (a flat top-level func typed against the rep-carrying type "is
+    /// not valid to be used as an export"; one typed against the abstract exported type treats a
+    /// returned rep as an existing handle → "unknown handle index"). Its body is pure imports + exports
+    /// (no core content); the outer component instantiates it with the real (rep-carrying) resource +
+    /// lifted funcs.
+    fn inner_reexport_component() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        // import the abstract resource → type 0, func 0/1 references.
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        ); // type 0
+        // make : () -> own<0>.
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty)); // func 0
+        // encode : (self: own<0>) -> list<u8>.
+        let (list1, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_ty, mut ef) = c.type_function();
+        ef.params([("self", ComponentValType::Type(own_imp))])
+            .result(Some(ComponentValType::Type(list1)));
+        let enc_fn = c.import("import-func-encode", ComponentTypeRef::Func(enc_ty)); // func 1
+        // RE-EXPORT the resource type (publishing its identity), then the funcs against it. The
+        //  re-declared func types (against the EXPORTED resource) are built BEFORE the export call —
+        //  `type_defined`/`type_function` borrow `c`, so they cannot run inside a `c.export(...)` arg.
+        // Re-export the imported resource type DIRECTLY (no `SubResource` ascription — that would mint
+        // a fresh resource identity distinct from `imp_t`, and the re-typed func exports would then
+        // reference a different resource → "resource types are not the same"). Re-publishes `imp_t`'s
+        // identity under the name `t`, returning its new export-index.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od2) = c.type_defined();
+        od2.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (own_exp2, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (list2, ld2) = c.type_defined();
+        ld2.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_exp_ty, mut ef2) = c.type_function();
+        ef2.params([("self", ComponentValType::Type(own_exp2))])
+            .result(Some(ComponentValType::Type(list2)));
+        c.export(
+            "encode",
+            ComponentExportKind::Func,
+            enc_fn,
+            Some(ComponentTypeRef::Func(enc_exp_ty)),
+        );
+        c
+    }
+
+    /// Build the resource-exporting component with `ComponentBuilder` — the authoritative reference.
+    /// A LEANER shape than wit-bindgen's: because our DTOR lives in its own core module (importing
+    /// nothing — [`dtor_module`]), we instantiate it FIRST, so the resource type has a real dtor
+    /// core-func before `resource.new` (and the main module) need the resource type. This dissolves the
+    /// circular dependency WITHOUT the shim/fixup trampoline+table+elem dance wit-bindgen needs (it
+    /// only needs the shim because it puts the dtor in the same module that imports `resource.new`).
+    /// Order: dtor module → resource type (with real dtor) → lower `resource.new` → main module
+    /// (threading `resource.new` in) → lift make/encode → inner re-export component → export instance.
+    fn oracle_resource_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        // (1) dtor module FIRST — a self-contained unit, so its `t-dtor` core func exists before the
+        //     resource type needs it. No cycle → no shim/fixup.
+        let dtor_idx = c.core_module_raw(&dtor_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        // (2) resource `t` with the REAL dtor; lower resource.new(t) → a core func.
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        // (3) thread resource.new into the main core module (as `heap.resource-new`) + instantiate.
+        let heap_inst = c.core_instantiate_exports([("resource-new", ExportKind::Func, rnew_core)]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        // (4) lift make/encode against the INTERNAL res_ty (rep-carrying).
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (encode_ty, mut enc2) = c.type_function();
+        enc2.params([("self", ComponentValType::Type(own_t))])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let encode_comp = c.lift_func(
+            encode_core,
+            encode_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        // (6) inner re-export component → the `cadenza:run/run` instance.
+        let inner_idx = c.component(inner_reexport_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-encode", ComponentExportKind::Func, encode_comp),
+            ],
+        );
+        c.export("cadenza:run/run", ComponentExportKind::Instance, inst, None);
+        c.finish()
+    }
+
+    /// The `ComponentBuilder` reference for the R1 resource-export envelope: a monomorphized resource
+    /// `t` (rep i32, with a dtor) exported inside the `cadenza:run/run` instance, alongside `make : ()
+    /// -> own<t>` (calls `resource.new`) and `encode : (own<t>) -> list<u8>` (the canonical binary
+    /// value form). Built via the leaner resource-linking pattern (separate dtor module + threaded
+    /// `resource.new` + inner re-export component, no shim/fixup). VALIDATES under wasmparser + wasmtime and RUNS the
+    /// round-trip: `make()` → a strongly-typed resource handle (NOT a bare u32), `encode(handle)` →
+    /// `[1,2,3]`. This is the authoritative shape the hand-emitted `envelope.rs` R1 path must mirror.
+    #[test]
+    fn resource_encode_oracle_runs() {
+        let core = resource_core();
+        let comp = oracle_resource_component(&core);
+
+        // Validate with wasmparser (localizes any byte error) then wasmtime.
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("resource component validates under wasmparser");
+        // Run it: make() -> resource handle -> encode(handle) -> list<u8> == [1,2,3].
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        // The resource + funcs are exported inside the `cadenza:run/run` instance.
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:run/run")
+            .expect("run interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let encode_idx = instance
+            .get_export_index(&mut store, Some(&iface), "encode")
+            .expect("encode export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let encode = instance
+            .get_func(&mut store, encode_idx)
+            .expect("encode func");
+        // make() → a strongly-typed resource handle (a Val::Resource, NOT a bare u32).
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(
+            matches!(handle[0], Val::Resource(_)),
+            "make must return a resource handle, got {:?}",
+            handle[0]
+        );
+        // encode(handle) → the canonical binary value form as list<u8>.
+        let mut out = [Val::Bool(false)];
+        encode
+            .call(&mut store, &handle, &mut out)
+            .expect("encode call");
+        encode.post_return(&mut store).expect("encode post_return");
+        match &out[0] {
+            Val::List(items) => {
+                let got: Vec<u8> = items
+                    .iter()
+                    .map(|v| match v {
+                        Val::U8(b) => *b,
+                        o => panic!("not u8: {o:?}"),
+                    })
+                    .collect();
+                assert_eq!(got, vec![1, 2, 3], "encode round-trip");
+            }
+            o => panic!("expected list, got {o:?}"),
+        }
     }
 }

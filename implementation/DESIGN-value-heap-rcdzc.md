@@ -393,31 +393,59 @@ shortcut: the corpus mandates the host sees CANONICAL TEXT (`(: (tuple 0 true) (
 a raw handle misreports. Now REMOVED (a compound host-return DECLINES pending this vertical); a compound
 consumed INTERNALLY (projected, threaded between defs) still works via the heap handle.
 
+**REFINEMENT (operator, 2026-07-11): the method returns the CANONICAL BINARY VALUE FORM, not formatted
+text.** Rather than bloat every emitted program with a per-type STRING renderer (decimal-formatting
+integers, spelling keywords + type names like `(Tuple Int64 Bool)` in wasm), the resource's one method
+emits the value's **canonical binary form** (`spec/contracts/deterministic-value-form.md`) as `list<u8>`,
+and the HOST (`cdz-run`, which already links the copied codec) decodes + pretty-prints it. This is
+mandated, not just cheaper: the value-form contract §"Decoding Is The Inverse" pins that there is exactly
+ONE canonical byte form of a value — the same bytes for hashing, cross-boundary equality, AND a
+component's emitted output — "not a separate interchange encoding" (`value-interchange.md` §"Serialized
+Bytes Are The Canonical Value Form"). So the escape path IS the interchange path; emitting anything but
+the canonical form would be a second encoding the contract forbids. The type travels WITH the value: the
+method encodes the s-expression `(: <value> <type>)` (both as ordinary AST/`Arenas`), so the host renders
+`(: (tuple 0 true) (Tuple Int64 Bool))` by decode-then-print, with zero type-name spelling in wasm.
+
 **The architecture (strict typing at EVERY layer — program↔runtime, boundary, host):**
 - **A monomorphized resource type per concrete compound type.** `(Tuple Int64 Bool)` exports as a
   DISTINCT resource type `tuple-int64-bool` (own<…>) — NOT a generic/erased resource. A different arity
   or element type is a different resource. Emitted via component-model resource decls + the canonical
-  `resource.new` (wrap the runtime u32 handle) + a dtor (drop the handle).
-- **Two compiler-emitted METHODS on every generated resource:** `display-value() -> string` and
-  `display-type() -> string`. The host assembles `(: <display-value> <display-type>)`. Symmetric,
-  uniform — every resource has both.
-- **The renderer lives in the PROGRAM (compiler-emitted), returns a NATIVE component `string`.** The
-  method body is the type-directed renderer: `resource.rep` → the runtime handle → walk it via the
-  runtime accessors (`arr-get`/`get-int`/`get-bool`), assemble the text with the runtime's `str-*`/
-  `bytes-*` ops, and return a canonical-ABI `string` (needs a core memory + `cabi_realloc`). It walks
-  the STATIC shape and bakes names/keywords as constants (§the runtime is name-free).
-- **`cdz-run`'s `run` becomes resource-aware:** an export returning a resource → call `display-value` +
-  `display-type`, print `(: value type)`, then drop the resource. That rendered text is what the gate
-  compares — so the corpus's tuple/record-return cases (expected canonical text) go `todo`→PASS.
+  `resource.new` (wrap the runtime u32 handle) + a dtor (drop the handle). The strongly-typed live ref
+  is retained (the host holds an `own<…>`); only the DISPLAY mechanism changed from text to binary.
+- **ONE compiler-emitted METHOD on every generated resource:** `encode() -> list<u8>`, returning the
+  canonical binary value form of `(: value type)`. (Supersedes the earlier `display-value`/`display-type`
+  string pair — the type is now IN the encoded s-expression, not a second formatted string.)
+- **The encoder lives in the PROGRAM (compiler-emitted), returns a native `list<u8>`.** The method body
+  is the type-directed serializer: `resource.rep` → the runtime handle → walk it via the runtime
+  accessors (`arr-get`/`get-int`/`get-bool`) and emit the codec bytes (`spec/contracts/deterministic-
+  value-form.md` layout — a leaf's kind tag + LEB length + payload, a list's child count + children).
+  Crucially, an integer crosses as its **magnitude bytes copied straight from the runtime's boxed value**
+  — NO in-wasm decimal formatting. It needs a core memory + `cabi_realloc` (R0). It walks the STATIC
+  shape and bakes the `(:` / type-node tags as constant bytes (the runtime is name-free).
+  - **No leaf dedup in the emitted encoder** (operator, 2026-07-11): the value encoder does a straight
+    structural walk — every atom emits its own leaf, no leaf→id interning map. Deduping would need a
+    linear byte-compare scan in emitted wasm for no correctness gain (canonicity needs DETERMINISM, not
+    sharing; `cdz-run`'s `decode` accepts a non-deduped pool fine). Keep it simple. (The AST codec's
+    `Builder` still dedups leaves for STORED PROGRAMS — that's a separate, host-side concern.)
+- **`cdz-run`'s `run` becomes resource-aware:** an export returning a resource → call `encode()`, decode
+  the returned `list<u8>` with the copied codec, pretty-print it, then drop the resource. That rendered
+  text is what the gate compares — so the corpus's tuple/record-return cases (expected canonical text)
+  go `todo`→PASS.
 
-Sub-increments (tasks #79–82): **R0** canonical string ABI (memory + `cabi_realloc` + `-> string` lift,
-proven by a constant-string return) → **R1** the monomorphized resource type + both methods returning
-CONSTANT strings first (prove the resource+method+string plumbing e2e) → **R2** the real type-directed
-renderer in the method bodies (walk the handle → canonical text; nested compounds recurse) → **R3**
-resource-aware `cdz-run` + the gate assembling `(: value type)`, corpus tuple-returns go green, remove
-the interim decline. The old `wit_envelope.rs` (`run: () -> string`) is the reference for the string-lift
-half; component-model resource decls (`resource.new`/`.rep`/dtor + `[method]…`) are the new byte-emission
+Sub-increments (tasks #79–82): **R0** canonical `list<u8>` ABI (core memory + `cabi_realloc` + a
+`-> list<u8>` lift over the canonical-ABI (ptr,len)→retptr return, proven by a constant-bytes return) →
+**R1** the monomorphized resource type + `encode()` returning a CONSTANT byte sequence first (prove the
+resource+method+list ABI e2e; the host decodes it) → **R2** the real type-directed serializer in the
+method body (walk the handle → canonical value bytes; nested compounds recurse) → **R3** resource-aware
+`cdz-run` (decode + pretty-print), corpus tuple-returns go green, remove the interim decline. The old
+`wit_envelope.rs` (`compile: list<u8> -> list<u8>`) is the reference for the `list<u8>`-lift half;
+component-model resource decls (`resource.new`/`.rep`/dtor + `[method]…`) are the new byte-emission
 (hand-emit + validate under wasmtime, as with the import envelope).
+
+#### R1 — the DECODED envelope byte-layout to hand-emit (from the proven `resource_encode_oracle_runs` reference; see [[rcdzc-r1-resource-encode-linking-findings]])
+The LEANER shape (no shim/fixup — dtor in its own module). Outer component section order + item bytes:
+1. **sec 1** dtor core module (`t-dtor : (i32)->()`, stub body). 2. **sec 2** instantiate it (`01 00 00 00`). 3. **sec 6** alias `t-dtor` → core func 0 (`00 00 01 00 <name>`). 4. **sec 7** resource type: `0x3f 0x7f 0x01 0x00` = resource-def, rep i32, has-dtor, dtor core-func 0 → comp-type 0. 5. **sec 8** `resource.new`: `0x02 <ty0>` → core func 1. 6. **sec 2** heap instance: export-items form, `resource-new` = core func 1 (`01 01 <name> 00 01`). 7. **sec 1** main core module (imports `heap.resource-new`, exports memory/make/t-encode/cabi_realloc; make = `i32.const rep; call resource-new`). 8. **sec 2** instantiate main threading `heap` = instance 1 (`00 <mod1> 01 heap 0x12 1`). 9. **sec 6** four core aliases off the prog instance (core inst 2): make→func2, t-encode→func3, memory→mem0, cabi_realloc→func4. 10. **sec 7** own<0> (`0x69 00`) + make functype (`0x40` 0-params result-form`0x00` own-idx1) → comp-types 1,2. 11. **sec 8** make lift: `00 00 <func2> 00 <ty2>` (no opts). 12. **sec 7** list<u8> (`0x70 0x7d`) + encode functype (1 param "self" own-idx1, result list-idx3) → comp-types 3,4. 13. **sec 8** encode lift: `00 00 <func3>` opts=`02 03 <mem0> 04 <realloc4>` `<ty4>`. 14. **sec 4** nested inner re-export component (see below). 15. **sec 5** instantiate inner: `01 00 <innercomp0> 03 (import-type-t Type res_ty0)(import-func-make Func makecomp)(import-func-encode Func enccomp)`. 16. **sec 11** export instance `cadenza:run/run` (`01 00 <name> 05 00`).
+Inner re-export component (its own header + sections): **sec10** import `import-type-t` (`03 <name> 03 01` = Type-ref SubResource) → type0; **sec7** own<0>+make-ft; **sec10** import `import-func-make` Func→func0; **sec7** list<u8>+encode-ft(self:own idx1); **sec10** import `import-func-encode` Func→func1; **sec11** export `t` type0 (`01 00 01 t 03 00 00`); **sec7** own<5>(`69 05`)+make-ft(result own idx6); **sec11** export `make` func0 ascribed ft7; **sec7** own<5>+list<u8>+encode-ft(self own idx8); **sec11** export `encode` func1 ascribed ft. KEY: re-export the resource type DIRECTLY (no SubResource ascription on the export → would mint a fresh identity ≠ the funcs' resource).
 
 5. **(H4) Records at runtime** (rides H2 — a record is a positional array; its host-return rides the
    resource vertical above), then **sums** (`sum-new`/`sum-disc`/`sum-payload`), then tuple/record/sum

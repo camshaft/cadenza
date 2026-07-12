@@ -617,6 +617,26 @@ mod wasm_abi {
             op("I32_WRAP_I64", Instruction::I32WrapI64),
             op("I64_EXTEND_I32_S", Instruction::I64ExtendI32S),
             op("I64_EXTEND_I32_U", Instruction::I64ExtendI32U),
+            // Memory stores — the `list<u8>`/`string` return path writes the payload bytes and the
+            // canonical-ABI return area (`[data-ptr, data-len]`) into linear memory. `MemArg` is
+            // irrelevant to the opcode byte (the extraction reads byte 0; the serializer emits the
+            // align/offset LEB operands itself), so a zero memarg suffices to recover the opcode.
+            op(
+                "I32_STORE",
+                Instruction::I32Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "I32_STORE8",
+                Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
         ];
 
         // The named single bytes: core valtypes, the empty block type, the component primitive
@@ -658,8 +678,13 @@ mod wasm_abi {
                 SectionId::Function,
             ),
             core_sec(
+                "CORE_SEC_MEMORY",
+                "core MEMORY section id (the linear memory a `list<u8>`/`string` return lifts through).",
+                SectionId::Memory,
+            ),
+            core_sec(
                 "CORE_SEC_GLOBAL",
-                "core GLOBAL section id (a build-once static compound's handle global).",
+                "core GLOBAL section id (a build-once static compound's handle global; the bump-allocator cursor).",
                 SectionId::Global,
             ),
             core_sec(
