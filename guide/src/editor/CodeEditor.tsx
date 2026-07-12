@@ -16,6 +16,7 @@ import { cadenzaHighlighting } from "./theme.ts";
 import { cadenzaLinter, lintGutter } from "../playground/lintField.ts";
 import { cadenzaHover } from "../playground/cadenzaHover.ts";
 import { cadenzaGotoDef } from "../playground/cadenzaGotoDef.ts";
+import { cadenzaHighlightRefs } from "../playground/cadenzaHighlightRefs.ts";
 import type { Surface } from "../compiler/client.ts";
 
 const editorTheme = EditorView.theme({
@@ -39,6 +40,10 @@ const editorTheme = EditorView.theme({
     border: "1px solid #334155",
     borderRadius: "6px",
     padding: "3px 8px",
+  },
+  ".cm-cadenza-ref": {
+    backgroundColor: "rgba(251, 191, 36, 0.18)",
+    borderRadius: "2px",
   },
 });
 
@@ -73,6 +78,7 @@ export function CodeEditor({ value, onChange, readOnly, minHeight = "auto", ide 
       cadenzaLinter({ surface: ide.surface, prepare: ide.prepare }),
       cadenzaHover({ surface: ide.surface, prepare: ide.prepare }),
       cadenzaGotoDef({ surface: ide.surface, prepare: ide.prepare }),
+      cadenzaHighlightRefs({ surface: ide.surface, prepare: ide.prepare }),
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!ide]);

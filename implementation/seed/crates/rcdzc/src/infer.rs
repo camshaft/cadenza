@@ -1567,7 +1567,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Handle { init, arms, body } => {
             collect(db, init, out);
             for arm in &arms {
-                collect(db, arm.op, out);
+                // A HANDLER ARM NAMES AN UNDECLARED OPERATION (CDZ0403). If the arm's op is `(. E k)`
+                // where `E` is an effect but `k` is not one of its declared operations, that is a
+                // closed-set violation (`capabilities-and-effects.md` §A Handler Arm Names An Operation
+                // Its Effect Declares) — CDZ0403, NOT the generic "record has no field" (CDZ0201) the
+                // member projection would otherwise emit. When it fires, skip the generic `collect` of the
+                // op (which would add the CDZ0201 duplicate).
+                if crate::effects::arm_op_names_undeclared_operation(db, arm.op) {
+                    out.push(
+                        Reject::coded(
+                            Code::HandlerUndeclaredOp,
+                            "this handler arm names an operation its effect does not declare",
+                        )
+                        .at(arm.op),
+                    );
+                } else {
+                    collect(db, arm.op, out);
+                }
                 // RESUME-VALUE / RESULT-TYPE CHECK. The value a handler resumes with — `(resume value
                 // state)` — is returned to the perform site, so it MUST have the operation's declared
                 // RESULT type (`capabilities-and-effects.md` §Performing An Operation Is Typed And

@@ -11,7 +11,9 @@ import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx"
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { compile, renderSyntax, type Diag, type Surface } from "../compiler/client.ts";
+import { compile, renderSyntax, emitRust, type Diag, type Surface } from "../compiler/client.ts";
+import { toWat } from "./wat.ts";
+import type { CompiledView } from "./OutputPanel.tsx";
 import { run as runComponent } from "../runner/client.ts";
 import type { EditorView } from "@codemirror/view";
 import { byteToUtf16 } from "./offsets.ts";
@@ -48,6 +50,8 @@ export default function PlaygroundPage() {
   const [compiled, setCompiled] = useState<CompiledInfo | null>(null);
   const [cursor, setCursor] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
   const viewRef = useRef<EditorView | null>(null);
+  // The last successfully-emitted component bytes, kept for lazily rendering the WAT view.
+  const lastComponent = useRef<Uint8Array | null>(null);
   // The surface the current `text` is written in — so a toggle re-renders the buffer (preserving
   // edits) rather than trying to parse it in the wrong surface.
   const shownSurface = useRef(surface);
@@ -120,10 +124,18 @@ export default function PlaygroundPage() {
       return;
     }
     // Summarize what it compiled to (for the Compiled tab): a component that imports the value-heap
-    // runtime carries the well-known import name in its bytes; a scalar one is self-contained.
+    // runtime carries the well-known import name in its bytes; a scalar one is self-contained. The
+    // WAT / Rust sub-views are filled lazily (onNeedCompiledView) when the reader opens them.
     const marker = new TextEncoder().encode("cadenza:runtime/heap");
-    setCompiled({ bytes: out.component.length, importsRuntime: indexOfBytes(out.component, marker) >= 0 });
-    const r = await runComponent(out.component);
+    lastComponent.current = out.component;
+    setCompiled({
+      bytes: out.component.length,
+      importsRuntime: indexOfBytes(out.component, marker) >= 0,
+      wat: null,
+      rustSync: null,
+      rustAsync: null,
+    });
+    const r = await runComponent(out.component, shownSurface.current);
     switch (r.kind) {
       case "value":
         setRunView({ kind: "value", text: r.text });
@@ -139,6 +151,26 @@ export default function PlaygroundPage() {
         break;
     }
   }, [text, surface]);
+
+  // Fill a Compiled sub-view (WAT / Rust / Rust-async) on demand — computed lazily when the reader
+  // opens it, so a run doesn't pay for views nobody looks at.
+  const needCompiledView = useCallback(
+    async (view: CompiledView) => {
+      if (view === "wat") {
+        const comp = lastComponent.current;
+        if (!comp) return;
+        const wat = await toWat(comp);
+        setCompiled((c) => (c ? { ...c, wat } : c));
+      } else if (view === "rust") {
+        const rustSync = await emitRust(text, shownSurface.current, false).catch((e) => `// error: ${e}`);
+        setCompiled((c) => (c ? { ...c, rustSync } : c));
+      } else if (view === "rustAsync") {
+        const rustAsync = await emitRust(text, shownSurface.current, true).catch((e) => `// error: ${e}`);
+        setCompiled((c) => (c ? { ...c, rustAsync } : c));
+      }
+    },
+    [text],
+  );
 
   // ⌘/Ctrl-Enter runs.
   useEffect(() => {
@@ -253,7 +285,14 @@ export default function PlaygroundPage() {
         </Panel>
         <PanelResizeHandle className="w-1.5 bg-slate-800 transition hover:bg-cadenza-600/50" />
         <Panel defaultSize={45} minSize={25} className="min-w-0">
-          <OutputPanel run={runView} diagnostics={diags} ast={ast} compiled={compiled} onJumpTo={jumpTo} />
+          <OutputPanel
+            run={runView}
+            diagnostics={diags}
+            ast={ast}
+            compiled={compiled}
+            onJumpTo={jumpTo}
+            onNeedCompiledView={needCompiledView}
+          />
         </Panel>
       </PanelGroup>
 

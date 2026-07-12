@@ -1163,3 +1163,80 @@ fn def_on_a_non_reference_reports_no_definition() {
     assert!(stderr.contains("no definition"), "clear message: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- `cdz scope FILE OFFSET` — variable scope tracking (Query::ScopeAt) ----
+
+#[test]
+fn scope_lists_the_visible_bindings_with_types() {
+    let dir = scratch_dir("scope_vis");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (f (: p Int64)) (let ((q (: 5 Int64))) (+ p q))) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let off = src.find("(+ p q)").unwrap();
+    let (ok, stdout, _) = run(&["scope", f.to_str().unwrap(), &off.to_string()], "");
+    assert!(ok);
+    // Both the param `p` and the let-binding `q` are in scope, both Int64, at a file:line:col.
+    assert!(stdout.contains("p : Int64"), "param p in scope: {stdout}");
+    assert!(
+        stdout.contains("q : Int64"),
+        "let-binding q in scope: {stdout}"
+    );
+    assert!(stdout.contains("prog.sexp:"), "with locations: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scope_at_top_level_is_empty() {
+    let dir = scratch_dir("scope_top");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (main) 42) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let off = src.find("42").unwrap();
+    let (ok, stdout, _) = run(&["scope", f.to_str().unwrap(), &off.to_string()], "");
+    assert!(ok, "no local scope is not an error");
+    assert_eq!(
+        stdout.trim(),
+        "",
+        "no local bindings at the top level: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- `cdz exports FILE` — the module interface (Query::Exports) ----
+
+#[test]
+fn exports_lists_each_export_with_its_type() {
+    let dir = scratch_dir("exports");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (v) (: 5 Int64)) \
+               (export inc) (export v))\n";
+    std::fs::write(&f, src).unwrap();
+    let (ok, stdout, _) = run(&["exports", f.to_str().unwrap()], "");
+    assert!(ok);
+    assert!(
+        stdout.contains("inc : (-> Int64 Int64)"),
+        "fn export: {stdout}"
+    );
+    assert!(stdout.contains("v : Int64"), "value export: {stdout}");
+    assert!(stdout.contains("prog.sexp:"), "with locations: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- `cdz type-at` hover polish: keywords + def signatures, not `Any` ----
+
+#[test]
+fn type_at_on_a_keyword_names_it_not_any() {
+    let dir = scratch_dir("hover_kw");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (main) (: 42 Int64)) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let def_off = src.find("def").unwrap();
+    let (ok, stdout, _) = run(&["type-at", f.to_str().unwrap(), &def_off.to_string()], "");
+    assert!(ok);
+    assert!(
+        stdout.contains("keyword def"),
+        "def is a keyword, not Any: {stdout}"
+    );
+    assert!(!stdout.contains("Any"), "no misleading Any: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

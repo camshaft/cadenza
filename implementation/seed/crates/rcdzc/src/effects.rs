@@ -234,6 +234,41 @@ struct HandlerCtx {
 /// Reduce a `(handle init arms body)` to a rewritten BODY occurrence with every perform of a discharged
 /// operation resolved to its arm and rewritten tail-resumptively, or `None` to DECLINE (the case is not
 /// in the tail-resumptive shipping surface — `lower` then declines cleanly, a Todo). `init`/`arms`/`body`
+/// Whether a handler arm's op occurrence `op` names an operation its effect does NOT declare — a
+/// closed-set violation (CDZ0403). True when `op` is a member access `(. E k)` where `E` resolves to an
+/// EFFECT record (its `(meta t)` is an `(effect …)` type-value) but `k` is not one of that effect's
+/// declared operation names. A valid op (a declared operation) is `false`; an `op` that is not a
+/// member-access on an effect at all (a malformed arm) is also `false` (its own fault surfaces).
+pub fn arm_op_names_undeclared_operation(db: &mut Db, op: StructId) -> bool {
+    // `op` must be a member access `(. operand key)`.
+    let Resolved::Member { operand, key } = resolved_of(db, op) else {
+        return false;
+    };
+    // The operand must resolve to an EFFECT record — recover its declaration occurrence from `(meta t)`
+    // = `(effect NAME <decl>)`. A non-effect operand (an ordinary record/module) is not this check's
+    // concern (a bad field there is the ordinary CDZ0201).
+    let Some(decl) = effect_decl_of_value(db, operand) else {
+        return false;
+    };
+    // Is `key` a declared operation of that effect? Look it up in the effect's declaration.
+    match db.effect_decl_by_occ(crate::ast::StructId(decl)) {
+        Some(eff) => !eff.ops.iter().any(|o| o.name == key.name),
+        None => false, // no such effect declaration (should not happen for a resolved effect record)
+    }
+}
+
+/// The effect-declaration occurrence the value at `id` denotes, if it resolves to an EFFECT record — its
+/// `(meta t)` is an `(effect NAME <decl>)` node. `None` for any value that is not an effect record.
+fn effect_decl_of_value(db: &mut Db, id: StructId) -> Option<u32> {
+    let field = crate::eval::project_meta(db, id, "t")?;
+    let tail = db.ast.as_form(field, "effect")?;
+    let decl_occ = tail.get(1).copied()?;
+    match resolved_of(db, decl_occ) {
+        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()),
+        _ => None,
+    }
+}
+
 /// Report CDZ0401 for every effect operation reached from ENTRYPOINT body `node` with no home — neither
 /// an enclosing handler discharging its effect nor a host delegation of it
 /// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Walks the resolved tree
@@ -315,16 +350,34 @@ fn check_no_home_walk(
         }
         // A `host` — its listed effects are DELEGATED for the body. Push each delegated effect's decl.
         Resolved::Host { effects, body } => {
-            let added: Vec<u32> = effects
+            let added: Vec<(StructId, u32)> = effects
                 .iter()
                 .filter_map(|&e| {
                     // Each `effect` element is a name occurrence resolving to the effect record; recover
                     // its decl via the record's `(meta t)` = `(effect NAME <decl>)`.
-                    host_effect_decl(db, e)
+                    host_effect_decl(db, e).map(|d| (e, d))
                 })
                 .collect();
+            // LATENT AUTHORITY (CDZ0404). A delegation must grant EXACTLY the effects that escape — an
+            // effect the body never reaches is a granted-but-unexercised capability, rejected
+            // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). Check each
+            // delegated effect is reached by a perform in the body; if not, CDZ0404 (anchored at the
+            // delegation's effect-name occurrence).
+            for &(occ, decl) in &added {
+                if !body_reaches_effect(db, body, decl, 0) {
+                    out.push(
+                        crate::diag::Reject::coded(
+                            crate::diag::Code::LatentAuthority,
+                            "this entrypoint delegates an effect to the host that its body never \
+                             reaches (latent authority); the manifest must be exactly the effects \
+                             that escape",
+                        )
+                        .at(occ),
+                    );
+                }
+            }
             let before = handled.len();
-            handled.extend(&added);
+            handled.extend(added.iter().map(|&(_, d)| d));
             check_no_home_walk(db, body, handled, out, depth);
             handled.truncate(before);
         }
@@ -336,6 +389,37 @@ fn check_no_home_walk(
                 }
             }
         }
+    }
+}
+
+/// Whether the resolved subtree at `node` performs an operation of the effect whose declaration
+/// occurrence is `decl` — following NON-RECURSIVE calls into their callee bodies (the perform may be
+/// cross-function, as the delegation-reaches-a-recursive-callee case shows; a recursive callee is not
+/// followed here — that reachability is E3, and missing it only UNDER-reports latent authority, the
+/// safe direction). Used by the CDZ0404 latent-authority check.
+fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bool {
+    if depth > 64 {
+        return false;
+    }
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((d, _idx)) = crate::eval::effect_op_of(db, head)
+        && d.0 == decl
+    {
+        return true;
+    }
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        && !crate::eval::is_recursive(db, callee)
+        && body_reaches_effect(db, callee, decl, depth + 1)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_reaches_effect(db, c, decl, depth)),
+        Struct::Atom(_) => false,
     }
 }
 

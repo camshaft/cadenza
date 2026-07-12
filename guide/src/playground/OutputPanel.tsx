@@ -15,12 +15,19 @@ export type RunView =
 
 type Tab = "result" | "diagnostics" | "ast" | "compiled";
 
-/// A summary of the last successful compile, for the "Compiled" tab.
+/// What the program compiled to, for the "Compiled" tab. `wat`/`rustSync`/`rustAsync` are filled
+/// lazily (null until computed) so a run doesn't pay for views the reader hasn't opened.
 export interface CompiledInfo {
   bytes: number;
   /** true if the emitted component imports the value-heap runtime (a compound result). */
   importsRuntime: boolean;
+  wat: string | null;
+  rustSync: string | null;
+  rustAsync: string | null;
 }
+
+/// Which sub-view of the Compiled tab is shown; the page fills the corresponding field on demand.
+export type CompiledView = "summary" | "wat" | "rust" | "rustAsync";
 
 interface Props {
   run: RunView;
@@ -29,9 +36,11 @@ interface Props {
   compiled: CompiledInfo | null;
   /** Jump the editor to a diagnostic's source range. */
   onJumpTo: (from: number, to: number) => void;
+  /** Ask the page to compute a Compiled sub-view (WAT / Rust / Rust-async) on demand. */
+  onNeedCompiledView: (view: CompiledView) => void;
 }
 
-export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo }: Props) {
+export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo, onNeedCompiledView }: Props) {
   const [tab, setTab] = useState<Tab>("result");
   const errorCount = diagnostics.filter((d) => d.error).length;
 
@@ -68,7 +77,7 @@ export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo }: Props
         {tab === "ast" && (
           <pre className="whitespace-pre-wrap text-slate-400">{ast || "— run or edit to see the tree —"}</pre>
         )}
-        {tab === "compiled" && <CompiledBody compiled={compiled} />}
+        {tab === "compiled" && <CompiledBody compiled={compiled} onNeed={onNeedCompiledView} />}
       </div>
     </div>
   );
@@ -121,28 +130,70 @@ function ResultBody({ run }: { run: RunView }) {
   }
 }
 
-function CompiledBody({ compiled }: { compiled: CompiledInfo | null }) {
+function CompiledBody({
+  compiled,
+  onNeed,
+}: {
+  compiled: CompiledInfo | null;
+  onNeed: (view: CompiledView) => void;
+}) {
+  const [view, setView] = useState<CompiledView>("summary");
   if (!compiled) {
     return <span className="text-slate-500">Run a well-formed program to see what it compiles to.</span>;
   }
+  // Ask the page to fill a view the first time it's opened (lazy).
+  function open(v: CompiledView) {
+    setView(v);
+    if (v === "wat" && compiled!.wat == null) onNeed("wat");
+    if (v === "rust" && compiled!.rustSync == null) onNeed("rust");
+    if (v === "rustAsync" && compiled!.rustAsync == null) onNeed("rustAsync");
+  }
+  const pending = (s: string | null) => (s == null ? "// computing…" : s);
   return (
-    <div className="space-y-2 text-slate-300">
-      <div>
-        <span className="text-slate-500">Component size:</span> {compiled.bytes.toLocaleString()} bytes
+    <div className="flex h-full flex-col">
+      <div className="mb-2 flex gap-1 text-[11px]">
+        <SubTab active={view === "summary"} onClick={() => open("summary")}>Summary</SubTab>
+        <SubTab active={view === "wat"} onClick={() => open("wat")}>WAT</SubTab>
+        <SubTab active={view === "rust"} onClick={() => open("rust")}>Rust</SubTab>
+        <SubTab active={view === "rustAsync"} onClick={() => open("rustAsync")}>Rust (async)</SubTab>
       </div>
-      <div>
-        <span className="text-slate-500">Value-heap runtime:</span>{" "}
-        {compiled.importsRuntime ? (
-          <span className="text-cadenza-300">imported (a compound result crosses the boundary)</span>
-        ) : (
-          <span className="text-emerald-300">not needed (self-contained scalar/unit result)</span>
-        )}
-      </div>
-      <p className="pt-1 text-xs text-slate-500">
-        Cadenza compiles to a sandboxed WebAssembly component. A program that returns a compound value
-        imports a shared value-heap runtime; a scalar one is fully self-contained.
-      </p>
+      {view === "summary" && (
+        <div className="space-y-2 text-slate-300">
+          <div>
+            <span className="text-slate-500">Component size:</span> {compiled.bytes.toLocaleString()} bytes
+          </div>
+          <div>
+            <span className="text-slate-500">Value-heap runtime:</span>{" "}
+            {compiled.importsRuntime ? (
+              <span className="text-cadenza-300">imported (a compound result crosses the boundary)</span>
+            ) : (
+              <span className="text-emerald-300">not needed (self-contained scalar/unit result)</span>
+            )}
+          </div>
+          <p className="pt-1 text-xs text-slate-500">
+            Cadenza is target-neutral above its backend seam: the same program lowers to a WebAssembly
+            component (see WAT), or to Rust source — synchronous, or gas-metered async.
+          </p>
+        </div>
+      )}
+      {view === "wat" && <pre className="whitespace-pre text-slate-400">{pending(compiled.wat)}</pre>}
+      {view === "rust" && <pre className="whitespace-pre text-slate-400">{pending(compiled.rustSync)}</pre>}
+      {view === "rustAsync" && <pre className="whitespace-pre text-slate-400">{pending(compiled.rustAsync)}</pre>}
     </div>
+  );
+}
+
+function SubTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        "rounded px-2 py-0.5 transition " +
+        (active ? "bg-slate-700/60 text-slate-100" : "text-slate-500 hover:text-slate-300")
+      }
+    >
+      {children}
+    </button>
   );
 }
 

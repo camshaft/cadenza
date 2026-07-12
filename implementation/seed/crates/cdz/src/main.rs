@@ -80,6 +80,12 @@ enum Cmd {
     /// Go-to-definition: the defining occurrence of the name at a source BYTE OFFSET in FILE, as
     /// `file:line:col`.
     Def(DefArgs),
+    /// The bindings visible at a source BYTE OFFSET in FILE — "variable scope tracking". Each visible
+    /// binding as `file:line:col: name : type` (innermost first).
+    Scope(ScopeArgs),
+    /// The module's exported interface: each `(export …)` name and its type, as
+    /// `file:line:col: name : type`.
+    Exports(ExportsArgs),
 }
 
 fn main() -> ExitCode {
@@ -106,6 +112,8 @@ fn main() -> ExitCode {
         Cmd::Uses(a) => run_uses(&a),
         Cmd::Check(a) => run_check(&a),
         Cmd::Def(a) => run_def(&a),
+        Cmd::Scope(a) => run_scope(&a),
+        Cmd::Exports(a) => run_exports(&a),
     }
 }
 
@@ -270,6 +278,20 @@ struct DefArgs {
     file: String,
     /// The source BYTE OFFSET of the reference to jump from (0-based, UTF-8 bytes).
     offset: usize,
+}
+
+#[derive(clap::Args)]
+struct ScopeArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// The source BYTE OFFSET whose visible bindings to list (0-based, UTF-8 bytes).
+    offset: usize,
+}
+
+#[derive(clap::Args)]
+struct ExportsArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
 }
 
 #[derive(clap::Args)]
@@ -498,6 +520,111 @@ fn run_def(args: &DefArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `cdz scope FILE OFFSET` — variable scope tracking. Resolves the offset to a node, drives the
+/// compiler's `ScopeAt { node }` query (every visible binding + its type + binder node id), and prints
+/// each as `file:line:col: name : type` (innermost first — nearest enclosing binder). What an editor's
+/// autocomplete / scope panel rides on.
+fn run_scope(args: &ScopeArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(node) = spans.node_at_offset(args.offset) else {
+        eprintln!(
+            "{PROG}: no node at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::ScopeAt { node: node.0 }),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_SCOPE) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if text.trim().is_empty() {
+        eprintln!(
+            "{PROG}: no bindings in scope at byte offset {}",
+            args.offset
+        );
+        return ExitCode::SUCCESS;
+    }
+    // Each line is `name<TAB>type<TAB>binder-node-id`; map the binder node to its source location.
+    for line in text.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let (name, ty, binder) = match (cols.next(), cols.next(), cols.next()) {
+            (Some(n), Some(t), Some(b)) => (n, t, b),
+            _ => continue,
+        };
+        let loc = match binder
+            .parse::<u32>()
+            .ok()
+            .and_then(|b| spans.get(cadenza_syntax::StructId(b)))
+        {
+            Some(span) => {
+                let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+                format!("{}:{l}:{c}", args.file)
+            }
+            None => args.file.clone(),
+        };
+        println!("{loc}: {name} : {ty}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `cdz exports FILE` — the module's exported interface. Drives `Query::Exports` (each exported name +
+/// its type + the def's name node), and prints `file:line:col: name : type` per export. The
+/// module-interface-at-a-glance view.
+fn run_exports(args: &ExportsArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Exports),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_EXPORTS) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if text.trim().is_empty() {
+        eprintln!("{PROG}: {} exports nothing", args.file);
+        return ExitCode::SUCCESS;
+    }
+    // Each line is `name<TAB>type<TAB>def-name-node-id` (`-` when the export names no def).
+    for line in text.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let (name, ty, node) = match (cols.next(), cols.next(), cols.next()) {
+            (Some(n), Some(t), Some(d)) => (n, t, d),
+            _ => continue,
+        };
+        let loc = match node
+            .parse::<u32>()
+            .ok()
+            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        {
+            Some(span) => {
+                let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+                format!("{}:{l}:{c}", args.file)
+            }
+            None => args.file.clone(),
+        };
+        println!("{loc}: {name} : {ty}");
+    }
+    ExitCode::SUCCESS
 }
 
 // ── shared plumbing ────────────────────────────────────────────────────────────────────────────────

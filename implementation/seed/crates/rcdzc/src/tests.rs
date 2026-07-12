@@ -1757,6 +1757,92 @@ fn a_branchless_select_computes_the_if_value() {
     );
 }
 
+/// CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition: within a branch the enclosing condition is
+/// known, so a directly-nested `if` on the SAME condition collapses to its taken arm. `(if c (if c 1 2)
+/// 3)` → `(if c 1 3)` (inner `c` is true in the then-branch, so the inner `if` takes `1`); `(if c 1 (if
+/// c 2 3))` → `(if c 1 3)` (inner `c` is false in the else-branch, takes `3`). Both then fold to a single
+/// branchless `select` on `c` with no re-test of the condition. A DIFFERENT inner condition is left
+/// intact (no collapse). Sound in a language with no mutation: a pure condition re-evaluates to the same
+/// value, so its second test is redundant.
+#[test]
+fn a_repeated_condition_in_a_nested_if_collapses() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    use wasmtime::component::Val;
+    // The Lir of `(if c (if c 1 2) 3)` must have a SINGLE reference to the condition (one `local.get 0`
+    // feeding a branchless `select`) — the inner `if`'s re-test of `c` is gone.
+    let lir = |body: &str| -> Vec<Lir> {
+        let ast = crate::testkit::parse(&format!(
+            "(module m (def (f (: c Bool)) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let params: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code
+    };
+    let then_nested = lir("(if c (if c 1 2) 3)");
+    assert_eq!(
+        then_nested
+            .iter()
+            .filter(|i| matches!(i, Lir::LocalGet(0)))
+            .count(),
+        1,
+        "the inner if's re-test of c must be gone (one condition read), got: {then_nested:?}"
+    );
+    // Value parity for both nesting positions.
+    let pick = |src: &str, c: bool| -> i64 {
+        let bytes = compile_component(&crate::codec::encode(&crate::testkit::parse(src)));
+        let bytes = bytes.expect("compile");
+        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(c)])
+    };
+    let then_src = "(module m (def (f (: c Bool)) (if c (if c 1 2) 3)) (export f))";
+    assert_eq!(
+        pick(then_src, true),
+        1,
+        "then-branch inner if takes its then-arm"
+    );
+    assert_eq!(pick(then_src, false), 3);
+    let else_src = "(module m (def (f (: c Bool)) (if c 1 (if c 2 3))) (export f))";
+    assert_eq!(pick(else_src, true), 1);
+    assert_eq!(
+        pick(else_src, false),
+        3,
+        "else-branch inner if takes its else-arm"
+    );
+    // A DIFFERENT inner condition must NOT collapse — both conditions are still read at run time.
+    let diff = {
+        let src = "(module m (def (f (: c Bool) (: d Bool)) (if c (if d 1 2) 3)) (export f))";
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        (
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::Bool(true)]),
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::Bool(false)]),
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::Bool(true)]),
+        )
+    };
+    assert_eq!(
+        diff,
+        (1, 2, 3),
+        "a distinct inner condition is not collapsed and dispatches on both"
+    );
+}
+
 /// A NESTED checked op `(* (+ a b) c)` runs correctly AND still traps on overflow after the
 /// dest-threading optimization (the inner `(+ a b)` writes its result directly into the outer mul's
 /// operand slot rather than a separate scratch slot + copy). Both the value and the guards must
@@ -4134,6 +4220,31 @@ mod match_engine {
                 run_returns::<i64>(&component(&src), "main"),
                 want,
                 "string equality fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn constant_float_equality_folds_by_canonical_value() {
+        // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
+        // form.md): `1e19` and `1e20` round to DIFFERENT doubles → false; `1e19` equals its own decimal
+        // spelling `10000000000000000000.0` → true (same double); `-0.0` and `0.0` have DISTINCT bits →
+        // false (the canonical form distinguishes them); `-0.0` equals `-0.0`. Consumed by an `if` so
+        // `main` returns 1/0 — a Bool result, no float runtime. NESTED in a tuple folds the same way.
+        for (prog, want) in [
+            ("(= 1e19 1e20)", 0),
+            ("(= 1e19 10000000000000000000.0)", 1),
+            ("(= -0.0 0.0)", 0),
+            ("(= -0.0 -0.0)", 1),
+            ("(= 3.5 3.5)", 1),
+            ("(= (tuple -0.0) (tuple 0.0))", 0),
+            ("(= (tuple -0.0 1.0) (tuple -0.0 1.0))", 1),
+        ] {
+            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "float equality fold: {prog}"
             );
         }
     }
@@ -7238,6 +7349,43 @@ mod stage1 {
             err.code.as_deref(),
             Some("CDZ0401"),
             "expected CDZ0401 (no home for a reached effect), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_handler_arm_for_an_undeclared_operation_is_cdz0403() {
+        // E2a: a handler arm naming an operation its effect does not declare is a closed-set violation —
+        // CDZ0403 (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares).
+        // `Choose` declares only `pick`; an arm `((. Choose guess) …)` names `guess` — undeclared. This
+        // is CDZ0403, not the generic "record has no field" CDZ0201 the member projection alone gives.
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle unit (((. Choose guess) () s (resume 5 s))) ((. Choose pick)))) \
+                   (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a handler arm for an undeclared op must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0403"),
+            "expected CDZ0403 (handler arm names an undeclared op), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_delegation_of_an_unreached_effect_is_cdz0404() {
+        // E2a: a `host` delegation naming an effect the body never reaches is latent authority — CDZ0404
+        // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). `main`
+        // delegates `log` but its body is `42` (never performs `log.emit`), so the manifest would carry a
+        // granted-but-unexercised capability — rejected.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) 42)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a delegation of an unreached effect must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0404"),
+            "expected CDZ0404 (latent authority), got: {}",
             err.message
         );
     }
@@ -10376,8 +10524,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_RESOLVE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
-        Request,
+        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT,
+        KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -10683,6 +10831,84 @@ mod sidecar_driven {
         );
     }
 
+    /// Hover text for the node at `substr`'s first occurrence in `src` (the TypeAt query answer).
+    fn hover_at(src: &str, substr: &str) -> String {
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let off = src.find(substr).expect("substr in source");
+        let node = spans.node_at_offset(off).expect("a node at the offset");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        artifact_text(&out, KIND_TYPE_AT).expect("a type-at artifact")
+    }
+
+    #[test]
+    fn hover_on_a_grammar_keyword_names_the_keyword_not_any() {
+        // A grammar keyword (`def`/`export`/`module`/`:`) is syntax, not an expression — hover names it
+        // rather than returning the misleading `Any` fallback.
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        assert_eq!(hover_at(src, "def"), "keyword def");
+        assert_eq!(hover_at(src, "export"), "keyword export");
+        assert_eq!(hover_at(src, "module"), "keyword module");
+        assert_eq!(hover_at(src, ": 42"), "keyword :");
+    }
+
+    #[test]
+    fn hover_on_a_definition_shows_its_signature() {
+        // Hovering a function's NAME or its `(def …)` form shows the SIGNATURE (the full arrow), not the
+        // body's return type alone. A nullary def shows `name : T`.
+        let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (g) (: 5 Int64)) (export main))";
+        // The function name and the whole def form both read as the signature.
+        assert_eq!(hover_at(src, "inc"), "inc : (-> Int64 Int64)");
+        assert_eq!(hover_at(src, "(def (inc"), "inc : (-> Int64 Int64)");
+        // A nullary def reads `name : T`.
+        assert_eq!(hover_at(src, "(g)"), "g : Int64");
+    }
+
+    #[test]
+    fn hover_on_a_reference_shows_the_value_type_not_the_signature() {
+        // A USE of a name is a value — it hovers as the value's type. (Only the DEFINITION shows the
+        // `name : sig` form; a reference to a nullary def shows the value it denotes.)
+        let src = "(module m (def (v) (: 7 Int64)) (def (main) v) (export main))";
+        // The `v` reference in `(def (main) v)` — the LAST occurrence.
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let off = src.rfind('v').expect("the v reference");
+        let node = spans.node_at_offset(off).unwrap();
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    }
+
+    #[test]
+    fn hover_on_an_operator_does_not_leak_a_record() {
+        // A prelude operator name (`+`) resolves to an internal record; hover must not leak
+        // `(record (apply …) (t …))` — it surfaces the callable arrow instead.
+        let src = "(module m (def (main) (+ 1 2)) (export main))";
+        let h = hover_at(src, "+");
+        assert!(!h.starts_with("(record"), "no record leak: {h}");
+        assert!(h.starts_with("(->"), "an arrow/callable: {h}");
+    }
+
     #[test]
     fn a_diagnostics_query_reports_faults_without_an_export() {
         // The "diagnostics as you type" primitive: an ill-typed program with NO export still yields its
@@ -10782,6 +11008,112 @@ mod sidecar_driven {
         );
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_RESOLVE).as_deref(), Some(""));
+    }
+
+    /// Parse `src`, resolve `offset` to a node, run `ScopeAt`, and return the `(name, type)` bindings.
+    fn scope_bindings(src: &str, offset: usize) -> Vec<(String, String)> {
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let node = spans.node_at_offset(offset).expect("a node at the offset");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::ScopeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        artifact_text(&out, KIND_SCOPE)
+            .expect("a scope artifact")
+            .lines()
+            .map(|l| {
+                let mut c = l.split('\t');
+                (c.next().unwrap().to_string(), c.next().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_scope_at_query_lists_let_bindings_and_params_with_types() {
+        // Inside `body`, both the parameter `p` (Int64) and the let-binding `q` (Int64) are visible.
+        let src = "(module m (def (f (: p Int64)) (let ((q (: 5 Int64))) (+ p q))) (export main))";
+        // Offset at the `(+ p q)` body.
+        let off = src.find("(+ p q)").expect("the body");
+        let scope = scope_bindings(src, off);
+        // `p` and `q` are both in scope, both Int64.
+        assert!(
+            scope.iter().any(|(n, t)| n == "p" && t == "Int64"),
+            "param p:Int64 in scope: {scope:?}"
+        );
+        assert!(
+            scope.iter().any(|(n, t)| n == "q" && t == "Int64"),
+            "let-binding q:Int64 in scope: {scope:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_at_query_at_the_top_level_is_empty() {
+        // At a top-level def body with no enclosing binder, no local bindings are in scope.
+        let src = "(module m (def (main) 42) (export main))";
+        let off = src.find("42").expect("the literal");
+        assert!(
+            scope_bindings(src, off).is_empty(),
+            "top level has no local scope"
+        );
+    }
+
+    #[test]
+    fn a_scope_at_query_respects_sequential_let_scope() {
+        // In `(let ((a 1) (b (+ a 1))) …)`, the initializer of `b` sees `a` but NOT `b` itself.
+        let src = "(module m (def (main) (let ((a (: 1 Int64)) (b (+ a 1))) b)) (export main))";
+        // Offset inside `b`'s initializer `(+ a 1)`.
+        let off = src.find("(+ a 1)").expect("b's initializer");
+        let scope = scope_bindings(src, off);
+        assert!(
+            scope.iter().any(|(n, _)| n == "a"),
+            "a is visible in b's init: {scope:?}"
+        );
+        assert!(
+            !scope.iter().any(|(n, _)| n == "b"),
+            "b is NOT visible in its own init: {scope:?}"
+        );
+    }
+
+    #[test]
+    fn an_exports_query_lists_each_export_with_its_type() {
+        // The module interface: every `(export …)` clause paired with the named def's signature.
+        let src = "(module m (def (inc (: n Int64)) (+ n 1)) (def (v) (: 5 Int64)) \
+                   (export inc) (export v))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_EXPORTS).expect("an exports artifact");
+        let rows: Vec<(&str, &str)> = text
+            .lines()
+            .map(|l| {
+                let mut c = l.split('\t');
+                (c.next().unwrap(), c.next().unwrap())
+            })
+            .collect();
+        // Both exports appear with their types (a function's arrow, a value's type), in export order.
+        assert_eq!(rows[0], ("inc", "(-> Int64 Int64)"), "rows: {rows:?}");
+        assert_eq!(rows[1], ("v", "Int64"), "rows: {rows:?}");
+    }
+
+    #[test]
+    fn an_exports_query_with_no_exports_is_empty() {
+        // A module with no `(export …)` yields the empty interface (total, not an error).
+        let src = "(module m (def (main) 42))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
     }
 }
 

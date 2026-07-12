@@ -315,6 +315,49 @@ pub struct Decimal {
     pub exponent: i64,
 }
 
+impl Decimal {
+    /// The IEEE-754 double the literal denotes, as its raw BIT PATTERN (`f64::to_bits`). Bits, not the
+    /// `f64` itself, so structural equality is exact: `-0.0` and `0.0` have DISTINCT bits (they compare
+    /// UNEQUAL, as the canonical value form requires), and a NaN compares unequal to itself by value but
+    /// its bits are stable. The exact `Decimal` is reconstructed as a decimal string (`significand ·
+    /// 10^exponent`, with sign) and parsed by Rust's `f64` reader — correctly-rounded to the nearest
+    /// double, the type-directed rounding `numeric-model.md` pins for a `Float64`. Overflow parses to
+    /// `±inf` (a defined double), underflow to `±0.0` — both real Float64 values.
+    pub fn to_f64_bits(&self) -> u64 {
+        // The significand is a big-endian BASE-256 magnitude (like `IntValue::magnitude`), so convert it
+        // to base-10 DIGITS first — Horner over the bytes, each step `acc = acc*256 + byte` carried out
+        // in a decimal-digit vector (little-endian digits, printed reversed). Then reconstruct
+        // `[-]<decimal-digits>e<exponent>` and let the standard library round it to the nearest double —
+        // the type-directed rounding `numeric-model.md` pins for `Float64`. An empty significand is zero
+        // ("0"), so `-0.0` keeps its sign through the `-` prefix; overflow → `±inf`, underflow → `±0.0`.
+        let mut digits: Vec<u8> = vec![0]; // little-endian base-10 digits; starts at zero
+        for &byte in &self.significand {
+            let mut carry = byte as u32;
+            for d in digits.iter_mut() {
+                let v = (*d as u32) * 256 + carry;
+                *d = (v % 10) as u8;
+                carry = v / 10;
+            }
+            while carry > 0 {
+                digits.push((carry % 10) as u8);
+                carry /= 10;
+            }
+        }
+        let mut s: String = digits.iter().rev().map(|d| (b'0' + d) as char).collect();
+        // Trim leading zeros the reversed build may have left (e.g. "007").
+        let trimmed = s.trim_start_matches('0');
+        s = if trimmed.is_empty() {
+            "0".to_string()
+        } else {
+            trimmed.to_string()
+        };
+        let sign = if self.negative { "-" } else { "" };
+        let text = format!("{sign}{s}e{}", self.exponent);
+        // A well-formed `Decimal` always parses; a pathological one falls back to a canonical zero.
+        text.parse::<f64>().unwrap_or(0.0).to_bits()
+    }
+}
+
 /// The two arenas plus the root occurrence — the whole AST of one program unit.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Arenas {
@@ -543,6 +586,32 @@ mod tests {
             negative: true,
             magnitude: vec![],
         }));
+    }
+
+    #[test]
+    fn decimal_to_f64_bits_converts_base256_significand_and_distinguishes_signed_zero() {
+        // `to_f64_bits` reconstructs the exact decimal (base-256 significand → base-10 digits) and rounds
+        // to the nearest double. Pins the base-256→base-10 conversion (the load-bearing arithmetic) + the
+        // canonical-bits contract (`-0.0` ≠ `0.0`, a value equals its own spelling).
+        let dec = |neg: bool, sig: Vec<u8>, exp: i64| Decimal {
+            negative: neg,
+            significand: sig,
+            exponent: exp,
+        };
+        // 3.5 = 35 × 10^-1; 35 = 0x23 = one byte [35].
+        assert_eq!(dec(false, vec![35], -1).to_f64_bits(), 3.5f64.to_bits());
+        // 1e19 = 1 × 10^19 — a value beyond i64, must NOT saturate; equals the plain double.
+        assert_eq!(dec(false, vec![1], 19).to_f64_bits(), 1e19f64.to_bits());
+        // 256 × 10^0 — exercises a MULTI-byte base-256 significand ([1,0] = 256).
+        assert_eq!(dec(false, vec![1, 0], 0).to_f64_bits(), 256.0f64.to_bits());
+        // Signed zero: empty significand is 0; the `negative` flag distinguishes -0.0 from 0.0 by BITS.
+        assert_eq!(dec(true, vec![], 0).to_f64_bits(), (-0.0f64).to_bits());
+        assert_eq!(dec(false, vec![], 0).to_f64_bits(), (0.0f64).to_bits());
+        assert_ne!(
+            dec(true, vec![], 0).to_f64_bits(),
+            dec(false, vec![], 0).to_f64_bits(),
+            "-0.0 and 0.0 have distinct canonical bits"
+        );
     }
 
     #[test]

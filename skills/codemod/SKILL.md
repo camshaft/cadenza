@@ -11,7 +11,9 @@ description: >-
   or building on the query/Tree matcher API — OR when the task is a SEMANTIC query the shape layer
   can't answer: the type of a definition (`cdz type`), every source location that references a
   name (`cdz uses`, a span-mapped go-to-references), every well-formedness fault (`cdz check`,
-  "diagnostics as you type"), or a name's definition (`cdz def`, go-to-definition). Covers the
+  "diagnostics as you type"), a name's definition (`cdz def`, go-to-definition), the bindings
+  visible at a point (`cdz scope`, variable scope tracking), or a module's exported interface
+  (`cdz exports`). Covers the
   `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
@@ -207,14 +209,14 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
-## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def`) — the compiler as oracle
+## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope` / `cdz exports`) — the compiler as oracle
 
 The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
 duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
-holds both the front-end AND `rcdzc` in one process — exposes two **semantic** queries. They parse the
-program keeping its span table, ask the compiler (via its sidecar query engine), and map the answer
-back to source. They are TOTAL: an unknown name yields a defined answer, not an error, and a query
-answers even for a program that would not fully compile.
+holds both the front-end AND `rcdzc` in one process — exposes a family of **semantic** queries. They
+parse the program keeping its span table, ask the compiler (via its sidecar query engine), and map the
+answer back to source. They are TOTAL: an unknown name yields a defined answer, not an error, and a
+query answers even for a program that would not fully compile.
 
 ```console
 # cdz type NAME FILE — the inferred type of a definition, rendered (the same text an annotation uses)
@@ -239,7 +241,23 @@ prog.cdz:2:16: error [CDZ0203]: if condition must be Bool, found Int64
 # cdz def FILE OFFSET — go-to-definition: the definition of the name at the cursor, as file:line:col.
 $ cdz def prog.cdz 49
 prog.cdz:1:25
+
+# cdz scope FILE OFFSET — variable scope tracking: every binding visible at the cursor, innermost
+# first, as `file:line:col: name : type` (params, let-bindings, match-arm binders).
+$ cdz scope prog.cdz 54
+prog.cdz:1:41: q : Int64
+prog.cdz:1:22: p : Int64
+
+# cdz exports FILE — the module's interface: each exported name and its type, at its definition.
+$ cdz exports prog.cdz
+prog.cdz:1:17: inc : (-> Int64 Int64)
+prog.cdz:1:49: v : Int64
 ```
+
+> **Hover reads as a presentation, not a raw type** (`type-at`): a grammar keyword shows `keyword def`
+> (not `Any`); a DEFINITION shows its signature `name : (-> A B)` (not just the body's return type); a
+> reference/use shows the value's type; an untypeable node shows `unknown`; an operator no longer leaks
+> its internal `(record …)`.
 
 - **Why these are here and not codemod guards.** `type`/`uses` reach into `rcdzc` (inference,
   resolution); the structural matcher stays dependency-free. Keeping them a **separate command** (not
@@ -259,6 +277,13 @@ prog.cdz:1:25
 - **`def`** drives `Query::ResolveOf` — the go-to-definition counterpart of `uses`: the reference node
   at the cursor → its defining occurrence (`resolve::resolved_of` → `Ref`/`Lambda`), mapped to
   `file:line:col`. A non-navigable token (a literal, an unbound name) reports no definition.
+- **`scope`** drives `Query::ScopeAt` — variable scope tracking: walks the lexical scope from the
+  cursor collecting every binding in scope (enclosing `fn`/`def` params, a `let`'s bindings visible at
+  the point — sequential, so an initializer sees earlier bindings not itself, a match-arm binder),
+  each with its type; INNERMOST first (a shadowed name appears once). What an editor's autocomplete /
+  scope panel rides on.
+- **`exports`** drives `Query::Exports` — the module's interface: each `(export …)` name paired with
+  its def's type (signature), at the def's location. The "what does this module offer" view.
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
 
