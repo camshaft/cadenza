@@ -9772,10 +9772,13 @@ mod debug_info {
             .to_vec()
     }
 
+    /// The parsed `name` section: the optional module name and the `(func_index, name)` pairs.
+    type NameSection = (Option<String>, Vec<(u32, String)>);
+
     /// Extract the embedded core module's `name`-section function names from a component's bytes, using
     /// `wasmparser` (a dev-only validator, never in the compile path). Returns `(module_name,
     /// [(func_index, name)])`; `None` if there is no `name` section.
-    fn name_section_of(component: &[u8]) -> Option<(Option<String>, Vec<(u32, String)>)> {
+    fn name_section_of(component: &[u8]) -> Option<NameSection> {
         use wasmparser::{Chunk, Parser, Payload};
         // Find the embedded core module: the component is a wrapper; a `ModuleSection` payload gives the
         // byte range of the core module, which itself carries the `name` custom section.
@@ -9808,25 +9811,25 @@ mod debug_info {
         let mut func_names = Vec::new();
         let mut found = false;
         for payload in Parser::new(0).parse_all(core) {
-            if let Payload::CustomSection(reader) = payload.expect("parse core") {
-                if reader.name() == "name" {
-                    found = true;
-                    let name_reader = wasmparser::NameSectionReader::new(
-                        wasmparser::BinaryReader::new(reader.data(), reader.data_offset()),
-                    );
-                    for subsection in name_reader {
-                        match subsection.expect("name subsection") {
-                            wasmparser::Name::Module { name, .. } => {
-                                module_name = Some(name.to_string())
-                            }
-                            wasmparser::Name::Function(map) => {
-                                for naming in map {
-                                    let naming = naming.expect("naming");
-                                    func_names.push((naming.index, naming.name.to_string()));
-                                }
-                            }
-                            _ => {}
+            if let Payload::CustomSection(reader) = payload.expect("parse core")
+                && reader.name() == "name"
+            {
+                found = true;
+                let name_reader = wasmparser::NameSectionReader::new(
+                    wasmparser::BinaryReader::new(reader.data(), reader.data_offset()),
+                );
+                for subsection in name_reader {
+                    match subsection.expect("name subsection") {
+                        wasmparser::Name::Module { name, .. } => {
+                            module_name = Some(name.to_string())
                         }
+                        wasmparser::Name::Function(map) => {
+                            for naming in map {
+                                let naming = naming.expect("naming");
+                                func_names.push((naming.index, naming.name.to_string()));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
