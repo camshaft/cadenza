@@ -1,0 +1,34 @@
+name: diag-determinism
+on:
+  push:
+    branches: [spec]
+    paths: [".github/workflows/diag-determinism.yml"]
+permissions:
+  contents: read
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: diag2
+      - name: Build (build-std) + strip + dump
+        env:
+          RUSTC_BOOTSTRAP: "1"
+        run: |
+          set -euo pipefail
+          cd implementation/seed/crates/cdz-runtime
+          cargo component build --release --target wasm32-unknown-unknown
+          RT=target/wasm32-unknown-unknown/release/cdz_runtime.wasm
+          wasm-tools strip -a "$RT" -o "$GITHUB_WORKSPACE/x86.wasm"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum x86.wasm
+          wasm-tools print x86.wasm > x86.wat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x86-buildstd-dump
+          path: |
+            x86.wat
+            x86.wasm
