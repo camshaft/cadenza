@@ -1059,7 +1059,11 @@ fn op_arr_alloc_reuse(len: u32, token: Handle) -> Handle {
             n.rc = 1;
             n.handles.clear();
             n.handles.resize(len as usize, Handle::NULL);
-            n.raw.clear();
+            // Reset to an EMPTY INLINE raw (an array node carries no raw). `raw.clear()` would keep a
+            // heap buffer if the token came from a reset bytes/string leaf — an empty heap Vec retained
+            // for the node's life, and a non-canonical rep vs the inline-empty raw a fresh `op_arr_alloc`
+            // produces. Assigning the inline-empty raw drops that spill and matches the fresh node.
+            n.raw = Raw::Inline { len: 0, buf: [0u8; INLINE_RAW_CAP] };
             token
         }
     }
@@ -1077,8 +1081,13 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
             n.rc = 1;
             n.handles.clear();
             n.handles.push(payload);
-            n.raw.clear();
-            n.raw.extend_from_slice(&disc.to_le_bytes());
+            // Assign a fresh INLINE raw rather than clear()+extend_from_slice: if the token came from a
+            // reset bytes/string leaf its raw was `Heap`, and clear() keeps a heap buffer (Vec::clear
+            // semantics) — so extending 4 disc bytes into it would leave the reused sum node carrying a
+            // HEAP raw where a fresh `op_sum_new` gives an INLINE one. That both retains a stray heap
+            // allocation and forks the canonical storage rep for one logical value. A direct inline
+            // assignment drops any heap spill and matches `op_sum_new` byte-for-byte.
+            n.raw = Raw::inline(&disc.to_le_bytes());
             token
         }
     }
@@ -4908,6 +4917,15 @@ mod tests {
         unsafe { (*h.0).rc }
     }
 
+    /// Test-only: is the node's raw payload HEAP-backed (spilled) rather than inline? Used to assert the
+    /// reuse constructors normalize a reused shell's raw back to inline (a fresh constructor's rep).
+    fn raw_is_heap(h: Handle) -> bool {
+        if is_immediate(h) {
+            return false;
+        }
+        matches!(unsafe { &(*h.0).raw }, Raw::Heap(_))
+    }
+
     /// A DEFINITELY-BOXED int leaf (test-only): bypasses `op_box_int`'s P2 normalize so the RC /
     /// reuse / cascade tests keep exercising a real heap Node with rc == 1 (a small `op_box_int(v)`
     /// now inlines and would make those node-count / drop-a-leaf scenarios vacuous). Byte-identical
@@ -6051,6 +6069,52 @@ mod tests {
         assert_eq!(op_get_int(op_arr_get(fresh, 2)), 30);
         op_drop(fresh);
         assert_eq!(live_nodes(), before);
+    }
+
+    /// A reuse TOKEN whose shell came from a node with a HEAP-backed raw (a bytes/string leaf longer
+    /// than the inline cap) must NOT leave the reused node carrying that heap raw: `op_sum_new_reuse`
+    /// and `op_arr_alloc_reuse` normalize the raw back to INLINE, matching what the fresh constructors
+    /// produce. (Regression guard: the old `raw.clear()` + `extend_from_slice` kept a heap buffer — a
+    /// stray retained allocation AND a non-canonical storage rep for one logical value; the value stayed
+    /// byte-equal via Deref so hash/eq tests could NOT have caught it, hence this explicit rep check.)
+    #[test]
+    fn reuse_ctor_normalizes_a_heap_raw_token_to_inline() {
+        reset();
+        let before = live_nodes();
+        // A bytes leaf longer than INLINE_RAW_CAP → its raw spills to the heap.
+        let big_leaf = |n: usize| -> Handle {
+            let bytes: Vec<u8> = (0..n as u32).map(|k| (k & 0xff) as u8).collect();
+            alloc(Vec::new(), bytes)
+        };
+
+        // (1) reuse a heap-raw shell as a SUM node → raw must be inline (the 4-byte disc).
+        let leaf = big_leaf(INLINE_RAW_CAP + 8);
+        assert!(raw_is_heap(leaf), "precondition: a >cap bytes leaf has a heap raw");
+        let token = op_reset(leaf); // childless heap-raw shell, rc==1
+        assert_eq!(token, leaf, "unique reset yields the shell");
+        let s = op_sum_new_reuse(3, op_box_int(42), token);
+        assert!(!raw_is_heap(s), "reused sum node's raw is INLINE, not the token's leftover heap buffer");
+        assert_eq!(op_sum_disc(s), 3, "disc correct");
+        assert_eq!(op_get_int(op_sum_payload(s)), 42, "payload correct");
+        // Byte-identical to a FRESH sum (same disc/payload) — the whole point of normalizing the rep.
+        let fresh_sum = op_sum_new(3, op_box_int(42));
+        assert!(champ_eq(s, fresh_sum), "reused sum equals a fresh one built the same way");
+        assert_eq!(champ_hash(s), champ_hash(fresh_sum), "…and hashes identically");
+        op_drop(s);
+        op_drop(fresh_sum);
+
+        // (2) reuse a heap-raw shell as an ARRAY node → raw must be inline (empty).
+        let leaf2 = big_leaf(INLINE_RAW_CAP + 20);
+        assert!(raw_is_heap(leaf2));
+        let token2 = op_reset(leaf2);
+        let a = op_arr_alloc_reuse(2, token2);
+        assert!(!raw_is_heap(a), "reused array node's raw is INLINE-empty, not a leftover heap buffer");
+        op_arr_set(a, 0, op_box_int(1));
+        op_arr_set(a, 1, op_box_int(2));
+        assert_eq!(op_get_int(op_arr_get(a, 1)), 2);
+        op_drop(a);
+
+        assert_eq!(live_nodes(), before, "no leak: every reused/fresh node reclaimed");
     }
 
     /// `sum-new-reuse` with a token repurposes the SAME shell as the new `(disc, payload)` node.
