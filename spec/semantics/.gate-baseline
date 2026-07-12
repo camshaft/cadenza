@@ -39,6 +39,7 @@ pass	a later let binding sees an earlier one in the same let
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let binding whose value references a parameter compiles under a call
+pass	a let shadowing a parameter whose initializer references that parameter computes
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
@@ -72,6 +73,7 @@ pass	a non-first field is projected from a record returned across a call boundar
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
+pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter carries a type annotation in the signature
 pass	a record is constructed and a field is read
 pass	a record whose field is a runtime tuple nests across the boundary

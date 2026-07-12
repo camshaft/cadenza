@@ -75,6 +75,34 @@
             (def (main) (f 99)) (export main)))
   (output (: 5 Int64)))
 
+(case "a let shadowing a parameter whose initializer references that parameter computes"
+  (doc    "The demanding shadow: the shadowing binding's INITIALIZER references the shadowed parameter.
+           `(def (f x) (let ((x (+ x 1))) (* x 2)))` — the initializer `(+ x 1)` is written before the
+           new `x` binding takes effect, so its `x` is the PARAMETER (core-semantics.md:53: an
+           initializer observes the bindings written before it, not the one it introduces); the body's
+           `(* x 2)` then reads the new local. `(f 20)` = (20+1)*2 = 42. This combines the two β-reduce
+           hazards: the binder occurrence `x` must be copied not substituted (else the binding name is
+           lost), AND the initializer's `x` reference must still be substituted with the argument (it IS
+           a value reference to the param). A generation that lost the parameter binding when the local
+           shared its name rejected CDZ0101 'unbound name `x`'. The different-name form (`(let ((y (+ x
+           1))) …)`) and the let-over-let form both worked — only a same-name PARAM shadow broke.")
+  (input  (do
+            (def (f x) (let ((x (+ x 1))) (* x 2)))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 20 Int64))
+  (output (: 42 Int64)))
+
+(case "a param-shadowing let with a param-referencing initializer folds at a constant argument"
+  (doc    "The constant-argument companion of the case above: `(f 20)` folds to 42 the same way, so the
+           fix is not specific to a runtime argument — the parameter binding survives β-reduction for
+           the initializer whether the argument is constant or runtime. Pins the fold path of the
+           binder-copy / reference-substitute split.")
+  (input  (do
+            (def (f x) (let ((x (+ x 1))) (* x 2)))
+            (def (main) (f 20)) (export main)))
+  (output (: 42 Int64)))
+
 (case "a let binding whose value references a parameter compiles under a call"
   (doc    "`(def (g n) (let ((x (+ n 1))) (+ x x)))` — the `let` value USES the parameter `n` (not a
            shadow). Calling `(g 10)` inlines g's body; the reduction must substitute `n`→`10` in the
