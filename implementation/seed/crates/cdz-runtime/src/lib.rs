@@ -4384,6 +4384,17 @@ mod tests {
         });
         println!("ALLOC vec_get x{N}: {get}");
         assert_eq!(get, 0, "vec_get is a pure read — zero allocations");
+        // (E2) vec update on a UNIQUELY-owned vec — the FBIP path swaps the element slot in place down
+        // the spine (`vec_update_fbip`, `mine` all the way), so a random-access update on an owned vector
+        // must allocate NOTHING. Guards that persistent update stays in-place on the unique-owner path
+        // (a regression to path-copy would allocate a node per spine level per update).
+        let vupd = measure(&mut || {
+            for k in 0..N as u32 {
+                v = op_vec_update(v, k % N as u32, op_box_int(k as i64 + 1));
+            }
+        });
+        println!("ALLOC vec_update x{N}: {vupd}");
+        assert_eq!(vupd, 0, "vec_update on a uniquely-owned vec is FBIP in-place — zero allocations");
         op_drop(v);
 
         // (F) map lookup — a pure read on scalar keys must allocate NOTHING. Guards the lazy champ_eq
@@ -4529,6 +4540,24 @@ mod tests {
         println!("ALLOC bytes_slice x{N}: {slice}");
         assert!(slice <= 2200, "bytes_slice x{N} allocs {slice} exceeds ceiling 2200 (node Box + 1-elem handles Vec; the [off,len] raw is inline — was 3/op with a heap raw Vec)");
         op_drop(leaf);
+
+        // (K) build a 2-tuple x1000 (`op_arr_alloc(2)` + two slot sets) — the common positional-product
+        // constructor shared by tuples, records, and CHAMP `[k,v]` pairs. With scalar (immediate)
+        // elements a tuple node is the node Box + its 2-element handles Vec = 2 allocs/op (empty raw = no
+        // raw alloc, immediate elements = no element boxes). This is the tuple/record/pair construction
+        // FLOOR under the current `Node.handles: Vec` layout — tracked so the pending inline-`handles`
+        // lever (which targets exactly this ≤2-handle node) can be measured against it, and so a
+        // regression in the arr-alloc/set path is visible.
+        let tbuild = measure(&mut || {
+            for k in 0..N {
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, op_box_int(k));
+                op_arr_set(t, 1, op_box_int(k + 1));
+                op_drop(t);
+            }
+        });
+        println!("ALLOC tuple2_build x{N}: {tbuild}");
+        assert!(tbuild <= 2200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type

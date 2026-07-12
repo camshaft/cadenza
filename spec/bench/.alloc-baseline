@@ -12,5 +12,7 @@
 356	set_intersection x1000
 431	set_union x1000
 2000	sum_new x1000
+2000	tuple2_build x1000
 0	vec_get x1000
 197	vec_push x1000
+0	vec_update x1000
