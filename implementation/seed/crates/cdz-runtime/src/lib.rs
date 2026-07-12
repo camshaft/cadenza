@@ -3108,7 +3108,7 @@ fn op_map_insert(m: Handle, key: Handle, val: Handle) -> Handle {
 /// collision node), return that entry's `stride` handles (BORROWED — no rc change) so the parent can
 /// inline it. Otherwise `None`. Root nodes are never passed here.
 #[allow(dead_code)]
-fn collapse_candidate(node: Handle, stride: usize) -> Option<Vec<Handle>> {
+fn collapse_candidate(node: Handle, stride: usize) -> Option<Entry> {
     with_node(node, None, |n| {
         let dm = champ_datamap(&n.raw);
         let nm = champ_nodemap(&n.raw);
@@ -3121,7 +3121,10 @@ fn collapse_candidate(node: Handle, stride: usize) -> Option<Vec<Handle>> {
             n.handles.len() / stride // collision (or empty) node
         };
         if entries == 1 && n.handles.len() >= stride {
-            Some(n.handles[0..stride].to_vec())
+            // The single entry's `stride` columns as an inline `Entry` (≤2 handles) — no heap Vec.
+            let mut cols = [Handle::NULL, Handle::NULL];
+            cols[..stride].copy_from_slice(&n.handles[0..stride]);
+            Some(Entry { cols, len: stride })
         } else {
             None
         }
@@ -3225,7 +3228,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
         }
         if let Some(centry) = collapse_candidate(new_child, stride) {
             // COLLAPSE: inline the child's single entry into this node at slot i.
-            for &h in &centry {
+            for &h in centry.cols() {
                 op_dup(h);
             }
             op_drop(new_child); // frees the collapsed child wrapper; entry cols survive via our dups
@@ -3240,7 +3243,7 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
                     new_handles.push(h);
                 }
             }
-            for (off, &h) in centry.iter().enumerate() {
+            for (off, &h) in centry.cols().iter().enumerate() {
                 new_handles.insert(stride * new_eidx + off, h); // entry cols at the entry position
             }
             for s in 0..scount {
@@ -3329,9 +3332,8 @@ fn champ_remove_fbip(
     }
 
     let dcount = data_count(datamap) as usize;
-    let scount = subnode_count(nodemap) as usize;
-    let subbase = stride * dcount;
-    let i = level_index(hash, level);
+    let subbase = stride * dcount; // subnodes follow the `dcount` entries; the datamap-found and
+    let i = level_index(hash, level); // COLLAPSE paths now rebuild in place, so `scount` isn't needed
     let bit = 1u32 << i;
 
     if datamap & bit != 0 {
@@ -3368,31 +3370,27 @@ fn champ_remove_fbip(
         if let Some(centry) = collapse_candidate(new_child, stride) {
             // COLLAPSE: inline the child's single entry into this node at slot i. Dup the entry cols
             // (they must survive the child wrapper's drop), then free the now-empty child wrapper.
-            for &h in &centry {
+            for &h in centry.cols() {
                 op_dup(h);
             }
             op_drop(new_child); // frees the collapsed child; entry cols survive via our dups
-            let handles = champ_take_handles(node);
+            // Transform the taken `handles` IN PLACE rather than rebuilding: the collapsed subnode's ONE
+            // handle leaves (at `subbase + sidx`) and the entry's `stride` columns enter the entry region
+            // (at `stride * new_eidx`). Both regions are contiguous and the entry region precedes the
+            // subnodes, so: (1) remove the subnode handle, then (2) splice the entry columns at their
+            // slot — the drain shifts the surviving subnodes, and the splice shifts them again to sit
+            // after the now-larger entry region. Reuses the vec; only the `centry` dups above allocate
+            // nothing (Entry is inline). Net arity change is `stride - 1`.
+            let mut handles = champ_take_handles(node);
             let new_datamap = datamap | bit;
             let new_nodemap = nodemap & !bit;
             let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-            let mut new_handles = Vec::with_capacity(arity);
-            for e in 0..dcount {
-                for t in 0..stride {
-                    new_handles.push(handles[stride * e + t]); // carried, no dup
-                }
-            }
-            for (off, &h) in centry.iter().enumerate() {
-                new_handles.insert(stride * new_eidx + off, h); // inlined entry (dup'd above)
-            }
-            for s in 0..scount {
-                if s == sidx {
-                    continue; // this subnode was collapsed away (freed above)
-                }
-                new_handles.push(handles[subbase + s]); // carried, no dup
+            handles.remove(subbase + sidx); // the collapsed subnode handle leaves
+            for (off, &h) in centry.cols().iter().enumerate() {
+                handles.insert(stride * new_eidx + off, h); // inlined entry columns (dup'd above)
             }
             return (
-                champ_become_hdr(node, new_handles, new_datamap, new_nodemap, size - 1),
+                champ_become_hdr(node, handles, new_datamap, new_nodemap, size - 1),
                 true,
             );
         }
@@ -4118,8 +4116,8 @@ mod tests {
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
-    /// in-place remove-drain + inline-Slots cursor + in-place SPLIT + shallow-compound hash+eq work
-    /// (insert 1084, remove 954, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 2000=probe-only;
+    /// in-place remove-drain/collapse + inline-Slots cursor + in-place SPLIT + shallow-compound hash+eq work
+    /// (insert 1084, remove 0, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 2000=probe-only;
     /// set union 595 / ∩ 482 / ∖ 491); they are UPPER BOUNDS so ordinary noise never trips them but a
     /// regression toward the old 6779/8397/5248/1000 does.
     ///
@@ -4175,7 +4173,7 @@ mod tests {
             }
         });
         println!("ALLOC map_remove x{N}: {remove}");
-        assert!(remove <= 1100, "unique map_remove x{N} allocs {remove} exceeds ceiling 1100 (8397 → 5207 champ_become_hdr → 2953 lazy-remove → 1953 lazy champ_eq worklist → ~954 in-place drain of the removed entry)");
+        assert!(remove <= 50, "unique map_remove x{N} allocs {remove} exceeds ceiling 50 (8397 → 5207 → 2953 → 1953 → 954 in-place drain → ~0 in-place COLLAPSE + inline collapse_candidate; remove is now allocation-FREE)");
         op_drop(m2);
 
         // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
@@ -7785,6 +7783,62 @@ mod tests {
         op_drop(solo);
         op_drop(m);
         assert_eq!(live_nodes(), before);
+    }
+
+    #[test]
+    fn map_remove_inplace_collapse_repositions_amid_entries_and_subnodes_canonically() {
+        reset();
+        let before = live_nodes();
+        // Guards the in-place COLLAPSE (remove the collapsed subnode's handle, then splice the inlined
+        // entry's columns into the entry region on the taken vec). The load-bearing case is a node that
+        // holds OTHER inline entries AND OTHER subnodes besides the collapsing one — the remove+insert
+        // must reposition so the inlined entry lands canonically among the entries and the surviving
+        // subnodes stay correct. Two low-5 split pairs create TWO subnodes at the root; ordinary keys
+        // add inline entries; removing one key from one split pair collapses THAT subnode while the
+        // other subnode + inline entries remain. Assert byte-identical to the copy-path + fresh build.
+        let (a, b) = low5_split_pair();
+        let (c, d) = full_hash_collision_pair(); // a second, distinct pair → a second subnode
+        let build = |shared: bool| -> Handle {
+            let mut m = op_map_empty();
+            // a,b (subnode #1) + c,d (subnode #2) + ordinary inline entries.
+            let mut seq: Vec<(i64, i64)> = vec![(a, 1), (b, 2), (c, 3), (d, 4), (5i64, 50), (6, 60), (7, 70)];
+            // Remove `a`: subnode #1 (from the a,b split) collapses to inline `b`, while subnode #2
+            // (c,d) and the inline entries stay — exercising the reposition amid entries + a subnode.
+            seq.push((a, -1)); // marker handled below
+            let mut m2 = m;
+            let inserts = &seq[..seq.len() - 1];
+            for &(k, v) in inserts {
+                if shared {
+                    op_dup(m2);
+                    let old = m2;
+                    m2 = minsert_int(m2, k, v);
+                    op_drop(old);
+                } else {
+                    m2 = minsert_int(m2, k, v);
+                }
+            }
+            if shared {
+                op_dup(m2);
+                let old = m2;
+                m2 = mremove_int(m2, a);
+                op_drop(old);
+            } else {
+                m2 = mremove_int(m2, a); // unique → the in-place collapse path
+            }
+            m = m2;
+            m
+        };
+        let fbip = build(false);
+        let copy = build(true);
+        assert!(champ_eq(fbip, copy), "in-place collapse == copy-path collapse (canonical)");
+        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert_eq!(mlookup_int(fbip, a), None, "removed key gone");
+        for &(k, v) in &[(b, 2i64), (c, 3), (d, 4), (5, 50), (6, 60), (7, 70)] {
+            assert_eq!(mlookup_int(fbip, k), Some(v), "survivor {k} intact after in-place collapse");
+        }
+        op_drop(fbip);
+        op_drop(copy);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     #[test]
