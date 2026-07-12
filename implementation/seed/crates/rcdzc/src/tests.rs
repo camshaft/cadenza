@@ -3314,42 +3314,71 @@ mod r0 {
 // list<u8>` returns the canonical binary value form. This module builds that shape with the
 // authoritative `ComponentBuilder` encoder + RUNS it under wasmtime (make → resource handle → encode
 // → bytes), the reference the hand-emitted `envelope.rs` R1 path mirrors — the H1b method (validate a
-// ComponentBuilder oracle first, then hand-emit byte-identical). The full wit-bindgen resource-linking
-// pattern is exercised: a shim/fixup breaks the resource↔dtor↔`resource.new` circular dependency, the
-// core module imports + calls `resource.new` (a raw rep is NOT auto-wrapped by the lift), the resource
-// carries a dtor (the rc-handle release, stubbed for the constant-bytes proof), and an inner re-export
-// component publishes the abstracted resource + funcs as the `cadenza:run/run` instance.
+// ComponentBuilder oracle first, then hand-emit byte-identical). It exercises: the core module imports
+// + calls `resource.new` (a raw rep is NOT auto-wrapped by the lift), the resource carries a dtor (the
+// rc-handle release, stubbed for the constant-bytes proof), and an inner re-export component publishes
+// the abstracted resource + funcs as the `cadenza:run/run` instance.
+//
+// A LEANER shape than wit-bindgen's: the dtor lives in its OWN core module (importing nothing), so it
+// can be instantiated first — the resource type gets a real dtor core-func before `resource.new` (and
+// the main module) need the resource type. This dissolves the resource↔dtor↔`resource.new` circular
+// dependency WITHOUT the shim/fixup trampoline+table+elem dance wit-bindgen needs (wit-bindgen only
+// needs the shim because it puts the dtor in the same module that imports `resource.new`). Simpler to
+// hand-emit AND a cleaner integration story (a self-contained dtor unit).
 mod r1_reference {
-    /// A core module for the resource oracle. IMPORTS `heap.resource-new : (i32 rep) -> i32 handle`
-    /// (the `resource.new` intrinsic the component threads in — a raw rep is NOT auto-wrapped by the
-    /// lift; `make` MUST register it, else "unknown handle index"). Exports `memory`, `cabi_realloc`,
-    /// `make : () -> i32 handle` (computes a dummy rep `7`, calls resource-new → a handle), `t-encode :
-    /// (i32 handle-rep) -> i32 retptr` (retptr to constant `list<u8>` `[1,2,3]`), and `t-dtor : (i32
-    /// rep) -> ()` — the DESTRUCTOR the component invokes on host-drop. The resource wraps an rc handle
-    /// to the runtime heap, so the dtor must release it (call the runtime's `drop`); for R1's
-    /// constant-bytes proof the dtor BODY is a stub, but the SLOT is wired end-to-end (R2 fills it).
+    /// The DTOR core module — a standalone unit exporting `t-dtor : (i32 rep) -> ()`, the destructor
+    /// the component invokes on host-drop. The resource wraps an rc handle to the runtime heap, so the
+    /// dtor must release it (call the runtime's `drop`); for R1's constant-bytes proof the BODY is a
+    /// stub, but the SLOT is wired end-to-end (R2 fills it with the real drop call). KEY: keeping the
+    /// dtor in its OWN module (which imports nothing) is what lets us avoid the wit-bindgen shim/fixup
+    /// — this module can be instantiated FIRST, so the resource type has a real dtor core-func before
+    /// `resource.new` (and hence the main module) needs the resource type. No circular dependency.
+    fn dtor_module() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![]); // 0: (i32)->()
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("t-dtor", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut dtor = Function::new(vec![]);
+        dtor.instruction(&Instruction::End); // stub: release the rep (real `drop` is R2)
+        code.function(&dtor);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The MAIN core module for the resource oracle. IMPORTS `heap.resource-new : (i32 rep) -> i32
+    /// handle` (the `resource.new` intrinsic the component threads in — a raw rep is NOT auto-wrapped
+    /// by the lift; `make` MUST register it, else "unknown handle index"). Exports `memory`,
+    /// `cabi_realloc`, `make : () -> i32 handle` (dummy rep `7` → resource-new → a handle), and
+    /// `t-encode : (i32 handle-rep) -> i32 retptr` (retptr to constant `list<u8>` `[1,2,3]`). The dtor
+    /// lives in [`dtor_module`] (separate → no cycle).
     fn resource_core() -> Vec<u8> {
         use wasm_encoder::*;
         let mut m = Module::new();
         let mut types = TypeSection::new();
-        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32 (resource-new, make? no)
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0: (i32)->i32 (resource-new / encode)
         types.ty().function(vec![], vec![ValType::I32]); // 1: make ()->i32
-        types.ty().function(vec![ValType::I32], vec![]); // 2: dtor (rep)->()
         types.ty().function(
             vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
             vec![ValType::I32],
-        ); // 3: cabi_realloc
+        ); // 2: cabi_realloc
         m.section(&types);
         // Import resource-new : (rep)->handle (type 0), from module "heap".
         let mut imports = ImportSection::new();
         imports.import("heap", "resource-new", EntityType::Function(0));
         m.section(&imports);
-        // Defined funcs start at index 1 (import is func 0): make=1, encode=2, dtor=3, realloc=4.
+        // Defined funcs start at index 1 (import is func 0): make=1, encode=2, realloc=3.
         let mut funcs = FunctionSection::new();
         funcs.function(1); // make ()->i32
         funcs.function(0); // encode (i32)->i32 (reuse type 0 shape)
-        funcs.function(2); // dtor (i32)->()
-        funcs.function(3); // cabi_realloc
+        funcs.function(2); // cabi_realloc
         m.section(&funcs);
         let mut mems = MemorySection::new();
         mems.memory(MemoryType {
@@ -3364,8 +3393,7 @@ mod r1_reference {
         exports.export("memory", ExportKind::Memory, 0);
         exports.export("make", ExportKind::Func, 1);
         exports.export("t-encode", ExportKind::Func, 2);
-        exports.export("t-dtor", ExportKind::Func, 3);
-        exports.export("cabi_realloc", ExportKind::Func, 4);
+        exports.export("cabi_realloc", ExportKind::Func, 3);
         m.section(&exports);
         let mut data = DataSection::new();
         // payload [1,2,3] @0; return area [ptr=0, len=3] @8.
@@ -3383,10 +3411,6 @@ mod r1_reference {
         encode.instruction(&Instruction::I32Const(8));
         encode.instruction(&Instruction::End);
         code.function(&encode);
-        // dtor: stub (real `drop` call is R2).
-        let mut dtor = Function::new(vec![]);
-        dtor.instruction(&Instruction::End);
-        code.function(&dtor);
         let mut realloc = Function::new(vec![]);
         realloc.instruction(&Instruction::I32Const(0));
         realloc.instruction(&Instruction::End);
@@ -3462,96 +3486,24 @@ mod r1_reference {
         c
     }
 
-    /// The wit-bindgen SHIM module: exports a `call_indirect` trampoline func `"0" : (i32)->()` that
-    /// dispatches through a 1-entry funcref table `"$imports"`. It provides a dtor placeholder BEFORE
-    /// the main module exists — breaking the circular dependency (the resource type needs a dtor core
-    /// func; the dtor lives in the main module; the main module imports `resource.new` which needs the
-    /// resource type). The real dtor is written into the table later by the FIXUP module.
-    fn shim_module() -> Vec<u8> {
-        use wasm_encoder::*;
-        let mut m = Module::new();
-        let mut types = TypeSection::new();
-        types.ty().function(vec![ValType::I32], vec![]); // 0: (i32)->()
-        m.section(&types);
-        let mut funcs = FunctionSection::new();
-        funcs.function(0);
-        m.section(&funcs);
-        let mut tables = TableSection::new();
-        tables.table(TableType {
-            element_type: RefType::FUNCREF,
-            minimum: 1,
-            maximum: Some(1),
-            table64: false,
-            shared: false,
-        });
-        m.section(&tables);
-        let mut exports = ExportSection::new();
-        exports.export("0", ExportKind::Func, 0);
-        exports.export("$imports", ExportKind::Table, 0);
-        m.section(&exports);
-        let mut code = CodeSection::new();
-        let mut f = Function::new(vec![]);
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::CallIndirect {
-            type_index: 0,
-            table_index: 0,
-        });
-        f.instruction(&Instruction::End);
-        code.function(&f);
-        m.section(&code);
-        m.finish()
-    }
-
-    /// The wit-bindgen FIXUP module: imports the shim table `$imports` + the real dtor func `"0"`, and
-    /// writes the dtor into table slot 0 via an active element segment. Instantiated LAST (after the
-    /// main module exists), it patches the shim trampoline to call the real dtor.
-    fn fixup_module() -> Vec<u8> {
-        use wasm_encoder::*;
-        let mut m = Module::new();
-        let mut types = TypeSection::new();
-        types.ty().function(vec![ValType::I32], vec![]); // 0: (i32)->()
-        m.section(&types);
-        let mut imports = ImportSection::new();
-        imports.import("", "0", EntityType::Function(0));
-        imports.import(
-            "",
-            "$imports",
-            EntityType::Table(TableType {
-                element_type: RefType::FUNCREF,
-                minimum: 1,
-                maximum: Some(1),
-                table64: false,
-                shared: false,
-            }),
-        );
-        m.section(&imports);
-        let mut elems = ElementSection::new();
-        elems.active(
-            Some(0),
-            &ConstExpr::i32_const(0),
-            Elements::Functions([0].as_slice().into()),
-        );
-        m.section(&elems);
-        m.finish()
-    }
-
     /// Build the resource-exporting component with `ComponentBuilder` — the authoritative reference.
-    /// Follows the full wit-bindgen resource-linking pattern: a SHIM provides a dtor placeholder, the
-    /// resource type is declared against it, `resource.new` is lowered + threaded into the main core
-    /// module, the FIXUP patches the real dtor in, and the inner re-export component publishes the
-    /// abstracted resource + `make`/`encode` as the `cadenza:run/run` instance. The shim/fixup breaks
-    /// the circular dependency (resource type ← dtor ← main module ← resource.new ← resource type).
+    /// A LEANER shape than wit-bindgen's: because our DTOR lives in its own core module (importing
+    /// nothing — [`dtor_module`]), we instantiate it FIRST, so the resource type has a real dtor
+    /// core-func before `resource.new` (and the main module) need the resource type. This dissolves the
+    /// circular dependency WITHOUT the shim/fixup trampoline+table+elem dance wit-bindgen needs (it
+    /// only needs the shim because it puts the dtor in the same module that imports `resource.new`).
+    /// Order: dtor module → resource type (with real dtor) → lower `resource.new` → main module
+    /// (threading `resource.new` in) → lift make/encode → inner re-export component → export instance.
     fn oracle_resource_component(core: &[u8]) -> Vec<u8> {
         use wasm_encoder::*;
         let mut c = ComponentBuilder::default();
-        // (1) shim: instantiate it, alias its trampoline "0" as the dtor placeholder + its table.
-        let shim_idx = c.core_module_raw(&shim_module());
-        let shim_inst = c.core_instantiate(shim_idx, std::iter::empty::<(&str, ModuleArg)>());
-        let dtor_placeholder = c.core_alias_export(shim_inst, "0", ExportKind::Func);
-        let shim_table = c.core_alias_export(shim_inst, "$imports", ExportKind::Table);
-        // (2) resource `t` with the placeholder dtor; lower resource.new(t) → a core func.
-        let res_ty = c.type_resource(ValType::I32, Some(dtor_placeholder));
+        // (1) dtor module FIRST — a self-contained unit, so its `t-dtor` core func exists before the
+        //     resource type needs it. No cycle → no shim/fixup.
+        let dtor_idx = c.core_module_raw(&dtor_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        // (2) resource `t` with the REAL dtor; lower resource.new(t) → a core func.
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
         let rnew_core = c.resource_new(res_ty);
         // (3) thread resource.new into the main core module (as `heap.resource-new`) + instantiate.
         let heap_inst = c.core_instantiate_exports([("resource-new", ExportKind::Func, rnew_core)]);
@@ -3559,17 +3511,9 @@ mod r1_reference {
         let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
         let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
         let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
-        let real_dtor = c.core_alias_export(prog_inst, "t-dtor", ExportKind::Func);
         let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
         let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
-        // (4) fixup: patch the real dtor into the shim table.
-        let fixup_idx = c.core_module_raw(&fixup_module());
-        let fixup_args = c.core_instantiate_exports([
-            ("0", ExportKind::Func, real_dtor),
-            ("$imports", ExportKind::Table, shim_table),
-        ]);
-        c.core_instantiate(fixup_idx, [("", ModuleArg::Instance(fixup_args))]);
-        // (5) lift make/encode against the INTERNAL res_ty (rep-carrying).
+        // (4) lift make/encode against the INTERNAL res_ty (rep-carrying).
         let (own_t, odef) = c.type_defined();
         odef.own(res_ty);
         let (make_ty, mut enc) = c.type_function();
@@ -3606,8 +3550,8 @@ mod r1_reference {
     /// The `ComponentBuilder` reference for the R1 resource-export envelope: a monomorphized resource
     /// `t` (rep i32, with a dtor) exported inside the `cadenza:run/run` instance, alongside `make : ()
     /// -> own<t>` (calls `resource.new`) and `encode : (own<t>) -> list<u8>` (the canonical binary
-    /// value form). Built via the full wit-bindgen resource-linking pattern (shim/fixup + threaded
-    /// `resource.new` + inner re-export component). VALIDATES under wasmparser + wasmtime and RUNS the
+    /// value form). Built via the leaner resource-linking pattern (separate dtor module + threaded
+    /// `resource.new` + inner re-export component, no shim/fixup). VALIDATES under wasmparser + wasmtime and RUNS the
     /// round-trip: `make()` → a strongly-typed resource handle (NOT a bare u32), `encode(handle)` →
     /// `[1,2,3]`. This is the authoritative shape the hand-emitted `envelope.rs` R1 path must mirror.
     #[test]
