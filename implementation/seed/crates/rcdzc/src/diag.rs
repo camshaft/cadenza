@@ -9,11 +9,14 @@
 //! concretely, never reconstructed downstream from an artifact's shape
 //! (`reference-compiler.md` §The Kind Of A "No" Is Fixed Where It Is Produced).
 //!
-//! Stage 0 needs only a handful of codes; the taxonomy grows one variant per added check, and its
-//! `str` form is the stable `CDZ####` string a tool branches on.
+//! The taxonomy grows one variant per added check; its `str` form is the stable `CDZ####` string a
+//! tool branches on.
 
 /// A stable, machine-readable diagnostic code. Its `code()` string is the durable identity a
 /// consumer matches on; the enum variant is the compiler-internal handle.
+///
+//= spec/capabilities/diagnostics.md#every-diagnostic-has-a-stable-code
+//# Every diagnostic the compiler emits MUST carry a machine-readable code that is stable across changes to unrelated diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Code {
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
