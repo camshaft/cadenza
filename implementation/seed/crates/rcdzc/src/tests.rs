@@ -11298,4 +11298,47 @@ mod debug_info {
             "a nullary function must have no formal parameters:\n{stdout}"
         );
     }
+
+    #[test]
+    fn wasm_plus_dwarf_links_the_component_to_the_sidecar() {
+        // When a run emits BOTH a lean component and a detached DWARF sidecar, the component carries an
+        // `external_debug_info` custom section naming the sidecar file — so a debugger auto-loads it.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile_debug(
+            src,
+            &[Request::Emit(Target::Wasm), Request::Emit(Target::Dwarf)],
+        );
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let comp = out.artifact("component").expect("component").to_vec();
+        let names = custom_section_names(&comp);
+        assert!(
+            names.iter().any(|n| n == "external_debug_info"),
+            "the lean component must point at the sidecar; found {names:?}"
+        );
+        // The lean component embeds NO DWARF itself (that lives in the sidecar) — only the pointer.
+        assert!(
+            names.iter().all(|n| !n.starts_with(".debug")),
+            "a lean component must not embed DWARF (it points at the sidecar): {names:?}"
+        );
+        // The pointer's payload names the on-disk sidecar file (`main.dwarf` — the program name).
+        assert!(
+            comp.windows(b"main.dwarf".len())
+                .any(|w| w == b"main.dwarf"),
+            "the external_debug_info payload must name the sidecar file"
+        );
+    }
+
+    #[test]
+    fn a_lone_wasm_carries_no_external_debug_info() {
+        // Without a paired `Dwarf` target, a plain component has no `external_debug_info` pointer — it
+        // stays byte-identical to today's undecorated output.
+        let src = "(module m (def (main) 42) (export main))";
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            !custom_section_names(&plain)
+                .iter()
+                .any(|n| n == "external_debug_info"),
+            "a lone Wasm target must carry no external_debug_info"
+        );
+    }
 }

@@ -161,12 +161,30 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // Its Computation Is Observed) but almost always a defect, so warn — the build still succeeds.
     let mut diagnostics = collect_dead_trap_warnings(&mut db);
 
+    // A run that emits BOTH a plain component (`Wasm`) AND a detached DWARF sidecar (`Dwarf`) links the
+    // two: the component carries an `external_debug_info` custom section naming the sidecar file, so a
+    // debugger auto-loads the symbols (`DESIGN-debug-info-rcdzc.md` §9.2, Mode S). The name is the
+    // sidecar artifact's on-disk file (`<program>.dwarf`, matching the CLI's `ext_for_kind`). Only when
+    // a LEAN `Wasm` is paired with a `Dwarf` — a `WasmDebug` embeds its own DWARF and needs no pointer.
+    let external_debug_info =
+        if emit_targets.contains(&Target::Wasm) && emit_targets.contains(&Target::Dwarf) {
+            Some(format!("{}.dwarf", program_name(&db)))
+        } else {
+            None
+        };
+
     // Clean: ask each requested target's backend to fill its artifact. The query artifacts (facts
     // read above) lead, then each emitted backend artifact — all one kinded-artifact list, selected by
     // kind (`build-tool-interface.md`).
     let mut artifacts = query_artifacts;
     for &target in &emit_targets {
-        match backend::emit(target, &mut db, &layout, span_data.as_ref()) {
+        match backend::emit(
+            target,
+            &mut db,
+            &layout,
+            span_data.as_ref(),
+            external_debug_info.as_deref(),
+        ) {
             Ok(bytes) => artifacts.push(Artifact::new(
                 target.artifact_kind(),
                 program_name(&db),
