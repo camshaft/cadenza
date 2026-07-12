@@ -266,6 +266,25 @@ fn compute(db: &Db, id: StructId) -> Resolved {
 /// Resolution Is One Ordered Lookup Returning The Bound Value). A hit is the value the name denotes;
 /// scope-first order means a local binding SHADOWS a top-level def or built-in of the same name. A
 /// miss is a `Poison`.
+/// The resolved form a top-level def at index `d` denotes: a nullary def denotes its body (`Ref`); a
+/// def with parameters denotes a lambda `(params) body`; a bodyless (malformed) def is a rejection.
+/// Shared by the flat and file-scoped step-2 paths of [`resolve_name`].
+fn def_as_resolved(db: &Db, d: usize, name: &str) -> Resolved {
+    let def = &db.defs[d];
+    trace!(target: "rcdzc::resolve", %name, params = def.params.len(), "name → top-level def");
+    match def.body {
+        Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
+        Some(body) => Resolved::Lambda {
+            params: def.params.clone().into(),
+            body,
+        },
+        None => Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("`{name}` has no body"),
+        )),
+    }
+}
+
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
     // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
@@ -278,20 +297,47 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // denotes a lambda `(params) body` (so a call `(f a)` applies it by the ordinary application
     // path). This is what makes a top-level function callable by name — and, being resolved lazily
     // per reference, a forward/mutual reference resolves regardless of definition order.
-    if let Some(d) = db.def_by_name(name) {
-        let def = &db.defs[d];
-        trace!(target: "rcdzc::resolve", node = id.0, %name, params = def.params.len(), "name → top-level def");
-        return match def.body {
-            Some(body) if def.params.is_empty() => Resolved::Ref { value: body },
-            Some(body) => Resolved::Lambda {
-                params: def.params.clone().into(),
-                body,
+    //
+    // In a LINKED multi-file PACKAGE this step is FILE-SCOPED (`DESIGN-package-linking.md` §4): a bare
+    // name resolves against the reference's OWN file's surface (its own defs + its imports), never a
+    // sibling file's defs. A single-file compile carries no linkage, so `is_linked_package()` is false
+    // and this falls straight through to the flat `def_by_name` below — byte-identical to before.
+    if db.is_linked_package() {
+        match db.file_scoped_def(id, name) {
+            // The reference's file is known and `name` is visible there → that def.
+            Some(Ok(d)) => {
+                trace!(target: "rcdzc::resolve", node = id.0, %name, file_scoped = true, "name → file-scoped def");
+                return def_as_resolved(db, d, name);
+            }
+            // The file is known but `name` is NOT visible there — do NOT leak a sibling's def. Fall
+            // through to the type-decl + prelude steps (a package may still reference a prelude built-in
+            // or a `(type …)`); if none matches it is unbound, correctly.
+            Some(Err(())) => {}
+            // The reference's file is INDETERMINATE — a synthesized / β-copied node (an inlined callee
+            // body), which lies outside every file's demux range. β-copy hygiene: a name defined in
+            // exactly ONE file across the whole package is unambiguous, so resolve it flat; a name
+            // defined in MORE THAN ONE file cannot be attributed to a file here, so DECLINE rather than
+            // guess the wrong sibling (decline-don't-miscompile). A name in NO file falls through to the
+            // prelude/type steps.
+            None => match db.package_def_name_count(name) {
+                0 => {}
+                1 => {
+                    if let Some(d) = db.def_by_name(name) {
+                        trace!(target: "rcdzc::resolve", node = id.0, %name, "name → package def (unambiguous, synthesized node)");
+                        return def_as_resolved(db, d, name);
+                    }
+                }
+                _ => {
+                    trace!(target: "rcdzc::resolve", node = id.0, %name, "name AMBIGUOUS across files under a synthesized node — decline");
+                    return Resolved::Poison(Reject::decline(format!(
+                        "cross-file reference to `{name}` inside an inlined body is ambiguous \
+                         (defined in more than one file); import it explicitly"
+                    )));
+                }
             },
-            None => Resolved::Poison(Reject::coded(
-                Code::Malformed,
-                format!("`{name}` has no body"),
-            )),
-        };
+        }
+    } else if let Some(d) = db.def_by_name(name) {
+        return def_as_resolved(db, d, name);
     }
     // 3. The module's own SUM declarations — `(type NAME …)` binds `NAME` to its synthesized record
     // (fields = variants), resolved EXACTLY like a top-level def (step 2): a lookup against the

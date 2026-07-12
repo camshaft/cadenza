@@ -276,6 +276,24 @@ Mechanically:
 > at a concrete def occurrence in the one merged arena, and β-reduction monomorphizes across files
 > exactly as within one file (it's the same arena, the same `Db`, the same `apply_lambda`).
 
+> **⚠ The one non-obvious hazard the first draft missed — β-copy hygiene (learned while implementing
+> Inc 3).** "Key the lookup by the reference's `StructId → file`" is correct ONLY for a node that is
+> still in its home file's `FileSpan`. But β-reduction **copies a callee's body to FRESH StructIds**
+> (`eval::copy_structural` mints a new occurrence per name via `push_atom`/`push_list`), and those
+> copies are appended AFTER every file, so they fall outside all `FileSpan` ranges. A copied *free*
+> reference — e.g. a helper `h` in file `lib` whose body references a sibling `k` also in `lib` — must
+> still resolve `k` in **`lib`'s** scope after `h` is inlined into a caller in file `app`; a naive
+> `StructId → FileSpan` lookup finds no file for the copy and would either report `k` unbound or (worse,
+> once names collide) bind it to `app`'s `k` — a silent miscompile. **Fix:** carry a `node_file:
+> Vec<Option<usize>>` column on the `Db` (a node's home file index), seeded from the `FileSpan` ranges
+> at load and **extended in `push_atom`/`push_list` so a β-copy inherits its source node's file**
+> (parallel to how `push_list` already maintains `parent`/`scope_binders`). Resolution reads
+> `node_file[id]` instead of a range search. This keeps the change local (the resolver + two push
+> helpers + a load-time seed) but it is NOT the zero-touch "single lookup swap" the first draft implied.
+> A safe interim (what Inc 3's first slice ships): file-scope only for a package of >1 file, and when a
+> copied node's file is indeterminate AND the name is defined in more than one file, **DECLINE** rather
+> than guess — decline-don't-miscompile buys correctness while the `node_file` column is proven out.
+
 ---
 
 ## 5. Cycles & collisions (spec-mandated rejections)
@@ -343,18 +361,38 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
 
 ## 8. Increment plan (each independently gate-able)
 
-1. **Spec-first (§2):** pin `(import "path" (names…))` in `options/code-shape/` + add the deferred
-   multi-file cases to `11-modules.sexp` (they'll be `todo` until step 4 realizes them — additive,
-   gate-neutral). This is the constitutional prerequisite.
-2. **Arena splice + `link()` skeleton (§3):** merge N artifacts → one `Arenas` under a synthesized
-   `(do …)` root, prelude installed once, `FileSpan` table built. Gate: a package of files with NO
-   cross-file imports (each self-contained) compiles byte-identically to the same files concatenated —
-   i.e. reproduce the Makefile concat's result structurally. **This alone retires the Makefile** for
-   the no-import case.
-3. **File-scoped resolution + `(import …)` (§4):** the resolve steps-2-and-3 change (file-scope BOTH
-   `def_by_name` AND `type_decl_by_name`) + import binding + visibility via `(export …)`. Gate: the new
-   `11-modules.sexp` import cases go `todo`→`pass`; a cross-file call monomorphizes and folds (assert
-   the callee's body is inlined, no `Core::Call` unless recursive).
+> **Landed status (2026-07-12):** steps 2 and 3 are **DONE** on branch `imports` (module
+> `rcdzc/src/link.rs` + `Db::load_linked` + a file-scoped step 2 in `resolve.rs`). Step 1 (spec/corpus
+> witnesses) is **blocked on a corpus-format gap** — see the note under it. Steps 4–6 remain.
+
+1. **Spec-first (§2):** pin `(import "path" (names…))` as a core form + add the deferred multi-file
+   cases to `11-modules.sexp`. ⚠ **BLOCKED / re-scoped.** The behavior is already normative in
+   `spec/capabilities/modules-and-namespaces.md`; what's missing is a *surface-form* pin (the
+   `options/code-shape/` path the first draft named does NOT exist — the corpus references it
+   aspirationally). **The real blocker:** the corpus is **single-`(input …)` per case** (`cdz-corpus`
+   `parse_case` reads ONE `input`; the gate driver pipes ONE file through `rcdzc compile -`), so a
+   multi-file package **cannot be expressed as a `.sexp` case today**. Realizing this step needs a
+   corpus extension first (e.g. an `(input (file "name" …)… (entry "name"))` shape + a gate-driver path
+   that feeds several named `ast` artifacts + an `entry` artifact to `compile`). Until then, steps 2–3
+   are gated by **Rust integration tests** in `link.rs` (splice, id-offset, FileSpan demux, cross-file
+   import emits, unimported-sibling-unbound, non-exported-import declines, unknown-module declines,
+   alias-form declines, β-copy hygiene) — 12 tests, all green.
+2. **Arena splice + `link()` skeleton (§3):** ✅ **DONE.** `link()` merges N artifacts → one `Arenas`
+   under a synthesized `(do …)` root, prelude installed once (via `Db::load`), `FileSpan` table built.
+   `compile()` selects all `ast` inputs + an optional `entry` artifact and routes through
+   `link_inputs`; a single `ast` decodes directly (byte-identical to before). Gate: 7 unit tests +
+   full behavior gate green with 0 regressions.
+3. **File-scoped resolution + `(import …)` (§4):** ✅ **DONE (def scope).** `link()` reads `(import
+   "path" (name…))` clauses (compile-time directives, NOT spliced) + each file's `(export …)` surface;
+   only the ENTRY file's exports survive into the merged `(do …)` (so `db.exports` IS the boundary).
+   `Db::load_linked` derives a `FileScopeTable`; `resolve_name` step 2 is file-scoped when a package is
+   linked (own defs + imports; a sibling's def is invisible unless imported), with β-copy hygiene (a
+   synthesized/inlined node whose file is indeterminate resolves an unambiguous name flat and DECLINES
+   an ambiguous one — decline-don't-miscompile). **RESIDUALS (deliberately deferred):** (a) `(type …)`
+   resolution (`type_decl_by_name`, step 3) is NOT yet file-scoped — cross-file type visibility stays
+   flat (a follow-up, mirrors the def change); (b) the ALIAS form `(import "p" alias)` declines
+   (needs modules-as-record); (c) a cross-file *collision* between two imports is not yet checked
+   (that is step 4).
 4. **Cycles & collisions (§5):** import-graph DFS + collision CDZ0201. Gate: a 2-file import cycle
    rejects; a colliding import rejects.
 5. **Diagnostics link-map (§6):** surface the `FileSpan` table so a cross-file error maps to the right
