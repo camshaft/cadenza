@@ -1488,18 +1488,14 @@
 (case "a Bool match with its arms in either order is exhaustive"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: exhaustiveness of a Bool match is a
            property of the arm-value SET {true, false}, not the arm order. `(match b (false 2) (true
-           1))` covers both values with the arms reversed, so it needs no wildcard; with the runtime
-           `b` = true the `true` arm gives 1. Pins that the checker accepts the reversed order exactly
-           as it accepts `(true …) (false …)` — the wildcard requirement is for OPEN types (Int64),
-           never for a Bool covered by both literals.")
+           1))` covers both values with the arms reversed, so it needs no wildcard. Exercised at BOTH
+           runtime selections: `b` = true takes the `true` arm (1), `b` = false takes the `false` arm
+           (2). Pins that the checker accepts the reversed order exactly as it accepts `(true …) (false
+           …)` — the wildcard requirement is for OPEN types (Int64), never for a Bool covered by both
+           literals — and that both branches select correctly at run time.")
   (input  (do (def (main (: b Bool)) (match b (false 2) (true 1))) (export main)))
   (call   main (: true Bool))
-  (output (: 1 Int64)))
-
-(case "a Bool match with its arms in either order selects the false arm at run time"
-  (doc    "The false-selection companion of the reversed-order case: with runtime `b` = false the
-           `(false 2)` arm gives 2. Confirms both runtime selections of the reversed-order Bool match.")
-  (input  (do (def (main (: b Bool)) (match b (false 2) (true 1))) (export main)))
+  (output (: 1 Int64))
   (call   main (: false Bool))
   (output (: 2 Int64)))
 

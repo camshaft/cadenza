@@ -668,19 +668,16 @@
 ; cases above: `-1 << 63` produces exactly Int64.min (in range) and `1 << 63` overflows and traps, so
 ; the const fold of each must match (reject the overflow, produce the Int64.min) — not diverge.
 
-(case "a runtime left shift of -1 by 63 is exactly the minimum integer"
-  (doc    "The runtime companion of `(<< -1 63)`: the operand arrives as a parameter, so the emitted
-           guarded i64.shl runs rather than folding. -1 * 2^63 = Int64.min, which fits, so the run
-           produces -9223372036854775808 — the value the constant fold must also produce.")
+(case "a runtime left shift by 63 fits for -1 and overflow-traps for 1"
+  (doc    "The runtime companion of the constant `(<< _ 63)` cases: the operand arrives as a parameter,
+           so the emitted guarded i64.shl runs rather than folding. Exercised at both boundary operands:
+           with x = -1, -1 * 2^63 = Int64.min, which FITS, so the run produces -9223372036854775808 (the
+           value the constant fold must also produce); with x = 1, 1 * 2^63 OVERFLOWS Int64 and the
+           emitted round-trip overflow guard traps rather than wrapping — the outcome the constant fold
+           of the same shift matches by rejecting (CDZ0304), not by producing a wrapped Int64.min.")
   (input  (do (def (main (: x Int64)) (<< x 63)) (export main)))
   (call   main (: -1 Int64))
-  (output (: -9223372036854775808 Int64)))
-
-(case "a runtime left shift of 1 by 63 overflows and traps"
-  (doc    "The runtime companion of `(<< 1 63)`: 1 * 2^63 overflows Int64, and the emitted round-trip
-           overflow guard traps rather than wrapping — the outcome the constant fold of the same shift
-           must match by rejecting (CDZ0304), not by producing a wrapped Int64.min.")
-  (input  (do (def (main (: x Int64)) (<< x 63)) (export main)))
+  (output (: -9223372036854775808 Int64))
   (call   main (: 1 Int64))
   (trap   "integer overflow"))
 

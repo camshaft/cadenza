@@ -678,24 +678,32 @@ fn gate_one_case(tools: &Tools, store: &Option<PathBuf>, files: &[PathBuf], need
                 continue;
             }
             found += 1;
-            let ran = run_program(tools, store, &rec.program, rec.call.as_ref());
-            let actual = match &ran {
-                Ran::Value(v) => format!("value {v}"),
-                Ran::Declined => "declined (compiler can't compile it yet)".to_string(),
-                Ran::Trap(t) => format!("trap: {t}"),
-            };
-            let verdict = match grade_ran(&rec, &ran) {
+            // Run each trial (re-driving the program per its `(call …)`) so the debug view shows every
+            // call/expect/actual line — a multi-trial case lists them in order.
+            let rans: Vec<Ran> = rec
+                .trials
+                .iter()
+                .map(|t| run_program(tools, store, &rec.program, t.call.as_ref()))
+                .collect();
+            let verdict = match grade_ran(&rec, &rans) {
                 Grade::Pass => "PASS",
                 Grade::Todo => "todo",
                 Grade::Fail(_) => "FAIL",
             };
             println!("case:     {}", rec.description);
             println!("program:  {}", rec.program);
-            if let Some(call) = &rec.call {
-                println!("call:     {} {}", call.export, call.args.join(" "));
+            for (trial, ran) in rec.trials.iter().zip(&rans) {
+                if let Some(call) = &trial.call {
+                    println!("call:     {} {}", call.export, call.args.join(" "));
+                }
+                let actual = match ran {
+                    Ran::Value(v) => format!("value {v}"),
+                    Ran::Declined => "declined (compiler can't compile it yet)".to_string(),
+                    Ran::Trap(t) => format!("trap: {t}"),
+                };
+                println!("expect:   {}", trial.expect);
+                println!("actual:   {actual}");
             }
-            println!("expect:   {}", rec.expect);
-            println!("actual:   {actual}");
             println!("verdict:  {verdict}\n");
         }
     }
@@ -720,17 +728,25 @@ enum Grade {
 struct CorpusRecord {
     description: String,
     program: String,
-    /// A `(call …)` clause: the export to invoke and its runtime arguments. `None` when the case has
-    /// no `(call …)` — the program's sole export is run with no arguments (the common nullary case).
-    call: Option<Call>,
-    /// The `expect` line's payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
-    expect: String,
+    /// One or more TRIALS — each an optional `(call …)` paired with the `expect` payload it must
+    /// produce. The program is compiled ONCE; each trial runs its call and grades against its expect,
+    /// and the case's verdict COMBINES them (see `grade_ran`). A single-result case is one trial with
+    /// `call: None`; a case interleaving several `(call …) (output …)` pairs has one trial each.
+    trials: Vec<Trial>,
     /// The `(needs …)` capabilities a case documents. NO LONGER gates grading — every case is graded by
     /// what the compiler ACTUALLY does (a construct it can't compile DECLINES → `Todo`, not skipped), so
     /// `(needs)` is documentation only now, kept so a corpus `(needs …)` clause still parses. (Was a
     /// blunt whole-feature skip that hid a case running to a WRONG value as a benign skip.)
     #[allow(dead_code)]
     needs: Vec<String>,
+}
+
+/// One (call, expected-payload) trial of a case — a single run of the compiled program.
+struct Trial {
+    /// The `(call …)` for this trial, or `None` to invoke the sole export with no arguments.
+    call: Option<Call>,
+    /// The `expect` payload, e.g. `output (: 42 Int64)`, `error CDZ0201`, `trap "…"`.
+    expect: String,
 }
 
 /// A corpus case's `(call <export> <arg>…)` clause, parsed from the record stream. The export is run
@@ -760,27 +776,24 @@ fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
     parse_records(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line. A `call` line
-/// (the export) and any following `arg` lines (its arguments, in order) build the record's optional
-/// `(call …)` clause.
+/// Parse the flat record stream: `key\tvalue` lines, records separated by a `---` line. Each TRIAL is a
+/// `call` line (the export) + its following `arg` lines + the `expect` line that CLOSES it — so an
+/// `expect` flushes the pending call/args into a trial. A single-trial case is the historical shape.
 fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut records = Vec::new();
-    let (mut desc, mut prog, mut expect, mut needs) =
-        (String::new(), String::new(), String::new(), Vec::new());
+    let (mut desc, mut prog, mut needs) = (String::new(), String::new(), Vec::new());
+    let mut trials: Vec<Trial> = Vec::new();
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
         if line == "---" {
-            let call = call_export.take().map(|export| Call {
-                export,
-                args: std::mem::take(&mut call_args),
-            });
             records.push(CorpusRecord {
                 description: std::mem::take(&mut desc),
                 program: std::mem::take(&mut prog),
-                call,
-                expect: std::mem::take(&mut expect),
+                trials: std::mem::take(&mut trials),
                 needs: std::mem::take(&mut needs),
             });
+            // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
+            call_export = None;
             call_args.clear();
             continue;
         }
@@ -790,7 +803,18 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 "program" => prog = val.to_string(),
                 "call" => call_export = Some(val.to_string()),
                 "arg" => call_args.push(val.to_string()),
-                "expect" => expect = val.to_string(),
+                "expect" => {
+                    // The `expect` closes a trial: pair the pending call (if any) with this payload.
+                    let call = call_export.take().map(|export| Call {
+                        export,
+                        args: std::mem::take(&mut call_args),
+                    });
+                    call_args.clear();
+                    trials.push(Trial {
+                        call,
+                        expect: val.to_string(),
+                    });
+                }
                 "needs" => needs.push(val.to_string()),
                 _ => {}
             }
@@ -799,15 +823,43 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     records
 }
 
-/// Grade one case: drive its program, then compare against the recorded expectation.
+/// Grade one case: run EACH trial (the program is re-driven per trial's `(call …)`) and COMBINE. A
+/// case's verdict is the combination of its trials' verdicts: `Fail` if ANY trial fails (the actionable
+/// disagreement wins, tagged with which trial), else `Todo` if any trial is todo (the whole case is
+/// only as "done" as its least-done trial — a partially-declining case is not a live guard), else
+/// `Pass`. The common single-trial case grades exactly as before.
 fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord) -> Grade {
-    let ran = run_program(tools, store, &rec.program, rec.call.as_ref());
-    grade_ran(rec, &ran)
+    let rans: Vec<Ran> = rec
+        .trials
+        .iter()
+        .map(|t| run_program(tools, store, &rec.program, t.call.as_ref()))
+        .collect();
+    grade_ran(rec, &rans)
 }
 
-/// Compare an already-run outcome against a case's recorded expectation — the pure grading logic,
-/// shared by the tally path and the single-case debug view.
-fn grade_ran(rec: &CorpusRecord, ran: &Ran) -> Grade {
+/// Combine per-trial outcomes into the case's verdict. `rans[i]` is the outcome of `rec.trials[i]`.
+/// Shared by the tally path and the single-case debug view.
+fn grade_ran(rec: &CorpusRecord, rans: &[Ran]) -> Grade {
+    let mut todo = false;
+    for (trial, ran) in rec.trials.iter().zip(rans) {
+        match grade_trial(&trial.expect, ran) {
+            Grade::Pass => {}
+            Grade::Todo => todo = true,
+            // Tag a failing trial with its call so a multi-trial case points at the offending run.
+            Grade::Fail(why) => {
+                return Grade::Fail(match &trial.call {
+                    Some(c) if !c.args.is_empty() => format!("[{} {}] {why}", c.export, c.args.join(" ")),
+                    _ => why,
+                });
+            }
+        }
+    }
+    if todo { Grade::Todo } else { Grade::Pass }
+}
+
+/// Compare ONE trial's run outcome against its recorded `expect` payload — the pure per-trial grading
+/// logic. (A case combines these across its trials in `grade_ran`.)
+fn grade_trial(expect: &str, ran: &Ran) -> Grade {
     // NO capability gate: a case is graded by what the compiler ACTUALLY does with it, never skipped
     // because it carries a `(needs …)` tag. The compiler DECLINES a construct it cannot yet compile
     // (decline-don't-miscompile — `reference-compiler.md` §Outcomes Are Ordered By Safety), and a
@@ -815,10 +867,7 @@ fn grade_ran(rec: &CorpusRecord, ran: &Ran) -> Grade {
     // Gating a whole feature set on `(needs)` hid a case that RUNS TO A WRONG VALUE (a miscompile) as a
     // benign skip; running every case surfaces that as a `Fail`, the honest signal. (`(needs …)` stays
     // in the corpus as documentation of what a case exercises; it no longer suppresses grading.)
-    let (kind, payload) = rec
-        .expect
-        .split_once(' ')
-        .unwrap_or((rec.expect.as_str(), ""));
+    let (kind, payload) = expect.split_once(' ').unwrap_or((expect, ""));
     match kind {
         // `output (: <value> <Type>)`: the run must produce that value. A SCALAR crosses as a bare value
         // (`cdz-run` renders `42`), so it matches the value-form's value alone; a COMPOUND crosses via

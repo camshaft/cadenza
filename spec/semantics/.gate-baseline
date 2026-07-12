@@ -1,7 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	Result type for fallible operations
 pass	a Bool match with its arms in either order is exhaustive
-pass	a Bool match with its arms in either order selects the false arm at run time
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a UInt32 holds a wasm section size at the width boundary
@@ -122,7 +121,6 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime division truncates toward zero
 pass	a runtime greater-than compares by signed order
 pass	a runtime left shift multiplies by a power of two
-pass	a runtime left shift of -1 by 63 is exactly the minimum integer
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime record built behind a recursive call escapes to the host
 pass	a runtime record whose field is a runtime tuple escapes to the host
@@ -130,13 +128,11 @@ pass	a runtime remainder takes the dividend's sign
 pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime truncation into a signed byte sign-extends
-pass	a runtime truncation of a negative value uses two's complement and never traps
-pass	a runtime truncation to an unsigned byte keeps the low bits
+pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
-pass	a runtime-branched tuple returned from a callee is projected in the caller (else)
-pass	a runtime-branched tuple returned from a callee is projected in the caller (then)
+pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
@@ -538,8 +534,8 @@ todo	a right shift by the bit width or more traps rather than masking
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime Option carrying a user sum is matched by a nested constructor pattern
 todo	a runtime division by zero traps
+todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime left shift by the bit width or more traps
-todo	a runtime left shift of 1 by 63 overflows and traps
 todo	a runtime multiplication that overflows traps
 todo	a runtime overflowing left shift traps
 todo	a runtime right shift by the bit width or more traps

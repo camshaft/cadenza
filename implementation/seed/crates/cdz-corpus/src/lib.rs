@@ -31,14 +31,24 @@ pub struct Record {
     pub description: String,
     /// The `input` rewritten to the runnable export shape, as one-line s-expression text.
     pub program: String,
-    /// A `(call <export> <arg>…)` clause, if the case supplies runtime arguments to its entrypoint —
-    /// the export to invoke plus the argument values to pass. `None` for the common nullary case
-    /// (the driver invokes the sole export with no arguments).
-    pub call: Option<Call>,
-    /// The recorded oracle result: `Output(value-form)`, `Error(code)`, or `Trap(reason)`.
-    pub expect: Expect,
-    /// Capabilities the case declares via `(needs …)` — a generation runs it only if it realizes them.
+    /// One or more TRIALS: each pairs an optional `(call …)` with the result it must produce. A case
+    /// with a single `(output)`/`(error)`/`(trap)` and no `(call …)` is ONE trial with `call: None`
+    /// (the common nullary case — invoke the sole export with no arguments). A case that INTERLEAVES
+    /// several `(call …) (output …)` pairs runs the SAME compiled program once per trial, comparing
+    /// each against its own result — so one case documents a shape exercised at several runtime
+    /// arguments (`(def (main (: x UInt8)) (+ x 1))` called with 100→101, 200→(traps), …). The case
+    /// passes iff EVERY trial passes. Always non-empty.
+    pub trials: Vec<Trial>,
+    /// Capabilities the case declares via `(needs …)` — documentation only (the gate runs every case).
     pub needs: Vec<String>,
+}
+
+/// One (call, expected-result) pair of a case — a single run of the compiled program.
+pub struct Trial {
+    /// The `(call <export> <arg>…)` for this trial, or `None` to invoke the sole export with no args.
+    pub call: Option<Call>,
+    /// The recorded oracle result for this trial: `Output(value-form)`, `Error(code)`, or `Trap(reason)`.
+    pub expect: Expect,
 }
 
 /// A `(call <export> <arg>…)` clause: run the named export with the given runtime arguments. This is
@@ -105,32 +115,36 @@ pub fn render(records: &[Record]) -> String {
         out.push_str("program\t");
         out.push_str(&r.program);
         out.push('\n');
-        if let Some(call) = &r.call {
-            out.push_str("call\t");
-            out.push_str(&call.export);
-            out.push('\n');
-            for arg in &call.args {
-                out.push_str("arg\t");
-                out.push_str(arg);
+        // One group of lines per TRIAL: its `call`/`arg` lines (if any) then its `expect`, which ends
+        // the trial. A single-trial case emits exactly the historical `call?`/`arg*`/`expect` shape.
+        for trial in &r.trials {
+            if let Some(call) = &trial.call {
+                out.push_str("call\t");
+                out.push_str(&call.export);
                 out.push('\n');
+                for arg in &call.args {
+                    out.push_str("arg\t");
+                    out.push_str(arg);
+                    out.push('\n');
+                }
             }
+            out.push_str("expect\t");
+            match &trial.expect {
+                Expect::Output(v) => {
+                    out.push_str("output ");
+                    out.push_str(v);
+                }
+                Expect::Error(code) => {
+                    out.push_str("error ");
+                    out.push_str(code);
+                }
+                Expect::Trap(reason) => {
+                    out.push_str("trap ");
+                    out.push_str(reason);
+                }
+            }
+            out.push('\n');
         }
-        out.push_str("expect\t");
-        match &r.expect {
-            Expect::Output(v) => {
-                out.push_str("output ");
-                out.push_str(v);
-            }
-            Expect::Error(code) => {
-                out.push_str("error ");
-                out.push_str(code);
-            }
-            Expect::Trap(reason) => {
-                out.push_str("trap ");
-                out.push_str(reason);
-            }
-        }
-        out.push('\n');
         for cap in &r.needs {
             out.push_str("needs\t");
             out.push_str(cap);
@@ -159,12 +173,15 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         .ok_or("case has no description string")?;
 
     let mut input: Option<StructId> = None;
-    let mut call: Option<Call> = None;
-    let mut output: Option<String> = None;
-    let mut error: Option<String> = None;
-    let mut compiler_error: Option<String> = None;
-    let mut trap: Option<String> = None;
     let mut needs: Vec<String> = Vec::new();
+    // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
+    // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
+    // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
+    // `(call …) (output …)` pairs — each result closes one trial — while a single-result case (the
+    // common shape) yields exactly one trial. A `(compiler (error …))` overrides the current trial's
+    // result with the compile-time rejection (it accompanies a dynamic `(trap …)`).
+    let mut trials: Vec<Trial> = Vec::new();
+    let mut pending_call: Option<Call> = None;
 
     for &clause in &items[2..] {
         match a.head_name(clause) {
@@ -175,50 +192,80 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 // `(call <export> <arg>…)` — the export to invoke plus its runtime arguments. The
                 // export is the first child (a name); each remaining child is an argument value-form,
                 // reduced to its bare value text (the runner coerces it to the declared param type).
+                // Sets the PENDING call, paired with the result clause that follows.
                 if let Some(tail) = a.as_form(clause, "call")
                     && let Some(&export_id) = tail.first()
                     && let Some(export) = a.as_name(export_id)
                 {
                     let args = tail[1..].iter().map(|&arg| value_of(a, arg)).collect();
-                    call = Some(Call {
+                    pending_call = Some(Call {
                         export: export.to_string(),
                         args,
                     });
                 }
             }
             Some("output") => {
-                // `(output (: <value> <Type>))` — record the value-form's canonical text. The value
-                // is the first child of the `:` form; we keep the whole `(: value Type)` text so the
-                // driver can compare against however the run renders (value alone is the common case).
-                output = a
+                // `(output (: <value> <Type>))` — closes a trial. Record the value-form's canonical text
+                // (the whole `(: value Type)`); the driver compares against however the run renders.
+                if let Some(v) = a
                     .as_form(clause, "output")
                     .and_then(|t| t.first().copied())
-                    .map(|form| value_form_text(a, form));
+                    .map(|form| value_form_text(a, form))
+                {
+                    trials.push(Trial {
+                        call: pending_call.take(),
+                        expect: Expect::Output(v),
+                    });
+                }
             }
             Some("error") => {
-                error = a
+                // `(error <CODE>)` — closes a trial with a compile-time rejection code.
+                if let Some(code) = a
                     .as_form(clause, "error")
                     .and_then(|t| t.first().copied())
-                    .and_then(|id| a.as_name(id).map(str::to_string));
+                    .and_then(|id| a.as_name(id).map(str::to_string))
+                {
+                    trials.push(Trial {
+                        call: pending_call.take(),
+                        expect: Expect::Error(code),
+                    });
+                }
             }
             Some("trap") => {
-                trap = a
+                // `(trap "<reason>")` — closes a trial with a runtime trap.
+                if let Some(reason) = a
                     .as_form(clause, "trap")
                     .and_then(|t| t.first().copied())
-                    .and_then(|id| string_leaf(a, id));
+                    .and_then(|id| string_leaf(a, id))
+                {
+                    trials.push(Trial {
+                        call: pending_call.take(),
+                        expect: Expect::Trap(reason),
+                    });
+                }
             }
             Some("compiler") => {
                 // `(compiler (error <CODE>))` — a provable-at-compile-time rejection accompanying a
-                // dynamic `(trap …)`. The compiler's recorded outcome is the rejection.
+                // dynamic `(trap …)`. The compiler's recorded outcome is the rejection, so it OVERRIDES
+                // the most recently closed trial's result (the `(trap …)` that precedes it in the same
+                // trial). If it appears before any result, it opens+closes a trial on its own.
                 if let Some(inner) = a
                     .as_form(clause, "compiler")
                     .and_then(|t| t.first().copied())
                     && a.head_name(inner) == Some("error")
-                {
-                    compiler_error = a
+                    && let Some(code) = a
                         .as_form(inner, "error")
                         .and_then(|t| t.first().copied())
-                        .and_then(|id| a.as_name(id).map(str::to_string));
+                        .and_then(|id| a.as_name(id).map(str::to_string))
+                {
+                    if let Some(last) = trials.last_mut() {
+                        last.expect = Expect::Error(code);
+                    } else {
+                        trials.push(Trial {
+                            call: pending_call.take(),
+                            expect: Expect::Error(code),
+                        });
+                    }
                 }
             }
             Some("needs") => {
@@ -238,23 +285,14 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let input = input.ok_or_else(|| format!("case {description:?} has no (input …)"))?;
     let program = normalize_program(a, input);
 
-    // Primary result precedence: a compile-time rejection (compiler-error, or a primary error) is the
-    // compiler's recorded outcome; else the terminal output/trap.
-    let expect = if let Some(code) = compiler_error.or(error) {
-        Expect::Error(code)
-    } else if let Some(v) = output {
-        Expect::Output(v)
-    } else if let Some(reason) = trap {
-        Expect::Trap(reason)
-    } else {
+    if trials.is_empty() {
         return Err(format!("case {description:?} has no primary result clause"));
-    };
+    }
 
     Ok(Record {
         description,
         program,
-        call,
-        expect,
+        trials,
         needs,
     })
 }
@@ -346,5 +384,69 @@ fn string_leaf(a: &Arenas, id: StructId) -> Option<String> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A single-result case (the common shape) parses to ONE trial — no call, one output.
+    #[test]
+    fn a_single_result_case_is_one_trial() {
+        let recs = read(r#"(case "x" (input 5) (output (: 5 Int64)))"#).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].trials.len(), 1);
+        assert!(recs[0].trials[0].call.is_none());
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Output(v) if v == "(: 5 Int64)"));
+    }
+
+    /// Interleaved `(call …) (output …)` pairs parse to one trial each, in order — the multi-call form.
+    #[test]
+    fn interleaved_call_result_pairs_are_separate_trials() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (main (: b Bool)) (match b (true 1) (false 2))) (export main)))
+                 (call main (: true Bool))  (output (: 1 Int64))
+                 (call main (: false Bool)) (output (: 2 Int64)))"#,
+        )
+        .unwrap();
+        assert_eq!(recs[0].trials.len(), 2);
+        let t0 = &recs[0].trials[0];
+        assert_eq!(t0.call.as_ref().unwrap().args, vec!["true".to_string()]);
+        assert!(matches!(&t0.expect, Expect::Output(v) if v == "(: 1 Int64)"));
+        let t1 = &recs[0].trials[1];
+        assert_eq!(t1.call.as_ref().unwrap().args, vec!["false".to_string()]);
+        assert!(matches!(&t1.expect, Expect::Output(v) if v == "(: 2 Int64)"));
+    }
+
+    /// A case may mix result KINDS across its trials — one `(output …)`, one `(trap …)`.
+    #[test]
+    fn trials_may_have_different_result_kinds() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (main (: x Int64)) (<< x 63)) (export main)))
+                 (call main (: -1 Int64)) (output (: -9223372036854775808 Int64))
+                 (call main (: 1 Int64))  (trap "integer overflow"))"#,
+        )
+        .unwrap();
+        assert_eq!(recs[0].trials.len(), 2);
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Output(_)));
+        assert!(matches!(&recs[0].trials[1].expect, Expect::Trap(r) if r == "integer overflow"));
+    }
+
+    /// The flat record stream emits one `call?`/`arg*`/`expect` group per trial (round-trips the shape).
+    #[test]
+    fn render_emits_a_group_per_trial() {
+        let text = to_records(
+            r#"(case "x"
+                 (input (do (def (main (: b Bool)) b) (export main)))
+                 (call main (: true Bool))  (output (: true Bool))
+                 (call main (: false Bool)) (output (: false Bool)))"#,
+        )
+        .unwrap();
+        // Two `expect` lines (one per trial) and two `call` lines.
+        assert_eq!(text.matches("\nexpect\t").count() + text.starts_with("expect\t") as usize, 2);
+        assert_eq!(text.matches("call\t").count(), 2);
     }
 }

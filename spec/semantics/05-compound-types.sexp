@@ -441,27 +441,20 @@
 ; reported a spurious `unbound name` for the plainly-bound parameter. Both branch selections and the
 ; straight-line companion (no `if`) project the runtime element.
 
-(case "a runtime-branched tuple returned from a callee is projected in the caller (then)"
+(case "a runtime-branched tuple returned from a callee is projected in the caller"
   (doc    "`(pick b)` returns `(tuple 1 2)` or `(tuple 3 4)` chosen by the runtime Bool `b`; the caller
-           projects element 0. With `b` = true the callee returns the first tuple, so element 0 is 1.
-           The `if`-branched compound crosses the `pick`→`main` call boundary and is projected in the
-           caller — pins that inlining `pick` threads main's `b` into both branch constructors (a
-           substitution earlier dropped through the branch/compound combination, spuriously reporting
-           `b` unbound).")
+           projects element 0. The `if`-branched compound crosses the `pick`→`main` call boundary and is
+           projected in the caller — pins that inlining `pick` threads main's `b` into both branch
+           constructors (a substitution earlier dropped through the branch/compound combination,
+           spuriously reporting `b` unbound). Exercised at BOTH branches: `b` = true returns the first
+           tuple so element 0 is 1; `b` = false returns the second so element 0 is 3 — confirming the
+           projection follows the runtime branch the callee selected, across the call.")
   (input  (do
             (def (pick b) (if b (tuple 1 2) (tuple 3 4)))
             (def (main (: b Bool)) (. (pick b) 0))
             (export main)))
   (call   main (: true Bool))
-  (output (: 1 Int64)))
-
-(case "a runtime-branched tuple returned from a callee is projected in the caller (else)"
-  (doc    "The else companion: with `b` = false, `(pick b)` is `(tuple 3 4)` and element 0 is 3.
-           Confirms the projection follows the runtime branch the callee selected, across the call.")
-  (input  (do
-            (def (pick b) (if b (tuple 1 2) (tuple 3 4)))
-            (def (main (: b Bool)) (. (pick b) 0))
-            (export main)))
+  (output (: 1 Int64))
   (call   main (: false Bool))
   (output (: 3 Int64)))
 

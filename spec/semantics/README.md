@@ -65,9 +65,20 @@ one place a construct's meaning lives.
   parameter that crosses the boundary MUST be annotated (`(: x Int64)`): its boundary representation
   follows its declared type, so an unannotated parameter has no boundary form and the compiler declines.
 
-**Primary result clause — exactly one, the oracle.** This is the recorded result the corpus fixes for
-`input`; every generation that runs the case reproduces it, and the corpus's recorded value — not any
-one implementation — is the authority (constitution §IX; §XIV). Usually a *terminal clause* — the
+  **A case may pair SEVERAL `(call …)`s, each with its own result** — exercising one program at several
+  runtime arguments without duplicating the whole case. Write the pairs interleaved: each `(call …)` is
+  immediately followed by the result clause it produces (an `(output …)`/`(trap …)`/`(error …)`), e.g.
+  `(call main (: true Bool)) (output (: 1 Int64)) (call main (: false Bool)) (output (: 2 Int64))`. The
+  program is compiled ONCE and run once per call; the case passes iff EVERY pair matches (a failing pair
+  is reported with its call). Prefer this to two near-identical cases that share an `(input …)` and
+  differ only in the argument. Distinct results per call are fine — one may `(output …)` and another
+  `(trap …)` (e.g. a shift that fits for one operand and overflow-traps for another).
+
+**Primary result clause — one per call (usually exactly one), the oracle.** This is the recorded result
+the corpus fixes for `input` (or for each `(call …)`); every generation that runs the case reproduces
+it, and the corpus's recorded value — not any one implementation — is the authority (constitution §IX;
+§XIV). A case with no `(call …)`, or a single call, has exactly one; a case with several `(call …)`s has
+one result clause after each (see the `(call …)` clause above). Usually a *terminal clause* — the
 outcome of running the program:
 - `(output <value-form>)` — the value the run produces on normal termination.
 - `(trap "<reason>")` — the run halts at a defined point with this reason (for example, a checked overflow).

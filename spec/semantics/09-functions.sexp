@@ -1133,20 +1133,16 @@
 ; emitted path agrees with the constant fold across the slot-crossing (i64 source → narrow target) the
 ; folded cases never reach. CORE (no `(needs …)`): the seed realizes `wrap` for the aliased widths.
 
-(case "a runtime truncation to an unsigned byte keeps the low bits"
-  (doc    "`(def (main (: n Int64)) (UInt8.wrap n))` called with 300 = 0x12C. `wrap` keeps the low 8 bits
-           (0x2C = 44), emitted as an `i32.wrap_i64` of the parameter then a mask — 44 : UInt8. Pins the
-           runtime truncating conversion (a self-hosted encoder truncating a computed value to a byte).")
+(case "a runtime truncation to an unsigned byte keeps the low bits, total on negatives"
+  (doc    "`(def (main (: n Int64)) (UInt8.wrap n))` — a runtime truncating conversion (a self-hosted
+           encoder truncating a computed value to a byte), emitted as an `i32.wrap_i64` of the parameter
+           then a mask. `wrap` keeps the low 8 bits and is TOTAL (never traps, unlike the checked
+           `T.of`). Exercised at two operands: n = 300 = 0x12C keeps 0x2C = 44 : UInt8; n = -1 keeps the
+           low 8 bits of -1's two's-complement (all ones) = 255 : UInt8, WITHOUT trapping on the negative
+           value — the emitted conversion reinterprets the low bits exactly as the constant fold does.")
   (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
   (call   main (: 300 Int64))
-  (output (: 44 UInt8)))
-
-(case "a runtime truncation of a negative value uses two's complement and never traps"
-  (doc    "`(UInt8.wrap n)` with n = -1 at run time = 255 — the low 8 bits of -1's two's-complement (all
-           ones). It does NOT trap on the negative value (contrast the checked `T.of`, which would report
-           it): `wrap` is total. Pins the emitted conversion reinterprets the low bits for a negative
-           runtime operand exactly as the constant fold does.")
-  (input  (do (def (main (: n Int64)) (UInt8.wrap n)) (export main)))
+  (output (: 44 UInt8))
   (call   main (: -1 Int64))
   (output (: 255 UInt8)))
 
