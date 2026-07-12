@@ -782,6 +782,22 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return compound_ctor_type(db, prim, args);
     }
+    // A NULLARY PERFORM `(E.op)` — an effect operation applied to no argument. Its `(meta t)` scheme is
+    // `(-> Unit result)` (a `Unit`-domain op whose unit argument is elided in the corpus surface), so the
+    // performance's type is `result`, NOT the op record's type (which the zero-arg identity short-circuit
+    // below would wrongly return). Checked before that short-circuit, only for an effect operation, so an
+    // ordinary nullary def `(g)` is unaffected. (A non-nullary op reaches the scheme-peeling loop below.)
+    if crate::eval::effect_op_of(db, head).is_some() {
+        let mut fresh = Fresh::new();
+        if let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) {
+            let cur = crate::unify::instantiate(&scheme, &mut fresh);
+            if let Ty::Fn(param, result) = &cur
+                && (args.is_empty() && matches!(**param, Ty::Unit))
+            {
+                return (**result).clone();
+            }
+        }
+    }
     // A ZERO-ARGUMENT application `(g)` with a non-lambda head is the head value — applying to no
     // arguments is the identity (a nullary def `(def (g) 7)` called). Its type is the head's type.
     // Mirrors the same short-circuit in `lower`, so `(g)` types and lowers as its body value. A
@@ -839,7 +855,20 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             _ => return Ty::Any,
         }
     }
-    subst.apply(&cur)
+    // A NULLARY PERFORM: an effect operation declared `(-> Unit T)` performed as `(E.op)` (no argument —
+    // the `unit` domain is elided, the corpus surface). After the given args are peeled, if the head is
+    // an effect operation and `cur` is still `(-> Unit result)`, the elided unit is the implicit argument
+    // — so the performance's type is `result`, not the un-applied arrow. Without this a nullary perform
+    // types as its arrow (a `Type`), and using it as a value (`(+ (E.op) 1)`) faults "unify Int64 with
+    // Type". (Only for an effect op — an ordinary partial application keeps its arrow type.)
+    let applied = subst.apply(&cur);
+    if crate::eval::effect_op_of(db, head).is_some()
+        && let Ty::Fn(param, result) = &applied
+        && matches!(**param, Ty::Unit)
+    {
+        return subst.apply(result);
+    }
+    applied
 }
 
 /// Apply a def SCHEME to `args`, returning the result type — instantiate it with fresh variables, then

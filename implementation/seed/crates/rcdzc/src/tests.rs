@@ -7072,18 +7072,21 @@ mod stage1 {
     }
 
     #[test]
-    fn a_handler_form_is_recognized_and_declines_cleanly() {
-        // E1a: `handle`/`resume` are recognized grammar with resolved node shapes, but handler lowering
-        // is not built yet — so a handled program DECLINES (does not crash, does not miscompile, does not
-        // run to a wrong value). The point is that the surface parses and the compiler declines rather
-        // than aborting (decline-don't-miscompile). Full handler resolution (this case running to 6)
-        // arrives in E1b+.
+    fn a_tail_resumptive_handler_runs() {
+        // E1c: a tail-resumptive handler is REDUCED AWAY at lowering — the perform `(Choose.pick)` is
+        // resolved to its arm and rewritten to the arm's resume value `5`, so `(+ (Choose.pick) 1)` = 6.
+        // The handler is stateless (seed unit, thread s unchanged); the whole `handle` becomes plain
+        // arithmetic, so `select` sees only ordinary `Core` (no effect node, no runtime handler search).
         let src = "(do (effect Choose (op pick (-> Unit Int64))) \
                    (def (main) (handle unit (((. Choose pick) () s (resume 5 s))) \
                    (+ ((. Choose pick)) 1))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a handler is recognized but not yet lowered → it must decline, not compile"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a tail-resumptive handler compiles and runs"),
+                "main"
+            ),
+            6
         );
     }
 

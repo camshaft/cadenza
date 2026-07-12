@@ -770,6 +770,29 @@ pub fn variant_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
     }
 }
 
+/// The effect-operation IDENTITY of the value at `id`, if it is an effect operation — the declaring
+/// effect's declaration occurrence and the operation's index, read off the `(meta effect-op)` channel
+/// (an `(effect-op <decl> <index>)` node the effect synthesis wrote, `crate::effects`). `None` for any
+/// value that is not an effect operation (no `(meta effect-op)`). This is what a PERFORM reads to know
+/// WHICH operation is performed — the analogue of `variant_disc_of` for a variant constructor. It also
+/// MARKS a value as an operation (distinguishing `E.op` from an ordinary member value).
+pub fn effect_op_of(db: &mut Db, id: StructId) -> Option<(crate::ast::StructId, u32)> {
+    let field = project_meta(db, id, "effect-op")?;
+    // `(effect-op <decl> <index>)` — decl and index are decimal integer literals.
+    let tail = db.ast.as_form(field, "effect-op")?;
+    let decl_occ = tail.first().copied()?;
+    let index_occ = tail.get(1).copied()?;
+    let decl = match resolved_of(db, decl_occ) {
+        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok())?,
+        _ => return None,
+    };
+    let index = match resolved_of(db, index_occ) {
+        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok())?,
+        _ => return None,
+    };
+    Some((crate::ast::StructId(decl), index))
+}
+
 /// The PAYLOAD type of the sum variant the value at `id` constructs — for a variant constructor
 /// `(. Sum V)` whose `(meta t)` is `(-> payload Sum)`, the arrow's parameter `payload`. Read via the
 /// ordinary `(meta t)` scheme, so it works for any single-payload variant. A NULLARY variant's type is

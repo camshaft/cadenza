@@ -682,14 +682,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
             "a type value or compile-time lambda has no runtime form",
         )),
-        // EFFECT CONTROL FORMS (E1a: surface recognized, lowering not yet built). The compile-time
-        // evaluator will REDUCE a `handle` away — resolving each enclosed perform to a concrete arm and
-        // rewriting the tail-resumptive case to plain code — but that handler-context-aware fold is E1b+.
-        // Until then a `handle`/`host`/`resume` DECLINES: the program TYPES (so a handled expression in a
-        // typed context does not fault) but does not RUN.
-        Resolved::Handle { .. } => Core::Poison(Reject::decline(
-            "an effect handler is not yet lowered (handler resolution arrives in E1)",
-        )),
+        // A `handle` is REDUCED AWAY (E1c): resolve each enclosed perform to its concrete arm and rewrite
+        // the tail-resumptive case to plain code — the perform becomes the arm's resume value, the
+        // next-state threads forward (`DESIGN-effects-rcdzc.md` §4.1). `reduce_handle` produces a
+        // rewritten BODY occurrence, which we then lower by the ordinary path (so `select` sees only
+        // plain `Core`). A case the tail path cannot serve (a non-tail/absent resume, a cross-function or
+        // recursive perform) makes `reduce_handle` return `None` → DECLINE (a Todo, never a miscompile).
+        Resolved::Handle { init, arms, body } => match crate::effects::reduce_handle(db, init, &arms, body) {
+            Some(rewritten) => core_of(db, rewritten),
+            None => Core::Poison(Reject::decline(
+                "this handler is not yet reducible by the tail-resumptive fold (cross-function \
+                 or non-tail resume arrives in a later increment)",
+            )),
+        },
         Resolved::Host { .. } => Core::Poison(Reject::decline(
             "a host delegation is not yet lowered (the boundary import arrives in E2)",
         )),
