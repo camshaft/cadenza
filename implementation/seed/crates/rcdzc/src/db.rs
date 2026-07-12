@@ -148,6 +148,15 @@ pub struct Db {
     /// provenance-by-back-reference the columns model uses for source position.
     parent: Vec<Option<StructId>>,
 
+    /// For each `StructId`, its POSITION among its parent's children (`0` for a root or a node with no
+    /// recorded position — meaningful only when the node has a parent). Built in the SAME single pass
+    /// as `parent`. It turns "which child of my parent am I?" — the window bound a scope walk needs
+    /// when it ascends INTO a `let` bindings-list from one binding pair — into an O(1) read rather than
+    /// an O(k) `position()` scan of the sibling list. Without it, resolving the n references of a
+    /// sequential `let` (`(let ((a …)(b (f a))(c (g b))…) …)`) re-scans an ever-longer sibling prefix
+    /// per reference — O(n²); with it, each ascent is O(1).
+    child_ix: Vec<u32>,
+
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
     /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
@@ -271,13 +280,14 @@ impl Db {
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let prelude = crate::prelude::install(&mut ast);
         let (defs, exports, type_decls) = scan_top_level(&ast);
-        let parent = parent_index(&ast);
+        let (parent, child_ix) = parent_index(&ast);
         Db {
             ast,
             defs,
             exports,
             type_decls,
             parent,
+            child_ix,
             prelude,
             user_node_count,
             reduce_depth: 0,
@@ -324,6 +334,14 @@ impl Db {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
     }
 
+    /// `id`'s position among its parent's children (0-based). Meaningful only when `id` has a parent;
+    /// a root or a node with no recorded position reads as `0`. Paired with [`parent_of`], it gives a
+    /// scope walk that ascends into a sibling list (e.g. into a `let` bindings-list from one binding
+    /// pair) the window bound it needs in O(1) rather than an O(k) `position()` scan of the siblings.
+    pub fn child_ix_of(&self, id: StructId) -> usize {
+        self.child_ix.get(id.0 as usize).copied().unwrap_or(0) as usize
+    }
+
     /// Whether `id` is a genuine USER-PROGRAM node — one the decoded program contained, which the
     /// front-end's span table can map to a text region. A prelude binding or an evaluator-synthesized
     /// node (β-reduced body, built `(Int W)` module) is NOT one: it has no source position, so its id
@@ -350,6 +368,7 @@ impl Db {
         let sid = StructId(self.ast.structure.len() as u32);
         self.ast.structure.push(Struct::Atom(lid));
         self.parent.push(None);
+        self.child_ix.push(0);
         sid
     }
 
@@ -357,14 +376,16 @@ impl Db {
     /// scope walk works inside a built subtree. Returns the list's id.
     pub fn push_list(&mut self, children: Vec<StructId>) -> StructId {
         let sid = StructId(self.ast.structure.len() as u32);
-        for &c in &children {
+        for (pos, &c) in children.iter().enumerate() {
             let ix = c.0 as usize;
             if ix < self.parent.len() {
                 self.parent[ix] = Some(sid);
+                self.child_ix[ix] = pos as u32;
             }
         }
         self.ast.structure.push(Struct::List(children));
         self.parent.push(None);
+        self.child_ix.push(0);
         sid
     }
 
@@ -387,19 +408,22 @@ impl Db {
     }
 }
 
-/// Build the parent index: for each structure occurrence, the `List` occurrence that holds it as a
-/// child (`None` for the root). One pass over the whole arena — deterministic (a child's parent is a
-/// fixed function of the arena, no ordering or address involved).
-fn parent_index(ast: &Arenas) -> Vec<Option<StructId>> {
+/// Build the parent index AND the child-position index in one pass: for each structure occurrence,
+/// the `List` occurrence that holds it as a child (`None` for the root) and its position among that
+/// parent's children (`0` when it has no parent). One pass over the whole arena — deterministic (a
+/// child's parent and position are a fixed function of the arena, no ordering or address involved).
+fn parent_index(ast: &Arenas) -> (Vec<Option<StructId>>, Vec<u32>) {
     let mut parent = vec![None; ast.structure.len()];
+    let mut child_ix = vec![0u32; ast.structure.len()];
     for i in 0..ast.structure.len() {
         if let Struct::List(children) = &ast.structure[i] {
-            for &child in children {
+            for (pos, &child) in children.iter().enumerate() {
                 parent[child.0 as usize] = Some(StructId(i as u32));
+                child_ix[child.0 as usize] = pos as u32;
             }
         }
     }
-    parent
+    (parent, child_ix)
 }
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations

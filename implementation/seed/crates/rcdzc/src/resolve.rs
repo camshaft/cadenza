@@ -294,19 +294,15 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Stru
         let bindings_occ = tail.first().copied()?;
         let body_occ = tail.get(1).copied();
         if Some(from) == body_occ {
-            let pairs = binding_pairs(db, bindings_occ);
-            return last_binding_of(db, &pairs, name, pairs.len());
+            // The body sees EVERY binding — no `stop_before`.
+            return last_binder_named(db, bindings_occ, name, None);
         }
         return None;
     }
-    // Case 2: `form` is a let's BINDINGS-LIST, ascended from pair k → bindings 0..k visible.
+    // Case 2: `form` is a let's BINDINGS-LIST, ascended from pair `from` → the bindings BEFORE `from`
+    // are visible (an initializer sees the earlier bindings, not itself or later ones).
     if let_of_bindings_list(db, form).is_some() {
-        let pairs = binding_pairs(db, form);
-        // `from` is one of the `(name init)` pair occurrences; its index k is how many earlier
-        // bindings are in scope for this initializer.
-        if let Some(k) = pair_index(db, form, from) {
-            return last_binding_of(db, &pairs, name, k);
-        }
+        return last_binder_named(db, form, name, Some(from));
     }
     // Case 3: `form` is a `(fn (params) body)`, ascended from the body → its parameters bind. A
     // parameter reference resolves to the PARAMETER occurrence itself (a formal); the evaluator
@@ -415,21 +411,56 @@ fn param_name(db: &Db, param: StructId) -> Option<(&str, StructId)> {
     None
 }
 
-/// The value occurrence of the LAST of the first `upto` bindings whose name is `name`, or `None`. Last
-/// wins so a repeated binding shadows the earlier one.
-fn last_binding_of(
+/// The value occurrence of the LAST binding named `name` visible from a lookup at this bindings-list,
+/// or `None`. Last wins so a repeated binding shadows the earlier one.
+///
+/// A SINGLE allocation-free pass over the bindings-list children — the hot path of scope resolution.
+/// (The earlier form materialized a `Vec<(StructId, StructId)>` of all pairs on EVERY name lookup;
+/// resolving n references in one `let` re-scanned and re-allocated the whole list n times — O(n²)
+/// with heavy malloc/free churn. This reads the children in place, in reverse, and returns on the
+/// first match, so a lookup costs only the distance from the last matching binder.)
+///
+/// `stop_before` bounds the scope: `None` means the whole list is visible (a lookup from the `let`
+/// BODY sees every binding); `Some(pair_occ)` means only the bindings BEFORE `pair_occ` are visible
+/// (an initializer sees the earlier bindings, not itself or later ones — the Case-2 window). A
+/// `stop_before` that names no pair in the list yields `None` (no binding is in scope).
+fn last_binder_named(
     db: &Db,
-    pairs: &[(StructId, StructId)],
+    bindings_occ: StructId,
     name: &str,
-    upto: usize,
+    stop_before: Option<StructId>,
 ) -> Option<StructId> {
-    let mut found = None;
-    for &(binder_name_occ, init_occ) in pairs.iter().take(upto) {
-        if db.ast.as_name(binder_name_occ) == Some(name) {
-            found = Some(init_occ);
+    let Struct::List(pairs) = db.ast.get(bindings_occ) else {
+        return None;
+    };
+    // Find the window end: all pairs when `stop_before` is None, else the pairs strictly before it.
+    // `from` is a child of `bindings_occ`, so its position is the precomputed `child_ix` — an O(1)
+    // read rather than an O(k) scan of the sibling list (the difference between O(n) and O(n²) when
+    // n references each ascend into an n-binding list).
+    let end = match stop_before {
+        None => pairs.len(),
+        Some(from) => {
+            let k = db.child_ix_of(from);
+            // Defensive: the recorded position must actually address `from` in this list. (It always
+            // does for a genuine child; a mismatch would mean `from` is not a child of `bindings_occ`,
+            // in which case no binding is in scope.)
+            if pairs.get(k) != Some(&from) {
+                return None;
+            }
+            k
+        }
+    };
+    // Scan the in-scope pairs in REVERSE and return the first match — the last binder wins, and a
+    // reverse walk lets us stop as soon as we find it rather than scanning the whole prefix.
+    for &pair in pairs[..end].iter().rev() {
+        if let Struct::List(kv) = db.ast.get(pair)
+            && kv.len() == 2
+            && db.ast.as_name(kv[0]) == Some(name)
+        {
+            return Some(kv[1]);
         }
     }
-    found
+    None
 }
 
 /// If `form` is the bindings-list of a `let` (its parent is a `let` and `form` is that let's first
@@ -442,15 +473,6 @@ fn let_of_bindings_list(db: &Db, form: StructId) -> Option<StructId> {
     } else {
         None
     }
-}
-
-/// The index of the binding pair (in `bindings_occ`) whose subtree we ascended from at `from` — i.e.
-/// which `(name init)` pair `from` is.
-fn pair_index(db: &Db, bindings_occ: StructId, from: StructId) -> Option<usize> {
-    if let Struct::List(pairs) = db.ast.get(bindings_occ) {
-        return pairs.iter().position(|&p| p == from);
-    }
-    None
 }
 
 /// The `(binder-name-occ, init-occ)` pairs of a `let` bindings-list occurrence. A malformed pair is
