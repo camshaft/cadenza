@@ -1188,14 +1188,23 @@ fn emit_loop_iteration(
     // width (unification already set it to the parameter's type at the call site — the same
     // reconciliation an operand/branch literal gets, so a default-Int64 literal into a narrow param slot
     // does not mismatch). All args are evaluated BEFORE any store, so each reads the OLD param values.
+    //
+    // Each arg after the first starts its scratch ABOVE the running high-water (`arg_base = *high`), so
+    // sibling args never SHARE a scratch slot. All args are simultaneously live on the operand stack for
+    // the parallel move, and a wasm local has ONE type — a later arg's i32 heap-match handle reusing an
+    // earlier arg's i64 arith-guard slot (`(f (- n 1) (match <heap-Option> …))`) would force one slot to
+    // two types and the module fails validation. `*high` is the max slot ever touched, so advancing to it
+    // hands each arg fresh, never-typed slots (the `MatchSum` arm applies the same discipline internally).
+    let mut arg_base = base;
     for &arg in args {
         if let Core::ConstInt(_) = core_of(db, arg)
             && let Ty::Int(ait) = type_of(db, arg)
         {
-            emit_operand(db, arg, ait, slots, base, high, scratch_ty, layout, out)?;
+            emit_operand(db, arg, ait, slots, arg_base, high, scratch_ty, layout, out)?;
         } else {
-            emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?;
         }
+        arg_base = *high;
     }
     // Pop the values into the parameter slots, last-arg-first (stack is LIFO).
     for &slot in tl.param_slots.iter().rev() {
@@ -4192,11 +4201,19 @@ fn emit_call_args(
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     let param_its = callee_param_int_tys(db, callee);
+    // Each arg after the first starts its scratch ABOVE the running high-water (`arg_base = *high`): the
+    // args are all simultaneously live on the operand stack before the `call`, so a later arg reusing an
+    // earlier arg's scratch slot at a different width (a heap-match handle's i32 slot over an arith
+    // guard's i64 slot — `(g (- n 1) (match <heap-Option> …))`) would force one wasm local to two types
+    // and fail validation. Advancing to `*high` hands each arg fresh, never-typed slots. Mirrors the same
+    // discipline in `emit_loop_iteration` (the self-tail-loop back-edge).
+    let mut arg_base = base;
     for (i, &arg) in args.iter().enumerate() {
         match param_its.get(i).copied().flatten() {
-            Some(it) => emit_operand(db, arg, it, slots, base, high, scratch_ty, layout, out)?,
-            None => emit(db, arg, slots, base, high, scratch_ty, layout, out)?,
+            Some(it) => emit_operand(db, arg, it, slots, arg_base, high, scratch_ty, layout, out)?,
+            None => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
         }
+        arg_base = *high;
     }
     Ok(())
 }

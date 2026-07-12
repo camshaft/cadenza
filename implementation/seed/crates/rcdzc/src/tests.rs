@@ -3163,6 +3163,55 @@ mod match_engine {
     }
 
     #[test]
+    fn a_self_tail_call_with_a_heap_match_argument_emits_valid_wasm() {
+        // ⚠⚠ REGRESSION: a self-tail-recursive accumulator whose self-call passes a `match` over a HEAP
+        // value (Option) as an ARGUMENT emitted a STRUCTURALLY INVALID wasm module ("expected i32, found
+        // i64"). The self-tail-loop lowering pushes all args onto the operand stack simultaneously (the
+        // parallel move into the param slots), yet each arg was emitted at the same scratch `base`: arg 0
+        // `(- n 1)`'s overflow guard types slot `base` i64, and arg 1's non-reusable heap-match scrutinee
+        // types the SAME slot i32 — one wasm local, two types, rejected. Fixed by advancing each arg's
+        // scratch base past the running high-water so siblings hold disjoint slots. `f(5,0)` sums
+        // 5+4+3+2+1 = 15. The match-as-OPERAND sibling (see next test) always worked (its i32 slot nests
+        // above the arith's i64 slots); this pins the match sitting DIRECTLY in the tail-call arg.
+        let src = "(module m \
+            (def (f (: n Int64) (: acc Int64)) \
+              (if (= n 0) acc (f (- n 1) (match (if (> n 0) (Some n) (None)) ((Some x) (+ acc x)) ((None) acc))))) \
+            (def (main) (f 5 0)) (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect("a self-tail-call heap-match arg must emit valid wasm");
+        // The scrutinee is a RUNTIME `if`-produced Option (does not fold), so the program imports the
+        // value-heap runtime — link + run it through `cdz_run` (like the runtime-if-list-len case).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed self-tail-call heap-match run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "15", "self-tail-call heap-match accumulate"),
+            cdz_run::Outcome::Trap(t) => panic!("self-tail-call heap-match run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_non_tail_call_with_a_heap_match_argument_emits_valid_wasm() {
+        // The same scratch-slot collision existed on the NON-tail call path (`emit_call_args`): a call
+        // whose args are `(- n 1)` (i64 arith-guard slot) then a heap-`match` (i32 scrutinee slot) shared
+        // the scratch base. `g(a, m) = a + m`; `(g (- 6 1) (match (Some 10) ((Some x) x) ((None) 0)))` →
+        // 5 + 10 = 15. Companion of the self-tail-call case; guards the ordinary-call fix.
+        let src = "(module m \
+            (def (g (: a Int64) (: m Int64)) (+ a m)) \
+            (def (main) (g (- 6 1) (match (Some 10) ((Some x) x) ((None) 0)))) (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect("a non-tail-call heap-match arg must emit valid wasm");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 15);
+    }
+
+    #[test]
     fn a_runtime_if_list_is_length_measured_with_valid_wasm() {
         // A `(List a)` produced by a RUNTIME `if` (neither branch folds away) then measured by `List.len`
         // must emit VALID wasm and the right length. TWO bugs made it emit an invalid module: (1) a list

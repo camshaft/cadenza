@@ -177,6 +177,7 @@ pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
@@ -247,6 +248,7 @@ pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
+pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a shadowed-constructor application types at the binding's return type
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value

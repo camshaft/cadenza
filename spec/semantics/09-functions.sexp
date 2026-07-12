@@ -549,6 +549,48 @@
             (def (main) (if (go 0 3) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+; A self-tail call (or any call) evaluates ALL its arguments onto the operand stack simultaneously — a
+; parallel move into the parameter slots (the self-tail-loop back-edge) or the call's argument sequence.
+; Each argument's scratch is live until the store, so sibling arguments must occupy DISJOINT scratch
+; slots. A HEAP-scrutinee `match` argument (Option/List/sum) evaluates its non-reusable scrutinee into an
+; i32 handle slot; an arithmetic argument's overflow guard uses an i64 slot. When both shared the same
+; scratch `base`, one wasm local was `local.set` at two widths (i64 then i32) and rcdzc emitted a
+; STRUCTURALLY INVALID module ("expected i32, found i64"). A match as an OPERAND worked (its i32 slot
+; nested above the arith i64 slots), as did a scalar-scrutinee match (it reuses the param, claims no
+; slot); the gap was a heap-match sitting DIRECTLY in a call/tail-call argument. Each argument's scratch
+; must float above the running high-water — the same disjoint-slot discipline the checked-arith operands
+; and the sum-match arms already apply — so a well-typed tail-recursive accumulate-a-matched-value never
+; emits invalid wasm. Sibling of the narrow-two-parameter invalid-wasm regression above (both are a
+; call-boundary machine-slot mismatch).
+
+(case "a self-tail call passing a heap-match argument compiles to valid wasm"
+  (doc    "`(def (f n acc) (if (= n 0) acc (f (- n 1) (match (if (> n 0) (Some n) (None)) ((Some x) (+ acc
+           x)) ((None) acc)))))` — a tail-recursive accumulator whose self-call's second argument is a
+           `match` over a heap Option. `f(5, 0)` sums 5+4+3+2+1 = 15. rcdzc emitted a STRUCTURALLY INVALID
+           wasm module: the self-tail-loop back-edge slot received the heap-match value at a width
+           (i32 handle) colliding with the first argument's i64 arith-guard slot. The same shape with the
+           match as an OPERAND `(+ acc (match …))` works (15) and a SCALAR-scrutinee match in the same
+           argument works, so the machinery is right; the gap is a heap-scrutinee match in a self-tail-call
+           argument. Expected: 15.")
+  (input  (do
+            (def (f (: n Int64) (: acc Int64))
+              (if (= n 0) acc (f (- n 1) (match (if (> n 0) (Some n) (None)) ((Some x) (+ acc x)) ((None) acc)))))
+            (def (main) (f 5 0)) (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
+(case "a non-tail call passing a heap-match argument compiles to valid wasm"
+  (doc    "The same scratch-slot collision on the ORDINARY (non-tail) call path: `g(a, m) = a + m`, called
+           `(g (- 6 1) (match (Some 10) ((Some x) x) ((None) 0)))`. Argument 0 `(- 6 1)` claims an i64
+           arith-guard slot; argument 1's heap-match scrutinee claims an i32 handle slot — they must be
+           disjoint. 5 + 10 = 15. Companion of the self-tail-call case; pins that the disjoint-slot fix
+           covers a plain call's argument sequence, not only the self-tail-loop back-edge.")
+  (input  (do
+            (def (g (: a Int64) (: m Int64)) (+ a m))
+            (def (main) (g (- 6 1) (match (Some 10) ((Some x) x) ((None) 0)))) (export main)))
+  (call   main)
+  (output (: 15 Int64)))
+
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
            argument. Multi-parameter syntax (fn (x y) body) desugars to (fn x (fn y body)). Partial
