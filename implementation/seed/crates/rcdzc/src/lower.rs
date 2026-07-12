@@ -149,24 +149,45 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Code::Malformed,
                 format!("record has no field `{}`", key.name),
             )),
-            // The operand did not reduce to a compile-time-visible record. If it is a RUNTIME record (a
-            // call result, an `if` selection) carrying the field, read it off the heap array: a record
-            // at run time IS a positional array in sorted-key order, so the field read is a `Core::Proj`
-            // at the field's sorted index — the SAME `arr-get` a tuple projection uses. Otherwise it is
-            // a genuine non-record (or a poison operand, whose own root cause propagates).
+            // The operand did not reduce to a compile-time-visible record. MEMBER-INTO-IF: if it is an
+            // `(if c R S)` whose BOTH branches are visible records carrying the field →
+            // `(if c R.key S.key)`, pushing the member read into each branch. The record analogue of the
+            // tuple `PROJECTION-INTO-IF` (a record built through an `if` was OPAQUE to `member_value`, so
+            // it stayed a runtime heap value — `arr-alloc` + per-field box/set + `arr-get`/unbox, purely
+            // to read one field back). Reuses the EXISTING field-value occurrences as the branches (no
+            // ast synthesis, no re-resolution — each keeps its resolved scope); the un-read sibling
+            // fields drop exactly as a visible-record member fold drops them, and `c` is evaluated either
+            // way so its trap is preserved. `member_value` on each branch reduces it to its record and
+            // projects `key` (by name — order-independent); a branch missing the field, or a kept
+            // multi-use `if`-binding (`reduce_to_if` stops there), declines this and falls through to the
+            // runtime read below.
             crate::eval::Member::NotRecord => {
-                match crate::eval::runtime_member_index(db, operand, &key) {
-                    Some(index) => {
-                        trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access on a runtime record → arr-get at the field's sorted index");
-                        Core::Proj { operand, index }
+                if let Some((cond, then_, else_)) = crate::eval::reduce_to_if(db, operand)
+                    && let crate::eval::Member::Field(tf) =
+                        crate::eval::member_value(db, then_, &key)
+                    && let crate::eval::Member::Field(ef) =
+                        crate::eval::member_value(db, else_, &key)
+                {
+                    trace!(target: "rcdzc::fold", node = id.0, key = %key.name, "member read pushed into an if of records (no heap build)");
+                    Core::If {
+                        cond,
+                        then_: tf,
+                        else_: ef,
                     }
-                    None => match core_of(db, operand) {
-                        Core::Poison(r) => Core::Poison(r),
-                        _ => Core::Poison(Reject::coded(
-                            Code::Malformed,
-                            "member access requires a record",
-                        )),
-                    },
+                } else {
+                    match crate::eval::runtime_member_index(db, operand, &key) {
+                        Some(index) => {
+                            trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access on a runtime record → arr-get at the field's sorted index");
+                            Core::Proj { operand, index }
+                        }
+                        None => match core_of(db, operand) {
+                            Core::Poison(r) => Core::Poison(r),
+                            _ => Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                "member access requires a record",
+                            )),
+                        },
+                    }
                 }
             }
         },

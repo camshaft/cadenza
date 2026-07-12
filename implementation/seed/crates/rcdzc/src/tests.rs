@@ -784,6 +784,42 @@ fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
     assert_eq!(f, 20, "p false → .0 = b (the else branch's element 0)");
 }
 
+/// The RECORD analogue of the tuple `PROJECTION-INTO-IF` fold: a SINGLE field read of a record built
+/// through an `if` pushes the member read INTO the branches — `(. (if c (record (x a)(y b))
+/// (record (x b)(y a))) x)` → `(if c a b)`. The `if`-selected record was OPAQUE to `member_value`
+/// (`reduce_to_record_id` stops at an `if`), forcing a per-call heap build of BOTH branch records
+/// (`arr-alloc` + per-field box/set) then an `arr-get`/unbox to read one field back; now the field is
+/// projected from each branch (by NAME — order-independent) and the two records fold away, leaving one
+/// `if` over the selected field values — no heap, no runtime import. Reuses the EXISTING field-value
+/// occurrences (no ast synthesis). Fields are written out of sorted order to confirm the fold is by key,
+/// not slot. Contrast `a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index`, where the record
+/// is built behind a RECURSIVE call so it stays opaque and the heap read stands.
+#[test]
+fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // `.x` of `(if p (record (y b)(x a)) (record (y a)(x b)))` → `(if p a b)`.
+    let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
+                 (. (if p (record (y b) (x a)) (record (y a) (x b))) x)) (export pick))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+        "a single member read of an if-of-records must fold (no per-call arr-alloc, no runtime import)"
+    );
+    let t: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(true), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(t, 10, "p true → .x = a");
+    let f: i64 = run_returns_with(
+        &bytes,
+        "pick",
+        &[Val::Bool(false), Val::S64(10), Val::S64(20)],
+    );
+    assert_eq!(f, 20, "p false → .x = b (the else branch's x field)");
+}
+
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
 /// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip
@@ -829,20 +865,22 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
 /// the runtime value (slot 0), not the literal 9. Earlier the member-access path folded only through a
 /// compile-time record and REJECTED a call-produced one with a self-contradictory CDZ0201 "requires a
 /// record, found (record …)"; this pins the runtime field read AND that it indexes by sorted position.
-/// To keep the record OPAQUE to the fold (a call-returned record now folds through — cycle 16), it comes
-/// from an `if` whose branches DIFFER in the `a` field (`n` vs `n+1`): `reduce_to_record_id` does not
-/// see through an `if`, so `main` selects one at run time and reads `a` off the heap.
+/// To keep the record OPAQUE to the fold, it is built behind a RECURSIVE call: `is_recursive` declines
+/// the compile-time β-reduction, so `reduce_to_record_id` (and thus the member fold, incl. the cycle-33
+/// member-into-if fold) cannot see through `mk` — `main` reads `a` off the heap at run time. (Earlier
+/// this test used an `if` with branches differing in `a`, but cycle 33's member-into-if fold now sees
+/// through such an `if`, so an `if` no longer keeps a record opaque — a recursive call does.)
 #[test]
 fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
     use crate::testkit::parse;
     // The record's `a` field is the parameter; fields written z-before-a so the sorted layout (a=0, z=1)
-    // differs from the write order. The `if` has a RUNTIME condition `(< v 100)` (not compile-time
-    // constant, so it does not fold to a taken literal branch) and branches that DIFFER in `a` — so the
-    // record stays a runtime heap value. For v = 41 the condition is true, `a` = v, and projecting `a`
-    // reads slot 0 = the argument.
+    // differs from the write order. `mk` recurses to a base case that builds the record, so the compiler
+    // cannot fold through it — `main` selects the runtime handle and reads `a` off the heap. For v = 41
+    // the recursion bottoms out with `a` = 41, and projecting `a` reads slot 0.
     let src = "(module m \
-                 (def (main (: v Int64)) \
-                   (. (if (< v 100) (record (z 9) (a v)) (record (z 9) (a (+ v 1)))) a)) \
+                 (def (mk (: n Int64)) (if (< n 0) (record (z 9) (a 0)) \
+                   (if (= n 41) (record (z 9) (a n)) (mk (- n 1))))) \
+                 (def (main (: v Int64)) (. (mk v) a)) \
                  (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
@@ -877,14 +915,16 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
 /// value, `r` is that record and `(. r x)` is its `x`. Earlier the seed rejected the body standalone
 /// with a self-contradictory CDZ0201 "requires a record, found Any" (an `Any` operand is unconstrained,
 /// not a proven non-record) — projection was the outlier vs arithmetic, which never faulted on `Any`.
-/// The argument is an `if`-selected record (runtime condition, branches differing in `x`) so it stays
-/// OPAQUE to the fold (a plain `(mk v)` would fold through — cycle 16): `get-x` reads `x` off the heap
-/// at run time. For v = 41 the condition holds, so `x` = v; composed run: 41.
+/// The argument is a record built behind a RECURSIVE call so it stays OPAQUE to the fold (a plain
+/// `(mk v)` would fold through — cycle 16; and an `if`-selected record now folds through too — cycle
+/// 33's member-into-if): `is_recursive` declines the β-reduction, so `get-x` reads `x` off the heap at
+/// run time. For v = 41 the recursion bottoms out with `x` = v; composed run: 41.
 #[test]
 fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
     use crate::testkit::parse;
-    let src = "(module m (def (get-x r) (. r x)) (def (mk n) (record (x n) (y 2))) \
-                 (def (main (: v Int64)) (get-x (if (< v 100) (mk v) (mk (+ v 1))))) (export main))";
+    let src = "(module m (def (get-x r) (. r x)) \
+                 (def (mk n) (if (= n 41) (record (x n) (y 2)) (mk (+ n 1)))) \
+                 (def (main (: v Int64)) (get-x (mk v))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_some(),

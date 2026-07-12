@@ -1008,34 +1008,43 @@ type IfOfTuples = (
     std::sync::Arc<[StructId]>,
 );
 
-/// If `id` reduces (through refs/annotations) to an `(if cond T E)` whose BOTH branches reduce to
-/// compile-time-visible tuples of the SAME arity, return `(cond, te, ee)` — the condition occurrence and
-/// the two branches' element occurrences. This lets a projection push INTO the branches:
-/// `(. (if c T E) i)` → `(if c T[i] E[i])`, reusing the EXISTING element occurrences as the new `if`'s
-/// branches (NO ast synthesis, NO re-resolution — each occurrence keeps the scope it was resolved in).
-/// The un-projected sibling elements drop exactly as they do for a plain tuple projection
-/// (`reduce_to_tuple_elems` — a trapping sibling that folds away is never built, so never evaluated), and
-/// `cond` is evaluated in both forms, so the fold is value- and trap-preserving. `None` when the operand
-/// is not such an `if`, hits a KEPT multi-use binding (opaque — a runtime tuple, read by `arr-get`), or
-/// the branch tuples disagree in arity (then the projection stays a runtime `Core::Proj`). Mirrors
-/// `reduce_to_tuple_elems`'s ref/annot/kept handling.
-pub fn reduce_to_if_of_tuples(db: &mut Db, id: StructId) -> Option<IfOfTuples> {
+/// If `id` reduces (through refs/annotations) to an `(if cond then else)`, return its three child
+/// occurrences `(cond, then_, else_)`. This is the substrate for pushing a CONSUMER (a projection, a
+/// member read) INTO an `if`'s branches: `(consume (if c T E))` → `(if c (consume T) (consume E))`,
+/// reusing the EXISTING branch occurrences (NO ast synthesis, NO re-resolution — each keeps the scope
+/// it was resolved in). A KEPT multi-use binding is OPAQUE (its value lives in a slot at run time, read
+/// back — folding through it would duplicate the computation), so a `Ref` to one stops the reduction;
+/// a single-use / propagated `Ref` and an `Annot` are followed. Mirrors `reduce_to_tuple_elems`'s
+/// ref/annot/kept handling.
+pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, StructId)> {
     match resolved_of(db, id) {
-        Resolved::If { cond, then_, else_ } => {
-            let te = reduce_to_tuple_elems(db, then_)?;
-            let ee = reduce_to_tuple_elems(db, else_)?;
-            (te.len() == ee.len()).then_some((cond, te, ee))
-        }
+        Resolved::If { cond, then_, else_ } => Some((cond, then_, else_)),
         Resolved::Ref { value } => {
             if db.kept_bindings.contains(&value) {
                 None
             } else {
-                reduce_to_if_of_tuples(db, value)
+                reduce_to_if(db, value)
             }
         }
-        Resolved::Annot { expr, .. } => reduce_to_if_of_tuples(db, expr),
+        Resolved::Annot { expr, .. } => reduce_to_if(db, expr),
         _ => None,
     }
+}
+
+/// If `id` reduces to an `(if cond T E)` whose BOTH branches reduce to compile-time-visible tuples of
+/// the SAME arity, return `(cond, te, ee)` — the condition occurrence and the two branches' element
+/// occurrences. This lets a projection push INTO the branches: `(. (if c T E) i)` → `(if c T[i] E[i])`,
+/// reusing the EXISTING element occurrences as the new `if`'s branches (NO ast synthesis, NO
+/// re-resolution). The un-projected sibling elements drop exactly as they do for a plain tuple
+/// projection (`reduce_to_tuple_elems` — a trapping sibling that folds away is never built, so never
+/// evaluated), and `cond` is evaluated in both forms, so the fold is value- and trap-preserving. `None`
+/// when the operand is not such an `if` (via [`reduce_to_if`], which stops at a kept multi-use binding),
+/// or the branch tuples disagree in arity (then the projection stays a runtime `Core::Proj`).
+pub fn reduce_to_if_of_tuples(db: &mut Db, id: StructId) -> Option<IfOfTuples> {
+    let (cond, then_, else_) = reduce_to_if(db, id)?;
+    let te = reduce_to_tuple_elems(db, then_)?;
+    let ee = reduce_to_tuple_elems(db, else_)?;
+    (te.len() == ee.len()).then_some((cond, te, ee))
 }
 
 /// The primitive the value at `id` denotes, following a `Ref` — `+` resolves to a `Ref` to its
