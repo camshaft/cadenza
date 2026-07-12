@@ -188,7 +188,7 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
             [] => {} // no artifact (errors already reported); fall through to the exit status.
             many => {
                 eprintln!(
-                    "rcdzc: `-o -` writes ONE artifact to stdout, but {} were produced",
+                    "cdz: `-o -` writes ONE artifact to stdout, but {} were produced",
                     many.len()
                 );
                 return ExitCode::FAILURE;
@@ -223,11 +223,7 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
             eprintln!("{prog}: cannot write {}: {e}", path.display());
             return ExitCode::FAILURE;
         }
-        eprintln!(
-            "rcdzc: wrote {} ({} bytes)",
-            path.display(),
-            art.bytes.len()
-        );
+        eprintln!("cdz: wrote {} ({} bytes)", path.display(), art.bytes.len());
     }
 
     if out.has_error() {

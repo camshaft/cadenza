@@ -1,28 +1,45 @@
 ---
 name: codemod
 description: >-
-  How to structurally search and rewrite Cadenza programs with the `cdz-syntax query` / `rewrite`
-  codemod tool (in the cadenza-syntax crate). Read this whenever the task is finding or transforming
-  code by SHAPE rather than text — structural search-and-replace, a rename/peephole/wrap refactor,
-  a multi-rule simplifier pass, running a codemod across files/directories (apply in place, diff
-  preview, or JSON), structurally diffing two programs (which subtrees changed), finding duplicated
-  subtrees (exact or near-clone / anti-unification), counting occurrences of a form, extracting spans
-  of matching nodes, or building on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern
-  language, structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context
-  (`inside`/`has`), multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the
-  `diff` (structural tree-diff) and `clones` (content-hash duplicate + `--near` anti-unification)
-  subcommands, `lint` mode (anti-pattern checker / CI gate), the CLI, the library API, and the
-  self-hosted sidecar map.
+  How to structurally search and rewrite Cadenza programs with the `cdz query` / `rewrite` codemod
+  tool, and how to ask the COMPILER for a semantic fact with `cdz type` / `cdz uses` (all in the
+  unified `cdz` binary). Read this whenever the task is finding or transforming code by SHAPE rather
+  than text — structural search-and-replace, a rename/peephole/wrap refactor, a multi-rule simplifier
+  pass, running a codemod across files/directories (apply in place, diff preview, or JSON),
+  structurally diffing two programs (which subtrees changed), finding duplicated subtrees (exact or
+  near-clone / anti-unification), counting occurrences of a form, extracting spans of matching nodes,
+  or building on the query/Tree matcher API — OR when the task is a SEMANTIC query the shape layer
+  can't answer: the type of a definition (`cdz type`) or every source location that references a
+  name (`cdz uses`, a span-mapped go-to-references). Covers the `,x`/`,@xs` pattern language,
+  structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
+  multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
+  (structural tree-diff) and `clones` (content-hash duplicate + `--near` anti-unification)
+  subcommands, `lint` mode (anti-pattern checker / CI gate), the semantic `type`/`uses` compiler
+  queries, the CLI, the library API, and the self-hosted sidecar map.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
 
 A codemod here is **structural search-and-replace over the homoiconic AST**, not a text patch.
 Because every Cadenza form is `(head child…)` data, a pattern that matches code *is itself code* — a
-rewrite rule reads in the shape of what it rewrites. The tool lives in `cadenza-syntax` (the `query`
-module + the `cdz-syntax query`/`rewrite` subcommands). It is **Rung 2** of
+rewrite rule reads in the shape of what it rewrites. The structural tool lives in `cadenza-syntax`
+(the `query` module + the `query`/`rewrite`/`diff`/`lint`/`clones` subcommands). It is **Rung 2** of
 `implementation/DESIGN-query-engine.md` (a built-in Rust driver) standing in for the eventual
 self-hosted sidecar — see `implementation/PROTOTYPE-codemod.md` for the full write-up.
+
+> **The binary is now `cdz`, not `cdz-syntax`.** The front-end (convert + this codemod) and the
+> compiler (`compile`, plus the semantic queries below) were unified into ONE tool, `cdz`, over both
+> libraries (`cadenza-syntax` + `rcdzc`); the standalone `cdz-syntax`/`rcdzc` bins were retired. Every
+> `cdz-syntax query …` is now `cdz query …` (the subcommands and flags are unchanged — same code). See
+> [[cdz-unified-binary-cli]].
+>
+> **One consequence is a genuinely new capability.** Because `cdz` holds BOTH libraries in one
+> process, it also offers the SEMANTIC queries the structural layer deliberately can't — `cdz type`
+> (a definition's inferred type) and `cdz uses` (every reference, as `file:line:col`). Those reach
+> into the compiler (`rcdzc`), so they are NOT codemod guards; they are a sibling surface documented
+> in [§Semantic queries](#semantic-queries-cdz-type--cdz-uses--the-compiler-as-oracle) below. The
+> structural pattern language stays purely shape-based (no type/scope guards); the semantic answer is
+> a separate command.
 
 ## The pattern language (not a new language)
 
@@ -55,78 +72,84 @@ pins as the self-hosted end state, so a rule written today reads identically lat
 `is-literal`, `is-name`, `is-int`/`is-float`/`is-str`/`is-bool`, `is-atom`/`is-list`,
 `(head-is NAME)`, `(matches PAT)`, `(not GUARD)`. E.g. `(+ ,(x is-literal) ,y)`, `(f ,(g (head-is *)))`.
 An unknown guard is rejected at compile time. **All guards are purely structural — there are NO
-scope/binding or type guards** (`refs`/`defines`/`type-of`); binding analysis is the compiler's job,
-not this layer's, to avoid duplicating the resolver.
+scope/binding or type guards** (`refs`/`defines`/`type-of`) *inside a pattern*; binding/type analysis
+is the compiler's job, not the matcher's, to avoid duplicating the resolver. When you need a semantic
+fact — "what is the type of this node", "where is this name used" — use the `cdz type` / `cdz uses`
+compiler queries ([§Semantic queries](#semantic-queries-cdz-type--cdz-uses--the-compiler-as-oracle)),
+which ask `rcdzc` directly rather than re-deriving it in the pattern layer. (Combining the two —
+a structural selector filtered by a type predicate — is a planned `cdz query --where` increment; today
+run the structural query, then `cdz type` each hit.)
 
 ## CLI
 
-The binary is `cdz-syntax` (at `target/<profile>/cdz-syntax`, or `cargo run -p cadenza-syntax --bin
-cdz-syntax --`). `--from`/`--to` infer from a FILE extension (`.cdz`/`.ml`→ml, `.sexp`→sexpr,
-`.bin`→binary); stdin needs an explicit `--from`.
+The binary is `cdz` (at `target/<profile>/cdz`, or `cargo run -p cdz --`). `--from`/`--to` infer from
+a FILE extension (`.cdz`/`.ml`→ml, `.sexp`→sexpr, `.bin`→binary); stdin needs an explicit `--from`.
+The codemod subcommands (`query`/`rewrite`/`diff`/`lint`/`clones`) are the front-end surface; `cdz`
+also has `convert`, `compile`, and the semantic `type`/`uses` queries (below).
 
 ```console
 # find every additive-identity site; prints "byte START-END: <form>" + "$var = …" bindings
-$ printf 'f(a + 0, b * 1)' | cdz-syntax query '(+ ,x 0)' --from ml
+$ printf 'f(a + 0, b * 1)' | cdz query '(+ ,x 0)' --from ml
 byte 2-7: (+ a 0)
   $x = a
 
 # just the count
-$ printf 'g(x + 0) + (y + 0)' | cdz-syntax query '(+ ,e 0)' --from ml --count
+$ printf 'g(x + 0) + (y + 0)' | cdz query '(+ ,e 0)' --from ml --count
 2
 
 # rewrite: (+ ,x 0) -> ,x   (result on stdout, "rewrote N site(s)" on stderr)
-$ printf 'f(a + 0, b + 0)' | cdz-syntax rewrite '(+ ,x 0)' ',x' --from ml --to ml
-cdz-syntax: rewrote 2 site(s)
+$ printf 'f(a + 0, b + 0)' | cdz rewrite '(+ ,x 0)' ',x' --from ml --to ml
+cdz: rewrote 2 site(s)
 f(a, b)
 
 # wrap a call with a splice template
-$ printf '(risky a b)' | cdz-syntax rewrite '(risky ,@args)' '(log (risky ,@args))' --from sexpr
+$ printf '(risky a b)' | cdz rewrite '(risky ,@args)' '(log (risky ,@args))' --from sexpr
 (log (risky a b))
 
 # delete a clause from ANY position of a variadic form (two splices around a fixed anchor)
 $ printf '(case foo (doc "d") (needs bar) (result 1))' \
-    | cdz-syntax rewrite '(case ,@a (needs ,_) ,@b)' '(case ,@a ,@b)' --from sexpr
+    | cdz rewrite '(case ,@a (needs ,_) ,@b)' '(case ,@a ,@b)' --from sexpr
 (case foo (doc "d") (result 1))
 
 # a guard + a relational constraint
-$ printf '(do (+ 1 a) (+ b c))' | cdz-syntax query '(+ ,(x is-literal) ,y)' --from sexpr --count
+$ printf '(do (+ 1 a) (+ b c))' | cdz query '(+ ,(x is-literal) ,y)' --from sexpr --count
 1
-$ printf '(do (safe x) (danger (g x)))' | cdz-syntax query 'x' --from sexpr --inside '(danger ,@_)'
-#0: x
+$ printf '(do (safe x) (danger (g x)))' | cdz query 'x' --from sexpr --inside '(danger ,@_)'
+byte 24-25: x
 
 # a multi-rule peephole set (first match wins), applied in one bottom-up pass
-$ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz-syntax rewrite --rules peephole.rules --from sexpr
+$ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz rewrite --rules peephole.rules --from sexpr
 (f a b 0)
 
 # run over a whole directory; --json for machine-readable output
-$ cdz-syntax query '(+ ,e 0)' src/ --json
+$ cdz query '(+ ,e 0)' src/ --json
 [{"file":"src/a.ml","span":{"start":2,"end":7},"matched":"(+ x 0)","bindings":{"e":"x"}}, …]
 
 # preview a rewrite (--diff, file untouched), then apply in place across a dir (--write).
 # --write/--diff are FORMATTING-PRESERVING by default: only changed subtrees are spliced at their
 # spans, so a hand-formatted file keeps its layout/comments (the diff is minimal, line-by-line).
-$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --diff
-$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/ --write
+$ cdz rewrite '(+ ,x 0)' ',x' src/a.ml --diff
+$ cdz rewrite '(+ ,x 0)' ',x' src/ --write
 # force a canonical whole-file reflow instead (opt out of preserving):
-$ cdz-syntax rewrite '(+ ,x 0)' ',x' src/a.ml --write --reprint
+$ cdz rewrite '(+ ,x 0)' ',x' src/a.ml --write --reprint
 
 # STRUCTURAL diff of two programs — which subtrees changed (not text lines)
-$ cdz-syntax diff before.ml after.ml
+$ cdz diff before.ml after.ml
 1: replace (+ a 0) => a
 
 # LINT: flag anti-patterns; exits non-zero on any `error` (a CI gate)
-$ cdz-syntax lint src/ --rule '(lint (deprecated ,@_) "avoid" error)'
+$ cdz lint src/ --rule '(lint (deprecated ,@_) "avoid" error)'
 src/a.ml:2:3: error: avoid
 
 # CLONES: find duplicated subtrees (copy-paste) within/across files
-$ cdz-syntax clones src/ --min-size 4
+$ cdz clones src/ --min-size 4
 clone: 3 occurrences, 4 nodes: (validate config strict)
   src/a.ml:1:11
   src/a.ml:2:11
   src/b.ml:1:11
 
 # NEAR-CLONES: same shape, differing leaves — INFERS the pattern (feed straight into rewrite)
-$ cdz-syntax clones src/ --near --min-size 3
+$ cdz clones src/ --near --min-size 3
 near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
   src/a.ml:1:11 …
 ```
@@ -141,7 +164,8 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
   context: `--inside`/`--has`/`--not-inside`/`--not-has PAT` (repeatable, conjunctive; ancestry/
   containment only — no scope).
 - `rewrite PATTERN TEMPLATE` (or `rewrite --rules FILE`) prints the rewritten program to **stdout** and
-  the count to **stderr** (stdout stays a clean, pipeable program). `--rules FILE` = `(rule PAT TMPL)`
+  the count to **stderr** (stdout stays a clean, pipeable program; the count line is prefixed `cdz:`).
+  `--rules FILE` = `(rule PAT TMPL)`
   forms (first match wins); `--top-down` (default bottom-up); `--fixpoint` (bounded). Output modes:
   `--diff` previews a unified diff (file untouched), `--write` applies in place (FILE inputs only,
   changed files only), `--json` emits `{file?, count, rewritten}` (mutually exclusive with `--write`).
@@ -174,10 +198,53 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
   It buckets by a shape hash then **anti-unifies** — the inverse of matching — INFERRING the pattern
   with `,mK` holes where sites differ (shared when positions vary together). Output:
   `near-clone: N occurrences, H hole(s): (scale x ,m0)`. That pattern *is* a `rewrite` pattern — it
-  re-matches every site — so a near-clone report **feeds straight back into `cdz-syntax rewrite`** to
+  re-matches every site — so a near-clone report **feeds straight back into `cdz rewrite`** to
   factor the duplication into one call.
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
+
+## Semantic queries (`cdz type` / `cdz uses`) — the compiler as oracle
+
+The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
+duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
+holds both the front-end AND `rcdzc` in one process — exposes two **semantic** queries. They parse the
+program keeping its span table, ask the compiler (via its sidecar query engine), and map the answer
+back to source. They are TOTAL: an unknown name yields a defined answer, not an error, and a query
+answers even for a program that would not fully compile.
+
+```console
+# cdz type NAME FILE — the inferred type of a definition, rendered (the same text an annotation uses)
+$ cdz type main prog.cdz
+Int64
+$ cdz type add prog.cdz            # a function renders as its arrow type
+(-> Int64 Int64)
+$ cdz type ghost prog.cdz          # total: unknown name is a defined answer, not a failure
+no such definition `ghost`
+
+# cdz uses NAME FILE — every source location that references a definition/type, as file:line:col
+# (a span-mapped go-to-references; the DECLARATION site is excluded — only references)
+$ cdz uses helper prog.cdz
+prog.cdz:3:12
+prog.cdz:4:5
+```
+
+- **Why these are here and not codemod guards.** `type`/`uses` reach into `rcdzc` (inference,
+  resolution); the structural matcher stays dependency-free. Keeping them a **separate command** (not
+  a `,(x type-of Int64)` guard) is the deliberate split — shape queries in `query`, semantic facts in
+  `type`/`uses`. This realizes `spec/capabilities/tooling-and-lsp.md` §The Compiler Is A Queryable
+  Oracle: an agent learns a static fact by *asking*, and the answer equals what a full compile
+  determines (it's the same column read; see [[rcdzc-sidecar-request-list-abi]]).
+- **`type`** reads the type column (`infer::def_scheme` → `Ty::render_name`). **`uses`** is the
+  transpose of the resolution column: every occurrence resolving to the named def/type, in ascending
+  order, each mapped to `file:line:col` via the span table this process kept (the cross-process CLI
+  could only report raw node ids — this is the in-process win). A name with no references (or none
+  such) prints nothing and exits 0.
+- **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
+  codemod subcommands.
+- **Not yet:** a combined query (`cdz query '(f ,x)' --where 'type-of(x) = Int64'` — a structural
+  selector filtered by a compiler type predicate) is a planned increment. Today, run the structural
+  `query` and pass each hit's binding to `cdz type`. The underlying seam (both libraries, one shared
+  `StructId` space) already makes it reachable.
 
 ## Library API — `cadenza_syntax::query`
 
@@ -258,15 +325,19 @@ its already-rewritten children, so a rule that exposes a new match collapses in 
 
 ## What is NOT here (and why)
 
-- **Scope- / binding-based queries and guards** (`refs`, `defines`, scope-aware rename) — these need
-  a name resolver, which the **compiler** owns. Kept out on purpose to avoid duplicating scope logic;
-  every guard and relational constraint here is purely structural (shape/ancestry/containment).
-- **Type-directed queries** (`type-of`, typed metavars) — reach into the checker; this layer is
-  dependency-free. They belong to the driver once it links `rcdzc` (Rung 3).
+- **Scope- / binding-based guards and type guards INSIDE a pattern** (`,(x refs …)`, `,(x type-of …)`,
+  typed metavars) — the structural matcher stays dependency-free, so a *pattern* never resolves a name
+  or infers a type. The FACTS those would express ARE available — just as a separate command: use
+  `cdz uses` for references and `cdz type` for a node's type ([§Semantic queries](#semantic-queries-cdz-type--cdz-uses--the-compiler-as-oracle)).
+  What's still missing is FUSING them into one call (`cdz query PAT --where 'type-of(x)=T'`) — a
+  planned increment; today, structural-query then `cdz type` each hit.
+- **Scope-aware rename** (rename a binding + every reference, respecting shadowing) — `cdz uses` gives
+  you the reference set; a validated multi-site rename built on it is not yet a single command.
 - **Addressed edits** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the
   `options/structural-interface/content-addressed-nodes.md` layer, above these primitives.
-- **Type-checking a rewrite result** — the tool validates *well-formedness* (re-parse + round-trip);
-  full type validation is Rung 3.
+- **Type-checking a rewrite result** — the codemod validates *well-formedness* (re-parse + round-trip),
+  not types. A full typed transaction (re-check the edited tree with `rcdzc`) is reachable now that the
+  binary links both libraries, but is not yet wired into `rewrite`.
 
 ## Gotchas
 

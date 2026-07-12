@@ -356,7 +356,7 @@ fn collect_targets(files: &[String], from: Option<Fmt>) -> Result<Vec<TargetSpec
             let before = out.len();
             collect_dir(p, from, &mut out)?;
             if out.len() == before {
-                eprintln!("cdz-syntax: {f}: no source files (.cdz/.ml/.sexp/.bin) found");
+                eprintln!("cdz: {f}: no source files (.cdz/.ml/.sexp/.bin) found");
             }
         } else {
             // An explicitly-named file honors --from (or its extension); the user asked for it.
@@ -390,7 +390,7 @@ fn load_target(
     match load() {
         Ok(v) => Ok(Some(v)),
         Err(e) if resilient => {
-            eprintln!("cdz-syntax: skipping {e}");
+            eprintln!("cdz: skipping {e}");
             Ok(None)
         }
         Err(e) => Err(e),
@@ -414,10 +414,7 @@ fn collect_dir(
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                eprintln!(
-                    "cdz-syntax: skipping unreadable entry in {}: {e}",
-                    dir.display()
-                );
+                eprintln!("cdz: skipping unreadable entry in {}: {e}", dir.display());
                 continue;
             }
         };
@@ -516,7 +513,7 @@ fn run_diff(args: &DiffArgs) -> Result<(), String> {
     } else {
         let report = query::driver::changes_report(&a.tree, &b.tree);
         if report.is_empty() {
-            eprintln!("cdz-syntax: no structural changes");
+            eprintln!("cdz: no structural changes");
         } else {
             print!("{report}");
         }
@@ -570,7 +567,7 @@ fn run_clones(args: &ClonesArgs) -> Result<(), String> {
         } else {
             let report = query::driver::near_clones_report(&classes, &src_map);
             if report.is_empty() {
-                eprintln!("cdz-syntax: no near-clones (min-size {})", args.min_size);
+                eprintln!("cdz: no near-clones (min-size {})", args.min_size);
             } else {
                 print!("{report}");
             }
@@ -582,7 +579,7 @@ fn run_clones(args: &ClonesArgs) -> Result<(), String> {
         } else {
             let report = query::driver::clones_report(&classes, &src_map);
             if report.is_empty() {
-                eprintln!("cdz-syntax: no clones (min-size {})", args.min_size);
+                eprintln!("cdz: no clones (min-size {})", args.min_size);
             } else {
                 print!("{report}");
             }
@@ -714,14 +711,14 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
                 // to the whole-tree reprint rather than fail, warning that layout will reflow.
                 Err(e) => {
                     eprintln!(
-                        "cdz-syntax: {}: {e}; falling back to a full reprint (layout will reflow)",
+                        "cdz: {}: {e}; falling back to a full reprint (layout will reflow)",
                         label(&spec.path)
                     );
                     match reprint_outcome(&rules, strategy, &target, to, args.width, args.fixpoint)
                     {
                         Ok(o) => (o, false),
                         Err(e) if multi => {
-                            eprintln!("cdz-syntax: skipping {}", with_path(&spec.path, &e));
+                            eprintln!("cdz: skipping {}", with_path(&spec.path, &e));
                             continue;
                         }
                         Err(e) => return Err(with_path(&spec.path, &e)),
@@ -734,7 +731,7 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
                 // A rewrite that fails its validated-transaction check on one file of many warns and
                 // skips (the other files still get rewritten); a single target is a hard error.
                 Err(e) if multi => {
-                    eprintln!("cdz-syntax: skipping {}", with_path(&spec.path, &e));
+                    eprintln!("cdz: skipping {}", with_path(&spec.path, &e));
                     continue;
                 }
                 Err(e) => return Err(with_path(&spec.path, &e)),
@@ -765,7 +762,7 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
                 &format!("b/{}", label(&spec.path)),
             );
             if d.is_empty() {
-                eprintln!("cdz-syntax: {}: no change", label(&spec.path));
+                eprintln!("cdz: {}: no change", label(&spec.path));
             } else {
                 print!("{d}");
             }
@@ -775,11 +772,11 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         if args.write {
             let path = spec.path.as_deref().expect("write requires a path");
             if outcome.count == 0 {
-                eprintln!("cdz-syntax: {path}: no change");
+                eprintln!("cdz: {path}: no change");
             } else {
                 let content = ensure_trailing_newline(&outcome.output);
                 std::fs::write(path, content).map_err(|e| format!("writing {path}: {e}"))?;
-                eprintln!("cdz-syntax: {path}: rewrote {} site(s)", outcome.count);
+                eprintln!("cdz: {path}: rewrote {} site(s)", outcome.count);
             }
             continue;
         }
@@ -787,13 +784,13 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         // Default: print the rewritten program to stdout, count to stderr.
         if multi {
             eprintln!(
-                "cdz-syntax: {}: rewrote {} site(s)",
+                "cdz: {}: rewrote {} site(s)",
                 label(&spec.path),
                 outcome.count
             );
             println!("=== {} ===", label(&spec.path));
         } else {
-            eprintln!("cdz-syntax: rewrote {} site(s)", outcome.count);
+            eprintln!("cdz: rewrote {} site(s)", outcome.count);
         }
         print!("{}", outcome.output);
         if !outcome.output.ends_with('\n') {
@@ -845,7 +842,7 @@ fn ensure_trailing_newline(s: &str) -> String {
 fn report_input_errors(path: Option<&str>, errors: &[String]) {
     let where_ = path.unwrap_or("(stdin)");
     for e in errors {
-        eprintln!("cdz-syntax: {where_}: input parse warning: {e}");
+        eprintln!("cdz: {where_}: input parse warning: {e}");
     }
 }
 
