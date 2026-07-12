@@ -3683,10 +3683,12 @@ fn op_set_iter_elem(cur: Handle) -> Handle {
 // result is `op_dup`ed before `op_set_insert` consumes it; an element NOT carried stays owned by its
 // operand and dies when that operand is `op_drop`ed. Both operands are consumed (dropped) at the end.
 
-/// `set-union` — a new owned set with every element of `a` OR `b`. CONSUMES both. Built by draining
-/// `b`'s elements into `a` (the accumulator): `a` is already the union's `a`-side, so we only add the
-/// `b`-side. `a`'s own elements are carried by reusing `a` as the accumulator base (no per-element
-/// dup). An empty operand is the identity (`union(empty,b)==b`, `union(a,empty)==a`).
+/// `set-union` — a new owned set with every element of `a` OR `b`. CONSUMES both. Built by walking the
+/// SMALLER operand's elements into the LARGER (the accumulator base): union is commutative and the CHAMP
+/// result is canonical-by-construction (insertion-order-independent), so the base choice cannot change
+/// the result — only how many inserts run. Walking the smaller therefore does `min(|a|,|b|)` inserts
+/// instead of always `|b|`. The base's own elements are carried by reusing it as the accumulator (no
+/// per-element dup). An empty operand is the identity (`union(empty,b)==b`, `union(a,empty)==a`).
 #[allow(dead_code)]
 fn op_set_union(a: Handle, b: Handle) -> Handle {
     if is_empty_node(a) {
@@ -3697,9 +3699,14 @@ fn op_set_union(a: Handle, b: Handle) -> Handle {
         op_drop(b);
         return a;
     }
-    // Accumulate onto `a` (consumed by the first insert, then threaded). Walk `b` with a cursor.
-    let mut acc = a;
-    let mut cur = op_set_iter(b);
+    // Insert the SMALLER set into the LARGER: fewer inserts, identical (canonical) result.
+    let (base, walk) = if op_set_size(a) >= op_set_size(b) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let mut acc = base;
+    let mut cur = op_set_iter(walk);
     loop {
         let e = op_set_iter_elem(cur);
         if e == Handle::NULL {
@@ -3710,7 +3717,7 @@ fn op_set_union(a: Handle, b: Handle) -> Handle {
         cur = op_set_iter_next(cur);
     }
     op_drop(cur);
-    op_drop(b); // b's own references released; carried elements survive via the dups above
+    op_drop(walk); // walk's own references released; carried elements survive via the dups above
     acc
 }
 
@@ -3918,6 +3925,48 @@ mod tests {
         println!("ALLOC map_lookup x{N}: {lookup}");
         assert_eq!(lookup, 0, "map_lookup on scalar keys is a pure read — zero allocations (was 1/op via champ_eq's eager worklist)");
         op_drop(mm);
+
+        // (G) set algebra — union / intersection / difference of two N-element sets with 50% overlap.
+        // These are O(n·log) insert-folds (union threads onto `a`; ∩/∖ probe-and-insert into a fresh
+        // accumulator), so they dominate the remaining allocation budget; tracked so a change to the
+        // insert/cursor/contains machinery they lean on is visible, and so a future O(min) node-merge
+        // can be measured against them.
+        let build_set = |lo: i64, hi: i64| -> Handle {
+            let mut s = op_set_empty();
+            for k in lo..hi {
+                s = op_set_insert(s, op_box_int(k));
+            }
+            s
+        };
+        let sa = build_set(0, N);
+        let sb = build_set(N / 2, N + N / 2); // 50% overlap, same size — ∩/∖ probe cost
+        // Union uses a SMALLER second operand so the smaller-into-larger optimization is exercised
+        // (union walks min(|a|,|sc|) = |sc| elements into the larger `sa`, not always |b|).
+        let sc = build_set(N, N + N / 4); // size N/4, disjoint from sa
+        let union = measure(&mut || {
+            op_dup(sa);
+            op_dup(sc);
+            op_drop(op_set_union(sa, sc));
+        });
+        println!("ALLOC set_union x{N}: {union}");
+        assert!(union <= 3500, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 3500");
+        let inter = measure(&mut || {
+            op_dup(sa);
+            op_dup(sb);
+            op_drop(op_set_intersection(sa, sb));
+        });
+        println!("ALLOC set_intersection x{N}: {inter}");
+        assert!(inter <= 4500, "set_intersection x{N} allocs {inter} exceeds ceiling 4500");
+        let diff = measure(&mut || {
+            op_dup(sa);
+            op_dup(sb);
+            op_drop(op_set_difference(sa, sb));
+        });
+        println!("ALLOC set_difference x{N}: {diff}");
+        assert!(diff <= 4500, "set_difference x{N} allocs {diff} exceeds ceiling 4500");
+        op_drop(sa);
+        op_drop(sb);
+        op_drop(sc);
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
@@ -8557,6 +8606,36 @@ mod tests {
             op_drop(r);
         }
         assert_eq!(live_nodes(), before, "no leak across union cases");
+    }
+
+    #[test]
+    fn set_union_base_choice_is_canonical_and_order_independent() {
+        reset();
+        let before = live_nodes();
+        // Guards the "walk the SMALLER operand into the LARGER" base choice in op_set_union. Because the
+        // CHAMP result is canonical-by-construction, union(a,b) must be BYTE-IDENTICAL (champ_eq +
+        // champ_hash) to union(b,a) AND to a fresh set of all elements — regardless of which operand is
+        // larger (hence which becomes the accumulator base). Use ASYMMETRIC sizes so the two directions
+        // pick different bases, plus subnode-split and collision keys so the shape is non-trivial.
+        let (sa, sb) = low5_split_pair();
+        let (ca, cb) = full_hash_collision_pair();
+        let big: Vec<i64> = vec![sa, sb, ca, cb, 1, 2, 3, 4, 5, 6, 7, 8]; // 12 elements
+        let small: Vec<i64> = vec![sb, ca, 5, 100]; // 4 elements, partial overlap
+        let mut all: std::collections::BTreeSet<i64> = big.iter().copied().collect();
+        all.extend(small.iter().copied());
+        let fresh = set_of(&all.iter().copied().collect::<Vec<_>>());
+
+        let ab = op_set_union(set_of(&big), set_of(&small)); // base = big
+        let ba = op_set_union(set_of(&small), set_of(&big)); // base = big too (larger), via the swap
+        assert!(champ_eq(ab, ba), "union(big,small) == union(small,big) byte-identically");
+        assert_eq!(champ_hash(ab), champ_hash(ba));
+        assert!(champ_eq(ab, fresh), "union == a fresh set of all elements (canonical)");
+        assert_eq!(champ_hash(ab), champ_hash(fresh));
+        assert_eq!(op_set_size(ab) as usize, all.len(), "union has every distinct element once");
+        op_drop(ab);
+        op_drop(ba);
+        op_drop(fresh);
+        assert_eq!(live_nodes(), before, "no leak");
     }
 
     #[test]

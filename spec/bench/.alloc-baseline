@@ -5,5 +5,8 @@
 2248	map_iterate x1000
 0	map_lookup x1000
 1953	map_remove x1000
+3576	set_difference x1000
+3566	set_intersection x1000
+1651	set_union x1000
 0	vec_get x1000
 197	vec_push x1000
