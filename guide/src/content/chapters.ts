@@ -95,6 +95,13 @@ export const CHAPTERS: Chapter[] = [
     section: "Fundamentals",
     Component: lazy(() => import("./chapters/Numbers.tsx")),
   },
+  {
+    slug: "whats-next",
+    title: "Where to go next",
+    blurb: "A recap, one last program, and how to keep exploring.",
+    section: "Wrapping up",
+    Component: lazy(() => import("./chapters/WhatsNext.tsx")),
+  },
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {
