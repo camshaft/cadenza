@@ -684,6 +684,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::StrSlice) if args.len() == 3 => {
                     lower_str_slice(db, id, args[0], args[1], args[2])
                 }
+                // `String.to-bytes` — the UTF-8 encoding. FOLD a constant string to a `Core::BytesOf` of
+                // its UTF-8 bytes; a runtime string declines.
+                Some(Prim::StrToBytes) if args.len() == 1 => lower_str_to_bytes(db, args[0]),
                 // `Option.expect` / `Result.expect` — the unwrap-or-trap accessor. `args[0]` is the sum,
                 // `args[1]` the message (dropped — the wasm trap is textless). FOLD a constant PRESENT
                 // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
@@ -3196,6 +3199,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrAt
         | Prim::StrConcat
         | Prim::StrSlice
+        | Prim::StrToBytes
         | Prim::SumExpect
         | Prim::CheckedAdd
         | Prim::CheckedMul
@@ -3747,6 +3751,34 @@ fn lower_str_slice(
     }
 }
 
+/// Lower `(String.to-bytes s)` — the UTF-8 encoding `String → Bytes`. FOLD a constant string to a
+/// `Core::BytesOf` whose elements are its UTF-8 bytes, each a fresh `UInt8` `Leaf::Int` synthesized into
+/// the arena (the same shape `Bytes.of` of a byte-list builds — so it bakes at escape / consumes through
+/// `Bytes.len`/`Bytes.at` identically, no string heap). A runtime string declines (the byte-rope
+/// materialization arrives with the runtime string heap). A poison operand propagates.
+fn lower_str_to_bytes(db: &mut Db, string: StructId) -> Core {
+    match core_of(db, string) {
+        Core::ConstStr(s) => {
+            let elems: Vec<StructId> = s
+                .as_bytes()
+                .iter()
+                .map(|&b| {
+                    db.push_atom(crate::ast::Leaf::Int {
+                        value: IntValue::from_i64(b as i64),
+                        radix: crate::ast::Radix::Dec,
+                    })
+                })
+                .collect();
+            trace!(target: "rcdzc::fold", len = elems.len(), "String.to-bytes folds a constant string to its UTF-8 bytes");
+            Core::BytesOf { elems }
+        }
+        Core::Poison(r) => Core::Poison(r),
+        _ => Core::Poison(Reject::decline(
+            "String.to-bytes of a runtime string is not yet computed (constant strings only)",
+        )),
+    }
+}
+
 /// Lower `(Option.expect sum message)` / `(Result.expect sum message)` — the unwrap-or-trap accessor. The
 /// PRESENT variant is discriminant 0 (`Some`/`Ok`, the sum's FIRST variant — the shape the `expect` field
 /// is added for). FOLD a compile-time-visible PRESENT variant (`Core::SumNew{disc:0, payloads:[p]}`) to
@@ -4169,6 +4201,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrAt => "str-at",
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
+        Prim::StrToBytes => "str-to-bytes",
         Prim::SumExpect => "sum-expect",
         Prim::CheckedAdd => "checked-add",
         Prim::CheckedMul => "checked-mul",

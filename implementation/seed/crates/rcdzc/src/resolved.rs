@@ -241,6 +241,11 @@ pub enum Prim {
     /// a runtime string declines (the byte-rope slice arrives later). The string companion of
     /// `Bytes.slice`, but cut by scalar offset and with an `(start, end)` — not `(start, len)` — range.
     StrSlice,
+    /// `String.to-bytes` — the UTF-8 encoding `String → Bytes`. A CONSTANT string FOLDS to a constant
+    /// `Core::BytesOf` of its UTF-8 bytes (each a synthesized `UInt8`), consumed by `Bytes.len`/`Bytes.at`
+    /// (`(Bytes.len (String.to-bytes "run"))` → 3, `"café"` → 5); a runtime string declines (the byte-rope
+    /// materialization arrives with the runtime string heap). A String IS its UTF-8 bytes.
+    StrToBytes,
     /// `Option.expect` / `Result.expect` — the unwrap-or-trap accessor `∀a. Sum<a> → String → a`. The
     /// `(meta apply)` of the `expect` field on the synthesized Option/Result records. Applying it to a
     /// present variant (`Some`/`Ok`, discriminant 0) yields the payload; the absent variant TRAPS
@@ -322,6 +327,7 @@ impl Prim {
             "str-at" => Some(Prim::StrAt),
             "str-concat" => Some(Prim::StrConcat),
             "str-slice" => Some(Prim::StrSlice),
+            "str-to-bytes" => Some(Prim::StrToBytes),
             "sum-expect" => Some(Prim::SumExpect),
             "checked-add" => Some(Prim::CheckedAdd),
             "checked-mul" => Some(Prim::CheckedMul),
