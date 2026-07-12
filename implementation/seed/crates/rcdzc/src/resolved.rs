@@ -152,6 +152,12 @@ pub enum Prim {
     /// `List.len` — the length of a list, an `Int64`. The `(meta apply)` of the `len` field of the `List`
     /// prelude module. Lowers to the runtime `vec-len` op.
     ListLen,
+    /// `List.push` — append an element to a list, returning the new list. `∀a. (List a) → a → (List a)`.
+    /// Lowers to the runtime `vec-push` op (persistent — returns a new handle, does not mutate).
+    ListPush,
+    /// `List.concat` — concatenate two lists of the same element type into one. `∀a. (List a) → (List a)
+    /// → (List a)`. Lowers to the runtime `vec-concat` op.
+    ListConcat,
     /// `List : Type → Type` — the list-TYPE constructor. `(List Int64)` in type position builds the
     /// type-value `Ty::List(Int64)` (used in annotations `(: e (List Int64))` and in `List.len`'s scheme
     /// `∀a. (List a) → Int64`). One element type, unlike `Tuple`'s variadic — the list companion of the
@@ -194,6 +200,8 @@ impl Prim {
             "record-new" => Some(Prim::RecordNew),
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
+            "list-push" => Some(Prim::ListPush),
+            "list-concat" => Some(Prim::ListConcat),
             "List" => Some(Prim::ListCtor),
             _ => None,
         }

@@ -331,6 +331,15 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Core::Proj { operand, .. } | Core::ListLen { operand } => {
             collect_reached_poisons(db, operand, out)
         }
+        // `List.push`/`concat` unconditionally evaluate both operands — descend into each.
+        Core::ListPush { list, elem } => {
+            collect_reached_poisons(db, list, out);
+            collect_reached_poisons(db, elem, out);
+        }
+        Core::ListConcat { lhs, rhs } => {
+            collect_reached_poisons(db, lhs, out);
+            collect_reached_poisons(db, rhs, out);
+        }
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
             for p in payloads {

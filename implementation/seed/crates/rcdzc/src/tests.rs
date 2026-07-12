@@ -3016,6 +3016,73 @@ mod match_engine {
         );
     }
 
+    /// Compile `src`, assert it imports the value-heap runtime, then compose+run export `main` with the
+    /// value-heap runtime and return the printed result — the "runs on the real heap" behavior check for
+    /// the `vec-*` list ops (which never fold, so they always import the runtime). Skips (returns `None`)
+    /// when the runtime wasm is not built.
+    fn run_on_heap(src: &str) -> Option<String> {
+        let bytes = component(src);
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime list op must import the value-heap runtime (genuine heap, not a fold)"
+        );
+        let runtime = super::find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("list heap run trapped (miscompile?): {t}"),
+        }
+    }
+
+    #[test]
+    fn a_list_push_extends_and_its_runtime_length_counts() {
+        // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. The result
+        // is NOT a compile-time-visible literal (it is a `Core::ListPush`), so `List.len` of it does NOT
+        // fold — it emits the runtime `vec-len`. So `(List.len (List.push (list 1 2 3) 4))` exercises the
+        // full runtime path: `vec-empty` + 3 boxed `vec-push` (the literal) + one more `vec-push` (the
+        // appended 4) + `vec-len` → 4.
+        let Some(out) = run_on_heap(
+            "(module m (def (main) ((. List len) ((. List push) (list 1 2 3) 4))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "4", "push then runtime length");
+    }
+
+    #[test]
+    fn a_list_concat_joins_and_its_runtime_length_sums() {
+        // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both).
+        // `(List.len (List.concat (list 1 2) (list 3 4 5)))` builds both spines then concatenates, so the
+        // runtime `vec-len` counts 2 + 3 = 5. Pins the runtime concat + length path.
+        let Some(out) = run_on_heap(
+            "(module m (def (main) ((. List len) ((. List concat) (list 1 2) (list 3 4 5)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "5", "concat then runtime length");
+    }
+
+    #[test]
+    fn a_list_push_type_mismatch_is_rejected() {
+        // `List.push : ∀a. (List a) → a → (List a)` — the appended element must match the list's element
+        // type. `(List.push (list 1 2) true)` pushes a Bool onto a `List Int64` — a mismatch (CDZ0203),
+        // the same homogeneity class as a mixed literal. Pins the push type lambda's element unification.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. List len) ((. List push) (list 1 2) true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
     #[test]
     fn a_constant_scrutinee_folds_to_the_selected_arm() {
         // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).

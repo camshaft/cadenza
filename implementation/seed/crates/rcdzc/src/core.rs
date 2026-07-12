@@ -148,6 +148,12 @@ pub enum Core {
     /// Present when the operand is a RUNTIME list (a constant list's length folds to a `ConstInt` in
     /// `lower`, so it never reaches here).
     ListLen { operand: StructId },
+    /// `List.push` — append `elem` to `list`, returning the new list (runtime `vec-push`; persistent, no
+    /// mutation). `elem` is boxed by its type before the push, exactly as a list element is at construction.
+    ListPush { list: StructId, elem: StructId },
+    /// `List.concat` — concatenate `lhs` and `rhs` into one list (runtime `vec-concat`). Both are list
+    /// handles of the same element type.
+    ListConcat { lhs: StructId, rhs: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

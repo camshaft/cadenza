@@ -170,14 +170,23 @@ fn list_module(ast: &mut Arenas) -> StructId {
     // `(meta apply)` = the `List` TYPE constructor (`(List Int64)` reduces to `Ty::List(Int64)`).
     let builder = intrinsic_node(ast, "List");
     let apply_field = meta_field(ast, "apply", builder);
-    // `len : ∀a. (List a) → Int64` — the operator record for `(. List len)`.
+    // One field per realized operation — each an operator record `(name <op-record>)`. `len : ∀a. (List
+    // a) → Int64`; `push : ∀a. (List a) → a → (List a)`; `concat : ∀a. (List a) → (List a) → (List a)`.
+    // Each lambda is built first (a `&mut ast` borrow) then handed to `list_op_record`.
     let len_lambda = list_len_type_lambda(ast);
-    let len_op = list_op_record(ast, "list-len", len_lambda);
-    let len_field = {
-        let k = push_atom(ast, Leaf::Name("len".to_string()));
-        push_list(ast, vec![k, len_op])
-    };
-    push_list(ast, vec![head, apply_field, len_field])
+    let push_lambda = list_push_type_lambda(ast);
+    let concat_lambda = list_concat_type_lambda(ast);
+    let mut children = vec![head, apply_field];
+    for (name, prim, lambda) in [
+        ("len", "list-len", len_lambda),
+        ("push", "list-push", push_lambda),
+        ("concat", "list-concat", concat_lambda),
+    ] {
+        let op = list_op_record(ast, prim, lambda);
+        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![k, op]));
+    }
+    push_list(ast, children)
 }
 
 /// An operation record for a `List` module field: `(record ((meta t) TYPE-LAMBDA) ((meta apply)
@@ -195,12 +204,51 @@ fn list_op_record(ast: &mut Arenas, prim: &str, type_lambda: StructId) -> Struct
 /// taking a list of it and returning `Int64`. Written as ordinary AST so `infer` reduces it to the
 /// scheme `∀a. (List a) → Int64` through the one evaluator (`(List a)` reduces via `Prim::ListCtor`).
 fn list_len_type_lambda(ast: &mut Arenas) -> StructId {
+    let list_a = list_a_type(ast);
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, list_a, int64);
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (a) (-> (List a) (-> a (List a))))` for `List.push` — `∀a. (List a) → a →
+/// (List a)`: take a list and an element of its type, return the new list.
+fn list_push_type_lambda(ast: &mut Arenas) -> StructId {
+    let list_r = list_a_type(ast);
+    let elem = push_atom(ast, Leaf::Name("a".to_string()));
+    let inner = arrow_type(ast, elem, list_r); // (-> a (List a))
+    let list_l = list_a_type(ast);
+    let body = arrow_type(ast, list_l, inner); // (-> (List a) (-> a (List a)))
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (a) (-> (List a) (-> (List a) (List a))))` for `List.concat` — `∀a. (List a) →
+/// (List a) → (List a)`: concatenate two lists of the same element type.
+fn list_concat_type_lambda(ast: &mut Arenas) -> StructId {
+    let list_r = list_a_type(ast);
+    let list_2 = list_a_type(ast);
+    let inner = arrow_type(ast, list_2, list_r); // (-> (List a) (List a))
+    let list_1 = list_a_type(ast);
+    let body = arrow_type(ast, list_1, inner); // (-> (List a) (-> (List a) (List a)))
+    list_type_lambda(ast, body)
+}
+
+/// Build `(List a)` — the list type applied to the element parameter `a`, a shared shape in the `List`
+/// operation type-lambdas (each occurrence is a fresh `(List a)` referencing the same parameter name).
+fn list_a_type(ast: &mut Arenas) -> StructId {
     let list = push_atom(ast, Leaf::Name("List".to_string()));
     let a = push_atom(ast, Leaf::Name("a".to_string()));
-    let list_a = push_list(ast, vec![list, a]);
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    push_list(ast, vec![list, a])
+}
+
+/// Build `(-> l r)` — a function type from `l` to `r`.
+fn arrow_type(ast: &mut Arenas, l: StructId, r: StructId) -> StructId {
     let arrow = push_atom(ast, Leaf::Name("->".to_string()));
-    let body = push_list(ast, vec![arrow, list_a, int64]);
+    push_list(ast, vec![arrow, l, r])
+}
+
+/// Wrap `body` in `(fn (a) body)` — the one-parameter type-lambda over the element type `a`, shared by
+/// the `List` operation schemes.
+fn list_type_lambda(ast: &mut Arenas, body: StructId) -> StructId {
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let a_param = push_atom(ast, Leaf::Name("a".to_string()));
     let params = push_list(ast, vec![a_param]);

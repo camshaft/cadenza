@@ -53,6 +53,8 @@ const OP_SUM_PAYLOAD: &str = "sum-payload";
 const OP_VEC_EMPTY: &str = "vec-empty";
 const OP_VEC_PUSH: &str = "vec-push";
 const OP_VEC_LEN: &str = "vec-len";
+/// `vec-concat(a, b) -> handle` — concatenate two lists into one.
+const OP_VEC_CONCAT: &str = "vec-concat";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
@@ -96,6 +98,14 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         Core::Tuple { elems } | Core::ListNew { elems } => {
             elems.iter().any(|&e| binding_escapes(db, e, binder, false))
+        }
+        // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
+        // the pushed/concatenated value into the result).
+        Core::ListPush { list, elem } => {
+            binding_escapes(db, list, binder, false) || binding_escapes(db, elem, binder, false)
+        }
+        Core::ListConcat { lhs, rhs } => {
+            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
         // A call CONSUMES its arguments.
         Core::Call { args, .. } => args.iter().any(|&a| binding_escapes(db, a, binder, false)),
@@ -292,6 +302,20 @@ pub fn collect_used_ops(
         Core::ListLen { operand } => {
             out.insert(OP_VEC_LEN);
             collect_used_ops(db, operand, out);
+        }
+        // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
+        Core::ListPush { list, elem } => {
+            out.insert(OP_VEC_PUSH);
+            if let Ok(Some(op)) = box_op(db, elem) {
+                out.insert(op);
+            }
+            collect_used_ops(db, list, out);
+            collect_used_ops(db, elem, out);
+        }
+        Core::ListConcat { lhs, rhs } => {
+            out.insert(OP_VEC_CONCAT);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops(db, cond, out);
@@ -1400,6 +1424,32 @@ fn emit(
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [list]
             out.push(Lir::CallImport(OP_VEC_LEN)); // → [len:i32]
             out.push(Lir::I64ExtendI32U); // → [len:i64] — List.len : Int64
+            Ok(())
+        }
+        // `List.push(l, x)` — emit the list handle, then the element boxed to a u32 handle by its type
+        // (a narrow int extended i32→i64 first), then `vec-push` (RETURNS the new list handle). Nested
+        // compound elements are already handles (`box_op` → None), pushed directly.
+        Core::ListPush { list, elem } => {
+            emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
+            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, elem]
+            if let Some(op) = box_op(db, elem)? {
+                if let Some(m) = is_narrow_int(db, elem) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::CallImport(op)); // [list, handle]
+            }
+            out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list']
+            Ok(())
+        }
+        // `List.concat(a, b)` — emit both list handles, then `vec-concat` (→ the joined list handle).
+        Core::ListConcat { lhs, rhs } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            out.push(Lir::CallImport(OP_VEC_CONCAT)); // → [a++b]
             Ok(())
         }
         // A runtime SUM construction — `(Option.Some 5)` or a nullary `None`. Build the PAYLOAD handle,

@@ -64,6 +64,7 @@ pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matc
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a decimal integer literal
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
+pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a division whose divisor folds to zero still traps
@@ -77,6 +78,7 @@ pass	a field is projected from a record returned by a let-bound function
 pass	a field is projected from a record returned by a nullary function
 pass	a field is projected off a record bound through a match arm
 pass	a field read follows the record's SORTED field order, not its written order
+pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a float in integer-width position is rejected
 pass	a function applied to an argument
 pass	a function bound to a name and then applied
@@ -117,7 +119,10 @@ pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a list annotated with the wrong element type is rejected
+pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
+pass	a list mixing integer and boolean elements is a type error
+pass	a list-concatenating helper threads lists through a call
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match on a computed runtime value dispatches on the result
@@ -193,6 +198,7 @@ pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
+pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a reference to an unbound name is rejected before running
@@ -245,6 +251,7 @@ pass	a strict less-than of equal operands is false
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum value annotated as a scalar type is rejected
+pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a three-element runtime tuple is returned as a result
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
@@ -327,6 +334,7 @@ pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
 pass	concatenating lists of different element types is a type error
+pass	concatenating with the empty list on the right is identity
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
 pass	constructor pattern binders capture the payload uniformly
@@ -403,6 +411,8 @@ pass	the guarded-let conditional takes its else-branch when the conjunction is f
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the largest factorial that fits the integer type computes exactly
+pass	the length of a concatenation is the sum of the two lengths
+pass	the length of a grown list is its element count
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
@@ -485,7 +495,6 @@ todo	a constructor whose payload is a constructor keeps the outer variant tag
 todo	a curried function can be partially applied
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a declaration in a do block shadows an outer binding
-todo	a deep chain of runtime-list let-bindings compiles and returns the final length
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
@@ -502,7 +511,6 @@ todo	a field is projected off a record unwrapped from a result with expect
 todo	a field is projected off a record unwrapped from an optional with expect
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
-todo	a fixpoint loop that threads a growing list accumulator returns that list
 todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
 todo	a floating-point literal
 todo	a function declaration in a do block calls an earlier sibling declaration
@@ -526,15 +534,12 @@ todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a left shift by a floating-point count does not silently promote
 todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a list built by a recursive push-loop is then iterated by index
-todo	a list built by a runtime-length loop has that many elements
-todo	a list mixing integer and boolean elements is a type error
 todo	a list mixing integer and float elements is a type error
 todo	a list of maps with different keys is homogeneous, not a type error
 todo	a list of records with different field sets is a type error
 todo	a list of tuples with different arities is a type error
 todo	a list value consumed by two operations in one function is not freed early
 todo	a list with a runtime element is returned as a program result
-todo	a list-concatenating helper threads lists through a call
 todo	a literal inside a constructor pattern matches a runtime payload
 todo	a literal inside a tuple pattern matches a runtime element
 todo	a literal segment before a binder dispatches then reads the payload
@@ -623,7 +628,6 @@ todo	a recursive function sums a range it walks by performing a fresh-index effe
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a recursive function that threads a tuple accumulator returns it
 todo	a recursive function threads two nested handlers' states at once
-todo	a recursive list accumulator grown by push and returned in the base arm stays a list
 todo	a recursive lower from a sum to Bytes assembles its output in match arms
 todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
@@ -678,7 +682,6 @@ todo	a string passed to a function as a runtime argument is measured by its byte
 todo	a sum type can mix nullary and payload-carrying variants
 todo	a sum type is declared with named variants
 todo	a sum type variant can carry data
-todo	a sum-match recursion that accumulates a built-in list returns a list
 todo	a sum-type value is constructed through a variant
 todo	a sum-type value is deconstructed by an exhaustive match
 todo	a symbol compared to a string is a type error
@@ -802,7 +805,6 @@ todo	concatenating tuples preserves each element's type
 todo	concatenating two byte sequences appends their bytes in order
 todo	concatenating two runtime strings and measuring the result
 todo	concatenating two tuples appends their elements
-todo	concatenating with the empty list on the right is identity
 todo	concatenation is associative by content
 todo	constructing a bit-field from a value wider than its width traps
 todo	constructing a byte sequence with a negative value traps
@@ -990,9 +992,7 @@ todo	the empty symbol equals itself
 todo	the intersection contains the elements in both sets
 todo	the le modifier encodes a u16 little-endian
 todo	the length of a byte sequence is its byte count
-todo	the length of a concatenation is the sum of the two lengths
 todo	the length of a fixed-width construction is the sum of its segment widths
-todo	the length of a grown list is its element count
 todo	the length of a runtime byte sequence is its byte count
 todo	the length of a slice is the slice's byte count
 todo	the number of elements counts distinct elements

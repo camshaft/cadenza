@@ -908,12 +908,13 @@
 (case "concatenating lists of different element types is a type error"
   (doc    "`(List.concat (list 1 2) (list true))` joins an `Int64` list with a `Bool` list — but a list
            has ONE element type (collections-and-text.md §A List Is An Ordered Homogeneous Sequence),
-           so a concatenation of two differently-typed lists has no well-typed result and is rejected
-           (CDZ0201). A generation that skipped this would render the result at one operand's element
-           type, mistyping the other's elements — a wrong value, not merely a missing rejection.")
+           so a concatenation of two differently-typed lists has no well-typed result and is a type
+           error (CDZ0203, the same element-type conflict the `(list 1 true)` literal raises). A
+           generation that skipped this would render the result at one operand's element type,
+           mistyping the other's elements — a wrong value, not merely a missing rejection.")
   (needs      collections)
   (input  (do (def (main) (List.len (List.concat (list 1 2) (list true)))) (export main)))
-  (error CDZ0201))
+  (error CDZ0203))
 
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
@@ -1949,12 +1950,12 @@
 
 (case "a list mixing integer and boolean elements is a type error"
   (doc    "`(list 1 true)` has an Int64 element and a Bool element — they do not share one type, so
-           the list is not homogeneous and the compiler rejects it (CDZ0201, collections-and-text.md
-           #A List Is An Ordered Homogeneous Sequence), or declines if it does not yet cover the
-           homogeneity rule.")
+           the list is not homogeneous and the compiler rejects it as a type mismatch (CDZ0203,
+           collections-and-text.md #A List Is An Ordered Homogeneous Sequence), or declines if it does
+           not yet cover the homogeneity rule.")
   (needs     collections)
   (input     (list 1 true))
-  (error     CDZ0201))
+  (error     CDZ0203))
 
 (case "a list mixing integer and float elements is a type error"
   (doc    "The numeric companion: Int64 and Float64 are distinct types that do not silently unify
@@ -1982,7 +1983,7 @@
 (case "pushing an element of a different type onto a list is a type error"
   (doc    "`(List.push (list 1 2) true)` appends a Bool to an Int64 list — the result is not homogeneous
            (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), so it is a type error
-           (CDZ0201), exactly as the `(list 1 true)` literal above is. `List.push` produces a new LIST
+           (CDZ0203), exactly as the `(list 1 true)` literal above is. `List.push` produces a new LIST
            value (#A List Is Grown By Functional Construction), which must satisfy the same
            element-share-one-type rule the literal does. A `List.push` that skips the element-type check
            miscompiles: it renders the result at the pushed element's type, so the stored integers come
@@ -1991,7 +1992,7 @@
            declines rather than building the mistyped list.")
   (needs     collections)
   (input     (List.push (list 1 2) true))
-  (error     CDZ0201))
+  (error     CDZ0203))
 
 ; `List.update` is the other functional-construction operator (#A List Is Grown By Functional
 ; Construction pairs "append an element" with "replace the element at an index"), and it has the same

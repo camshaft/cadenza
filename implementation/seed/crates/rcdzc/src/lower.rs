@@ -416,6 +416,33 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Core::ListLen { operand },
                     }
                 }
+                // `List.push` / `List.concat` — runtime `vec-push`/`vec-concat`. A poison operand
+                // propagates; otherwise emit the runtime op (no constant fold — a persistent push/concat
+                // builds a new heap value, not worth folding a constant spine here).
+                Some(Prim::ListPush) if args.len() == 2 => {
+                    if let Core::Poison(r) = core_of(db, args[0]) {
+                        Core::Poison(r)
+                    } else if let Core::Poison(r) = core_of(db, args[1]) {
+                        Core::Poison(r)
+                    } else {
+                        Core::ListPush {
+                            list: args[0],
+                            elem: args[1],
+                        }
+                    }
+                }
+                Some(Prim::ListConcat) if args.len() == 2 => {
+                    if let Core::Poison(r) = core_of(db, args[0]) {
+                        Core::Poison(r)
+                    } else if let Core::Poison(r) = core_of(db, args[1]) {
+                        Core::Poison(r)
+                    } else {
+                        Core::ListConcat {
+                            lhs: args[0],
+                            rhs: args[1],
+                        }
+                    }
+                }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2201,6 +2228,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RecordNew
         | Prim::ListNew
         | Prim::ListLen
+        | Prim::ListPush
+        | Prim::ListConcat
         | Prim::ListCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
@@ -2452,6 +2481,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RecordNew => "record-new",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
+        Prim::ListPush => "list-push",
+        Prim::ListConcat => "list-concat",
         Prim::ListCtor => "List",
     }
 }
