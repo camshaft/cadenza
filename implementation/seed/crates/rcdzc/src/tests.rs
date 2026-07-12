@@ -2882,6 +2882,66 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nullary_variant_is_constructed_by_applying_it_to_unit() {
+        // core-semantics.md §Construction MUST Be Via Application: "(None unit)". A NULLARY variant is
+        // constructed by applying its ctor to the unit value — `(T.Nil ())` — not only used bare. The
+        // unit arg is the (empty) payload: `SumNew{disc, payloads:[]}` builds `arr-alloc(0)`. A match over
+        // `(T.Nil ())` dispatches on the discriminant like any sum. `(match (T.Nil ()) ((T.Nil _) 7)
+        // ((T.A _) 1))` → 7 (the constant folds through the applied nullary construction).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type T A Nil) \
+                       (def (main) (match (T.Nil ()) ((T.Nil _) 7) ((T.A _) 1))) \
+                       (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn a_recursive_sum_linked_list_folds_at_runtime() {
+        // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
+        // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length
+        // list `[n … 1]` via `(IntList.Cons (tuple n (count (- n 1))))` and `(IntList.Nil ())` (nullary
+        // construction); `sm` folds it, destructuring each Cons node's tuple payload `(tuple h t)` and
+        // recursing on the runtime discriminant. sm(count 5) = 5+4+3+2+1 = 15. Exercises recursive sums +
+        // nullary `(Nil ())` construction + tuple-payload destructure + runtime sum-match, all composed.
+        let src = "(module m \
+                     (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                     (def (count (: n Int64)) \
+                        (if (< n 1) (IntList.Nil ()) \
+                            (IntList.Cons (tuple n (count (- n 1)))))) \
+                     (def (sm (: xs IntList)) \
+                        (match xs \
+                          ((IntList.Cons (tuple h t)) (+ h (sm t))) \
+                          ((IntList.Nil _) 0))) \
+                     (def (main) (sm (count 5))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile a recursive-sum linked list");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime linked-list fold imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed linked-list run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "15", "sm(count 5)"),
+            cdz_run::Outcome::Trap(t) => panic!("recursive linked-list fold trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_variant_tuple_payload_is_destructured_by_a_nested_pattern() {
         // core-semantics.md §Patterns Compose: a tagged value carrying a TUPLE of sub-values is
         // destructured in ONE arm by a nested tuple pattern — `(Pair.Both (tuple a b))` binds `a`/`b` to

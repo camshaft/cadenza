@@ -107,6 +107,7 @@ pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
+pass	a match takes another match's result as its scrutinee
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
@@ -161,6 +162,8 @@ pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
+pass	a recursive function folds a linked list of runtime-determined length
+pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a reference to an unbound name is rejected before running
@@ -298,6 +301,8 @@ pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	match on a Result returned by a fallible function
+pass	match on a function-returned sum takes the other variant at runtime
+pass	match on a sum value returned by a function selects the runtime variant
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
 pass	member access of a field the record does not have is a type error
@@ -326,6 +331,7 @@ pass	projecting a tuple passed as a function parameter yields the element, never
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
+pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	splitting a tuple beyond its arity is rejected
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
@@ -509,7 +515,6 @@ todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
 todo	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 todo	a match over multiple nullary constructors with uniform patterns
-todo	a match takes another match's result as its scrutinee
 todo	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
@@ -575,8 +580,6 @@ todo	a recursive byte walk sums a runtime sequence via Bytes.at and match
 todo	a recursive emitter dispatches on a sum's variants to build bytes per node
 todo	a recursive fold of a cons-list to bytes is the whole program result
 todo	a recursive function counts down through a stateful effect and bails at zero
-todo	a recursive function folds a linked list of runtime-determined length
-todo	a recursive function folds a runtime linked list to a scalar
 todo	a recursive function sums a range it walks by performing a fresh-index effect
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a recursive function that threads a tuple accumulator returns it
@@ -852,8 +855,6 @@ todo	less-than-or-equal of an integer and a float is rejected
 todo	lists are equal by elements in order
 todo	looking up an absent key yields None
 todo	map equality is independent of insertion order
-todo	match on a function-returned sum takes the other variant at runtime
-todo	match on a sum value returned by a function selects the runtime variant
 todo	matching a lookup from a computed-key map literal selects the present-value arm
 todo	matching a runtime Bytes.at Option binds the byte in the Some arm
 todo	matching a runtime Bytes.at Option takes the None arm past the end
@@ -916,7 +917,6 @@ todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
 todo	resolving a head against a prelude symbol rejects a length-mismatched prefix
-todo	resolving a name in a shadowing environment returns the innermost binding's slot
 todo	resuming with a value of the wrong type for the operation's result is a type error
 todo	resuming with a wrong-type value for a compound result type is a type error
 todo	runtime float equality compares by canonical byte form

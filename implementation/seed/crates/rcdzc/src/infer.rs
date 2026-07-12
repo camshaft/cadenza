@@ -664,6 +664,17 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return type_of(db, head);
     }
+    // A NULLARY variant CONSTRUCTOR applied to the unit value — `(None unit)` / `(Nil ())` — constructs
+    // the sum (core-semantics.md §Construction MUST Be Via Application). Its ctor `(meta t)` is the bare
+    // sum (no arrow — `variant_payload_type` is `None`), so the "peel a curried parameter per arg" loop
+    // below would find a non-function and yield `Any`. The application's type IS the sum (the ctor's own
+    // `(meta t)`); the unit argument is the payload, not a curried parameter. This is what lets a
+    // `(match (None unit) …)` scrutinee type as the sum and route to the sum matcher.
+    if crate::eval::variant_disc_of(db, head).is_some()
+        && crate::eval::variant_payload_type(db, head).is_none()
+    {
+        return type_of(db, head);
+    }
     // The compound-VALUE constructors reached via the `tuple`/`record` alias names build a compound
     // whose type is VARIADIC in the arguments — a tuple of the arg types, or a record of the field
     // types — so it cannot be expressed as a fixed `(meta t)` scheme (unlike a sum variant's arrow).
@@ -786,6 +797,24 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+    // A NULLARY variant CONSTRUCTOR applied to the unit value — `(None unit)` / `(Nil ())` — is the
+    // canonical construction of a nullary variant (core-semantics.md §Construction MUST Be Via
+    // Application). Its ctor `(meta t)` is the bare sum (no arrow — `variant_payload_type` is `None`), so
+    // the generic "instantiate the scheme and apply each arg" check below would see a non-function head
+    // and wrongly fault "cannot apply a value of type <Sum>". Recognize it here: a variant ctor
+    // (`(meta variant)` present) with no payload type, applied to one argument, is a well-formed nullary
+    // construction — the argument is the unit payload. (A NON-unit argument is an arity error the arg's
+    // own type surfaces; a nullary variant's payload type is unit, checked when it matters at the escape.)
+    if crate::eval::variant_disc_of(db, head).is_some()
+        && crate::eval::variant_payload_type(db, head).is_none()
+    {
+        // Descend into the argument(s) for their OWN faults (an unbound name in `(None (frob))`), but do
+        // not apply the non-function ctor to them.
+        for &arg in args {
+            collect(db, arg, out);
+        }
+        return;
+    }
     // A LAMBDA head β-reduces. Its faults do NOT surface on their own: the outer `collect` walks the
     // ORIGINAL call (head + argument occurrences), never the reduced body, and β-reduction ERASES the
     // parameter↔argument relationship (the parameter's annotation is dropped when its argument is

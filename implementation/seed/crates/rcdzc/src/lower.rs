@@ -2211,6 +2211,21 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             "a sum constructor has no discriminant metadata",
         ));
     };
+    // A NULLARY variant is CONSTRUCTED by applying it to the unit value — `(None unit)` / `(Nil ())` —
+    // the canonical form (core-semantics.md §Construction MUST Be Via Application: "(None unit)"; a
+    // nullary variant carries unit). Its ctor `(meta t)` is the bare sum (no arrow → `variant_payload_type`
+    // is `None`), so the single `unit` argument is NOT a payload — the payload of a nullary variant IS the
+    // unit value, built as an empty array by the backend (`SumNew` with no payloads). Drop the unit arg so
+    // it is not boxed as a spurious payload. (A bare `None` used as a value takes the no-arg path directly.)
+    if crate::eval::variant_payload_type(db, head).is_none() && args.len() == 1 {
+        // The argument must BE the unit value — a nullary variant applied to a non-unit is an arity error
+        // the type-checker reports; here, lower it as the nullary construction (the type fault surfaces in
+        // `type_errors`, and an over-payloaded nullary is caught there, not silently given a payload).
+        return Core::SumNew {
+            disc,
+            payloads: Vec::new(),
+        };
+    }
     Core::SumNew {
         disc,
         payloads: args.to_vec(),
