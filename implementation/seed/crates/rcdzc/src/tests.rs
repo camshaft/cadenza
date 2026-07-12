@@ -3192,7 +3192,9 @@ mod match_engine {
             runtime_cache_dir: None,
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "15", "self-tail-call heap-match accumulate"),
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "15", "self-tail-call heap-match accumulate")
+            }
             cdz_run::Outcome::Trap(t) => panic!("self-tail-call heap-match run trapped: {t}"),
         }
     }
