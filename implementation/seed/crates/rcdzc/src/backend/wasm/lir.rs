@@ -191,8 +191,8 @@ pub enum Lir {
 }
 
 /// The wasm value type a value of solved type `ty` occupies inside a function body, or `None` for a
-/// type that occupies no runtime slot (unit). An integer's width chooses i32 vs i64 (Stage 0 grounds
-/// every integer to i64); a boolean is an i32. This is the wasm backend's read-off of the solved type
+/// type that occupies no runtime slot (unit). An integer's width chooses i32 vs i64 (a width ≤ 32 uses
+/// i32, wider uses i64); a boolean is an i32. This is the wasm backend's read-off of the solved type
 /// (`reference-compiler.md` §A Value's Machine Representation Follows Its Solved Type At Selection).
 pub fn valtype_of(ty: &Ty) -> Option<ValType> {
     match ty {
@@ -269,17 +269,14 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         }
         Ty::Bool => Some(wasm_abi::COMP_BOOL), // bool
         Ty::Unit => None,
-        // A tuple crosses the boundary as a `u32` HANDLE — a ref into the composed runtime's value
-        // store (the same opaque handle the heap ops thread). Ownership transfers to the caller, who
-        // reads the value back through the runtime accessors (the "display function") — this is the
-        // escape path (H3a) that lets a runtime compound leave a function without the canonical-text
-        // renderer (a later increment lifts it to a rich boundary type). A record rides the same handle
-        // representation once its return path lands (H3c+); it still declines above until then.
+        // A tuple threaded BETWEEN functions is a `u32` HANDLE — a ref into the composed runtime's
+        // value store (the same opaque handle the heap ops thread). This is the INTERNAL representation;
+        // it is NOT how a compound leaves the program to the host. A compound host-escape crosses as the
+        // canonical binary value form through the resource `encode()` path (`wasm::emit`), not this
+        // primitive-valtype mapping. Records and sums escape the same way, but they have no primitive
+        // handle valtype defined here (they are not threaded as bare u32 params), so `None`.
         Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
-        // A sum is a runtime heap compound; its host-escape path (the resource `encode()` walk that
-        // renders `(disc payload)`) lands in a later tick. Until then it has no boundary form and
-        // declines like a record — no representation is invented for a value that cannot yet cross.
         Ty::Sum { .. } => None,
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
