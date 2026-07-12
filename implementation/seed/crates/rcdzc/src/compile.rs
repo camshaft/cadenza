@@ -23,7 +23,7 @@ use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::infer::type_errors;
-use crate::layout::{self, Layout};
+use crate::layout;
 use crate::lower::core_of;
 use crate::sidecar;
 use crate::spans;
@@ -135,7 +135,8 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
     // the first — `compiler-pipeline.md` §Phases Recover From Errors).
-    let mut faults = collect_faults(&mut db, &layout);
+    let _ = &layout; // layout gates EMISSION below; well-formedness (faults) is layout-independent.
+    let mut faults = collect_faults(&mut db);
     if !faults.is_empty() {
         trace!(target: "rcdzc::compile", faults = faults.len(), "compilation FAILED (faults reported, no artifact)");
         for f in &mut faults {
@@ -216,13 +217,32 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
     }
 }
 
+/// Every well-formedness fault of a loaded program, as consumer-facing diagnostics, WITHOUT requiring
+/// the program to export anything or to emit — the total, layout-independent read an IDE wants for
+/// "diagnostics as you type". This is exactly the fault set [`compile`] reports (it calls the same
+/// [`collect_faults`]), minus the emission path that a missing export would otherwise decline at
+/// `layout::compute` before any fault is seen. A bare expression, a mid-edit buffer, or a set of
+/// sibling defs with no `(export …)` all yield their real type/shape faults here. Origins are
+/// sanitized to user nodes (a prelude/synthesized node has no source span), so a consumer holding the
+/// front-end span table maps every `node` to a text range.
+///
+/// The caller passes a `Db` it loaded from the SAME arena its span table was built from
+/// ([`Db::load`]), so the diagnostics' node ids index that span table directly.
+pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
+    let mut faults = collect_faults(db);
+    for f in &mut faults {
+        sanitize_origin(db, f);
+    }
+    faults.iter().map(Diagnostic::from_reject).collect()
+}
+
 /// Every fault across the program's definitions. Well-formedness — scope resolution and type
 /// checking — is UNCONDITIONAL: it holds over EVERY top-level definition's body, not only the ones
 /// reachable from an export, because a program is well-formed or not regardless of what is asked to
 /// compile (`core-semantics.md` §Binding Is Lexical — the unbound-name rule is not gated on
 /// reachability; an ill-formed uncalled sibling definition is still rejected). Emission stays
 /// reachability-driven (the `layout` decides what is emitted); only well-formedness is total.
-fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
+fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
     // UNMODELED TOP-LEVEL FORM. A top-level declaration the compiler does not model — `(effect …)`,
     // `(pragma …)` — makes the whole program decline (decline-don't-miscompile): compiling the rest as
