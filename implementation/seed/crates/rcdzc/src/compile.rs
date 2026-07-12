@@ -534,8 +534,11 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, value, out);
             }
         }
-        // Both operands of a runtime arithmetic or comparison op are unconditionally evaluated.
-        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+        // Both operands of a runtime arithmetic, comparison, or structural-equality op are
+        // unconditionally evaluated.
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::ValueEq { lhs, rhs } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }

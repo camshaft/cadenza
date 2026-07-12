@@ -90,6 +90,11 @@ const OP_DROP: &str = "drop";
 /// takes ownership of a handle it only BORROWED — `List.at` `dup`s the `vec-get` element before the
 /// `Some` payload consumes it, so the list keeps its own reference.
 const OP_DUP: &str = "dup";
+/// `value-eq(a, b) -> bool` — deep STRUCTURAL equality over two compound heap values (the `champ_eq`
+/// walk). BORROWS both operands (an inspector, like `sum-disc`/`vec-len`): it changes neither refcount,
+/// so an owned-temporary operand is `drop`ped by the emit AFTER the compare. The runtime `=` on two
+/// runtime compounds neither of which the compiler folded.
+const OP_VALUE_EQ: &str = "value-eq";
 
 /// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
 /// contract reclaims (a tuple, record, sum, or list). A scalar (integer/bool/unit) owns no heap cell,
@@ -195,6 +200,15 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         | Core::Compare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
+        // `value-eq` BORROWS both operands (it drops only an OWNED temporary, never a `LocalRef`), so a
+        // binding used DIRECTLY as an operand does NOT escape — the enclosing `let` still drops it. A
+        // binding that flows into a CONSTRUCTED operand (`(= (Wrap x) …)`) DOES escape: it is consumed
+        // into that owned temporary, which `value-eq` then drops (so the `let` must not double-drop). The
+        // borrow-in-tail recursion (`tail_borrowed: true`) computes exactly this — a direct `LocalRef`
+        // borrows, a constructor/call arm resets to consuming — mirroring the `Proj`/`ListLen` arm above.
+        Core::ValueEq { lhs, rhs } => {
+            binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
             binding_escapes(db, operand, binder, false)
@@ -527,6 +541,14 @@ pub fn collect_used_ops(
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
+        // Runtime structural equality imports `value-eq` (the compare) AND `drop` (to reclaim an owned
+        // temporary operand after the borrowing compare — see the `Core::ValueEq` emit).
+        Core::ValueEq { lhs, rhs } => {
+            out.insert(OP_VALUE_EQ);
+            out.insert(OP_DROP);
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -2506,6 +2528,40 @@ fn emit(
             out.push(compare_op(op, it));
             Ok(())
         }
+        // RUNTIME STRUCTURAL EQUALITY on two COMPOUND heap values — a `value-eq` (`champ_eq`) call. The
+        // op BORROWS both operands, so refcounts are balanced by DROPPING each OWNED-temporary operand
+        // after the compare (a bare reference — a parameter/binding the owner reclaims — is NOT dropped).
+        // Each operand is emitted, `tee`d into a scratch slot (kept on the stack for the call AND
+        // remembered for a possible drop), then `value-eq` pops both and pushes the i32 bool; a drop of a
+        // remembered owned handle leaves that bool on top. An operand whose ownership cannot be proved
+        // (an `if`/`match`/`let` that may return a borrowed sub-value) DECLINES — reject, never a leak or
+        // a double-free.
+        Core::ValueEq { lhs, rhs } => {
+            let lo = value_eq_operand_ownership(db, lhs)?;
+            let ro = value_eq_operand_ownership(db, rhs)?;
+            // Two i32 scratch slots for the operand handles, above the running high-water (they must not
+            // clash with an operand emit's own transient scratch — a `Call` arg's i64 guard slot).
+            let slot_l = *high;
+            let slot_r = *high + 1;
+            *high = slot_r + 1;
+            scratch_ty.insert(slot_l, ValType::I32);
+            scratch_ty.insert(slot_r, ValType::I32);
+            let op_base = *high;
+            emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalTee(slot_l));
+            emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalTee(slot_r));
+            out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both handles (borrowed) → [bool]
+            if lo == HandleOwnership::Owned {
+                out.push(Lir::LocalGet(slot_l));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            if ro == HandleOwnership::Owned {
+                out.push(Lir::LocalGet(slot_r));
+                out.push(Lir::CallImport(OP_DROP));
+            }
+            Ok(())
+        }
         // A runtime arithmetic op. The numeric model fixes each operation's DEFINED outcome, which the
         // emitted instruction must honor at run time exactly as the constant fold does (`numeric-
         // model.md`; the const path folds in `lower` with the SAME traps → CDZ0304). Every op is
@@ -2780,6 +2836,51 @@ fn reusable_handle_src(db: &mut Db, scrutinee: StructId, slots: &HashMap<StructI
     match core_of(db, scrutinee) {
         Core::Param { binder } | Core::LocalRef { binder } => slots.contains_key(&binder),
         _ => false,
+    }
+}
+
+/// Whether the handle an expression's emit leaves on the stack is a NEW OWNED reference the current
+/// frame must reclaim, or a BORROW another owner (a parameter's caller, a `let`'s binding-slot drop)
+/// already accounts for. Drives whether the `value-eq` emit `drop`s an operand after the borrowing
+/// compare — an OWNED temporary must be dropped (else it leaks), a BORROW must NOT (else double-free).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HandleOwnership {
+    /// A fresh allocation the frame owns — a constructor result (`SumNew`/`Tuple`/`Record`/`ListNew`) or
+    /// a call's returned value (ownership transfers out of the callee). The `value-eq` emit drops it.
+    Owned,
+    /// A reference the frame only borrows — a parameter (the caller owns it) or a kept `let`-binding (the
+    /// `Core::Let` emit drops it at scope end). The `value-eq` emit must NOT drop it.
+    Borrowed,
+}
+
+/// Classify a `value-eq` OPERAND's handle ownership, or DECLINE (`Err`) a shape whose ownership this
+/// analysis cannot prove — reject-don't-miscompile: a wrong guess would leak or double-free the heap.
+/// A constructor / call is `Owned`; a parameter / kept-local reference is `Borrowed`. An `if`/`match`/
+/// `let` is classified by its result sub-expression(s) — but ONLY when every branch agrees (a mixed
+/// owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
+fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
+    match core_of(db, id) {
+        // Constructors and calls produce a fresh owned reference (ownership transfers out).
+        Core::SumNew { .. }
+        | Core::Tuple { .. }
+        | Core::Record { .. }
+        | Core::ListNew { .. }
+        | Core::Call { .. } => Ok(HandleOwnership::Owned),
+        // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
+        Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
+        // Control flow: each result branch must agree on ownership (so the single post-compare drop is
+        // correct on every path). `if` — both arms; `let` — its body. A disagreement declines.
+        Core::If { then_, else_, .. } => {
+            let t = value_eq_operand_ownership(db, then_)?;
+            let e = value_eq_operand_ownership(db, else_)?;
+            (t == e)
+                .then_some(t)
+                .ok_or_else(|| Reject::decline("value-eq operand's branches disagree on ownership"))
+        }
+        Core::Let { body, .. } => value_eq_operand_ownership(db, body),
+        _ => Err(Reject::decline(
+            "value-eq operand has an ownership this backend cannot yet prove",
+        )),
     }
 }
 
@@ -4438,7 +4539,12 @@ fn emit_div_rem(
     )?;
     out.push(m.div()); // traps on ÷0 natively; the machine op does not overflow at a narrow width
     out.push(Lir::LocalSet(sr));
-    emit_range_check(m, sr, ReachableBounds::Both, out);
+    // A narrow signed quotient can overflow the type ONLY upward: the sole out-of-type case is
+    // `MIN_N / -1 = 2^(N-1) = MAX_N + 1` (above the max). It can never fall below `min`: `|q| = |a|/|b| <=
+    // |a| <= 2^(N-1)`, so the most-negative reachable quotient is `-2^(N-1) = MIN_N` itself (in range,
+    // e.g. `MIN_N / 1 = MIN_N`). So the `r < min` half of the range-check is provably dead — only the
+    // upper bound is reachable (`UpperOnly`), dropping 4 instructions (get/const/lt_s/if).
+    emit_range_check(m, sr, ReachableBounds::UpperOnly, out);
     out.push(Lir::LocalGet(sr));
     Ok(())
 }

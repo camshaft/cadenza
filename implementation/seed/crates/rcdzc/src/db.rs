@@ -578,6 +578,13 @@ pub struct Db {
     pub(crate) types: Column<StructId, Ty>,
     /// The core-form column. Filled only by [`crate::lower`].
     pub(crate) core: Column<StructId, Core>,
+    /// Memo of RECURSIVE-EFFECTFUL SPECIALIZATIONS (`crate::effects` E3): a recursive function called
+    /// under a handler context is emitted ONCE per `(def-body-occ, handler-context-key)` as a synthesized
+    /// `f#ctx` def — its state threaded as trailing parameters (`DESIGN-effects-rcdzc.md` §4.3). The key
+    /// is the recursive callee's body occurrence plus a RESOLVED handler-context identity string (the
+    /// discharged ops + their arm occurrences — NOT `format!("{:?}", body)`); the value is the `db.defs`
+    /// index of the synthesized specialization, so the same call under the same context reuses one def.
+    pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 }
 
 impl Db {
@@ -703,6 +710,7 @@ impl Db {
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),
+            effect_specializations: crate::fxhash::FxHashMap::default(),
         }
     }
 
@@ -903,6 +911,34 @@ impl Db {
     /// name reference, so a linear scan here made resolution O(N²) on a many-def program.
     pub fn def_by_name(&self, name: &str) -> Option<usize> {
         self.def_name_index.get(name).copied()
+    }
+
+    /// Push a SYNTHESIZED def (an effect specialization `f#ctx`, `crate::effects` E3) and index it by
+    /// name, returning its index. Its body may be `None` at push time (reserved, filled by
+    /// [`fill_specialized_def`] once threaded) so a recursive self-call inside the body can name it. The
+    /// name is unspellable in source (`#` in it), so it never collides with a user def.
+    pub(crate) fn push_specialized_def(&mut self, def: Def) -> usize {
+        let idx = self.defs.len();
+        self.def_name_index.entry(def.name.clone()).or_insert(idx);
+        if let Some(body) = def.body {
+            self.def_by_body.insert(body, idx);
+        }
+        self.defs.push(def);
+        idx
+    }
+
+    /// Fill a reserved specialized def's parameters + body (see [`push_specialized_def`]) — the two-step
+    /// build a self-referential specialization needs: reserve the name, thread the body (which may call
+    /// the name), then fill. Updates the body index so `def_index_by_body` finds it.
+    pub(crate) fn fill_specialized_def(
+        &mut self,
+        idx: usize,
+        params: Vec<StructId>,
+        body: StructId,
+    ) {
+        self.defs[idx].params = params;
+        self.defs[idx].body = Some(body);
+        self.def_by_body.insert(body, idx);
     }
 
     /// File-scoped def lookup for a multi-file PACKAGE (`DESIGN-package-linking.md` §4). Resolves the

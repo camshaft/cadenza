@@ -51,7 +51,7 @@
 //! field or a construction-less sum constructor already has.
 
 use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
-use crate::db::{Db, EffectDecl, OpDecl};
+use crate::db::{Db, Def, EffectDecl, OpDecl};
 use crate::fxhash::FxHashMap as HashMap;
 use crate::prelude::{meta_field, push_atom, push_list};
 use crate::resolve::resolved_of;
@@ -229,6 +229,50 @@ fn copy_subtree(ast: &mut Arenas, node: StructId) -> StructId {
 struct HandlerCtx {
     /// Each discharged operation's `(decl-occ, op-index)` → the arm that discharges it.
     arms: HashMap<(u32, u32), HandleArm>,
+    /// A stable identity STRING for this handler context — the discharged ops + their arm occurrences,
+    /// in sorted order — used as the specialization memo key (`db.effect_specializations`). A RESOLVED
+    /// identity (occurrences), NOT `format!("{:?}", body)` — the old compiler's stringly-typed-syntax
+    /// footgun (`DESIGN-effects-rcdzc.md` §4.3). Empty until built by `HandlerCtx::new`.
+    key: String,
+    /// The STATE-BINDER occurrence for the SINGLE-STATE fast path (E3 countdown/range-sum): the arm's
+    /// `state` binder, if every arm in this context shares one. A specialized recursive fn threads this
+    /// as its trailing state parameter. `None` when the context is not single-state (multiple distinct
+    /// state binders across arms — the two-nested case, a later increment).
+    single_state: Option<StructId>,
+    /// The state's TYPE (the type of the handle's `init` seed) — used to ANNOTATE the specialized
+    /// recursive fn's trailing state parameter so it types (a synthesized param has no source
+    /// annotation). `None` if the init type is undetermined (then a specialization declines).
+    state_ty: Option<crate::ty::Ty>,
+}
+
+impl HandlerCtx {
+    /// Build a handler context from its operation→arm map, computing the specialization key and the
+    /// single-state binder. The key is the discharged ops (`decl:idx`) plus each arm's occurrence, sorted
+    /// — a stable RESOLVED identity. Single-state holds when there is exactly one arm (so exactly one
+    /// state binder); a multi-arm context is not single-state here (its state threading is the same binder
+    /// per arm today, but a recursive specialization over multiple arms is a later increment).
+    fn new(arms: HashMap<(u32, u32), HandleArm>, state_ty: Option<crate::ty::Ty>) -> HandlerCtx {
+        let mut parts: Vec<String> = arms
+            .iter()
+            .map(|((d, i), arm)| format!("{d}:{i}@{}", arm.op.0))
+            .collect();
+        parts.sort();
+        let key = parts.join(",");
+        // Single-state: exactly one arm ⇒ one state binder to thread. (The corpus's single-state
+        // recursive cases — countdown, range-sum — each have one arm; the two-effect nested case has two
+        // arms with distinct states, handled by a later increment.)
+        let single_state = if arms.len() == 1 {
+            arms.values().next().map(|a| a.state)
+        } else {
+            None
+        };
+        HandlerCtx {
+            arms,
+            key,
+            single_state,
+            state_ty,
+        }
+    }
 }
 
 /// Reduce a `(handle init arms body)` to a rewritten BODY occurrence with every perform of a discharged
@@ -444,6 +488,15 @@ pub fn reduce_handle(
     arms: &[HandleArm],
     body: StructId,
 ) -> Option<StructId> {
+    // RE-ENTRY GUARD, held for the whole fold. `type_of` of a `handle` calls `reduce_handle` (E1c-2), and
+    // `resume_result_type_ok`/`type_of(init)` below type nodes that can reach an enclosing handle — so
+    // reducing a handle can re-enter this same `reduce_handle`. `db.enter_reduction()` bumps the shared
+    // reduction-depth guard (the same backstop β-reduction uses); past the bound it returns `None` → we
+    // decline. Held across the whole fold so every `type_of` inside is bounded. (The unbounded INLINE
+    // loop — a recursive effectful callee β-reduced to a fresh non-self-referential copy each level —
+    // is bounded separately by `THREAD_INLINE_LIMIT` in `thread_bounded`.)
+    let mut guard = db.enter_reduction()?;
+    let db = guard.db();
     // Build the operation→arm map, keyed by each arm's operation identity (read off the arm's op
     // projection's `(meta effect-op)`). An arm whose op is not an effect operation (a malformed arm) or
     // whose op the effect does not declare (CDZ0403 — reported elsewhere) makes the fold decline.
@@ -463,7 +516,18 @@ pub fn reduce_handle(
         }
         map.insert((decl.0, idx), arm.clone());
     }
-    let ctx = HandlerCtx { arms: map };
+    // The state's type — from the `init` seed — annotates a specialized recursive fn's state param. A
+    // deferred/undetermined init type (e.g. a bare literal not yet grounded) is grounded to a definite
+    // integer here via `type_of`; if still undetermined a recursive specialization declines.
+    let state_ty = {
+        let t = crate::infer::type_of(db, init);
+        if matches!(t, crate::ty::Ty::Any) {
+            None
+        } else {
+            Some(t)
+        }
+    };
+    let ctx = HandlerCtx::new(map, state_ty);
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
@@ -529,6 +593,28 @@ fn thread(
     state: StructId,
     ctx: &HandlerCtx,
 ) -> Option<(StructId, StructId)> {
+    thread_bounded(db, node, state, ctx, 0)
+}
+
+/// Bound on cross-function INLINE depth during threading. A handled body that inlines callees deeper
+/// than this DECLINES rather than unrolling without end (`reference-compiler.md` §An Unbounded Handler
+/// Context Declines) — the safe backstop against a RECURSIVE effectful callee slipping past the
+/// `is_recursive` exclusion (β-reduction produces a fresh non-self-referential copy each inline, so a
+/// naive `is_recursive` on the copy reads false and would unroll forever). E3's proper per-context
+/// specialization handles a recursive callee; anything the specialization does not cover, this bound
+/// declines. Set well above any real non-recursive inline chain in the corpus.
+const THREAD_INLINE_LIMIT: u32 = 64;
+
+fn thread_bounded(
+    db: &mut Db,
+    node: StructId,
+    state: StructId,
+    ctx: &HandlerCtx,
+    inline_depth: u32,
+) -> Option<(StructId, StructId)> {
+    if inline_depth > THREAD_INLINE_LIMIT {
+        return None; // an unbounded inline chain — decline (a recursive callee the spec path missed)
+    }
     match resolved_of(db, node) {
         // A PERFORM `(E.op args…)` of a discharged operation: resolve to its arm, substitute the arm's
         // params ↦ (rewritten) args and its state binder ↦ current state, and rewrite the arm body's
@@ -540,7 +626,7 @@ fn thread(
             let mut cur = state;
             let mut rewritten_args = Vec::with_capacity(args.len());
             for &a in args.iter() {
-                let (ra, next) = thread(db, a, cur, ctx)?;
+                let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
                 rewritten_args.push(ra);
                 cur = next;
             }
@@ -593,7 +679,7 @@ fn thread(
             let mut cur = state;
             let mut last = None;
             for it in items {
-                let (r, next) = thread(db, it, cur, ctx)?;
+                let (r, next) = thread_bounded(db, it, cur, ctx, inline_depth)?;
                 last = Some(r);
                 cur = next;
             }
@@ -612,7 +698,7 @@ fn thread(
             let mut cur = state;
             let mut rargs = Vec::with_capacity(args.len());
             for &a in args.iter() {
-                let (ra, next) = thread(db, a, cur, ctx)?;
+                let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
                 rargs.push(ra);
                 cur = next;
             }
@@ -623,7 +709,85 @@ fn thread(
                 Some(r) => r,
                 None => crate::eval::lambda_body_of_nullary(db, head)?,
             };
-            thread(db, reduced, cur, ctx)
+            thread_bounded(db, reduced, cur, ctx, inline_depth + 1)
+        }
+        // A RECURSIVE effectful call `(f args…)` — `f` recurses AND reaches a discharged op, so it cannot
+        // be inlined (E1c-3's trigger excludes it). SPECIALIZE it: emit `f#ctx` once per handler context
+        // (`DESIGN-effects-rcdzc.md` §4.3), threading this context's state as a trailing parameter, and
+        // emit a call `(f#ctx args… <current-state>)`. Only the SINGLE-STATE, single-arg-state fast path
+        // is built (countdown/range-sum); anything else declines below.
+        Resolved::Apply { head, args }
+            if ctx.single_state.is_some() && recursive_call_reaches_discharged(db, &head, ctx) =>
+        {
+            // Thread state through the args first (they evaluate before the call), then the call takes the
+            // current threaded state as its trailing argument.
+            let mut cur = state;
+            let mut rargs = Vec::with_capacity(args.len() + 1);
+            for &a in args.iter() {
+                let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
+                rargs.push(ra);
+                cur = next;
+            }
+            let spec = specialize_recursive(db, head, ctx)?;
+            rargs.push(cur); // the state argument, in the state as it stands at the call
+            // Build the call `(<spec-name> args… state)`. The specialized def is named, so a name atom
+            // resolves to it (via `def_by_name`), and the ordinary recursive `Core::Call` + reachability
+            // path emits it.
+            let name_atom = db.push_atom(Leaf::Name(spec));
+            let mut call = vec![name_atom];
+            call.extend(rargs);
+            // The call's VALUE is the specialized fn's result; the state after it is not observed (the
+            // corpus never reads post-recursion state — the single-return shape).
+            Some((db.push_list(call), cur))
+        }
+        // An `(if cond then else)` — the condition is evaluated (thread state through it), then BOTH
+        // branches see the post-condition state (only one runs, but each is rewritten under the same
+        // incoming state — a perform in a branch reads that state). The branch STATES are not merged
+        // (the corpus never observes post-`if` state across a perform-in-a-branch), so the `if`'s
+        // out-state is the post-CONDITION state — sound for the single-return shape (a recursive call
+        // in a branch takes the branch-local threaded state as its argument; nothing after the `if`
+        // reads state). This is what threads countdown's `(if (= (tick) 0) 0 (+ 1 (loop)))`.
+        Resolved::If { cond, then_, else_ } => {
+            let (rcond, cur) = thread_bounded(db, cond, state, ctx, inline_depth)?;
+            let (rthen, _) = thread_bounded(db, then_, cur, ctx, inline_depth)?;
+            let (relse, _) = thread_bounded(db, else_, cur, ctx, inline_depth)?;
+            let if_head = db.push_atom(Leaf::Name("if".to_string()));
+            Some((db.push_list(vec![if_head, rcond, rthen, relse]), cur))
+        }
+        // A `(let ((n init)…) body)` — thread state through each initializer in order, then the body.
+        // This is what threads range-sum's `(let ((i (Idx.next))) (if (= i 0) …))`: the init `(Idx.next)`
+        // performs (reads state, threads next), and `i` binds that resume value. Rebuild the `let` with
+        // the rewritten inits + body so `i`'s binding survives (the binder name is copied structurally).
+        _ if db.ast.as_form(node, "let").is_some() => {
+            let tail: Vec<StructId> = db.ast.as_form(node, "let").unwrap().to_vec();
+            if tail.len() != 2 {
+                return None;
+            }
+            let bindings_occ = tail[0];
+            let body_occ = tail[1];
+            let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
+                return None;
+            };
+            let mut cur = state;
+            let mut rpairs = Vec::with_capacity(pairs.len());
+            for pair in pairs {
+                let Struct::List(kv) = db.ast.get(pair).clone() else {
+                    return None;
+                };
+                if kv.len() != 2 {
+                    return None;
+                }
+                // The binder NAME is copied structurally (a binder, not a value to thread); the INIT is
+                // threaded (it may perform).
+                let name_copy = copy_pure(db, kv[0]);
+                let (rinit, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
+                cur = next;
+                rpairs.push(db.push_list(vec![name_copy, rinit]));
+            }
+            let (rbody, cur) = thread_bounded(db, body_occ, cur, ctx, inline_depth)?;
+            let let_head = db.push_atom(Leaf::Name("let".to_string()));
+            let rbindings = db.push_list(rpairs);
+            Some((db.push_list(vec![let_head, rbindings, rbody]), cur))
         }
         // An ordinary application / arithmetic / comparison / connective / `not` over sub-expressions:
         // thread state through the operands in left-to-right order, rebuilding the same head. This
@@ -631,11 +795,11 @@ fn thread(
         // arm above caught it), so it is copied as-is.
         Resolved::Apply { head, args } => {
             let mut cur = state;
-            let (rhead, next0) = thread_or_copy(db, head, cur, ctx)?;
+            let (rhead, next0) = thread_or_copy(db, head, cur, ctx, inline_depth)?;
             cur = next0;
             let mut children = vec![rhead];
             for &a in args.iter() {
-                let (ra, next) = thread(db, a, cur, ctx)?;
+                let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
                 children.push(ra);
                 cur = next;
             }
@@ -710,6 +874,108 @@ fn body_reaches_discharged(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth:
     }
 }
 
+/// Whether `head` names a RECURSIVE top-level def whose body reaches a discharged operation — the E3
+/// specialization trigger (the recursive counterpart of `call_reaches_discharged_effect`, which excludes
+/// recursion). Only a NAMED top-level def can be specialized (it needs a stable identity to synthesize
+/// `f#ctx` from and to name the recursive call); a computed/anonymous recursive head is not.
+fn recursive_call_reaches_discharged(db: &mut Db, head: &StructId, ctx: &HandlerCtx) -> bool {
+    let head = *head;
+    let Some(callee_def) = callee_def_index_of(db, head) else {
+        return false;
+    };
+    let Some(body) = db.defs[callee_def].body else {
+        return false;
+    };
+    crate::eval::is_recursive(db, body) && body_reaches_discharged(db, body, ctx, 0)
+}
+
+/// The `db.defs` index the application head `head` names — following a `Ref` to a lambda/def body. `None`
+/// for a head that is not a named top-level def. (A local copy of `lower::callee_def_index`, which is
+/// private there.)
+fn callee_def_index_of(db: &mut Db, head: StructId) -> Option<usize> {
+    match resolved_of(db, head) {
+        Resolved::Lambda { body, .. } => db.def_index_by_body(body),
+        Resolved::Ref { value } => db
+            .def_index_by_body(value)
+            .or_else(|| callee_def_index_of(db, value)),
+        _ => None,
+    }
+}
+
+/// Specialize the recursive effectful def `head` names UNDER this handler context — emit `f#ctx` once
+/// (memoized on `db.effect_specializations` by `(body-occ, ctx.key)`), returning its synthesized NAME.
+/// The specialized def takes `f`'s original parameters plus a trailing STATE parameter; its body is
+/// `f`'s body threaded under `ctx` (each perform → its arm's resume value against the state param; the
+/// recursive self-call → a call to `f#ctx` with the threaded next-state). `None` if `head` is not a
+/// specializable recursive def or its body cannot be threaded (declines cleanly).
+fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option<String> {
+    let callee_def = callee_def_index_of(db, head)?;
+    let orig_body = db.defs[callee_def].body?;
+    let _state_binder = ctx.single_state?;
+    let state_ty = ctx.state_ty.clone()?;
+
+    // MEMO: the same recursive def under the same handler context specializes ONCE. Keyed by the def's
+    // body occurrence + the context's resolved identity. A hit returns the existing synthesized name.
+    let memo_key = (orig_body, ctx.key.clone());
+    if let Some(&idx) = db.effect_specializations.get(&memo_key) {
+        return Some(db.defs[idx].name.clone());
+    }
+
+    // The single-state fast path handles a NULLARY recursive def (countdown `loop`, range-sum
+    // `sum-down`): no original params, just the threaded state. A parameterized recursive effectful def
+    // is a later increment.
+    if !db.defs[callee_def].params.is_empty() {
+        return None;
+    }
+
+    // The specialized NAME — unique per (def, context). The `#` makes it unspellable in source (no user
+    // collision); the def-count suffix keeps distinct specializations distinct.
+    let base = db.defs[callee_def].name.clone();
+    let spec_name = format!("{base}#eff{}", db.defs.len());
+
+    // Build the specialized def as a REAL AST form `(def (spec (: s <state-ty-typeval>)) <body>)`, so its
+    // state parameter resolves as a param (via `is_param_occurrence`, which walks to a `def` form) and
+    // types by its annotation. The state param is an ANNOTATED binder `(: s T)`.
+    let state_name = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
+    let state_type_expr = crate::eval::encode_typeval(db, &state_ty);
+    let colon = db.push_atom(Leaf::Name(":".to_string()));
+    let state_param = db.push_list(vec![colon, state_name, state_type_expr]);
+    let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone()));
+    let sig = db.push_list(vec![spec_name_atom, state_param]);
+
+    // RESERVE the def NOW (with the sig, body filled later) + MEMOIZE — so the recursive self-call inside
+    // the body re-enters `specialize_recursive`, hits the memo, and names THIS `spec_name`. `db.defs`
+    // params carry the SIGNATURE PARAM occurrence (the `(: s T)` node), as a normal scanned def does.
+    let spec_index = db.defs.len();
+    db.push_specialized_def(Def {
+        name: spec_name.clone(),
+        sig_occ: sig,
+        params: vec![state_param],
+        body: None,
+    });
+    db.effect_specializations.insert(memo_key, spec_index);
+
+    // Thread `orig_body` under `ctx`, with the incoming state = a REFERENCE to the state param `s`. The
+    // performs' resume values reference the arm's state binder, which `thread`'s perform arm substitutes
+    // with this state expression; the recursive self-call re-enters and (via the memo) rewrites to
+    // `(spec_name <threaded-state>)`. The state name atom must re-resolve to the param, so we pass a
+    // FRESH occurrence of the name (a bare `s` reference), not the binder occurrence.
+    let state_ref = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
+    let (spec_body, _out) = thread(db, orig_body, state_ref, ctx)?;
+
+    // Wrap in a REAL `(def (spec (: s T)) spec_body)` arena node so the parent index links
+    // param → sig → def: `is_param_occurrence` walks that chain to classify `s` as a param, and
+    // `binder_in` Case 4 resolves a body reference to `s` against the def signature. Without this the
+    // synthesized param would not resolve. The def head + form are pushed here (after threading, since
+    // the body must exist); the `db.defs` entry's `body` points at `spec_body` (the def-form node is for
+    // scope/param resolution, not the emitted body — emission reads `db.defs[i].body`).
+    let def_head = db.push_atom(Leaf::Name("def".to_string()));
+    let _def_form = db.push_list(vec![def_head, sig, spec_body]);
+
+    db.fill_specialized_def(spec_index, vec![state_param], spec_body);
+    Some(spec_name)
+}
+
 /// Thread `node` if it performs, else copy it (a head that is a pure function reference). Convenience for
 /// an application head.
 fn thread_or_copy(
@@ -717,9 +983,10 @@ fn thread_or_copy(
     node: StructId,
     state: StructId,
     ctx: &HandlerCtx,
+    inline_depth: u32,
 ) -> Option<(StructId, StructId)> {
     if subtree_performs(db, node, ctx) {
-        thread(db, node, state, ctx)
+        thread_bounded(db, node, state, ctx, inline_depth)
     } else {
         Some((copy_pure(db, node), state))
     }
