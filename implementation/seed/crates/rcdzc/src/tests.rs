@@ -3399,6 +3399,51 @@ mod stage1 {
     }
 
     #[test]
+    fn the_bare_name_unit_is_the_unit_value() {
+        // `unit` is a prelude value — an alias for the empty list `()`, the other spelling of the unit
+        // value (core-semantics.md #Unit And The Empty Tuple Are The Same Value). It must RESOLVE (not
+        // reject "unbound name `unit`") and produce the unit value exactly as `()` does. Compiling a
+        // unit-returning `main` from each spelling must succeed and yield the SAME core.
+        let core_of_body = |body: &str| {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            // A unit `main` has no scalar result to run; assert it COMPILES (resolves) — before the fix
+            // `unit` rejected CDZ0101 and no component was produced.
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&src)))
+                .unwrap_or_else(|e| panic!("`{body}` must compile: {}", e.message))
+        };
+        // Both spellings compile to a valid component (the unit value crosses the boundary as an empty
+        // result). `unit` no longer rejects as an unbound name.
+        let from_unit = core_of_body("unit");
+        let from_parens = core_of_body("()");
+        // The two produce byte-identical components — `unit` and `()` are the same value.
+        assert_eq!(
+            from_unit, from_parens,
+            "`unit` and `()` must compile to the same component (the same unit value)"
+        );
+    }
+
+    #[test]
+    fn two_unit_values_compare_equal() {
+        // There is exactly ONE unit value, so any two units compare EQUAL — `(= unit ())` is true,
+        // regardless of which spelling (`unit` / `()`) each operand uses. Folded at compile time: unit
+        // carries no data and has no machine slot, so this is a trivial constant, NOT a "compound needs
+        // a heap walk" decline. `<`/`>` are false (Equal, not Less/Greater); `<=`/`>=` are true.
+        assert!(run_main_as::<bool>("(= unit ())"));
+        assert!(run_main_as::<bool>("(= unit unit)"));
+        assert!(run_main_as::<bool>("(= () ())"));
+        assert!(!run_main_as::<bool>("(< unit ())"));
+        assert!(run_main_as::<bool>("(<= unit ())"));
+        assert!(run_main_as::<bool>("(>= () unit)"));
+        // A unit compared against a non-unit is a TYPE error — the operator is `∀a. a → a → Bool`, so
+        // both operands must be the SAME type; `(= unit 5)` cannot unify Unit with Int64 (CDZ0203).
+        let e = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (main) (= unit 5)) (export main))",
+        )))
+        .expect_err("comparing unit with an int must reject");
+        assert_eq!(e.code.as_deref(), Some("CDZ0203"), "got: {}", e.message);
+    }
+
+    #[test]
     fn a_binding_shadows_the_tuple_and_record_constructor_aliases() {
         // `tuple`/`record` are SHADOWABLE prelude aliases for the symbol primitives `(,)`/`{}`. A local
         // binding of the name wins in application-head position via the ordinary scope-first lookup —

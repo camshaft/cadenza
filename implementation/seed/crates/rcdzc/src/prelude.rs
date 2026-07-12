@@ -41,6 +41,15 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     names.insert("Bool".to_string(), ground_type_record(ast, "Bool"));
     names.insert("Unit".to_string(), ground_type_record(ast, "Unit"));
 
+    // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
+    // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;
+    // 01-literals "unit and the empty tuple are the same value"). An empty-list node resolves to
+    // `Resolved::Unit` exactly as a source `()` does, so `unit` and `()` are interchangeable in value
+    // position — this is what lets the pervasive nullary-variant idiom `(None unit)` / `(Sign.Pos unit)`
+    // and the direct `(input unit)` case RUN, rather than declining "unbound name `unit`". (`Unit`,
+    // capitalized, is the TYPE above; `unit` is the value.)
+    names.insert("unit".to_string(), push_list(ast, vec![]));
+
     // Type constructors — a record whose META channel `(meta apply)` holds the native builder. `(Int
     // a)` / `(-> A B)` are ORDINARY applications: project `(meta apply)`, apply it. `Int`/`UInt` build
     // a width-specialized integer MODULE; `->` builds a function type-value.

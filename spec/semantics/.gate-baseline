@@ -26,6 +26,7 @@ pass	a conditional evaluates only the selected branch
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional shields a trap in a nested unselected branch
+pass	a conditional whose branches are unit yields unit
 pass	a conditional whose condition folds to a constant still drops the untaken trapping branch
 pass	a conditional's condition may itself be a conditional
 pass	a consistent annotation type-checks against the inferred type
@@ -62,6 +63,7 @@ pass	a let binding shadows a built-in constructor name in application-head posit
 pass	a let binding shadows the record constructor in application-head position
 pass	a let binding shadows the tuple constructor in application-head position
 pass	a let binding whose value references a parameter compiles under a call
+pass	a let body of unit yields unit
 pass	a let shadowing a parameter whose initializer references that parameter computes
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
@@ -239,6 +241,7 @@ pass	the module entrypoint is the def named main regardless of its position
 pass	the other parity of a mutually-recursive pair
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
+pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	true is greater than false
 pass	true is not less than false
@@ -247,6 +250,8 @@ pass	two functions defined by mutual recursion compute a result
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	unit and the empty tuple are the same value
+pass	unit is the empty tuple
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
@@ -310,7 +315,6 @@ todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a compound if condition is a type error, not an unbound name
 todo	a conditional inside a function with a constant condition and mismatched branches is a type error
 todo	a conditional type error is caught even when the mismatched branch is the one taken
-todo	a conditional whose branches are unit yields unit
 todo	a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead
 todo	a conditional with a missing branch is rejected, not a crash
 todo	a conditional with an integer then-branch and a boolean else-branch is a type error
@@ -386,7 +390,6 @@ todo	a left shift by the bit width or more traps rather than wrapping
 todo	a left shift that overflows Int64 traps like multiplication
 todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a let binding with no value expression is rejected, not a crash
-todo	a let body of unit yields unit
 todo	a let-bound variable is in scope inside a boolean connective operand
 todo	a list annotated with the wrong element type is rejected
 todo	a list built by a recursive push-loop is then iterated by index
@@ -981,7 +984,6 @@ todo	the three-way comparison orders strings lexicographically
 todo	the two variants of Result compare unequal
 todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 todo	the union contains the elements of either set
-todo	the unit value
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
 todo	tuple access on a non-tuple is a type error
@@ -1010,8 +1012,6 @@ todo	two structural values of the same shape are equal
 todo	two unequal runtime strings compare false by their contents
 todo	two variants of the same sum compare unequal regardless of operand order
 todo	under-applying a unary constructor is a type error, not a fabricated unit payload
-todo	unit and the empty tuple are the same value
-todo	unit is the empty tuple
 todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote outside quasiquote is a syntax error
 todo	unquote with more than one operand inside a quasiquote is malformed

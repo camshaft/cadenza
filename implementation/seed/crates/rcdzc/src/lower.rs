@@ -1771,6 +1771,17 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant boolean comparison");
             Core::ConstBool(r)
         }
+        // Two UNIT values — there is exactly ONE unit value, so two units always compare EQUAL. Fold at
+        // compile time to the ordering-`Equal` result for the operator (`= unit ()` → true, `< unit ()`
+        // → false, `<= unit ()` → true). No heap walk and no runtime op: unit carries no data to
+        // compare (it has no machine slot — `valtype_of(Ty::Unit)` is `None`), so `(= unit ())` is not a
+        // "compound needs a heap walk" case but a trivial constant. (`unit` and `()` are the same value —
+        // core-semantics.md #Unit And The Empty Tuple Are The Same Value.)
+        (Core::Unit, Core::Unit) => {
+            let r = compare_ord(op, std::cmp::Ordering::Equal);
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded unit comparison (two units are equal)");
+            Core::ConstBool(r)
+        }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         // A non-constant operand: a runtime comparison IF both operands are scalars (integers or
         // booleans, which have a machine representation the backend can compare); a compound operand
