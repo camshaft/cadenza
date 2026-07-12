@@ -55,10 +55,11 @@
 # Source paths are relative to the PROJECT ROOT, not to .duvet/.
 # =============================================================================
 
-# Generated seed compiler lives under implementation/seed/ (gitignored); default is Rust.
-# Scoped to the seed's own source; throwaway spikes under implementation/spikes/ are excluded.
+# Generated seed compiler lives under implementation/seed/ (a Cargo workspace under
+# crates/); default is Rust. Scoped to the seed's own source; throwaway spikes under
+# implementation/spikes/ are excluded.
 [[source]]
-pattern = "implementation/seed/src/**/*.rs"
+pattern = "implementation/seed/crates/**/*.rs"
 
 # ---- ignition-subset requirement side ---------------------------------------
 

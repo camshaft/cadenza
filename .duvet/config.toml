@@ -32,10 +32,12 @@
 
 # ---- code side (regenerated per-language; the compiler lives here) ----------
 # Match the seed compiler's Rust source FILES (not directories — a bare `**/*` matches
-# directories too and duvet errors "Is a directory"). Throwaway de-risking spikes under
-# implementation/spikes/ are excluded: they cite their own toy specs, not the spec tree.
+# directories too and duvet errors "Is a directory"). The seed toolchain is a Cargo
+# workspace under implementation/seed/crates/ (cadenza-syntax, rcdzc, cdz-run, cdz-runtime,
+# cdz-corpus). Throwaway de-risking spikes under implementation/spikes/ are excluded: they
+# cite their own toy specs, not the spec tree.
 [[source]]
-pattern = "implementation/seed/src/**/*.rs"
+pattern = "implementation/seed/crates/**/*.rs"
 
 # ---- requirement side (stable; one [[specification]] per normative spec) ----
 

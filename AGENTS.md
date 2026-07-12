@@ -153,6 +153,37 @@ build modes they obey are fixed by [spec/capabilities/build-modes.md](spec/capab
 
 After any spec edit, run `analyze` and confirm it ends `ANALYZE: PASS`.
 
+## Keep the compiler's own docs current — a doc is part of the change
+
+The seed toolchain under `implementation/seed/crates/` (`cadenza-syntax`, `rcdzc`, `cdz-run`,
+`cdz-runtime`, `cdz-corpus`) is a regenerable projection of the specs, but it is *committed*,
+and its module docs and comments are read as the current truth by the next agent. Treat a
+comment the same way you treat code: **if your change makes a comment false, fixing the comment
+is part of your change, not a follow-up.** The failure mode this rule exists to prevent is
+already visible in the tree — comments that say "Stage 0 only", "when we get type inference",
+"not yet built", or "for now" for a capability that has since shipped. A stale status comment
+is worse than no comment: it actively misinforms.
+
+Concretely, when you touch a module:
+
+- **State what is, not what was.** Describe the code's current behavior and the invariant it
+  keeps. If a limitation is genuinely still present, say so and say *why it is declined*, not
+  "not yet" (which rots the moment it ships). A forward-looking note belongs in a design doc or
+  a memory, not in a `//!` header that outlives it.
+- **Delete the scaffolding narrative.** "Stage 0's thin slice", "this is temporary", and
+  "later stages widen this" describe a construction history the reader does not have and cannot
+  verify. If the staging still matters, cite the normative sentence that mandates the shape (see
+  below); otherwise cut it.
+- **Prefer a duvet citation to a prose justification.** When a module is shaped the way it is
+  *because the specification requires it*, cite the requirement inline with a `//=` / `//#`
+  pair rather than paraphrasing it. The pair is machine-checked: `//= <spec>#<section>` names
+  the requirement and `//# <exact sentence>` quotes it verbatim, so duvet fails the requirement
+  gate if the quoted words drift out of the spec. This turns "why is it like this?" from a
+  comment that can silently go stale into a link the gate keeps honest — and it credits the
+  seed compiler with the spec coverage it actually provides. The seed sources are scanned by
+  both `.duvet/config.toml` and `.duvet/bootstrap.toml` under
+  `implementation/seed/crates/**/*.rs`; run `duvet report` to confirm a new citation resolves.
+
 ## Authoring order (of the specification itself)
 
 Author for internal consistency: glossary + constitution together, then `overview.md`, then
