@@ -2967,8 +2967,17 @@ fn emit_probe_chain(
         match &arm.probe {
             crate::core::Probe::Int(v) => {
                 let m = Machine::of(it);
-                out.push(m.konst(v.to_i64_bits()));
-                out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+                // PROBE-AGAINST-ZERO → `eqz`. A `0` literal arm (the shape of every recursion base case
+                // `(match n (0 …) …)`) is `scrutinee == 0` — exactly `i32.eqz`/`i64.eqz` (one
+                // instruction), not a pushed `0` constant + `eq` (two). Same instruction-selection the
+                // comparison path applies to `(= n 0)`; mirrored here for the match probe. A nonzero
+                // literal keeps the `const ; eq`.
+                if v.to_i64_bits() == 0 {
+                    out.push(if m.slot32 { Lir::I32Eqz } else { Lir::I64Eqz });
+                } else {
+                    out.push(m.konst(v.to_i64_bits()));
+                    out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+                }
             }
             crate::core::Probe::Bool(b) => {
                 out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
@@ -3530,12 +3539,18 @@ fn emit_sum_cont(
                     }
                 }
             }
-            // Read the leaf scalar and compare against the literal.
+            // Read the leaf scalar and compare against the literal. A `0` literal (a `(Some 0)`/`(Ok 0)`
+            // payload pattern) is `payload == 0` — `i64.eqz` (one instruction), not `const 0 ; eq` (two);
+            // the sum-payload twin of the scalar-probe eqz special case.
             match probe {
                 crate::core::Probe::Int(v) => {
                     out.push(Lir::CallImport(OP_GET_INT)); // [i64]
-                    out.push(Lir::ConstI64(v.to_i64_bits()));
-                    out.push(Lir::I64Eq); // [bool]
+                    if v.to_i64_bits() == 0 {
+                        out.push(Lir::I64Eqz); // [bool]
+                    } else {
+                        out.push(Lir::ConstI64(v.to_i64_bits()));
+                        out.push(Lir::I64Eq); // [bool]
+                    }
                 }
                 crate::core::Probe::Bool(b) => {
                     out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]

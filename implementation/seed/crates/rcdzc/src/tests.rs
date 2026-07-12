@@ -5758,6 +5758,62 @@ mod match_engine {
     }
 
     #[test]
+    fn a_scalar_match_probe_against_zero_uses_eqz() {
+        // A `0`-literal match arm — the shape of every recursion base case `(match n (0 …) …)` — probes
+        // `scrutinee == 0`, which is exactly `i64.eqz` (one instruction), not a pushed `0` + `eq` (two).
+        // Mirrors the comparison path's `(= n 0)` → eqz. A NONZERO probe keeps `const ; eq`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = {
+            let ast = crate::testkit::parse(
+                "(module m (def (f (: n Int64)) (match n (0 10) (1 20) (_ 30))) (def (main) 0) (export main))",
+            );
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The `0` arm is an `eqz`; the `1` arm is a `const 1 ; eq`.
+        assert!(
+            code.contains(&Lir::I64Eqz),
+            "the `0` probe must be an i64.eqz, got: {code:?}"
+        );
+        assert!(
+            code.contains(&Lir::ConstI64(1)) && code.contains(&Lir::I64Eq),
+            "the nonzero `1` probe keeps const ; eq, got: {code:?}"
+        );
+        // Exactly ONE eqz (the `0` arm) and ONE const-0 must NOT be pushed for the probe.
+        assert_eq!(
+            code.iter().filter(|i| matches!(i, Lir::I64Eqz)).count(),
+            1,
+            "only the single `0` arm becomes an eqz"
+        );
+        // Value parity: dispatch is unchanged.
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: n Int64)) (match n (0 10) (1 20) (_ 30))) (export f))";
+        let bytes = component(src);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 10);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(1)]), 20);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(9)]), 30);
+    }
+
+    #[test]
     fn a_computed_match_scrutinee_is_evaluated_once() {
         use wasmtime::component::Val;
         // `(match (+ a b) (0 10) (1 20) (_ 30))` — the scrutinee is a CHECKED add. It is evaluated ONCE
