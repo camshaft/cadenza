@@ -1137,7 +1137,20 @@ const VEC_MASK: u32 = (1 << VEC_BITS) - 1;
 
 /// Read a little-endian `u32` at byte `off` of `raw`, zero-padded past the end (total: a short raw
 /// yields 0, never a panic — same discipline as `read_word`/`read_disc`).
+///
+/// FAST PATH: when the full 4-byte window is in bounds (the ALWAYS case for a real CHAMP header —
+/// `champ_datamap`/`champ_nodemap`/`champ_size` on a 12-byte raw — and vec headers / relaxed size
+/// tables), read the 4-byte subslice in ONE `from_le_bytes` with a single bounds check, instead of the
+/// four per-byte `.get()` bounds checks the general loop does. This is on the hottest descent
+/// (`champ_find_base_h` reads datamap+nodemap PER LEVEL) so the per-byte branches were measurable
+/// (`Raw::as_slice`/`read_u32_at` ~3% of the profile). Byte-identical output. The zero-padded loop
+/// stays for the defensive short/absent-raw tail (e.g. `champ_become_hdr`'s pre-resize probe).
+#[inline]
 fn read_u32_at(raw: &[u8], off: usize) -> u32 {
+    if let Some(window) = raw.get(off..off + 4) {
+        // SAFETY-FREE: `window` is exactly 4 bytes, so the array conversion cannot fail.
+        return u32::from_le_bytes(window.try_into().unwrap());
+    }
     let mut b = [0u8; 4];
     for k in 0..4 {
         if let Some(&byte) = raw.get(off + k) {
@@ -4976,6 +4989,46 @@ mod tests {
     }
 
     // ── Inline tagged-immediate helpers (producers: op_box_int fixnum / op_box_bool / op_arr_alloc(0)) ─────
+
+    /// `read_u32_at` has two paths — a fast in-bounds 4-byte window read and a zero-padded fallback for
+    /// a short/absent raw. This locks their EQUIVALENCE at the boundary: both must yield the same
+    /// little-endian value where 4 bytes exist, and zero-pad missing high bytes. It is the hottest
+    /// header read (`champ_datamap`/`nodemap`/`size`, every descent level), so a boundary mistake would
+    /// silently corrupt bitmaps/sizes; a reference recompute over every offset of several raw lengths
+    /// (including 0/1/2/3-byte short raws that exercise ONLY the fallback) pins the contract.
+    #[test]
+    fn read_u32_at_fast_and_padded_paths_agree() {
+        // Independent reference: exactly the zero-padded byte-by-byte definition.
+        fn reference(raw: &[u8], off: usize) -> u32 {
+            let mut b = [0u8; 4];
+            for k in 0..4 {
+                if let Some(&byte) = raw.get(off + k) {
+                    b[k] = byte;
+                }
+            }
+            u32::from_le_bytes(b)
+        }
+        let raws: &[&[u8]] = &[
+            &[],                                             // absent: fallback only
+            &[0xAB],                                         // 1 byte: fallback (3 zero-padded)
+            &[0x01, 0x02],                                   // 2 bytes
+            &[0xFF, 0xEE, 0xDD],                             // 3 bytes: fallback (1 zero-padded)
+            &[0x78, 0x56, 0x34, 0x12],                       // exactly 4: fast path, no pad
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],        // 12-byte CHAMP-header-sized raw
+        ];
+        for raw in raws {
+            // Probe every offset from 0 to just past the end — covers in-bounds (fast) and past-end
+            // (fallback, including a partial window straddling the end).
+            for off in 0..=raw.len() + 2 {
+                assert_eq!(
+                    read_u32_at(raw, off),
+                    reference(raw, off),
+                    "read_u32_at(raw len {}, off {off}) disagrees with the zero-padded reference",
+                    raw.len()
+                );
+            }
+        }
+    }
 
     #[test]
     fn imm_encoding_roundtrip() {
