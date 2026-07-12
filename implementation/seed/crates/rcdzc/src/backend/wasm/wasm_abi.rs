@@ -31,6 +31,7 @@ pub mod op {
     pub const GLOBAL_GET: u8 = 0x23;
     pub const GLOBAL_SET: u8 = 0x24;
     pub const CALL: u8 = 0x10;
+    pub const CALL_INDIRECT: u8 = 0x11;
     pub const RETURN_CALL: u8 = 0x12;
     pub const RETURN: u8 = 0x0f;
     pub const UNREACHABLE: u8 = 0x00;
@@ -124,6 +125,10 @@ pub const COMP_F64: u8 = 0x75;
 pub const CORE_SEC_TYPE: u8 = 0x01;
 /// core FUNCTION section id.
 pub const CORE_SEC_FUNCTION: u8 = 0x03;
+/// core TABLE section id (the funcref table a closure's `call_indirect` dispatches through — one entry per lambda-lifted closure function).
+pub const CORE_SEC_TABLE: u8 = 0x04;
+/// core ELEMENT section id (the active segment filling the funcref table with the lifted closure functions' indices, so a closure's stored table slot names its code).
+pub const CORE_SEC_ELEMENT: u8 = 0x09;
 /// core MEMORY section id (the linear memory a `list<u8>`/`string` return lifts through).
 pub const CORE_SEC_MEMORY: u8 = 0x05;
 /// core GLOBAL section id (a build-once static compound's handle global; the bump-allocator cursor).
