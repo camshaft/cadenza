@@ -1824,6 +1824,33 @@ mod runtime_ops {
     }
 
     #[test]
+    fn runtime_shift_with_a_nested_value_operand() {
+        // `(<< (+ a b) c)` — the shift's VALUE operand is a nested checked add, so `emit_operand_into`
+        // routes it through `emit_checked_arith_to` writing the shift's value slot directly. Both the
+        // add's overflow guard and the shift's count/overflow guards must still fire. (1+2)<<3 = 24.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64) (: c Int64)",
+                "(<< (+ a b) c)",
+                &[Val::S64(1), Val::S64(2), Val::S64(3)]
+            ),
+            24
+        );
+        // The inner add overflows before the shift runs → trap.
+        assert!(traps(
+            "(: a Int64) (: b Int64) (: c Int64)",
+            "(<< (+ a b) c)",
+            &[Val::S64(i64::MAX), Val::S64(1), Val::S64(0)]
+        ));
+        // The shift overflows Int64 (1 << 63 = +2^63, out of range) → trap.
+        assert!(traps(
+            "(: a Int64) (: b Int64) (: c Int64)",
+            "(<< (+ a b) c)",
+            &[Val::S64(1), Val::S64(0), Val::S64(63)]
+        ));
+    }
+
+    #[test]
     fn runtime_signed_right_shift_is_arithmetic() {
         // >> on a signed type is ARITHMETIC (sign-extending): -256 >> 7 = -2 (a logical shift would give a
         // huge positive value). An out-of-range count traps.

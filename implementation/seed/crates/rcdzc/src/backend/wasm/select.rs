@@ -1594,12 +1594,15 @@ fn emit_machine_overflow_guard(
             out.push(Lir::IfUnreachableEnd);
         }
         Prim::Sub if addsub_can_overflow && m.signed => {
-            // signed sub: `((a^b) & (a^r)) < 0` → trap.
+            // signed sub: `((r^a) & (a^b)) < 0` → trap. Mathematically `((a^b) & (a^r)) < 0`, but `^`
+            // and `&` are commutative, so we compute `(r^a)` FIRST — reading `$r` immediately after the
+            // `local.set $r` that produced the result, so the peephole fuses that `set ; get` into a
+            // `local.tee $r` (one fewer instruction). `(r^a)` ≡ `(a^r)`, `(r^a)&(a^b)` ≡ `(a^b)&(a^r)`.
+            out.push(Lir::LocalGet(sr));
             sa.push(out);
-            sb.push(out);
             out.push(m.xor());
             sa.push(out);
-            out.push(Lir::LocalGet(sr));
+            sb.push(out);
             out.push(m.xor());
             out.push(m.and());
             out.push(m.konst(0));
@@ -1762,50 +1765,84 @@ fn emit_shift(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
-    let (sa, sb, sr) = (base, base + 1, base + 2);
-    if sr + 1 > *high {
-        *high = sr + 1;
-    }
-    for s in [sa, sb, sr] {
-        scratch_ty.insert(s, m.slot());
-    }
-    let operand_base = base + 3;
     let ot = IntTy::fixed(m.signed, m.width);
-    // <A> local.set $a ; <B> local.set $b. Both the value and the count share the op's machine slot, so
-    // a bare-literal value or count is grounded to that width (a mixed i32/i64 shift is invalid wasm).
-    emit_operand(
-        db,
-        lhs,
-        ot,
-        slots,
-        operand_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-    )?;
-    out.push(Lir::LocalSet(sa));
-    emit_operand(
-        db,
-        rhs,
-        ot,
-        slots,
-        operand_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-    )?;
-    out.push(Lir::LocalSet(sb));
+    // The value `$a` and the count `$b` are read several times (count guard, the shift, the round-trip
+    // check), so — like `emit_checked_arith` — a reusable operand (a matching local or a constant) is
+    // pushed directly at each use (no scratch), and only a nested computation is stashed in a scratch
+    // slot. `$r` (the result) always needs its own scratch. Both share the op's machine slot, so a
+    // bare-literal value/count is grounded to that width (a mixed i32/i64 shift is invalid wasm).
+    let mut next_scratch = base;
+    let mut claim = |high: &mut u32| {
+        let s = next_scratch;
+        next_scratch += 1;
+        if s + 1 > *high {
+            *high = s + 1;
+        }
+        s
+    };
+    let sa_src = operand_src(db, lhs, ot, slots)?;
+    let sa = match sa_src {
+        Some(src) => src,
+        None => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            OperandSrc::Slot(s)
+        }
+    };
+    let sb_src = operand_src(db, rhs, ot, slots)?;
+    let sb = match sb_src {
+        Some(src) => src,
+        None => {
+            let s = claim(high);
+            scratch_ty.insert(s, m.slot());
+            OperandSrc::Slot(s)
+        }
+    };
+    let sr = claim(high);
+    scratch_ty.insert(sr, m.slot());
+    let operand_base = next_scratch;
+    // Stash a non-reusable value/count into its scratch slot (a nested op writes it directly).
+    if sa_src.is_none()
+        && let OperandSrc::Slot(sa_slot) = sa
+    {
+        emit_operand_into(
+            db,
+            lhs,
+            ot,
+            sa_slot,
+            slots,
+            operand_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+    }
+    if sb_src.is_none()
+        && let OperandSrc::Slot(sb_slot) = sb
+    {
+        emit_operand_into(
+            db,
+            rhs,
+            ot,
+            sb_slot,
+            slots,
+            operand_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+    }
     // Count guard: `b >=ᵤ N` → trap. A negative count read unsigned is huge (≥ N), so this one test
     // catches both a negative and a too-large count. Bound is the LANGUAGE width N, not the slot width.
-    out.push(Lir::LocalGet(sb));
+    sb.push(out);
     out.push(m.konst(m.width as i64));
     out.push(m.ge_u());
     out.push(Lir::IfUnreachableEnd);
-    // get$a get$b <machine-shift> local.set $r
-    out.push(Lir::LocalGet(sa));
-    out.push(Lir::LocalGet(sb));
+    // push$a push$b <machine-shift> local.set $r
+    sa.push(out);
+    sb.push(out);
     out.push(match op {
         Prim::Shl => m.shl(),
         Prim::Shr => m.shr(),
@@ -1816,9 +1853,9 @@ fn emit_shift(
         // Round-trip: shifting `$r` back right by `$b` must recover `$a`; else the shift dropped bits out
         // of the SLOT (overflow). The inverse shift matches signedness so the round-trip is exact.
         out.push(Lir::LocalGet(sr));
-        out.push(Lir::LocalGet(sb));
+        sb.push(out);
         out.push(m.shr());
-        out.push(Lir::LocalGet(sa));
+        sa.push(out);
         out.push(m.ne());
         out.push(Lir::IfUnreachableEnd);
         // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
