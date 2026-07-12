@@ -1912,6 +1912,16 @@ fn emit_probe_chain(
     out: &mut Vec<Lir>,
     tail: TailPos,
 ) -> Result<(), Reject> {
+    // BR_TABLE DECISION TREE for a DENSE integer match: ≥3 `Int` probes over a small contiguous-ish
+    // range dispatch in O(1) via a jump table instead of the linear `if (== k)` cascade below. Only
+    // fires for an unguarded integer match with a wildcard default (see `try_emit_scalar_br_table`),
+    // and only when the value range is dense enough to not waste table slots. `None` → fall through to
+    // the linear chain (a sparse range, guards, too few arms, a non-int probe).
+    if let Some(()) = try_emit_scalar_br_table(
+        db, src, arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out, tail,
+    )? {
+        return Ok(());
+    }
     // An arm body is emitted via `emit_arm_body` (grounds a bare-`ConstInt` body to the match's result
     // width, threads the tail context). The chain dispatches per arm below.
     let Some((arm, rest)) = arms.split_first() else {
@@ -1974,6 +1984,168 @@ fn emit_probe_chain(
             out, inner,
         )
     }
+}
+
+/// Try to emit a DENSE integer `match` as a BR_TABLE decision tree (O(1) jump) instead of the linear
+/// `if (== k)` cascade. Returns `Ok(Some(()))` when it emitted the table, `Ok(None)` to fall back.
+///
+/// Eligible when: the match is NOT in tail position (a tail match keeps the linear chain, which threads
+/// the self-loop context — a br_table here would bypass the match-based tail-loop and break O(1) stack);
+/// the arms are ≥3 UNGUARDED `Int` probes followed by ONE trailing UNGUARDED wildcard default (a scalar
+/// int match is always wildcard-terminated — int is unbounded, so exhaustiveness requires it); every
+/// literal fits an i64; and the value RANGE is DENSE — `span = max - min + 1` satisfies `span <= 2*count`
+/// and `span <= 256` (so the jump table is not mostly default padding). Otherwise fall back to the chain.
+///
+/// The index is `scrutinee - min` (a 0-based table position). Values outside `[min, max]`, and gaps in
+/// the range with no arm, route to the default via `br_table`'s own unsigned out-of-range check — EXCEPT
+/// an i64 scrutinee, where the required `i32.wrap_i64` of the shifted index could alias a value
+/// `>= min + 2^32` into `[0, span)`; for that case a `br_if` bounds guard (`(idx as u64) >= span →
+/// default`) precedes the table. A ≤32-bit scrutinee needs no guard (its slot IS i32; the subtraction is
+/// exact mod 2^32 and br_table's bounds check is correct). The block structure mirrors
+/// `try_emit_disc_br_table` (one typed `$join`, empty label blocks, each arm `br`s its value to `$join`).
+#[allow(clippy::too_many_arguments)]
+fn try_emit_scalar_br_table(
+    db: &mut Db,
+    src: OperandSrc,
+    arms: &[crate::core::MatchArm],
+    it: IntTy,
+    result_it: Option<IntTy>,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+    tail: TailPos,
+) -> Result<Option<()>, Reject> {
+    // A SELF-LOOP tail match must keep the linear chain (it threads the loop context so a self-tail-call
+    // in an arm iterates the loop — a br_table's value-join structure can't carry a loop `br` out of an
+    // arm). A NON-self-loop match — value position (`NonTail`) OR a plain tail position with no loop
+    // (`Tail(None)`, e.g. an exported non-recursive body) — is eligible: its arm bodies are ordinary
+    // values `br`'d to the join block, and the join's value is the function's result. Disqualify only
+    // `Tail(Some(_))`.
+    if matches!(tail, TailPos::Tail(Some(_))) {
+        return Ok(None);
+    }
+    // Split off a trailing unguarded wildcard default; the rest must be unguarded `Int` probes.
+    let (default, int_arms): (&crate::core::MatchArm, &[crate::core::MatchArm]) = match arms.last()
+    {
+        Some(a)
+            if matches!(a.probe, crate::core::Probe::Wild)
+                && a.guard.is_none()
+                && arms.len() >= 4 =>
+        {
+            (a, &arms[..arms.len() - 1])
+        }
+        _ => return Ok(None),
+    };
+    let mut lits: Vec<i64> = Vec::with_capacity(int_arms.len());
+    for a in int_arms {
+        match &a.probe {
+            crate::core::Probe::Int(v) if a.guard.is_none() => match v.to_i64() {
+                Some(x) => lits.push(x),
+                None => return Ok(None), // a value that doesn't fit i64 — fall back.
+            },
+            _ => return Ok(None), // a guard, a bool probe, or a wildcard mid-list — fall back.
+        }
+    }
+    // Density: ≥3 arms, contiguous-enough range, capped table size.
+    let min = *lits.iter().min().unwrap();
+    let max = *lits.iter().max().unwrap();
+    let span: i128 = max as i128 - min as i128 + 1;
+    let count = lits.len() as i128;
+    if count < 3 || span > 2 * count || span > 256 {
+        return Ok(None);
+    }
+    let span = span as u32;
+    // The table: index `i` (a shifted value `min + i`) → the arm whose literal is `min + i`, or the
+    // default. `arm_at[i] = Some(arm_index)` maps a covered slot to its position in `int_arms`.
+    let mut arm_at: Vec<Option<usize>> = vec![None; span as usize];
+    for (ai, &lit) in lits.iter().enumerate() {
+        let slot = (lit - min) as usize;
+        if arm_at[slot].is_some() {
+            return Ok(None); // duplicate literal — fall back (the chain handles it, first-wins).
+        }
+        arm_at[slot] = Some(ai);
+    }
+    let m = Machine::of(it);
+
+    // Open the ONE typed join block, the default label block, then one empty block per COVERED arm
+    // (arm 0 innermost). The br_table's targets index into these by SHIFTED VALUE, remapped to the
+    // covering arm's block depth (a gap slot → the default depth).
+    out.push(Lir::Block(block_ty)); // $join (typed)
+    out.push(Lir::Block(BlockType::Empty)); // $default
+    let n_arms = int_arms.len() as u32;
+    for _ in 0..n_arms {
+        out.push(Lir::Block(BlockType::Empty)); // $a_{n-1} … $a_0 (innermost = arm 0)
+    }
+    // Compute the shifted index `scrutinee - min` in the scrutinee's slot width.
+    // At the innermost point the enclosing blocks (inner→outer) are: a_0 … a_{n-1}, default, join.
+    // `br d`: d in 0..n → $a_d ; d = n → $default ; d = n+1 → $join.
+    let default_depth = n_arms; // exits $default
+    src.push(out);
+    out.push(m.konst(min));
+    out.push(m.sub());
+    if !m.slot32 {
+        // i64 scrutinee: guard against the wrap-aliasing (idx as u64 >= span → default), then narrow.
+        let idx_slot = base;
+        if idx_slot + 1 > *high {
+            *high = idx_slot + 1;
+        }
+        scratch_ty.insert(idx_slot, ValType::I64);
+        out.push(Lir::LocalTee(idx_slot)); // keep idx, leave a copy on the stack
+        out.push(Lir::ConstI64(span as i64));
+        out.push(Lir::I64GeU);
+        out.push(Lir::BrIf(default_depth)); // out of range → default (br_if pops the bool)
+        out.push(Lir::LocalGet(idx_slot));
+        out.push(Lir::I32WrapI64);
+    }
+    // Targets: one entry per SHIFTED VALUE `0..span`, each the block depth of the covering arm, or the
+    // default depth for a gap. Arm `ai` (position in `int_arms`) sits at block depth `ai` (a_0 innermost).
+    let targets: Vec<u32> = (0..span as usize)
+        .map(|i| match arm_at[i] {
+            Some(ai) => ai as u32,
+            None => default_depth,
+        })
+        .collect();
+    out.push(Lir::BrTable(targets, default_depth));
+
+    // Emit each covered arm's body after its label's `end`, innermost (arm 0) first, then `br` its value
+    // to $join. After `End`ing $a_0..$a_k, the enclosing blocks (inner→outer) are a_{k+1}…a_{n-1},
+    // default, join — so $join is at depth `(n_arms - 1 - k) + 1 + 1 = n_arms - k + 1`.
+    for (k, arm) in int_arms.iter().enumerate() {
+        out.push(Lir::End); // close $a_k → br_table target `k` lands here
+        emit_arm_body(
+            db,
+            arm.body,
+            result_it,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+            TailPos::NonTail,
+        )?;
+        out.push(Lir::Br(n_arms - k as u32 + 1)); // → $join, carrying the value
+    }
+    // Close $default; emit the default body (falls through to $join's end — no `br` needed).
+    out.push(Lir::End); // close $default
+    emit_arm_body(
+        db,
+        default.body,
+        result_it,
+        slots,
+        base,
+        high,
+        scratch_ty,
+        layout,
+        out,
+        TailPos::NonTail,
+    )?;
+    out.push(Lir::End); // close $join
+    Ok(Some(()))
 }
 
 /// A [`TailPos`] one `if` block deeper — a self-loop `br` from inside a fresh `if` targets one level
@@ -2063,13 +2235,137 @@ fn emit_arm_guarded_body(
     }
 }
 
+/// Try to emit a sum-discriminant switch as a BR_TABLE decision tree (O(1) jump) instead of the linear
+/// `if (disc == k)` chain. Returns `Ok(Some(()))` when it emitted the table, `Ok(None)` to fall back to
+/// the linear chain. Eligible when the arms are a set of ≥3 DISTINCT explicit discriminants (each
+/// `disc: Some`), optionally followed by ONE trailing default (`disc: None`); a leading/mid default, or
+/// fewer than 3 discs, falls back (the linear chain is fine and simpler there).
+///
+/// The value-producing structure — for discriminants `d_0..d_{m-1}` (each with a continuation) and a
+/// default continuation, all yielding `block_ty`:
+/// ```text
+///   block $join (block_ty)          ; the ONE typed block; every arm br's its value here
+///     block $default                ; empty control-flow labels …
+///       block $a_{m-1} … block $a_0 ;   ($a_0 innermost)
+///         <disc>                    ; sum-disc(scrutinee walked to `path`) → i32 on the stack
+///         br_table [0,1,…,m-1] m    ;   index k → exits $a_k; out-of-range → exits $default
+///       end                         ; $a_0 label → cont_0 runs here
+///       <cont_0> ; br $join
+///     end                           ; $a_1 label
+///       <cont_1> ; br $join
+///     … end $a_{m-1} <cont_{m-1}> ; br $join
+///     end                           ; $default label
+///     <default cont>                ; falls through to $join's end (no br needed — it is last)
+///   end
+/// ```
+/// The inner blocks are EMPTY (jump labels only); only `$join` carries the result type, so the stack is
+/// empty at each `br_table` target and each `end` is reached only via a `br` that already pushed the
+/// value to `$join` — a well-typed structure wasm accepts. The `br_table` index maps arm position → its
+/// label depth; a discriminant not in `0..m` (impossible for an exhaustive sum, but the ABI is total)
+/// takes the default. NOTE: this handles the ROOT and any nested switch uniformly (the discriminant is
+/// read at `path`); a continuation that is itself a nested switch still recurses through `emit_sum_cont`.
+#[allow(clippy::too_many_arguments)]
+fn try_emit_disc_br_table(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+    arms: &[crate::core::SumArm],
+    result_it: Option<IntTy>,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<Option<()>, Reject> {
+    // Partition into explicit-disc arms (the table entries) and an optional trailing default.
+    let (disc_arms, default): (&[crate::core::SumArm], Option<&crate::core::SumArm>) =
+        match arms.last() {
+            Some(a) if a.disc.is_none() => (&arms[..arms.len() - 1], Some(a)),
+            _ => (arms, None),
+        };
+    // Every table arm must carry an explicit discriminant (a default anywhere but last → fall back).
+    if disc_arms.len() < 3 || disc_arms.iter().any(|a| a.disc.is_none()) {
+        return Ok(None);
+    }
+    // Distinct discriminants, and each in `0..disc_arms.len()` so a table position IS its discriminant
+    // (sum discs are contiguous `0..k`; a match lists each variant once). If the discs are not exactly
+    // the contiguous set `0..m` in arm order, fall back rather than build a sparse/misindexed table.
+    let discs: Vec<u32> = disc_arms.iter().map(|a| a.disc.unwrap()).collect();
+    let m = discs.len() as u32;
+    let contiguous_in_order = discs.iter().enumerate().all(|(i, &d)| d == i as u32);
+    if !contiguous_in_order {
+        return Ok(None);
+    }
+    // Open the ONE typed join block, then `m + 1` empty label blocks (m arm labels + the default label),
+    // innermost = arm 0. The `br_table` sits at the innermost point; its target list maps index k → the
+    // `br` depth that exits block $a_k, and the default index → the $default block.
+    // At the innermost point the block nesting (outermost→innermost) is: join, default, a_{m-1}, …, a_0.
+    // From there, `br d` exits: d=0 → $a_0, …, d=m-1 → $a_{m-1}, d=m → $default, d=m+1 → $join.
+    out.push(Lir::Block(block_ty)); // $join (typed)
+    out.push(Lir::Block(BlockType::Empty)); // $default
+    for _ in 0..m {
+        out.push(Lir::Block(BlockType::Empty)); // $a_{m-1} … $a_0
+    }
+    // Push the discriminant: emit the scrutinee, walk `path`, then `sum-disc`.
+    emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
+    for step in path {
+        match step {
+            crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+            crate::core::PathStep::Elem(i) => {
+                out.push(Lir::ConstI32(*i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET));
+            }
+        }
+    }
+    out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc: i32]
+    // Target k (arm index) → depth k (exits $a_k); default → depth m (exits $default).
+    let targets: Vec<u32> = (0..m).collect();
+    out.push(Lir::BrTable(targets, m));
+    // Now emit each arm body after its label's `end`, in innermost→outermost order (arm 0 first). After
+    // closing block $a_k, control from `br_table` index k lands here; run the continuation and `br` its
+    // value to $join. The `br` depth to reach $join from inside arm k's region: after `end`ing $a_0..$a_k
+    // we are inside (default, a_{m-1}, …, a_{k+1}) plus join — so $join is `(m - 1 - k) + 1 + 1` levels
+    // out? Compute concretely below by tracking remaining enclosing blocks.
+    // After the br_table, we `End` block $a_0 first. Just before that End, enclosing blocks
+    // (inner→outer) are [a_0, a_1, …, a_{m-1}, default, join]. Each `End` we emit pops one.
+    for (k, arm) in disc_arms.iter().enumerate() {
+        out.push(Lir::End); // close $a_k → its br_table target lands here
+        // Enclosing blocks now (inner→outer): a_{k+1}, …, a_{m-1}, default, join.
+        // $join depth = (m - 1 - k) arm blocks + 1 default + 0 (join is that count) = (m-1-k)+1 = m-k.
+        emit_sum_cont(
+            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out,
+        )?;
+        out.push(Lir::Br(m - k as u32)); // br to $join, carrying the value
+    }
+    // Close $default; emit the default continuation (falls through to $join's end — it is the last thing
+    // before `End $join`, so no `br` is needed).
+    out.push(Lir::End); // close $default
+    match default {
+        Some(d) => emit_sum_cont(
+            db, scrutinee, &d.cont, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+        )?,
+        None => {
+            // No default arm: an exhaustive sum lists every variant, so the default label is unreachable.
+            // Emit an `unreachable` so the block is well-formed (it must still produce `block_ty` on the
+            // fallthrough path, and `unreachable` is stack-polymorphic — satisfies any result type).
+            out.push(Lir::Unreachable);
+        }
+    }
+    out.push(Lir::End); // close $join
+    Ok(Some(()))
+}
+
 /// Emit one SWITCH of the decision tree: for each variant arm, `sum-disc(<scrutinee walked to `path`>)
 /// == disc`, then `if (block_ty) <continuation> else <rest>`; a default arm (`disc: None`) or the LAST
 /// arm (its probe redundant — every earlier disc has been tested and this is the only one left) is the
 /// unconditional tail. `path` reaches the sub-value THIS switch dispatches on — empty for the ROOT (the
 /// scrutinee itself), a `[Payload…]` path for a NESTED switch. Each arm's CONTINUATION is a leaf body or
 /// a deeper switch (`emit_sum_cont`), which is what makes the whole match a decision tree that shares the
-/// outer probe. Mirrors `emit_match_arms_tailable` but probes the discriminant.
+/// outer probe. Mirrors `emit_match_arms_tailable` but probes the discriminant. (A dense set of ≥3 discs
+/// takes the `try_emit_disc_br_table` fast path before this linear chain.)
 #[allow(clippy::too_many_arguments)]
 fn emit_sum_match_arms(
     db: &mut Db,
@@ -2085,6 +2381,16 @@ fn emit_sum_match_arms(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
+    // BR_TABLE DECISION TREE: a switch that tests ≥3 DISTINCT discriminants dispatches in O(1) via a
+    // jump table instead of a linear `if (disc == k)` cascade (the arms below). Sum discriminants are
+    // contiguous `0..variant_count`, so the table is dense with no wasted slots. `try_emit_disc_br_table`
+    // returns `Some(())` when it emitted the table, `None` to fall through to the linear chain (too few
+    // arms, or a shape it does not handle — a leading default, non-distinct discs).
+    if let Some(()) = try_emit_disc_br_table(
+        db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+    )? {
+        return Ok(());
+    }
     match arms.split_first() {
         None => Err(Reject::decline(
             "sum match ran off the end with no covering arm",
@@ -3583,6 +3889,59 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::Loop(_))),
             "a non-recursive function is not wrapped in a loop"
+        );
+    }
+
+    #[test]
+    fn a_dense_scalar_match_emits_a_br_table() {
+        // A value-position match over ≥3 dense integer literals (0..4) + a wildcard emits a `br_table`
+        // decision tree (and the enclosing `Block`s), not a linear `if (== k)` chain (no `I64Eq` probe).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (let ((r (match n (0 100) (1 101) (2 102) (3 103) (4 104) (_ 999)))) r)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a dense scalar match emits a br_table, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::Block(_))),
+            "the br_table is wrapped in dispatch blocks"
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
+            "a br_table dispatch has no linear per-arm equality probe, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_sparse_scalar_match_keeps_the_linear_probe_chain() {
+        // A sparse range (0 and 100 — span 101 ≫ 2·2) is NOT worth a jump table; it keeps the linear
+        // `if (== k)` chain (an `I64Eq` probe, no `br_table`).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (let ((r (match n (0 1) (100 2) (7 3) (_ 0))) ) r)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "a sparse scalar match keeps the linear chain (no br_table), got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
+            "the linear probe chain compares the scrutinee per arm"
         );
     }
 

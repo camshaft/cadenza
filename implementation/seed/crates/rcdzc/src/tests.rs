@@ -5700,6 +5700,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_three_variant_sum_match_dispatches_via_br_table() {
+        // A runtime match over a 3-variant sum dispatches through a BR_TABLE (O(1) jump on the
+        // discriminant) instead of a linear `if (disc == k)` chain. `(code n)` picks Red/Green/Blue from
+        // a runtime `n` and matches each to a distinct scalar; every variant must dispatch to the right
+        // arm (a wrong br_table index or block depth would return the wrong value — hence a run). The
+        // Lir-level br_table SHAPE is pinned separately by the `select` unit tests; here we prove the
+        // end-to-end dispatch value is correct through the composed runtime.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (type Color Red Green Blue) \
+                     (def (pick (: n Int64)) \
+                        (if (= n 0) (Color.Red unit) \
+                          (if (= n 1) (Color.Green unit) (Color.Blue unit)))) \
+                     (def (code (: n Int64)) \
+                        (match (pick n) \
+                          ((Color.Red _) 10) ((Color.Green _) 20) ((Color.Blue _) 30))) \
+                     (export code))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile 3-variant match");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed 3-variant run");
+            return;
+        };
+        for (arg, want) in [("0", "10"), ("1", "20"), ("2", "30")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("code".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "code {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("composed 3-variant run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_non_exhaustive_nested_sum_match_is_rejected() {
         // A nested match missing the inner `Neg` case with no wildcard is NON-EXHAUSTIVE at the INNER
         // switch (the outer `Full` is reached, but its inner `Inner` leaves `Neg` uncovered). The

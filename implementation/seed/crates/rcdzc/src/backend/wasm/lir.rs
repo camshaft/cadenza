@@ -92,6 +92,11 @@ pub enum Lir {
     CallImport(&'static str),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
+    /// `block <blocktype>` — open a forward block; a `Br` targeting it jumps FORWARD to its `end` (the
+    /// block label is at the `end`, unlike a `loop` whose label is at the top). Used to build the
+    /// br_table decision tree: nested blocks whose exits land right before each match arm's body.
+    /// Closed by an `End` like `if`/`loop`.
+    Block(BlockType),
     /// `loop <blocktype>` — open a loop block; a `Br` targeting it jumps BACK to this point (the loop
     /// label is at the top, unlike a `block` whose label is at the `end`). Used to compile a
     /// self-tail-recursive function as an in-place iteration: the body is wrapped in a loop and each
@@ -102,6 +107,15 @@ pub enum Lir {
     /// (0 = the innermost). To a `loop` it jumps to the loop's top (iterate); to a `block`/`if` it
     /// jumps to the `end` (exit). Used by the self-tail-call → loop transform (`br 0` back to the loop).
     Br(u32),
+    /// `br_if <depth>` — pop an i32 condition; branch to `depth` (like `br`) iff it is nonzero, else
+    /// fall through. Used by the scalar br_table's out-of-range bounds guard (an i64 index that could
+    /// wrap-alias into the table range branches to the default before the table).
+    BrIf(u32),
+    /// `br_table <targets> <default>` — an indexed multi-way branch: pop an i32 index off the stack and
+    /// branch to `targets[index]` levels out, or `default` if the index is out of range. One O(1) jump
+    /// table replacing a linear `if (== k)` probe cascade. Used by the decision-tree lowering of a dense
+    /// scalar `match` and the sum-discriminant switch (discriminants are contiguous 0..k).
+    BrTable(Vec<u32>, u32),
     /// `else`.
     Else,
     /// `end`.

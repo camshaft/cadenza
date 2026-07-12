@@ -19,8 +19,11 @@ pub mod op {
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0b;
     pub const SELECT: u8 = 0x1b;
+    pub const BLOCK: u8 = 0x02;
     pub const LOOP: u8 = 0x03;
     pub const BR: u8 = 0x0c;
+    pub const BR_IF: u8 = 0x0d;
+    pub const BR_TABLE: u8 = 0x0e;
     pub const LOCAL_GET: u8 = 0x20;
     pub const LOCAL_SET: u8 = 0x21;
     pub const LOCAL_TEE: u8 = 0x22;

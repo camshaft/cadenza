@@ -103,6 +103,10 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::IF);
             out.push(bt.byte()); // block-type byte lives here, not in the IR
         }
+        Lir::Block(bt) => {
+            out.push(op::BLOCK);
+            out.push(bt.byte());
+        }
         Lir::Loop(bt) => {
             out.push(op::LOOP);
             out.push(bt.byte());
@@ -110,6 +114,19 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
         Lir::Br(depth) => {
             out.push(op::BR);
             uleb128(*depth as u64, out);
+        }
+        Lir::BrIf(depth) => {
+            out.push(op::BR_IF);
+            uleb128(*depth as u64, out);
+        }
+        // `br_table`: the target vector (count-prefixed uleb128 entries) then the default target.
+        Lir::BrTable(targets, default) => {
+            out.push(op::BR_TABLE);
+            uleb128(targets.len() as u64, out);
+            for t in targets {
+                uleb128(*t as u64, out);
+            }
+            uleb128(*default as u64, out);
         }
         Lir::Else => out.push(op::ELSE),
         Lir::End => out.push(op::END),
