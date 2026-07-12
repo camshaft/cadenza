@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, Surface } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, Diag, Surface, TypeAtInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -20,13 +20,24 @@ export function compile(text: string, from: Surface): Promise<CompileOutcome> {
   return client().compile(text, from);
 }
 
-export function renderSyntax(text: string, from: Surface, to: Surface): Promise<string> {
+/// Type-check without building a component (as-you-type diagnostics). No export required upstream.
+export function diagnostics(text: string, from: Surface): Promise<Diag[]> {
+  return client().diagnostics(text, from);
+}
+
+/// The inferred type at a UTF-8 byte offset, for a hover tooltip.
+export function typeAt(text: string, from: Surface, byteOffset: number): Promise<TypeAtInfo | null> {
+  return client().typeAt(text, from, byteOffset);
+}
+
+/// `to` may be a surface (`ml`/`sexpr`) or an output-only view (`debug`/`flat`) for "show the raw AST".
+export type RenderTarget = Surface | "debug" | "flat";
+
+export function renderSyntax(text: string, from: Surface, to: RenderTarget): Promise<string> {
   return client().renderSyntax(text, from, to);
 }
 
 export function renderValue(bytes: Uint8Array): Promise<string> {
-  // Comlink can't structured-clone a Uint8Array view cheaply across the boundary without a copy;
-  // for guide-sized value forms (tens of bytes) that is negligible.
   return client().renderValue(bytes);
 }
 
@@ -34,5 +45,4 @@ export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }
 
-export type { CompileOutcome, Surface };
-export type { Diag } from "./worker.ts";
+export type { CompileOutcome, Surface, Diag, TypeAtInfo };
