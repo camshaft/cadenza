@@ -886,6 +886,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // [[an-out-of-arity-tuple-index-traps]]). A poison operand reports its own fault via the descent.
         Resolved::Proj { operand, index } => {
             let operand_is_poison = matches!(resolved_of(db, operand), Resolved::Poison(_));
+            // NOT collapsible into a guarded arm (`clippy::collapsible_match`): an IN-RANGE tuple
+            // projection must match `Ty::Tuple` and produce NO fault. Guarding the arm with `if index
+            // >= len` would let the in-range case fall through to the `_ if !operand_is_poison` arm
+            // below, which would spuriously report "requires a tuple, found (Tuple …)".
+            #[allow(clippy::collapsible_match)]
             match type_of(db, operand) {
                 Ty::Tuple(elems) => {
                     if index >= elems.len() {
