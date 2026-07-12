@@ -20,6 +20,7 @@ pub mod op {
     pub const END: u8 = 0x0b;
     pub const LOCAL_GET: u8 = 0x20;
     pub const LOCAL_SET: u8 = 0x21;
+    pub const LOCAL_TEE: u8 = 0x22;
     pub const GLOBAL_GET: u8 = 0x23;
     pub const GLOBAL_SET: u8 = 0x24;
     pub const CALL: u8 = 0x10;

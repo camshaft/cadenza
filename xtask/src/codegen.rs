@@ -564,6 +564,7 @@ mod wasm_abi {
             op("END", Instruction::End),
             op("LOCAL_GET", Instruction::LocalGet(0)),
             op("LOCAL_SET", Instruction::LocalSet(0)),
+            op("LOCAL_TEE", Instruction::LocalTee(0)),
             op("GLOBAL_GET", Instruction::GlobalGet(0)),
             op("GLOBAL_SET", Instruction::GlobalSet(0)),
             op("CALL", Instruction::Call(0)),

@@ -63,6 +63,12 @@ pub enum Lir {
     /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash
     /// operands and the result in scratch locals.
     LocalSet(u32),
+    /// `local.tee I` — pop the stack top into local `I` AND leave a copy on the stack (`local.set`
+    /// followed by an implicit `local.get`, in one opcode). Not emitted directly by selection; the
+    /// [`peephole`] pass folds an adjacent `local.set I ; local.get I` into it, saving one instruction
+    /// wherever a value is stashed and immediately re-read (a nested op's result feeding an outer
+    /// operand slot, a checked op's result feeding its guard).
+    LocalTee(u32),
     /// `global.get G` — read module global `G` (an i32 handle). A build-once static compound (§2d) is
     /// stored in a mutable global by the init/start function; every use reads it here (then `dup`s to
     /// retain — the global is a persistent root, so the consumer's `drop` balances the retained `dup`).

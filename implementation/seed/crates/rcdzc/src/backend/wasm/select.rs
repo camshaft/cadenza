@@ -317,12 +317,40 @@ pub fn select_function(
     let declared: Vec<ValType> = (base..high)
         .map(|s| scratch_ty.get(&s).copied().unwrap_or(ValType::I64))
         .collect();
+    peephole(&mut code);
     Ok(SelectedFunc {
         params: param_vts,
         ret,
         code,
         declared,
     })
+}
+
+/// A local peephole pass over the linearized body: fold `local.set N ; local.get N` (store then
+/// immediately re-read the SAME local) into a single `local.tee N` (store AND leave the value on the
+/// stack, one opcode). This is ALWAYS valid — `local.tee` is defined as exactly that set-then-leave —
+/// so no liveness analysis is needed; the two forms have identical stack and local effects. The pattern
+/// is emitted wherever a value is stashed into a scratch slot and read back immediately: a nested
+/// checked op's result flowing into the enclosing op's operand slot (`… local.set $r_inner ;
+/// local.get $r_inner ; local.set $a`), and a runtime `let` value stored then used. Block markers
+/// (`If`/`Else`/`End`) are their own `Lir` entries, so "adjacent in the vec" means adjacent WITHIN a
+/// block — a `local.get` that opens a different block never fuses with a `local.set` closing another.
+fn peephole(code: &mut Vec<Lir>) {
+    let mut out: Vec<Lir> = Vec::with_capacity(code.len());
+    let mut i = 0;
+    while i < code.len() {
+        if let Lir::LocalSet(n) = code[i]
+            && let Some(Lir::LocalGet(m)) = code.get(i + 1)
+            && n == *m
+        {
+            out.push(Lir::LocalTee(n));
+            i += 2;
+            continue;
+        }
+        out.push(code[i].clone());
+        i += 1;
+    }
+    *code = out;
 }
 
 /// Emit the node at `id` in TAIL position — the body's result, whose value becomes the function's
@@ -1845,9 +1873,10 @@ mod tests {
                 Lir::LocalGet(0),
                 Lir::LocalGet(1),
                 Lir::I64Add,
-                Lir::LocalSet(2),
+                // `local.set 2 ; local.get 2` (store $r, then the guard's first read of $r) is fused by
+                // the `peephole` pass into a single `local.tee 2`.
+                Lir::LocalTee(2),
                 // overflow guard: ((r^a) & (r^b)) < 0 → trap, reading a=slot0, b=slot1 directly.
-                Lir::LocalGet(2),
                 Lir::LocalGet(0),
                 Lir::I64Xor,
                 Lir::LocalGet(2),
@@ -1864,6 +1893,48 @@ mod tests {
         // One i64 scratch local declared ($r) — the operand copies ($a,$b) are eliminated.
         assert_eq!(f.declared, vec![ValType::I64; 1]);
         assert!(f.ret.agrees_with(&Ty::int64()));
+    }
+
+    #[test]
+    fn peephole_fuses_set_then_get_of_the_same_local_into_tee() {
+        // `local.set N ; local.get N` (store then immediately re-read the SAME local) → `local.tee N`.
+        let mut code = vec![
+            Lir::I64Add,
+            Lir::LocalSet(2),
+            Lir::LocalGet(2), // same local as the set → fuses
+            Lir::LocalGet(0),
+            Lir::I64Xor,
+        ];
+        peephole(&mut code);
+        assert_eq!(
+            code,
+            vec![Lir::I64Add, Lir::LocalTee(2), Lir::LocalGet(0), Lir::I64Xor]
+        );
+    }
+
+    #[test]
+    fn peephole_leaves_a_set_get_of_different_locals_alone() {
+        // A `local.get` of a DIFFERENT local must NOT fuse (it is a genuine read of another value), and
+        // a `local.set` not immediately followed by a matching `local.get` is untouched.
+        let mut code = vec![
+            Lir::LocalSet(3),
+            Lir::LocalGet(4), // different local → no fuse
+            Lir::LocalSet(5),
+            Lir::I64Add, // set not followed by a get → no fuse
+        ];
+        let before = code.clone();
+        peephole(&mut code);
+        assert_eq!(code, before);
+    }
+
+    #[test]
+    fn peephole_does_not_fuse_across_a_block_boundary() {
+        // A block marker (`End`) between the set and the get keeps them non-adjacent, so no fuse — a
+        // `local.get` opening a different block never merges with a `local.set` closing another.
+        let mut code = vec![Lir::LocalSet(2), Lir::End, Lir::LocalGet(2)];
+        let before = code.clone();
+        peephole(&mut code);
+        assert_eq!(code, before);
     }
 
     #[test]
