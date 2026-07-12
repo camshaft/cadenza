@@ -246,6 +246,16 @@ pub struct Db {
     /// computed once and the DFS just reads the cached slice.
     pub(crate) callee_edges: std::collections::HashMap<StructId, Vec<StructId>>,
 
+    /// Memo of an operator's `(meta t)` reduced to a CANONICAL [`Scheme`] (`eval::scheme_of`), keyed by
+    /// the `(meta t)` NODE — which is SHARED across every application of the same operator (all `+`
+    /// occurrences project the one prelude `+`'s type-lambda). Reading it re-reduces the type-lambda via
+    /// `type_in_env` (a ~half-the-time cost on operator-heavy code); the reduction is a pure function of
+    /// the fixed `(meta t)` structure, so it caches. The cached scheme uses canonical (from-0) variable
+    /// numbering; every caller `instantiate`s it — which renames the bound variables to truly-fresh ones
+    /// — so a shared canonical scheme is correct for all uses. `None` caches "has no scheme". Mirrors
+    /// `recursive`/`callee_edges` (a pure fact keyed by node identity).
+    pub(crate) scheme_cache: std::collections::HashMap<StructId, Option<crate::ty::Scheme>>,
+
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
     /// no ephemeral collections: `is_recursive` takes them out (`mem::take`), CLEARS them, uses them,
@@ -357,6 +367,7 @@ impl Db {
             build_cache: std::collections::HashMap::new(),
             recursive: std::collections::HashMap::new(),
             callee_edges: std::collections::HashMap::new(),
+            scheme_cache: std::collections::HashMap::new(),
             rec_visited: std::collections::HashSet::new(),
             rec_worklist: Vec::new(),
             kept_bindings: std::collections::HashSet::new(),

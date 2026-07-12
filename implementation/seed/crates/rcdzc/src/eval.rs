@@ -31,6 +31,32 @@ use tracing::trace;
 /// or its type expression is malformed.
 pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme> {
     let t = project_meta(db, id, "t")?;
+    // MEMOIZE by the `(meta t)` NODE `t` — shared across every application of the same operator (all
+    // `+` occurrences project the one prelude `+`'s type-lambda). Reducing that lambda (`type_in_env`)
+    // is ~half the cost of typing operator-heavy code, and it is a pure function of `t`'s structure.
+    // The cached scheme is built with CANONICAL numbering (a private `Fresh` from 0), independent of
+    // the caller's `fresh` counter; every caller `instantiate`s the result, which renames the bound
+    // variables to truly-fresh ones — so one shared canonical scheme serves all uses. (Without the
+    // cache each of N operator applications re-reduced the same lambda: O(N) redundant work.)
+    if let Some(cached) = db.scheme_cache.get(&t) {
+        return cached.clone();
+    }
+    // Compute with a PRIVATE canonical counter (from 0), independent of the caller's `fresh`. The
+    // caller's `fresh` is intentionally NOT advanced: every caller `instantiate`s the returned scheme
+    // before using it, and `instantiate` renames ALL of the scheme's bound variables to fresh ones
+    // from the caller's counter — so the canonical numbers 0..k never survive into a solved type and
+    // cannot collide. (This is why one shared canonical scheme is correct for every use site.)
+    let mut canon = Fresh::new();
+    let scheme = scheme_of_uncached(db, t, &mut canon);
+    db.scheme_cache.insert(t, scheme.clone());
+    let _ = fresh; // caller's counter untouched — instantiate freshens the canonical vars
+    scheme
+}
+
+/// Reduce the `(meta t)` node `t` to a [`Scheme`] using the supplied `fresh` for its variable
+/// numbering — the uncached core of [`scheme_of`]. Split out so [`scheme_of`] can compute the cached
+/// value with a private canonical counter.
+fn scheme_of_uncached(db: &mut Db, t: StructId, fresh: &mut Fresh) -> Option<Scheme> {
     // The `(meta t)` value is either a bare type (a scheme with no quantified vars) or a type-lambda
     // whose parameters are the quantified variables.
     match resolved_of(db, t) {
@@ -59,7 +85,7 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
                 sign_vars.push(s);
             }
             let ty = type_in_env(db, body, &env)?;
-            trace!(target: "rcdzc::eval", node = id.0, scheme = %ty.render_name(), quantified = params.len(), "read (meta t) as a polymorphic scheme");
+            trace!(target: "rcdzc::eval", node = t.0, scheme = %ty.render_name(), quantified = params.len(), "read (meta t) as a polymorphic scheme");
             // Only the vars actually mentioned matter; keep the lists (unused ones are harmless).
             Some(Scheme {
                 ty_vars,
@@ -72,7 +98,7 @@ pub fn scheme_of(db: &mut Db, id: StructId, fresh: &mut Fresh) -> Option<Scheme>
         _ => {
             let scheme = typeval_of(db, t).map(Scheme::mono);
             if let Some(s) = &scheme {
-                trace!(target: "rcdzc::eval", node = id.0, ty = %s.ty.render_name(), "read (meta t) as a monomorphic type");
+                trace!(target: "rcdzc::eval", node = t.0, ty = %s.ty.render_name(), "read (meta t) as a monomorphic type");
             }
             scheme
         }
