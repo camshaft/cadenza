@@ -176,8 +176,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         }
                     }
                 }
-                // A grammar declaration form appearing in expression position is not an expression
-                // (Stage 0 handles module/def/export/do at the top level, not here).
+                // A grammar declaration form appearing in expression position is not an expression:
+                // `module`/`def`/`export`/`do`/`type` are recognized by the top-level scan
+                // (`db::scan_top_level`), not by the expression resolver, so one here declines.
                 Some(h) if GRAMMAR.contains(&h) => {
                     trace!(target: "rcdzc::resolve", node = id.0, head = %h, "grammar form in expression position (decline)");
                     Resolved::Poison(Reject::decline(format!("`{h}` is not an expression here")))
