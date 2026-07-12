@@ -60,14 +60,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "0c528d9a88cfc8d4cbd1bdb628a12cd728f767ce572d56a4a36f41b776ecaf9f";
+    "812cc2b4e760813e0a28466ee729b15c6985c95e322130b1baffcfa887434faf";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "75cc38e86a54222494ea2ac4b6f1099c9bb2451967caaa0e556a0f236ab4dbf4";
+    "02f423787482fe1a2231ab4c86bcc797c3c5555547d1906c1a3f66dee69dfa55";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant
@@ -400,6 +400,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: true,
     },
     RtOp {
+        name: "value-eq",
+        params: &[AbiValType::U32, AbiValType::U32],
+        result: Some(AbiValType::Bool),
+        lowerable: true,
+    },
+    RtOp {
         name: "vec-concat",
         params: &[AbiValType::U32, AbiValType::U32],
         result: Some(AbiValType::U32),
@@ -505,6 +511,7 @@ pub struct RuntimeOps {
     pub sum_new: &'static RtOp,
     pub sum_new_reuse: &'static RtOp,
     pub sum_payload: &'static RtOp,
+    pub value_eq: &'static RtOp,
     pub vec_concat: &'static RtOp,
     pub vec_empty: &'static RtOp,
     pub vec_get: &'static RtOp,
@@ -569,12 +576,13 @@ pub const OPS: RuntimeOps = RuntimeOps {
     sum_new: &RUNTIME_OPS[50],
     sum_new_reuse: &RUNTIME_OPS[51],
     sum_payload: &RUNTIME_OPS[52],
-    vec_concat: &RUNTIME_OPS[53],
-    vec_empty: &RUNTIME_OPS[54],
-    vec_get: &RUNTIME_OPS[55],
-    vec_len: &RUNTIME_OPS[56],
-    vec_of_arr: &RUNTIME_OPS[57],
-    vec_push: &RUNTIME_OPS[58],
-    vec_split: &RUNTIME_OPS[59],
-    vec_update: &RUNTIME_OPS[60],
+    value_eq: &RUNTIME_OPS[53],
+    vec_concat: &RUNTIME_OPS[54],
+    vec_empty: &RUNTIME_OPS[55],
+    vec_get: &RUNTIME_OPS[56],
+    vec_len: &RUNTIME_OPS[57],
+    vec_of_arr: &RUNTIME_OPS[58],
+    vec_push: &RUNTIME_OPS[59],
+    vec_split: &RUNTIME_OPS[60],
+    vec_update: &RUNTIME_OPS[61],
 };

@@ -3438,6 +3438,22 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Eq) && compound_eq_heap_walkable(db, args[0]) {
+                // RUNTIME STRUCTURAL EQUALITY — a `=` on two COMPOUND heap values neither of which folded
+                // (a sum/tuple/record built from a parameter or a recursive call). Emit a `value-eq`
+                // runtime call (the tagless `champ_eq` walk): equal iff same shape + component-wise equal
+                // (core-semantics.md §Equality Is Structural). Restricted to a value whose leaves are all
+                // SCALAR (Int/Bool/Unit) — such a value is canonical BY CONSTRUCTION (no embedded RRB
+                // vector / CHAMP map / Bytes rope, whose byte form is canonical only after a compaction
+                // the compiler would first have to emit), so the walk's result is exact. A compound with a
+                // collection/bytes leaf still declines (that canonicalization is a later increment). The
+                // type checker already unified the two operands' types before lowering, so a single-side
+                // walkability check suffices — both sides share the shape.
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime structural equality → value-eq heap walk");
+                Core::ValueEq {
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
                 Core::Poison(Reject::decline(
@@ -3533,6 +3549,85 @@ fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
         }
         // Any other pairing includes a runtime operand (not a constant compound) — decline the fold.
         _ => None,
+    }
+}
+
+/// Whether the operand at `id` has a type the runtime `value-eq` heap walk (`champ_eq`) compares
+/// CORRECTLY — a compound whose leaves are all SCALAR (Int/Bool/Unit), reached through tuples, records,
+/// and sum variants. Such a value is CANONICAL BY CONSTRUCTION: it holds no embedded RRB vector, CHAMP
+/// map/set, or Bytes/String rope, each of whose byte form is canonical only AFTER a compaction the
+/// compiler would have to emit first (`deterministic-value-form.md` §A Value Has One Canonical Byte
+/// Form). Restricting the runtime `=` to this class keeps the walk EXACT without that extra machinery;
+/// a compound carrying a collection/text leaf still declines (a later increment). Recurses structurally:
+/// a sum is walkable iff EVERY variant's payload type is (read via `payload_ty_at_instantiation`, so a
+/// generic sum's payload is checked at its actual instantiation). A cyclic type (a recursive sum whose
+/// payload mentions itself — a cons list) terminates because the recursion is bounded by the DISTINCT
+/// declaration occurrences visited, tracked in `seen`.
+fn compound_eq_heap_walkable(db: &mut Db, id: StructId) -> bool {
+    let ty = crate::infer::type_of(db, id);
+    ty_heap_walkable(db, &ty, &mut Vec::new())
+}
+
+/// The type-level recursion behind [`compound_eq_heap_walkable`]. `seen` holds the sum declarations
+/// currently on the recursion stack, so a recursive sum (`(type IntList (Cons (Tuple Int64 IntList))
+/// Nil)`) does not loop: re-entering a decl already in progress is treated as walkable (its scalar-leaf
+/// obligation is discharged by the OTHER variants / the outer visit — a purely self-referential cycle
+/// carries no non-scalar leaf of its own).
+fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        // Scalar leaves — the base case the walk compares directly (equal canonical raw bytes).
+        Ty::Int(_) | Ty::Bool | Ty::Unit => true,
+        // A tuple/record — walkable iff every element/field is. (An empty tuple is unit, trivially so.)
+        Ty::Tuple(elems) => {
+            let elems: Vec<Ty> = elems.to_vec();
+            elems.iter().all(|e| ty_heap_walkable(db, e, seen))
+        }
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().all(|v| ty_heap_walkable(db, v, seen))
+        }
+        // A sum — walkable iff every variant's payload type is. A recursive sum is broken by `seen`.
+        Ty::Sum { decl, .. } => {
+            if seen.contains(decl) {
+                return true;
+            }
+            seen.push(*decl);
+            let Some(variant_count) = db.type_decl_by_occ(*decl).map(|t| t.variants.len()) else {
+                seen.pop();
+                return false;
+            };
+            let mut ok = true;
+            for disc in 0..variant_count {
+                let ctor = db
+                    .type_decl_by_occ(*decl)
+                    .and_then(|t| t.variants.get(disc))
+                    .and_then(|v| v.ctor);
+                // A NULLARY variant (no ctor arrow → no payload) carries only its discriminant — a scalar
+                // leaf, walkable. A payload-carrying variant's payload type must itself be walkable.
+                if let Some(ctor) = ctor
+                    && let Some(payload_ty) =
+                        crate::infer::payload_ty_at_instantiation(db, ctor, ty)
+                    && !ty_heap_walkable(db, &payload_ty, seen)
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            seen.pop();
+            ok
+        }
+        // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
+        // canonical form needs machinery this increment does not emit, or it is not a runtime value that
+        // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
+        Ty::List(_)
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Float
+        | Ty::Fn(_, _)
+        | Ty::Var(_)
+        | Ty::Type
+        | Ty::Any => false,
     }
 }
 

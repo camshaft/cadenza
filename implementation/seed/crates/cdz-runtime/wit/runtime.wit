@@ -274,6 +274,21 @@ interface heap {
   //    leaf (reused by move — only the 8-byte header node is allocated); a larger list fills the trie in
   //    one pass. `arr-len 0` (the empty array is inline unit) yields the empty vector.
   vec-of-arr: func(arr: u32) -> u32;                   // 60 — vector from a flat arr (consumes arr)
+
+  // ── Structural value equality (index 61) — the deep heap walk behind the language's `=` on two
+  //    RUNTIME compound values (a sum/tuple/record/list whose contents came from a parameter or a
+  //    call, so neither side is a compile-time constant the compiler folds). `value-eq(a, b)` is the
+  //    SAME tagless structural comparison the map/set key path already runs (`champ_eq`): two values
+  //    are equal iff same shape AND equal component-wise (core-semantics.md §Equality Is Structural),
+  //    with a variant's discriminant compared before its payload — no type tag, no serialization, no
+  //    upcall. It is correct for ANY value form because every form is canonical modulo the
+  //    Bytes-rope compaction the compiler already emits before a Bytes key (deterministic-value-form.md
+  //    §A Value Has One Canonical Byte Form). Ownership (value-heap-runtime.md §Constructors Consume
+  //    And Accessors Borrow): an INSPECTOR — BORROWS both operands (like `set-contains`), returning a
+  //    scalar without changing either reference count; a caller that built an operand as a temporary
+  //    drops it after the compare (the compiler emits the `drop`). Identical handles (structural
+  //    sharing) short-circuit true.
+  value-eq: func(a: u32, b: u32) -> bool;              // 61 — structural equality (borrows both)
 }
 
 world runtime {

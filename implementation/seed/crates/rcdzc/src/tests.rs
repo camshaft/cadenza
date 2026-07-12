@@ -1601,6 +1601,83 @@ fn perceus_balance_leaves_no_live_objects() {
     );
 }
 
+/// RUNTIME STRUCTURAL EQUALITY leak balance: a `=` on two RUNTIME sum values (`value-eq`) leaves NO
+/// live heap cells. Both operands are OWNED temporaries — `(build 3)` allocates a cons-list each side —
+/// and `value-eq` only BORROWS them, so the emit must `drop` each after the compare (else two whole
+/// lists leak). `main` returns a scalar (`if (= …) 1 0`), so the ONLY heap traffic is the two built
+/// operands; after the run `live-objects` must be 0. Guards the ownership/drop discipline of the
+/// `Core::ValueEq` emit (the exact refcount hazard the feature introduces). `#[ignore]` — needs
+/// `xtask build` to have populated the store (run with `-- --ignored`).
+#[test]
+#[ignore]
+fn runtime_value_eq_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[value-eq] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // Two OWNED cons-list operands (recursion-built, so neither folds); `value-eq` borrows both, the
+    // emit drops both. `main` returns a scalar so nothing else touches the heap.
+    let src = "(module m \
+                 (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                 (def (build n) (if (< n 1) (IntList.Nil ()) \
+                    (IntList.Cons (tuple n (build (- n 1)))))) \
+                 (def (main) (if (= (build 3) (build 3)) 1 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "the two equal runtime lists compare equal → 1"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "value-eq leak: the two built operands' heap cells are still live after the compare (expected \
+         0 — the borrowing value-eq must drop each owned operand)"
+    );
+}
+
+/// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves
+/// no cell leaked or double-freed. `xs = (build 3)` is compared to a fresh `(build 3)` (an OWNED
+/// temporary `value-eq` drops); the result is a scalar `1`, so `xs` is used ONLY as the borrowed
+/// operand. `value-eq` must NOT drop `xs` (it only borrows) — the enclosing `let` drops it exactly once.
+/// So `live-objects` is 0: the fresh operand reclaimed by `value-eq`, `xs` by the `let`, neither leaked
+/// nor doubly-freed. The borrowed-vs-owned companion of `runtime_value_eq_leaves_no_live_objects`
+/// (avoids a recursive fold, whose own reclamation is a separate concern). `#[ignore]` — needs the
+/// store populated.
+#[test]
+#[ignore]
+fn runtime_value_eq_borrowed_operand_survives_and_balances() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[value-eq] debug-counters runtime not in the store; skipping borrow probe");
+        return;
+    };
+    let src = "(module m \
+                 (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                 (def (build n) (if (< n 1) (IntList.Nil ()) \
+                    (IntList.Cons (tuple n (build (- n 1)))))) \
+                 (def (main) (let ((xs (build 3))) (if (= xs (build 3)) 1 0))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "the two equal lists compare equal → 1"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "value-eq borrow leak/double-free: `xs` (borrowed by `=`, dropped by the `let`) plus the owned \
+         `(build 3)` operand (dropped by value-eq) must net to 0 live cells"
+    );
+}
+
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
 /// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
 /// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
@@ -6833,7 +6910,7 @@ mod stage1 {
     }
 
     #[test]
-    fn constant_compound_equality_folds_but_a_runtime_one_declines() {
+    fn constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk() {
         // Equality of two CONSTANT compounds folds STRUCTURALLY (core-semantics.md §Equality Is
         // Structural: same type + component-wise equal). `(= (Some 1) (Some 1))` → true; `(= (Some 1)
         // (Some 2))` → false; `(= None None)` → true; `(= (tuple 1 2) (tuple 1 2))` → true; a nested
@@ -6901,17 +6978,22 @@ mod stage1 {
                 "constant compound equality folds: {body}"
             );
         }
-        // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) still
-        // DECLINES — the heap-walk equality is a later stage. `dn 3` recurses (cannot fold), so `(= (dn 3)
-        // (Some 0))` reaches the compound-comparison boundary.
+        // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) now
+        // COMPILES to a `value-eq` heap walk (a scalar-leaf compound is canonical by construction, so the
+        // tagless `champ_eq` walk is exact). `dn 3` recurses (cannot fold), so `(= (dn 3) (Some 0))`
+        // reaches the runtime structural-equality path — it must build a component (not decline) and
+        // IMPORT the runtime (the walk is a runtime call). The RESULT VALUE (true → 1) is verified end to
+        // end by the corpus heap-walk cases (03-equality-and-observation), which run against the composed
+        // runtime; here we assert the compile succeeds AND pulls in the runtime import.
         let runtime = "(module m (def (dn n) (if (< n 1) (Some 0) (dn (- n 1)))) \
                         (def (main) (if (= (dn 3) (Some 0)) 1 0)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(runtime)))
-            .expect_err("a runtime compound comparison must still decline")
-            .message;
+        let program = compile_component(&crate::codec::encode(&parse(runtime)))
+            .expect("a runtime scalar-leaf compound equality now compiles to a value-eq heap walk");
         assert!(
-            msg.contains("compound") || msg.contains("heap walk"),
-            "a runtime compound comparison declines (heap walk not yet built); got: {msg}"
+            cdz_run::required_runtime(&program)
+                .expect("valid component")
+                .is_some(),
+            "a runtime compound equality imports the value-heap runtime (the value-eq walk is a runtime call)"
         );
     }
 

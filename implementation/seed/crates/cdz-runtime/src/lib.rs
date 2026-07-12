@@ -2646,6 +2646,13 @@ impl Guest for Component {
     fn vec_of_arr(arr: u32) -> u32 {
         op_vec_of_arr(Handle::from_u32(arr)).to_u32()
     }
+    // Structural value equality (index 61) — the deep heap walk behind `=` on two runtime compounds.
+    // BORROWS both operands (an inspector, like `set-contains`): `champ_eq` reads without touching
+    // either refcount, so the caller drops a temporary operand itself. This is the SAME tagless
+    // structural comparison the map/set key path runs, exposed for the language's `=`.
+    fn value_eq(a: u32, b: u32) -> bool {
+        champ_eq(Handle::from_u32(a), Handle::from_u32(b))
+    }
     fn bytes_concat(a: u32, b: u32) -> u32 {
         op_bytes_concat(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
     }

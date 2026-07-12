@@ -377,6 +377,14 @@ pub enum Core {
         lhs: StructId,
         rhs: StructId,
     },
+    /// A runtime STRUCTURAL EQUALITY on two COMPOUND operands (a sum/tuple/record/list heap value) —
+    /// result is a `Bool`. Present only for `=` when the fold could not decide it because at least one
+    /// operand is a runtime compound (two constant compounds fold to `ConstBool` via `const_compound_eq`
+    /// in `lower`, and two runtime SCALARS take `Compare`). The backend emits a `value-eq` runtime call
+    /// (the same tagless `champ_eq` walk the map/set key path runs): equal iff same shape + component-wise
+    /// equal, variant discriminant before payload (core-semantics.md §Equality Is Structural). `value-eq`
+    /// BORROWS both operands, so an owned-temporary operand is dropped after the compare.
+    ValueEq { lhs: StructId, rhs: StructId },
     /// A runtime integer CONVERSION on one operand (child by AST `StructId`) — present only when the
     /// fold could not reduce it (the operand is a runtime value). `Prim::Wrap` truncates the operand to
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
