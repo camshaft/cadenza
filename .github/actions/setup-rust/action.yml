@@ -44,6 +44,11 @@ runs:
         key: ${{ inputs.cache-key }}
         # Do not fail the build if the cache service hiccups.
         cache-on-failure: "true"
+        # Do NOT cache ~/.cargo/bin: it restores a cargo-component/wasm-tools MARKER that makes
+        # binstall skip reinstalling ("already installed"), yet the subcommand isn't runnable
+        # ("no such command: component"). Installing them fresh each run (binstall --force below,
+        # seconds) is reliable; caching the bin dir is the opposite of reliable here.
+        cache-bin: "false"
 
     # The value-heap runtime is a wasm component: `cargo xtask build`/`codegen`/`gate` shell out to
     # `cargo component build` and canonicalize the bytes with `wasm-tools strip`. Pin both so the
@@ -55,6 +60,8 @@ runs:
       run: |
         curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
         # `-y` IS `--no-confirm`; passing both errors "cannot be used multiple times".
-        cargo binstall -y cargo-component@0.21.1 wasm-tools@1.253.0
+        # `--force`: always (re)install, even if a stale/partial copy is on PATH — otherwise binstall
+        # says "already installed" and leaves a `cargo component` that errors "no such command".
+        cargo binstall -y --force cargo-component@0.21.1 wasm-tools@1.253.0
         cargo component --version
         wasm-tools --version
