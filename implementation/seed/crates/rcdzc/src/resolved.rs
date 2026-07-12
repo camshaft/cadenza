@@ -31,14 +31,15 @@ use std::collections::BTreeMap;
 /// makes record equality and projection order-independent (a record's fields are a SET).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Symbol {
-    /// The namespace this label belongs to, or `None` for an unqualified source name. Stage 0 source
-    /// names are unqualified; the field exists so a macro-introduced label carries its origin.
+    /// The namespace this label belongs to, or `None` for an unqualified source name. Source names
+    /// are unqualified today; the field exists so a macro-introduced label can carry its origin
+    /// namespace when hygienic macros are added.
     pub namespace: Option<String>,
     pub name: String,
 }
 
 impl Symbol {
-    /// An unqualified label from a source spelling (the Stage-0 case — no namespace).
+    /// An unqualified label from a source spelling (no namespace).
     pub fn plain(name: impl Into<String>) -> Symbol {
         Symbol {
             namespace: None,
@@ -247,10 +248,10 @@ pub enum Resolved {
     /// examined; each arm is a `(pattern-occ, body-occ)` pair, tried top-to-bottom. A pattern is carried
     /// as its AST occurrence (NOT a `Pattern` enum — `intermediate-representations.md`: patterns are
     /// ordinary nodes classified where consumed), so a literal pattern is an `Int`/`Bool` node and the
-    /// wildcard is the name `_`. Stage 3a handles a SCALAR scrutinee with literal + wildcard arms: an arm
-    /// is a probe `scrutinee == literal` (or always, for `_`) and its body; the match lowers to a chain
-    /// of `if`s (folded when the scrutinee is constant). Binder patterns / sum / tuple patterns join the
-    /// same engine in later increments.
+    /// wildcard is the name `_`. A SCALAR scrutinee is handled with literal, binder, and wildcard arms:
+    /// an arm is a probe `scrutinee == literal` (or always, for a binder/`_`) and its body; the match
+    /// lowers to a chain of `if`s (folded when the scrutinee is constant). A sum/tuple/record scrutinee
+    /// walks the value heap rather than probing a scalar.
     Match {
         scrutinee: StructId,
         arms: Vec<(StructId, StructId)>,
