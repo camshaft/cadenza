@@ -3185,6 +3185,21 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // booleans, which have a machine representation the backend can compare); a compound operand
         // still declines (heap-walk equality is a later stage).
         _ => {
+            // CONSTANT COMPOUND EQUALITY folds STRUCTURALLY (`core-semantics.md §Equality Is Structural`:
+            // two values are equal when they have the same type and their contents are equal
+            // component-wise). Only for `=` (a total ordering `<`/`>` over compounds is a later stage);
+            // only when BOTH operands are compile-time-visible constant compounds (a `SumNew`/`Tuple`/
+            // `Record`/`ListNew`, recursively) — a runtime operand still needs the heap walk (deferred).
+            // `(= (Some 1) (Some 1))` → true, `(= (Some 1) (Some 2))` → false, `(= None None)` → true,
+            // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
+            // element that is itself a compound). Returns `None` when either side is not a constant
+            // compound → falls through to the scalar-runtime / decline below.
+            if matches!(op, Prim::Eq)
+                && let Some(eq) = const_compound_eq(db, args[0], args[1])
+            {
+                trace!(target: "rcdzc::fold", result = eq, "folded constant compound equality (structural)");
+                return Core::ConstBool(eq);
+            }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "comparison stays runtime (scalar operands)");
                 Core::Compare {
@@ -3199,6 +3214,82 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 ))
             }
         }
+    }
+}
+
+/// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
+/// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
+/// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL
+/// (`core-semantics.md §Equality Is Structural`): two values are equal iff same shape + component-wise
+/// equal. A `SumNew` compares its discriminant then its payloads pairwise; a `Tuple`/`ListNew` its
+/// elements pairwise (unequal length → not equal); a `Record` its fields (the field SET is fixed by the
+/// type, so same-typed records share keys — compare each). Scalar leaves compare by value. Two DIFFERENT
+/// compound KINDS (a tuple vs a sum) never fold here — the type checker rejects a cross-shape `=` before
+/// lowering, so a kind mismatch reaching here is a compiler bug → `None` (decline).
+fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
+        (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),
+        (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
+        (Core::Unit, Core::Unit) => Some(true),
+        // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
+        // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same
+        // payload arity (the type fixes it), so a pairwise payload compare is well-formed.
+        (
+            Core::SumNew {
+                disc: da,
+                payloads: pa,
+            },
+            Core::SumNew {
+                disc: db_,
+                payloads: pb,
+            },
+        ) => {
+            if da != db_ {
+                return Some(false);
+            }
+            if pa.len() != pb.len() {
+                return Some(false);
+            }
+            for (&x, &y) in pa.iter().zip(pb.iter()) {
+                if !const_compound_eq(db, x, y)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        (Core::Tuple { elems: ea }, Core::Tuple { elems: eb })
+        | (Core::ListNew { elems: ea }, Core::ListNew { elems: eb }) => {
+            if ea.len() != eb.len() {
+                return Some(false);
+            }
+            for (&x, &y) in ea.iter().zip(eb.iter()) {
+                if !const_compound_eq(db, x, y)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        (Core::Record { fields: fa }, Core::Record { fields: fb }) => {
+            if fa.len() != fb.len() {
+                return Some(false);
+            }
+            // Same-typed records share the field SET; compare each field's value by key. A key present in
+            // one but not the other (a shape mismatch the type checker would have caught) is not-equal.
+            for (key, &va) in fa.iter() {
+                match fb.get(key) {
+                    Some(&vb) => {
+                        if !const_compound_eq(db, va, vb)? {
+                            return Some(false);
+                        }
+                    }
+                    None => return Some(false),
+                }
+            }
+            Some(true)
+        }
+        // Any other pairing includes a runtime operand (not a constant compound) — decline the fold.
+        _ => None,
     }
 }
 

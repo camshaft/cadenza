@@ -52,8 +52,8 @@
 
 use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::{Db, EffectDecl, OpDecl};
-use crate::prelude::{meta_field, push_atom, push_list};
 use crate::fxhash::FxHashMap as HashMap;
+use crate::prelude::{meta_field, push_atom, push_list};
 use crate::resolve::resolved_of;
 use crate::resolved::{HandleArm, Resolved};
 

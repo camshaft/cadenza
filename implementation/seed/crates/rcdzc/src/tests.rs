@@ -6308,13 +6308,57 @@ mod stage1 {
     }
 
     #[test]
-    fn comparison_of_a_compound_declines() {
-        // Structural comparison over the value heap is a later stage — comparing records declines
-        // cleanly (the operator's type stays generic; only the fold's coverage is bounded).
-        let msg = expect_decline("(= (record (x 1)) (record (x 1)))");
+    fn constant_compound_equality_folds_but_a_runtime_one_declines() {
+        // Equality of two CONSTANT compounds folds STRUCTURALLY (core-semantics.md §Equality Is
+        // Structural: same type + component-wise equal). `(= (Some 1) (Some 1))` → true; `(= (Some 1)
+        // (Some 2))` → false; `(= None None)` → true; `(= (tuple 1 2) (tuple 1 2))` → true; a nested
+        // compound recurses. Was declined "comparison of a compound value needs a heap walk".
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= (Some 1) (Some 1)) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Some 1) (Some 2)) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= None None) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (tuple 1 2) (tuple 1 2)) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (tuple 1 2) (tuple 1 3)) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= (Some (Some 1)) (Some (Some 1))) 1 0)) (export main))",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant compound equality folds: {body}"
+            );
+        }
+        // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) still
+        // DECLINES — the heap-walk equality is a later stage. `dn 3` recurses (cannot fold), so `(= (dn 3)
+        // (Some 0))` reaches the compound-comparison boundary.
+        let runtime = "(module m (def (dn n) (if (< n 1) (Some 0) (dn (- n 1)))) \
+                        (def (main) (if (= (dn 3) (Some 0)) 1 0)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(runtime)))
+            .expect_err("a runtime compound comparison must still decline")
+            .message;
         assert!(
-            msg.contains("compound") || msg.contains("value heap") || msg.contains("not yet"),
-            "got: {msg}"
+            msg.contains("compound") || msg.contains("heap walk"),
+            "a runtime compound comparison declines (heap walk not yet built); got: {msg}"
         );
     }
 
