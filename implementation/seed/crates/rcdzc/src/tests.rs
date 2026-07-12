@@ -4567,6 +4567,23 @@ mod match_engine {
     }
 
     #[test]
+    fn string_to_bytes_folds_to_the_utf8_bytes() {
+        // `String.to-bytes : String → Bytes` — the UTF-8 encoding. A CONSTANT string FOLDS to a constant
+        // `Bytes` of its UTF-8 bytes, consumed here by `Bytes.len` → the byte count. `"run"` = 3 ASCII
+        // bytes; `"café"` = 5 (é is two UTF-8 bytes); `"😀"` = 4; `""` = 0. Agrees with `String.byte-len`.
+        for (s, want) in [("run", 3), ("café", 5), ("😀", 4), ("", 0)] {
+            let src = format!(
+                "(module m (def (main) ((. Bytes len) ((. String to-bytes) \"{s}\"))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "String.to-bytes {s:?} byte count"
+            );
+        }
+    }
+
+    #[test]
     fn a_string_annotation_checks_against_a_string_value() {
         // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
         // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the
