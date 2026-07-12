@@ -2215,6 +2215,49 @@ pub fn runtime_value_form_template(ty: &crate::ty::Ty) -> Option<ValueFormTempla
     })
 }
 
+/// The two STATIC halves of a runtime `Bytes` value form, for the looping `encode()` walker (L2b).
+/// The value form of `(: <bytes> Bytes)` is `PREFIX · <LEB len> · <n raw bytes> · SUFFIX`, where ONLY
+/// the leaf's length-LEB and payload are runtime — the prefix (header … the `KIND_BYTES` tag) and the
+/// suffix (the `Bytes` type-name leaf + the whole struct table + root) are byte-identical regardless of
+/// `n` (verified across n = 0 / 3 / 130). So the walker writes `prefix`, then the runtime LEB of
+/// `bytes-len`, then copies the bytes, then `suffix` — no fixed-size template. `DESIGN-runtime-bytes-
+/// escape-walker.md`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RuntimeBytesForm {
+    /// Bytes to write verbatim BEFORE the runtime length+payload — the header through the KIND_BYTES tag.
+    pub prefix: Vec<u8>,
+    /// Bytes to write verbatim AFTER the runtime payload — the type-name leaf + struct table + root.
+    pub suffix: Vec<u8>,
+}
+
+/// Compute the [`RuntimeBytesForm`] for `Ty::Bytes` — build the ZERO-length Bytes value form (`…0b 00
+/// <suffix>`) and split it at the leaf's length byte: `prefix` = everything up to and INCLUDING the
+/// `KIND_BYTES` tag, `suffix` = everything AFTER the `00` length byte. A runtime walker fills the gap
+/// with `<LEB n><n bytes>`. `None` if the encoded form does not have the expected `0b 00` shape (a
+/// codec change) — the escape then declines rather than emit a wrong walker.
+pub fn runtime_bytes_form(db: &mut Db) -> Option<RuntimeBytesForm> {
+    // Build `(: b"" Bytes)` — an empty Bytes leaf — and encode it. Its leaf pool holds `":"`, the empty
+    // bytes leaf (`0b 00`), and `"Bytes"`; the struct table + root follow.
+    let _ = db; // (kept for signature symmetry with the other form builders; not needed here)
+    let mut b = crate::ast::Builder::new();
+    let colon = b.name(":");
+    let empty = b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new()));
+    let bytes_ty = b.name("Bytes");
+    let root = b.list(vec![colon, empty, bytes_ty]);
+    let arenas = b.finish(root);
+    let encoded = crate::codec::encode(&arenas);
+    // Find the `KIND_BYTES`(0x0b) tag IMMEDIATELY followed by its `0x00` length byte (the empty leaf).
+    // `":"` is a NAME leaf (`0x0a 01 3a`) and `"Bytes"` a NAME leaf too, so the only `0b 00` pair is the
+    // empty bytes leaf's tag+length. Split there.
+    const KIND_BYTES: u8 = 11;
+    let pos = encoded.windows(2).position(|w| w == [KIND_BYTES, 0x00])?;
+    // prefix = header … the KIND_BYTES tag (inclusive); the byte at `pos+1` is the `00` length we replace.
+    let prefix = encoded[..=pos].to_vec();
+    // suffix = everything AFTER the `00` length byte (an empty payload contributes no bytes).
+    let suffix = encoded[pos + 2..].to_vec();
+    Some(RuntimeBytesForm { prefix, suffix })
+}
+
 /// A value-form template: the byte buffer (placeholders in the leaf values) + the runtime holes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ValueFormTemplate {
@@ -3748,13 +3791,16 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
             "Bytes.of of a runtime list is not yet supported (only a visible list literal)",
         ));
     };
-    // Each element is a `UInt8` (the `Bytes.of : (List UInt8) → Bytes` scheme). A byte outside `0..=255`
-    // is not a UInt8 — reject it as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap (CDZ0304):
-    // under the UInt8 model an ill-typed byte cannot be constructed at all, and to truncate a wider value
-    // into a byte the program writes `(UInt8.wrap n)` explicitly. (The list-element width-check does not
-    // yet flow the UInt8 bound through `(list …)` unification on its own, so this is where the bound is
-    // enforced — with the width code, matching the type story.) A non-constant element declines (runtime
-    // construction is a later increment).
+    // Each element is a `UInt8` (the `Bytes.of : (List UInt8) → Bytes` scheme). A CONSTANT element
+    // outside `0..=255` is not a UInt8 — reject it as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a
+    // runtime trap: under the UInt8 model an ill-typed byte cannot be constructed at all, and to truncate
+    // a wider value into a byte the program writes `(UInt8.wrap n)` explicitly. (The list-element
+    // width-check does not yet flow the UInt8 bound through `(list …)` unification on its own, so the
+    // constant bound is enforced here — with the width code, matching the type story.) A RUNTIME element
+    // (a `UInt8` param, or `(UInt8.wrap n)`) is IN RANGE BY ITS TYPE and passes through — `select` emits
+    // its i32 value into `bytes-set`, so `(Bytes.of (list (UInt8.wrap n)))` builds a byte from a runtime
+    // value (the LEB128 encoder). The `Core::BytesOf` is built either way; a CONSTANT one bakes at escape
+    // (R1), a RUNTIME one builds on the rope heap + escapes via the looping walker (L2b).
     for &e in &elems {
         match core_of(db, e) {
             Core::Poison(r) => return Core::Poison(r),
@@ -3768,14 +3814,11 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
                     ));
                 }
             },
-            _ => {
-                return Core::Poison(Reject::decline(
-                    "Bytes.of with a non-constant element is not yet supported",
-                ));
-            }
+            // A runtime UInt8 element — in range by its type; `select` emits its value into `bytes-set`.
+            _ => {}
         }
     }
-    trace!(target: "rcdzc::lower", node = id.0, len = elems.len(), "Bytes.of → Core::BytesOf (constant UInt8 literal)");
+    trace!(target: "rcdzc::lower", node = id.0, len = elems.len(), "Bytes.of → Core::BytesOf");
     Core::BytesOf { elems }
 }
 

@@ -692,6 +692,10 @@ pub fn runtime_resource_core_module(
 pub enum EscapeForm<'a> {
     Flat(&'a crate::lower::ValueFormTemplate),
     Sum(&'a crate::lower::SumFormTemplate),
+    /// A RUNTIME `Bytes` result — a VARIABLE-length value form the walker builds by LOOPING (the first
+    /// non-unrolled `encode()`): write the static prefix, the runtime `bytes-len` as a LEB, a
+    /// `bytes-get` copy loop, then the static suffix. `DESIGN-runtime-bytes-escape-walker.md`.
+    RuntimeBytes(&'a crate::lower::RuntimeBytesForm),
 }
 
 /// The escape core module for either a flat compound or a sum result (see [`EscapeForm`]). Everything
@@ -815,6 +819,9 @@ pub fn runtime_resource_core_module_form(
     let templates: Vec<&crate::lower::ValueFormTemplate> = match &form {
         EscapeForm::Flat(t) => vec![*t],
         EscapeForm::Sum(s) => s.variants.iter().collect(),
+        // RuntimeBytes writes its entire output at run time (variable length) — no preloaded template,
+        // no data section. The walker uses a fixed retarea at offset 0 and writes the value form after it.
+        EscapeForm::RuntimeBytes(_) => Vec::new(),
     };
     for t in &templates {
         // 4-align the start of this template's bytes.
@@ -869,6 +876,7 @@ pub fn runtime_resource_core_module_form(
         EscapeForm::Sum(s) => {
             encode_sum_walk_body(&s.variants, &placed_pairs(&placed), f_rrep, &import_index)
         }
+        EscapeForm::RuntimeBytes(form) => encode_bytes_walk_body(form, f_rrep, &import_index),
     };
     code_items.extend_from_slice(&encode_body);
     // cabi_realloc: stub (never called for a nullary-input list result).
@@ -947,6 +955,198 @@ fn encode_walk_body(
     // return the (ptr,len) area.
     body.push(op::I32_CONST);
     crate::backend::wasm::encode::sleb128(ret_off as i64, &mut body);
+    body.push(op::END);
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
+/// The `t-encode(handle) -> i32` walker for a RUNTIME `Bytes` result — the FIRST looping `encode()`
+/// (`DESIGN-runtime-bytes-escape-walker.md`). It writes the VARIABLE-length value form
+/// `PREFIX · LEB(n) · <n bytes> · SUFFIX` into linear memory and returns a `(ptr,len)` retarea:
+///  * retarea at `[0..8]` (ptr,len); the value form is written starting at `OUT = 8`.
+///  * write the static `prefix` (a store8 run), the runtime `bytes-len` as a LEB (a bounded loop over
+///    the count), a `bytes-get` copy loop `for i in 0..n`, then the static `suffix`.
+///  * `heap.drop(rep)` (encode owns `own<t>`), then store `(ptr=OUT, len = w-OUT)` and return `0`.
+///
+/// `n` (bytes-len) fits u32; the LEB of a u32 is ≤ 5 bytes. Byte constants ≥ 0x80 (the LEB continuation
+/// bit) are emitted with `sleb128` (the raw-`i32.const`-is-signed-LEB rule).
+fn encode_bytes_walk_body(
+    form: &crate::lower::RuntimeBytesForm,
+    f_rrep: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    // A signed-LEB `i32.const v` (v may be ≥ 0x80 — the LEB continuation bit — so NEVER a raw byte).
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    // `[addr, value]` on the stack → store the low byte at `addr` (align 0, offset 0).
+    let store8 = |out: &mut Vec<u8>| {
+        out.push(op::I32_STORE8);
+        out.push(0x00);
+        out.push(0x00);
+    };
+    // Output region begins after the 8-byte retarea.
+    const OUT: i64 = 8;
+
+    // Locals (after param 0 = handle): rep(i32), n(i32), w(i32 write cursor), i(i32 loop counter),
+    // t(i32 LEB temp). One i32 group of 5.
+    let mut body = Vec::new();
+    uleb128(1, &mut body); // 1 local-decl group
+    uleb128(5, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let (rep, n, w, i, t) = (1u32, 2u32, 3u32, 4u32, 5u32);
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    let tee = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_TEE);
+        uleb128(l as u64, out);
+    };
+
+    // rep = resource.rep(handle).
+    get(0, &mut body);
+    body.push(op::CALL);
+    uleb128(f_rrep as u64, &mut body);
+    set(rep, &mut body);
+    // n = bytes-len(rep)  (BORROWS rep — drop happens once, at the end).
+    get(rep, &mut body);
+    call_op("bytes-len", &mut body);
+    set(n, &mut body);
+    // w = OUT.
+    const_i32(OUT, &mut body);
+    set(w, &mut body);
+
+    // Write the static PREFIX: for each byte, `store8(w, byte); w += 1`.
+    for &b in &form.prefix {
+        get(w, &mut body);
+        const_i32(b as i64, &mut body);
+        store8(&mut body);
+        get(w, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(w, &mut body);
+    }
+
+    // Write LEB128(n): t = n; loop { b = t & 0x7f; t >>= 7 (unsigned); if t!=0 b|=0x80; store8(w,b); w++;
+    // if t!=0 continue }. A do-while over `t`.
+    get(n, &mut body);
+    set(t, &mut body);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        // store8(w, (t & 0x7f) | (t>=0x80 ? 0x80 : 0))
+        get(w, &mut body);
+        // low 7 bits
+        get(t, &mut body);
+        const_i32(0x7f, &mut body);
+        body.push(op::I32_AND);
+        // continuation bit: (t >>u 7) != 0 ? 0x80 : 0  → compute ((t >>u 7) != 0) * 0x80 via select-free
+        // arithmetic: push 0x80 if more bits remain. Use: more = (t >>u 7); (more != 0) → 0x80 else 0.
+        get(t, &mut body);
+        const_i32(7, &mut body);
+        body.push(op::I32_SHR_U); // more = t >>u 7
+        const_i32(0, &mut body);
+        body.push(op::I32_NE); // (more != 0) as 0/1
+        const_i32(0x80, &mut body);
+        body.push(op::I32_MUL); // 0 or 0x80
+        body.push(op::I32_OR); // (t&0x7f) | cont
+        store8(&mut body);
+        // w += 1
+        get(w, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(w, &mut body);
+        // t >>u= 7
+        get(t, &mut body);
+        const_i32(7, &mut body);
+        body.push(op::I32_SHR_U);
+        tee(t, &mut body); // t = t>>7, leave it on stack
+        // continue the loop while t != 0 (br_if to loop label 0)
+        body.push(op::BR_IF);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END); // end loop
+
+    // COPY LOOP: i = 0; block { loop { if i>=n br 1; store8(w+i, bytes-get(rep,i)); i++; br 0 } }.
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        // if i >= n: br 1 (exit block)
+        get(i, &mut body);
+        get(n, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body);
+        // store8(w + i, bytes-get(rep, i))
+        get(w, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD); // addr = w + i
+        get(rep, &mut body);
+        get(i, &mut body);
+        call_op("bytes-get", &mut body); // → byte value (0..=255)
+        store8(&mut body);
+        // i += 1
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END); // end loop
+    body.push(op::END); // end block
+    // w += n  (advance the write cursor past the copied payload).
+    get(w, &mut body);
+    get(n, &mut body);
+    body.push(op::I32_ADD);
+    set(w, &mut body);
+
+    // Write the static SUFFIX.
+    for &b in &form.suffix {
+        get(w, &mut body);
+        const_i32(b as i64, &mut body);
+        store8(&mut body);
+        get(w, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(w, &mut body);
+    }
+
+    // Release the escaped handle: encode owns `own<t>`, so drop the one reference (balances make's alloc).
+    get(rep, &mut body);
+    call_op("drop", &mut body);
+
+    // Store the retarea at [0..8]: ptr = OUT, len = w - OUT. Then return 0 (the retptr).
+    const_i32(0, &mut body); // addr for ptr store
+    const_i32(OUT, &mut body); // ptr = OUT
+    body.push(op::I32_STORE);
+    body.push(0x02); // align 2 (4-byte)
+    body.push(0x00); // offset 0
+    const_i32(4, &mut body); // addr for len store
+    get(w, &mut body);
+    const_i32(OUT, &mut body);
+    body.push(op::I32_SUB); // len = w - OUT
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    // return the retarea pointer (0).
+    const_i32(0, &mut body);
     body.push(op::END);
     let mut e = uleb_bytes(body.len() as u64);
     e.extend_from_slice(&body);

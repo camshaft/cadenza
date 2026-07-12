@@ -445,7 +445,31 @@ fn apply_lambda_uncached(
     }
     trace!(target: "rcdzc::eval", body = body.0, params = params.len(), args = args.len(), "β-reduce lambda application");
     if args.len() < params.len() {
-        return Err("partial application of a function is not yet supported".to_string());
+        // PARTIAL APPLICATION — compile-time currying (`core-semantics.md` §Functions Are
+        // Single-Arity: "applying a curried function to fewer arguments than its full chain returns a
+        // closure awaiting the remaining arguments"). Substitute the provided args for the leading
+        // parameters, then wrap the remaining parameters in a fresh residual lambda
+        // `(fn (remaining…) reduced-body)`. Applying that residual to the rest of the arguments
+        // β-reduces it the same way, so `((add 3) 4)` folds to `(+ 3 4)` → 7 with no residual
+        // function surviving to run time. The residual's parameter binders are FRESH copies (same
+        // spelling) so the original lambda is untouched (its param occurrences keep their parent under
+        // the original `fn`/`def`); a body reference to a remaining parameter re-resolves, by name,
+        // against the residual's scope to the residual's binder — exactly how `beta_reduce` re-resolves
+        // a `let`-local across the copy.
+        let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
+        for (p, a) in params.iter().zip(args.iter()) {
+            crate::resolve::resolve_subtree(db, *a);
+            arg_of.insert(param_name_occ(db, *p), *a);
+        }
+        let reduced_body = beta_reduce(db, body, &arg_of);
+        let remaining: Vec<StructId> = params[args.len()..]
+            .iter()
+            .map(|&p| copy_param(db, p))
+            .collect();
+        let params_list = db.push_list(remaining);
+        let fn_head = db.push_name("fn");
+        let residual = db.push_list(vec![fn_head, params_list, reduced_body]);
+        return Ok(Some(residual));
     }
     let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
     for (p, a) in params.iter().zip(args.iter()) {
@@ -473,6 +497,16 @@ fn apply_lambda_uncached(
             None => Err("applied more arguments than the function accepts".to_string()),
         }
     }
+}
+
+/// Copy a lambda PARAMETER occurrence into a fresh binder for a residual (partially-applied) lambda —
+/// a bare name atom becomes a fresh atom of the same name, an annotated `(: name T)` binder becomes a
+/// fresh list of freshly-copied children. Fresh occurrences so the residual's binders are distinct from
+/// the original lambda's (a body reference re-resolves by name to the residual's binder across the copy,
+/// as in `beta_reduce`); the empty `arg_of` means nothing is substituted, only re-parented.
+fn copy_param(db: &mut Db, param: StructId) -> StructId {
+    let empty: HashMap<StructId, StructId> = HashMap::default();
+    copy_structural(db, param, &empty)
 }
 
 /// The NAME occurrence a parameter binds — seeing through a `(: name T)` annotated binder to `name`,
@@ -730,6 +764,8 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::sync::Arc<[StructId]>, S
     match resolved_of(db, id) {
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
+        // A type annotation is transparent to the value — `(: (fn …) (-> A B))` is the lambda.
+        Resolved::Annot { expr, .. } => lambda_of(db, expr),
         Resolved::Apply { head, args } => {
             // Reduce the inner application to a value, then see if THAT is a lambda. This reduction is
             // itself a β-reduction, so run it UNDER THE DEPTH GUARD: a self-referential nullary call
@@ -741,6 +777,48 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::sync::Arc<[StructId]>, S
             let g = guard.db();
             let reduced = apply_lambda(g, head, &args).ok().flatten()?;
             lambda_of(g, reduced)
+        }
+        // A lambda produced by a `let` BODY, capturing the let's bindings — `(let ((y 3)) (fn (x) (+ x
+        // y)))`. The lambda ESCAPES the let (it is bound elsewhere and applied later), so its captured
+        // bindings must be INLINED into the body BEFORE it is returned: β-reduction copies a returned
+        // lambda's body and re-parents it at the application site, so a captured name left as a bare
+        // reference would re-resolve against the APPLICATION site's scope (a `(let ((y 100)) …)` there
+        // would wrongly shadow the captured `y=3`). Substituting the let's bindings closes the lambda
+        // over their values first, so capture is by the CREATION scope (`core-semantics.md` §A Function
+        // Value Captures The Bindings In Scope Where It Is Created). Runs under the depth guard (a
+        // binding init could itself apply a lambda). A binding whose value is a runtime computation
+        // still substitutes its (opaque) core; the corpus capture cases are all constant.
+        Resolved::Let { bindings, body } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
+            for (_name_occ, init) in &bindings {
+                // Pin each binding's meaning at its definition site before the body copy re-parents it
+                // (the same reason `apply_lambda` resolves each argument subtree first).
+                crate::resolve::resolve_subtree(g, *init);
+                // A `let`-bound reference resolves to `Ref { value: <init occurrence> }` (the binding's
+                // VALUE, per `last_binder_named` returning `kv[1]`), so `beta_reduce`'s transitive-ref
+                // walk keys on the INIT occurrence, not the binder name. Map it to itself: the walk
+                // returns the init occurrence directly (not a fresh copy), which resolves to the same
+                // captured value regardless of the scope the copied body lands in — closing the lambda
+                // over the creation-site binding.
+                arg_of.insert(*init, *init);
+            }
+            let reduced = beta_reduce(g, body, &arg_of);
+            lambda_of(g, reduced)
+        }
+        // A lambda stored in a RECORD field and projected — `(. (record (f (fn …))) f)`. Reduce the
+        // member access to the field's value, then that value to a lambda.
+        Resolved::Member { operand, key } => match member_value(db, operand, &key) {
+            Member::Field(v) => lambda_of(db, v),
+            _ => None,
+        },
+        // A lambda stored in a TUPLE element and projected — `(. (tuple (fn …) 9) 0)`. Reduce the tuple
+        // to its element occurrences, index the projected one, and reduce THAT to a lambda.
+        Resolved::Proj { operand, index } => {
+            let elems = reduce_to_tuple_elems(db, operand)?;
+            let elem = *elems.get(index)?;
+            lambda_of(db, elem)
         }
         _ => None,
     }
