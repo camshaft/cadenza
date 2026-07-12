@@ -873,18 +873,19 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
                     if signed { "Int" } else { "UInt" }
                 ));
             }
-            // A MALFORMED width (negative/non-natural) reduces to the invalid sentinel width 0, so the
-            // built module's type is `Ty::Int(Fixed(0))` — which `int_bounds`/`fits_width` reject as
-            // CDZ0302 exactly as an explicit `(UInt 0)` is (a nonsensical width is rejected at the
-            // annotation, not silently dropped to the default Int64). A NON-CONSTANT width declines: an
-            // integer width must be a compile-time value (numeric-model.md §An Integer Type Is Indexed
-            // By A Compile-Time Width), so a runtime width is rejected, not a missing feature.
+            // A width the compiler cannot resolve to a compile-time natural reduces to the invalid
+            // sentinel width 0, so the built module's type is `Ty::Int(Fixed(0))` — which
+            // `int_bounds`/`fits_width` reject as CDZ0302 exactly as an explicit `(UInt 0)` is (the bad
+            // width is rejected AT THE ANNOTATION, not silently dropped to the default Int64). This
+            // covers BOTH a MALFORMED concrete width (negative/over-u32/non-integer) AND a NON-CONSTANT
+            // one — a RUNTIME parameter, an unbound name, a non-constant computation: an integer type
+            // MUST be indexed by a compile-time width (numeric-model.md §An Integer Type Is Indexed By A
+            // Compile-Time Width), so a runtime value in width position is rejected, not accepted-and-
+            // ignored. (A width VARIABLE `(Int a)` inside an operator's `(meta t)` scheme never reaches
+            // here — it is read symbolically by `width_in_env` as `Width::Var`, not by `read_width`.)
             let width = match read_width(db, args[0]) {
                 WidthRead::Fixed(w) => w,
-                WidthRead::Malformed => 0,
-                WidthRead::NotConst => {
-                    return Err("integer width must be a constant".to_string());
-                }
+                WidthRead::Malformed | WidthRead::NotConst => 0,
             };
             // Build once per (ctor, width): the first demand appends the module, every later demand —
             // repeated on this occurrence, or another `(Int 64)` elsewhere — returns the same node, so
@@ -1056,13 +1057,15 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
     }
 }
 
-/// How a `(Int W)`/`(UInt W)` width argument reads. A concrete non-negative natural is `Fixed`. A
-/// concrete but NON-NATURAL width — a negative or over-`u32` integer, or a bool/float/type-value in
-/// width position — is `Malformed`: the diagnostics registry lists exactly these (CDZ0302, "a negative
-/// width, or a non-natural width"). A width that is not a concrete value at all — a width variable, an
-/// unbound name, or a non-constant computation — is `NotConst`, a genuine decline (its own scope error,
-/// if any, surfaces elsewhere; a width must be a compile-time value, so a runtime width is rejected —
-/// numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width).
+/// How a `(Int W)`/`(UInt W)` width argument reads. A concrete non-negative natural that fits `u32` is
+/// `Fixed`. A concrete but NON-NATURAL width — a negative or over-`u32` integer, or a bool/float/type-
+/// value in width position — is `Malformed`. A width that is not a concrete value at all — an unbound
+/// name, a runtime parameter, or a non-constant computation — is `NotConst`. Both `Malformed` and
+/// `NotConst` are INVALID widths: an integer type MUST be indexed by a compile-time natural
+/// (numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width), so the caller reduces either
+/// to the sentinel width 0 → CDZ0302, rejecting the bad width at the annotation rather than dropping it.
+/// (The variants stay distinct so a future caller could message them differently; `reduce_ctor` treats
+/// both as reject.)
 enum WidthRead {
     Fixed(u32),
     Malformed,

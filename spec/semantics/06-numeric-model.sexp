@@ -1361,9 +1361,27 @@
            Compile-Time Width: the width MUST be resolved from a compile-time value and MUST NOT be
            determined by runtime data; type-system.md #Generics Are Type-Valued Parameters). It is
            rejected at compile time (CDZ0302), keeping the feature at indexed types over compile-time
-           naturals rather than dependent types — no runtime value ever determines a type.")
-  (needs  numeric-model)
+           naturals rather than dependent types — no runtime value ever determines a type. A width the
+           compiler cannot resolve to a compile-time natural — negative, non-natural, OR runtime — reduces
+           to the invalid sentinel width 0 and is rejected at the annotation (CDZ0302), never dropped so
+           the literal falls back to its default type. (Previously `(needs numeric-model)`-gated, which
+           SKIPPED the case and hid the miscompile — the seed ran `(mk 8)` to 5; ungated + fixed, it
+           rejects.)")
   (input  (do
             (def (mk n) (: 5 (UInt n)))
             (def (main) (mk 8)) (export main)))
+  (error  CDZ0302))
+
+(case "an absurd runtime width is rejected, not silently ignored"
+  (doc    "The sharper witness: `(: 5 (UInt n))` with `n` supplied as a RUNTIME argument (99, an
+           out-of-range width). As a constant `(UInt 99)` names a width past the 64 ceiling; as runtime
+           data the width is not a compile-time natural at all. Either way it MUST reject (CDZ0302), not
+           be accepted-and-ignored — the width reader resolves neither, so the annotation reduces to the
+           sentinel width 0 and rejects. Pins that the runtime branch rejects like the negative/non-
+           natural branches, closing the drop-instead-of-reject family (no runtime value in a type
+           position).")
+  (input  (do
+            (def (mk (: n Int64)) (: 5 (UInt n)))
+            (def (main (: k Int64)) (mk k)) (export main)))
+  (call   main (: 99 Int64))
   (error  CDZ0302))

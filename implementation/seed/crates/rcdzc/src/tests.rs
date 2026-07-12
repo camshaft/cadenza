@@ -3703,6 +3703,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_integer_width_is_rejected_not_dropped() {
+        // A `(UInt n)`/`(Int n)` whose width is a RUNTIME value (a function parameter) puts a runtime
+        // value in a type-determining position, which the type system forbids: an integer type MUST be
+        // indexed by a COMPILE-TIME width (numeric-model.md §An Integer Type Is Indexed By A Compile-Time
+        // Width). The width reader resolves `n` to no compile-time natural, so — like a negative or
+        // non-natural width — the annotation reduces to the sentinel width 0 and the fit-check rejects
+        // it (CDZ0302), rather than DROPPING the annotation so the literal keeps its default Int64 (which
+        // is what made `(mk 8)` run to 5). The runtime branch of the drop-instead-of-reject family.
+        let compile = |src: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
+        };
+        // Runtime width via an inlined call — `(mk 8)` substitutes 8 but `n` is not a constant at the
+        // annotation site; the width is non-constant → reject, not run-to-5.
+        let e = compile("(module m (def (mk n) (: 5 (UInt n))) (def (main) (mk 8)) (export main))")
+            .expect_err("a runtime-valued width must be rejected");
+        assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
+        // The signed variant likewise.
+        let e = compile("(module m (def (mk n) (: 5 (Int n))) (def (main) (mk 16)) (export main))")
+            .expect_err("a runtime-valued signed width must be rejected");
+        assert_eq!(e.code.as_deref(), Some("CDZ0302"), "got: {}", e.message);
+        // A width that IS a compile-time constant reached through a `let` is still fine (it folds to the
+        // constant): `(let ((w 8)) (: 5 (UInt w)))` builds and 5 fits UInt8 (crosses as u8, not dropped
+        // to the default i64 — the constant width is honored).
+        assert_eq!(run_main_as::<u8>("(let ((w 8)) (: 5 (UInt w)))"), 5);
+    }
+
+    #[test]
     fn arbitrary_odd_widths_compute_their_bounds() {
         // The bounds are computed FROM THE WIDTH PARAMETER, not a per-named-type table — so an ODD,
         // non-machine width works: `(UInt 7)` max = 2^7-1 = 127, `(UInt 24)` max = 2^24-1 = 16777215,
