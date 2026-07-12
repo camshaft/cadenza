@@ -869,6 +869,70 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
     }
 }
 
+/// R2 NESTED: a runtime tuple whose element is ITSELF a runtime tuple escapes — the inner compound is
+/// built on the heap as its own array, and the outer `arr-set`s the inner HANDLE directly (no box), so
+/// the outer array holds a handle to the inner array. `encode()` walks the nested `arr-get` path and
+/// renders both levels. Recursive → unfoldable → genuine nested-heap construction. Pins that a nested
+/// compound element is stored/read as a handle (not boxed/unboxed) — the `box_op`/`get_op` `None` path.
+#[test]
+fn a_nested_runtime_tuple_escapes_to_the_host() {
+    use crate::testkit::parse;
+    let src = "(module m (def (f n) (if (= n 0) (tuple n (tuple n n)) (f (- n 1)))) \
+                 (def (main) (f 2)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a nested runtime-tuple escape must import the value-heap runtime (genuine nested heap)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[R2] runtime wasm not found; skipping composed nested escape");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "(: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64)))",
+            "R2 nested tuple escape value form"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("R2 nested tuple escape run trapped: {t}"),
+    }
+}
+
+/// R2 NESTED (heterogeneous): a runtime RECORD whose field is a runtime TUPLE — the type-directed
+/// walker recurses record→tuple, each sub-shape rendered by its own head. Pins the nested handle path
+/// across a record boundary.
+#[test]
+fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
+    use crate::testkit::parse;
+    let src = "(module m (def (f n) (if (= n 0) (record (x n) (y (tuple n 1))) (f (- n 1)))) \
+                 (def (main) (f 2)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a record-with-tuple-field escape must import the value-heap runtime"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[R2] runtime wasm not found; skipping composed nested-record escape");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "(: (record (x 0) (y (tuple 0 1))) (Record (x Int64) (y (Tuple Int64 Int64))))",
+            "R2 nested record escape value form"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("R2 nested record escape run trapped: {t}"),
+    }
+}
+
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
 //
 // The operator directive: get the static heap-value path right FIRST — a constant compound must never

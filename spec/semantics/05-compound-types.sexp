@@ -655,6 +655,28 @@
             (def (main) (f 3)) (export main)))
   (output (: (record (a 0) (b 7)) (Record (a Int64) (b Int64)))))
 
+(case "a nested runtime tuple built behind a recursive call escapes to the host"
+  (doc    "`(tuple n (tuple n n))` with n=0 (reached via recursion so it does NOT constant-fold) →
+           `(tuple 0 (tuple 0 0))`. The INNER tuple is built on the value heap as its own array; the
+           OUTER tuple stores the inner HANDLE directly (a nested compound element is already a handle —
+           NOT boxed like a scalar). `encode()` walks the nested `arr-get` path and renders both levels
+           (component-abi.md §A Compound Result Is Rendered By Compiler-Emitted Code). Pins that a
+           runtime compound NESTS: a heap value referencing another heap value crosses the boundary.")
+  (input  (do
+            (def (f n) (if (= n 0) (tuple n (tuple n n)) (f (- n 1))))
+            (def (main) (f 2)) (export main)))
+  (output (: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "a runtime record whose field is a runtime tuple escapes to the host"
+  (doc    "`(record (x n) (y (tuple n 1)))` with n=0 (recursion, unfoldable) →
+           `(record (x 0) (y (tuple 0 1)))` — a record field that is itself a runtime compound. Pins
+           that the type-directed renderer recurses through a HETEROGENEOUS nesting (record → tuple),
+           dispatching each sub-shape to its own head; the field holds the inner tuple's handle.")
+  (input  (do
+            (def (f n) (if (= n 0) (record (x n) (y (tuple n 1))) (f (- n 1))))
+            (def (main) (f 2)) (export main)))
+  (output (: (record (x 0) (y (tuple 0 1))) (Record (x Int64) (y (Tuple Int64 Int64))))))
+
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
 ; array a tuple is — field names and the tuple/list/record distinction are static type

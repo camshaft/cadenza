@@ -105,14 +105,17 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
     }
 }
 
-/// The runtime op that BOXES the node at `id` (a tuple element) into a u32 heap handle, by its solved
-/// scalar type: an integer → `box-int` (an i64 payload), a boolean → `box-bool`. A non-scalar element
-/// (a nested compound) is already a handle and would not be re-boxed — but H2b's tuples are scalars, so
-/// a non-scalar element DECLINES (nested runtime compounds arrive with H4). Reads the solved type.
-fn box_op(db: &mut Db, id: StructId) -> Result<&'static str, Reject> {
+/// The runtime op that BOXES the node at `id` (a tuple/record element) into a u32 heap handle, by its
+/// solved type: an integer → `box-int` (an i64 payload), a boolean → `box-bool`. A COMPOUND element (a
+/// nested tuple/record) is ALREADY a u32 handle — it is `arr-set` into the parent array as-is, with no
+/// box op — so this returns `Ok(None)` for a compound (the caller skips the box). A type with no heap
+/// representation at all (a function/type-value) DECLINES. Reads the solved type.
+fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
-        Ty::Int(_) => Ok(OP_BOX_INT),
-        Ty::Bool => Ok(OP_BOX_BOOL),
+        Ty::Int(_) => Ok(Some(OP_BOX_INT)),
+        Ty::Bool => Ok(Some(OP_BOX_BOOL)),
+        // A nested compound is already a handle — store it directly, no box.
+        Ty::Tuple(_) | Ty::Record(_) => Ok(None),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -120,13 +123,16 @@ fn box_op(db: &mut Db, id: StructId) -> Result<&'static str, Reject> {
     }
 }
 
-/// The runtime op that UNBOXES a u32 heap handle back to the scalar the node at `id` projects — the
-/// dual of [`box_op`], keyed by this projection's solved type: an integer → `get-int`, a boolean →
-/// `get-bool`. A non-scalar projection declines (nested compounds are H4).
-fn get_op(db: &mut Db, id: StructId) -> Result<&'static str, Reject> {
+/// The runtime op that UNBOXES a u32 heap handle back to the value the node at `id` projects — the dual
+/// of [`box_op`], keyed by this projection's solved type: an integer → `get-int`, a boolean →
+/// `get-bool`. A COMPOUND projection (the element is itself a nested tuple/record) needs NO unbox — the
+/// handle `arr-get` yields IS the nested compound — so this returns `Ok(None)` (the caller uses the
+/// handle as-is). A projection of a type with no heap representation declines.
+fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
-        Ty::Int(_) => Ok(OP_GET_INT),
-        Ty::Bool => Ok(OP_GET_BOOL),
+        Ty::Int(_) => Ok(Some(OP_GET_INT)),
+        Ty::Bool => Ok(Some(OP_GET_BOOL)),
+        Ty::Tuple(_) | Ty::Record(_) => Ok(None),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -189,7 +195,10 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
             for elem in &elems {
-                if let Ok(op) = box_op(db, *elem) {
+                // A scalar element boxes (`box-int`/`box-bool`); a nested compound is already a handle
+                // (`box_op` → `Ok(None)`), stored as-is. Recurse either way so a nested compound's own
+                // construction ops (`arr-alloc`/`arr-set`/its element boxes) are collected.
+                if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
                 }
                 collect_used_ops(db, *elem, out);
@@ -197,7 +206,7 @@ pub fn collect_used_ops(
         }
         Core::Proj { operand, .. } => {
             out.insert(OP_ARR_GET);
-            if let Ok(op) = get_op(db, id) {
+            if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
             collect_used_ops(db, operand, out);
@@ -241,7 +250,7 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
             for value in fields.values() {
-                if let Ok(op) = box_op(db, *value) {
+                if let Ok(Some(op)) = box_op(db, *value) {
                     out.insert(op);
                 }
                 collect_used_ops(db, *value, out);
@@ -374,16 +383,20 @@ fn emit_tail(
             // which must be GROUNDED to the `if`'s result width (a bare literal is never a tail call, so
             // grounding is safe): a default-Int64 literal opposite a narrow branch would push a
             // mismatched machine slot into the block. Ground via `emit_operand`, else emit in tail pos.
-            let emit_tail_branch =
-                |db: &mut Db, b: StructId, high: &mut u32, st: &mut HashMap<u32, ValType>, out: &mut Vec<Lir>| -> Result<(), Reject> {
-                    if matches!(core_of(db, b), Core::ConstInt(_))
-                        && let Ty::Int(rit) = &result
-                    {
-                        emit_operand(db, b, *rit, slots, base, high, st, layout, out)
-                    } else {
-                        emit_tail(db, b, slots, base, high, st, layout, out)
-                    }
-                };
+            let emit_tail_branch = |db: &mut Db,
+                                    b: StructId,
+                                    high: &mut u32,
+                                    st: &mut HashMap<u32, ValType>,
+                                    out: &mut Vec<Lir>|
+             -> Result<(), Reject> {
+                if matches!(core_of(db, b), Core::ConstInt(_))
+                    && let Ty::Int(rit) = &result
+                {
+                    emit_operand(db, b, *rit, slots, base, high, st, layout, out)
+                } else {
+                    emit_tail(db, b, slots, base, high, st, layout, out)
+                }
+            };
             emit_tail_branch(db, then_, high, scratch_ty, out)?;
             out.push(Lir::Else);
             emit_tail_branch(db, else_, high, scratch_ty, out)?;
@@ -524,18 +537,21 @@ fn emit(
             out.push(Lir::ConstI32(fields.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
             for (i, (_, &value)) in fields.iter().enumerate() {
-                // [arr] ; push index ; push+box the field value ; arr-set → [arr]
+                // [arr] ; push index ; push (box, if scalar) the field value ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [arr, i, value]
-                // A NARROW int lives in an i32 slot; `box-int` takes i64 — extend before boxing.
-                if let Some(m) = is_narrow_int(db, value) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
+                // A scalar element boxes to a handle (a NARROW int first extends i32→i64, as box-int
+                // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly.
+                if let Some(op) = box_op(db, value)? {
+                    if let Some(m) = is_narrow_int(db, value) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
-                out.push(Lir::CallImport(box_op(db, value)?)); // [arr, i, handle]
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
             Ok(()) // leaves [arr] — the record handle
@@ -549,18 +565,21 @@ fn emit(
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
             for (i, &elem) in elems.iter().enumerate() {
-                // [arr] ; push index ; push+box the element ; arr-set → [arr]
+                // [arr] ; push index ; push (box, if scalar) the element ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
-                // A NARROW int lives in an i32 slot; `box-int` takes i64 — extend before boxing.
-                if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
+                // A scalar element boxes (a NARROW int extends i32→i64 first, box-int takes i64); a
+                // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box.
+                if let Some(op) = box_op(db, elem)? {
+                    if let Some(m) = is_narrow_int(db, elem) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
-                out.push(Lir::CallImport(box_op(db, elem)?)); // [arr, i, handle]
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
             }
             Ok(()) // leaves [arr] — the tuple handle
@@ -572,11 +591,13 @@ fn emit(
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [handle]
             out.push(Lir::ConstI32(index as i32)); // [handle, i]
             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
-            out.push(Lir::CallImport(get_op(db, id)?)); // → [scalar (i64 for an int, i32 for a bool)]
-            // `get-int` yields an i64 heap cell; a NARROW projection's slot is i32 — narrow it (drop the
-            // high half; the low `width` bits are the value, already sign-/zero-correct from the box).
-            if is_narrow_int(db, id).is_some() {
-                out.push(Lir::I32WrapI64);
+            // A scalar element unboxes (`get-int`/`get-bool`, then a NARROW int narrows i64→i32); a
+            // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is.
+            if let Some(op) = get_op(db, id)? {
+                out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
+                if is_narrow_int(db, id).is_some() {
+                    out.push(Lir::I32WrapI64);
+                }
             }
             Ok(())
         }
@@ -601,9 +622,13 @@ fn emit(
             // Int64) opposite a NARROW branch would otherwise push a mismatched i64 into a narrow-i32
             // block. Ground a bare-`ConstInt` branch to the result's integer width via `emit_operand`,
             // exactly as an operator operand (`@1a4528f`) and a match arm (`@10f7bdb`) are grounded.
-            emit_branch(db, then_, &result, slots, base, high, scratch_ty, layout, out)?;
+            emit_branch(
+                db, then_, &result, slots, base, high, scratch_ty, layout, out,
+            )?;
             out.push(Lir::Else);
-            emit_branch(db, else_, &result, slots, base, high, scratch_ty, layout, out)?;
+            emit_branch(
+                db, else_, &result, slots, base, high, scratch_ty, layout, out,
+            )?;
             out.push(Lir::End);
             Ok(())
         }
