@@ -241,7 +241,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, layout: &Layout) -> Result<String,
         | Core::ListLen { .. }
         | Core::ListPush { .. }
         | Core::ListConcat { .. }
-        | Core::ListUpdate { .. } => Err(Reject::decline(
+        | Core::ListUpdate { .. }
+        | Core::ListAt { .. } => Err(Reject::decline(
             "the Rust backend does not yet render compound values",
         )),
     }

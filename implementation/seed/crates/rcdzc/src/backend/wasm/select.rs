@@ -98,6 +98,12 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Proj { operand, .. } | Core::ListLen { operand } => {
             binding_escapes(db, operand, binder, true)
         }
+        // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
+        // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
+        // index is a scalar. Recurse borrowing the list; the index cannot hold a heap reference.
+        Core::ListAt { list, index, .. } => {
+            binding_escapes(db, list, binder, true) || binding_escapes(db, index, binder, false)
+        }
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         Core::Tuple { elems } | Core::ListNew { elems } => {
             elems.iter().any(|&e| binding_escapes(db, e, binder, false))
@@ -334,6 +340,14 @@ pub fn collect_used_ops(
             collect_used_ops(db, list, out);
             collect_used_ops(db, index, out);
             collect_used_ops(db, elem, out);
+        }
+        // A RUNTIME `List.at` (list/index not both constant) declines at emit in this increment — only
+        // the constant FOLD is realized (it lowers to a `SumNew`, handled above). Descend for the
+        // operands' own ops; the runtime bounds-checked `vec-get` path (with the Perceus `dup` for the
+        // borrowed element) is the next increment.
+        Core::ListAt { list, index, .. } => {
+            collect_used_ops(db, list, out);
+            collect_used_ops(db, index, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops(db, cond, out);
@@ -1544,6 +1558,13 @@ fn emit(
             out.push(Lir::CallImport(OP_SUM_NEW)); // → [sum-handle]
             Ok(())
         }
+        // A RUNTIME `List.at` — only the constant fold is realized in this increment (it lowers to a
+        // `SumNew`, never reaching here). The bounds-checked runtime `vec-get` (with the Perceus `dup`
+        // for the borrowed element it feeds into `Some`) is the next increment; decline cleanly for now
+        // so a runtime-list index is an honest decline, not a miscompile.
+        Core::ListAt { .. } => Err(Reject::decline(
+            "List.at on a runtime list is not yet emitted (constant fold only)",
+        )),
         // A runtime PROJECTION `(. t i)` — read element `i` off the operand's array handle and UNBOX it
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this
         // node's solved type) chooses the unbox op.

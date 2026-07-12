@@ -162,6 +162,13 @@ pub enum Prim {
     /// a → (List a)`. Lowers to the runtime `vec-update` op (persistent — returns a new handle; an
     /// out-of-bounds index TRAPS). The functional-construction companion of `List.push`.
     ListUpdate,
+    /// `List.at` — the FALLIBLE indexed read. `∀a. (List a) → Int64 → (Option a)`: `Some` of the element
+    /// when the index is in bounds (`0 <= i < len`), `None` otherwise (collections-and-text.md #Indexing
+    /// And Lookup Are Fallible, Not Trapping — an out-of-range index yields `None`, never traps nor reads
+    /// an unspecified value). A CONSTANT list + constant index FOLDS to `(Some elem)` / `(None unit)`;
+    /// a runtime list emits a bounds-checked `vec-get` (runtime companion of `arr-get` for the flat
+    /// product). The list-reader half of the fallible-access family (`Bytes.at`/`String.at` mirror it).
+    ListAt,
     /// `List : Type → Type` — the list-TYPE constructor. `(List Int64)` in type position builds the
     /// type-value `Ty::List(Int64)` (used in annotations `(: e (List Int64))` and in `List.len`'s scheme
     /// `∀a. (List a) → Int64`). One element type, unlike `Tuple`'s variadic — the list companion of the
@@ -207,6 +214,7 @@ impl Prim {
             "list-push" => Some(Prim::ListPush),
             "list-concat" => Some(Prim::ListConcat),
             "list-update" => Some(Prim::ListUpdate),
+            "list-at" => Some(Prim::ListAt),
             "List" => Some(Prim::ListCtor),
             _ => None,
         }

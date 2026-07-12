@@ -163,6 +163,20 @@ pub enum Core {
         index: StructId,
         elem: StructId,
     },
+    /// `List.at` — the FALLIBLE indexed read, present when the list is a RUNTIME value (a constant list +
+    /// constant index FOLDS to a `SumNew` in `lower`, so it never reaches here). The backend emits a
+    /// bounds-checked runtime form: evaluate the list handle ONCE (a scratch local), read its `vec-len`,
+    /// and if `0 <= index < len` build `Some(<boxed vec-get element, dup'd — vec-get BORROWS but the
+    /// `Some` payload is CONSUMED>)`, else `None`. `disc_some`/`disc_none` are the built-in Option
+    /// variants' discriminants (read at lowering off the result type's declaration, not baked by name);
+    /// `elem` is the solved element type, choosing the box/unbox ops. The runtime companion of the
+    /// fold — one code path per index-in-range test, yielding a heap `Option` handle.
+    ListAt {
+        list: StructId,
+        index: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

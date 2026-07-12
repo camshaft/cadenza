@@ -356,6 +356,10 @@ pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than-or-equal
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	indexing a list bound from a sum payload yields the element
+pass	indexing a list in bounds yields Some of the element
+pass	indexing a list out of bounds yields None
+pass	indexing a list with a negative index yields None
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
@@ -869,10 +873,6 @@ todo	identical negative zeros nested in a tuple compare equal
 todo	indexing a byte sequence out of bounds yields None
 todo	indexing a byte sequence returns Some of the byte at that position
 todo	indexing a byte sequence with a negative index yields None
-todo	indexing a list bound from a sum payload yields the element
-todo	indexing a list in bounds yields Some of the element
-todo	indexing a list out of bounds yields None
-todo	indexing a list with a negative index yields None
 todo	indexing a runtime string past its last scalar yields None
 todo	indexing a slice is relative to the slice's start
 todo	indexing an empty list yields None

@@ -462,6 +462,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         }
                     }
                 }
+                // `List.at` — the FALLIBLE indexed read `(List a) → Int64 → (Option a)`. FOLD when the
+                // list is a compile-time-visible literal AND the index is a constant: an in-range index
+                // yields `(Some elem)` (the element's own core), an out-of-range one (negative, or `>=`
+                // arity) yields `None` — both built as a `Core::SumNew` of the result Option's variant
+                // discriminants, so a constant `List.at` renders through the ordinary sum escape/fold with
+                // no heap read. Otherwise emit the runtime `Core::ListAt` (a bounds-checked `vec-get`).
+                Some(Prim::ListAt) if args.len() == 2 => lower_list_at(db, id, args[0], args[1]),
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2268,6 +2275,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListPush
         | Prim::ListConcat
         | Prim::ListUpdate
+        | Prim::ListAt
         | Prim::ListCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
@@ -2419,6 +2427,76 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
     }
 }
 
+/// The `(Some-discriminant, None-discriminant)` of the `Option` sum that is the type at `id` (a
+/// `List.at`/fallible-access node's result). Reads the sum's declaration by its `decl` occurrence and
+/// finds the `Some`/`None` variant positions (a variant's index in the decl IS its discriminant).
+/// `None` if the type is not a two-variant `Some`/`None` sum — a fallible-access result is always the
+/// built-in `Option`, so a non-Option here is a compiler bug and the caller declines.
+fn option_discs(db: &mut Db, id: StructId) -> Option<(u32, u32)> {
+    let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, id) else {
+        return None;
+    };
+    let decl_ref = db.type_decl_by_occ(decl)?;
+    let mut some_disc = None;
+    let mut none_disc = None;
+    for (i, v) in decl_ref.variants.iter().enumerate() {
+        match v.name.as_str() {
+            "Some" => some_disc = Some(i as u32),
+            "None" => none_disc = Some(i as u32),
+            _ => {}
+        }
+    }
+    Some((some_disc?, none_disc?))
+}
+
+/// Lower `(List.at list index)` — the fallible indexed read. FOLD when the `list` operand is a
+/// compile-time-visible list literal AND the `index` folds to a constant: an in-range index (`0 <= i <
+/// arity`) yields `(Some elem)` — a `Core::SumNew` of the element's core at the `Some` discriminant —
+/// and an out-of-range index (negative or `>= arity`) yields `None` (`Core::SumNew` with no payloads at
+/// the `None` discriminant). Both fold to the ordinary sum construction, so a constant `List.at` renders
+/// through the sum escape/fold with no heap. Otherwise emit the runtime `Core::ListAt` (a bounds-checked
+/// `vec-get`). A poison list/index propagates.
+fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, list) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, index) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "List.at result is not the built-in Option sum",
+        ));
+    };
+    // FOLD a constant list literal indexed by a constant integer.
+    if let (Core::ListNew { elems }, Core::ConstInt(i)) = (core_of(db, list), core_of(db, index)) {
+        // The index is a signed Int64; a negative value or one `>= arity` is out of bounds → `None`.
+        match i.to_i64() {
+            Some(n) if n >= 0 && (n as usize) < elems.len() => {
+                trace!(target: "rcdzc::fold", node = id.0, index = n, "List.at folds to Some (in-bounds constant index)");
+                return Core::SumNew {
+                    disc: disc_some,
+                    payloads: vec![elems[n as usize]],
+                };
+            }
+            _ => {
+                trace!(target: "rcdzc::fold", node = id.0, "List.at folds to None (out-of-bounds constant index)");
+                return Core::SumNew {
+                    disc: disc_none,
+                    payloads: Vec::new(),
+                };
+            }
+        }
+    }
+    // A runtime list or runtime index — emit the bounds-checked runtime read.
+    Core::ListAt {
+        list,
+        index,
+        disc_some,
+        disc_none,
+    }
+}
+
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
@@ -2522,6 +2600,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListPush => "list-push",
         Prim::ListConcat => "list-concat",
         Prim::ListUpdate => "list-update",
+        Prim::ListAt => "list-at",
         Prim::ListCtor => "List",
     }
 }

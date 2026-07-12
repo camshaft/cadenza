@@ -177,12 +177,14 @@ fn list_module(ast: &mut Arenas) -> StructId {
     let push_lambda = list_push_type_lambda(ast);
     let concat_lambda = list_concat_type_lambda(ast);
     let update_lambda = list_update_type_lambda(ast);
+    let at_lambda = list_at_type_lambda(ast);
     let mut children = vec![head, apply_field];
     for (name, prim, lambda) in [
         ("len", "list-len", len_lambda),
         ("push", "list-push", push_lambda),
         ("concat", "list-concat", concat_lambda),
         ("update", "list-update", update_lambda),
+        ("at", "list-at", at_lambda),
     ] {
         let op = list_op_record(ast, prim, lambda);
         let k = push_atom(ast, Leaf::Name(name.to_string()));
@@ -245,6 +247,24 @@ fn list_update_type_lambda(ast: &mut Arenas) -> StructId {
     let index_arrow = arrow_type(ast, int64, elem_arrow); // (-> Int64 (-> a (List a)))
     let list_l = list_a_type(ast);
     let body = arrow_type(ast, list_l, index_arrow); // (-> (List a) (-> Int64 (-> a (List a))))
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (a) (-> (List a) (-> Int64 (Option a))))` for `List.at` — `∀a. (List a) → Int64
+/// → (Option a)`: take a list and an Int64 index, return the element wrapped in `Option` (`Some` in
+/// bounds, `None` out — collections-and-text.md #Indexing And Lookup Are Fallible). `(Option a)` reduces
+/// via the built-in `Option` sum ctor exactly as `(List a)` reduces via `List`, so the fallible-access
+/// result type is expressed in the ordinary generic-application evaluator, no privileged `Option` path.
+fn list_at_type_lambda(ast: &mut Arenas) -> StructId {
+    let option_a = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![option, a])
+    };
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let index_arrow = arrow_type(ast, int64, option_a); // (-> Int64 (Option a))
+    let list_l = list_a_type(ast);
+    let body = arrow_type(ast, list_l, index_arrow); // (-> (List a) (-> Int64 (Option a)))
     list_type_lambda(ast, body)
 }
 

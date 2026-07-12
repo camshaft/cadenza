@@ -3236,6 +3236,86 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_list_index_folds_to_some_of_the_element() {
+        // `List.at : ∀a. (List a) → Int64 → (Option a)` — the fallible indexed read. A CONSTANT list
+        // literal indexed by a CONSTANT in-range index FOLDS to `(Some elem)` at compile time (no heap,
+        // no `vec-get`): `(List.at (list 1 2 3) 1)` → `(Some 2)`. Consumed by a match here so `main`
+        // returns a scalar — `(match (List.at (list 10 20 30) 1) ((Some x) x) (None -1))` = 20 — pinning
+        // that the fold produces the right variant + payload. (The corpus case renders `(Some 20)` at
+        // the boundary, which needs sum escape; the match-consumer form checks the fold without it.)
+        let bytes = component(
+            "(module m (def (main) (match ((. List at) (list 10 20 30) 1) ((Some x) x) (None -1))) (export main))",
+        );
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            20,
+            "in-bounds → Some(element)"
+        );
+    }
+
+    #[test]
+    fn a_constant_list_index_out_of_bounds_folds_to_none() {
+        // The absent side of the fold: an out-of-range CONSTANT index yields `None`
+        // (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping). `(List.at (list 10
+        // 20 30) 5)` → `None`; matched, the `None` arm is taken → -1. An over-large index (5), a NEGATIVE
+        // index (-1, which MUST NOT wrap to a huge unsigned offset), and the empty list `(list)` all fold
+        // to `None` — the three out-of-bounds shapes the corpus pins.
+        for (src, label) in [
+            (
+                "(module m (def (main) (match ((. List at) (list 10 20 30) 5) ((Some x) x) (None -1))) (export main))",
+                "over-large",
+            ),
+            (
+                "(module m (def (main) (match ((. List at) (list 10 20 30) -1) ((Some x) x) (None -1))) (export main))",
+                "negative",
+            ),
+            (
+                "(module m (def (main) (match ((. List at) (list) 0) ((Some x) x) (None -1))) (export main))",
+                "empty",
+            ),
+        ] {
+            let bytes = component(src);
+            assert_eq!(
+                run_returns::<i64>(&bytes, "main"),
+                -1,
+                "out of bounds ({label}) → None"
+            );
+        }
+    }
+
+    #[test]
+    fn a_constant_list_index_escapes_as_some_of_the_element() {
+        // The corpus surface: `(List.at (list 1 2 3) 1)` returned as the program result renders `(: (Some
+        // 2) (Option Int64))` — the fold produces a `Some` sum that crosses the host boundary through the
+        // sum-escape resource path (task #11). Pins the end-to-end fallible-read → Option escape for a
+        // constant list. Run composed with the runtime (the resource `encode()` disc-switch renders it).
+        let bytes = component("(module m (def (main) ((. List at) (list 1 2 3) 1)) (export main))");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a Some escape imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "(: (Some 2) (Option Int64))",
+                    "List.at escape renders Some(element)"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("List.at escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_constant_scrutinee_folds_to_the_selected_arm() {
         // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
         assert_eq!(
