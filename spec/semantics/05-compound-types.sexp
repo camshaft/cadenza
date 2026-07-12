@@ -1771,6 +1771,72 @@
             (def (main) (f (Outer.Wrap (tuple (Inner.A 20) 22)))) (export main)))
   (output (: 42 Int64)))
 
+; --- A MULTI-PAYLOAD variant destructures positionally (sugar for a single tuple payload) -----------
+; A variant declared with several payload types — `(Cons Int64 IntList)` — carries them as ONE tuple
+; handle (the runtime boxes multiple payloads into a tuple, exactly as `(Cons (tuple …))` does). So a
+; multi-payload pattern `(Cons h t)` is sugar for the single-tuple-payload form `(Cons (tuple h t))`:
+; each payload binder destructures a tuple ELEMENT at `[Payload, Elem(i)]`. The natural linked-list
+; `(type IntList Nil (Cons Int64 IntList))` — the shape a user reaches for before discovering the
+; tuple-payload form — is exactly this. Before it was lowered, `(Cons h t)` reported a spurious CDZ0101
+; "unbound name `t`" (the arity-2+ pattern never bound its payloads, so a reference to a later binder
+; resolved as unbound); `t` IS bound by the pattern. These pin the positional destructure computing a
+; real value, plus the arity check (an over-arity pattern names a nonexistent element → CDZ0201).
+
+(case "a multi-payload variant destructures its payloads positionally"
+  (doc    "`(type IntList Nil (Cons Int64 IntList))` with `(def (len l) (match l ((IntList.Nil) 0)
+           ((IntList.Cons h t) (+ 1 (len t)))))` — the canonical linked-list length. The `Cons` arm binds
+           `h` (head) and `t` (tail) POSITIONALLY from the multi-payload variant (sugar for `(Cons (tuple
+           h t))`, the payloads boxed as one tuple handle), and recurses on `t`. `len` of a 3-element list
+           is 3. Was CDZ0101 'unbound name `t`' before multi-payload destructure was lowered — `t` is
+           bound by the `Cons` pattern; now it destructures the payload tuple's second element.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type IntList Nil (Cons Int64 IntList))
+            (def (len (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ 1 (len t)))))
+            (def (main) (len (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main)))
+  (call   main)
+  (output (: 3 Int64)))
+
+(case "a multi-payload destructure binds the head and recurses on the tail"
+  (doc    "The companion binding BOTH payloads meaningfully: `sm` sums a linked list — the `Cons` arm
+           binds `h` and adds it to the recursive `(sm t)` over the tail. `1 + 2 + 3` = 6. Pins that both
+           positional binders of a multi-payload variant resolve at their tuple-element positions (the
+           head at `[Payload, Elem(0)]`, the tail at `[Payload, Elem(1)]`), not just the trailing one.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type IntList Nil (Cons Int64 IntList))
+            (def (sm (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ h (sm t)))))
+            (def (main) (sm (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main)))
+  (call   main)
+  (output (: 6 Int64)))
+
+(case "a nested constructor in a multi-payload position destructures two levels"
+  (doc    "A variant pattern in a multi-payload slot — `(Cons h (Cons h2 rest))` — switches TWO levels: the
+           inner `Cons` sits in the tail position `[Payload, Elem(1)]`, whose sub-value type is registered
+           so the nested switch resolves. `snd` returns the list's second element; for `(Cons 10 (Cons 20
+           Nil))` → 20; a shorter list falls to the `_` arm. Pins that the positional-payload sugar
+           composes with a nested constructor pattern (the shape a kernel equation-arm takes).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type IntList Nil (Cons Int64 IntList))
+            (def (snd (: l IntList)) (match l ((IntList.Cons h (IntList.Cons h2 rest)) h2) (_ 0)))
+            (def (main) (snd (IntList.Cons 10 (IntList.Cons 20 IntList.Nil)))) (export main)))
+  (call   main)
+  (output (: 20 Int64)))
+
+(case "a multi-payload pattern of the wrong arity is a malformed destructure"
+  (doc    "A payload-arity mismatch — `(Mk a b c)` against a 2-payload `Mk` — names a nonexistent third
+           element; it MUST reject (CDZ0201), never bind `c` past the payload tuple (which would read a
+           wrong value or emit invalid wasm). The correct-arity sibling `(Mk a b)` compiles and computes;
+           only the over-arity pattern faults, the same arity check an explicit `(tuple …)` payload
+           pattern enforces.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b))))
+            (export main)))
+  (error  CDZ0201))
+
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
 ; above project fields, index lists, and re-match variants inside the arm). But when the payload

@@ -973,8 +973,7 @@ fn pattern_constraints(
     // Recurse into the payload. A single-payload variant `(Some p)` descends into `p` at `path +
     // [Payload]`; the payload's TYPE is the variant's payload type at this instantiation, so a nested
     // variant name there resolves against the right sum. A NULLARY variant pattern `(None)`/bare `None`
-    // has no payload arg — nothing to recurse. Multiple payload args (a multi-payload variant destructure)
-    // is a later increment — decline rather than silently drop the extra constraints.
+    // has no payload arg — nothing to recurse.
     match args.len() {
         0 => {}
         1 => {
@@ -985,10 +984,53 @@ fn pattern_constraints(
             let sub = pattern_constraints(db, args[0], &payload_ty, deeper)?;
             out.extend(sub);
         }
+        // A MULTI-PAYLOAD variant pattern `(Cons h t)` is sugar for the single-tuple-payload form `(Cons
+        // (tuple h t))`: the payloads are boxed as ONE tuple handle (`lower_sum_new` / the `SumNew`
+        // backend), so `payload_ty_at_instantiation` reports the payload as a `Ty::Tuple`, and each arg
+        // destructures a tuple ELEMENT at `path + [Payload, Elem(i)]` — exactly the descent the explicit
+        // `(tuple …)` payload pattern takes.
         _ => {
-            return Err(Reject::decline(
-                "a multi-payload variant destructure is not yet supported",
-            ));
+            let payload_ty = crate::infer::payload_ty_at_instantiation(db, head, ty)
+                .unwrap_or(crate::ty::Ty::Any);
+            // The pattern's payload ARITY must match the variant's declared payload count — `(Mk a b c)`
+            // against a 2-payload `Mk` names a nonexistent third element (it would read past the payload
+            // tuple and bind `c` under an `Any`/wrong type — a wrong value, or invalid wasm). REJECT it
+            // (CDZ0201), the same arity check the explicit `(tuple …)` payload pattern enforces above. An
+            // `Any` payload (unsolved) can't be arity-checked — descend permissively (each `Any`).
+            let elem_tys: Vec<crate::ty::Ty> = match &payload_ty {
+                crate::ty::Ty::Tuple(ts) if ts.len() == args.len() => ts.to_vec(),
+                crate::ty::Ty::Tuple(ts) => {
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "this variant pattern binds {} payload(s), but the variant carries {}",
+                            args.len(),
+                            ts.len()
+                        ),
+                    ));
+                }
+                crate::ty::Ty::Any => vec![crate::ty::Ty::Any; args.len()],
+                // A non-tuple payload type under a multi-arg pattern is an arity error too (a single-payload
+                // variant matched with several binders).
+                _ => {
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "this variant pattern binds {} payloads, but the variant's payload is {}",
+                            args.len(),
+                            payload_ty.render_name()
+                        ),
+                    ));
+                }
+            };
+            let mut payload_path = path;
+            payload_path.push(crate::core::PathStep::Payload);
+            for (i, (&arg, elem_ty)) in args.iter().zip(elem_tys.iter()).enumerate() {
+                let mut deeper = payload_path.clone();
+                deeper.push(crate::core::PathStep::Elem(i));
+                let sub = pattern_constraints(db, arg, elem_ty, deeper)?;
+                out.extend(sub);
+            }
         }
     }
     Ok(out)
@@ -1184,6 +1226,17 @@ fn extend_path_types(
     {
         let mut child = switch_path.to_vec();
         child.push(crate::core::PathStep::Payload);
+        // A MULTI-payload variant's payload is a `Ty::Tuple` (its payloads boxed as one tuple handle);
+        // also register each tuple ELEMENT's type at `switch_path + [Payload, Elem(i)]` so a nested switch
+        // (a variant pattern in a payload position — `(Cons h (Cons h2 rest))`) resolves its sub-value's
+        // type. A single-payload variant's payload is registered at `[Payload]` alone, unchanged.
+        if let crate::ty::Ty::Tuple(elems) = &payload_ty {
+            for (i, elem_ty) in elems.iter().enumerate() {
+                let mut elem_path = child.clone();
+                elem_path.push(crate::core::PathStep::Elem(i));
+                out.insert(elem_path, elem_ty.clone());
+            }
+        }
         out.insert(child, payload_ty);
     }
     out

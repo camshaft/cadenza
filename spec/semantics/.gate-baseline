@@ -60,6 +60,7 @@ pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
+pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a correctly-annotated function parameter is accepted
@@ -144,6 +145,9 @@ pass	a match whose only arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
 pass	a module with two definitions of the same name is rejected
+pass	a multi-payload destructure binds the head and recurses on the tail
+pass	a multi-payload pattern of the wrong arity is a malformed destructure
+pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
@@ -169,6 +173,7 @@ pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
+pass	a nested constructor in a multi-payload position destructures two levels
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
@@ -279,6 +284,7 @@ pass	a tuple access out of arity on a function-returned tuple is a type error, n
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple is constructed with positional elements
+pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
@@ -528,7 +534,6 @@ todo	a checked result is consumed by matching its Option at run time
 todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
-todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a curried function can be partially applied
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
@@ -732,7 +737,6 @@ todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 todo	a tuple pattern against a Sign scrutinee is a type error
-todo	a tuple pattern against a sum scrutinee is a type error
 todo	a tuple pattern of the wrong arity is a type error
 todo	a tuple payload extracted through a helper return must not be rejected as a type error
 todo	a u16 segment encodes an integer big-endian by default

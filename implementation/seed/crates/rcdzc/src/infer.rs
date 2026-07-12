@@ -875,15 +875,33 @@ pub(crate) fn payload_ty_at_instantiation(
     let mut fresh = Fresh::new();
     let scheme = crate::eval::scheme_of(db, variant_head, &mut fresh)?;
     let inst = crate::unify::instantiate(&scheme, &mut fresh);
-    // The ctor type is `payload → result` (a single-payload variant). Peel the one arrow.
-    let (payload, result) = match inst {
-        Ty::Fn(p, r) => (*p, *r),
-        _ => return None, // nullary (bare sum) — no payload to bind
+    // The ctor type is a curried arrow `payload… → result`. Peel EVERY arrow: a single-payload variant
+    // has one (`p → Sum`); a MULTI-payload variant curries (`p0 → p1 → Sum`) and its payloads are boxed
+    // as ONE tuple handle (the same representation `(Cons (tuple p0 p1))` builds), so its bound payload
+    // TYPE is the `Ty::Tuple(p0, p1, …)` that the `[Payload, Elem(i)]` access path indexes into.
+    let mut payloads = Vec::new();
+    let mut cur = inst;
+    let result = loop {
+        match cur {
+            Ty::Fn(p, r) => {
+                payloads.push(*p);
+                cur = *r;
+            }
+            other => break other,
+        }
     };
+    if payloads.is_empty() {
+        return None; // nullary (bare sum) — no payload to bind
+    }
     // Solve the scheme's params from the scrutinee's concrete instantiation: unify the ctor's RESULT
     // (`Sum ?a`) against the scrutinee type (`Sum Int64`).
     let mut subst = Subst::new();
     let _ = crate::unify::unify(&mut subst, &result, scrut_ty);
+    let payload = if payloads.len() == 1 {
+        payloads.pop().unwrap()
+    } else {
+        Ty::Tuple(payloads.into())
+    };
     Some(subst.apply(&payload))
 }
 

@@ -614,13 +614,44 @@ fn find_binder_in_pattern(
     let Struct::List(app) = db.ast.get(pattern) else {
         return false;
     };
-    if app.len() != 2 {
-        return false; // a single-payload variant pattern is handled; other arities decline.
+    if app.len() < 2 {
+        return false; // a nullary variant pattern binds nothing; a lone head has no payload.
     }
     let head = app[0];
     // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME.
     let head_ok = db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some();
     if !head_ok {
+        return false;
+    }
+    // A MULTI-PAYLOAD variant pattern `(Cons h t)` — more than one payload arg — is sugar for the
+    // single-tuple-payload form `(Cons (tuple h t))`: the runtime boxes the payloads as ONE tuple handle
+    // (see `lower::pattern_constraints` / the `SumNew` backend), so each arg destructures a tuple ELEMENT.
+    // One `Payload` step reaches the payload tuple, then each arg descends at `Elem(i)` exactly as an
+    // explicit tuple pattern's elements do. (`find_binder_in_tuple` records/undoes the `Elem(i)` step per
+    // position, so `path`/`heads` reflect only the found binder's path.)
+    if app.len() > 2 {
+        path.push(crate::core::PathStep::Payload);
+        heads.push(head);
+        let path_len = path.len();
+        let heads_len = heads.len();
+        for (i, &arg) in app[1..].iter().enumerate() {
+            path.push(crate::core::PathStep::Elem(i));
+            let found = if let Some(arg_name) = db.ast.as_name(arg) {
+                arg_name == name && arg_name != "_"
+            } else if is_tuple_pattern(db, arg) {
+                find_binder_in_tuple(db, arg, name, path, heads)
+            } else {
+                find_binder_in_pattern(db, arg, name, path, heads)
+            };
+            if found {
+                return true;
+            }
+            path.truncate(path_len);
+            heads.truncate(heads_len);
+        }
+        // Not found in any payload position — undo the `Payload` step this pattern pushed.
+        path.pop();
+        heads.pop();
         return false;
     }
     let arg = app[1];

@@ -744,11 +744,13 @@ pub fn variant_payload_type(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> 
 pub fn variant_owner_decl(db: &mut Db, id: StructId) -> Option<crate::ast::StructId> {
     let mut fresh = Fresh::new();
     let scheme = scheme_of(db, id, &mut fresh)?;
-    // A payload variant `(-> payload Sum)` → the result; a nullary variant's scheme is the bare `Sum`.
-    let result = match scheme.ty {
-        Ty::Fn(_, result) => *result,
-        other => other,
-    };
+    // Peel EVERY arrow to the final result: a single-payload variant `(-> payload Sum)` → `Sum`; a
+    // MULTI-payload variant curries `(-> p0 (-> p1 Sum))` → `Sum` (peel both); a nullary variant's scheme
+    // is the bare `Sum` (no arrow). The owning sum is always the constructor's ultimate RESULT type.
+    let mut result = scheme.ty;
+    while let Ty::Fn(_, r) = result {
+        result = *r;
+    }
     match result {
         Ty::Sum { decl, .. } => Some(decl),
         _ => None,

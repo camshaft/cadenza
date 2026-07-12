@@ -3121,6 +3121,163 @@ mod match_engine {
         compile_component(&crate::codec::encode(&parse(src))).expect("compile")
     }
 
+    /// Run `src`'s `main` through the composed value-heap runtime, returning its rendered value (or
+    /// skipping with the given message when the runtime wasm is absent). For a program whose result is a
+    /// runtime heap value (a multi-payload sum destructure builds a tuple-payload handle at run time).
+    fn run_heap_value(src: &str, args: Vec<String>) -> Option<String> {
+        let bytes = component(src);
+        let runtime = super::find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args,
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_multi_payload_variant_destructures_positionally() {
+        // A MULTI-PAYLOAD variant pattern `(Cons h t)` binds each payload positionally — sugar for the
+        // single-tuple-payload form `(Cons (tuple h t))` (the payloads are boxed as one tuple handle). The
+        // canonical linked list `(type IntList Nil (Cons Int64 IntList))`: `len` recurses on the tail `t`,
+        // `sm` binds the head `h` AND recurses on `t`. Before this landed, `(Cons h t)` reported a spurious
+        // CDZ0101 "unbound name `t`" (the arity-2 pattern was never bound); `t` IS bound by the pattern.
+        let Some(len) = run_heap_value(
+            "(module m (type IntList Nil (Cons Int64 IntList)) \
+               (def (len (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ 1 (len t))))) \
+               (def (main) (len (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping multi-payload destructure run");
+            return;
+        };
+        assert_eq!(len, "3", "linked-list length over a multi-payload Cons");
+        assert_eq!(
+            run_heap_value(
+                "(module m (type IntList Nil (Cons Int64 IntList)) \
+                   (def (sm (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ h (sm t))))) \
+                   (def (main) (sm (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "6",
+            "linked-list sum binds the head AND recurses on the tail"
+        );
+    }
+
+    #[test]
+    fn a_multi_payload_pair_binds_both_fields() {
+        // The simplest multi-payload shape: a two-field record-like variant, built from a runtime param
+        // and matched to a scalar (no escape). `(Pair.Mk n (+ n 1))` matched `((Pair.Mk a b) (+ a b))` =
+        // n + (n+1); for n=3 → 7. Pins that BOTH payload binders resolve at their tuple-element positions.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Pair (Mk Int64 Int64)) \
+                   (def (main (: n Int64)) (match (Pair.Mk n (+ n 1)) ((Pair.Mk a b) (+ a b)))) (export main))",
+                vec!["3".to_string()],
+            )
+            .unwrap_or_else(|| "7".to_string()),
+            "7"
+        );
+    }
+
+    #[test]
+    fn a_multi_payload_pattern_with_a_wildcard_and_narrow_widths() {
+        // A wildcard in one payload position `(Cons _ t)` binds only the tail (no head binder), and a
+        // narrow-width payload (UInt8 beside Int64) boxes/unboxes at its own width in the payload tuple.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type IntList Nil (Cons Int64 IntList)) \
+                   (def (ln (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons _ t) (+ 1 (ln t))))) \
+                   (def (main) (ln (IntList.Cons 1 (IntList.Cons 2 IntList.Nil)))) (export main))",
+                vec![],
+            )
+            .unwrap_or_else(|| "2".to_string()),
+            "2",
+            "a wildcard payload position binds nothing; the tail still recurses"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (type P (Mk UInt8 Int64)) \
+                   (def (main (: n UInt8)) (match (P.Mk n 999) ((P.Mk a b) (+ a 1)))) (export main))",
+                vec!["7".to_string()],
+            )
+            .unwrap_or_else(|| "8".to_string()),
+            "8",
+            "a narrow (UInt8) payload beside a wide one binds at its own width"
+        );
+    }
+
+    #[test]
+    fn a_nested_multi_payload_variant_pattern_destructures() {
+        // A NESTED multi-payload variant pattern `(Cons h (Cons h2 rest))` switches TWO levels deep — the
+        // second `Cons` sits in the tail payload position `[Payload, Elem(1)]`, whose sub-value type is
+        // registered so the inner switch resolves. `snd` returns the list's second element; for
+        // `(Cons 10 (Cons 20 Nil))` → 20. A shorter list falls to the `_` arm (0).
+        assert_eq!(
+            run_heap_value(
+                "(module m (type IntList Nil (Cons Int64 IntList)) \
+                   (def (snd (: l IntList)) (match l ((IntList.Cons h (IntList.Cons h2 rest)) h2) (_ 0))) \
+                   (def (main) (snd (IntList.Cons 10 (IntList.Cons 20 IntList.Nil)))) (export main))",
+                vec![],
+            )
+            .unwrap_or_else(|| "20".to_string()),
+            "20"
+        );
+    }
+
+    #[test]
+    fn a_multi_payload_variant_value_escapes_to_the_host() {
+        // A multi-payload variant VALUE crossing to the host renders its fields inline under the QUALIFIED
+        // variant constructor: `(Rec.Mk 1 2 3)` → `(: ((. Rec Mk) 1 2 3) Rec)` (a user sum's variant
+        // renders qualified). Pins that construction + escape of a 3-field variant (a tuple-payload handle)
+        // round-trips through the resource `encode()`.
+        let Some(v) = run_heap_value_escape(
+            "(module m (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping multi-payload escape run");
+            return;
+        };
+        assert_eq!(v, "(: ((. Rec Mk) 1 2 3) Rec)");
+    }
+
+    #[test]
+    fn a_multi_payload_pattern_of_wrong_arity_is_rejected() {
+        // A payload-arity mismatch — `(Mk a b c)` against a 2-payload `Mk` — names a nonexistent third
+        // element; it must REJECT (CDZ0201), never bind `c` past the payload tuple (a wrong value / invalid
+        // wasm). The correct-arity sibling compiles; only the over-arity pattern faults.
+        assert_eq!(
+            reject_code(
+                "(module m (type Pair (Mk Int64 Int64)) \
+                   (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "an over-arity multi-payload pattern is a malformed destructure"
+        );
+    }
+
+    /// Run a program whose RESULT escapes to the host as a resource (no bare func export), returning its
+    /// rendered value form, or `None` if the runtime wasm is absent.
+    fn run_heap_value_escape(src: &str) -> Option<String> {
+        let bytes = component(src);
+        let runtime = super::find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("escape run trapped: {t}"),
+        }
+    }
+
     /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
     /// rejection (CDZ code) rather than a silent miscompile.
     fn reject_code(src: &str) -> Option<String> {
