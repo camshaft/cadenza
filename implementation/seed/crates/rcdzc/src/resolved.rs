@@ -246,6 +246,13 @@ pub enum Prim {
     /// (`(Bytes.len (String.to-bytes "run"))` → 3, `"café"` → 5); a runtime string declines (the byte-rope
     /// materialization arrives with the runtime string heap). A String IS its UTF-8 bytes.
     StrToBytes,
+    /// `String.from-bytes` — the TOTAL UTF-8 DECODE `Bytes → (Option String)` (the inverse of `to-bytes`):
+    /// a well-formed byte sequence → `Some string`, ill-formed → `None`, never a trap (collections-and-
+    /// text.md #Decoding Bytes To A String Is Total, Not Trapping). A CONSTANT `Bytes.of` FOLDS via strict
+    /// UTF-8 (`std::str::from_utf8`, which rejects invalid/overlong/surrogate exactly as the spec pins) →
+    /// `(Some "<decoded>")` / `(None unit)` at the result Option's discs (like `List.at`/`String.at`); a
+    /// runtime Bytes declines.
+    StrFromBytes,
     /// `Option.expect` / `Result.expect` — the unwrap-or-trap accessor `∀a. Sum<a> → String → a`. The
     /// `(meta apply)` of the `expect` field on the synthesized Option/Result records. Applying it to a
     /// present variant (`Some`/`Ok`, discriminant 0) yields the payload; the absent variant TRAPS
@@ -328,6 +335,7 @@ impl Prim {
             "str-concat" => Some(Prim::StrConcat),
             "str-slice" => Some(Prim::StrSlice),
             "str-to-bytes" => Some(Prim::StrToBytes),
+            "str-from-bytes" => Some(Prim::StrFromBytes),
             "sum-expect" => Some(Prim::SumExpect),
             "checked-add" => Some(Prim::CheckedAdd),
             "checked-mul" => Some(Prim::CheckedMul),

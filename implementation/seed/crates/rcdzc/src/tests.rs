@@ -4584,6 +4584,30 @@ mod match_engine {
     }
 
     #[test]
+    fn string_from_bytes_decodes_utf8_totally() {
+        // `String.from-bytes : Bytes → (Option String)` — the TOTAL UTF-8 decode. A constant `Bytes.of`
+        // FOLDS by strict UTF-8: well-formed → `(Some s)`, ill-formed/overlong/surrogate → `None`, never a
+        // trap. Consumed by a match to a scalar. `[99 97 102 195 169]` = "café" → Some (matched to 1);
+        // `[255]` invalid, `[192 128]` overlong C0 80, `[237 160 128]` surrogate ED A0 80 → None (→ -1).
+        for (bytes, want) in [
+            ("99 97 102 195 169", 1), // café — well-formed
+            ("255", -1),              // 0xFF — invalid
+            ("192 128", -1),          // C0 80 — overlong NUL
+            ("237 160 128", -1),      // ED A0 80 — surrogate U+D800
+        ] {
+            let src = format!(
+                "(module m (def (main) (match (String.from-bytes (Bytes.of (list {bytes}))) \
+                   ((Some _) 1) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "String.from-bytes [{bytes}] decode"
+            );
+        }
+    }
+
+    #[test]
     fn a_string_annotation_checks_against_a_string_value() {
         // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
         // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the

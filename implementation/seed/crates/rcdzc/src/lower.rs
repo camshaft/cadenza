@@ -687,6 +687,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `String.to-bytes` — the UTF-8 encoding. FOLD a constant string to a `Core::BytesOf` of
                 // its UTF-8 bytes; a runtime string declines.
                 Some(Prim::StrToBytes) if args.len() == 1 => lower_str_to_bytes(db, args[0]),
+                // `String.from-bytes` — the TOTAL UTF-8 decode → `(Option String)`. FOLD a constant Bytes
+                // via strict UTF-8; a runtime Bytes declines.
+                Some(Prim::StrFromBytes) if args.len() == 1 => {
+                    lower_str_from_bytes(db, id, args[0])
+                }
                 // `Option.expect` / `Result.expect` — the unwrap-or-trap accessor. `args[0]` is the sum,
                 // `args[1]` the message (dropped — the wasm trap is textless). FOLD a constant PRESENT
                 // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
@@ -3200,6 +3205,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrConcat
         | Prim::StrSlice
         | Prim::StrToBytes
+        | Prim::StrFromBytes
         | Prim::SumExpect
         | Prim::CheckedAdd
         | Prim::CheckedMul
@@ -3779,6 +3785,70 @@ fn lower_str_to_bytes(db: &mut Db, string: StructId) -> Core {
     }
 }
 
+/// Lower `(String.from-bytes b)` — the TOTAL UTF-8 decode `Bytes → (Option String)`. FOLD a
+/// compile-time-visible constant `Bytes.of` (each element a constant `UInt8`) by strict UTF-8
+/// (`std::str::from_utf8`, which rejects INVALID bytes, OVERLONG encodings, AND surrogate code points —
+/// exactly the three failure modes the spec pins): well-formed → `(Some "<decoded>")` (a fresh
+/// `Core::ConstStr` payload), ill-formed → `(None unit)` — built as a `Core::SumNew` at the result
+/// Option's discs (`option_discs`, like `List.at`/`String.at`), riding the ordinary sum fold/escape/
+/// match, no string heap. A runtime `Bytes` declines; a poison operand propagates. Never a trap — an
+/// ill-formed sequence is DATA (`None`), the whole point of the total decode.
+fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, bytes) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.from-bytes result is not the built-in Option sum",
+        ));
+    };
+    // Collect the raw bytes of a compile-time-visible `Bytes.of`; a runtime Bytes declines.
+    let Core::BytesOf { elems } = core_of(db, bytes) else {
+        return Core::Poison(Reject::decline(
+            "String.from-bytes of a runtime byte sequence is not yet computed (constant Bytes only)",
+        ));
+    };
+    let mut raw = Vec::with_capacity(elems.len());
+    for e in elems {
+        match core_of(db, e) {
+            Core::ConstInt(v) => match v.to_i64() {
+                Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
+                // A non-UInt8 element can't occur in a well-formed `Bytes.of` (range-checked at build),
+                // but be defensive — decline rather than mis-decode.
+                _ => {
+                    return Core::Poison(Reject::decline(
+                        "String.from-bytes: a byte element is not a UInt8",
+                    ));
+                }
+            },
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "String.from-bytes of a non-constant byte element is not yet computed",
+                ));
+            }
+        }
+    }
+    // Strict UTF-8 decode: `from_utf8` yields the string iff every byte forms a shortest-form, non-
+    // surrogate scalar sequence — the spec's well-formedness. Otherwise `None`.
+    match std::str::from_utf8(&raw) {
+        Ok(s) => {
+            trace!(target: "rcdzc::fold", node = id.0, "String.from-bytes folds well-formed UTF-8 to Some");
+            let payload = db.push_atom(crate::ast::Leaf::Str(s.to_string()));
+            Core::SumNew {
+                disc: disc_some,
+                payloads: vec![payload],
+            }
+        }
+        Err(_) => {
+            trace!(target: "rcdzc::fold", node = id.0, "String.from-bytes folds ill-formed UTF-8 to None");
+            Core::SumNew {
+                disc: disc_none,
+                payloads: Vec::new(),
+            }
+        }
+    }
+}
+
 /// Lower `(Option.expect sum message)` / `(Result.expect sum message)` — the unwrap-or-trap accessor. The
 /// PRESENT variant is discriminant 0 (`Some`/`Ok`, the sum's FIRST variant — the shape the `expect` field
 /// is added for). FOLD a compile-time-visible PRESENT variant (`Core::SumNew{disc:0, payloads:[p]}`) to
@@ -4202,6 +4272,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
         Prim::StrToBytes => "str-to-bytes",
+        Prim::StrFromBytes => "str-from-bytes",
         Prim::SumExpect => "sum-expect",
         Prim::CheckedAdd => "checked-add",
         Prim::CheckedMul => "checked-mul",
