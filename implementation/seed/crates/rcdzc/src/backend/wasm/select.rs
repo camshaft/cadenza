@@ -2090,6 +2090,20 @@ fn emit(
         // requires): `and` → `if lhs then rhs else 0`; `or` → `if lhs then 1 else rhs`. The `if` yields an
         // i32 Bool. (A constant `lhs` folded in `lower`, so here `lhs` is a runtime bool.)
         Core::And { lhs, rhs, is_and } => {
+            // BRANCHLESS BOOLEAN: when `rhs` is a cheap trap-free LEAF (param/local/const), the
+            // short-circuit is unnecessary — `and`/`or` become a bitwise `i32.and`/`i32.or`. Booleans are
+            // canonical i32 `0`/`1`, so `p & q` IS the boolean AND and `p | q` IS the boolean OR; and the
+            // only observable effect short-circuit preserves is NOT evaluating `rhs` when `lhs` decides
+            // the result — a leaf has no effect or trap to skip, so evaluating it unconditionally is
+            // identical. One bitwise op, no branch (mirrors the `if`→`select` rewrite for leaf branches).
+            // A NON-leaf `rhs` (a call, a nested op that could trap, an effecting expression) KEEPS the
+            // short-circuit `if` so `rhs` runs only when reached.
+            if is_select_leaf(db, rhs) {
+                emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+                emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+                out.push(if is_and { Lir::I32And } else { Lir::I32Or });
+                return Ok(());
+            }
             emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::If(BlockType::Val(ValType::I32)));
             if is_and {

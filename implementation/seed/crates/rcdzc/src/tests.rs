@@ -3727,6 +3727,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_leaf_operand_boolean_connective_is_branchless() {
+        // `(and p q)` / `(or p q)` over cheap trap-free LEAF operands (params here) need no short-circuit
+        // branch — booleans are canonical i32 0/1, so they emit a branchless `i32.and`/`i32.or` (no `if`).
+        // Short-circuit only matters to skip an EFFECTING/trapping right operand; a leaf has neither, so
+        // evaluating it unconditionally is identical. (The trapping-rhs case keeps the `if` — covered by
+        // `a_conjunction_short_circuits_shielding_a_trapping_right_operand`.) Asserted at the Lir level
+        // AND run over the full truth table.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f (: p Bool) (: q Bool)) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let sig = db.defs[d].params.clone();
+            let params: Vec<_> = sig
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let and_code = lir("(and p q)");
+        assert!(
+            and_code.contains(&Lir::I32And) && !and_code.iter().any(|i| matches!(i, Lir::If(_))),
+            "(and p q) over leaves is a branchless i32.and, got: {and_code:?}"
+        );
+        let or_code = lir("(or p q)");
+        assert!(
+            or_code.contains(&Lir::I32Or) && !or_code.iter().any(|i| matches!(i, Lir::If(_))),
+            "(or p q) over leaves is a branchless i32.or, got: {or_code:?}"
+        );
+        // Full truth-table value parity under wasmtime.
+        use wasmtime::component::Val;
+        let and_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: p Bool) (: q Bool)) (and p q)) (export f))",
+        )))
+        .expect("compile and");
+        let or_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: p Bool) (: q Bool)) (or p q)) (export f))",
+        )))
+        .expect("compile or");
+        for (p, q) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run_returns_with::<bool>(&and_b, "f", &[Val::Bool(p), Val::Bool(q)]),
+                p && q,
+                "and({p},{q})"
+            );
+            assert_eq!(
+                run_returns_with::<bool>(&or_b, "f", &[Val::Bool(p), Val::Bool(q)]),
+                p || q,
+                "or({p},{q})"
+            );
+        }
+    }
+
+    #[test]
     fn a_nullary_variant_is_constructed_by_applying_it_to_unit() {
         // core-semantics.md §Construction MUST Be Via Application: "(None unit)". A NULLARY variant is
         // constructed by applying its ctor to the unit value — `(T.Nil ())` — not only used bare. The
