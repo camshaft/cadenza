@@ -2687,8 +2687,13 @@ fn champ_hash(root: Handle) -> u32 {
         Visit(Handle),
         Combine(Handle, usize), // (node, arity — how many child hashes to consume)
     }
-    let mut work: Vec<Task> = vec![Task::Visit(root)];
-    let mut results: Vec<u32> = Vec::new();
+    // Pre-size both worklists to skip the 1→2→4→8→16 reallocation chain a growing `Vec` would do on a
+    // nested compound (profiled: the general-walk `realloc` was ~15% of hashing a deep nested key, on the
+    // insert+lookup hot path). 16 tasks / 8 results cover the common small-to-medium nested value in ONE
+    // allocation; a larger compound still grows correctly (this only sets the initial capacity).
+    let mut work: Vec<Task> = Vec::with_capacity(16);
+    work.push(Task::Visit(root));
+    let mut results: Vec<u32> = Vec::with_capacity(8);
     while let Some(task) = work.pop() {
         match task {
             Task::Visit(h) => {
