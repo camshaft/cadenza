@@ -10,7 +10,21 @@
 use anyhow::{Result, anyhow};
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Linker, Type, Val};
-use wasmtime::{Engine, Store};
+use wasmtime::{Config, Engine, OptLevel, Store};
+
+/// The wasmtime engine for a run. `cdz-run` is a ONE-SHOT tool: it JIT-compiles the component, invokes
+/// an export ONCE, and exits — so Cranelift's optimizing backend (the `Engine::default()` `OptLevel::
+/// Speed`) spends compile time that the single execution never repays. `OptLevel::None` skips the
+/// optimization passes: the generated code is slower per-instruction, but the compile is much faster,
+/// and for a tiny gate program (which runs once) the total `Component::new`→run time drops. This is the
+/// dominant per-invocation cost across the gate's ~1000 spawns (cdz-run was the slowest pipeline stage).
+fn engine() -> Engine {
+    let mut cfg = Config::new();
+    cfg.cranelift_opt_level(OptLevel::None);
+    // A fresh `Config` can only fail to build an `Engine` on an unsupported target/feature combination,
+    // which this host supports; fall back to the default engine if that ever changes rather than panic.
+    Engine::new(&cfg).unwrap_or_default()
+}
 
 mod render;
 pub use render::render_val;
@@ -60,7 +74,7 @@ pub struct RunOpts {
 
 /// Validate `component_bytes` as a well-formed component — the cheap structural check before a run.
 pub fn validate(component_bytes: &[u8]) -> Result<()> {
-    let engine = Engine::default();
+    let engine = engine();
     Component::new(&engine, component_bytes)
         .map(|_| ())
         .map_err(|e| anyhow!("invalid component: {e}"))
@@ -69,7 +83,7 @@ pub fn validate(component_bytes: &[u8]) -> Result<()> {
 /// Instantiate `component_bytes`, compose the value-heap runtime if imported, invoke the chosen
 /// export with the (coerced) arguments, and return the rendered outcome.
 pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
-    let engine = Engine::default();
+    let engine = engine();
     let component =
         Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
 
@@ -139,7 +153,7 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
 /// `cadenza:runtime/heap` interface prefix) and the content address carried in that import name.
 /// A component with no such import produces `None` (a scalar/const program needs no runtime).
 pub fn required_runtime(component_bytes: &[u8]) -> Result<Option<RuntimeReq>> {
-    let engine = Engine::default();
+    let engine = engine();
     let component =
         Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
     Ok(find_runtime_req(&engine, &component))
