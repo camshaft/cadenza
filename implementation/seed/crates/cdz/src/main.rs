@@ -73,6 +73,10 @@ enum Cmd {
     TypeAt(TypeAtArgs),
     /// Every source location that references the definition/type NAME in FILE, as `file:line:col`.
     Uses(UsesArgs),
+    /// Report every well-formedness fault in FILE (type mismatch, unbound name, …) as
+    /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
+    /// exits non-zero if any error-severity fault is present.
+    Check(CheckArgs),
 }
 
 fn main() -> ExitCode {
@@ -95,6 +99,7 @@ fn main() -> ExitCode {
         Cmd::Type(a) => run_type(&a),
         Cmd::TypeAt(a) => run_type_at(&a),
         Cmd::Uses(a) => run_uses(&a),
+        Cmd::Check(a) => run_check(&a),
     }
 }
 
@@ -113,6 +118,12 @@ struct UsesArgs {
     /// The definition or type name to find references to.
     name: String,
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+}
+
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// The program file to check (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
 }
 
@@ -234,6 +245,64 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `cdz check FILE` — report every well-formedness fault, "diagnostics as you type". Drives the
+/// compiler's `Query::Diagnostics` (the fault set, NOT gated on export/emit), maps each fault's node id
+/// to `file:line:col` via the span table, and prints `file:line:col: severity [CODE]: message`. Exits
+/// non-zero iff any error-severity fault is present (a clean file prints nothing and exits 0) — the
+/// CI-gate / editor-lint shape.
+fn run_check(args: &CheckArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    let mut any_error = false;
+    // Each line is `severity<TAB>code<TAB>node-id<TAB>message` (`code`/`node-id` may be `-`).
+    for line in text.lines() {
+        let mut cols = line.splitn(4, '\t');
+        let (severity, code, node, message) =
+            match (cols.next(), cols.next(), cols.next(), cols.next()) {
+                (Some(s), Some(c), Some(n), Some(m)) => (s, c, n, m),
+                _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
+            };
+        any_error |= severity == "error";
+        // Map the node id to a source location; an unanchored fault (`-`) reports at the file.
+        let loc = match node
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| spans.get(cadenza_syntax::StructId(n)))
+        {
+            Some(span) => {
+                let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+                format!("{}:{l}:{c}", args.file)
+            }
+            None => args.file.clone(),
+        };
+        let code_part = if code == "-" {
+            String::new()
+        } else {
+            format!(" [{code}]")
+        };
+        println!("{loc}: {severity}{code_part}: {message}");
+    }
+    if any_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 // ── shared plumbing ────────────────────────────────────────────────────────────────────────────────

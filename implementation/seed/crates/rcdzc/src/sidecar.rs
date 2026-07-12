@@ -46,6 +46,9 @@ pub const KIND_USES: &str = "uses";
 /// The output artifact kind for a `TypeAt` query result — the rendered type of a specific node.
 pub const KIND_TYPE_AT: &str = "type-at";
 
+/// The output artifact kind for a `Diagnostics` query result — the program's well-formedness faults.
+pub const KIND_DIAGNOSTICS: &str = "diagnostics";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -82,6 +85,14 @@ pub enum Query {
     /// front-end owns spans). Total: a node id past the program, or one with no meaningful type, yields
     /// a defined "unknown" answer rather than an error.
     TypeAt { node: u32 },
+    /// EVERY well-formedness fault in the program — a read of the fault set (`compile::diagnostics`),
+    /// WITHOUT requiring the program to export anything or emit. This is the "diagnostics as you type"
+    /// primitive: the same faults `compile` reports (type mismatch, unbound name, duplicate def/field,
+    /// non-linear binder, …), but not gated on `layout`/export, so a mid-edit buffer that declares no
+    /// export still gets its diagnostics. Answered as one fault per line, `severity<TAB>code<TAB>node-id
+    /// <TAB>message` (node-id-keyed like `UsesOf` — the consumer maps the node to a source range). Total:
+    /// a clean program yields the empty result.
+    Diagnostics,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -103,6 +114,7 @@ mod tag {
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
+    pub const QUERY_DIAGNOSTICS: u8 = 0x13;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -139,6 +151,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_TYPE_AT => Some(Request::Query(Query::TypeAt {
             node: u32::try_from(r.read_varu64()?).ok()?,
         })),
+        tag::QUERY_DIAGNOSTICS => Some(Request::Query(Query::Diagnostics)),
         _ => None,
     }
 }
@@ -173,6 +186,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
             out.push(tag::QUERY_TYPE_AT);
             leb128::write_u64(out, *node as u64);
         }
+        Request::Query(Query::Diagnostics) => out.push(tag::QUERY_DIAGNOSTICS),
     }
 }
 
@@ -241,6 +255,29 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             QueryResult {
                 kind: KIND_TYPE_AT,
                 name: node.to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
+        Query::Diagnostics => {
+            // Every well-formedness fault, WITHOUT gating on export/layout — the "diagnostics as you
+            // type" set (`compile::diagnostics`, which runs `collect_faults` alone). One fault per
+            // line: `severity<TAB>code<TAB>node-id<TAB>message`. `code` is the `CDZ####` or `-` for an
+            // uncoded decline; `node-id` is the anchor (`-` if unanchored) the consumer maps to a span.
+            let mut text = String::new();
+            for d in crate::diagnostics(db) {
+                let severity = match d.severity {
+                    crate::Severity::Error => "error",
+                    crate::Severity::Warning => "warning",
+                };
+                let code = d.code.as_deref().unwrap_or("-");
+                let node = d.node.map_or_else(|| "-".to_string(), |n| n.to_string());
+                // Newlines in a message would break the one-line-per-fault framing — collapse them.
+                let message = d.message.replace('\n', " ");
+                text.push_str(&format!("{severity}\t{code}\t{node}\t{message}\n"));
+            }
+            QueryResult {
+                kind: KIND_DIAGNOSTICS,
+                name: "diagnostics".to_string(),
                 bytes: text.into_bytes(),
             }
         }
@@ -334,6 +371,7 @@ mod tests {
                 name: "helper".into(),
             }),
             Request::Query(Query::TypeAt { node: 42 }),
+            Request::Query(Query::Diagnostics),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

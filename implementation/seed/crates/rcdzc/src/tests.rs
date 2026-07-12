@@ -9918,7 +9918,9 @@ mod sidecar_driven {
     use crate::abi::{Artifact, Severity};
     use crate::backend::Target;
     use crate::compile::compile;
-    use crate::sidecar::{self, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request};
+    use crate::sidecar::{
+        self, KIND_DIAGNOSTICS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+    };
     use crate::testkit::parse;
 
     /// Build the two input artifacts (the AST + a sidecar request list) for `src` and `requests`.
@@ -10221,6 +10223,44 @@ mod sidecar_driven {
             artifact_text(&out, KIND_TYPE_AT).as_deref(),
             Some("unknown")
         );
+    }
+
+    #[test]
+    fn a_diagnostics_query_reports_faults_without_an_export() {
+        // The "diagnostics as you type" primitive: an ill-typed program with NO export still yields its
+        // faults (the query is not gated on layout/export). `(if 5 1 2)` — a non-Bool condition — is a
+        // CDZ0203, reported as `severity<TAB>code<TAB>node-id<TAB>message`.
+        let src = "(module m (def (main) (if 5 1 2)))"; // note: NO (export …)
+        let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
+        // A query never fails the compile; the diagnostics ride in the artifact, not the error channel.
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        let text = artifact_text(&out, KIND_DIAGNOSTICS).expect("a diagnostics artifact");
+        let line = text
+            .lines()
+            .find(|l| l.contains("CDZ0203"))
+            .unwrap_or_else(|| panic!("expected a CDZ0203 fault, got:\n{text}"));
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols[0], "error", "severity column");
+        assert_eq!(cols[1], "CDZ0203", "code column");
+        assert!(
+            cols[2].parse::<u32>().is_ok(),
+            "node-id column is a number: {:?}",
+            cols[2]
+        );
+        assert!(!cols[3].is_empty(), "message column is non-empty");
+    }
+
+    #[test]
+    fn a_diagnostics_query_on_a_clean_program_is_empty() {
+        // A well-formed program yields the empty diagnostics result (total — no faults, no error).
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_DIAGNOSTICS).as_deref(), Some(""));
     }
 }
 

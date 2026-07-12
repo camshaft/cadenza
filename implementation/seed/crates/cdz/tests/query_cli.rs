@@ -1097,3 +1097,36 @@ fn where_malformed_predicate_is_an_error() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- `cdz check FILE` — diagnostics as you type (Query::Diagnostics) ----
+// Reports every well-formedness fault without requiring an export/run; exits non-zero on any error.
+
+#[test]
+fn check_reports_a_fault_without_an_export_and_exits_nonzero() {
+    let dir = scratch_dir("check_bad");
+    let f = dir.join("prog.sexp");
+    // Ill-typed (`if 5 …` — non-Bool condition) and, crucially, NO `(export …)`.
+    std::fs::write(&f, "(module m (def (main) (if 5 1 2)))\n").unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(!ok, "an error-severity fault exits non-zero");
+    assert!(
+        stdout.contains("CDZ0203"),
+        "reports the type fault: {stdout}"
+    );
+    assert!(
+        stdout.contains("prog.sexp:"),
+        "with a file:line:col location: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
+    let dir = scratch_dir("check_ok");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) (: 42 Int64)) (export main))\n").unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok, "a clean program exits 0");
+    assert_eq!(stdout.trim(), "", "and prints no diagnostics: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
