@@ -48,6 +48,7 @@ pass	a conditional with a compound branch and a scalar branch is a type error ev
 pass	a conditional with a missing branch is rejected, not a crash
 pass	a conditional with an integer then-branch and a boolean else-branch is a type error
 pass	a conditional with too many operands is rejected, not a crash
+pass	a conditional with two list branches of different length is well-typed
 pass	a conditional with two tuple branches of different arity is a type error
 pass	a conditional with two tuple branches of different element type is a type error
 pass	a conditional's condition may itself be a conditional
@@ -123,6 +124,7 @@ pass	a list annotated with the wrong element type is rejected
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list mixing integer and boolean elements is a type error
+pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match binder over a narrow scrutinee returns the bound value
@@ -501,7 +503,6 @@ todo	a checked result is consumed by matching its Option at run time
 todo	a closure captures the binding in scope where it was created
 todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
-todo	a conditional with two list branches of different length is well-typed
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a constructor whose payload is a constructor keeps the outer variant tag
@@ -554,7 +555,6 @@ todo	a list of tuples with different arities is a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
-todo	a list with a runtime element is returned as a program result
 todo	a literal inside a constructor pattern matches a runtime payload
 todo	a literal inside a tuple pattern matches a runtime element
 todo	a literal segment before a binder dispatches then reads the payload

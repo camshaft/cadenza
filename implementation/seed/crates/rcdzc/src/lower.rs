@@ -1878,6 +1878,18 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             }
             Some(b.list(children))
         }
+        // A CONSTANT list literal renders `(list e1 e2 …)` — its length is statically known (unlike a
+        // grown/runtime list), so its bytes bake exactly like a constant tuple's. Each element is a
+        // constant in turn (a non-constant element makes the whole value non-constant, so `core_of` would
+        // not be a `ListNew` of constants and this returns `None`, declining the escape).
+        Core::ListNew { elems } => {
+            let head = b.name("list");
+            let mut children = vec![head];
+            for e in elems {
+                children.push(const_value_ast(db, b, e)?);
+            }
+            Some(b.list(children))
+        }
         _ => None,
     }
 }

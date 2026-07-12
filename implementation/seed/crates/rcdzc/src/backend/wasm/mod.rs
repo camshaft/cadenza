@@ -56,7 +56,10 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         && e.params.is_empty()
         && matches!(
             e.result,
-            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) | crate::ty::Ty::Sum { .. }
+            crate::ty::Ty::Tuple(_)
+                | crate::ty::Ty::Record(_)
+                | crate::ty::Ty::Sum { .. }
+                | crate::ty::Ty::List(_)
         )
     {
         let body = def_body(db, e.def)?;
@@ -65,6 +68,11 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
             let dtor_core = serialize::resource_dtor_module();
             return Ok(envelope::assemble_resource(&main_core, &dtor_core));
         }
+        // A LIST result whose value is NOT constant-foldable (a runtime-built list) has no baked-bytes
+        // form, and there is no runtime value-form template for a list yet (its length is dynamic, so the
+        // `encode()` walker would need to LOOP — a later increment). It is not a sum, and
+        // `runtime_value_form_template` returns `None` for a list, so it falls through to the decline
+        // below — an honest "runtime list return not yet supported", not a miscompile.
         // A SUM result crosses through the resource shape but its `encode()` SWITCHES on the runtime
         // discriminant (`sum-disc`) and renders the matching variant — a per-variant template, not a
         // single flat one. Route through the sum escape when the sum has a value-form (`None` — a

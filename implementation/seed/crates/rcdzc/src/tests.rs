@@ -3455,6 +3455,66 @@ mod match_engine {
         );
     }
 
+    /// Compile `src` (a single nullary-export program returning a compound), compose+run it, and return
+    /// the host's rendered `(: value type)` string. Skips (returns `None`) when the runtime is not built.
+    fn escape_render(src: &str) -> Option<String> {
+        let bytes = component(src);
+        let runtime = super::find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: None, // a resource-escape component (make/encode), not a bare function export
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("list escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_constant_list_escapes_to_the_host() {
+        // A CONSTANT list returned as the program result crosses the host boundary through the SAME
+        // resource-escape path a constant tuple/record takes: its length is statically known, so its
+        // canonical value-form bytes bake into the resource module and `encode()` serves them (no runtime
+        // heap walk). `(list 1 2 3)` renders `(: (list 1 2 3) (List Int64))` — the `(list …)` surface with
+        // its element type in the type node. A list with a folded-through-β-reduction element (`(f 1)` =
+        // `(list n 2 3)`) still bakes as a constant.
+        let Some(out) = escape_render("(module m (def (main) (list 1 2 3)) (export main))") else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "(: (list 1 2 3) (List Int64))", "constant list escape");
+
+        let Some(out) =
+            escape_render("(module m (def (f n) (list n 2 3)) (def (main) (f 1)) (export main))")
+        else {
+            return;
+        };
+        assert_eq!(
+            out, "(: (list 1 2 3) (List Int64))",
+            "folded-arg list escape"
+        );
+    }
+
+    #[test]
+    fn a_constant_list_of_tuples_escapes_nested() {
+        // A list whose ELEMENTS are themselves compounds escapes with each element template nested inside
+        // the `(list …)` — the type-directed renderer recurses through `List → Tuple`. `(list (tuple 1 2)
+        // (tuple 3 4))` renders `(: (list (tuple 1 2) (tuple 3 4)) (List (Tuple Int64 Int64)))`. Pins that
+        // a list's element type is carried into each element's sub-render (a heterogeneous nesting).
+        let Some(out) =
+            escape_render("(module m (def (main) (list (tuple 1 2) (tuple 3 4))) (export main))")
+        else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (list (tuple 1 2) (tuple 3 4)) (List (Tuple Int64 Int64)))",
+            "nested constant list-of-tuples escape"
+        );
+    }
+
     #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
@@ -4711,7 +4771,8 @@ mod stage1 {
         // declines — and here the message DOES name "multiple exports" (the trigger that actually
         // applies), distinct from the single-parameterized-export diagnosis above. Pins the two triggers
         // are diagnosed separately, not conflated into one misleading phrase.
-        let src = "(module m (def (main) (tuple 5 6)) (def (other) 7) (export main) (export other))";
+        let src =
+            "(module m (def (main) (tuple 5 6)) (def (other) 7) (export main) (export other))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a multi-export compound return declines");
         assert!(
@@ -5688,7 +5749,10 @@ mod stage1 {
                 )],
                 &[crate::backend::Target::Wasm],
             );
-            if out.artifact(crate::backend::Target::Wasm.artifact_kind()).is_some() {
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
                 return None; // compiled — no rejection
             }
             out.diagnostics
@@ -5702,8 +5766,10 @@ mod stage1 {
             Some("CDZ0102")
         );
         assert_eq!(
-            code("(module m (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main))")
-                .as_deref(),
+            code(
+                "(module m (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main))"
+            )
+            .as_deref(),
             Some("CDZ0102")
         );
         assert_eq!(
@@ -5716,7 +5782,9 @@ mod stage1 {
             None
         );
         assert_eq!(
-            code("(module m (def (f x) x) (def (g x) x) (def (main) (+ (f 1) (g 2))) (export main))"),
+            code(
+                "(module m (def (f x) x) (def (g x) x) (def (main) (+ (f 1) (g 2))) (export main))"
+            ),
             None
         );
     }
