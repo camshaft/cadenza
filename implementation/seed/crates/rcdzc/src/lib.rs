@@ -40,6 +40,9 @@ pub mod prelude;
 // record whose fields are its variants), the program-driven twin of `prelude`. Reuses the same member
 // access / application / `(meta t)` machinery, so nothing about sums is special-cased.
 pub mod sums;
+// `(effect …)` synthesis — an effect declaration realized as an ordinary record (fields = operation
+// values), the effect analogue of `sums`. So `E.op` is member access and a perform is application.
+pub mod effects;
 
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —

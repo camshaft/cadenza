@@ -294,6 +294,15 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → sum type decl");
         return Resolved::Ref { value };
     }
+    // 3b. The module's own EFFECT declarations — `(effect NAME …)` binds `NAME` to its synthesized record
+    // (fields = operation values), resolved EXACTLY like a sum type decl: a lookup against the
+    // occurrence-keyed `effect_decls`, returning a `Ref` to the record. So `E`, `E.op`, and a perform
+    // `(E.op a)` all take the ordinary member-access/application paths — no separate name map, no effect
+    // special-case in resolve (`prelude-and-resolution.md` §Nothing Is Privileged By Name).
+    if let Some(value) = db.effect_decl_by_name(name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → effect decl");
+        return Resolved::Ref { value };
+    }
     // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {

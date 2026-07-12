@@ -534,6 +534,11 @@ impl Db {
         // BEFORE the parent index (which must index the synthesized nodes so a name inside a synthesized
         // ctor type resolves by the scope walk).
         crate::sums::synthesize(&mut ast, &mut type_decls);
+        // Synthesize each `(effect …)` as a record (fields = operation values), the effect analogue of
+        // the sum synthesis above — AFTER the scan (it reads `effect_decls`) and BEFORE the parent index
+        // (which must index the synthesized nodes so a name inside a synthesized op type resolves).
+        let mut effect_decls = effect_decls;
+        crate::effects::synthesize(&mut ast, &mut effect_decls);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary
@@ -825,6 +830,23 @@ impl Db {
     /// variant names + payload types from its type-value. `None` if `occ` names no declaration.
     pub fn type_decl_by_occ(&self, occ: StructId) -> Option<&TypeDecl> {
         self.type_decls.iter().find(|t| t.occ == occ)
+    }
+
+    /// The SYNTHESIZED record occurrence an effect NAME resolves to — the effect analogue of
+    /// `type_decl_by_name`. `E` in value position denotes its record (fields = operation values), so
+    /// `E.op` is ordinary member access. `None` if no effect of that name is declared.
+    pub fn effect_decl_by_name(&self, name: &str) -> Option<StructId> {
+        self.effect_decls
+            .iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.synth)
+    }
+
+    /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
+    /// operation's `(meta effect-op)` channel carries, so a later pass recovers an effect's operation set
+    /// from a projected op value. `None` if `occ` names no effect declaration.
+    pub fn effect_decl_by_occ(&self, occ: StructId) -> Option<&EffectDecl> {
+        self.effect_decls.iter().find(|e| e.occ == occ)
     }
 
     /// The top-level items whose head is a form the compiler does NOT model — `(effect …)`, `(pragma

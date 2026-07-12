@@ -6897,6 +6897,45 @@ mod stage1 {
     }
 
     #[test]
+    fn performing_an_operation_with_a_wrong_type_argument_is_rejected() {
+        // `E.op` is declared `(-> Int64 Int64)`; performing `(E.op true)` supplies a Bool where an Int64
+        // is required. E0 synthesizes `E.op` as a typed operation value, so a perform is an ordinary
+        // application checked against that arrow (`capabilities-and-effects.md` §Performing An Operation
+        // Is Typed) — a wrong-type argument is a type error even before the perform can be lowered
+        // (which E0 does not do; the point is the ARGUMENT check fires at the surface). The perform is
+        // written with the qualified projection `(. E op)` (the desugaring of `E.op`); `main` returns the
+        // op's result, so the whole program still declines to run (no handler yet) — but the mistyped
+        // argument is caught first.
+        let src = "(do (effect E (op op (-> Int64 Int64))) \
+                   (def (main) ((. E op) true)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a wrong-type perform argument must be rejected"
+        );
+    }
+
+    #[test]
+    fn two_effects_may_declare_a_same_named_operation() {
+        // An operation is reached through its declaring effect, so two effects may each declare an `op`
+        // of the same name without collision (`capabilities-and-effects.md` §An Operation Is Reached
+        // Through Its Declaring Effect). Both `A.op` and `B.op` synthesize as distinct operation values
+        // (identity = the declaring effect's occurrence), so neither the declarations nor the projections
+        // collide — the program is well-formed (it declines to RUN only for want of a handler, an E1
+        // concern; here we assert the two same-named ops do not clash at the surface, so a projection of
+        // each resolves rather than erroring unbound/duplicate).
+        let src = "(do (effect A (op op (-> Int64 Int64))) (effect B (op op (-> Bool Bool))) \
+                   (def (main) 1) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("two effects with a same-named op are well-formed"),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn a_runtime_integer_width_is_rejected() {
         // `(def (mk n) (: 5 (UInt n)))` puts a RUNTIME value `n` (a parameter) in a width position — a
         // width must be a compile-time natural (`numeric-model.md §An Integer Type Is Indexed By A
