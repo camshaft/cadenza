@@ -16,6 +16,7 @@ pass	a conditional selects the false branch when the condition is false
 pass	a conditional's condition may itself be a conditional
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a decimal integer literal
+pass	a deeply nested constant expression compiles or declines without crashing
 pass	a function applied to an argument
 pass	a function bound to a name and then applied
 pass	a function is passed as an argument (higher-order)
@@ -622,6 +623,7 @@ todo	an unbound name in a short-circuited boolean operand is still rejected
 todo	an unbound name in an uncalled sibling definition is still rejected
 todo	an unbound name in an unselected conditional branch is still rejected
 todo	an unbound name in an unselected match arm is still rejected
+todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unquote of an expression with an unbound name is rejected, not quoted
 todo	an unrecognized pragma key is rejected rather than ignored

@@ -3214,6 +3214,42 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unproductive_nullary_recursion_declines_not_crashes() {
+        // `(def (f) (f))` — a NULLARY self-call with no base case. A nullary def resolves its name to a
+        // `Ref` at its body, so the head/record-reduction helpers (`lambda_of`, `reduce_to_record_id`)
+        // would re-enter the same body and overflow the native stack. It must DECLINE (a recursive
+        // function it cannot specialize), never abort. Regression for the compile-time-recursion crash.
+        let src = "(module m (def (f) (f)) (def (main) (f)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("nullary self-recursion must decline")
+            .message;
+        assert!(
+            msg.contains("recursive") || msg.contains("runtime") || msg.contains("deeply"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_pathologically_deep_expression_declines_not_crashes() {
+        // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound. The compiler must DECLINE
+        // (a resource-limit rejection) rather than overflow its own stack and abort — a compiler
+        // completes or declines on well-formed input, never crashes. A shallow nest still folds (the
+        // 64-deep corpus case folds to 65); this pins the deep end declines instead of aborting.
+        let mut body = "1".to_string();
+        for _ in 0..4000 {
+            body = format!("(+ 1 {body})");
+        }
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let msg = compile_component(&crate::codec::encode(&parse(&src)))
+            .expect_err("a pathologically deep expression must decline")
+            .message;
+        assert!(
+            msg.contains("deeply") || msg.contains("recursion") || msg.contains("resource"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
     fn mutually_recursive_functions_decline() {
         // `f` calls `g`, `g` calls `f` — neither reaches a normal form. The transitive call-graph walk
         // finds the cycle f→g→f, so applying `f` declines.

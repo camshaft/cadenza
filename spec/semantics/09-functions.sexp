@@ -251,6 +251,30 @@
             (def (main) (sum-to 3)) (export main)))
   (output (: 6 Int64)))
 
+; ROBUSTNESS: a compiler must DECLINE (or complete), never ABORT, on any well-formed input
+; (self-hosting-and-bootstrap.md §An Unsupported Construct Is Declined, Not Miscompiled). Two shapes
+; that a naive recursive-descent compiler crashes on — an unproductive compile-time recursion, and a
+; deeply nested expression — must instead stop at a recursion/resource bound and decline. A generation
+; that cannot reduce such input declines; it does not overflow its own stack.
+
+(case "an unproductive self-recursion is declined, not a compiler crash"
+  (doc    "`(def (f) (f))` — a nullary self-call with no base case — cannot be reduced to a value: the
+           compile-time evaluator would inline it without end. The compiler must DECLINE it (a
+           recursive function it cannot specialize), exactly as an unproductive PARAMETERIZED recursion
+           declines, and MUST NOT abort with a native stack overflow. A generation that does not realize
+           runtime specialization of such a function declines; the point of the case is 'never crash'.")
+  (input  (do (def (f) (f)) (def (main) (f)) (export main)))
+  (error  CDZ0999))
+
+(case "a deeply nested constant expression compiles or declines without crashing"
+  (doc    "A 64-deep nest of `(+ 1 …)` folds to 65 — well within any reasonable bound. The point is the
+           companion the gate cannot record: the SAME shape thousands deep must DECLINE (a
+           recursion/resource-limit rejection) rather than overflow the compiler's stack and abort. This
+           anchors the shallow end; the compiler bounds its own recursive descent and declines when the
+           bound is reached, so a pathological depth is a decline, never a process crash.")
+  (input  (do (def (main) (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) (export main)))
+  (output (: 65 Int64)))
+
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
 ; self-call sits in one branch of an inner `if` and a Bool literal in the other: `(if guard (recurse …)

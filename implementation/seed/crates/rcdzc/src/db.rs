@@ -65,6 +65,19 @@ pub struct Export {
 /// cheap safety net. No legitimate compile-time fold nests this deep.
 pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 32;
 
+/// The bound on RECURSIVE-DESCENT depth across the demand queries (`type_of`, the fault `collect`, and
+/// `core_of`) — a backstop against a native stack overflow on pathologically deep input. Each query is
+/// recursive descent (a node's answer re-enters the query for its sub-expressions), so a deeply NESTED
+/// expression (`(+ 1 (+ 1 …))` thousands deep) or an unproductive self-recursion a nullary call
+/// re-enters (`(def (f) (f))`) would recurse until the process aborts. Past this depth the query
+/// DECLINES (a resource-limit poison / `Any` type) rather than crashing — a compiler must never abort
+/// on well-formed input (`self-hosting-and-bootstrap.md` §An Unsupported Construct Is Declined, Not
+/// Miscompiled). Set well above any real nesting depth (a program nesting expressions this deep is not
+/// hand-written) and well below the native stack's ceiling (~a few thousand frames per query), so a
+/// legitimate program never hits it and a pathological one declines long before the abort. Mirrors
+/// [`REDUCE_DEPTH_LIMIT`] for the evaluator's own recursion.
+pub(crate) const DESCENT_DEPTH_LIMIT: u32 = 1024;
+
 /// An RAII guard for one active β-reduction: holds the reduction depth bumped for its lifetime and
 /// decrements it on drop, so the depth exactly reflects the reductions currently on the stack. Held by
 /// the evaluator across the reduce-and-evaluate of a lambda application.
@@ -130,6 +143,15 @@ pub struct Db {
     /// legitimately nests the same body twice while both calls terminate; only the depth distinguishes
     /// a terminating nest from an unbounded one.)
     pub(crate) reduce_depth: u32,
+
+    /// The current RECURSIVE-DESCENT depth across the demand queries (`type_of`, `collect`, `core_of`)
+    /// — the recursive-descent backstop. Bumped on entering a query's recursion and restored on exit;
+    /// past [`DESCENT_DEPTH_LIMIT`] the query declines instead of recursing, so pathologically deep
+    /// input (or an unproductive self-recursion) yields a resource-limit decline rather than a native
+    /// stack overflow. Shared across the queries, which interleave (`collect` calls `type_of`), so the
+    /// counter reflects true stack depth; it returns to 0 between top-level demands. See
+    /// [`DESCENT_DEPTH_LIMIT`].
+    pub(crate) descent_depth: u32,
 
     /// Memo of built values the evaluator produced by applying a native constructor — keyed by the
     /// reduction `(prim, arg-values)`, mapping to the built node's occurrence. Without it, a
@@ -239,6 +261,7 @@ impl Db {
             prelude,
             user_node_count,
             reduce_depth: 0,
+            descent_depth: 0,
             build_cache: std::collections::HashMap::new(),
             recursive: std::collections::HashMap::new(),
             rec_visited: std::collections::HashSet::new(),

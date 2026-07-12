@@ -35,7 +35,19 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
         trace!(target: "rcdzc::infer", node = id.0, "memo hit");
         return t.clone();
     }
+    // Recursive-descent DEPTH GUARD (shared with `collect` and `core_of`). `compute` re-enters
+    // `type_of` for sub-expressions, so pathologically deep input would recurse until the native stack
+    // overflows and the process ABORTS. Past the limit, type as `Any` (unknown, compatible with
+    // everything) — the fault walk's own guard reports the resource-limit decline, and a compiler must
+    // never crash on well-formed input. Not memoized (like the provisional `Any` below): a node typed
+    // at a shallower depth still gets its real type. See `db::DESCENT_DEPTH_LIMIT`.
+    if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
+        trace!(target: "rcdzc::infer", node = id.0, "type depth limit hit → Any (resource limit)");
+        return Ty::Any;
+    }
+    db.descent_depth += 1;
     let t = compute(db, id);
+    db.descent_depth -= 1;
     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
     // Do NOT memoize a provisional `Any`: a node typed `Any` here may be a recursive-def parameter (or
     // a reference to one) whose CONNECTED solve (A2) has not run yet — caching `Any` would freeze that
@@ -561,8 +573,15 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     }
     // A ZERO-ARGUMENT application `(g)` with a non-lambda head is the head value — applying to no
     // arguments is the identity (a nullary def `(def (g) 7)` called). Its type is the head's type.
-    // Mirrors the same short-circuit in `lower`, so `(g)` types and lowers as its body value.
+    // Mirrors the same short-circuit in `lower`, so `(g)` types and lowers as its body value. A
+    // RECURSIVE nullary call (`(def (f) (f))`) has no normal form — type it `Any` (the fault is
+    // reported by the collection side) rather than recursing into its own body without end.
     if args.is_empty() {
+        if let Some(body) = crate::eval::lambda_body_of_nullary(db, head)
+            && crate::eval::is_recursive(db, body)
+        {
+            return Ty::Any;
+        }
         return type_of(db, head);
     }
     let mut fresh = Fresh::new();
@@ -715,11 +734,27 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
 /// first); afterwards we stamp every fault THIS frame added that is still unanchored with `id` — so a
 /// fault ends up anchored to the innermost node whose frame produced it, with no per-`push` threading.
 fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // Recursive-descent DEPTH GUARD (shared with `type_of` and `core_of`). `collect_node` recurses into
+    // children, so pathologically deep input would overflow the native stack and ABORT the process.
+    // Past the limit, report the resource-limit decline and stop descending — a compiler declines on
+    // input it cannot handle, never crashes (`self-hosting-and-bootstrap.md`). See `DESCENT_DEPTH_LIMIT`.
+    if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
+        trace!(target: "rcdzc::infer", node = id.0, "collect depth limit hit → decline (resource limit)");
+        out.push(
+            Reject::decline(
+                "expression nests too deeply to compile (a recursion/resource limit was reached)",
+            )
+            .at(id),
+        );
+        return;
+    }
+    db.descent_depth += 1;
     let before = out.len();
     collect_node(db, id, out);
     for reject in &mut out[before..] {
         reject.set_origin_if_absent(id);
     }
+    db.descent_depth -= 1;
 }
 
 fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {

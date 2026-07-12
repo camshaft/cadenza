@@ -29,7 +29,22 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
         return c.clone();
     }
+    // Recursive-descent DEPTH GUARD. `compute` re-enters `core_of` for a node's sub-expressions, so a
+    // pathologically deep nest (`(+ 1 (+ 1 …))` thousands deep) or an unproductive self-recursion a
+    // nullary call re-enters (`(def (f) (f))`) would recurse until the native stack overflows and the
+    // PROCESS ABORTS. Past `LOWER_DEPTH_LIMIT` decline (a resource-limit poison) instead — a compiler
+    // must never crash on well-formed input, only decline or complete (decline-don't-miscompile). This
+    // result is NOT memoized: the same node lowered from a shallower context (below the limit) must
+    // still get its real core, so the decline is specific to this over-deep demand, not the node.
+    if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
+        trace!(target: "rcdzc::lower", node = id.0, "lowering depth limit hit → decline (resource limit)");
+        return Core::Poison(Reject::decline(
+            "expression nests too deeply to compile (a recursion/resource limit was reached)",
+        ));
+    }
+    db.descent_depth += 1;
     let c = compute(db, id);
+    db.descent_depth -= 1;
     trace!(target: "rcdzc::lower", node = id.0, core = ?c, "lowered");
     db.core.fill(id, c.clone());
     c
@@ -172,6 +187,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // to `meta_apply_of` — which, finding no `(meta apply)` on the scalar 7, rejected it as
             // "value is not applyable", breaking every nullary-function call.
             if args.is_empty() {
+                // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
+                // the head would re-enter the same body without end. Decline it exactly as a recursive
+                // parameterized call declines (a nullary def has no runtime-function form yet, so there
+                // is no `Core::Call` to emit — it declines rather than diverging). `is_recursive` reads
+                // the callee body reached through the nullary def's `Ref` (see `eval::callee_body`).
+                if let Some(body) = crate::eval::lambda_body_of_nullary(db, head)
+                    && crate::eval::is_recursive(db, body)
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: recursive nullary call → decline");
+                    return Core::Poison(Reject::decline(
+                        "a recursive function needs runtime specialization (not yet built)",
+                    ));
+                }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: zero-argument application is its head value");
                 return core_of(db, head);
             }

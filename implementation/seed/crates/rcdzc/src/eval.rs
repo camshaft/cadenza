@@ -290,6 +290,18 @@ pub fn lambda_body(db: &mut Db, head: StructId) -> Option<StructId> {
     lambda_of(db, head).map(|(_, body)| body)
 }
 
+/// The def-BODY occurrence a NULLARY-def head refers to, if `head` names one — a nullary def resolves
+/// its name to a `Ref` straight at its body (no `Lambda` wrapper). Returns that body so a caller can
+/// ask `is_recursive` of it (a nullary self-call `(def (f) (f))` must be detected as recursive and
+/// declined, not inlined without end). `None` for a head that is not a nullary-def reference.
+pub fn lambda_body_of_nullary(db: &mut Db, head: StructId) -> Option<StructId> {
+    match resolved_of(db, head) {
+        Resolved::Ref { value } if db.defs.iter().any(|d| d.body == Some(value)) => Some(value),
+        Resolved::Ref { value } => lambda_body_of_nullary(db, value),
+        _ => None,
+    }
+}
+
 /// The PARAMETER NAME occurrences of the lambda `head` reduces to, in signature order — each the
 /// identity a body reference resolves to and the node whose `type_of` is the parameter's declared
 /// type (its annotation, or `Any` for a bare param). Used by infer to check each call argument against
@@ -429,7 +441,20 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
 fn callee_body(db: &mut Db, head: StructId) -> Option<StructId> {
     match resolved_of(db, head) {
         Resolved::Lambda { body, .. } => Some(body),
-        Resolved::Ref { value } => callee_body(db, value),
+        Resolved::Ref { value } => {
+            // A NULLARY def resolves its name straight to its BODY occurrence (a value, not a `Lambda`
+            // wrapper — that is what makes a bare `g` denote the body value). So a call `(g)` reaching
+            // this `Ref` has its callee body AT `value`: recognize `value` as a def body and return it,
+            // rather than recursing INTO it (which would classify the body's own head, missing the
+            // self-call edge). Without this a nullary self-recursion `(def (f) (f))` is not detected as
+            // recursive, so the call inlines without end. A `Ref` to anything else (a `let`-bound
+            // function, a nested ref) still follows through.
+            if db.defs.iter().any(|d| d.body == Some(value)) {
+                Some(value)
+            } else {
+                callee_body(db, value)
+            }
+        }
         _ => None,
     }
 }
@@ -443,9 +468,16 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(Vec<StructId>, StructId)> {
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
         Resolved::Apply { head, args } => {
-            // Reduce the inner application to a value, then see if THAT is a lambda.
-            let reduced = apply_lambda(db, head, &args).ok().flatten()?;
-            lambda_of(db, reduced)
+            // Reduce the inner application to a value, then see if THAT is a lambda. This reduction is
+            // itself a β-reduction, so run it UNDER THE DEPTH GUARD: a self-referential nullary call
+            // `(def (f) (f))` resolves `f` to a `Ref` at the body `(f)`, so reducing THIS application
+            // re-enters `lambda_of` on the same body — an unbounded loop that would overflow the native
+            // stack. Past `REDUCE_DEPTH_LIMIT` the guard denies entry and this yields `None` (not a
+            // lambda / can't be reduced here), matching how a too-deep β-reduction declines elsewhere.
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let reduced = apply_lambda(g, head, &args).ok().flatten()?;
+            lambda_of(g, reduced)
         }
         _ => None,
     }
@@ -493,12 +525,20 @@ fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
         Resolved::Record { .. } => Some(id),
         Resolved::Ref { value } => reduce_to_record_id(db, value),
         Resolved::Apply { head, args } => {
-            let prim = meta_apply_of(db, head)?;
+            // Reducing the application to a record is a β-reduction — run it UNDER THE DEPTH GUARD. A
+            // self-referential nullary call `(def (f) (f))` resolves `f` to a `Ref` at the body `(f)`,
+            // and `meta_apply_of(head)` → `project_field` → `reduce_to_record_id` re-enters this same
+            // application, an unbounded loop that would overflow the native stack. Past
+            // `REDUCE_DEPTH_LIMIT` the guard denies entry and this yields `None` (does not reduce to a
+            // record), matching how a too-deep β-reduction declines elsewhere.
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let prim = meta_apply_of(g, head)?;
             if prim.is_arith() {
                 return None;
             }
-            let built = reduce_ctor(db, prim, &args).ok()?;
-            reduce_to_record_id(db, built)
+            let built = reduce_ctor(g, prim, &args).ok()?;
+            reduce_to_record_id(g, built)
         }
         // A member projection whose result is itself a record (a nested record chain).
         Resolved::Member { operand, key } => {
