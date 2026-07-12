@@ -528,6 +528,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
                 Some(Prim::BytesAt) if args.len() == 2 => lower_bytes_at(db, id, args[0], args[1]),
+                // `String.at` — the FALLIBLE scalar-indexed read. FOLD a constant string + constant index
+                // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
+                // runtime string declines (the byte-rope read is a later increment).
+                Some(Prim::StrAt) if args.len() == 2 => lower_str_at(db, id, args[0], args[1]),
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2033,17 +2037,15 @@ fn leb_len(mut n: u64) -> usize {
 }
 
 /// Build the variant HEAD s-expression for variant `disc` of the sum declared at `decl`, as it appears
-/// in an observed value's canonical form. A USER-declared sum renders its variant QUALIFIED as the
-/// MEMBER-ACCESS form `(. Type Variant)` — `(. IntList Cons)`, `(. Sign Pos)`: the tag-free runtime holds
-/// only the discriminant, and the type-directed renderer reconstructs the `Type.Variant` reference from
-/// the declaration (corpus 05 "a recursive user sum type … renders with qualified variant names"; the
-/// dotted `IntList.Cons` source sugar reads to `(. IntList Cons)`, so the observed value form is that
-/// member-access list). A BUILT-IN prelude sum (Option/Result — whose variant names bind BARE,
-/// `Some`/`None`/`Ok`/`Err`) renders its variant BARE as a NAME atom, the corpus surface (`(Some 5)`,
-/// `(None unit)`). The two are distinguished by `is_user_node(decl)`: a user declaration's occurrence is
-/// below the prelude-install watermark, a built-in's at/above it — no name special-case. `None` if the
-/// disc is out of range (a compiler bug). Shared by the constant-escape bake and the runtime-escape
-/// template so both write the identical head.
+/// in an observed value's canonical form: the variant's BARE NAME atom — `Some`, `Sm`, `Cons`, `Pos`. A
+/// variant renders the SAME whether its sum is BUILT-IN (Option/Result) or USER-declared: the value form
+/// of a variant does not depend on where its sum was declared (the built-in-vs-user split that rendered a
+/// user variant as the member-access `(. Type Variant)` while a built-in rendered bare was an
+/// inconsistency — a rendered VALUE should be a variant name, not a projection expression). The rendered
+/// value is always annotated with its sum type (`(: (Sm 42) Opt)`), which disambiguates a bare variant
+/// name shared across sums (sum identity is by declaration occurrence, carried by the annotation). `None`
+/// if the disc is out of range (a compiler bug). Shared by the constant-escape bake and the
+/// runtime-escape template so both write the identical head.
 fn variant_head_ast(
     db: &Db,
     b: &mut crate::ast::Builder,
@@ -2052,16 +2054,7 @@ fn variant_head_ast(
 ) -> Option<StructId> {
     let t = db.type_decl_by_occ(decl)?;
     let vname = t.variants.get(disc as usize)?.name.clone();
-    if db.is_user_node(decl) {
-        // `(. Type Variant)` — the member-access form the dotted `Type.Variant` sugar reads to.
-        let dot = b.name(".");
-        let tname = b.name(t.name.clone());
-        let variant = b.name(vname);
-        Some(b.list(vec![dot, tname, variant]))
-    } else {
-        // A built-in prelude variant binds bare — render the bare name atom.
-        Some(b.name(vname))
-    }
+    Some(b.name(vname))
 }
 
 /// Reconstruct the VALUE s-expression of a constant node into `b`: a scalar → its literal atom; a
@@ -2587,6 +2580,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BytesTy
         | Prim::StrScalarLen
         | Prim::StrByteLen
+        | Prim::StrAt
         | Prim::StringTy
         | Prim::BytesAt => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -2818,6 +2812,64 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
     }
 }
 
+/// Lower `(String.at string index)` — the fallible SCALAR-indexed read. FOLD when both operands are
+/// constant: index the string by UNICODE SCALAR position (`chars().nth`, NOT byte offset —
+/// collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), yielding `(Some
+/// "<char>")` in range (the ONE-scalar string at that position, a fresh `Core::ConstStr` synthesized
+/// into the arena) and `None` out (negative, or `>=` the scalar length). Builds a `Core::SumNew` at the
+/// result Option's Some/None discriminants, so it rides the ordinary sum fold/escape/match — no string
+/// heap. A runtime string declines (the byte-rope indexed read is a later increment). A poison
+/// operand propagates.
+fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, string) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, index) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.at result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, string), core_of(db, index)) {
+        (Core::ConstStr(s), Core::ConstInt(i)) => {
+            // Index by scalar value; a negative index or one at/beyond the scalar length is out of range.
+            let scalar = i.to_i64().and_then(|n| {
+                if n >= 0 {
+                    s.chars().nth(n as usize)
+                } else {
+                    None
+                }
+            });
+            match scalar {
+                Some(c) => {
+                    // The one-scalar string at that position — a fresh `Leaf::Str` node whose `core_of`
+                    // is `Core::ConstStr`, used as the `Some` payload (the same shape `List.at` uses,
+                    // but the element is synthesized here since a string has no element sub-nodes).
+                    trace!(target: "rcdzc::fold", node = id.0, "String.at folds to Some (in-bounds constant scalar index)");
+                    let payload = db.push_atom(crate::ast::Leaf::Str(c.to_string()));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "String.at folds to None (out-of-range constant index)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        // A runtime string or runtime index — the byte-rope indexed read is a later increment.
+        _ => Core::Poison(Reject::decline(
+            "String.at on a runtime string is not yet computed (constant strings only)",
+        )),
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3020,6 +3072,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrScalarLen => "str-scalar-len",
         Prim::StrByteLen => "str-byte-len",
         Prim::BytesAt => "bytes-at",
+        Prim::StrAt => "str-at",
     }
 }
 

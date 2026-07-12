@@ -577,6 +577,22 @@ fn imm_unit() -> Handle {
     Handle(0b0010usize as *mut Node)
 }
 
+/// The ABI IMMEDIATE encodings, emitted into a `cdz-abi` wasm CUSTOM SECTION so the COMPILER can learn
+/// them without hand-coding an ABI constant. Today it carries one value — the inline-unit handle bits
+/// (`imm_unit`): `op_arr_alloc(0)` returns exactly this (a compile-time-known handle, no heap node), so
+/// the compiler can push it as a constant instead of emitting a runtime `arr-alloc(0)` CALL for every
+/// unit payload (a nullary sum variant, an empty tuple/record/list).
+///
+/// `cargo xtask codegen` reads this section (by name, statically — no execution) out of the RAW runtime
+/// build and emits its value into `runtime_abi.rs` as `IMM_UNIT`, BEFORE `canonicalize_runtime`'s
+/// `wasm-tools strip -a` removes all custom sections (so the section costs zero bytes in the shipped/
+/// hashed runtime, and the const the compiler pushes is DERIVED from the runtime, guarded by the content
+/// hash — never a hand-transcribed number). The bytes are the little-endian `u32` of `imm_unit()`'s bit
+/// pattern; a change to the encoding re-derives through codegen on the next run. `#[used]` keeps the
+/// section even though nothing in the crate references it.
+#[unsafe(link_section = "cdz-abi")]
+static CDZ_ABI_IMM_UNIT: [u8; 4] = (0b0010u32).to_le_bytes();
+
 /// An inline boolean: atom subkind `01`, tag `10`, value in bit[4] ⇒ false = `0b0110`, true = `0b10110`.
 #[inline]
 #[allow(dead_code)]
@@ -5499,6 +5515,42 @@ mod tests {
             }
             let upd_ns = t1.elapsed().as_nanos() as f64 / reps as f64;
             println!("VECSHARED n={n:>6}  push {push_ns:7.1} ns/op   update {upd_ns:7.1} ns/op");
+            op_drop(base);
+        }
+    }
+
+    /// CPU-scaling PROBE (diagnostic, not a gate) for the SHARED/PERSISTENT CHAMP map copy path — the
+    /// functional-update pattern on a map (keep the base version, derive a new one). This is the second-
+    /// largest realistic allocator (map_insert_shared 6143, map_remove_shared 6685 allocs/1000); the
+    /// alloc bench tracks the COUNT, this times where the CPU goes under `perf`. Each op path-copies the
+    /// touched spine root→leaf via `champ_insert_node`/`champ_remove_node` (clone-once-and-mutate,
+    /// dup every off-path sibling). Complements `shared_vec_copy_path_cpu_scaling_probe`; the map copy
+    /// path was never dedicated-CPU-profiled.
+    #[test]
+    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    fn shared_map_copy_path_cpu_scaling_probe() {
+        for &n in &[1000i64, 4000, 16000, 64000] {
+            // Build an N-entry base map, kept shared (rc>1) so each op path-copies instead of FBIP.
+            let mut base = op_map_empty();
+            for k in 0..n {
+                base = op_map_insert(base, op_box_int(k), op_box_int(k));
+            }
+            let reps = 1_000_000i64;
+            // Shared INSERT (overwrite an existing key → OVERWRITE/DESCEND path-copy).
+            let t0 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(base);
+                op_drop(op_map_insert(base, op_box_int(0), op_box_int(1)));
+            }
+            let ins_ns = t0.elapsed().as_nanos() as f64 / reps as f64;
+            // Shared REMOVE of a present key (found-entry drop → path-copy up the spine).
+            let t1 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(base);
+                op_drop(op_map_remove(base, op_box_int(0)));
+            }
+            let rem_ns = t1.elapsed().as_nanos() as f64 / reps as f64;
+            println!("MAPSHARED n={n:>6}  insert {ins_ns:7.1} ns/op   remove {rem_ns:7.1} ns/op");
             op_drop(base);
         }
     }

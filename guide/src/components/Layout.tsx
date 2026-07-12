@@ -122,7 +122,15 @@ function Header() {
           <span className="text-lg font-bold tracking-tight text-slate-100">Cadenza</span>
           <span className="hidden text-sm text-slate-500 sm:inline">the interactive guide</span>
         </NavLink>
-        <SyntaxToggle />
+        <div className="flex items-center gap-3">
+          <NavLink
+            to="/playground"
+            className="rounded-md border border-slate-700/70 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:border-cadenza-600/60 hover:text-cadenza-300"
+          >
+            Playground →
+          </NavLink>
+          <SyntaxToggle />
+        </div>
       </div>
     </header>
   );

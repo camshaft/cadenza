@@ -68,6 +68,12 @@ pub const REQUIRED_RUNTIME_HASH: &str =
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
     "c5b4da04ca1a63788e4f47cf36295d80dd81828d02db5c03ab734db4e71539d0";
+/// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
+/// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
+/// custom section (read at codegen, then stripped), so the compiler can push it as a constant
+/// for a unit payload (a nullary sum variant, an empty tuple/record/list) instead of emitting
+/// a runtime `arr-alloc(0)` CALL. Guarded by the content hash — never hand-transcribed.
+pub const IMM_UNIT: u32 = 2u32;
 /// Every op the runtime `heap` interface declares, as structured signature data (sorted).
 pub const RUNTIME_OPS: &[RtOp] = &[
     RtOp {

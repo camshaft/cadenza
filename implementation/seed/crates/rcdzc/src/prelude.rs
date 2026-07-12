@@ -249,7 +249,8 @@ fn string_module(ast: &mut Arenas) -> StructId {
     // (`Bytes` above CAN carry `(meta t)` because its ops' schemes reduce it via `bytes-ty` and its own
     // member access still works — but for `String` the plain-record shape is the tested-working one.)
     let mut children = vec![head];
-    // Each op: a `String → Int64` scheme (built fresh per field — a shared occurrence must not be).
+    // The LENGTH queries: each a `String → Int64` scheme (built fresh per field — a shared occurrence
+    // must not be).
     for (name, prim) in [
         ("scalar-len", "str-scalar-len"),
         ("byte-len", "str-byte-len"),
@@ -259,6 +260,11 @@ fn string_module(ast: &mut Arenas) -> StructId {
         let k = push_atom(ast, Leaf::Name(name.to_string()));
         children.push(push_list(ast, vec![k, op]));
     }
+    // `at : String → Int64 → (Option String)` — the fallible scalar-indexed read.
+    let at_ty = str_at_type(ast);
+    let at_op = list_op_record(ast, "str-at", at_ty);
+    let at_key = push_atom(ast, Leaf::Name("at".to_string()));
+    children.push(push_list(ast, vec![at_key, at_op]));
     push_list(ast, children)
 }
 
@@ -316,6 +322,26 @@ fn string_to_int64_type(ast: &mut Arenas) -> StructId {
     let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
     let body = arrow_type(ast, string, int64);
     // `(fn () body)` — an empty parameter list (no quantified type variables), the monomorphic wrapper.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> String (-> Int64 (Option String))))` for `String.at` — the fallible scalar read
+/// `String → Int64 → (Option String)`. A ZERO-PARAM `fn` wrapper (monomorphic, but the wrapper is
+/// needed so `scheme_of` reads a SCHEME not a bare type-value — see [`string_to_int64_type`]). The
+/// `String` param + `Option`'s `String` arg are the `(intrinsic "String")` type node (→ `Ty::String`),
+/// not the NAME `String` (the module record); `(Option String)` reduces via the built-in Option ctor.
+fn str_at_type(ast: &mut Arenas) -> StructId {
+    let option_string = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let string = intrinsic_node(ast, "String");
+        push_list(ast, vec![option, string])
+    };
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let index_arrow = arrow_type(ast, int64, option_string); // (-> Int64 (Option String))
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option String)))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

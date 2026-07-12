@@ -183,6 +183,41 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                         args: arg_tys,
                     })
                 }
+                // A `(Tuple T…)` inside a type-lambda — each element reduced UNDER THE ENV, so a type
+                // parameter `a` in a tuple element becomes its type variable. This is what lets a generic
+                // sum variant carry a TUPLE payload that mentions a param — `(type Box (B (Tuple a Int64))
+                // N)`'s `B` ctor `(meta t)` = `(fn (a) (-> (Tuple a Int64) (Box a)))` reads as the scheme
+                // `∀a. (Tuple a Int64) → Box a`. The `typeval_of` sibling (`reduce_ctor` TupleCtor) reduces
+                // the ground case; this reduces the param-bearing one. Without this arm the reduction fell
+                // to `None`, so the ctor arrow was unreadable and the variant looked NULLARY (CDZ0201).
+                Prim::TupleCtor => {
+                    let mut elems = Vec::with_capacity(args.len());
+                    for &a in args.iter() {
+                        elems.push(type_in_env(db, a, env)?);
+                    }
+                    Some(Ty::Tuple(elems.into()))
+                }
+                // A `(Record (name T)…)` inside a type-lambda — each field's TYPE reduced under the env
+                // (the field NAME is a label, not reduced), so a param in a field type becomes its variable.
+                // The record companion of the `TupleCtor` arm; mirrors `reduce_ctor`'s `RecordCtor`, which
+                // reads each arg as a raw `(name type)` pair and reduces the type. A duplicate field name
+                // collapses in the `BTreeMap`, the same fixed-SET rule a record value has.
+                Prim::RecordCtor => {
+                    let mut fields: std::collections::BTreeMap<Symbol, Ty> =
+                        std::collections::BTreeMap::new();
+                    for &a in args.iter() {
+                        let pair = match db.ast.get(a) {
+                            crate::ast::Struct::List(children) if children.len() == 2 => {
+                                [children[0], children[1]]
+                            }
+                            _ => return None,
+                        };
+                        let name = db.ast.as_name(pair[0])?.to_string();
+                        let t = type_in_env(db, pair[1], env)?;
+                        fields.insert(Symbol::plain(name), t);
+                    }
+                    Some(Ty::Record(std::sync::Arc::new(fields)))
+                }
                 _ => None,
             }
         }

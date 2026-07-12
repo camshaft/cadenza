@@ -38,6 +38,12 @@ wit-parser = "0.239"
 # Same crate the rcdzc byte-identity oracle test uses; dev-desk only (the generated table is plain
 # dep-free data, so `wasm-encoder` never enters the shipped compiler).
 wasm-encoder = "0.239"
+# Reads the RAW runtime build's `cdz-abi` custom section (by name, statically — no execution) so
+# `codegen` DERIVES the ABI immediate encodings (the inline-unit handle bits) into `runtime_abi.rs`,
+# letting the compiler push those constants instead of a runtime `arr-alloc(0)` call. Read BEFORE the
+# `strip -a` that removes custom sections, so the constant costs zero shipped bytes. Same wasm-tools
+# family as `wasm-encoder`/`wit-parser`; dev-desk only (the generated const is plain data).
+wasmparser = "0.239"
 # Formats generated Rust deterministically from a parsed syntax tree — `codegen` runs its output
 # through this so the committed file is fmt-clean (agreeing with `fmt --check` and `codegen --check`).
 # Preferred over shelling to `rustfmt`, which chokes on very long single lines. Dev-desk only.

@@ -463,14 +463,14 @@ pub fn collect_used_ops(
             }
         }
         // A sum construction always calls `sum-new`; the payload build mirrors `emit`'s `Core::SumNew`:
-        //  - nullary → an empty array `arr-alloc(0)` (the unit payload);
+        //  - nullary → the inline-unit CONSTANT (`IMM_UNIT`), no runtime op (see `emit`);
         //  - single → `box-*` the one payload (a compound payload is already a handle, no box);
         //  - multi → a tuple handle (`arr-alloc` + per-payload `box-*`/`arr-set`).
         Core::SumNew { payloads, .. } => {
             out.insert(OP_SUM_NEW);
             match payloads.len() {
                 0 => {
-                    out.insert(OP_ARR_ALLOC);
+                    // The unit payload is the inline-unit constant — no `arr-alloc` import.
                 }
                 1 => {
                     if let Ok(Some(op)) = box_op(db, payloads[0]) {
@@ -1671,9 +1671,12 @@ fn emit(
             out.push(Lir::ConstI32(disc as i32)); // [disc]
             match payloads.len() {
                 0 => {
-                    // Unit payload: an empty array.
-                    out.push(Lir::ConstI32(0)); // [disc, 0]
-                    out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc, payload]
+                    // Unit payload: the inline-unit handle. `arr-alloc(0)` RETURNS exactly this constant
+                    // (a compile-time-known handle, no heap node), so push it directly rather than
+                    // emitting an `arr-alloc(0)` CALL — one const instead of `const 0 ; call arr-alloc`,
+                    // and the nullary construction imports no runtime op for its payload. `IMM_UNIT` is
+                    // DERIVED from the runtime's `cdz-abi` section by codegen (never hand-coded).
+                    out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc, unit]
                 }
                 1 => {
                     let p = payloads[0];

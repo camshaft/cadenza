@@ -64,6 +64,8 @@ enum Cmd {
     // ── semantic queries — the in-process win (both libraries + spans) ──────────────────────────
     /// The solved type of a definition NAME in FILE, rendered (a compiler query over the type column).
     Type(TypeArgs),
+    /// The inferred type of the node at a source BYTE OFFSET in FILE — a "type at cursor" (hover).
+    TypeAt(TypeAtArgs),
     /// Every source location that references the definition/type NAME in FILE, as `file:line:col`.
     Uses(UsesArgs),
 }
@@ -83,6 +85,7 @@ fn main() -> ExitCode {
         Cmd::Compile(a) => compiler_cli::run(a, PROG),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
+        Cmd::TypeAt(a) => run_type_at(&a),
         Cmd::Uses(a) => run_uses(&a),
     }
 }
@@ -103,6 +106,14 @@ struct UsesArgs {
     name: String,
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+}
+
+#[derive(clap::Args)]
+struct TypeAtArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// The source BYTE OFFSET to type — the cursor position (0-based, UTF-8 bytes).
+    offset: usize,
 }
 
 /// `cdz type NAME FILE` — parse in-process, drive the compiler's `TypeOf` sidecar query, print the
@@ -133,6 +144,47 @@ fn run_type(args: &TypeArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `cdz type-at FILE OFFSET` — the "type at cursor" query. Resolves the source byte offset to the
+/// INNERMOST node id (via the span table this process kept — `SpanTable::node_at_offset`, the SAME
+/// resolution the browser IDE uses), drives the compiler's `TypeAt { node }` query, and prints the
+/// rendered type with the node's source `line:col-line:col` range. The offset→node split keeps the
+/// compiler span-free while the type is a node-identity query (`DESIGN-sidecar-api.md`).
+fn run_type_at(args: &TypeAtArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(node) = spans.node_at_offset(args.offset) else {
+        eprintln!(
+            "{PROG}: no node at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: node.0 }),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_TYPE_AT) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let ty = String::from_utf8_lossy(bytes);
+    // Show the node's source range so the caller can highlight exactly the sub-expression typed.
+    match spans.get(node) {
+        Some(span) => {
+            let (l0, c0) = cadenza_syntax::query::driver::line_col(&source, span.start);
+            let (l1, c1) = cadenza_syntax::query::driver::line_col(&source, span.end);
+            println!("{ty} @ {}:{l0}:{c0}-{l1}:{c1}", args.file);
+        }
+        None => println!("{ty}"),
+    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz uses NAME FILE` — drive the compiler's `UsesOf` query (node ids), then MAP each id to a source

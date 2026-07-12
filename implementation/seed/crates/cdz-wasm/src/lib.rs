@@ -37,6 +37,11 @@ pub struct Diagnostic {
     pub message: String,
     /// AST node index, or `u32::MAX` if the diagnostic is unanchored.
     pub node: u32,
+    /// The source byte range `[from, to)` this diagnostic anchors to, resolved from the front-end span
+    /// table in Rust (where offsets are UTF-8 bytes). `from == to == 0` when unanchored (no user span).
+    /// The JS side converts these UTF-8 byte offsets to the editor's UTF-16 offsets for a squiggle.
+    pub from: u32,
+    pub to: u32,
 }
 
 /// The outcome of a compile: on success `component` holds the WebAssembly component bytes and
@@ -59,12 +64,52 @@ impl CompileResult {
     }
 }
 
-fn to_js_diag(d: &rcdzc::Diagnostic) -> Diagnostic {
+/// Flatten an `rcdzc::Diagnostic` for JS, resolving its node id to a source byte range through the
+/// front-end span table (`None` → no span, e.g. a synthesized/prelude node or an unanchored decline).
+fn to_js_diag(d: &rcdzc::Diagnostic, spans: Option<&cadenza_syntax::spans::SpanTable>) -> Diagnostic {
+    let node = d.node.unwrap_or(u32::MAX);
+    let (from, to) = d
+        .node
+        .and_then(|n| spans?.get(cadenza_syntax::ast::StructId(n)))
+        .map(|s| (s.start as u32, s.end as u32))
+        .unwrap_or((0, 0));
     Diagnostic {
         error: d.severity == rcdzc::Severity::Error,
         code: d.code.clone().unwrap_or_default(),
         message: d.message.clone(),
-        node: d.node.unwrap_or(u32::MAX),
+        node,
+        from,
+        to,
+    }
+}
+
+/// Parse `text` in `surface` into rcdzc's binary AST bytes AND the front-end span table (node id →
+/// UTF-8 byte range) built from the SAME parse. Because a fresh parse is already in canonical normal
+/// form (`canon.rs` — the readers build structure in the codec's canonical order), encoding to bytes
+/// and decoding into rcdzc's arena preserves the user node ids, so the span table indexes rcdzc's
+/// diagnostics/type nodes directly. Only the s-expression and ML surfaces have a reader; a binary or
+/// output-only (`debug`/`flat`) `from` has no source spans, so `spans` is `None` there.
+fn parse_spanned(
+    text: &str,
+    from: Format,
+) -> Result<(Vec<u8>, Option<cadenza_syntax::spans::SpanTable>), String> {
+    match from {
+        Format::Sexpr => {
+            let (arenas, spans) =
+                cadenza_syntax::sexpr::read_spanned(text).map_err(|e| e.0)?;
+            Ok((cadenza_syntax::codec::encode(&arenas), Some(spans)))
+        }
+        Format::Ml => {
+            let parsed = cadenza_syntax::parser::read_ml(text);
+            if let Some(err) = parsed.errors.first() {
+                return Err(format!("ML parse error at byte {}: {}", err.span.start, err.message));
+            }
+            Ok((cadenza_syntax::codec::encode(&parsed.arenas), Some(parsed.spans)))
+        }
+        // No reader (or output-only) — fall back to the format-agnostic byte conversion, no spans.
+        _ => convert::convert(text.as_bytes(), from, Format::Binary)
+            .map(|b| (b, None))
+            .map_err(|e| e.0),
     }
 }
 
@@ -77,24 +122,27 @@ fn to_js_diag(d: &rcdzc::Diagnostic) -> Diagnostic {
 pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     let from = parse_format(from)?;
 
-    // Text surface -> canonical binary AST. A parse failure becomes a codeless error diagnostic.
-    let ast_bytes = match convert::convert(text.as_bytes(), from, Format::Binary) {
-        Ok(bytes) => bytes,
-        Err(e) => {
+    // Text surface -> canonical binary AST + the span table (so diagnostics carry source ranges). A
+    // parse failure becomes a codeless error diagnostic.
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(msg) => {
             return Ok(CompileResult {
                 component: None,
                 diagnostics: vec![Diagnostic {
                     error: true,
                     code: String::new(),
-                    message: e.0,
+                    message: msg,
                     node: u32::MAX,
+                    from: 0,
+                    to: 0,
                 }],
             });
         }
     };
 
-    // Binary AST -> WebAssembly component. `compile_component` returns the first error diagnostic on
-    // failure; use the full `compile` entry so warnings ride alongside a successful component too.
+    // Binary AST -> WebAssembly component. Use the full `compile` entry so warnings ride alongside a
+    // successful component too.
     let out = rcdzc::compile(
         &[rcdzc::Artifact::new(
             rcdzc::Artifact::KIND_AST,
@@ -103,7 +151,11 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
         )],
         &[rcdzc::Target::Wasm],
     );
-    let diagnostics = out.diagnostics.iter().map(to_js_diag).collect();
+    let diagnostics = out
+        .diagnostics
+        .iter()
+        .map(|d| to_js_diag(d, spans.as_ref()))
+        .collect();
     let component = out
         .artifact(rcdzc::Target::Wasm.artifact_kind())
         .map(|b| b.to_vec());
@@ -111,6 +163,88 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
         component,
         diagnostics,
     })
+}
+
+/// Type-check `text` (in `from` surface) and return every well-formedness diagnostic — WITHOUT
+/// requiring the program to export anything or emit. This is the as-you-type entry: it reads the
+/// surface into an arena + span table, loads a `Db`, and runs the same total fault collection a
+/// compile does (`rcdzc::diagnostics`), so a mid-edit buffer or a set of sibling defs gets its real
+/// type/shape faults with source ranges. Each diagnostic carries `from`/`to` byte offsets resolved
+/// through the span table. A parse failure comes back as one codeless error diagnostic.
+///
+/// Note: like `compile`, this checks DEFINITION BODIES. A bare top-level expression is not a
+/// definition, so the caller wraps a snippet into a module (`(module m (def (main) <expr>) …)`) — the
+/// same wrapping the runnable examples already do — before asking for diagnostics.
+#[wasm_bindgen]
+pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
+    let from = parse_format(from)?;
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(msg) => {
+            return Ok(vec![Diagnostic {
+                error: true,
+                code: String::new(),
+                message: msg,
+                node: u32::MAX,
+                from: 0,
+                to: 0,
+            }]);
+        }
+    };
+    let arenas = match rcdzc::codec::decode(&ast_bytes) {
+        Some(a) => a,
+        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
+    };
+    let mut db = rcdzc::db::Db::load(arenas);
+    let diags = rcdzc::diagnostics(&mut db);
+    Ok(diags.iter().map(|d| to_js_diag(d, spans.as_ref())).collect())
+}
+
+/// The inferred type at a source byte offset — for a hover tooltip. Finds the innermost user node
+/// whose span contains `byte_offset`, reads its solved type from the type column
+/// (`infer::type_of` → `Ty::render_name`), and returns that type text plus the node's byte range (so
+/// the caller highlights exactly the sub-expression). Returns `None` (via a null-carrying result) when
+/// there is no user node at the offset or no meaningful type. Total: never errors on a well-parsed
+/// buffer.
+#[wasm_bindgen(getter_with_clone)]
+pub struct TypeAt {
+    pub type_name: String,
+    pub from: u32,
+    pub to: u32,
+}
+
+#[wasm_bindgen]
+pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt>, JsError> {
+    let from = parse_format(from)?;
+    let (ast_bytes, spans) = match parse_spanned(text, from) {
+        Ok(pair) => pair,
+        Err(_) => return Ok(None), // a buffer that won't parse has no type-at
+    };
+    let Some(spans) = spans else { return Ok(None) };
+    // Resolve the offset to the innermost containing node via the SHARED helper — the SAME
+    // offset→node resolution the `cdz type-at` CLI uses (`SpanTable::node_at_offset`), so the browser
+    // IDE's "type at cursor" and the CLI agree by construction rather than by two copies of the loop.
+    // (The span table only holds user nodes, so any hit is a user node.)
+    let off = byte_offset as usize;
+    let Some(node) = spans.node_at_offset(off) else {
+        return Ok(None);
+    };
+    let span = spans.get(node).expect("node_at_offset returned a spanned node");
+    let arenas = match rcdzc::codec::decode(&ast_bytes) {
+        Some(a) => a,
+        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
+    };
+    let mut db = rcdzc::db::Db::load(arenas);
+    // The node id crosses the copy-don't-depend boundary as its raw index (`cadenza_syntax` and
+    // `rcdzc` each have their own `StructId`, but the byte-identical codec keeps the index space
+    // aligned — the same invariant `type-at` relies on).
+    let ty = rcdzc::infer::type_of(&mut db, rcdzc::ast::StructId(node.0));
+    let name = ty.render_name();
+    Ok(Some(TypeAt {
+        type_name: name,
+        from: span.start as u32,
+        to: span.end as u32,
+    }))
 }
 
 /// Re-render one program from one surface to another — the guide's global syntax toggle.

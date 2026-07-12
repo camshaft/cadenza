@@ -204,6 +204,13 @@ pub enum Prim {
     /// `(Some byte)` / `(None unit)`; a runtime read emits `Core::BytesAt` (a bounds-checked `bytes-get`
     /// boxed into `Some`, else `None`). The byte companion of `List.at`; monomorphic (a byte is Int64).
     BytesAt,
+    /// `String.at` — the FALLIBLE scalar-indexed read. `String → Int64 → (Option String)`: `Some` of the
+    /// ONE-scalar string at that Unicode SCALAR position when in bounds (`0 <= i < scalar-len`), `None`
+    /// otherwise (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping + #A String Is
+    /// A Sequence Of Unicode Scalar Values — indexed by SCALAR, not byte). A CONSTANT string + constant
+    /// index FOLDS to `(Some "<char>")` / `(None unit)` (`chars().nth(i)`); a runtime string declines
+    /// (the byte-rope indexed read arrives later). The string companion of `List.at`.
+    StrAt,
 }
 
 impl Prim {
@@ -253,6 +260,7 @@ impl Prim {
             "str-scalar-len" => Some(Prim::StrScalarLen),
             "str-byte-len" => Some(Prim::StrByteLen),
             "bytes-at" => Some(Prim::BytesAt),
+            "str-at" => Some(Prim::StrAt),
             _ => None,
         }
     }

@@ -3232,17 +3232,17 @@ mod match_engine {
 
     #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
-        // A multi-payload variant VALUE crossing to the host renders its fields inline under the QUALIFIED
-        // variant constructor: `(Rec.Mk 1 2 3)` → `(: ((. Rec Mk) 1 2 3) Rec)` (a user sum's variant
-        // renders qualified). Pins that construction + escape of a 3-field variant (a tuple-payload handle)
-        // round-trips through the resource `encode()`.
+        // A multi-payload variant VALUE crossing to the host renders its fields inline under the variant's
+        // BARE name: `(Rec.Mk 1 2 3)` → `(: (Mk 1 2 3) Rec)` (the same variant-name form built-in sums
+        // use). Pins that construction + escape of a 3-field variant (a tuple-payload handle) round-trips
+        // through the resource `encode()`.
         let Some(v) = run_heap_value_escape(
             "(module m (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main))",
         ) else {
             eprintln!("runtime wasm not found; skipping multi-payload escape run");
             return;
         };
-        assert_eq!(v, "(: ((. Rec Mk) 1 2 3) Rec)");
+        assert_eq!(v, "(: (Mk 1 2 3) Rec)");
     }
 
     #[test]
@@ -4060,6 +4060,43 @@ mod match_engine {
     }
 
     #[test]
+    fn string_at_folds_to_some_of_the_scalar_in_bounds() {
+        // `String.at : String → Int64 → (Option String)` — the fallible SCALAR-indexed read. A constant
+        // string + constant in-range index FOLDS to `(Some "<char>")` at compile time — indexed by
+        // UNICODE SCALAR position, NOT byte offset (`"café" [3]` = "é", though é is bytes 3–4 of the
+        // 5-byte UTF-8; `"😀b" [1]` = "b", though 😀 is 4 bytes / 2 UTF-16 units). Consumed by a match to
+        // a scalar (constant string equality) so `main` returns a Bool — fully foldable, no string escape.
+        for (s, i, want) in [("hello", 1, "e"), ("café", 3, "é"), ("😀b", 1, "b")] {
+            let src = format!(
+                "(module m (def (main) (if (= (match (String.at \"{s}\" {i}) ((Some c) c) ((None _) \"\")) \"{want}\") 1 0)) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                1,
+                "String.at {s:?}[{i}] = {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_at_out_of_range_folds_to_none() {
+        // An out-of-range constant index yields `None` (collections-and-text.md #Indexing And Lookup Are
+        // Fallible, Not Trapping): at/beyond the scalar length (`"hi" [5]`) and a NEGATIVE index (`"hi"
+        // [-1]`, which MUST NOT wrap to a huge offset) both take the `None` arm → -1. The String companion
+        // of the List.at / Bytes.at out-of-bounds Nones.
+        for (s, i) in [("hi", 5), ("hi", -1), ("", 0)] {
+            let src = format!(
+                "(module m (def (main) (match (String.at \"{s}\" {i}) ((Some c) 1) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                -1,
+                "String.at {s:?}[{i}] out of range → None"
+            );
+        }
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0
@@ -4657,6 +4694,35 @@ mod match_engine {
             )))
             .is_ok(),
             "an unguarded same-variant fall-through restores exhaustiveness"
+        );
+    }
+
+    #[test]
+    fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
+        // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
+        // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must
+        // construct, not be misread as NULLARY. `type_in_env` (which reduces a generic variant ctor's
+        // `(meta t)` type-lambda to its scheme) handled `Int`/`Fn`/`List`/`Sum`/`UInt` compound payloads
+        // but had NO `Tuple`/`Record` arm, so a param nested in a tuple/record payload made the ctor arrow
+        // unreadable → `variant_payload_type` = None → `B` looked NULLARY → CDZ0201 on the construction.
+        // A bare/`List a`/`Option a` payload worked (those arms existed); the gap was tuple + record.
+        // Fixed by adding `TupleCtor`/`RecordCtor` arms to `type_in_env` (reduce each element/field type
+        // under the env). The bug was a compile-time REJECT (the ctor looked nullary → CDZ0201), so
+        // COMPILING the construction is the precise guard; the runs are exercised by the corpus cases "a
+        // generic sum with a type parameter inside a tuple/record payload …" (which link the runtime).
+        let tup = "(module m (type Box (B (Tuple a Int64)) N) \
+                     (def (main) (match (Box.B (tuple 7 8)) ((Box.B (tuple x y)) (+ x y)) (Box.N 0))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(tup))).is_ok(),
+            "a generic sum with a type param in a TUPLE payload must compile — not reject B as nullary"
+        );
+        let rec = "(module m (type Box (B (Record (val a))) N) \
+                     (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(rec))).is_ok(),
+            "a generic sum with a type param in a RECORD payload must compile — not reject B as nullary"
         );
     }
 
@@ -6877,13 +6943,11 @@ mod stage1 {
     fn a_generic_sum_escapes_to_the_host_at_a_concrete_instantiation() {
         // A GENERIC `Option` built at `Int64` and RETURNED across the host boundary renders the
         // parameterized type surface `(Option Int64)` (§158, the corpus form), driven by the sum's solved
-        // `Ty::Sum{args:[Int64]}`. Here the program DECLARES its own `(type Option (Some a) None)` — a
-        // USER sum (its declaration occurrence is below the prelude watermark) — so its variant renders
-        // QUALIFIED as the member-access form `(. Option Some)`, the `Type.Variant` reconstruction the
-        // type-directed renderer applies to a user declaration (a built-in prelude `Some` would render
-        // bare; see `bare_prelude_option_needs_no_declaration`). The escape walker's per-variant template
-        // reads the concrete payload type (`Int64`) from the instantiation, so the `Some` arm holds a real
-        // Int64 hole. Composed + run through `cdz-run` (the resource shape, `export: None`).
+        // `Ty::Sum{args:[Int64]}`. Here the program DECLARES its own `(type Option (Some a) None)`; its
+        // variant renders as its BARE name `Some` — uniformly with a built-in sum (the value form does
+        // not depend on built-in-vs-user). The escape walker's per-variant template reads the concrete
+        // payload type (`Int64`) from the instantiation, so the `Some` arm holds a real Int64 hole.
+        // Composed + run through `cdz-run` (the resource shape, `export: None`).
         use crate::testkit::parse;
         let src = "(module m (type Option (Some a) None) \
                      (def (main) (Option.Some 5)) (export main))";
@@ -6902,8 +6966,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: ((. Option Some) 5) (Option Int64))",
-                    "a user-declared generic sum escape renders the instantiation with the qualified variant"
+                    s, "(: (Some 5) (Option Int64))",
+                    "a user-declared generic sum escape renders the instantiation with the bare variant name"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed generic-escape run trapped: {t}"),
@@ -7126,9 +7190,9 @@ mod stage1 {
         // Construction lowers to the right value-heap OPS — `collect_used_ops` reports exactly what
         // `emit` lays down (they must agree, or the import section omits a called op). A single-payload
         // `(Some a)` uses `sum-new` + `box-int` (box the Int64 payload); a nullary `None` uses `sum-new`
-        // + `arr-alloc` (the empty-array unit payload). This proves construction reaches the heap builder
-        // without needing the sum to escape (next tick) or a composed run (a dead sum folds away — a sum
-        // is only observable once it escapes or is matched).
+        // ALONE — its unit payload is the inline-unit CONSTANT (`IMM_UNIT`), so it imports no `arr-alloc`.
+        // This proves construction reaches the heap builder without needing the sum to escape (next tick)
+        // or a composed run (a dead sum folds away — a sum is only observable once it escapes or matched).
         use crate::backend::wasm::select::collect_used_ops;
         use crate::db::Db;
         use crate::testkit::parse;
@@ -7149,7 +7213,10 @@ mod stage1 {
             ops.contains("box-int"),
             "Some boxes its Int64 payload; got {ops:?}"
         );
-        // A nullary variant: `sum-new` + `arr-alloc` (the empty-array unit payload).
+        // A nullary variant: `sum-new` with the INLINE-UNIT CONSTANT payload — so it does NOT import
+        // `arr-alloc`. `arr-alloc(0)` returns the inline unit (`runtime_abi::IMM_UNIT`), so the compiler
+        // pushes that constant directly instead of calling `arr-alloc(0)` — a nullary construction needs
+        // only `sum-new`, no per-payload heap op.
         let src2 = "(module m (type Option (Some Int64) None) \
                       (def (none) Option.None) (export none))";
         let mut db2 = Db::load(parse(src2));
@@ -7163,8 +7230,57 @@ mod stage1 {
         collect_used_ops(&mut db2, none, &mut ops2);
         assert!(ops2.contains("sum-new"), "None emits sum-new; got {ops2:?}");
         assert!(
-            ops2.contains("arr-alloc"),
-            "None's unit payload is an empty array; got {ops2:?}"
+            !ops2.contains("arr-alloc"),
+            "None's unit payload is the inline-unit constant, no arr-alloc; got {ops2:?}"
+        );
+    }
+
+    #[test]
+    fn a_nullary_variant_pushes_the_inline_unit_constant_not_an_arr_alloc_call() {
+        // The nullary-variant unit payload is emitted as the `IMM_UNIT` constant (derived from the
+        // runtime's `cdz-abi` section), NOT a runtime `arr-alloc(0)` call. Asserted at the Lir level: the
+        // construction contains a `ConstI32(IMM_UNIT)` and NO `CallImport("arr-alloc")`. And it runs
+        // correctly (a `Sign` classify over the three nullary variants) — the constant IS the handle
+        // `arr-alloc(0)` would have returned, so `sum-new`/`sum-disc` see the same value.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::runtime_abi::IMM_UNIT;
+        use crate::db::Db;
+        let ast = crate::testkit::parse(
+            "(module m (type Sign Neg Zero Pos) \
+               (def (f (: n Int64)) \
+                  (match (if (< n 0) (Sign.Neg unit) (if (= n 0) (Sign.Zero unit) (Sign.Pos unit))) \
+                    ((Sign.Neg _) -1) ((Sign.Zero _) 0) ((Sign.Pos _) 1))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        assert!(
+            code.iter()
+                .any(|i| matches!(i, Lir::ConstI32(v) if *v == IMM_UNIT as i32)),
+            "a nullary variant pushes the inline-unit constant, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::CallImport("arr-alloc"))),
+            "no arr-alloc call for a nullary variant's unit payload, got: {code:?}"
         );
     }
 
@@ -7189,9 +7305,9 @@ mod stage1 {
         // A single NULLARY export returning a user sum crosses as a resource. `(Option.Some 5)` over a
         // USER `(type Option (Some Int64) None)` is a COMPILE-TIME CONSTANT, so its canonical bytes are
         // baked (the `const_value_ast` `SumNew` arm) and NO value-heap runtime is imported. The variant
-        // renders QUALIFIED — `(. Option Some)` — because the sum is user-declared (a built-in prelude
-        // `Some` would render bare). `(Option.Some 5)` → `(: ((. Option Some) 5) Option)`. The RUNTIME
-        // disc-switch encoder (a sum built from a non-constant payload) is exercised separately by
+        // renders as its BARE name — `Some` — uniformly with a built-in sum (the value form does not
+        // depend on built-in-vs-user). `(Option.Some 5)` → `(: (Some 5) Option)`. The RUNTIME disc-switch
+        // encoder (a sum built from a non-constant payload) is exercised separately by
         // `a_runtime_sum_export_escapes_via_the_heap_walk`. Composed + run through `cdz-run`.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
@@ -7219,8 +7335,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: ((. Option Some) 5) Option)",
-                    "sum escape renders the qualified variant"
+                    s, "(: (Some 5) Option)",
+                    "sum escape renders the bare variant name"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed sum-escape run trapped: {t}"),
@@ -7268,10 +7384,10 @@ mod stage1 {
 
     #[test]
     fn a_nullary_variant_export_escapes_as_unit_payload() {
-        // The nullary arm: `Option.None` over a USER `(type Option …)` renders `(: ((. Option None) unit)
-        // Option)` — a nullary variant carries the unit value, and the user-declared variant renders
-        // QUALIFIED as the member-access form. The value is a compile-time constant, so its bytes are
-        // baked (no runtime import); the `None` template has NO holes (the `unit` payload is static).
+        // The nullary arm: `Option.None` over a USER `(type Option …)` renders `(: (None unit) Option)` —
+        // a nullary variant carries the unit value, and the variant renders as its BARE name `None`
+        // (uniform with a built-in sum). The value is a compile-time constant, so its bytes are baked (no
+        // runtime import); the `None` template has NO holes (the `unit` payload is static).
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (main) Option.None) (export main))";
@@ -7290,8 +7406,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: ((. Option None) unit) Option)",
-                    "nullary variant escape renders the qualified variant"
+                    s, "(: (None unit) Option)",
+                    "nullary variant escape renders the bare variant name"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed None-escape run trapped: {t}"),
@@ -9478,10 +9594,11 @@ mod bench {
 // denies a component), an Emit request is today's `Target` reached through the list, and the no-sidecar
 // path is unchanged.
 mod sidecar_driven {
+
     use crate::abi::{Artifact, Severity};
     use crate::backend::Target;
     use crate::compile::compile;
-    use crate::sidecar::{self, KIND_TYPE_INFO, KIND_USES, Query, Request};
+    use crate::sidecar::{self, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request};
     use crate::testkit::parse;
 
     /// Build the two input artifacts (the AST + a sidecar request list) for `src` and `requests`.
@@ -9726,6 +9843,64 @@ mod sidecar_driven {
         );
         // No component: the request list could not be understood, so nothing was driven.
         assert!(out.artifact("component").is_none());
+    }
+
+    #[test]
+    fn a_type_at_query_types_the_node_at_a_source_offset() {
+        // The "type at cursor" query: the CONSUMER resolves a source offset to the innermost node id
+        // (via the span table it holds), then asks `TypeAt { node }`. This proves the split — offset→node
+        // at the boundary (span-owning), node→type in the compiler (span-free). Here the literal `42` is
+        // annotated Int64; hovering it yields `Int64`.
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        // The consumer parses WITH spans and maps the offset of `42` to its node. Use `read_spanned`
+        // (a SINGLE top-level form stays bare) — the same root convention the real `cdz` CLI uses; the
+        // whole-program `read_all_spanned` would wrap a lone `(module …)` in `(do …)`, and the
+        // compiler's top-level scan would then miss the module's defs. The AST crosses to the compiler
+        // as BYTES (the copy-don't-depend bridge): `cadenza_syntax`'s codec produces the byte-identical
+        // form `rcdzc::codec::decode` reads, so the `StructId`s line up — which is exactly what lets the
+        // span-resolved node id name the same node inside the compiler.
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse with spans");
+        // Hover the `42` literal — the innermost node there is the literal itself, whose width the
+        // annotation `(: 42 Int64)` pins to Int64 (the type column carries the SOLVED type, not the
+        // bare-literal deferred one). `node_at_offset` maps the offset to that literal node.
+        let off = src.find("42").expect("the literal is in the source");
+        let node = spans
+            .node_at_offset(off)
+            .expect("a node at the literal offset");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    }
+
+    #[test]
+    fn a_type_at_query_for_a_non_user_node_is_total() {
+        // A node id past the program is not a user node — a DEFINED "unknown", never a crash (the query
+        // is total, guarding a malformed request the span table would never actually produce).
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(src, &[Request::Query(Query::TypeAt { node: 100_000 })]),
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_AT).as_deref(),
+            Some("unknown")
+        );
     }
 }
 

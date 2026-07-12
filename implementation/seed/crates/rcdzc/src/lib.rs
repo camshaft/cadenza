@@ -82,7 +82,7 @@ pub mod cli;
 
 pub use abi::{Artifact, CompileOutput, Diagnostic, Severity};
 pub use backend::Target;
-pub use compile::{compile, compile_component};
+pub use compile::{compile, compile_component, diagnostics};
 pub use host::run_with_compiler_stack;
 pub use sidecar::{Query, Request};
 

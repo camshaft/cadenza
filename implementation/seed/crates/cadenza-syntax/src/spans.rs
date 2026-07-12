@@ -53,4 +53,52 @@ impl SpanTable {
     pub fn is_empty(&self) -> bool {
         self.spans.is_empty()
     }
+
+    /// The INNERMOST occurrence whose span contains `byte_offset` — the deepest node under a cursor.
+    /// "Innermost" = the smallest-length containing span (a child's span is nested inside its parent's,
+    /// so the smallest one is the leaf/most-specific node). Returns `None` when no recorded span
+    /// contains the offset. This is the offset→node resolution a "type at cursor" (hover) needs: the
+    /// caller maps a source position to a node id, then asks the compiler for that node's type — so the
+    /// COMPILER stays span-free (the span table lives here, in the front-end) while the type query is by
+    /// node identity. Shared so the `cdz type-at` CLI and the browser IDE resolve a cursor the same way.
+    pub fn node_at_offset(&self, byte_offset: usize) -> Option<StructId> {
+        let mut best: Option<(StructId, Span)> = None;
+        for (i, &s) in self.spans.iter().enumerate() {
+            if s.contains(byte_offset) && best.is_none_or(|(_, b)| s.len() < b.len()) {
+                best = Some((StructId(i as u32), s));
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sexpr;
+
+    #[test]
+    fn node_at_offset_finds_the_innermost_node() {
+        // `(+ a b)` — hovering the `a` returns the `a` leaf, NOT the enclosing `(+ a b)` list, because
+        // the innermost (smallest) containing span wins.
+        let src = "(+ a b)";
+        let (arenas, spans) = sexpr::read_all_spanned(src).expect("parse");
+        let a_off = src.find('a').unwrap();
+        let node = spans.node_at_offset(a_off).expect("a node at `a`");
+        assert_eq!(
+            arenas.as_name(node),
+            Some("a"),
+            "innermost node under `a` is the `a` leaf"
+        );
+
+        // An offset on the `+` head returns the `+` leaf, not the list.
+        let plus_off = src.find('+').unwrap();
+        let head = spans.node_at_offset(plus_off).expect("a node at `+`");
+        assert_eq!(arenas.as_name(head), Some("+"));
+    }
+
+    #[test]
+    fn node_at_offset_past_the_source_is_none() {
+        let (_, spans) = sexpr::read_all_spanned("(+ 1 2)").expect("parse");
+        assert_eq!(spans.node_at_offset(9999), None);
+    }
 }

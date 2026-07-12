@@ -111,7 +111,10 @@ export function useCadenzaEditor(
       case "timeout":
         return { kind: "timeout" };
       case "error":
-        return { kind: "declined", diags: [{ error: true, code: "", message: result.message, node: -1 }] };
+        return {
+          kind: "declined",
+          diags: [{ error: true, code: "", message: result.message, node: -1, from: 0, to: 0 }],
+        };
     }
   }, [text, wrap]);
 

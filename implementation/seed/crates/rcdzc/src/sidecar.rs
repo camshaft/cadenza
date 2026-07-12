@@ -43,6 +43,9 @@ pub const KIND_TYPE_INFO: &str = "type-info";
 /// The output artifact kind for a `UsesOf` query result — the node indices that reference a name.
 pub const KIND_USES: &str = "uses";
 
+/// The output artifact kind for a `TypeAt` query result — the rendered type of a specific node.
+pub const KIND_TYPE_AT: &str = "type-at";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -70,6 +73,15 @@ pub enum Query {
     /// consumer holding the span table maps to source regions (`query-engine.md` §Provenance Is
     /// Recovered By Back-Reference). The defining occurrence itself is not a use.
     UsesOf { name: String },
+    /// The solved type of a SPECIFIC NODE, by its `StructId` — a read of the type column
+    /// (`infer::type_of` → `Ty::render_name`). This is the node-granular companion of `TypeOf` (which
+    /// is by definition name): given a node id, answer its rendered type. It is the query behind a
+    /// "type at cursor" hover — the CONSUMER (which holds the span table) resolves a source OFFSET to
+    /// the innermost node id and asks this, so the compiler stays span-free (`query-engine.md`
+    /// §Provenance Is Recovered By Back-Reference: the compiler emits/consumes node IDENTITY, the
+    /// front-end owns spans). Total: a node id past the program, or one with no meaningful type, yields
+    /// a defined "unknown" answer rather than an error.
+    TypeAt { node: u32 },
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -85,6 +97,7 @@ mod tag {
     pub const EMIT_WASM_DEBUG: u8 = 0x03;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
+    pub const QUERY_TYPE_AT: u8 = 0x12;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -117,6 +130,9 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_USES_OF => Some(Request::Query(Query::UsesOf {
             name: read_string(r)?,
         })),
+        tag::QUERY_TYPE_AT => Some(Request::Query(Query::TypeAt {
+            node: u32::try_from(r.read_varu64()?).ok()?,
+        })),
         _ => None,
     }
 }
@@ -145,6 +161,10 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Query(Query::UsesOf { name }) => {
             out.push(tag::QUERY_USES_OF);
             write_string(out, name);
+        }
+        Request::Query(Query::TypeAt { node }) => {
+            out.push(tag::QUERY_TYPE_AT);
+            leb128::write_u64(out, *node as u64);
         }
     }
 }
@@ -198,6 +218,22 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             QueryResult {
                 kind: KIND_USES,
                 name: name.clone(),
+                bytes: text.into_bytes(),
+            }
+        }
+        Query::TypeAt { node } => {
+            let id = crate::ast::StructId(*node);
+            // Total: a node id past the program is not a user node — a defined "unknown", not a crash.
+            // (The consumer resolves an offset to a node via the span table, which only holds user
+            // nodes, so a well-formed request always names a user node; this guards a malformed one.)
+            let text = if db.is_user_node(id) {
+                crate::infer::type_of(db, id).render_name()
+            } else {
+                "unknown".to_string()
+            };
+            QueryResult {
+                kind: KIND_TYPE_AT,
+                name: node.to_string(),
                 bytes: text.into_bytes(),
             }
         }
@@ -290,6 +326,7 @@ mod tests {
             Request::Query(Query::UsesOf {
                 name: "helper".into(),
             }),
+            Request::Query(Query::TypeAt { node: 42 }),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

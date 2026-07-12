@@ -5,12 +5,30 @@
 /// sync, preserving edits). Run compiles the current text and executes it, showing the value / trap /
 /// diagnostics. A snippet meant to fail (to teach a diagnostic) sets `expect="error"`: a declined
 /// compile then reads as the intended outcome rather than a problem.
+///
+/// On first interaction (focus) the editor upgrades to a minimal IDE — inline error squiggles + a
+/// lint gutter + type-on-hover — gated so a chapter full of editors doesn't compile-storm on load.
+/// "Open in playground" hands the current buffer to the full `/playground` experience.
 
 import { useState } from "react";
 import { CodeEditor } from "../editor/CodeEditor.tsx";
-import { useCadenzaEditor, type EditorOutcome } from "./useCadenzaEditor.ts";
+import { useCadenzaEditor, wrapModule, type EditorOutcome } from "./useCadenzaEditor.ts";
 import { StatusIcon } from "./StatusIcon.tsx";
+import { OpenInPlayground } from "./OpenInPlayground.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
+
+/// Wrap the editor text into a compilable module for diagnostics/hover, AND report the UTF-8 byte
+/// length of the wrapper prefix so spans map back to the editor text. `wrapModule` trims the snippet,
+/// so we locate the trimmed body within the wrapped output for an exact prefix. When the text is
+/// already a full module (wrap is a no-op) the prefix is 0.
+function prepareWrapped(editorText: string, surface: Surface, wrap: boolean) {
+  if (!wrap) return { compiled: editorText, wrapPrefixBytes: 0 };
+  const compiled = wrapModule(editorText, surface);
+  const trimmed = editorText.trim();
+  const idx = trimmed ? compiled.indexOf(trimmed) : -1;
+  const wrapPrefixBytes = idx < 0 ? 0 : new TextEncoder().encode(compiled.slice(0, idx)).length;
+  return { compiled, wrapPrefixBytes };
+}
 
 interface Props {
   /** The snippet source, in `authoredIn` surface. Wrapped in a module automatically if `wrap`. */
@@ -30,6 +48,9 @@ type Status = { phase: "idle" } | { phase: "busy" } | { phase: "done"; outcome: 
 export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props) {
   const editor = useCadenzaEditor(source, authoredIn, wrap);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
+  // The minimal IDE (squiggles + hover) turns on once the reader focuses the editor, so a page full
+  // of examples doesn't fire a compile per editor on load.
+  const [ideOn, setIdeOn] = useState(false);
 
   async function doRun() {
     setStatus({ phase: "busy" });
@@ -48,6 +69,10 @@ export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "
       <div className="flex items-center justify-between border-b border-slate-700/60 bg-slate-800/50 px-3 py-1.5">
         <span className="text-xs font-medium text-slate-400">{title ?? "Example"}</span>
         <div className="flex items-center gap-2">
+          <OpenInPlayground
+            getText={() => prepareWrapped(editor.text, editor.surface, wrap).compiled}
+            surface={() => editor.surface}
+          />
           <button
             onClick={reset}
             className="rounded px-2 py-1 text-xs text-slate-400 transition hover:bg-slate-700/60 hover:text-slate-200"
@@ -64,7 +89,20 @@ export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "
         </div>
       </div>
 
-      <CodeEditor value={editor.text} onChange={editor.setText} />
+      <div onFocusCapture={() => setIdeOn(true)}>
+        <CodeEditor
+          value={editor.text}
+          onChange={editor.setText}
+          ide={
+            ideOn
+              ? {
+                  surface: () => editor.surface,
+                  prepare: (t, s) => prepareWrapped(t, s, wrap),
+                }
+              : undefined
+          }
+        />
+      </div>
 
       {status.phase !== "idle" && (
         <StatusPane busy={busy} outcome={status.phase === "done" ? status.outcome : null} expect={expect} />

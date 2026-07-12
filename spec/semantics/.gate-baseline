@@ -105,6 +105,8 @@ pass	a function whose name is capitalized is called, not treated as a constructo
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a generic sum with a type parameter inside a record payload constructs and projects
+pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
@@ -178,6 +180,7 @@ pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
 pass	a negative right-shift count traps rather than masking
 pass	a negative shift count traps rather than masking
+pass	a negative string index yields None rather than wrapping to a large offset
 pass	a negative unsigned integer width is rejected
 pass	a negative width is not honored as a narrow type
 pass	a nested Result pattern selects the inner Err arm
@@ -231,7 +234,7 @@ pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
-pass	a recursive user sum type is built at run time and renders with qualified variant names
+pass	a recursive user sum type is built at run time and renders its variant names
 pass	a reference to an unbound name is rejected before running
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a right shift by the bit width or more traps rather than masking
@@ -303,11 +306,14 @@ pass	a tuple payload returned through a helper from a built-in Option must not t
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a two-arm Bool match selects its second (false) arm
+pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
+pass	a user sum's nullary variant escapes with its bare variant name
+pass	a user sum's payload variant escapes with its bare variant name
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
 pass	a well-formed annotation still checks and accepts a matching type (the control)
@@ -457,6 +463,10 @@ pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	splitting a tuple beyond its arity is rejected
 pass	string equality
+pass	string indexing addresses Unicode scalar values, not bytes
+pass	string indexing at or beyond the length yields None
+pass	string indexing past a supplementary-plane scalar lands on the next scalar
+pass	string indexing returns Some of the character
 pass	string inequality
 pass	string length
 pass	string length counts scalar values after normalization
@@ -641,7 +651,6 @@ todo	a name bound to a string keys a map by its value, not the literal name
 todo	a named function is partially applied, bound, and used
 todo	a named multi-argument function applies in explicit curried form
 todo	a nearer handler on the call chain shadows an outer one
-todo	a negative string index yields None rather than wrapping to a large offset
 todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
@@ -999,10 +1008,6 @@ todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	string concatenation
-todo	string indexing addresses Unicode scalar values, not bytes
-todo	string indexing at or beyond the length yields None
-todo	string indexing past a supplementary-plane scalar lands on the next scalar
-todo	string indexing returns Some of the character
 todo	string slicing yields Some of the substring
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters
