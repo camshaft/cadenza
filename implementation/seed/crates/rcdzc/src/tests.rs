@@ -4180,6 +4180,48 @@ mod match_engine {
     }
 
     #[test]
+    fn string_slice_folds_in_range_to_some_of_the_substring() {
+        // `String.slice : String → Int64 → Int64 → (Option String)` — the fallible SCALAR sub-range read
+        // `[start, end)`. A constant string + constant in-range bounds FOLD to `(Some "<substr>")`,
+        // indexed by UNICODE SCALAR position, NOT byte offset (`"héllo" [0,2)` = "hé", though é is two
+        // UTF-8 bytes). `start == end` is an in-range EMPTY slice (Some ""), not None. Consumed by a match
+        // + constant string equality so `main` returns a Bool — fully foldable.
+        for (s, a, b, want) in [
+            ("hello world", 0, 5, "hello"),
+            ("hello", 1, 4, "ell"),
+            ("héllo", 0, 2, "hé"),
+            ("hello", 2, 2, ""),
+        ] {
+            let src = format!(
+                "(module m (def (main) (if (= (match (String.slice \"{s}\" {a} {b}) ((Some x) x) ((None _) \"!\")) \"{want}\") 1 0)) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                1,
+                "String.slice {s:?}[{a},{b}) = {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_slice_out_of_range_folds_to_none() {
+        // A range outside `0 <= start <= end <= scalar-len` has no defined substring → `None`
+        // (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping): end beyond the length
+        // (`"hi" [0,5)`), a REVERSED range (`"hello" [3,1)`), and a NEGATIVE start (`"hello" [-1,3)`, which
+        // MUST NOT wrap to a huge unsigned offset) all take the `None` arm → -1.
+        for (s, a, b) in [("hi", 0, 5), ("hello", 3, 1), ("hello", -1, 3)] {
+            let src = format!(
+                "(module m (def (main) (match (String.slice \"{s}\" {a} {b}) ((Some x) 1) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                -1,
+                "String.slice {s:?}[{a},{b}) out of range → None"
+            );
+        }
+    }
+
+    #[test]
     fn a_runtime_list_index_reads_the_element_through_vec_get() {
         // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
         // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0

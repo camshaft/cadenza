@@ -228,6 +228,13 @@ pub enum Prim {
     /// join arrives with the runtime string heap). The compiler builds error messages and export names
     /// this way (collections-and-text.md #Strings Concatenate).
     StrConcat,
+    /// `String.slice` — the FALLIBLE sub-range read `String → Int64 → Int64 → (Option String)` by SCALAR
+    /// offsets (`start`, `end`, half-open `[start, end)`). In range (`0 <= start <= end <= scalar-len`) →
+    /// `Some substring`, else `None` (a reversed, over-long, or negative bound). A CONSTANT string +
+    /// constant bounds FOLD to `(Some "<substr>")` / `(None unit)` (indexed by Unicode scalar, NOT byte);
+    /// a runtime string declines (the byte-rope slice arrives later). The string companion of
+    /// `Bytes.slice`, but cut by scalar offset and with an `(start, end)` — not `(start, len)` — range.
+    StrSlice,
 }
 
 impl Prim {
@@ -282,6 +289,7 @@ impl Prim {
             "bytes-compact" => Some(Prim::BytesCompact),
             "str-at" => Some(Prim::StrAt),
             "str-concat" => Some(Prim::StrConcat),
+            "str-slice" => Some(Prim::StrSlice),
             _ => None,
         }
     }

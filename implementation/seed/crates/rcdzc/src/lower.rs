@@ -553,6 +553,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
                 // runtime string declines (the byte-rope read is a later increment).
                 Some(Prim::StrAt) if args.len() == 2 => lower_str_at(db, id, args[0], args[1]),
+                // `String.slice` — the FALLIBLE sub-range read by SCALAR offsets `[start, end)`. FOLD a
+                // constant string + constant bounds to `(Some "<substr>")` in range / `None` out (reversed,
+                // over-long, or negative). A runtime string declines (the byte-rope slice is a later
+                // increment).
+                Some(Prim::StrSlice) if args.len() == 3 => {
+                    lower_str_slice(db, id, args[0], args[1], args[2])
+                }
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
                 // concatenation (the result is another constant `String`). The value form is always NFC,
                 // and NFC is NOT closed under concatenation in general (a combining mark starting the RIGHT
@@ -2626,6 +2633,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrByteLen
         | Prim::StrAt
         | Prim::StrConcat
+        | Prim::StrSlice
         | Prim::StringTy
         | Prim::BytesAt
         | Prim::BytesConcat
@@ -2918,6 +2926,63 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
     }
 }
 
+/// Lower `(String.slice string start end)` — the fallible SCALAR sub-range read, half-open `[start,
+/// end)`. FOLD when all three operands are constant: cut the string by UNICODE SCALAR position (`chars`,
+/// NOT byte offset — collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values). The
+/// range is well-defined only when `0 <= start <= end <= scalar-len`: then `(Some "<substr>")` (a fresh
+/// `Core::ConstStr` of the selected scalars — `start == end` yields the empty string, present not None);
+/// any bound outside that (reversed `end < start`, over-long `end > len`, or negative) yields `(None
+/// unit)`. Builds a `Core::SumNew` at the result Option's discriminants, riding the ordinary sum
+/// fold/escape/match — no string heap. A runtime string declines; a poison operand propagates.
+fn lower_str_slice(
+    db: &mut Db,
+    id: StructId,
+    string: StructId,
+    start: StructId,
+    end: StructId,
+) -> Core {
+    for operand in [string, start, end] {
+        if let Core::Poison(r) = core_of(db, operand) {
+            return Core::Poison(r);
+        }
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.slice result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, string), core_of(db, start), core_of(db, end)) {
+        (Core::ConstStr(s), Core::ConstInt(a), Core::ConstInt(b)) => {
+            let scalars: Vec<char> = s.chars().collect();
+            let len = scalars.len() as i64;
+            // The range is valid iff `0 <= start <= end <= scalar-len` (signed — a negative bound is out
+            // of range, NOT wrapped to a large unsigned offset). `start == end` is an in-range empty slice.
+            match (a.to_i64(), b.to_i64()) {
+                (Some(a), Some(b)) if a >= 0 && a <= b && b <= len => {
+                    let sub: String = scalars[a as usize..b as usize].iter().collect();
+                    trace!(target: "rcdzc::fold", node = id.0, "String.slice folds to Some (in-range constant bounds)");
+                    let payload = db.push_atom(crate::ast::Leaf::Str(sub));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                _ => {
+                    trace!(target: "rcdzc::fold", node = id.0, "String.slice folds to None (out-of-range constant bounds)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        // A runtime string or runtime bound — the byte-rope slice is a later increment.
+        _ => Core::Poison(Reject::decline(
+            "String.slice on a runtime string is not yet computed (constant strings only)",
+        )),
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3198,6 +3263,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BytesCompact => "bytes-compact",
         Prim::StrAt => "str-at",
         Prim::StrConcat => "str-concat",
+        Prim::StrSlice => "str-slice",
     }
 }
 

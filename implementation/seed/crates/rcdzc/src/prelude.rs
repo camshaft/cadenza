@@ -282,6 +282,13 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let concat_op = list_op_record(ast, "str-concat", concat_ty);
     let concat_key = push_atom(ast, Leaf::Name("concat".to_string()));
     children.push(push_list(ast, vec![concat_key, concat_op]));
+    // `slice : String → Int64 → Int64 → (Option String)` — the fallible sub-range read by SCALAR offsets
+    // (`start`, `end`, half-open). In range (`0 <= start <= end <= scalar-len`) → `Some substring`, else
+    // `None`. A constant string + constant bounds FOLD.
+    let slice_ty = string_slice_type(ast);
+    let slice_op = list_op_record(ast, "str-slice", slice_ty);
+    let slice_key = push_atom(ast, Leaf::Name("slice".to_string()));
+    children.push(push_list(ast, vec![slice_key, slice_op]));
     push_list(ast, children)
 }
 
@@ -411,6 +418,30 @@ fn string_concat_type(ast: &mut Arenas) -> StructId {
     let inner = arrow_type(ast, rhs, out); // (-> String String)
     let lhs = intrinsic_node(ast, "String");
     let body = arrow_type(ast, lhs, inner); // (-> String (-> String String))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> String (-> Int64 (-> Int64 (Option String)))))` for `String.slice` — the
+/// FALLIBLE sub-range read by SCALAR offsets: take a string, a `start` and an `end` (both `Int64`,
+/// half-open `[start, end)`), return `(Option String)` (`Some` of the substring when `0 <= start <= end
+/// <= scalar-len`, else `None`). A ZERO-PARAM `fn` wrapper (see [`string_to_int64_type`] for why). The
+/// `String` param + `Option`'s `String` arg are `(intrinsic "String")` (→ `Ty::String`); the string
+/// companion of `Bytes.slice`, returning `Option String` rather than `Option Bytes` (and cutting by
+/// SCALAR offset, not byte).
+fn string_slice_type(ast: &mut Arenas) -> StructId {
+    let option_string = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let string = intrinsic_node(ast, "String");
+        push_list(ast, vec![option, string])
+    };
+    let end_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let end_arrow = arrow_type(ast, end_i, option_string); // (-> Int64 (Option String))
+    let start_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let start_arrow = arrow_type(ast, start_i, end_arrow); // (-> Int64 (-> Int64 (Option String)))
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, string, start_arrow); // (-> String (-> Int64 (-> Int64 (Option String))))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
