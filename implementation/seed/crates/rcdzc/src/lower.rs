@@ -1360,7 +1360,16 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     match (lhs, rhs) {
         (Core::ConstInt(a), Core::ConstInt(b)) => fold_arith(op, a, b),
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        _ => {
+        // ALGEBRAIC IDENTITY: one operand is a constant whose value makes the op a NO-OP or a constant
+        // result — the whole checked operation (and its overflow guard) is eliminated at lowering. Only
+        // the identities that are SAFE at every width and never trap are applied (see `arith_identity`);
+        // the RESULT keeps the op's solved type because the runtime operand shares it (binary-op
+        // unification), and a `0`/`1` constant grounds to that width at selection.
+        (lc, rc) => {
+            if let Some(simplified) = arith_identity(db, op, args[0], &lc, args[1], &rc) {
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic identity simplified (op elided)");
+                return simplified;
+            }
             trace!(target: "rcdzc::lower", op = intrinsic_name(op), "arithmetic stays runtime (operand not constant)");
             Core::Arith {
                 op,
@@ -1368,6 +1377,91 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 rhs: args[1],
             }
         }
+    }
+}
+
+/// Apply a SAFE algebraic identity to a runtime arithmetic op with ONE constant operand, returning the
+/// simplified core (the runtime operand's own core, or a constant) — or `None` when no identity applies
+/// and the op stays a runtime `Arith`. `lc`/`rc` are the already-lowered operand cores; `lhs`/`rhs`
+/// their AST occurrences. Every identity here is exact at EVERY width and never CHANGES the value; the
+/// PASSTHROUGH identities keep the runtime operand (so its own traps still fire), while the ANNIHILATOR
+/// identities (`x*0`, `x&0` → `0`) DISCARD the operand and so are applied ONLY when the discarded
+/// operand cannot trap (`is_trap_free`) — else eliding it would drop a defined trap (`(* (/ a b) 0)`
+/// must still trap on `b==0`; `numeric-model.md`/§div traps are defined outcomes, not to be optimized
+/// away). Applied identities:
+///  - `x + 0` = `0 + x` = `x - 0` = `x` (adding/subtracting 0 never overflows; keeps x);
+///  - `x * 1` = `1 * x` = `x` (keeps x); `x * 0` = `0 * x` = `0` (ONLY if x is trap-free — discards x);
+///  - `x | 0` = `0 | x` = `x ^ 0` = `0 ^ x` = `x` (keeps x); `x & 0` = `0 & x` = `0` (trap-free x only);
+///  - `x << 0` = `x >> 0` = `x` (a zero shift COUNT is a no-op — count is the RIGHT operand; keeps x).
+///
+/// Deliberately NOT applied: `0 - x` (negation traps at MIN), `x & allbits` (all-ones is width-
+/// dependent), `0 << x` / `0 >> x` (a non-constant count must still trap if out of range), `x * 2^k →
+/// x << k` (mul's and shift's overflow checks differ — strength-reduction, not an identity).
+fn arith_identity(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    lc: &Core,
+    rhs: StructId,
+    rc: &Core,
+) -> Option<Core> {
+    // A constant operand's value tested against a small literal (0 or 1), by value (magnitude-agnostic).
+    let is =
+        |c: &Core, k: i64| matches!(c, Core::ConstInt(v) if v.eq_value(&IntValue::from_i64(k)));
+    let zero = || Core::ConstInt(IntValue::from_i64(0));
+    match op {
+        // `x + 0` / `0 + x` → x.
+        Prim::Add if is(rc, 0) => Some(lc.clone()),
+        Prim::Add if is(lc, 0) => Some(rc.clone()),
+        // `x - 0` → x. (`0 - x` is negation — NOT an identity, would need a trap-checked negate.)
+        Prim::Sub if is(rc, 0) => Some(lc.clone()),
+        // `x * 1` / `1 * x` → x (keeps x).
+        Prim::Mul if is(rc, 1) => Some(lc.clone()),
+        Prim::Mul if is(lc, 1) => Some(rc.clone()),
+        // `x * 0` / `0 * x` → 0 — DISCARDS x, so only when x cannot trap.
+        Prim::Mul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
+        Prim::Mul if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
+        // `x | 0` / `0 | x` / `x ^ 0` / `0 ^ x` → x.
+        Prim::BitOr | Prim::BitXor if is(rc, 0) => Some(lc.clone()),
+        Prim::BitOr | Prim::BitXor if is(lc, 0) => Some(rc.clone()),
+        // `x & 0` / `0 & x` → 0 — DISCARDS x, so only when x cannot trap.
+        Prim::BitAnd if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
+        Prim::BitAnd if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
+        // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
+        Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
+        _ => None,
+    }
+}
+
+/// Whether the node at `id` lowers to a core that CANNOT TRAP at run time — so discarding it (an
+/// annihilator identity like `x * 0 → 0`) loses no defined trap. CONSERVATIVE: only a value with no
+/// checked operation anywhere inside it. Trap-free = a leaf (constant/param/local/unit), a wrap
+/// (total), or a bitwise op / conversion / projection over trap-free operands. NOT trap-free = `+`/
+/// `-`/`*`/`<<`/`>>` (overflow/count guards), `/`/`%` (÷0, MIN/-1), a call (its body may trap), an
+/// `if`/`match` (a branch may trap), a sum/tuple/record construct (may allocate/box — treated as
+/// possibly-effecting here). Reads the operand's already-lowered core recursively.
+fn is_trap_free(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::Unit
+        | Core::Param { .. }
+        | Core::LocalRef { .. } => true,
+        // Bitwise ops are total; a comparison never traps — trap-free if their operands are.
+        Core::Arith {
+            op: Prim::BitAnd | Prim::BitOr | Prim::BitXor,
+            lhs,
+            rhs,
+        }
+        | Core::Compare { lhs, rhs, .. } => is_trap_free(db, lhs) && is_trap_free(db, rhs),
+        // `wrap` is total (never traps) — trap-free if its operand is.
+        Core::Convert {
+            op: Prim::Wrap,
+            operand,
+        } => is_trap_free(db, operand),
+        // Everything else — checked arithmetic (+/-/*/shifts), div/rem, calls, control flow, heap
+        // constructs, poison — is conservatively treated as possibly-trapping.
+        _ => false,
     }
 }
 

@@ -2431,6 +2431,52 @@ mod runtime_ops {
             24
         );
     }
+
+    // ── algebraic identities: an op with an identity constant elides the checked op ───────────────
+
+    #[test]
+    fn algebraic_identities_compute_correctly() {
+        // Each identity must produce exactly the operand's value (or the annihilator's 0), at run time.
+        assert_eq!(run::<i64>("(: a Int64)", "(+ a 0)", &[Val::S64(7)]), 7); // x+0 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(+ 0 a)", &[Val::S64(7)]), 7); // 0+x = x
+        assert_eq!(run::<i64>("(: a Int64)", "(- a 0)", &[Val::S64(7)]), 7); // x-0 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(* a 1)", &[Val::S64(7)]), 7); // x*1 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(* 1 a)", &[Val::S64(7)]), 7); // 1*x = x
+        assert_eq!(run::<i64>("(: a Int64)", "(* a 0)", &[Val::S64(7)]), 0); // x*0 = 0
+        assert_eq!(run::<i64>("(: a Int64)", "(| a 0)", &[Val::S64(5)]), 5); // x|0 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(^ a 0)", &[Val::S64(5)]), 5); // x^0 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(& a 0)", &[Val::S64(5)]), 0); // x&0 = 0
+        assert_eq!(run::<i64>("(: a Int64)", "(<< a 0)", &[Val::S64(5)]), 5); // x<<0 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(>> a 0)", &[Val::S64(5)]), 5); // x>>0 = x
+        // An identity that KEEPS the operand still lets the operand's own trap fire: `(+ (* a b) 0)` = x
+        // but if `(* a b)` overflows it still traps (the +0 is elided, not the product).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(+ (* a b) 0)",
+            &[Val::S64(i64::MAX), Val::S64(2)]
+        ));
+    }
+
+    #[test]
+    fn an_annihilator_does_not_elide_a_trap() {
+        // `x * 0 → 0` DISCARDS x — but only when x cannot trap. `(* (/ a b) 0)` must STILL trap on b==0
+        // (division-by-zero is a defined trap, not to be optimized away by the annihilator).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(* (/ a b) 0)",
+            &[Val::S64(1), Val::S64(0)]
+        ));
+        // With a non-zero divisor it does NOT trap and the annihilator gives 0 (the division ran but its
+        // result was multiplied by 0).
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(* (/ a b) 0)",
+                &[Val::S64(10), Val::S64(2)]
+            ),
+            0
+        );
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
