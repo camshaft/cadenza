@@ -1906,11 +1906,21 @@ fn emit(
             Ok(())
         }
         // A runtime `Bytes.slice(bytes, start, len)` — the fallible sub-range read. Bounds-check `start >=
-        // 0 && len >= 0 && start + len <= bytes-len` (all i64), then in bounds build `Some(bytes-slice(
-        // bytes, start, len))` — `bytes-slice` CONSUMES its buffer, but `bytes-len` above only BORROWED it,
-        // so `dup` the handle before the consuming slice — else `None`. The slice result is a Bytes HANDLE,
-        // the `Some` payload directly (no box, unlike `at`'s byte value). Three scratch slots (bytes i32,
-        // start i64, len i64) above `base`; operand recursions float above them.
+        // 0 && len >= 0 && start <= bytes-len && len <= bytes-len - start` (all i64), then in bounds build
+        // `Some(bytes-slice(bytes, start, len))` — `bytes-slice` CONSUMES its buffer, but `bytes-len` above
+        // only BORROWED it, so the one owned ref is consumed exactly by the slice — else `None`. The slice
+        // result is a Bytes HANDLE, the `Some` payload directly (no box, unlike `at`'s byte value). Four
+        // scratch slots (bytes i32, start i64, len i64, byte-count i64) above `base`; operand recursions
+        // float above them.
+        //
+        // ⚠ The predicate is OVERFLOW-SAFE. The naive `start + len <= bytes-len` OVERFLOWS: for
+        // attacker-chosen `start`/`len` near i64::MAX the i64 sum wraps to a negative value that trivially
+        // passes the signed `<=`, wrongly taking the in-range path (a wrong `Some`, or a trap when the
+        // i32-wrapped index exceeds the runtime's u32 range) — a soundness hole in a FALLIBLE op that
+        // promises `None`, never a trap. Instead, once `start >= 0` holds, `bytes-len - start` (with the
+        // `start <= bytes-len` guard, so the difference is in `[0, bytes-len]`) cannot underflow — a small
+        // u32-extended non-negative i64 — and `len <= bytes-len - start` is the same range test with no
+        // add, so no sum ever overflows. Mirrors the const-fold path's i128 check (`lower_bytes_slice`).
         Core::BytesSlice {
             bytes,
             start,
@@ -1921,19 +1931,28 @@ fn emit(
             let bytes_slot = base;
             let start_slot = base + 1;
             let len_slot = base + 2;
-            if len_slot + 1 > *high {
-                *high = len_slot + 1;
+            let bytelen_slot = base + 3;
+            if bytelen_slot + 1 > *high {
+                *high = bytelen_slot + 1;
             }
             scratch_ty.insert(bytes_slot, ValType::I32);
             scratch_ty.insert(start_slot, ValType::I64);
             scratch_ty.insert(len_slot, ValType::I64);
-            emit(db, bytes, slots, base + 3, high, scratch_ty, layout, out)?; // [bytes]
+            scratch_ty.insert(bytelen_slot, ValType::I64);
+            emit(db, bytes, slots, base + 4, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::LocalSet(bytes_slot));
-            emit(db, start, slots, base + 3, high, scratch_ty, layout, out)?; // [start:i64]
+            emit(db, start, slots, base + 4, high, scratch_ty, layout, out)?; // [start:i64]
             out.push(Lir::LocalSet(start_slot));
-            emit(db, len, slots, base + 3, high, scratch_ty, layout, out)?; // [len:i64]
+            emit(db, len, slots, base + 4, high, scratch_ty, layout, out)?; // [len:i64]
             out.push(Lir::LocalSet(len_slot));
-            // in_bounds = (start >= 0) & (len >= 0) & (start + len <= bytes-len), all i64.
+            // Materialize the byte-count ONCE (i64, u32-extended — read three times below).
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [len:i32]
+            out.push(Lir::I64ExtendI32U); // [byte-count:i64]
+            out.push(Lir::LocalSet(bytelen_slot));
+            // in_bounds = (start >= 0) & (len >= 0) & (start <= byte-count) & (len <= byte-count - start),
+            // all i64 — OVERFLOW-SAFE (no `start + len`; `byte-count - start` cannot underflow once
+            // `start >= 0 & start <= byte-count`).
             out.push(Lir::LocalGet(start_slot));
             out.push(Lir::ConstI64(0));
             out.push(Lir::I64GeS); // [start >= 0]
@@ -1942,12 +1961,14 @@ fn emit(
             out.push(Lir::I64GeS); // [start>=0, len>=0]
             out.push(Lir::I32And); // [start>=0 & len>=0]
             out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::I64LeS); // [.., start <= byte-count]
+            out.push(Lir::I32And); // [start>=0 & len>=0 & start<=byte-count]
             out.push(Lir::LocalGet(len_slot));
-            out.push(Lir::I64Add); // [.., start+len]  (no overflow: both are small non-negative here)
-            out.push(Lir::LocalGet(bytes_slot));
-            out.push(Lir::CallImport(OP_BYTES_LEN)); // [.., start+len, len:i32]
-            out.push(Lir::I64ExtendI32U); // [.., start+len, byte-count:i64]
-            out.push(Lir::I64LeS); // [.., start+len <= byte-count]
+            out.push(Lir::LocalGet(bytelen_slot));
+            out.push(Lir::LocalGet(start_slot));
+            out.push(Lir::I64Sub); // [.., len, byte-count - start]  (no underflow: start in [0, byte-count])
+            out.push(Lir::I64LeS); // [.., len <= byte-count - start]
             out.push(Lir::I32And); // [in_bounds]
             out.push(Lir::If(BlockType::Val(ValType::I32)));
             // THEN — Some(bytes-slice(bytes, start, len)). The operand emit produced ONE owned ref;

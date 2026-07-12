@@ -468,6 +468,47 @@
             (def (main)     (sl 10 -1 2)) (export main)))
   (output (: (None unit) (Option Bytes))))
 
+; The runtime bounds check must be OVERFLOW-SAFE. `Bytes.slice` is the FALLIBLE sub-range read — out of
+; range yields None, and it MUST NEVER trap (it is the guarded read). A naive predicate `start + len <=
+; byte-count` computed in wrapping i64 overflows for attacker-chosen indices near i64::MAX: the sum wraps
+; to a negative value that trivially passes the signed `<=`, wrongly taking the in-range path — then the
+; i32-wrap of the huge index either returns a WRONG empty `Some` slice or drives the runtime `bytes-slice`
+; out of its u32 range and TRAPS. Both are soundness violations (a wrong value / an uncontrolled trap on a
+; trap-free op). The bound must be tested without an overflowing add — e.g. `start <= byte-count && len <=
+; byte-count - start` (the difference cannot underflow once `start >= 0 && start <= byte-count`), matching
+; the const-fold path's i128 check. These pin the two overflow shapes decline to None. The indices are
+; passed via runtime params (the constant fold, which already computes in i128, does not apply).
+
+(case "slicing with start+len overflowing i64 is out of range, not a wrong slice"
+  (doc    "`(Bytes.slice b start len)` with `start = 2^62` and `len = 2^62` on a 3-byte sequence: the range
+           is astronomically out of bounds → None. A bounds check that computes `start + len` in wrapping
+           i64 overflows to i64::MIN (negative), passes a signed `<= byte-count` test, and wrongly takes
+           the in-range path — then i32-wraps 2^62 to 0 and returns an empty `Some` (a WRONG value). The
+           predicate must be overflow-safe: a sum that would overflow is out of range. Expected None (-1).")
+  (input  (do
+            (def (main (: s Int64) (: l Int64))
+              (match (Bytes.slice (Bytes.of (list 10 20 30)) s l)
+                ((Some b) (Bytes.len b))
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 4611686018427387904 Int64) (: 4611686018427387904 Int64))
+  (output (: -1 Int64)))
+
+(case "slicing with a start near i64::MAX is out of range, not a trap"
+  (doc    "The trap sibling: `start = i64::MAX`, `len = 1` on a 3-byte sequence — out of bounds → None. A
+           wrapping-i64 bounds check computes `start + len = i64::MIN` (overflow), passes the signed `<=`,
+           takes the in-range path, and i32-wraps i64::MAX to 0xFFFFFFFF — which the runtime `bytes-slice`
+           reads as a 4-billion start and TRAPS. `Bytes.slice` PROMISES it never traps, so this is a
+           soundness violation. Pins that an out-of-range start, however large, declines to None (-1).")
+  (input  (do
+            (def (main (: s Int64) (: l Int64))
+              (match (Bytes.slice (Bytes.of (list 10 20 30)) s l)
+                ((Some b) (Bytes.len b))
+                ((None _) -1)))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 1 Int64))
+  (output (: -1 Int64)))
+
 (case "compacting a byte sequence built at run time preserves its bytes"
   (doc    "`(Bytes.compact b)` on a runtime-built `b` = `b`: compact re-bases the value into storage
            independent of any larger buffer it was sliced from (memory-and-resource-model.md #Retained

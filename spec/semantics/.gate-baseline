@@ -305,6 +305,7 @@ pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple is constructed with positional elements
 pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
+pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
@@ -388,11 +389,16 @@ pass	bitwise XOR toggles bits
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	chained guards of the same variant are tried in order
+pass	compacting a byte sequence built at run time preserves its bytes
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	concatenating an empty string on the left is the identity
+pass	concatenating an empty string on the right is the identity
+pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
+pass	concatenating two runtime strings and measuring the result
 pass	concatenating with the empty list on the right is identity
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
@@ -415,6 +421,7 @@ pass	indexing a list bound from a sum payload yields the element
 pass	indexing a list in bounds yields Some of the element
 pass	indexing a list out of bounds yields None
 pass	indexing a list with a negative index yields None
+pass	indexing a runtime string past its last scalar yields None
 pass	indexing an empty list yields None
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
@@ -466,6 +473,12 @@ pass	recursive fibonacci with literal match base cases
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
+pass	slicing a runtime byte sequence past the end yields None
+pass	slicing a runtime byte sequence with a negative start yields None
+pass	slicing past the end of a byte sequence yields None
+pass	slicing with a negative start yields None
+pass	slicing with a start near i64::MAX is out of range, not a trap
+pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
 pass	splitting a tuple beyond its arity is rejected
 pass	string equality
 pass	string indexing addresses Unicode scalar values, not bytes
@@ -770,7 +783,6 @@ todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 todo	a tuple pattern against a Sign scrutinee is a type error
 todo	a tuple pattern of the wrong arity is a type error
-todo	a tuple payload extracted through a helper return must not be rejected as a type error
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -848,7 +860,6 @@ todo	checked addition yields None on overflow instead of trapping
 todo	checked addition yields Some of the sum when it fits
 todo	checked multiplication reports overflow as None
 todo	checked multiplication yields Some when it fits
-todo	compacting a byte sequence built at run time preserves its bytes
 todo	compacting a slice preserves its bytes
 todo	compacting is the identity on value for a whole byte sequence
 todo	comparing a greater value to a lesser yields Greater
@@ -863,12 +874,8 @@ todo	comparing two same-shape nominal sum types is a type error, not false
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating an empty byte sequence on the left is the identity
 todo	concatenating an empty byte sequence on the right is the identity
-todo	concatenating an empty string on the left is the identity
-todo	concatenating an empty string on the right is the identity
-todo	concatenating byte sequences built at run time appends their bytes in order
 todo	concatenating tuples preserves each element's type
 todo	concatenating two byte sequences appends their bytes in order
-todo	concatenating two runtime strings and measuring the result
 todo	concatenating two tuples appends their elements
 todo	concatenation is associative by content
 todo	constructing a bit-field from a value wider than its width traps
@@ -924,7 +931,6 @@ todo	greater-than of an integer and a float is rejected
 todo	greater-than-or-equal of an integer and a float is rejected
 todo	host calls are observed in the order they were made
 todo	identical negative zeros nested in a tuple compare equal
-todo	indexing a runtime string past its last scalar yields None
 todo	indexing a slice is relative to the slice's start
 todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
@@ -1001,10 +1007,6 @@ todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps
 todo	slicing a byte sequence built at run time yields Some of the sub-range
-todo	slicing a runtime byte sequence past the end yields None
-todo	slicing a runtime byte sequence with a negative start yields None
-todo	slicing past the end of a byte sequence yields None
-todo	slicing with a negative start yields None
 todo	splice flattens where unquote nests
 todo	splicing a non-list value into a quasiquote is a type error
 todo	splicing an integer literal directly is a type error
