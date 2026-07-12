@@ -686,7 +686,7 @@
            variant. Construction is via application: Sign.Pos is a Constructor (function), and
            (Sign.Pos unit) applies it to unit, producing the Sum value.")
   (input  (let ((s (Sign.Pos unit))) s))
-  (output (: (Sign.Pos unit) Sign)))
+  (output (: (Pos unit) Sign)))
 
 ; A compound value (tuple/record/sum) whose ELEMENT is a RUNTIME value — a function parameter, a
 ; call result — must be producible as a program RESULT, not only projectable. The value crosses the
@@ -2694,7 +2694,7 @@
            produces the Sum value. No pre-applied Sums in the prelude — the constructor is the value
            bound to Sign.Zero, not the already-constructed variant.")
   (input  (Sign.Zero unit))
-  (output (: (Sign.Zero unit) Sign)))
+  (output (: (Zero unit) Sign)))
 
 ; --- A nullary variant's argument type is Unit -------------------------------------------
 ; core-semantics.md #A Sum Type Constructor Is A Single-Arity Function (2nd sentence): "A nullary

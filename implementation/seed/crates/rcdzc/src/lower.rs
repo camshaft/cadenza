@@ -3383,7 +3383,14 @@ fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
             Some(true)
         }
         (Core::Tuple { elems: ea }, Core::Tuple { elems: eb })
-        | (Core::ListNew { elems: ea }, Core::ListNew { elems: eb }) => {
+        | (Core::ListNew { elems: ea }, Core::ListNew { elems: eb })
+        // Two constant byte sequences: equal iff the same bytes in the same order — the SAME
+        // element-wise compare as a tuple/list, since a `Core::BytesOf`'s elements are constant `ConstInt`
+        // bytes (`0..=255`, range-checked at `lower_bytes_of`). `(= (Bytes.of (list 1 2)) (Bytes.of (list
+        // 1 2)))` → true; a different length or a differing byte → false. This is what folds the corpus's
+        // `(= (Bytes.concat …) (Bytes.of …))` / `(= (Bytes.compact …) …)` witnesses (concat/compact
+        // already fold to a constant `Core::BytesOf`, so both operands reach here constant).
+        | (Core::BytesOf { elems: ea }, Core::BytesOf { elems: eb }) => {
             if ea.len() != eb.len() {
                 return Some(false);
             }

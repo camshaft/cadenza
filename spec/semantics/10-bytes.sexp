@@ -590,6 +590,24 @@
             (def (main) (go (Bytes.of (list 10 20 30)) 0 0)) (export main)))
   (output (: 60 Int64)))
 
+(case "a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)"
+  (doc    "A recursive `be` whose body composes a heap-`match` result (the inlined `byte-at`, which
+           materializes an i32 Option handle in a scratch slot) with checked ARITHMETIC over another
+           helper's result (`(* (byte-at b i) (place …))`, whose overflow guards use i64 scratch slots).
+           The two must occupy DISJOINT scratch slots: reusing one wasm local at both an i32 handle and an
+           i64 arith temp re-types it to two widths → an invalid module ('expected i64, found i32'). The
+           annotated form pins the SCRATCH-SLOT discipline directly (the unannotated form additionally
+           needs argument-position inference — a separate increment). `be(b\"\\x01\\x02\", 0, 2)` =
+           byte[0]*place(1) + byte[1]*place(0) = 1*256 + 2*1 = 258.")
+  (needs  fallible-access)
+  (input  (do
+            (def (byte-at (: b Bytes) i) (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (place k) (if (< k 1) 1 (* 256 (place (- k 1)))))
+            (def (be (: b Bytes) i n)
+              (if (< n 1) 0 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1)))))
+            (def (main) (be (Bytes.of (list 1 2)) 0 2)) (export main)))
+  (output (: 258 Int64)))
+
 (case "a CBOR head decodes its major type and big-endian argument from the input bytes"
   (doc    "The compiler's INPUT-side decode spine — the dual of the LEB128 output encoder: reading a
            canonical-binary-AST head from the input bytes. The head's initial byte splits into a major

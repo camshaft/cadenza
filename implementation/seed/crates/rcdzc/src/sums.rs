@@ -73,7 +73,12 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     let option = type_form(ast, "Option", &[("Some", &["a"]), ("None", &[])]);
     // `(type Result (Ok a) (Err e))`.
     let result = type_form(ast, "Result", &[("Ok", &["a"]), ("Err", &["e"])]);
-    [option, result]
+    // `(type Sign Neg Zero Pos)` — a MONOMORPHIC three-variant sum (all nullary), the sign of a number.
+    // A closed prelude sum like Option/Result (§`Sign` is a prelude sum alongside Option/Result); a
+    // program uses bare `Sign.Neg`/`Zero`/`Pos` without declaring it. Nothing privileged — the same
+    // `type_form` + `scan_type_decl` path, just no type parameters.
+    let sign = type_form(ast, "Sign", &[("Neg", &[]), ("Zero", &[]), ("Pos", &[])]);
+    [option, result, sign]
         .into_iter()
         .filter_map(|item| crate::db::scan_type_decl(ast, item))
         .collect()

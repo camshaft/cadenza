@@ -2294,6 +2294,68 @@ mod runtime_ops {
         ));
     }
 
+    /// STRENGTH REDUCTION: an UNSIGNED `/`/`%` by a constant POWER OF TWO lowers to a shift/mask instead
+    /// of the slow hardware `div_u`/`rem_u`. `(/ a 4)` → `a >>ᵤ 2`, `(% a 4)` → `a & 3`. Only unsigned
+    /// (a signed divide rounds toward zero, unlike an arithmetic shift) and only a power-of-two constant
+    /// (a non-power keeps the divide, a signed operand keeps `div_s`). Verified at the Lir level (no
+    /// `div_u`/`rem_u` survives; the shift/mask is present) and by value.
+    #[test]
+    fn unsigned_div_rem_by_a_power_of_two_strength_reduces() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // (/ a 4) UInt64 → shr_u (no div_u).
+        let divc = lir("(: a UInt64)", "(/ a 4)");
+        assert!(
+            divc.contains(&Lir::I64ShrU) && !divc.contains(&Lir::I64DivU),
+            "unsigned /2^k must be a shr_u, not div_u; got: {divc:?}"
+        );
+        // (% a 4) UInt64 → and (no rem_u).
+        let remc = lir("(: a UInt64)", "(% a 4)");
+        assert!(
+            remc.contains(&Lir::I64And) && !remc.contains(&Lir::I64RemU),
+            "unsigned %2^k must be an and-mask, not rem_u; got: {remc:?}"
+        );
+        // A non-power-of-two divisor keeps div_u; a SIGNED divide keeps div_s.
+        assert!(lir("(: a UInt64)", "(/ a 3)").contains(&Lir::I64DivU));
+        assert!(lir("(: a Int64)", "(/ a 4)").contains(&Lir::I64DivS));
+
+        // Value parity: the shift/mask computes the same unsigned quotient/remainder as the divide.
+        assert_eq!(run::<u64>("(: a UInt64)", "(/ a 4)", &[Val::U64(17)]), 4);
+        assert_eq!(run::<u64>("(: a UInt64)", "(% a 4)", &[Val::U64(17)]), 1);
+        assert_eq!(
+            run::<u64>("(: a UInt64)", "(/ a 2)", &[Val::U64(u64::MAX)]),
+            u64::MAX / 2,
+            "the shift is UNSIGNED — the top bit is not treated as a sign"
+        );
+        assert_eq!(run::<u32>("(: a UInt32)", "(/ a 8)", &[Val::U32(100)]), 12);
+        assert_eq!(run::<u32>("(: a UInt32)", "(% a 8)", &[Val::U32(100)]), 4);
+    }
+
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
 
     #[test]
@@ -3356,6 +3418,41 @@ mod recursion {
             "(module m (def (even n) (if (= n 0) true (odd (- n 1)))) (def (odd n) (if (= n 0) false (even (- n 1)))) (def (main) (if (even 10) 1 0)) (export main))",
         );
         assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+    }
+
+    #[test]
+    fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
+        // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
+        // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with
+        // checked ARITHMETIC over another helper's result (`(* (byte-at b i) (place …))`, whose overflow
+        // guards use i64 scratch slots) emitted an invalid module ("expected i64, found i32"): the i32
+        // handle slot and an i64 arith temp aliased ONE wasm local at two widths. A wasm local's type is
+        // fixed function-wide, so width-disjoint temps must occupy disjoint slots even when their
+        // lifetimes don't overlap. Fixed by (a) materializing a MatchSum scrutinee into a slot ABOVE the
+        // high-water (never a pre-typed operand slot), (b) floating checked-arith's B operand and (c) a
+        // comparison's RHS above the LHS's high-water. `be(b"\x01\x02", 0, 2)` = 1*256 + 2*1 = 258.
+        let bytes = component(
+            "(module m (def (byte-at (: b Bytes) i) (match (Bytes.at b i) ((Some x) x) ((None _) 0))) \
+               (def (place k) (if (< k 1) 1 (* 256 (place (- k 1))))) \
+               (def (be (: b Bytes) i n) (if (< n 1) 0 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1))))) \
+               (def (main) (be (Bytes.of (list 1 2)) 0 2)) (export main))",
+        );
+        wasmparser::validate(&bytes)
+            .expect("a heap-match composed with checked arith must emit valid wasm");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "258"),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
     }
 }
 
@@ -6599,6 +6696,34 @@ mod stage1 {
                 "(module m (def (main) (if (= (Some (Some 1)) (Some (Some 1))) 1 0)) (export main))",
                 1,
             ),
+            // Bytes structural equality (10-bytes.sexp): two constant byte sequences compare equal iff
+            // the same bytes in the same order — the byte companion of the tuple/list arm. A `Bytes.concat`
+            // and a `Bytes.compact` already fold to a constant `Core::BytesOf`, so their `=` witnesses fold
+            // here too.
+            (
+                "(module m (def (main) (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 99))) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2 3))) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.of (list)) (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 1 2 3 4))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))) 1 0)) (export main))",
+                1,
+            ),
         ] {
             assert_eq!(
                 run_returns::<i64>(
@@ -7971,6 +8096,38 @@ mod stage1 {
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "prelude pick {arg}"),
                 cdz_run::Outcome::Trap(t) => panic!("composed prelude-option run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_prelude_sign_sum_is_built_in() {
+        // `Sign` is a BUILT-IN monomorphic prelude sum `(type Sign Neg Zero Pos)` — a program uses
+        // `Sign.Pos`/`Sign.Zero`/`Sign.Neg` with NO declaration, and an exhaustive three-way match over
+        // it folds through the constant scrutinee. `(Sign.Zero unit)` matched → 0; the other two → 1/-1.
+        use crate::testkit::parse;
+        for (ctor, want) in [("Sign.Neg", -1), ("Sign.Zero", 0), ("Sign.Pos", 1)] {
+            let src = format!(
+                "(module m (def (main) (match ({ctor} unit) \
+                   ((Sign.Neg _) -1) ((Sign.Zero _) 0) ((Sign.Pos _) 1))) (export main))"
+            );
+            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect("compile built-in Sign match");
+            let Some(runtime) = super::find_runtime_wasm() else {
+                eprintln!("runtime wasm not found; skipping Sign run");
+                return;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(s, want.to_string(), "built-in Sign match: {ctor}")
+                }
+                cdz_run::Outcome::Trap(t) => panic!("Sign match run trapped: {t}"),
             }
         }
     }
