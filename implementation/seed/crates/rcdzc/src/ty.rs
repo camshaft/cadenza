@@ -127,13 +127,20 @@ pub enum Ty {
     /// A record: a fixed SET of named fields, each with its own type. Held as a canonically-ordered
     /// `BTreeMap` so two records of the same field-set are the SAME type regardless of the order the
     /// fields were written (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields), and a
-    /// field's type is looked up by name in O(log n).
-    Record(std::collections::BTreeMap<crate::resolved::Symbol, Ty>),
+    /// field's type is looked up by name in O(log n). Wrapped in an `Arc` so CLONING a `Ty::Record`
+    /// (which `type_of` does on every memo read) is a refcount bump, not a deep map copy — a wide
+    /// record read field-by-field was O(N²) in map clone. Faithful to the Cadenza port target, which
+    /// is ref-counted throughout (a shared immutable value = one refcounted allocation).
+    Record(std::sync::Arc<std::collections::BTreeMap<crate::resolved::Symbol, Ty>>),
     /// A tuple: a fixed-ARITY POSITIONAL product, each position with its own type. The arity AND the
     /// per-position types ARE the type — a tuple of a different arity, or with a differently-typed
     /// position, is a DIFFERENT type (`type-system.md` §The Structural Types Are Record, Tuple, And
-    /// Sum). Distinct from `Record` (a set of NAMED fields): a tuple is projected by position.
-    Tuple(Vec<Ty>),
+    /// Sum). Distinct from `Record` (a set of NAMED fields): a tuple is projected by position. Held
+    /// behind an `Arc<[Ty]>` (an immutable shared slice) so cloning a `Ty::Tuple` is a refcount bump,
+    /// not a deep element copy: an N-element tuple type read once per projection (N projections off one
+    /// shared tuple) was O(N²) in `Vec<Ty>` clone. Indexing/iterating are unchanged (it derefs to a
+    /// slice); only construction differs (`.collect::<Vec<_>>().into()` or `vec![…].into()`).
+    Tuple(std::sync::Arc<[Ty]>),
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
     /// against `param` and takes `result`.
@@ -205,7 +212,7 @@ impl Ty {
             // different arity is a different type (the corpus `if`-branch cases: a 2-tuple and a 3-tuple
             // do not agree, nor a `(Tuple Int Int)` with a `(Tuple Int Bool)`).
             (Ty::Tuple(a), Ty::Tuple(b)) => {
-                a.len() == b.len() && a.iter().zip(b).all(|(ta, tb)| ta.agrees_with(tb))
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(ta, tb)| ta.agrees_with(tb))
             }
             _ => false,
         }
@@ -243,11 +250,11 @@ impl Ty {
                         (k.clone(), t)
                     })
                     .collect();
-                Ty::Record(joined)
+                Ty::Record(std::sync::Arc::new(joined))
             }
             // Two agreeing tuples join position-wise (same arity, guaranteed by `agrees_with`).
             (Ty::Tuple(a), Ty::Tuple(b)) if self.agrees_with(other) => {
-                Ty::Tuple(a.iter().zip(b).map(|(ta, tb)| ta.join(tb)).collect())
+                Ty::Tuple(a.iter().zip(b.iter()).map(|(ta, tb)| ta.join(tb)).collect())
             }
             _ => self.clone(),
         }
@@ -270,7 +277,7 @@ impl Ty {
             // shape the renderer walks. The runtime holds no field names; this type does.
             Ty::Record(fields) => {
                 let mut s = String::from("(record");
-                for (k, t) in fields {
+                for (k, t) in fields.iter() {
                     s.push_str(&format!(" ({} {})", k.name, t.render_name()));
                 }
                 s.push(')');
@@ -280,7 +287,7 @@ impl Ty {
             // (its arity and element types are its type).
             Ty::Tuple(elems) => {
                 let mut s = String::from("(Tuple");
-                for t in elems {
+                for t in elems.iter() {
                     s.push(' ');
                     s.push_str(&t.render_name());
                 }

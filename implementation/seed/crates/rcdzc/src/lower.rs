@@ -848,7 +848,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         Ty::Tuple(elems) => {
             let head = b.name("Tuple");
             let mut children = vec![head];
-            for t in elems {
+            for t in elems.iter() {
                 children.push(type_ast(b, t)?);
             }
             Some(b.list(children))
@@ -858,7 +858,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             // (see `const_value_ast`). The corpus writes `(Record (a Int64) …)` for the type.
             let head = b.name("Record");
             let mut children = vec![head];
-            for (name, t) in fields {
+            for (name, t) in fields.iter() {
                 let fname = b.name(name.name.clone());
                 let fty = type_ast(b, t)?;
                 children.push(b.list(vec![fname, fty]));
@@ -1308,7 +1308,7 @@ mod tests {
 
     #[test]
     fn template_fills_a_flat_runtime_tuple() {
-        let ty = crate::ty::Ty::Tuple(vec![t_int(), t_int()]);
+        let ty = crate::ty::Ty::Tuple(vec![t_int(), t_int()].into());
         assert_eq!(
             render(&ty, &V::Tuple(vec![V::Int(3), V::Int(1)])),
             "(: (tuple 3 1) (Tuple Int64 Int64))"
@@ -1322,12 +1322,12 @@ mod tests {
 
     #[test]
     fn template_fills_a_mixed_and_negative_tuple() {
-        let ty = crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Bool]);
+        let ty = crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Bool].into());
         assert_eq!(
             render(&ty, &V::Tuple(vec![V::Int(0), V::Bool(true)])),
             "(: (tuple 0 true) (Tuple Int64 Bool))"
         );
-        let ty2 = crate::ty::Ty::Tuple(vec![t_int(), t_int()]);
+        let ty2 = crate::ty::Ty::Tuple(vec![t_int(), t_int()].into());
         assert_eq!(
             render(&ty2, &V::Tuple(vec![V::Int(-5), V::Int(7)])),
             "(: (tuple -5 7) (Tuple Int64 Int64))"
@@ -1336,13 +1336,13 @@ mod tests {
 
     #[test]
     fn template_fills_a_three_element_and_nested_tuple() {
-        let ty3 = crate::ty::Ty::Tuple(vec![t_int(), t_int(), t_int()]);
+        let ty3 = crate::ty::Ty::Tuple(vec![t_int(), t_int(), t_int()].into());
         assert_eq!(
             render(&ty3, &V::Tuple(vec![V::Int(10), V::Int(11), V::Int(12)])),
             "(: (tuple 10 11 12) (Tuple Int64 Int64 Int64))"
         );
         let nested =
-            crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Tuple(vec![t_int(), t_int()])]);
+            crate::ty::Ty::Tuple(vec![t_int(), crate::ty::Ty::Tuple(vec![t_int(), t_int()].into())].into());
         assert_eq!(
             render(
                 &nested,
@@ -1358,7 +1358,7 @@ mod tests {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert(Symbol::plain("a"), t_int());
         fields.insert(Symbol::plain("b"), t_int());
-        let ty = crate::ty::Ty::Record(fields);
+        let ty = crate::ty::Ty::Record(fields.into());
         // Fields in canonical (sorted) order a, b → positional [a, b].
         assert_eq!(
             render(&ty, &V::Record(vec![V::Int(3), V::Int(1)])),

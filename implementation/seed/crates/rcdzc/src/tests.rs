@@ -5534,7 +5534,7 @@ mod r2_runtime_resource {
     fn a_flat_runtime_tuple_walks_and_crosses() {
         // Build `(tuple 3 1)` on the value heap, escape it as a resource, walk it in encode(), decode →
         // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip.
-        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()]);
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
         let core = walker_core(&tpl, &[3, 1]);
         if let Some(text) = run_composed(&core) {
@@ -5547,7 +5547,7 @@ mod r2_runtime_resource {
     #[test]
     fn a_runtime_tuple_with_a_negative_element_walks() {
         // A negative element exercises the NEG kind-byte flip + absolute-magnitude write in the walker.
-        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()]);
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
         let core = walker_core(&tpl, &[-5, 7]);
         if let Some(text) = run_composed(&core) {
@@ -5567,7 +5567,7 @@ mod r2_runtime_resource {
     #[test]
     fn combined_envelope_matches_component_builder_oracle() {
         use crate::backend::wasm::envelope::assemble_runtime_resource;
-        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()]);
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
         let core = walker_core(&tpl, &[3, 1]);
         let dtor = dtor_module();

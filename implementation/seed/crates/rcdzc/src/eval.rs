@@ -823,7 +823,7 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
                     typeval_of(db, a).ok_or_else(|| format!("Tuple element {i} is not a type"))?;
                 elems.push(t);
             }
-            let tup = crate::ty::Ty::Tuple(elems);
+            let tup = crate::ty::Ty::Tuple(elems.into());
             trace!(target: "rcdzc::eval", ty = %tup.render_name(), "ctor (Tuple): built tuple type-value");
             Ok(encode_typeval(db, &tup))
         }
@@ -849,7 +849,7 @@ pub fn reduce_ctor(db: &mut Db, prim: Prim, args: &[StructId]) -> Result<StructI
                     .ok_or_else(|| format!("Record field `{name}` is not a type"))?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
-            let rec = crate::ty::Ty::Record(fields);
+            let rec = crate::ty::Ty::Record(std::sync::Arc::new(fields));
             trace!(target: "rcdzc::eval", ty = %rec.render_name(), "ctor (Record): built record type-value");
             Ok(encode_typeval(db, &rec))
         }
@@ -967,7 +967,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // A tuple: `(Tuple <elem>…)` — the head then each element type encoded in order.
         Ty::Tuple(elems) => {
             let mut items = vec![db.push_name("Tuple")];
-            for e in elems {
+            for e in elems.iter() {
                 items.push(encode_ty(db, e));
             }
             db.push_list(items)
@@ -977,7 +977,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // Round-trips with `decode_ty`'s `"Record"` arm; the `BTreeMap` iteration IS the canonical order.
         Ty::Record(fields) => {
             let mut items = vec![db.push_name("Record")];
-            for (name, t) in fields {
+            for (name, t) in fields.iter() {
                 let fname = db.push_name(&name.name);
                 let fty = encode_ty(db, t);
                 items.push(db.push_list(vec![fname, fty]));

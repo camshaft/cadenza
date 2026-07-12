@@ -617,7 +617,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             for &e in tail {
                 elems.push(decode_ty(db, e)?);
             }
-            Some(Ty::Tuple(elems))
+            Some(Ty::Tuple(elems.into()))
         }
         // A record type-value: `(Record (name T)…)` — each `(name T)` a field pair. The head is
         // capitalized `Record` (the TYPE; the VALUE head is lowercase `record`), matching `encode_ty`
@@ -634,7 +634,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 let t = decode_ty(db, items[1])?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
-            Some(Ty::Record(fields))
+            Some(Ty::Record(std::sync::Arc::new(fields)))
         }
         _ => None,
     }

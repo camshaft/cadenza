@@ -42,12 +42,12 @@ impl Subst {
                 width: self.apply_width(it.width),
             }),
             Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
-            Ty::Record(fields) => Ty::Record(
+            Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
                 fields
                     .iter()
                     .map(|(k, t)| (k.clone(), self.apply(t)))
                     .collect(),
-            ),
+            )),
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
             Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
         }
@@ -116,7 +116,7 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             if fa.len() != fb.len() {
                 return Err(mismatch(&a, &b));
             }
-            for (k, ta) in fa {
+            for (k, ta) in fa.iter() {
                 match fb.get(k) {
                     Some(tb) => unify(subst, ta, tb)?,
                     None => return Err(mismatch(&a, &b)),
@@ -130,7 +130,7 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             if ea.len() != eb.len() {
                 return Err(mismatch(&a, &b));
             }
-            for (ta, tb) in ea.iter().zip(eb) {
+            for (ta, tb) in ea.iter().zip(eb.iter()) {
                 unify(subst, ta, tb)?;
             }
             Ok(())
@@ -295,12 +295,12 @@ fn rename(
             Box::new(rename(p, ty_map, width_map, sign_map)),
             Box::new(rename(r, ty_map, width_map, sign_map)),
         ),
-        Ty::Record(fields) => Ty::Record(
+        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
             fields
                 .iter()
                 .map(|(k, t)| (k.clone(), rename(t, ty_map, width_map, sign_map)))
                 .collect(),
-        ),
+        )),
         Ty::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()

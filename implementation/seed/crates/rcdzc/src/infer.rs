@@ -85,7 +85,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                     let t = type_of(db, value);
                     field_tys.insert(label, t);
                 }
-                Ty::Record(field_tys)
+                Ty::Record(std::sync::Arc::new(field_tys))
             }
         }
         // Member access — the field's type is the type of the field's VALUE, found by reducing the
@@ -107,6 +107,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A tuple's type is the tuple of its elements' types, in position order (each a lazy `type_of`).
         // Arity + element types ARE the type.
         Resolved::Tuple { elems } => Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()),
+        // (Arc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
         // A tuple projection's type is the operand tuple's element type AT `index`. An operand that is
         // not a tuple, or an index outside its arity, has no element type — typed `Any` here so it does
         // not cascade; the actual fault (CDZ0201) is reported by `type_errors`.
