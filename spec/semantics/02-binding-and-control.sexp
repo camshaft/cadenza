@@ -48,6 +48,20 @@
             (def (main) (f 99)) (export main)))
   (output (: true Bool)))
 
+(case "a let binding whose value references a parameter compiles under a call"
+  (doc    "`(def (g n) (let ((x (+ n 1))) (+ x x)))` — the `let` value USES the parameter `n` (not a
+           shadow). Calling `(g 10)` inlines g's body; the reduction must substitute `n`→`10` in the
+           binding's initializer AND keep the body's references to the binding pointing at that
+           substituted initializer. `x = 10+1 = 11`, so `(+ x x)` = 22. Pins that β-reduction copies a
+           `let` inside a called function consistently — the body's binding references resolve to the
+           COPY's substituted initializer, not the original (a name occurrence carried through a copy must
+           re-resolve against the copied scope). A generation that shared the original unsubstituted
+           initializer would surface an unsubstituted parameter with no local slot.")
+  (input  (do
+            (def (g n) (let ((x (+ n 1))) (+ x x)))
+            (def (main) (g 10)) (export main)))
+  (output (: 22 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`

@@ -969,6 +969,35 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
     }
 }
 
+/// A `let`-bound value INSIDE a function that takes a PARAMETER compiles and runs — the β-reduction
+/// atom-copy fix. `(g 10)` inlines g's body `(let ((x (+ n 1))) (+ x x))`; the reduction copies the
+/// body, substituting the param `n`→`10` in the binding's init. The BUG was that the body's `x`
+/// references (shared name atoms) kept their stale resolution to the ORIGINAL (unsubstituted) init, so
+/// a `Core::Param{n}` surfaced at select (no slot) → decline. The fix COPIES name atoms in `beta_reduce`
+/// so a `let`-local re-resolves against the copied (substituted) init. Runs to `(+ 11 11)` = 22.
+#[test]
+fn a_let_bound_value_under_a_fn_param_compiles() {
+    use crate::testkit::parse;
+    let src =
+        "(module m (def (g n) (let ((x (+ n 1))) (+ x x))) (def (main) (g 10)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 22);
+}
+
+/// The value-heap companion: a `let`-bound runtime TUPLE inside a parameterized function, projected —
+/// `(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`, `t`'s init substitutes `n`, and `(. t
+/// 0)` reads element 0 = `n+1` = 11. Exercises the atom-copy fix on a heap-compound let-local (the case
+/// that motivated finding the bug — an internal runtime compound under a live param). Folds to the
+/// scalar 11, so it needs no runtime.
+#[test]
+fn a_let_bound_runtime_tuple_under_a_fn_param_projects() {
+    use crate::testkit::parse;
+    let src = "(module m (def (g n) (let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))) \
+                 (def (main) (g 10)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
+}
+
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
 //
 // The operator directive: get the static heap-value path right FIRST — a constant compound must never

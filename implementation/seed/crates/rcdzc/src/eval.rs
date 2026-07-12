@@ -197,10 +197,25 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     {
         return arg;
     }
-    // Otherwise structurally copy: an atom is shared (it references only a leaf); a list is copied
-    // with each child reduced.
+    // Otherwise structurally copy. A CONSTANT atom (int/bool/float/string leaf) is self-contained — it
+    // resolves to its own value regardless of scope, so SHARE it (cheap, no re-resolution needed). A
+    // NAME atom, though, resolves by a SCOPE WALK: if it names a binding INSIDE this body (a `let`-local
+    // like `x`), sharing the original node would keep its stale resolution to the ORIGINAL (pre-copy)
+    // binding — but the copy re-parents everything, so a `let`-local's copied init differs from the
+    // original. So COPY a name atom (a fresh occurrence of the same name leaf); `push_list` re-parents
+    // it under the copied enclosing form, and its `resolved_of` re-runs against the COPIED scope,
+    // binding it to the copied binding (`(def (g n) (let ((x (+ n 1))) (+ x x)))` — the body's `x` must
+    // resolve to the COPY's substituted init `(+ arg 1)`, not the original `(+ n 1)`). A param reference
+    // never reaches here (the substitution branches above return the arg first); a prelude/free name
+    // re-resolves to the same global, harmlessly.
     match db.ast.get(body).clone() {
-        crate::ast::Struct::Atom(_) => body, // atoms are immutable and self-contained — reuse.
+        crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
+            crate::ast::Leaf::Name(_) => {
+                let leaf = db.ast.leaf(lid).clone();
+                db.push_atom(leaf)
+            }
+            _ => body, // a constant leaf — self-contained, share it.
+        },
         crate::ast::Struct::List(children) => {
             let reduced: Vec<StructId> = children
                 .iter()
