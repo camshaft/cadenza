@@ -2105,6 +2105,23 @@ fn arith_identity(
         Prim::BitAnd if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
+        // `x / 1` → x (division by one is the identity; keeps x, so its own traps stay).
+        Prim::Div if is(rc, 1) => Some(lc.clone()),
+        // `x % 1` → 0 (every integer is divisible by 1) — DISCARDS x, so only when x cannot trap.
+        Prim::Rem if is(rc, 1) && is_trap_free(db, lhs) => Some(zero()),
+
+        // SAME-OPERAND identities: the two operands are the SAME value (`core_equiv`), so the result is
+        // determined regardless of that value. `core_equiv` matches only pure scalar cores, but the
+        // operand may still be a checked op that TRAPS (`(- (/ a b) (/ a b))` — the `/` traps on b==0),
+        // so a DISCARDING identity (`- a a → 0`, `^ a a → 0`) fires only when the operand is trap-free;
+        // eliding a possibly-trapping operand would drop a defined trap. The KEEPING identities
+        // (`& a a → a`, `| a a → a`) return the operand's own core, so its traps are preserved — always
+        // safe. (`/ a a → 1` is NOT applied: `a == 0` traps ÷0, a defined outcome, so it is not an
+        // identity.)
+        Prim::Sub | Prim::BitXor if core_equiv(db, lhs, rhs) && is_trap_free(db, lhs) => {
+            Some(zero())
+        }
+        Prim::BitAnd | Prim::BitOr if core_equiv(db, lhs, rhs) => Some(lc.clone()),
         _ => None,
     }
 }

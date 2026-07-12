@@ -2834,6 +2834,20 @@ mod runtime_ops {
         assert_eq!(run::<i64>("(: a Int64)", "(& a 0)", &[Val::S64(5)]), 0); // x&0 = 0
         assert_eq!(run::<i64>("(: a Int64)", "(<< a 0)", &[Val::S64(5)]), 5); // x<<0 = x
         assert_eq!(run::<i64>("(: a Int64)", "(>> a 0)", &[Val::S64(5)]), 5); // x>>0 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 1)", &[Val::S64(7)]), 7); // x/1 = x
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 1)", &[Val::S64(7)]), 0); // x%1 = 0
+        // SAME-OPERAND identities (the two operands are the same value).
+        assert_eq!(run::<i64>("(: a Int64)", "(- a a)", &[Val::S64(7)]), 0); // a-a = 0
+        assert_eq!(run::<i64>("(: a Int64)", "(^ a a)", &[Val::S64(7)]), 0); // a^a = 0
+        assert_eq!(run::<i64>("(: a Int64)", "(& a a)", &[Val::S64(5)]), 5); // a&a = a
+        assert_eq!(run::<i64>("(: a Int64)", "(| a a)", &[Val::S64(5)]), 5); // a|a = a
+        // A same-operand identity that KEEPS the operand preserves its trap: `(& (* a b) (* a b))` = the
+        // product, so it still traps on overflow (the `& x x` is elided, not the multiply).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(& (* a b) (* a b))",
+            &[Val::S64(i64::MAX), Val::S64(2)]
+        ));
         // An identity that KEEPS the operand still lets the operand's own trap fire: `(+ (* a b) 0)` = x
         // but if `(* a b)` overflows it still traps (the +0 is elided, not the product).
         assert!(traps(
@@ -2858,6 +2872,21 @@ mod runtime_ops {
             run::<i64>(
                 "(: a Int64) (: b Int64)",
                 "(* (/ a b) 0)",
+                &[Val::S64(10), Val::S64(2)]
+            ),
+            0
+        );
+        // The same-operand annihilator `x - x → 0` / `x ^ x → 0` likewise DISCARDS x, so it fires only
+        // when x is trap-free. `(- (/ a b) (/ a b))` must STILL trap on b==0 (not fold to 0).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(- (/ a b) (/ a b))",
+            &[Val::S64(1), Val::S64(0)]
+        ));
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(- (/ a b) (/ a b))",
                 &[Val::S64(10), Val::S64(2)]
             ),
             0
