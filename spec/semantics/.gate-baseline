@@ -549,6 +549,8 @@ todo	a list mixing integer and float elements is a type error
 todo	a list of maps with different keys is homogeneous, not a type error
 todo	a list of records with different field sets is a type error
 todo	a list of tuples with different arities is a type error
+todo	a list update at a genuinely out-of-bounds index traps (the control)
+todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
 todo	a list with a runtime element is returned as a program result
 todo	a literal inside a constructor pattern matches a runtime payload

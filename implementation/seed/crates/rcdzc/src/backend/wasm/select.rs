@@ -1489,7 +1489,26 @@ fn emit(
         Core::ListUpdate { list, index, elem } => {
             emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
             emit(db, index, slots, base, high, scratch_ty, layout, out)?; // [list, index:i64]
-            out.push(Lir::I32WrapI64); // [list, index:i32] — vec-update takes a u32 index
+            // HIGH-BITS BOUNDS GUARD before the i64→i32 wrap. `vec-update` takes a u32 index and checks it
+            // against the length, but `i32.wrap_i64` discards the high 32 bits FIRST — so a huge index
+            // `>= 2^32` that truncates BELOW the length would silently update the wrong slot instead of
+            // trapping (an OOB update aliasing a valid element — a safety hole). Trap if the i64 index does
+            // not fit u32 (`(index as u64) >= 2^32`); a value in `[0, 2^32)` wraps losslessly and the
+            // runtime's own length check catches a real OOB. A NEGATIVE index is a huge u64 (≥ 2^32) so it
+            // is caught here too (and is ≥ length regardless). Mirrors the `br_if` wrap-alias guard the
+            // scalar `br_table` dispatch emits for an i64 scrutinee, but traps (`IfUnreachableEnd`) rather
+            // than routing to a default. The index sub-value is kept in a scratch local across the test.
+            let idx_slot = base;
+            if idx_slot + 1 > *high {
+                *high = idx_slot + 1;
+            }
+            scratch_ty.insert(idx_slot, ValType::I64);
+            out.push(Lir::LocalTee(idx_slot)); // [list, index] — keep a copy in the slot
+            out.push(Lir::ConstI64(0x1_0000_0000)); // 2^32
+            out.push(Lir::I64GeU); // [list, (index as u64) >= 2^32]
+            out.push(Lir::IfUnreachableEnd); // out of u32 range → trap (index out of bounds)
+            out.push(Lir::LocalGet(idx_slot)); // [list, index:i64]
+            out.push(Lir::I32WrapI64); // [list, index:i32] — now known to fit u32
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, index, elem]
             if let Some(op) = box_op(db, elem)? {
                 if let Some(m) = is_narrow_int(db, elem) {

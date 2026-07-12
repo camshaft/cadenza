@@ -3316,6 +3316,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_update_index_that_wraps_below_the_length_traps() {
+        // SAFETY: `List.update`'s Int64 index is wrapped i64→i32 to feed the runtime's u32 index, but the
+        // wrap discards the high 32 bits BEFORE the runtime's length check — so a huge index `>= 2^32`
+        // that truncates below the length would silently update the WRONG element. `(List.update (list 1
+        // 2 3) 2^32 99)` (index 4294967296 truncates to 0) must TRAP, not alias into slot 0. A high-bits
+        // guard (trap if `(index as u64) >= 2^32`) precedes the wrap. An in-bounds index still updates;
+        // a real OOB index still traps.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping list-update OOB run");
+            return;
+        };
+        let run = |src: &str| -> cdz_run::Outcome {
+            let bytes = component(src);
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            cdz_run::run(&bytes, &opts).expect("run")
+        };
+        // A wrapping OOB index (2^32 → 0) must TRAP, not silently update element 0.
+        assert!(
+            matches!(
+                run("(module m (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main))"),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "an index that wraps below the length must trap, not alias into a valid slot"
+        );
+        // A real OOB index (no wrap) still traps.
+        assert!(
+            matches!(
+                run("(module m (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main))"),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a genuinely out-of-bounds index must trap"
+        );
+        // NO OVER-TRAP: an in-bounds update still succeeds and preserves the length.
+        assert!(
+            matches!(
+                run("(module m (def (main) (List.len (List.update (list 1 2 3) 2 99))) (export main))"),
+                cdz_run::Outcome::Value(ref s) if s == "3"
+            ),
+            "an in-bounds update must still succeed"
+        );
+    }
+
+    #[test]
     fn a_constant_scrutinee_folds_to_the_selected_arm() {
         // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
         assert_eq!(

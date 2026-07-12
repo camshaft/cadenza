@@ -3132,6 +3132,36 @@
             (def (main)  (put 99)) (export main)))
   (output (: (list 99 2) (List Int64))))
 
+; `List.update`'s index is an Int64 wrapped to the runtime's u32 index parameter. The bounds check must
+; see the FULL index, not the truncated low 32 bits — else a huge index `>= 2^32` that wraps below the
+; length would silently update the WRONG element instead of trapping (an out-of-bounds write aliasing a
+; valid slot — a safety hole). The compiler guards the i64 index against fitting u32 BEFORE the wrap
+; (trap if `(index as u64) >= 2^32`), so a genuinely out-of-bounds index traps regardless of how its low
+; bits wrap — the i64→i32 high-bits guard the br_table dispatch already applies to an i64 scrutinee.
+
+(case "a list update at an index that wraps below the length still traps"
+  (doc    "`(List.update (list 1 2 3) 4294967296 99)` — index 2^32, far out of bounds for a length-3
+           list. The index is wrapped i64→i32 for the runtime, and 2^32 truncates to 0, so without a
+           high-bits guard the update would SILENTLY succeed at element 0 (the program returning the len
+           3). A genuinely out-of-bounds update must TRAP, not alias into a valid slot via the wrap — the
+           guard traps when the i64 index does not fit u32. Contrast the in-bounds and real-OOB cases
+           around it: only an index in [2^32, 2^32+length) hit this gap. Expected: a trap.")
+  (needs  list-growth)
+  (input  (do (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main)))
+  (call   main)
+  (trap   "index out of bounds"))
+
+(case "a list update at a genuinely out-of-bounds index traps (the control)"
+  (doc    "The control pinning the wrap hazard above: a real out-of-bounds index (5, no wrap) on a
+           length-3 list traps as the runtime's contract requires — this already worked, since the wrap
+           does not alias 5 below the length. Triangulates that the bug was specifically the i64→i32
+           index truncation discarding the high bits before the bounds check, not OOB detection in
+           general. Expected: a trap.")
+  (needs  list-growth)
+  (input  (do (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main)))
+  (call   main)
+  (trap   "index out of bounds"))
+
 (case "a list built by a runtime-length loop has that many elements"
   (doc    "The genuine self-hosting idiom: a list whose LENGTH is decided at run time, built by a
            recursion that pushes an element per step, then measured. `build` pushes `0,1,…,n-1` onto
