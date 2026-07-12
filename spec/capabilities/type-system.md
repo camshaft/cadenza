@@ -31,6 +31,8 @@ Type inference MUST determine types by unification over type variables — solvi
 
 The type inference determines for an expression MUST be its principal type: the most general type from which every other valid type of that expression is an instance, so that inference commits to no more than the program's uses require.
 
+A value that escapes to the host whose type contains a type variable no use constrains MUST be rejected at compile time with the type-determination fault code, rather than crossing the boundary with an invented type, so that a serialized value's type header is always fully determined. A bare `None` returned as the program result (type `Option ?`, the payload free), an `Ok` whose `Err` parameter is never constructed, or an empty list indexed to `None` (element free) is rejected for its unresolved type — the fix is an annotation that determines the variable — not for its export shape. A CONSUMED such value (matched, or passed to a typed parameter) constrains the variable and type-checks without annotation; the ambiguity bites only at an unannotated escape.
+
 Inference MUST propagate a determined type to every occurrence of the binding it constrains, so that a parameter used in one position is typed consistently at every other occurrence and at every call site.
 
 A program for which unification has no solution — a use that imposes contradictory constraints on a type variable — MUST be rejected at compile time with the machine-readable code for the conflicting-use type error, rather than compiled.

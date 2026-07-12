@@ -3543,11 +3543,14 @@ mod match_engine {
         // The corpus surface: `(List.at (list 1 2 3) 1)` returned as the program result renders `(: (Some
         // 2) (Option Int64))` — the fold produces a `Some` sum that crosses the host boundary through the
         // sum-escape resource path (task #11). Pins the end-to-end fallible-read → Option escape for a
-        // constant list. Run composed with the runtime (the resource `encode()` disc-switch renders it).
+        // constant list. Because the whole value is a COMPILE-TIME CONSTANT (`List.at` of a literal list
+        // at a literal index folds to a `Some` `SumNew`), the escape bakes its bytes directly (the
+        // constant `const_value_ast` path) and needs NO value-heap runtime — verified below. Run composed
+        // (the bare-envelope resource `encode()` returns the baked bytes).
         let bytes = component("(module m (def (main) ((. List at) (list 1 2 3) 1)) (export main))");
         assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a Some escape imports the value-heap runtime"
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "a CONSTANT Some escape bakes its bytes — no value-heap runtime import"
         );
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
@@ -6515,11 +6518,15 @@ mod stage1 {
 
     #[test]
     fn a_generic_sum_escapes_to_the_host_at_a_concrete_instantiation() {
-        // A GENERIC `Option` built at `Int64` and RETURNED across the host boundary renders `(: (Some 5)
-        // (Option Int64))` — the parameterized type surface (§158, the corpus form), driven by the
-        // sum's solved `Ty::Sum{args:[Int64]}`. The escape walker's per-variant template reads the
-        // concrete payload type (`Int64`) from the instantiation, so the `Some` arm holds a real Int64
-        // hole. Composed + run through `cdz-run` (the resource shape, `export: None`).
+        // A GENERIC `Option` built at `Int64` and RETURNED across the host boundary renders the
+        // parameterized type surface `(Option Int64)` (§158, the corpus form), driven by the sum's solved
+        // `Ty::Sum{args:[Int64]}`. Here the program DECLARES its own `(type Option (Some a) None)` — a
+        // USER sum (its declaration occurrence is below the prelude watermark) — so its variant renders
+        // QUALIFIED as the member-access form `(. Option Some)`, the `Type.Variant` reconstruction the
+        // type-directed renderer applies to a user declaration (a built-in prelude `Some` would render
+        // bare; see `bare_prelude_option_needs_no_declaration`). The escape walker's per-variant template
+        // reads the concrete payload type (`Int64`) from the instantiation, so the `Some` arm holds a real
+        // Int64 hole. Composed + run through `cdz-run` (the resource shape, `export: None`).
         use crate::testkit::parse;
         let src = "(module m (type Option (Some a) None) \
                      (def (main) (Option.Some 5)) (export main))";
@@ -6538,8 +6545,8 @@ mod stage1 {
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(
-                    s, "(: (Some 5) (Option Int64))",
-                    "generic sum escape renders the instantiation"
+                    s, "(: ((. Option Some) 5) (Option Int64))",
+                    "a user-declared generic sum escape renders the instantiation with the qualified variant"
                 )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed generic-escape run trapped: {t}"),
@@ -6822,19 +6829,21 @@ mod stage1 {
 
     #[test]
     fn a_nullary_sum_export_escapes_to_the_host() {
-        // The R2 sum escape: a single NULLARY export returning a sum crosses as a resource whose
-        // `encode()` SWITCHES on `sum-disc` and renders the matching variant's `(: (Variant payload)
-        // SumType)` bytes. `(Some 5)` → `(: (Some 5) Option)`; the walker builds the sum on the heap
-        // (`sum-new`), reads its disc (0 → the `Some` arm), walks `sum-payload` → `get-int` → 5, and
-        // returns the rendered bytes. Composed + run through `cdz-run` (the canonical host).
+        // A single NULLARY export returning a user sum crosses as a resource. `(Option.Some 5)` over a
+        // USER `(type Option (Some Int64) None)` is a COMPILE-TIME CONSTANT, so its canonical bytes are
+        // baked (the `const_value_ast` `SumNew` arm) and NO value-heap runtime is imported. The variant
+        // renders QUALIFIED — `(. Option Some)` — because the sum is user-declared (a built-in prelude
+        // `Some` would render bare). `(Option.Some 5)` → `(: ((. Option Some) 5) Option)`. The RUNTIME
+        // disc-switch encoder (a sum built from a non-constant payload) is exercised separately by
+        // `a_runtime_sum_export_escapes_via_the_heap_walk`. Composed + run through `cdz-run`.
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (main) (Option.Some 5)) (export main))";
         let bytes =
             compile_component(&crate::codec::encode(&parse(src))).expect("compile a sum escape");
         assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a sum escape imports the value-heap runtime"
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "a CONSTANT sum escape bakes its bytes — no value-heap runtime import"
         );
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!(
@@ -6852,17 +6861,60 @@ mod stage1 {
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "(: (Some 5) Option)", "sum escape renders the variant")
+                assert_eq!(
+                    s, "(: ((. Option Some) 5) Option)",
+                    "sum escape renders the qualified variant"
+                )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed sum-escape run trapped: {t}"),
         }
     }
 
     #[test]
+    fn a_runtime_sum_export_escapes_via_the_heap_walk() {
+        // The R2 runtime sum escape: a single NULLARY export whose returned sum is built from a NON-CONSTANT
+        // payload (so it cannot fold to baked bytes) crosses as a resource whose `encode()` SWITCHES on
+        // `sum-disc` and WALKS the live handle. Here `pick` recurses (so the fold cannot inline it) and its
+        // `Some` payload is a genuine runtime value; the walker builds the sum on the heap (`sum-new`),
+        // reads its disc, walks `sum-payload` → `get-int`, and renders `(: (Some 3) (Option Int64))` — the
+        // bare built-in `Some` (no user declaration). Verifies the runtime disc-switch encoder, the
+        // companion of the constant-bake path in `a_nullary_sum_export_escapes_to_the_host`.
+        use crate::testkit::parse;
+        let src = "(module m (def (down n) (if (< n 1) (Some 0) (down (- n 1)))) \
+                     (def (main) (down 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile runtime sum escape");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a RUNTIME sum escape imports the value-heap runtime (the disc-switch heap walk)"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "(: (Some 0) (Option Int64))",
+                    "runtime sum escape walks the heap and renders the variant"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("composed runtime-sum-escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_nullary_variant_export_escapes_as_unit_payload() {
-        // The nullary arm of the disc-switch: `None` → `(: (None unit) Option)` (the corpus form — a
-        // nullary variant carries the unit value). The walker reads disc 1 (the `None` arm), whose
-        // template has NO holes (the `unit` payload is static), and returns its bytes.
+        // The nullary arm: `Option.None` over a USER `(type Option …)` renders `(: ((. Option None) unit)
+        // Option)` — a nullary variant carries the unit value, and the user-declared variant renders
+        // QUALIFIED as the member-access form. The value is a compile-time constant, so its bytes are
+        // baked (no runtime import); the `None` template has NO holes (the `unit` payload is static).
         use crate::testkit::parse;
         let src = "(module m (type Option (Some Int64) None) \
                      (def (main) Option.None) (export main))";
@@ -6880,7 +6932,10 @@ mod stage1 {
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "(: (None unit) Option)", "nullary variant escape")
+                assert_eq!(
+                    s, "(: ((. Option None) unit) Option)",
+                    "nullary variant escape renders the qualified variant"
+                )
             }
             cdz_run::Outcome::Trap(t) => panic!("composed None-escape run trapped: {t}"),
         }

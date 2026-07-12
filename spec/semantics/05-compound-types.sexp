@@ -943,8 +943,12 @@
 (case "Ok carrying a Some keeps both variant tags"
   (doc    "The Result-of-Option companion: `(Ok (Some 3))` is an Ok whose payload is a Some. Its
            canonical form is `(Ok (Some 3))`; a constructor's own tag is not replaced by `record`
-           because its payload is a Sum — both tags survive.")
-  (input  (Ok (Some 3)))
+           because its payload is a Sum — both tags survive. The `Err` type parameter is unconstrained
+           by the value, so the escape is ANNOTATED `(Result (Option Int64) Int64)` to fully determine
+           it (an unannotated escape of a value with a free type variable is rejected — see 07 \"an
+           escaped value with an unresolved payload type is rejected\"); the annotation fixes `Err` =
+           Int64 and the whole renders `(Ok (Some 3))` with both nested variant tags present.")
+  (input  (: (Ok (Some 3)) (Result (Option Int64) Int64)))
   (output (: (Ok (Some 3)) (Result (Option Int64) Int64))))
 
 (case "a nested constructor value dispatches on both tags in a match"
@@ -2099,9 +2103,13 @@
 (case "indexing an empty list yields None"
   (doc    "`(List.at (list) 0)` indexes position 0 of a list with no elements — out of bounds, since
            an empty list has no element at any index — so it MUST yield None. Pins the degenerate
-           boundary: index 0 is present only when the list is non-empty.")
+           boundary: index 0 is present only when the list is non-empty. An empty list's element type
+           is unconstrained, so the whole is ANNOTATED `(Option Int64)` to fully determine the escaping
+           value's type (an unannotated escape of a value with a free type variable is rejected — see 07
+           \"an escaped value with an unresolved payload type is rejected\"); the None still renders `(None
+           unit)`.")
   (needs fallible-access)
-  (input  (List.at (list) 0))
+  (input  (: (List.at (list) 0) (Option Int64)))
   (output (: (None unit) (Option Int64))))
 
 (case "indexing a list bound from a sum payload yields the element"
@@ -2773,9 +2781,12 @@
   (doc    "Witnesses core-semantics.md #The Prelude MUST Bind Constructor Values Only: the name
            `None` resolves to a Constructor (a function value), not to a pre-constructed Sum. You
            cannot use bare `None` as a value; you must apply it: `(None unit)`. The bound value is
-           the constructor, not the variant.")
-  (input  (let ((ctor None)) (ctor unit)))
-  (output (: (None unit) (Option Any))))
+           the constructor, not the variant. The escaping value's payload type is unconstrained, so the
+           result is ANNOTATED `(Option Int64)` to fully determine it (an unannotated escape of a value
+           with a free type variable is rejected — see 07 \"an escaped value with an unresolved payload
+           type is rejected\"); the applied constructor still renders the canonical `(None unit)`.")
+  (input  (: (let ((ctor None)) (ctor unit)) (Option Int64)))
+  (output (: (None unit) (Option Int64))))
 
 (case "a sum type is declared with named variants"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st

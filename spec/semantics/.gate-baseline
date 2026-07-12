@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	Ok carrying a Some keeps both variant tags
 pass	Result type for fallible operations
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
@@ -59,6 +60,7 @@ pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
+pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
@@ -88,6 +90,7 @@ pass	a function bound to a name and then applied
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
 pass	a function open over a record's extra fields accepts any record with the used field
+pass	a function returning None or a nested Some infers its compound result shape
 pass	a function returning a boolean predicate result
 pass	a function returns a heap sub-node selected by a match arm
 pass	a function takes a boolean parameter and branches on it
@@ -211,6 +214,7 @@ pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
+pass	a recursive user sum type is built at run time and renders with qualified variant names
 pass	a reference to an unbound name is rejected before running
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a right shift by the bit width or more traps rather than masking
@@ -374,6 +378,7 @@ pass	indexing a list bound from a sum payload yields the element
 pass	indexing a list in bounds yields Some of the element
 pass	indexing a list out of bounds yields None
 pass	indexing a list with a negative index yields None
+pass	indexing an empty list yields None
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
@@ -429,6 +434,7 @@ pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
+pass	the empty byte sequence has length zero
 pass	the entrypoint adds one to its runtime argument
 pass	the entrypoint branches on its runtime argument
 pass	the entrypoint compares its runtime argument to a bound
@@ -440,8 +446,10 @@ pass	the guarded-let conditional takes its else-branch when the conjunction is f
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the largest factorial that fits the integer type computes exactly
+pass	the length of a byte sequence is its byte count
 pass	the length of a concatenation is the sum of the two lengths
 pass	the length of a grown list is its element count
+pass	the length of a runtime byte sequence is its byte count
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound
@@ -450,6 +458,7 @@ pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
 pass	the nullary-first if returns the None arm on the base path
 pass	the other parity of a mutually-recursive pair
+pass	the prelude binds Constructor values not pre-applied Sums
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the runtime-if list takes its else branch and measures that length
@@ -473,7 +482,6 @@ pass	updating a list slot with an element of a different type is a type error
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
-todo	Ok carrying a Some keeps both variant tags
 todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Result propagates errors without trapping
 todo	String.scalar-len of a string selected by a runtime if
@@ -522,7 +530,6 @@ todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
-todo	a constructor whose payload is a constructor keeps the outer variant tag
 todo	a curried function can be partially applied
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a declaration in a do block shadows an outer binding
@@ -547,7 +554,6 @@ todo	a floating-point literal
 todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
-todo	a function returning None or a nested Some infers its compound result shape
 todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
 todo	a function whose body always diverges has result type Never
@@ -664,7 +670,6 @@ todo	a recursive resolver transforms one runtime sum tree into another, then con
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a recursive sum consumer whose arguments are recursive sum producers compiles
 todo	a recursive sum type works with pattern matching
-todo	a recursive user sum type is built at run time and renders with qualified variant names
 todo	a recursively-built binary tree renders its full runtime structure
 todo	a recursively-built byte sequence assembles its bytes at run time
 todo	a recursively-built linked list renders its full runtime spine
@@ -890,7 +895,6 @@ todo	indexing a byte sequence returns Some of the byte at that position
 todo	indexing a byte sequence with a negative index yields None
 todo	indexing a runtime string past its last scalar yields None
 todo	indexing a slice is relative to the slice's start
-todo	indexing an empty list yields None
 todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
 todo	inserting a present element is a no-op value
@@ -1001,7 +1005,6 @@ todo	the built-in list is folded by an element-with-rest pattern
 todo	the byte length of a runtime string equals the length of its encoded bytes
 todo	the default-integer pragma is definition-site scoped, not use-site
 todo	the difference contains the elements not in the second set
-todo	the empty byte sequence has length zero
 todo	the empty reader literal is the empty symbol
 todo	the empty set is equal to the empty set
 todo	the empty string has length zero
@@ -1009,12 +1012,9 @@ todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
 todo	the intersection contains the elements in both sets
 todo	the le modifier encodes a u16 little-endian
-todo	the length of a byte sequence is its byte count
 todo	the length of a fixed-width construction is the sum of its segment widths
-todo	the length of a runtime byte sequence is its byte count
 todo	the length of a slice is the slice's byte count
 todo	the number of elements counts distinct elements
-todo	the prelude binds Constructor values not pre-applied Sums
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
 todo	the same function called under two handlers is discharged by each in turn

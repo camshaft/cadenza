@@ -1642,7 +1642,7 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
         .map(|v| (v.name.clone(), v.payloads.clone()))
         .collect();
     let mut out = Vec::with_capacity(variants.len());
-    for (vname, payload_occs) in &variants {
+    for (disc, (_, payload_occs)) in variants.iter().enumerate() {
         // Reduce each payload TYPE occurrence to a `Ty` AT THE INSTANTIATION: a payload that IS a type
         // parameter (a bare name in `params`) becomes the corresponding concrete `arg`; any other
         // payload reduces normally (`typeval_of`). This is what makes a generic `Option Int64` escape
@@ -1658,24 +1658,36 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
             };
             payload_tys.push(pty);
         }
-        out.push(variant_form_template(vname, &payload_tys, ty)?);
+        // The variant HEAD — QUALIFIED `(. IntList Cons)` for a user sum, a BARE `Some` name for a
+        // built-in prelude sum — so the runtime walker writes the same head the constant bake does.
+        out.push(variant_form_template(
+            db,
+            *decl,
+            disc as u32,
+            &payload_tys,
+            ty,
+        )?);
     }
     Some(SumFormTemplate { variants: out })
 }
 
-/// One variant's value-form template: `(: (VariantName payload…) SumType)`, payload leaves as holes
-/// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]).
+/// One variant's value-form template: `(: <variant-head> payload…) SumType)`, payload leaves as holes
+/// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]). The
+/// variant HEAD is built by [`variant_head_ast`] (qualified `(. Type Variant)` for a user sum, a bare
+/// name for a built-in), so the runtime template writes the identical head the constant bake does.
 fn variant_form_template(
-    vname: &str,
+    db: &Db,
+    decl: StructId,
+    disc: u32,
     payloads: &[crate::ty::Ty],
     sum_ty: &crate::ty::Ty,
 ) -> Option<ValueFormTemplate> {
     let mut b = crate::ast::Builder::new();
     let colon = b.name(":");
     let mut leaves: Vec<PendingLeaf> = Vec::new();
-    // The VALUE: `(VariantName payload…)`.
+    // The VALUE: `(<variant-head> payload…)`.
     let value = {
-        let head = b.name(vname);
+        let head = variant_head_ast(db, &mut b, decl, disc)?;
         let mut children = vec![head];
         match payloads.len() {
             // Nullary: `(VariantName unit)` — the corpus form (`(None unit)`), no holes.
@@ -1891,6 +1903,38 @@ fn leb_len(mut n: u64) -> usize {
     c
 }
 
+/// Build the variant HEAD s-expression for variant `disc` of the sum declared at `decl`, as it appears
+/// in an observed value's canonical form. A USER-declared sum renders its variant QUALIFIED as the
+/// MEMBER-ACCESS form `(. Type Variant)` — `(. IntList Cons)`, `(. Sign Pos)`: the tag-free runtime holds
+/// only the discriminant, and the type-directed renderer reconstructs the `Type.Variant` reference from
+/// the declaration (corpus 05 "a recursive user sum type … renders with qualified variant names"; the
+/// dotted `IntList.Cons` source sugar reads to `(. IntList Cons)`, so the observed value form is that
+/// member-access list). A BUILT-IN prelude sum (Option/Result — whose variant names bind BARE,
+/// `Some`/`None`/`Ok`/`Err`) renders its variant BARE as a NAME atom, the corpus surface (`(Some 5)`,
+/// `(None unit)`). The two are distinguished by `is_user_node(decl)`: a user declaration's occurrence is
+/// below the prelude-install watermark, a built-in's at/above it — no name special-case. `None` if the
+/// disc is out of range (a compiler bug). Shared by the constant-escape bake and the runtime-escape
+/// template so both write the identical head.
+fn variant_head_ast(
+    db: &Db,
+    b: &mut crate::ast::Builder,
+    decl: StructId,
+    disc: u32,
+) -> Option<StructId> {
+    let t = db.type_decl_by_occ(decl)?;
+    let vname = t.variants.get(disc as usize)?.name.clone();
+    if db.is_user_node(decl) {
+        // `(. Type Variant)` — the member-access form the dotted `Type.Variant` sugar reads to.
+        let dot = b.name(".");
+        let tname = b.name(t.name.clone());
+        let variant = b.name(vname);
+        Some(b.list(vec![dot, tname, variant]))
+    } else {
+        // A built-in prelude variant binds bare — render the bare name atom.
+        Some(b.name(vname))
+    }
+}
+
 /// Reconstruct the VALUE s-expression of a constant node into `b`: a scalar → its literal atom; a
 /// `Core::Tuple` → `(tuple <elem>…)`; a `Core::Record` → `(record (<name> <value>)…)` in canonical field
 /// order. `None` if the node is not a constant the escape path can bake.
@@ -1934,6 +1978,34 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             let mut children = vec![head];
             for e in elems {
                 children.push(const_value_ast(db, b, e)?);
+            }
+            Some(b.list(children))
+        }
+        // A CONSTANT sum value — `(Some 5)`, `(None unit)`, `(Some (Some 5))`. Its canonical form is
+        // `(VariantName payload…)` with the variant TAG present (`deterministic-value-form.md`;
+        // core-semantics.md §A Constructor Applied To An Argument Is A Sum Value). This holds regardless
+        // of what the payload IS — a scalar, a tuple, or ANOTHER sum value — so a NESTED constant sum
+        // (`(Some (Some 5))`) bakes recursively, both variant tags present. This is the constant-escape
+        // (R1) companion of `sum_form_template`'s runtime walker: a fully-constant sum crosses by baked
+        // bytes here, so it never needs the per-variant runtime template (which cannot express a nested
+        // sum's variable-length inner shape). The variant NAME is recovered from the disc against this
+        // node's solved sum type (its declaration's variant set); a nullary variant carries `unit`.
+        Core::SumNew { disc, payloads } => {
+            let ty = crate::infer::type_of(db, id);
+            let crate::ty::Ty::Sum { decl, .. } = ty else {
+                return None; // a SumNew whose solved type is not a sum is a compiler bug — decline
+            };
+            let head = variant_head_ast(db, b, decl, disc)?;
+            let mut children = vec![head];
+            match payloads.len() {
+                // Nullary variant: `(VariantName unit)` — the corpus form (`(None unit)`).
+                0 => children.push(b.name("unit")),
+                // Single payload (the canonical variant shape — one payload type, a scalar / tuple /
+                // nested sum): render it recursively.
+                1 => children.push(const_value_ast(db, b, payloads[0])?),
+                // Multiple application arguments (a `(V.Both a b)` multi-arg surface) — not a canonical
+                // single-payload form; the escape declines rather than guess a rendering.
+                _ => return None,
             }
             Some(b.list(children))
         }
@@ -1996,6 +2068,13 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
         // `render_name`; its VALUE renders `b"…"` (built in `const_value_ast` / the escape walker).
         Ty::Bytes => Some(b.name("Bytes".to_string())),
+        // A still-free type variable in an escaping value's type has NO defined serialization — a bare
+        // `(None)` : `Option ?0` or an empty `(list)` : `List ?0` whose payload/element nothing pins. It
+        // is NOT rendered (no honest concrete surface exists): returning `None` here makes
+        // `constant_value_form`/`sum_form_template` decline, so the escape falls through to the
+        // AMBIGUOUS-TYPE guard in `backend/wasm/mod.rs` (`has_free_var` → CDZ0203, "annotate it") rather
+        // than crossing with an invented type. type-system.md §An Escaping Value MUST Have A Fully
+        // Determined Type; corpus 07 "an escaped value with an unresolved payload type is rejected".
         Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
     }
 }
