@@ -7979,6 +7979,25 @@ mod stage1 {
     }
 
     #[test]
+    fn nested_intra_program_handlers_compose_inside_out() {
+        // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
+        // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
+        // `(B.b)` resumes 20 (outer), so `(+ (A.a) (B.b))` = 42. The inner handle in the outer's body is
+        // recursively `reduce_handle`d, then threaded under the outer context.
+        let src = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle 0 ((B.b (u) s (resume 20 s))) \
+                     (handle 0 ((A.a (u) s (resume 22 s))) (+ (A.a) (B.b))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("nested intra-program handlers compose"),
+                "main"
+            ),
+            42
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_case_the_fold_cannot_serve_declines_not_hangs() {
         // E3 boundary: a recursive effectful walk the single-state fast path cannot serve (a 2-arm
         // handler over a compound list state) must DECLINE cleanly — NOT hang. Regression guard for the
