@@ -172,8 +172,13 @@ pub enum Lir {
     I64GtU,
     I64LeU,
     I64GeU,
+    /// `i64.eqz` — 1 (i32) if the i64 on the stack is 0, else 0. Emits `x == 0` on a 64-bit operand as
+    /// ONE instruction instead of `i64.const 0 ; i64.eq` — the shape of every recursion base case
+    /// `(if (= n 0) …)`. (The result is an i32 boolean, like every comparison.)
+    I64Eqz,
     /// `i32.eqz` — 1 if the i32 on the stack is 0, else 0. On a boolean (an i32 0/1) it is logical NOT;
-    /// used to emit a boolean negation `!c` (the `(if c false true)` fold).
+    /// used to emit a boolean negation `!c` (the `(if c false true)` fold) AND `x == 0` on a ≤32-bit
+    /// operand (one instruction vs `i32.const 0 ; i32.eq`).
     I32Eqz,
     /// 32-bit integer comparisons leaving an i32 boolean — for a ≤32-bit integer OR a boolean operand
     /// (a bool is an i32). Signed and unsigned variants (a ≤32-bit value is properly sign-/zero-extended

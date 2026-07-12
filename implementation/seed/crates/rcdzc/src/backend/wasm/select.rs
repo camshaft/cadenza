@@ -1711,6 +1711,23 @@ fn emit(
             // Both operands must share the comparison's machine slot; ground a bare-literal operand to
             // the shared width so `(> x 50)` over a narrow `x` does not push an i64 beside `x`'s i32.
             let it = operand_int_ty(db, lhs, rhs);
+            // EQUALITY-WITH-ZERO → `eqz`. `(= x 0)` (or `(= 0 x)`) is the shape of every recursion base
+            // case `(if (= n 0) …)`; `x == 0` is exactly wasm's `i32.eqz`/`i64.eqz` (1 if the operand is
+            // zero) — one instruction instead of pushing a `0` constant and an `eq` (three). This is
+            // INSTRUCTION SELECTION at the site where the semantics ("compare with zero") are known — not
+            // a byte peephole re-recognizing `const 0 ; eq` after the fact. A CONSTANT-vs-constant `= 0`
+            // would already have folded in `lower`, so here the non-zero operand is a runtime value.
+            if op == Prim::Eq
+                && let Some(nonzero) = eq_zero_operand(db, lhs, rhs)
+            {
+                emit_operand(db, nonzero, it, slots, base, high, scratch_ty, layout, out)?;
+                out.push(if it.ground_width() <= 32 {
+                    Lir::I32Eqz
+                } else {
+                    Lir::I64Eqz
+                });
+                return Ok(());
+            }
             emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
             emit_operand(db, rhs, it, slots, base, high, scratch_ty, layout, out)?;
             out.push(compare_op(op, it));
@@ -3573,6 +3590,23 @@ fn emit_wrap(
     Ok(())
 }
 
+/// For an equality comparison `(= a b)`, if EXACTLY ONE operand is a compile-time constant ZERO, return
+/// the OTHER (non-zero) operand — the one to push before an `eqz`. `None` if neither operand is a
+/// constant zero (a general equality → `eq`), or if BOTH are (a `0 == 0`, which `lower` already folds to
+/// `true`, so it should not reach here — return `None` defensively so it takes the ordinary `eq` path
+/// rather than a wrong single-operand `eqz`). The zero test is by VALUE (`IntValue::eq_value` against
+/// zero), width-agnostic — a zero of any width is the additive identity the `eqz` recognizes.
+fn eq_zero_operand(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId> {
+    let is_zero = |db: &mut Db, id: StructId| matches!(core_of(db, id), Core::ConstInt(v) if v.eq_value(&crate::ast::IntValue::zero()));
+    let l0 = is_zero(db, lhs);
+    let r0 = is_zero(db, rhs);
+    match (l0, r0) {
+        (true, false) => Some(rhs),
+        (false, true) => Some(lhs),
+        _ => None, // neither, or both (folded elsewhere) → ordinary `eq`.
+    }
+}
+
 /// The flat wasm comparison op for a relational prim over an operand integer type — the width chooses
 /// i32 (≤32-bit, or a boolean operand) vs i64, and the SIGNEDNESS chooses `_s` (a signed type orders by
 /// two's-complement value) vs `_u` (an unsigned type orders by magnitude). Equality is sign-agnostic
@@ -4061,6 +4095,44 @@ mod tests {
         );
         assert!(f.declared.is_empty());
         assert_eq!(f.ret, Ty::Bool);
+    }
+
+    #[test]
+    fn equality_with_zero_selects_to_eqz() {
+        // `(= n 0)` on a 64-bit param is `i64.eqz` (one instruction: push n, eqz) — NOT
+        // `local.get 0 ; i64.const 0 ; i64.eq` (three). The zero operand is recognized at the compare
+        // emit site; the commuted `(= 0 n)` folds the same way, and a NON-zero rhs keeps `i64.eq`.
+        let check = |src: &str, name: &str, want: Vec<Lir>| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, name);
+            let f = select_function(&mut db, body, &params, &layout).expect("select");
+            assert_eq!(f.code, want, "{src}");
+        };
+        check(
+            "(module m (def (f (: n Int64)) (= n 0)) (def (main) 0) (export main))",
+            "f",
+            vec![Lir::LocalGet(0), Lir::I64Eqz],
+        );
+        // Commuted: `(= 0 n)` → the non-zero operand (n) then eqz.
+        check(
+            "(module m (def (f (: n Int64)) (= 0 n)) (def (main) 0) (export main))",
+            "f",
+            vec![Lir::LocalGet(0), Lir::I64Eqz],
+        );
+        // A ≤32-bit operand uses i32.eqz.
+        check(
+            "(module m (def (f (: n Int32)) (= n 0)) (def (main) 0) (export main))",
+            "f",
+            vec![Lir::LocalGet(0), Lir::I32Eqz],
+        );
+        // A NON-zero literal keeps the general equality (push both, i64.eq) — eqz is zero-only.
+        check(
+            "(module m (def (f (: n Int64)) (= n 5)) (def (main) 0) (export main))",
+            "f",
+            vec![Lir::LocalGet(0), Lir::ConstI64(5), Lir::I64Eq],
+        );
     }
 
     #[test]

@@ -618,6 +618,7 @@ mod wasm_abi {
             op("I64_SHR_S", Instruction::I64ShrS),
             op("I64_SHR_U", Instruction::I64ShrU),
             op("I64_EQ", Instruction::I64Eq),
+            op("I64_EQZ", Instruction::I64Eqz),
             op("I64_NE", Instruction::I64Ne),
             op("I64_LT_S", Instruction::I64LtS),
             op("I64_LT_U", Instruction::I64LtU),

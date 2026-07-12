@@ -71,6 +71,7 @@ pub mod op {
     pub const I64_SHR_S: u8 = 0x87;
     pub const I64_SHR_U: u8 = 0x88;
     pub const I64_EQ: u8 = 0x51;
+    pub const I64_EQZ: u8 = 0x50;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LT_S: u8 = 0x53;
     pub const I64_LT_U: u8 = 0x54;
