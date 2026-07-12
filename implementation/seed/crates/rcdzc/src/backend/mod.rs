@@ -7,9 +7,14 @@
 //! (`query-engine.md` §Producing An Artifact Is A Column A Backend Fills). Selecting one is a branch
 //! on the requested [`Target`]; the query program picks it (`Compiler.compile(db, Compiler.Target.…)`).
 //!
-//! One backend ships here (wasm → a WebAssembly component). The `Target` enum exists so a second
-//! backend is a new arm behind this same seam, not a fork of the pipeline.
+//! Two backends ship here: wasm → a WebAssembly component, and rust → Rust source. Each is one arm
+//! behind this same seam (`Target`), not a fork of the pipeline — the concrete demonstration that
+//! everything above the seam (resolve/infer/lower/layout) is target-neutral. The Rust backend consumes
+//! the typed structured core DIRECTLY (it never builds the flat wasm `Lir`), so it also demonstrates
+//! the flat rung is a property of the linearizing backend, not a shared stage
+//! (`backends-and-targets.md` §The Flat Instruction Rung Is A Property Of A Linearizing Backend).
 
+pub mod rust;
 pub mod wasm;
 
 use crate::db::Db;
@@ -23,6 +28,11 @@ use tracing::trace;
 pub enum Target {
     /// A WebAssembly component (the Stage-0 backend).
     Wasm,
+    /// Rust source — a self-contained `.rs` module (one `pub fn` per export) that links into an
+    /// existing Rust codebase as ordinary source, with no component boundary and no FFI. The
+    /// structured second backend (`backends-and-targets.md` §A Backend Linearizes The Core Only If Its
+    /// Target Is Linear).
+    Rust,
 }
 
 impl Target {
@@ -31,6 +41,7 @@ impl Target {
     pub fn artifact_kind(self) -> &'static str {
         match self {
             Target::Wasm => "component",
+            Target::Rust => "rust",
         }
     }
 }
@@ -40,6 +51,7 @@ impl Target {
 pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let result = match target {
         Target::Wasm => wasm::emit(db, layout),
+        Target::Rust => rust::emit(db, layout),
     };
     match &result {
         Ok(bytes) => {

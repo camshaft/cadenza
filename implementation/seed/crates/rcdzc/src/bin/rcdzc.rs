@@ -53,12 +53,15 @@ struct Cli {
 enum TargetArg {
     /// A WebAssembly component.
     Wasm,
+    /// Rust source (a `.rs` module linking into a Rust codebase, no FFI).
+    Rust,
 }
 
 impl From<TargetArg> for Target {
     fn from(t: TargetArg) -> Target {
         match t {
             TargetArg::Wasm => Target::Wasm,
+            TargetArg::Rust => Target::Rust,
         }
     }
 }
@@ -249,6 +252,7 @@ fn parse_input_spec(spec: &str) -> InputSpec {
 fn ext_for_kind(kind: &str) -> &str {
     match kind {
         "component" => "wasm",
+        "rust" => "rs",
         other => other,
     }
 }
