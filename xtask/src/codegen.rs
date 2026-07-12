@@ -630,6 +630,13 @@ mod wasm_abi {
             op("GLOBAL_GET", Instruction::GlobalGet(0)),
             op("GLOBAL_SET", Instruction::GlobalSet(0)),
             op("CALL", Instruction::Call(0)),
+            op(
+                "CALL_INDIRECT",
+                Instruction::CallIndirect {
+                    type_index: 0,
+                    table_index: 0,
+                },
+            ),
             op("RETURN_CALL", Instruction::ReturnCall(0)),
             op("RETURN", Instruction::Return),
             op("UNREACHABLE", Instruction::Unreachable),
@@ -743,6 +750,16 @@ mod wasm_abi {
                 "CORE_SEC_FUNCTION",
                 "core FUNCTION section id.",
                 SectionId::Function,
+            ),
+            core_sec(
+                "CORE_SEC_TABLE",
+                "core TABLE section id (the funcref table a closure's `call_indirect` dispatches through — one entry per lambda-lifted closure function).",
+                SectionId::Table,
+            ),
+            core_sec(
+                "CORE_SEC_ELEMENT",
+                "core ELEMENT section id (the active segment filling the funcref table with the lifted closure functions' indices, so a closure's stored table slot names its code).",
+                SectionId::Element,
             ),
             core_sec(
                 "CORE_SEC_MEMORY",
