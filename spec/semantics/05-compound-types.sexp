@@ -919,6 +919,53 @@
             ((None _)     -1)))
   (output (: 5 Int64)))
 
+; --- A variant carrying a BARE NULLARY variant with an unconstrained payload type-checks ---------
+; type-system.md #Generics Are Type-Valued Parameters: a nullary variant `None : ∀a. Option a` is
+; generic in its payload. Constructing `(Some (None))`, the inner `None`'s payload `a` is a free type
+; variable the CONTEXT determines (an outer annotation, or the match arms that consume the value). It is
+; a WELL-TYPED value — `(Some (Some 5))` (inner constrained by the 5) and `(Some 5)` (one level) both
+; infer — so `(Some (None))` must too. A generation whose per-application type solve reused variable
+; numbers across the outer ctor and the inner value (each instantiating a scheme from a private fresh-0
+; counter) ALIASED the inner payload variable with the outer's parameter — `a = Option a` — and the
+; occurs-check spuriously REJECTED it (CDZ0203 "a type would contain itself"), EVEN under a full outer
+; annotation. Freshening the argument's free variables past the head's counter before unifying makes
+; them disjoint, so a nested nullary variant type-checks. The cases consume the value via a nested match
+; to a SCALAR (independent of the sum-escape path); the inner-annotated control pins the value is
+; well-typed and the matcher works, so a Pass is purely the construction type-checking.
+
+(case "a Some carrying a bare None type-checks under a whole-expression annotation"
+  (doc    "`(: (Some (None)) (Option (Option Int64)))` is well-typed: a `Some` whose payload is `None :
+           (Option Int64)`, the whole an `(Option (Option Int64))`. Matched, the `(Some (None))` arm
+           yields 1. A generation that aliased the inner nullary variant's free payload variable with the
+           outer `Some`'s parameter tripped the occurs-check (CDZ0203 'infinite type'), rejecting a
+           well-typed value even with this full outer annotation. Must type-check and return 1.")
+  (input  (do (def (main) (match (: (Some (None)) (Option (Option Int64)))
+                            ((Some (Some x)) x) ((Some (None)) 1) ((None) 2))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
+(case "a Some carrying an inner-annotated None matches its arm (the control)"
+  (doc    "The control pinning the reject above is about the inner nullary variant's UNCONSTRAINED
+           payload, not the value itself: annotating the INNERMOST `(None)` — `(Some (: (None) (Option
+           Int64)))` — sets its payload type early, so the same value type-checks and the matcher
+           dispatches it to the `(Some (None))` arm, returning 1. Identical value and match to the case
+           above; the only difference is where the annotation sits. Triangulates the value is well-typed
+           and the bug was a spurious occurs-check on construction, not the value or the matcher.")
+  (input  (do (def (main) (match (Some (: (None) (Option Int64)))
+                            ((Some (Some x)) x) ((Some (None)) 1) ((None) 2))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
+(case "an Ok carrying a bare None type-checks under a whole-expression annotation"
+  (doc    "The Result companion: `(: (Ok (None)) (Result (Option Int64) Int64))` — an `Ok` whose payload
+           is `None : (Option Int64)`, matched to yield 1 on the `(Ok (None))` arm. Rejected with the
+           same CDZ0203 infinite-type error before the fix, so the defect spans the generic-sum
+           constructors, not only Option. Must type-check and return 1.")
+  (input  (do (def (main) (match (: (Ok (None)) (Result (Option Int64) Int64))
+                            ((Ok (Some x)) x) ((Ok (None)) 1) ((Err e) e))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 ; --- Runtime SUM results (a constructor applied to a RUNTIME payload, returned as the result) ---
 ; A Sum value is a (variant, payload); its canonical form is `(Variant payload)`
 ; (deterministic-value-form.md). The const cases above fold to that text; these build the SAME

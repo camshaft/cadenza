@@ -6,6 +6,8 @@ pass	a Bool match with only the true arm is non-exhaustive
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
+pass	a Some carrying a bare None type-checks under a whole-expression annotation
+pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a bare binding form with no bindings and no body is rejected, not a crash
@@ -142,6 +144,7 @@ pass	a negative right-shift count traps rather than masking
 pass	a negative shift count traps rather than masking
 pass	a negative unsigned integer width is rejected
 pass	a negative width is not honored as a narrow type
+pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
@@ -259,6 +262,7 @@ pass	a wrong-arity tuple pattern nested under a constructor pattern is a type er
 pass	a zero-bit integer width is rejected
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an annotated value takes a narrower integer width
@@ -561,7 +565,6 @@ todo	a negative string index yields None rather than wrapping to a large offset
 todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
-todo	a nested Result pattern selects the inner Err arm
 todo	a nested literal pattern of the wrong type is a type error
 todo	a nested tuple pattern of the wrong arity is a type error
 todo	a nested unquote pattern matches a sub-AST by shape

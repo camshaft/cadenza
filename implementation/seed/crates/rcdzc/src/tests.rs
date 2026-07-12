@@ -5738,6 +5738,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_variant_carrying_a_bare_nullary_variant_type_checks() {
+        // A value carrying a bare nullary variant with an UNCONSTRAINED payload — `(Some (None))`,
+        // `(Ok (None))` — must type-check, not trip a spurious occurs-check. Each `apply_type` uses a
+        // private `Fresh` from 0, so `Some`'s scheme `(-> ?0 (Option ?0))` and the inner `(None)`'s
+        // independently-inferred `(Option ?0)` SHARE variable numbers; unifying the parameter `?0`
+        // against the argument `(Option ?0)` gave `?0 = Option ?0` and rejected CDZ0203 "infinite type".
+        // Freshening the argument's free vars past the head's counter (`?0` → `?1`) breaks the alias.
+        // Consumed by a nested match to a scalar so the value need not cross the host boundary.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) \
+                       (match (Some (None)) ((Some (Some x)) x) ((Some (None)) 1) ((None) 2))) \
+                       (export main))"
+                )))
+                .expect("(Some (None)) must type-check, not reject as an infinite type"),
+                "main"
+            ),
+            1
+        );
+        // Result too — the bug spans the generic-sum constructors, not only Option.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) \
+                       (match (Ok (None)) ((Ok (Some x)) x) ((Ok (None)) 1) ((Err e) e))) \
+                       (export main))"
+                )))
+                .expect("(Ok (None)) must type-check"),
+                "main"
+            ),
+            1
+        );
+        // NO OVER-ACCEPTANCE: the payload is still typed (a nested `Some 5` binds x : Int64, and using it
+        // as a Bool condition is still a fault) — freshening only removes the spurious cycle, it does not
+        // drop the real constraint.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (main) \
+                   (match (Some (Some 5)) ((Some (Some x)) (if x 1 0)) ((Some (None)) 0) ((None) -1))) \
+                   (export main))"
+            )))
+            .is_err(),
+            "an inner payload used as a Bool must still be a type fault"
+        );
+    }
+
+    #[test]
     fn a_non_exhaustive_nested_sum_match_is_rejected() {
         // A nested match missing the inner `Neg` case with no wildcard is NON-EXHAUSTIVE at the INNER
         // switch (the outer `Full` is reached, but its inner `Inner` leaves `Neg` uncovered). The

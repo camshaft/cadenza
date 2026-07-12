@@ -743,7 +743,13 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let applied = subst.apply(&cur);
         match applied {
             Ty::Fn(param, result) => {
-                let at = type_of(db, arg);
+                // FRESHEN the argument's free variables past the head's instantiation counter before
+                // unifying: `type_of` types the arg with its OWN private `Fresh` (from 0), so an
+                // under-constrained arg (a bare nullary variant `(None) : Option ?0`) shares variable
+                // numbers with the head's instantiation (`Some : (-> ?0 (Option ?0))`). Without freshening
+                // the two `?0`s alias and `?0 = Option ?0` trips the occurs-check, spuriously rejecting a
+                // well-typed `(Some (None))`. Freshening makes them disjoint (`?0 = Option ?1`).
+                let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
                 // A unify failure here is a real type fault; ignore it for the VALUE (reported by
                 // `type_errors`) and continue with the declared result so the shape stays sane.
                 let _ = crate::unify::unify(&mut subst, &param, &at);
@@ -768,7 +774,10 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
         let applied = subst.apply(&cur);
         match applied {
             Ty::Fn(param, result) => {
-                let at = type_of(db, arg);
+                // Freshen the arg's free variables past the scheme's instantiation before unifying (see
+                // `apply_type`): an under-constrained arg types with its own from-0 `Fresh` and would
+                // otherwise alias this scheme's variables into a spurious occurs-check cycle.
+                let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
                 let _ = crate::unify::unify(&mut subst, &param, &at);
                 cur = *result;
             }
@@ -911,7 +920,11 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
         let applied = subst.apply(&cur);
         match applied {
             Ty::Fn(param, result) => {
-                let at = type_of(db, arg);
+                // Freshen the arg's free variables past the head's instantiation before unifying — see
+                // the same step in `apply_type`. Without it, an under-constrained arg (a bare nullary
+                // variant `(None) : Option ?0`) shares variable numbers with the head scheme and the
+                // occurs-check spuriously FAULTS a well-typed `(Some (None))` (CDZ0203 "infinite type").
+                let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
                 if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter (type fault)");
                     out.push(reject);

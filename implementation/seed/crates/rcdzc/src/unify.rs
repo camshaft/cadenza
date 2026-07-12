@@ -424,6 +424,77 @@ fn rename_sign(s: Sign, m: &Rename) -> Sign {
     }
 }
 
+/// Replace EVERY free variable of `ty` (type, width, and sign axes) with a fresh one from `fresh`,
+/// consistently (the same old variable maps to the same new one). Unlike [`instantiate`], which
+/// freshens only a scheme's explicitly-BOUND variables, this freshens ALL variables — used to make a
+/// value's inferred type variable-DISJOINT from another solve before the two are unified.
+///
+/// WHY THIS IS NEEDED: each `apply_type`/scheme instantiation uses a PRIVATE `Fresh` counting from 0
+/// (a solve's variables are local to it), so two independent solves both produce `?0`, `?1`, …. When
+/// one solve's RESULT flows into another and they unify — e.g. typing `(Some (None))`, where `Some`'s
+/// scheme instantiates to `(-> ?0 (Option ?0))` and the argument `(None)` independently types as
+/// `(Option ?0)` — the numerically-equal `?0`s ALIAS, so unifying the parameter `?0` against the
+/// argument `(Option ?0)` produces `?0 = Option ?0` and the occurs-check spuriously rejects a
+/// well-typed value (CDZ0203 "infinite type"). Freshening the argument's free variables past the
+/// head's counter first (`?0` → `?1`) makes them disjoint: `?0 = Option ?1`, no cycle.
+pub fn freshen_free(ty: &Ty, fresh: &mut Fresh) -> Ty {
+    let mut map: crate::fxhash::FxHashMap<u32, u32> = crate::fxhash::FxHashMap::default();
+    let mut wmap: crate::fxhash::FxHashMap<u32, u32> = crate::fxhash::FxHashMap::default();
+    let mut smap: crate::fxhash::FxHashMap<u32, u32> = crate::fxhash::FxHashMap::default();
+    freshen_free_go(ty, fresh, &mut map, &mut wmap, &mut smap)
+}
+
+fn freshen_free_go(
+    ty: &Ty,
+    fresh: &mut Fresh,
+    map: &mut crate::fxhash::FxHashMap<u32, u32>,
+    wmap: &mut crate::fxhash::FxHashMap<u32, u32>,
+    smap: &mut crate::fxhash::FxHashMap<u32, u32>,
+) -> Ty {
+    match ty {
+        Ty::Var(v) => {
+            let n = *map.entry(*v).or_insert_with(|| fresh.var());
+            Ty::Var(n)
+        }
+        Ty::Int(it) => Ty::Int(IntTy {
+            sign: match it.sign {
+                Sign::Var(v) => Sign::Var(*smap.entry(v).or_insert_with(|| fresh.var())),
+                other => other,
+            },
+            width: match it.width {
+                Width::Var(v) => Width::Var(*wmap.entry(v).or_insert_with(|| fresh.var())),
+                other => other,
+            },
+        }),
+        Ty::Fn(p, r) => Ty::Fn(
+            Box::new(freshen_free_go(p, fresh, map, wmap, smap)),
+            Box::new(freshen_free_go(r, fresh, map, wmap, smap)),
+        ),
+        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+            fields
+                .iter()
+                .map(|(k, t)| (k.clone(), freshen_free_go(t, fresh, map, wmap, smap)))
+                .collect(),
+        )),
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
+                .collect(),
+        ),
+        Ty::List(elem) => Ty::List(Box::new(freshen_free_go(elem, fresh, map, wmap, smap))),
+        Ty::Sum { decl, name, args } => Ty::Sum {
+            decl: *decl,
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
+                .collect(),
+        },
+        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +580,45 @@ mod tests {
         // Each is a self-consistent `?n -> ?n`.
         if let Ty::Fn(p, r) = &a {
             assert_eq!(p, r);
+        } else {
+            panic!("expected a function type");
+        }
+    }
+
+    #[test]
+    fn freshen_free_renames_free_vars_disjoint_and_consistent() {
+        // `freshen_free` maps EVERY free var to a fresh one, consistently. This is what makes an
+        // under-constrained value's type variable-disjoint from a head scheme before unifying — the fix
+        // for the `(Some (None))` spurious occurs-check. `(Option ?0)` freshened past a `Fresh` already
+        // at 1 becomes `(Option ?1)`, so unifying a head's `?0` against it gives `?0 = Option ?1`, not
+        // the cyclic `?0 = Option ?0`.
+        let opt0 = Ty::Sum {
+            decl: crate::ast::StructId(0),
+            name: "Option".to_string(),
+            args: vec![Ty::Var(0)],
+        };
+        let mut fresh = Fresh::new();
+        let _ = fresh.var(); // advance to 1 (as a head instantiation would have reserved ?0)
+        let freshened = freshen_free(&opt0, &mut fresh);
+        // The free `?0` renamed to a var != 0 (disjoint from the head's `?0`).
+        match &freshened {
+            Ty::Sum { args, .. } => match args.as_slice() {
+                [Ty::Var(v)] => assert_ne!(*v, 0, "the free var must be renamed away from 0"),
+                other => panic!("expected one Var arg, got {other:?}"),
+            },
+            other => panic!("expected a Sum, got {other:?}"),
+        }
+        // Unifying a head param `?0` against the freshened arg does NOT cycle (occurs-check passes).
+        let mut subst = Subst::new();
+        assert!(
+            unify(&mut subst, &Ty::Var(0), &freshened).is_ok(),
+            "unifying ?0 with a freshened (Option ?k), k != 0, must not trip the occurs-check"
+        );
+        // Consistency: the SAME free var maps to ONE fresh var throughout.
+        let paired = Ty::Fn(Box::new(Ty::Var(7)), Box::new(Ty::Var(7)));
+        let mut f2 = Fresh::new();
+        if let Ty::Fn(p, r) = freshen_free(&paired, &mut f2) {
+            assert_eq!(p, r, "one source var must map to one fresh var");
         } else {
             panic!("expected a function type");
         }
