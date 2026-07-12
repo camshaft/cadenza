@@ -268,7 +268,7 @@ export default function PlaygroundPage() {
         <span className={warnCount > 0 ? "text-amber-400" : ""}>
           {warnCount} warning{warnCount === 1 ? "" : "s"}
         </span>
-        <span className="hidden text-slate-600 sm:inline">⌘/Ctrl↵ to run</span>
+        <span className="hidden text-slate-600 sm:inline">⌘/Ctrl↵ run · ⌘/Ctrl-click a name to jump to its definition</span>
         <span className="ml-auto">
           Cadenza · <Link to="/" className="hover:text-slate-300">home</Link> ·{" "}
           <Link to="/welcome" className="hover:text-slate-300">the guide</Link>
