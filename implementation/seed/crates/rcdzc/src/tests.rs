@@ -4537,50 +4537,92 @@ mod match_engine {
     }
 
     #[test]
-    fn a_guard_over_a_variant_pattern_binds_the_payload_and_declines_cleanly() {
-        // A guard over a VARIANT pattern `(guard (Some x) (> x 0))` — the payload binder `x` must be in
-        // SCOPE for the guard cond (resolve Case 6 sees through the `(guard …)` wrapper to `(Some x)`),
-        // so the guard is NOT a spurious "unbound name `x`" (CDZ0101, the pre-fix diagnostic). The sum
-        // decision tree has no guard support yet, so the arm DECLINES — but CLEANLY, with an honest
-        // "guard over a variant pattern is not yet supported" message, NOT the misleading "a sum match
-        // pattern head is not a variant constructor" (misreading the `(guard …)` head). A decline is an
-        // uncoded reject: `reject_code` returns `None`, and the message names the real gap.
+    fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
+        // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
+        // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only
+        // when the variant matches AND the guard holds, and on a false guard control FALLS THROUGH to a
+        // later arm of the same variant. `f(Some 5)` → guard `5>0` holds → x = 5; `f(Some -3)` → guard
+        // fails → the plain `(Some y)` arm negates → `-(-3)` = 3. (Was CDZ0101 "unbound name x" / a clean
+        // decline before the guarded sum-match decision-tree support landed.)
         let src = "(module m \
                      (def (f (: o (Option Int64))) \
                         (match o ((guard (Some x) (> x 0)) x) ((Some y) (- 0 y)) ((None) 0))) \
                      (def (main (: n Int64)) (f (Some n))) (export main))";
-        let out = compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "m",
-                crate::codec::encode(&parse(src)),
-            )],
-            &[Target::Wasm],
-        );
-        let err = out
-            .diagnostics
-            .iter()
-            .find(|d| d.severity == crate::abi::Severity::Error)
-            .expect("a guarded variant pattern declines");
-        // A DECLINE (uncoded), NOT the CDZ0101 unbound-name the resolve bug produced.
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect("a guarded variant match must emit valid wasm");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping guarded-variant run");
+            return;
+        };
+        for (arg, want) in [(5i64, "5"), (-3, "3")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "guarded variant f({arg})"),
+                cdz_run::Outcome::Trap(t) => panic!("guarded variant run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_guarded_variant_arm_does_not_satisfy_exhaustiveness() {
+        // A guarded arm covers no value unconditionally, so a sum match whose only `Some` arm is guarded
+        // (no unguarded `Some` fall-through) is non-exhaustive → CDZ0210. Pins that a guarded VARIANT arm
+        // is excluded from coverage exactly as a guarded scalar arm is.
         assert_eq!(
-            err.code, None,
-            "must be a clean decline, not a coded reject: {err:?}"
+            reject_code(
+                "(module m (def (f (: o (Option Int64))) \
+                   (match o ((guard (Some x) (> x 0)) x) ((None) 0))) \
+                 (def (main (: n Int64)) (f (Some n))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a guarded variant arm must not count toward exhaustiveness"
         );
-        assert!(
-            err.message.contains("guard over a variant pattern"),
-            "the decline must name the real gap (guarded variant match), got: {}",
-            err.message
-        );
-        // CONTROLS unaffected: a plain `(Some x)` destructure compiles, and a scalar guard compiles.
+        // CONTROL: an unguarded `(Some y)` fall-through makes it exhaustive again.
         assert!(
             compile_component(&crate::codec::encode(&parse(
-                "(module m (def (f (: o (Option Int64))) (match o ((Some x) x) ((None) 0))) \
+                "(module m (def (f (: o (Option Int64))) \
+                   (match o ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0))) \
                  (def (main (: n Int64)) (f (Some n))) (export main))"
             )))
             .is_ok(),
-            "a plain variant destructure must still compile"
+            "an unguarded same-variant fall-through restores exhaustiveness"
         );
+    }
+
+    #[test]
+    fn chained_guards_of_the_same_variant_fall_through_in_order() {
+        // Two guarded `Some` arms then a plain `(Some z)`: each guard is tried in source order, falling
+        // through to the next on failure. `f(Some 50)` → first guard `>10` → 100; `f(Some 5)` → second
+        // guard `>0` → 1; `f(Some -2)` → both fail → plain `(Some z)` → 0.
+        let src = "(module m \
+            (def (f (: o (Option Int64))) (match o \
+              ((guard (Some x) (> x 10)) 100) \
+              ((guard (Some y) (> y 0)) 1) \
+              ((Some z) 0) ((None) (- 0 1)))) \
+            (def (main (: n Int64)) (f (Some n))) (export main))";
+        let bytes = component(src);
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping chained-guard run");
+            return;
+        };
+        for (arg, want) in [(50i64, "100"), (5, "1"), (-2, "0")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "chained guards f({arg})"),
+                cdz_run::Outcome::Trap(t) => panic!("chained-guard run trapped: {t}"),
+            }
+        }
     }
 
     #[test]

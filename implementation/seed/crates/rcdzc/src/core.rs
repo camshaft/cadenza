@@ -101,6 +101,18 @@ pub struct SumArm {
 pub enum SumCont {
     /// The matched arm's body occurrence (lowered on demand).
     Leaf(StructId),
+    /// A GUARDED arm — the variant has already matched (its discriminant constraint satisfied), and the
+    /// arm fires only if `cond` (a boolean the payload binder is in scope for) holds: `if cond then body
+    /// else <els>`. On a false guard, control FALLS THROUGH to `els` — the continuation built from the
+    /// REMAINING rows of the same sub-matrix (a later arm of the same variant, or the default), exactly
+    /// as a scalar guarded probe threads its `else` to the next arm. A guarded arm does NOT count toward
+    /// exhaustiveness, so `els` must independently cover the variant (checked when the sub-matrix is
+    /// compiled). `body` and `cond` are lowered on demand.
+    Guarded {
+        cond: StructId,
+        body: StructId,
+        els: Box<SumCont>,
+    },
     /// A nested switch on the sub-value at `path` (from the ROOT scrutinee) — try each arm's disc, else
     /// the default arm. `path` is the full path from the scrutinee (not relative to the parent switch),
     /// so the backend walks it from the scrutinee handle uniformly at every depth.
@@ -214,11 +226,12 @@ pub enum Core {
     /// reference reads `sum-payload` at the binder's path), so an arm needs only its discriminant + cont.
     MatchSum {
         scrutinee: StructId,
-        /// The access PATH from `scrutinee` to the sub-value the ROOT switch tests — always empty (the
-        /// root dispatches on the scrutinee itself); a nested switch carries its own full path in
-        /// [`SumCont::Switch`]. Kept for uniform emit (every switch walks a path from the scrutinee).
-        path: Vec<PathStep>,
-        arms: Vec<SumArm>,
+        /// The ROOT continuation of the decision tree. Normally a [`SumCont::Switch`] on the scrutinee's
+        /// own discriminant (path empty); but a disc-fold (a statically-known scrutinee discriminant)
+        /// can collapse the root switch to the selected arm's continuation — a nested [`SumCont::Switch`],
+        /// or a [`SumCont::Guarded`] (a guarded arm of the selected variant). A root that is a bare
+        /// `Leaf` folds to its body in `lower` and never reaches here.
+        root: Box<SumCont>,
     },
     /// The SUB-VALUE of a sum scrutinee at an access PATH, extracted by a variant pattern's binder.
     /// `(match s ((Some x) x))` → `x` reads `sum-payload(scrutinee)` (path `[Payload]`); `(match s

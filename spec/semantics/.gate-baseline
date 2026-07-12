@@ -103,8 +103,10 @@ pass	a function whose name is capitalized is called, not treated as a constructo
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
+pass	a guarded variant arm falls through when the guard fails
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
 pass	a helper sums two fields of a record parameter
@@ -147,6 +149,7 @@ pass	a match on a value of one sum type rejects a pattern from a different sum t
 pass	a match takes another match's result as its scrutinee
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded is non-exhaustive
+pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
 pass	a module with two definitions of the same name is rejected
@@ -370,6 +373,7 @@ pass	bitwise XOR is its own inverse
 pass	bitwise XOR toggles bits
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
+pass	chained guards of the same variant are tried in order
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error

@@ -177,15 +177,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::SumNew { payloads, .. } => payloads
             .iter()
             .any(|&p| binding_escapes(db, p, binder, false)),
-        // A sum match: the binding escapes if it escapes the scrutinee or any arm's continuation (a leaf
-        // body, or a nested switch's arms — recursed via `cont_binding_escapes`).
-        Core::MatchSum {
-            scrutinee, arms, ..
-        } => {
+        // A sum match: the binding escapes if it escapes the scrutinee or the root continuation (a leaf
+        // body, a guarded arm, or a switch's arms — recursed via `cont_binding_escapes`).
+        Core::MatchSum { scrutinee, root } => {
             binding_escapes(db, scrutinee, binder, false)
-                || arms
-                    .iter()
-                    .any(|a| cont_binding_escapes(db, &a.cont, binder))
+                || cont_binding_escapes(db, &root, binder)
         }
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
@@ -206,6 +202,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
 fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: StructId) -> bool {
     match cont {
         crate::core::SumCont::Leaf(body) => binding_escapes(db, *body, binder, false),
+        // A guarded arm's binder can escape through either the guarded body or the fall-through
+        // continuation (the guard cond only reads, never escapes a binding).
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            binding_escapes(db, *body, binder, false) || cont_binding_escapes(db, els, binder)
+        }
         crate::core::SumCont::Switch { arms, .. } => arms
             .iter()
             .any(|a| cont_binding_escapes(db, &a.cont, binder)),
@@ -472,24 +473,11 @@ pub fn collect_used_ops(
         }
         // A sum match calls `sum-disc` to dispatch at each switch; a switch on a deeper sub-value (a
         // non-empty `path`) first WALKS there (`sum-payload`/`arr-get` per step) before the disc. The
-        // scrutinee + every arm's continuation are emitted (any op reachable in the tree must be
-        // imported) — `collect_cont_ops` recurses nested switches, inserting their walk ops too.
-        Core::MatchSum {
-            scrutinee,
-            path,
-            arms,
-        } => {
-            out.insert(OP_SUM_DISC);
-            for step in &path {
-                match step {
-                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
-                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
-                };
-            }
+        // scrutinee + the root continuation are emitted (any op reachable in the tree must be imported) —
+        // `collect_cont_ops` recurses switches/guards, inserting each switch's disc + walk ops.
+        Core::MatchSum { scrutinee, root } => {
             collect_used_ops(db, scrutinee, out);
-            for arm in &arms {
-                collect_cont_ops(db, &arm.cont, out);
-            }
+            collect_cont_ops(db, &root, out);
         }
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
         // by THIS node's solved type (`get-*`).
@@ -527,6 +515,12 @@ fn collect_cont_ops(
 ) {
     match cont {
         crate::core::SumCont::Leaf(body) => collect_used_ops(db, *body, out),
+        // A guarded arm uses the ops of its guard cond, its body, AND the fall-through continuation.
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_used_ops(db, *cond, out);
+            collect_used_ops(db, *body, out);
+            collect_cont_ops(db, els, out);
+        }
         crate::core::SumCont::Switch { path, arms } => {
             out.insert(OP_SUM_DISC);
             for step in path {
@@ -1898,11 +1892,7 @@ fn emit(
         // None`) is the unconditional `else` tail. The scrutinee is a heap handle (an i32 local reload
         // per probe, cheap). A payload binder in a body reads `sum-payload(scrutinee)` on its own
         // (`Core::SumPayload`), so the arm dispatch needs only the disc.
-        Core::MatchSum {
-            scrutinee,
-            path,
-            arms,
-        } => {
+        Core::MatchSum { scrutinee, root } => {
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
@@ -1953,11 +1943,10 @@ fn emit(
                 m.insert(scrutinee, slot);
                 (m, (*high).max(base + 1))
             };
-            emit_sum_match_arms(
+            emit_sum_cont(
                 db,
                 scrutinee,
-                &path,
-                &arms,
+                &root,
                 result_it,
                 block_ty,
                 &arms_slots,
@@ -2944,6 +2933,25 @@ fn emit_sum_cont(
                 return emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out);
             }
             emit(db, *body, slots, base, high, scratch_ty, layout, out)
+        }
+        // A GUARDED arm: `if cond then body else <els>`. The guard cond is a boolean (an i32); each of the
+        // body and the fall-through `els` produces the match's result type (`block_ty`), grounding a
+        // bare-literal body to the result width exactly as an `if` branch does. The `els` continuation
+        // recurses — it is the rest of the sub-matrix (a later arm of the same variant, or the default).
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            emit(db, *cond, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::If(block_ty));
+            if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
+                emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out)?;
+            } else {
+                emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
+            }
+            out.push(Lir::Else);
+            emit_sum_cont(
+                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            )?;
+            out.push(Lir::End);
+            Ok(())
         }
         crate::core::SumCont::Switch { path, arms } => emit_sum_match_arms(
             db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,

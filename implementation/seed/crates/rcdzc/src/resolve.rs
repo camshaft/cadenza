@@ -473,6 +473,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 6g: `form` is a GUARD `(guard <variant-pattern> <cond>)`, ascended from `<cond>` → a payload
+    // binder of the variant pattern is in scope in the guard cond (`(guard (Some x) (> x 0))` — the guard
+    // `(> x 0)` reads the payload binder `x`). Like Case 5g but the binder nests in a VARIANT pattern, so
+    // it resolves to a `SumPayload` (not the whole scrutinee). A guard-cond reference ascends into the
+    // `(guard …)` form BEFORE reaching the arm, so it is caught here (at the arm, `from` is the guard
+    // wrapper, not the cond, so Case 6's guard branch would miss it).
+    if let Some((scrutinee, steps, heads)) = guard_cond_variant_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            steps: steps.into(),
+            heads: heads.into(),
+        });
+    }
     None
 }
 
@@ -507,6 +520,48 @@ fn guard_cond_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Opti
         return None;
     }
     Some(scrutinee)
+}
+
+/// If `form` is a guard `(guard <variant-pattern> <cond>)` ascended from its `<cond>`, and the variant
+/// pattern binds `name` at a payload (possibly nested), the `(scrutinee, path, heads)` for a `SumPayload`
+/// read — the payload-binder analogue of [`guard_cond_binds`]. `(guard (Some x) (> x 0))` binds `x` at
+/// `[Payload]` for the guard cond. `None` otherwise. Complements [`match_arm_variant_binds`]: a reference
+/// in the guard cond ascends into the `(guard …)` form (this case) before it would reach the arm (where
+/// `from` is the guard wrapper, not the cond, so that case's guard-cond branch cannot fire).
+fn guard_cond_variant_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::core::PathStep>, Vec<StructId>)> {
+    // `form` must be `(guard <variant-pattern> <cond>)`, ascended from the cond.
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    // Descend the variant pattern to find where `name` is bound (its payload path + per-step heads).
+    let mut path = Vec::new();
+    let mut heads = Vec::new();
+    if find_binder_in_pattern(db, pattern, name, &mut path, &mut heads) {
+        Some((scrutinee, path, heads))
+    } else {
+        None
+    }
 }
 
 /// If `form` is a match ARM `(pattern body)` whose parent is a `(match scrutinee arm…)`, ascended from

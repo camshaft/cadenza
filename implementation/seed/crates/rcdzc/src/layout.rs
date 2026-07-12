@@ -281,13 +281,9 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // A sum match: the scrutinee + every arm's continuation are reachable code (a self-call in an arm
         // is a recursion edge, like an `if` branch). A nested switch's arms recurse. A sum-payload read
         // evaluates the scrutinee.
-        crate::core::Core::MatchSum {
-            scrutinee, arms, ..
-        } => {
+        crate::core::Core::MatchSum { scrutinee, root } => {
             collect_call_callees(db, scrutinee, out);
-            for arm in arms {
-                collect_cont_callees(db, &arm.cont, out);
-            }
+            collect_cont_callees(db, &root, out);
         }
         crate::core::Core::SumPayload { scrutinee, .. } => collect_call_callees(db, scrutinee, out),
         // Leaves and references have no sub-calls.
@@ -307,6 +303,12 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
 fn collect_cont_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<usize>) {
     match cont {
         crate::core::SumCont::Leaf(body) => collect_call_callees(db, *body, out),
+        // A guarded arm reaches callees through its guard cond, its body, AND the fall-through.
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_call_callees(db, *cond, out);
+            collect_call_callees(db, *body, out);
+            collect_cont_callees(db, els, out);
+        }
         crate::core::SumCont::Switch { arms, .. } => {
             for arm in arms {
                 collect_cont_callees(db, &arm.cont, out);

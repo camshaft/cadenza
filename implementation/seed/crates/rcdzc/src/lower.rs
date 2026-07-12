@@ -830,8 +830,18 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     // the whole match (a heap walk / literal-in-sum is a later increment), never a silent match.
     let mut rows: Vec<MatchRow> = Vec::new();
     for &(pat, body) in arms {
-        match pattern_constraints(db, pat, &scrut_ty, Vec::new()) {
-            Ok(constraints) => rows.push(MatchRow { constraints, body }),
+        // Peel a `(guard <inner-pattern> <cond>)` wrapper: the arm's discriminant constraints come from
+        // the inner pattern, and `<cond>` is carried as the row's guard (gated at the leaf in `build_tree`).
+        let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        match pattern_constraints(db, inner_pat, &scrut_ty, Vec::new()) {
+            Ok(constraints) => rows.push(MatchRow {
+                constraints,
+                body,
+                guard,
+            }),
             Err(r) => return Core::Poison(r),
         }
     }
@@ -842,10 +852,12 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     match build_tree(db, scrutinee, &rows, &path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
         Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
-        Ok(crate::core::SumCont::Switch { path, arms }) => Core::MatchSum {
+        // Otherwise the root is a Switch (the usual case) — or a Guarded, when a disc-fold collapsed the
+        // root switch to the selected variant's guarded arm. Either way the backend emits it through the
+        // uniform `emit_sum_cont`, so carry the root continuation directly.
+        Ok(root) => Core::MatchSum {
             scrutinee,
-            path,
-            arms,
+            root: Box::new(root),
         },
         Err(r) => Core::Poison(r),
     }
@@ -859,6 +871,11 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
 struct MatchRow {
     constraints: Vec<(Vec<crate::core::PathStep>, u32)>,
     body: StructId,
+    /// A match-arm GUARD `(guard <pattern> <cond>)` — the boolean `<cond>` the arm additionally requires.
+    /// `None` for an unguarded arm. Once every discriminant constraint is satisfied (the row reaches a
+    /// leaf position in `build_tree`), a guarded row emits `if cond then body else <fall-through>` and
+    /// does NOT count toward exhaustiveness; an unguarded row is an unconditional leaf.
+    guard: Option<StructId>,
 }
 
 /// Collect the discriminant constraints a PATTERN imposes on the sub-value at `path` (of type `ty`),
@@ -875,19 +892,18 @@ fn pattern_constraints(
     ty: &crate::ty::Ty,
     path: Vec<crate::core::PathStep>,
 ) -> Result<Vec<(Vec<crate::core::PathStep>, u32)>, Reject> {
-    // A GUARDED variant pattern `(guard <variant-pattern> <cond>)` — the payload binder now resolves for
-    // the guard cond + body (resolve Case 6 sees through the guard), but the sum-match DECISION TREE has
-    // no guard support yet: a guarded arm must gate on (variant matches AND guard holds) and, when the
-    // guard is false, fall through to a LATER arm of the SAME variant — a per-variant fall-through the
-    // Maranget tree (`build_tree`) does not model (unlike the scalar probe-chain, which threads a guard
-    // per arm). Decline CLEANLY and HONESTLY rather than misreading the `(guard …)` head as "not a
-    // variant constructor" (the pre-fix diagnostic) — reject-don't-miscompile. (A guarded SCALAR match
-    // works; a guarded VARIANT match is a later increment — full guard support in the sum decision tree.)
-    if db.ast.as_form(pat, "guard").is_some() {
-        return Err(Reject::decline(
-            "a guard over a variant pattern is not yet supported (a guarded sum-match arm needs \
-             per-variant fall-through in the decision tree)",
-        ));
+    // A GUARDED pattern `(guard <inner-pattern> <cond>)` contributes the INNER pattern's discriminant
+    // constraints (the guard itself is not a discriminant test — it is carried on the `MatchRow` by
+    // `lower_match_sum` and gated at the leaf in `build_tree`). Descend into the inner pattern so a
+    // `(guard (Some x) …)` still constrains `[]` to the `Some` disc + binds `x` at `[Payload]`.
+    if let Some(g) = db.ast.as_form(pat, "guard") {
+        if g.len() != 2 {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a guarded pattern must be (guard <pattern> <cond>)",
+            ));
+        }
+        return pattern_constraints(db, g[0], ty, path);
     }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
     // the sum's variant set — a name that IS a variant contributes that discriminant (no payload to
@@ -1100,7 +1116,12 @@ fn build_tree(
     rows: &[MatchRow],
     path_types: &PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
-    // The FIRST row matches unconditionally when it has no constraints — a top-level binder/wildcard.
+    // The FIRST row whose discriminant constraints are all satisfied (empty) is at a LEAF position. If it
+    // is UNGUARDED it matches unconditionally → its body is the leaf (later rows unreachable). If it is
+    // GUARDED, it fires only when its guard holds; on a false guard control FALLS THROUGH to the rest of
+    // this sub-matrix (`build_tree` of the remaining rows) — the per-variant fall-through a guarded arm
+    // needs. A guarded leaf does NOT terminate the matrix, so the fall-through must independently be
+    // exhaustive (an unguarded arm of the same variant, or the default, below it).
     match rows.first() {
         None => {
             return Err(Reject::coded(
@@ -1108,8 +1129,19 @@ fn build_tree(
                 "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
             ));
         }
-        Some(row) if row.constraints.is_empty() => {
+        Some(row) if row.constraints.is_empty() && row.guard.is_none() => {
             return Ok(crate::core::SumCont::Leaf(row.body));
+        }
+        Some(row) if row.constraints.is_empty() => {
+            // A GUARDED leaf: `if guard then body else <fall-through over the remaining rows>`.
+            let cond = row.guard.expect("matched the guarded arm");
+            let body = row.body;
+            let els = build_tree(db, scrutinee, &rows[1..], path_types)?;
+            return Ok(crate::core::SumCont::Guarded {
+                cond,
+                body,
+                els: Box::new(els),
+            });
         }
         _ => {}
     }
@@ -1159,6 +1191,7 @@ fn build_tree(
                             .cloned()
                             .collect(),
                         body: row.body,
+                        guard: row.guard,
                     },
                 ));
             }
@@ -1167,6 +1200,7 @@ fn build_tree(
                 MatchRow {
                     constraints: row.constraints.clone(),
                     body: row.body,
+                    guard: row.guard,
                 },
             )),
         }

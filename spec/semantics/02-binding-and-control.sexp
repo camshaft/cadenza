@@ -1011,6 +1011,66 @@
             ((guard x (< x 0)) 1)))
   (error  CDZ0210))
 
+; --- A guard may refine a VARIANT pattern ---------------------------------------------------------
+; A guard composes with a variant (sum) pattern, not only a bare binder: `(guard (Some x) <cond>)`
+; fires when the scrutinee is `Some` AND `<cond>` (which reads the payload binder `x`) holds. On a
+; false guard the arm falls through to a LATER arm — including a later arm of the SAME variant — just
+; as a scalar guard does. The payload binder is in scope for the guard cond (resolved through the
+; `(guard …)` wrapper to the inner variant pattern), and a guarded variant arm does NOT count toward
+; exhaustiveness (so a match whose only `Some` arm is guarded, with no `Some` fall-through, is
+; non-exhaustive). These pin the guard-over-variant surface end to end.
+
+(case "a guard over a variant pattern gates on the payload"
+  (doc    "`(match o ((guard (Some x) (> x 0)) x) ((Some y) (- 0 y)) ((None) 0))` — the natural `(Some x)
+           if x > 0` shape: the arm fires when the Option is `Some` AND its payload is positive, binding
+           `x` to the payload. For `(Some 5)` the guard `5 > 0` holds, so the arm returns x = 5. The
+           payload binder `x` is in scope for the guard condition (through the `(guard …)` wrapper). Was a
+           spurious CDZ0101 'unbound name x' before guarded sum-match support landed.")
+  (input  (do
+            (def (f (: o (Option Int64))) (match o ((guard (Some x) (> x 0)) x) ((Some y) (- 0 y)) ((None) 0)))
+            (def (main (: n Int64)) (f (Some n))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a guarded variant arm falls through when the guard fails"
+  (doc    "The fall-through face of the same program: for `(Some -3)` the guard `x > 0` is false, so the
+           guarded `(Some x)` arm does NOT fire and the match falls through to the plain `(Some y)` arm,
+           which negates: `-(-3)` = 3. Pins that a guarded VARIANT arm falls through to a LATER arm of the
+           same variant exactly as a bare-binder guard falls through — the per-variant fall-through the
+           decision tree threads.")
+  (input  (do
+            (def (f (: o (Option Int64))) (match o ((guard (Some x) (> x 0)) x) ((Some y) (- 0 y)) ((None) 0)))
+            (def (main (: n Int64)) (f (Some n))) (export main)))
+  (call   main (: -3 Int64))
+  (output (: 3 Int64)))
+
+(case "chained guards of the same variant are tried in order"
+  (doc    "Two guarded `Some` arms then a plain `(Some z)`: `(guard (Some x) (> x 10))`, `(guard (Some y)
+           (> y 0))`, `(Some z)`. Each guard is tried top-to-bottom, falling through on failure. For
+           `(Some 5)` the first guard `5 > 10` fails and the second `5 > 0` holds, so the result is 1.
+           Pins that multiple guarded arms of the SAME variant chain their fall-through correctly.")
+  (input  (do
+            (def (f (: o (Option Int64)))
+              (match o
+                ((guard (Some x) (> x 10)) 100)
+                ((guard (Some y) (> y 0)) 1)
+                ((Some z) 0)
+                ((None) (- 0 1))))
+            (def (main (: n Int64)) (f (Some n))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "a match whose only variant arm is guarded is non-exhaustive"
+  (doc    "A guarded VARIANT arm covers no value unconditionally, so `(match o ((guard (Some x) (> x 0))
+           x) ((None) 0))` — whose only `Some` arm is guarded, with no unguarded `Some` fall-through —
+           leaves `Some` uncovered and is non-exhaustive: the compiler MUST reject it (CDZ0210), exactly
+           as a guarded scalar arm is excluded from coverage. Pins that a guarded variant arm does not
+           satisfy exhaustiveness for its variant.")
+  (input  (do
+            (def (f (: o (Option Int64))) (match o ((guard (Some x) (> x 0)) x) ((None) 0)))
+            (def (main (: n Int64)) (f (Some n))) (export main)))
+  (error  CDZ0210))
+
 ; --- A match must cover every value of the scrutinee's type ------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected: "A match whose patterns do not cover
 ; every value of the scrutinee's type MUST be a compile-time error." A Bool has exactly two
