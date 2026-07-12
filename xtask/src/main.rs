@@ -607,23 +607,77 @@ fn run_program(
     tools: &Tools,
     store: &Option<PathBuf>,
     program: &str,
+    modules: &[(String, String)],
     call: Option<&Call>,
     target: GateTarget,
 ) -> Ran {
     match target {
-        GateTarget::Wasm => run_program_wasm(tools, store, program, call),
+        GateTarget::Wasm => run_program_wasm(tools, store, program, modules, call),
+        // The Rust backend has no package-linking path yet — a multi-file case declines there (Todo).
+        GateTarget::Rust if !modules.is_empty() => Ran::Declined { code: None },
+        GateTarget::RustAsync if !modules.is_empty() => Ran::Declined { code: None },
         GateTarget::Rust => run_program_rust(tools, program, call, false),
         GateTarget::RustAsync => run_program_rust(tools, program, call, true),
     }
 }
 
-/// Drive one program through cdz-syntax → rcdzc (wasm) → cdz-run — the historical path.
+/// Drive one program through cdz-syntax → rcdzc (wasm) → cdz-run — the historical path. A multi-file
+/// PACKAGE case (`modules` non-empty) instead writes the entry + library files to a temp dir and runs
+/// `cdz compile <files> --entry main` (the package path); either way the emitted component is run the
+/// same way.
 fn run_program_wasm(
     tools: &Tools,
     store: &Option<PathBuf>,
     program: &str,
+    modules: &[(String, String)],
     call: Option<&Call>,
 ) -> Ran {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    // Emit the component bytes — either the single-file pipe or the multi-file package compile.
+    let component = if modules.is_empty() {
+        emit_component_single(tools, program)
+    } else {
+        emit_component_package(tools, program, modules)
+    };
+    let component = match component {
+        Ok(bytes) => bytes,
+        Err(ran) => return ran,
+    };
+
+    // Stage 3: run the component (its stdout is the value; a trap goes to stderr with exit 1).
+    let mut run = std::process::Command::new(&tools.run);
+    run.arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(dir) = store {
+        run.arg("--store").arg(dir);
+    }
+    // A `(call …)` case names the export and passes runtime arguments; cdz-run coerces each `--arg` to
+    // the export's declared parameter type (its `--arg` allows a leading `-`, so a negative value is
+    // taken as the argument, not a flag).
+    if let Some(call) = call {
+        run.arg("--call").arg(&call.export);
+        for arg in &call.args {
+            run.arg("--arg").arg(arg);
+        }
+    }
+    let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
+    child.stdin.take().unwrap().write_all(&component).ok();
+    let run_out = child.wait_with_output().expect("wait cdz-run");
+    if run_out.status.success() {
+        Ran::Value(String::from_utf8_lossy(&run_out.stdout).trim().to_string())
+    } else {
+        Ran::Trap(first_line(&run_out.stderr))
+    }
+}
+
+/// The single-file component-emit path: program text (stdin) → binary AST → component (stdout), via
+/// the `cdz convert | cdz compile` pipe. `Err(Ran::Declined)` on a rejection/decline (its code
+/// recovered from stderr).
+fn emit_component_single(tools: &Tools, program: &str) -> Result<Vec<u8>, Ran> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -652,45 +706,77 @@ fn run_program_wasm(
         .unwrap_or_else(|e| launch_fail("rcdzc", e));
     let rcdzc_out = rcdzc.wait_with_output().expect("wait rcdzc");
     let _ = syntax.wait();
-    if !rcdzc_out.status.success() {
+    if rcdzc_out.status.success() {
+        Ok(rcdzc_out.stdout)
+    } else {
         // A rejection: recover the diagnostic CODE from the first `error [CODE]` line rcdzc printed to
-        // stderr (`rcdzc: error [CDZ0210] (node …): …`). A TYPED rejection carries a code; a codeless
-        // DECLINE (unimplemented construct) carries none. `grade_ran` uses this to match `(error CODE)`.
-        return Ran::Declined {
+        // stderr. A TYPED rejection carries a code; a codeless DECLINE (unimplemented construct) none.
+        Err(Ran::Declined {
             code: first_error_code(&rcdzc_out.stderr),
-        };
+        })
+    }
+}
+
+/// The multi-file PACKAGE component-emit path (`DESIGN-package-linking.md`): write the ENTRY (`program`,
+/// as `main.sexp`) and each library `(name, prog)` (as `<name>.sexp`) into a fresh temp dir, then run
+/// `cdz compile <lib>.sexp… main.sexp --entry main -o -` — the `cdz` front-end parses each source in
+/// process and `compile()` links them. `Err(Ran::Declined)` on a reject/decline (code from stderr).
+fn emit_component_package(
+    tools: &Tools,
+    program: &str,
+    modules: &[(String, String)],
+) -> Result<Vec<u8>, Ran> {
+    use std::process::Command;
+
+    // A unique temp dir per invocation (PID + a monotonic counter) so concurrent gate workers never
+    // collide — `Date::now`/random are unavailable, so use the process id + an atomic tick.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cdz-pkg-{}-{tick}", std::process::id()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Err(Ran::BadArtifact(
+            "could not create a temp package dir".into(),
+        ));
     }
 
-    // Stage 3: run the component (its stdout is the value; a trap goes to stderr with exit 1).
-    let mut run = Command::new(&tools.run);
-    run.arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(dir) = store {
-        run.arg("--store").arg(dir);
+    // Write every file. The entry is `main.sexp` (its program is named `main`); each library is
+    // `<name>.sexp` (matching the `(import "name" …)` target).
+    let mut specs: Vec<PathBuf> = Vec::new();
+    let write = |path: &PathBuf, text: &str| std::fs::write(path, text);
+    let entry_path = dir.join("main.sexp");
+    if write(&entry_path, program).is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(Ran::BadArtifact("could not write the entry file".into()));
     }
-    // A `(call …)` case names the export and passes runtime arguments; cdz-run coerces each `--arg` to
-    // the export's declared parameter type (its `--arg` allows a leading `-`, so a negative value is
-    // taken as the argument, not a flag).
-    if let Some(call) = call {
-        run.arg("--call").arg(&call.export);
-        for arg in &call.args {
-            run.arg("--arg").arg(arg);
+    for (name, prog) in modules {
+        let p = dir.join(format!("{name}.sexp"));
+        if write(&p, prog).is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Ran::BadArtifact("could not write a library file".into()));
         }
+        specs.push(p);
     }
-    let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&rcdzc_out.stdout)
-        .ok();
-    let run_out = child.wait_with_output().expect("wait cdz-run");
-    if run_out.status.success() {
-        Ran::Value(String::from_utf8_lossy(&run_out.stdout).trim().to_string())
+    specs.push(entry_path); // the entry last (order is irrelevant to link, but keep it deterministic)
+
+    // `cdz compile <files> --entry main -o -` → component bytes on stdout (link-map is skipped in
+    // single-output mode). stderr carries a decline's diagnostic.
+    let mut cmd = Command::new(&tools.rcdzc);
+    cmd.arg("compile");
+    for s in &specs {
+        cmd.arg(s);
+    }
+    cmd.args(["--entry", "main", "-o", "-"]);
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| launch_fail("cdz compile", e));
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.status.success() {
+        Ok(out.stdout)
     } else {
-        Ran::Trap(first_line(&run_out.stderr))
+        Err(Ran::Declined {
+            code: first_error_code(&out.stderr),
+        })
     }
 }
 
@@ -1373,7 +1459,16 @@ fn gate_one_case(
             let rans: Vec<Ran> = rec
                 .trials
                 .iter()
-                .map(|t| run_program(tools, store, &rec.program, t.call.as_ref(), target))
+                .map(|t| {
+                    run_program(
+                        tools,
+                        store,
+                        &rec.program,
+                        &rec.modules,
+                        t.call.as_ref(),
+                        target,
+                    )
+                })
                 .collect();
             let verdict = match grade_ran(&rec, &rans) {
                 Grade::Pass => "PASS",
@@ -1422,6 +1517,11 @@ enum Grade {
 struct CorpusRecord {
     description: String,
     program: String,
+    /// Sibling LIBRARY modules of a multi-file PACKAGE case (`DESIGN-package-linking.md`), each a
+    /// `(name, program)` from a `module` record line. Empty for a single-file case (then `program` is
+    /// compiled alone). When non-empty, the wasm gate driver writes every module + the entry (`program`,
+    /// named `main`) to a temp dir and runs `cdz compile <files> --entry main` instead of the stdin pipe.
+    modules: Vec<(String, String)>,
     /// One or more TRIALS — each an optional `(call …)` paired with the `expect` payload it must
     /// produce. The program is compiled ONCE; each trial runs its call and grades against its expect,
     /// and the case's verdict COMBINES them (see `grade_ran`). A single-result case is one trial with
@@ -1476,6 +1576,7 @@ fn read_corpus(tools: &Tools, file: &Path) -> Vec<CorpusRecord> {
 fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut records = Vec::new();
     let (mut desc, mut prog, mut needs) = (String::new(), String::new(), Vec::new());
+    let mut modules: Vec<(String, String)> = Vec::new();
     let mut trials: Vec<Trial> = Vec::new();
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
@@ -1483,6 +1584,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
             records.push(CorpusRecord {
                 description: std::mem::take(&mut desc),
                 program: std::mem::take(&mut prog),
+                modules: std::mem::take(&mut modules),
                 trials: std::mem::take(&mut trials),
                 needs: std::mem::take(&mut needs),
             });
@@ -1495,6 +1597,13 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
             match key {
                 "case" => desc = val.to_string(),
                 "program" => prog = val.to_string(),
+                // `module\t<name>\t<program>` — a library file (two tab-separated values). Split the
+                // name off the program.
+                "module" => {
+                    if let Some((name, mprog)) = val.split_once('\t') {
+                        modules.push((name.to_string(), mprog.to_string()));
+                    }
+                }
                 "call" => call_export = Some(val.to_string()),
                 "arg" => call_args.push(val.to_string()),
                 "expect" => {
@@ -1526,7 +1635,16 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
     let rans: Vec<Ran> = rec
         .trials
         .iter()
-        .map(|t| run_program(tools, store, &rec.program, t.call.as_ref(), target))
+        .map(|t| {
+            run_program(
+                tools,
+                store,
+                &rec.program,
+                &rec.modules,
+                t.call.as_ref(),
+                target,
+            )
+        })
         .collect();
     grade_ran(rec, &rans)
 }

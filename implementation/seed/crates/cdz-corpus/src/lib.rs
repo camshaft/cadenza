@@ -31,6 +31,12 @@ pub struct Record {
     pub description: String,
     /// The `input` rewritten to the runnable export shape, as one-line s-expression text.
     pub program: String,
+    /// Sibling LIBRARY modules of a multi-file PACKAGE case (`DESIGN-package-linking.md`), each a
+    /// `(name, program-text)` from a `(module "name" <prog>)` clause — the files the ENTRY (`program`,
+    /// named `main`) may `(import …)` from. Empty for the common single-file case (then `program` is
+    /// compiled alone, exactly as before). When non-empty, the gate driver writes every module + the
+    /// entry to a temp dir and runs `cdz compile <files> --entry main`.
+    pub modules: Vec<Module>,
     /// One or more TRIALS: each pairs an optional `(call …)` with the result it must produce. A case
     /// with a single `(output)`/`(error)`/`(trap)` and no `(call …)` is ONE trial with `call: None`
     /// (the common nullary case — invoke the sole export with no arguments). A case that INTERLEAVES
@@ -41,6 +47,16 @@ pub struct Record {
     pub trials: Vec<Trial>,
     /// Capabilities the case declares via `(needs …)` — documentation only (the gate runs every case).
     pub needs: Vec<String>,
+}
+
+/// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
+/// "name" …)` names it by) and its program text, normalized to the runnable `(do … )` shape like the
+/// entry. A `(module "name" <prog>)` clause produces one of these.
+pub struct Module {
+    /// The file name (the `(import "name" …)` target).
+    pub name: String,
+    /// The module's program, as one-line s-expression text (same normalization as the entry program).
+    pub program: String,
 }
 
 /// One (call, expected-result) pair of a case — a single run of the compiled program.
@@ -115,6 +131,16 @@ pub fn render(records: &[Record]) -> String {
         out.push_str("program\t");
         out.push_str(&r.program);
         out.push('\n');
+        // Sibling LIBRARY modules (multi-file package case): one `module\t<name>\t<program>` line each,
+        // after the entry program and before the trials. Absent for a single-file case (the common
+        // shape stays byte-identical). Ordered as written, so the record stream is deterministic.
+        for m in &r.modules {
+            out.push_str("module\t");
+            out.push_str(&m.name);
+            out.push('\t');
+            out.push_str(&m.program);
+            out.push('\n');
+        }
         // One group of lines per TRIAL: its `call`/`arg` lines (if any) then its `expect`, which ends
         // the trial. A single-trial case emits exactly the historical `call?`/`arg*`/`expect` shape.
         for trial in &r.trials {
@@ -174,6 +200,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 
     let mut input: Option<StructId> = None;
     let mut needs: Vec<String> = Vec::new();
+    let mut modules: Vec<Module> = Vec::new();
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -187,6 +214,22 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         match a.head_name(clause) {
             Some("input") => {
                 input = a.as_form(clause, "input").and_then(|t| t.first().copied());
+            }
+            Some("module") => {
+                // `(module "name" <prog>)` — a sibling LIBRARY file of a multi-file package case. Its
+                // NAME is a string literal (the `(import "name" …)` target); its program is normalized
+                // like the entry. NOTE the string-name shape is distinct from a single-module `(module
+                // NAME def…)` INPUT (bare-name head), which `normalize_program` handles as the entry.
+                if let Some(tail) = a.as_form(clause, "module")
+                    && let Some(&name_id) = tail.first()
+                    && let Some(name) = string_leaf(a, name_id)
+                    && let Some(&prog) = tail.get(1)
+                {
+                    modules.push(Module {
+                        name,
+                        program: normalize_program(a, prog),
+                    });
+                }
             }
             Some("call") => {
                 // `(call <export> <arg>…)` — the export to invoke plus its runtime arguments. The
@@ -292,6 +335,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     Ok(Record {
         description,
         program,
+        modules,
         trials,
         needs,
     })

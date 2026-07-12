@@ -13,11 +13,18 @@
 ; §Sequencing), which is why these cases are `(do (module m …) <form-using-m>)`.
 ;
 ; Scope of this file: SINGLE-module semantics, which the seed realizes (options/realized-capability-set/).
-; Multi-module composition — explicit imports, visibility, cyclic-dependency rejection, deterministic
-; initialization order, colliding-import rejection (modules-and-namespaces.md) — is deferred beyond a
-; single module AND has no pinned surface form in the core symbol table yet, so it is intentionally not
-; witnessed here; cases arrive with the generation that realizes it. Cases with no (needs …) are core
-; (the seed runs them); those comparing against a built manifest list carry (needs collections).
+; Cases with no (needs …) are core (the seed runs them); those comparing against a built manifest list
+; carry (needs collections).
+;
+; MULTI-FILE PACKAGE composition — explicit imports, visibility, cyclic-dependency rejection, colliding-
+; import rejection (modules-and-namespaces.md) — IS now witnessed, at the end of this file, via the
+; multi-file case surface: a case carries sibling `(module "name" <prog>)` clauses (library files) whose
+; public names its `(input …)` entry may `(import "name" (names…))`. The compiler links the files into
+; one component (DESIGN-package-linking.md). A `(module "NAME" …)` clause with a STRING name is a library
+; file of a package; the single-file `(module NAME …)` form (bare name) is the in-scope single-module
+; record witnessed above — the two are distinct surfaces. (A library body should carry ≥2 forms in its
+; `(do …)`: a single-form `do` collapses on the ML surface, so the markdown round-trip would not
+; preserve it — write at least a def plus its `(export …)`.)
 
 (case "a module declaration binds its name in the enclosing scope"
   (doc    "Witnesses core-semantics.md #A Module Binds Its Name In Its Enclosing Scope: the module
@@ -290,3 +297,89 @@
                 (= (. m (meta capabilities)) (list "log"))
                 false)))
   (output (: true Bool)))
+
+; ── MULTI-FILE PACKAGE composition (modules-and-namespaces.md; DESIGN-package-linking.md) ──────────────
+; Each case below carries one or more `(module "name" <prog>)` LIBRARY files; the `(input …)` is the
+; ENTRY (named `main`). A library's public surface is its `(export …)` list; the entry (or another
+; library) reaches it only through an explicit `(import "name" (names…))`.
+
+(case "an imported name resolves to a sibling file's exported definition"
+  (doc    "Witnesses modules-and-namespaces.md #Imports Are Explicit: a name defined in another module
+           is brought into scope by an explicit import, and a call to it resolves across the file
+           boundary into one linked component. `lib` exports `helper` (→ 40); `main` imports and calls
+           it, adding 2.")
+  (module "lib"
+    (do (def (helper) 40) (export helper)))
+  (input  (do
+            (import "lib" (helper))
+            (def (main) (+ (helper) 2))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "an unimported sibling definition is not in scope"
+  (doc    "Witnesses modules-and-namespaces.md #Imports Are Explicit (2nd sentence: an import introduces
+           no names beyond those it names) + #Visibility Is Explicit: WITHOUT an `(import …)`, a sibling
+           file's exported name is invisible — referencing it is an unbound-name rejection (CDZ0101),
+           not an implicit cross-file resolution.")
+  (module "lib"
+    (do (def (helper) 40) (export helper)))
+  (input  (do
+            (def (main) (+ (helper) 2))
+            (export main)))
+  (error  CDZ0101))
+
+(case "importing a name a module does not export is rejected"
+  (doc    "Witnesses modules-and-namespaces.md #Visibility Is Explicit (2nd sentence: a definition not
+           made visible is not importable): `lib` defines `helper` and exports only `other`, so
+           importing `helper` is rejected — visibility is the export list, not mere definition.")
+  (module "lib"
+    (do (def (helper) 40) (def (other) 1) (export other)))
+  (input  (do
+            (import "lib" (helper))
+            (def (main) (helper))
+            (export main)))
+  (error  CDZ0201))
+
+(case "two definitions imported under the same name are rejected"
+  (doc    "Witnesses modules-and-namespaces.md #Colliding Imported Names Are Rejected: importing two
+           definitions under the same local name into one scope is a compile-time error (CDZ0201),
+           never resolved by an implicit precedence.")
+  (module "a"
+    (do (def (x) 1) (export x)))
+  (module "b"
+    (do (def (x) 2) (export x)))
+  (input  (do
+            (import "a" (x))
+            (import "b" (x))
+            (def (main) (x))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a cycle of module imports is rejected"
+  (doc    "Witnesses modules-and-namespaces.md #Cyclic Module Dependencies Are Rejected: a set of
+           modules whose import relationships form a cycle is rejected at compile time (CDZ0201). Here
+           the entry imports `lib`, and `lib` imports back from the entry — a dependency loop.")
+  (module "lib"
+    (do (import "main" (seed)) (def (helper) (seed)) (export helper)))
+  (input  (do
+            (import "lib" (helper))
+            (def (seed) 1)
+            (def (main) (helper))
+            (export main)
+            (export seed)))
+  (error  CDZ0201))
+
+(case "an imported helper reaches its own file's private definition when inlined"
+  (doc    "Witnesses that linking preserves each file's scope through monomorphization: `lib` exports
+           `pub-helper`, whose body calls a PRIVATE sibling `priv-helper` (defined in `lib`, not
+           exported, not imported by the entry). When `pub-helper` inlines into `main`, its body's
+           reference to `priv-helper` still resolves in `lib`'s scope — cross-file β-copy hygiene.")
+  (module "lib"
+    (do (def (priv-helper) 40)
+        (def (pub-helper) (+ (priv-helper) 1))
+        (export pub-helper)))
+  (input  (do
+            (import "lib" (pub-helper))
+            (def (main) (+ (pub-helper) 1))
+            (export main)))
+  (output (: 42 Int64)))

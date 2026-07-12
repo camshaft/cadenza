@@ -187,6 +187,11 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
             }
         }
     }
+    // A `--entry <NAME>` names the package entry (a multi-file package needs it) — inject the
+    // `KIND_ENTRY` artifact, exactly as the artifacts-in `run` path does.
+    if let Some(entry) = args.entry() {
+        inputs.push(compiler_cli::entry_artifact(entry));
+    }
     compiler_cli::run_prepared(inputs, &targets, args.out_path(), PROG)
 }
 

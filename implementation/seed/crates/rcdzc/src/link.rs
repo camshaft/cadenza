@@ -328,11 +328,12 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
 /// Resolve one `(import "path" (name…))` clause of the file at spliced index whose base is `base`,
 /// appending an [`Import`] per imported name. `tail` is the clause's arguments in the file's LOCAL
 /// arena `ast`; `item` is the clause's LOCAL occurrence (its global id is `item + base`, used to
-/// anchor a diagnostic). Rejects (never silently binds nothing):
-///  - a malformed clause (not `("path" (name…))`);
-///  - the ALIAS form `(import "path" alias)` — deferred to the module-as-record phase (§2/§7);
-///  - an unknown module `"path"`;
-///  - a name the target module does not `(export …)` (visibility, §4).
+/// anchor a diagnostic). Outcomes:
+///  - a malformed clause (not `("path" (name…))`) → CDZ0201 (ill-formed);
+///  - the ALIAS form `(import "path" alias)` → a DECLINE (a later phase, §2/§7) — not ill-formed;
+///  - an unknown module `"path"`, or a name the target does not `(export …)` (visibility, §4) →
+///    CDZ0201 (a positively-proven ill-formed program: it names a file / a private name that the
+///    package does not provide, exactly as an unbound name is ill-formed).
 fn resolve_import_clause(
     ast: &Arenas,
     item: StructId,
@@ -342,22 +343,26 @@ fn resolve_import_clause(
     exports_of: &[Vec<String>],
     out: &mut Vec<Import>,
 ) -> Result<(), Reject> {
+    use crate::diag::Code;
     let occ = StructId(item.0 + base);
     // `(import "path" <spec>)` — exactly two arguments: the module path string and the name spec.
     let (Some(&path_id), Some(&spec_id)) = (tail.first(), tail.get(1)) else {
-        return Err(Reject::decline(
+        return Err(Reject::coded(
+            Code::Malformed,
             "malformed `(import …)`: expected `(import \"path\" (name…))`",
         )
         .at(occ));
     };
     let Some(path) = ast.as_str(path_id) else {
-        return Err(Reject::decline(
+        return Err(Reject::coded(
+            Code::Malformed,
             "`(import …)` path must be a string literal naming a package file",
         )
         .at(occ));
     };
     // The name spec must be a `(name…)` LIST (the named-list form). A bare NAME spec is the ALIAS
-    // form `(import "path" alias)`, which needs module-as-record projection — deferred (§2/§7).
+    // form `(import "path" alias)`, which needs module-as-record projection — deferred (§2/§7). This
+    // is a DECLINE (unrealized), not an ill-formed program.
     let names: &[StructId] = match ast.get(spec_id) {
         Struct::List(items) => items,
         Struct::Atom(_) => {
@@ -369,21 +374,26 @@ fn resolve_import_clause(
         }
     };
     let Some(&from_file) = name_to_ix.get(path) else {
-        return Err(
-            Reject::decline(format!("`(import …)` names unknown package file `{path}`")).at(occ),
-        );
+        return Err(Reject::coded(
+            Code::Malformed,
+            format!("`(import …)` names unknown package file `{path}`"),
+        )
+        .at(occ));
     };
 
     for &name_id in names {
         let Some(name) = ast.as_name(name_id) else {
-            return Err(
-                Reject::decline("`(import …)` name list may contain only bare names").at(occ),
-            );
+            return Err(Reject::coded(
+                Code::Malformed,
+                "`(import …)` name list may contain only bare names",
+            )
+            .at(occ));
         };
         if !exports_of[from_file].iter().any(|e| e == name) {
-            return Err(Reject::decline(format!(
-                "`(import …)`: `{path}` does not export `{name}`"
-            ))
+            return Err(Reject::coded(
+                Code::Malformed,
+                format!("`(import …)`: `{path}` does not export `{name}`"),
+            )
             .at(occ));
         }
         // COLLIDING IMPORTED NAMES (`modules-and-namespaces.md` §Colliding Imported Names Are

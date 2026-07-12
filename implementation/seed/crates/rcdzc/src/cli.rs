@@ -47,6 +47,14 @@ pub struct CompileArgs {
     /// Defaults to the current directory.
     #[arg(long, short, value_name = "OUT")]
     out: Option<PathBuf>,
+
+    /// The ENTRY file of a multi-file PACKAGE, by name (`DESIGN-package-linking.md`). Required when
+    /// more than one `ast`/source input is given: it names which file's `(export …)` forms the
+    /// component boundary. The other files are libraries reachable only through an explicit `(import
+    /// …)`. Ignored for a single-file compile (that lone file is the entry). A file's name is its stem
+    /// (`app.cdz` → `app`) or the `name=` of an explicit `kind:name=path` spec.
+    #[arg(long, value_name = "NAME")]
+    entry: Option<String>,
 }
 
 /// A backend target, as a clap-parsed value (its own enum so clap validates the spelling and `--help`
@@ -97,6 +105,12 @@ impl CompileArgs {
     /// Where output is written (`-o`), if given.
     pub fn out_path(&self) -> Option<PathBuf> {
         self.out.clone()
+    }
+
+    /// The `--entry <NAME>` of a multi-file package, if given — the file whose exports form the
+    /// component boundary. A wrapping driver turns this into a `KIND_ENTRY` input artifact.
+    pub fn entry(&self) -> Option<&str> {
+        self.entry.as_deref()
     }
 }
 
@@ -162,7 +176,22 @@ pub fn run(cli: CompileArgs, prog: &str) -> ExitCode {
         inputs.push(Artifact::new(parsed.kind, parsed.name, bytes));
     }
 
+    // A `--entry <NAME>` names the package entry file — inject it as a `KIND_ENTRY` artifact (its bytes
+    // ARE the entry name), the same stream `compile()` reads the entry from (`DESIGN-package-linking.md`
+    // §3c). Absent, a multi-`ast` package declines (no rule to pick the entry); a single-file compile
+    // needs none.
+    if let Some(entry) = cli.entry() {
+        inputs.push(entry_artifact(entry));
+    }
+
     run_prepared(inputs, &cli.targets(), cli.out, prog)
+}
+
+/// Build the `KIND_ENTRY` input artifact naming a package's entry file — its bytes are the entry name.
+/// Shared by `run` (artifacts-in) and the `cdz` driver (source-in), so both deliver a package the same
+/// way.
+pub fn entry_artifact(name: &str) -> Artifact {
+    Artifact::new(crate::link::KIND_ENTRY, "entry", name.as_bytes().to_vec())
 }
 
 /// Compile a set of ALREADY-BUILT input artifacts to the requested targets and write the outputs — the
@@ -215,11 +244,22 @@ pub fn run_prepared(
         }
     }
 
+    // The package `link-map` (`kind == "link-map"`) is a diagnostics DEMUX companion, not a primary
+    // output — it does not count toward the "single artifact ⇒ exact file" / `-o -` decisions (else a
+    // plain `-o app.wasm` component build would flip to directory mode the moment a package emits one).
+    // It is written only in DIRECTORY mode (as `link-map.txt`); a `-o FILE` / `-o -` build, which names
+    // one output, skips it.
+    let primary: Vec<&Artifact> = out
+        .artifacts
+        .iter()
+        .filter(|a| a.kind != crate::link::KIND_LINK_MAP)
+        .collect();
+
     // `-o -`: write the single produced artifact's bytes to stdout (so the bin composes in a pipe:
     // `… | rcdzc - -o - | cdz-run`). Only meaningful for a single artifact — a multi-artifact build
     // has no one stream to write, so that is an error rather than an ambiguous concatenation.
     if cli_out.as_deref().map(|p| p.as_os_str()) == Some(std::ffi::OsStr::new("-")) {
-        match out.artifacts.as_slice() {
+        match primary.as_slice() {
             [art] => {
                 if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &art.bytes) {
                     eprintln!("{prog}: cannot write stdout: {e}");
@@ -242,15 +282,21 @@ pub fn run_prepared(
         };
     }
 
-    // Decide whether `-o` names an exact output FILE (single artifact, not an existing directory) or
-    // a DIRECTORY to write each `<name>.<ext>` into.
-    let single_file_out: Option<&PathBuf> = match (cli_out, out.artifacts.as_slice()) {
+    // Decide whether `-o` names an exact output FILE (a single PRIMARY artifact, not an existing
+    // directory) or a DIRECTORY to write each `<name>.<ext>` into. The `link-map` companion does not
+    // count — a lone component that also emits a `link-map` still writes to the exact `-o FILE`.
+    let single_file_out: Option<&PathBuf> = match (cli_out, primary.as_slice()) {
         (Some(p), [_one]) if !p.is_dir() => Some(p),
         _ => None,
     };
 
-    // Write each produced artifact.
+    // Write each produced artifact. In single-file (`-o FILE`) mode, write ONLY the primary artifact
+    // there and skip the `link-map` companion (a `-o FILE` caller named one output). In directory mode,
+    // write everything (the `link-map` lands as `link-map.txt` beside the outputs).
     for art in &out.artifacts {
+        if single_file_out.is_some() && art.kind == crate::link::KIND_LINK_MAP {
+            continue;
+        }
         let path = match single_file_out {
             // Single artifact, `-o FILE`: write bytes to that exact path.
             Some(file) => file.clone(),
@@ -316,8 +362,9 @@ fn ext_for_kind(kind: &str) -> &str {
         "dwarf" => "dwarf",
         // Sidecar QUERY results are UTF-8 text (a rendered type, a newline-separated node-id list) —
         // written with a `.txt` extension. A `sidecar` INPUT is read generically as `kind:name=path`,
-        // so no case is needed for it here (this maps only produced OUTPUT kinds).
-        "type-info" | "uses" => "txt",
+        // so no case is needed for it here (this maps only produced OUTPUT kinds). The package
+        // `link-map` (a diagnostics demux table) is likewise UTF-8 text.
+        "type-info" | "uses" | "link-map" => "txt",
         other => other,
     }
 }
