@@ -102,7 +102,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
                 .any(|(_, v)| binding_escapes(db, *v, binder, false))
                 || binding_escapes(db, body, binder, false)
         }
-        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::And { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
@@ -283,7 +285,9 @@ pub fn collect_used_ops(
             }
             collect_used_ops(db, body, out);
         }
-        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::And { lhs, rhs, .. } => {
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -1720,6 +1724,27 @@ fn emit(
         Core::Not { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::I32Eqz);
+            Ok(())
+        }
+        // A SHORT-CIRCUITING boolean connective — emitted as an `if` over `lhs` (a Bool i32), so `rhs` is
+        // evaluated on ONLY ONE branch (the shield core-semantics.md §Boolean Connectives Short-Circuit
+        // requires): `and` → `if lhs then rhs else 0`; `or` → `if lhs then 1 else rhs`. The `if` yields an
+        // i32 Bool. (A constant `lhs` folded in `lower`, so here `lhs` is a runtime bool.)
+        Core::And { lhs, rhs, is_and } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            if is_and {
+                // then: rhs ; else: false (0)
+                emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+                out.push(Lir::Else);
+                out.push(Lir::ConstI32(0));
+            } else {
+                // then: true (1) ; else: rhs
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::Else);
+                emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+            }
+            out.push(Lir::End);
             Ok(())
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector

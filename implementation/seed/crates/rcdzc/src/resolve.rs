@@ -56,6 +56,13 @@ const GRAMMAR: &[&str] = &[
     "let",
     "if",
     "match",
+    // `and`/`or`/`not` are SHORT-CIRCUITING boolean connectives — CONTROL FLOW (like `if`), not strict
+    // value operators, so they are grammar, NOT prelude records (a strict `(meta apply)` record would
+    // evaluate both operands, breaking the shield core-semantics.md §Boolean Connectives Short-Circuit
+    // requires). `not` is strict but is a fixed one-operand form kept here with its siblings.
+    "and",
+    "or",
+    "not",
     ".",
     "module",
     "def",
@@ -161,6 +168,8 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             }
             match db.ast.head_name(id) {
                 Some("if") => resolve_if(db, id),
+                Some(h @ ("and" | "or")) => resolve_connective(db, id, h == "and"),
+                Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
                 Some("let") => resolve_let(db, id),
                 Some(".") => resolve_member(db, id),
@@ -763,6 +772,38 @@ fn resolve_if(db: &Db, id: StructId) -> Resolved {
         then_: tail[1],
         else_: tail[2],
     }
+}
+
+/// Resolve `(and A B)` / `(or A B)` into a short-circuiting connective (`is_and` picks which). Exactly
+/// two operands; a wrong arity is malformed (CDZ0201). The operands stay AST occurrences resolved on
+/// demand — the RIGHT one only reached on the non-short-circuit branch at emit, so a trapping `B` is
+/// shielded (core-semantics.md §Boolean Connectives Short-Circuit).
+fn resolve_connective(db: &Db, id: StructId, is_and: bool) -> Resolved {
+    let head = if is_and { "and" } else { "or" };
+    let tail = db.ast.as_form(id, head).unwrap_or(&[]);
+    if tail.len() != 2 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("{head} takes exactly 2 operands"),
+        ));
+    }
+    Resolved::And {
+        lhs: tail[0],
+        rhs: tail[1],
+        is_and,
+    }
+}
+
+/// Resolve `(not A)` into a logical negation. Exactly one operand; a wrong arity is malformed (CDZ0201).
+fn resolve_not(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "not").unwrap_or(&[]);
+    if tail.len() != 1 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "not takes exactly 1 operand",
+        ));
+    }
+    Resolved::Not { operand: tail[0] }
 }
 
 /// Resolve `(match SCRUTINEE (PATTERN BODY)…)` into its resolved form. The scrutinee and each arm's

@@ -48,6 +48,7 @@ pass	a conditional with too many operands is rejected, not a crash
 pass	a conditional with two tuple branches of different arity is a type error
 pass	a conditional with two tuple branches of different element type is a type error
 pass	a conditional's condition may itself be a conditional
+pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
@@ -106,6 +107,7 @@ pass	a let shadowing a parameter whose initializer references that parameter com
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
+pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a match arm binds a nested tuple inside a sum payload
@@ -311,7 +313,11 @@ pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	conjunction is true exactly when both operands are true
+pass	conjunction shields a trapping right operand when the left is false
 pass	constructor pattern binders capture the payload uniformly
+pass	disjunction is false exactly when both operands are false
+pass	disjunction shields a trapping right operand when the left is true
 pass	division by zero traps
 pass	division of the minimum integer by -1 overflows and traps
 pass	equality applied to one operand is rejected, not a crash
@@ -351,6 +357,7 @@ pass	multi-argument application is curried application
 pass	multiplication
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	negation inverts a boolean
 pass	nested patterns deconstruct recursively
 pass	ordering an integer against a boolean is a type error
 pass	over-applying a constructor by several arguments is a type error
@@ -377,6 +384,7 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the largest factorial that fits the integer type computes exactly
@@ -455,7 +463,6 @@ todo	a conditional with integer and floating-point branches is a type error
 todo	a conditional with two list branches of different length is well-typed
 todo	a conditionally-selected nullary variant is returned as a runtime sum result
 todo	a conditionally-selected variant is returned as a runtime sum result
-todo	a conjunction guards a let over a runtime value inside a conditional
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a constructor whose payload is a constructor keeps the outer variant tag
@@ -502,7 +509,6 @@ todo	a later declaration in a do block sees an earlier one
 todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a left shift by a floating-point count does not silently promote
 todo	a length-prefixed frame is built from a size segment and a bytes segment
-todo	a let-bound variable is in scope inside a boolean connective operand
 todo	a list annotated with the wrong element type is rejected
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list built by a runtime-length loop has that many elements
@@ -786,8 +792,6 @@ todo	concatenating two runtime strings and measuring the result
 todo	concatenating two tuples appends their elements
 todo	concatenating with the empty list on the right is identity
 todo	concatenation is associative by content
-todo	conjunction is true exactly when both operands are true
-todo	conjunction shields a trapping right operand when the left is false
 todo	constructing a bit-field from a value wider than its width traps
 todo	constructing a byte sequence with a negative value traps
 todo	constructing a byte sequence with a runtime value out of range traps
@@ -812,8 +816,6 @@ todo	decoding ill-formed bytes through a helper takes the None arm
 todo	decoding well-formed UTF-8 bytes yields the string
 todo	deeply nested pattern matching
 todo	dimensional equality is decided by canonical exponent map, not written form
-todo	disjunction is false exactly when both operands are false
-todo	disjunction shields a trapping right operand when the left is true
 todo	distinct large floats are not equal
 todo	distinct names bound to the same string key the same map entry
 todo	dividing quantities divides their dimensions
@@ -886,7 +888,6 @@ todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	modulo of an integer and a float does not silently promote
 todo	multiplication of an integer and a float does not silently promote
 todo	multiplying quantities multiplies their dimensions
-todo	negation inverts a boolean
 todo	negative integer to byte uses two's complement
 todo	negative zero is distinct in the canonical value form
 todo	negative zero is not equal to positive zero
@@ -975,7 +976,6 @@ todo	the empty set is equal to the empty set
 todo	the empty string has length zero
 todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
-todo	the guarded-let conditional takes its else-branch when the conjunction is false
 todo	the intersection contains the elements in both sets
 todo	the le modifier encodes a u16 little-endian
 todo	the length of a byte sequence is its byte count

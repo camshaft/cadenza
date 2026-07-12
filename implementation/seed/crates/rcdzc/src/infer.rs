@@ -184,6 +184,17 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // CHECKS are `type_errors`' job; this fills the value column.
             then_ty.join(&else_ty)
         }
+        // A boolean connective is a Bool. Reading the operands' types is the backward demand; the
+        // operands-are-Bool CHECK is `type_errors`' job (this fills the value column).
+        Resolved::And { lhs, rhs, .. } => {
+            let _l = type_of(db, lhs);
+            let _r = type_of(db, rhs);
+            Ty::Bool
+        }
+        Resolved::Not { operand } => {
+            let _o = type_of(db, operand);
+            Ty::Bool
+        }
         // A match's type is the JOIN of its arm bodies (like an `if` over N branches) — every arm must
         // produce the same type, and a branch that fixed a deferred width contributes it. The
         // arms-agree and exhaustiveness CHECKS are `type_errors`' job; this fills the value column.
@@ -442,6 +453,20 @@ fn collect_param_constraints(
             collect_param_constraints(db, cond, env, def, subst, fresh);
             collect_param_constraints(db, then_, env, def, subst, fresh);
             collect_param_constraints(db, else_, env, def, subst, fresh);
+        }
+        // A boolean connective's operands must be Bool — constrain each (a bare-param operand `(and p …)`
+        // pins `p` Bool), then descend.
+        Resolved::And { lhs, rhs, .. } => {
+            for &op in &[lhs, rhs] {
+                let t = arg_ty_in_env(db, op, env, subst);
+                let _ = crate::unify::unify(subst, &t, &Ty::Bool);
+                collect_param_constraints(db, op, env, def, subst, fresh);
+            }
+        }
+        Resolved::Not { operand } => {
+            let t = arg_ty_in_env(db, operand, env, subst);
+            let _ = crate::unify::unify(subst, &t, &Ty::Bool);
+            collect_param_constraints(db, operand, env, def, subst, fresh);
         }
         Resolved::Match { scrutinee, arms } => {
             // Each LITERAL pattern constrains the scrutinee's type: matching `n` against the integer
@@ -992,6 +1017,35 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect(db, cond, out);
             collect(db, then_, out);
             collect(db, else_, out);
+        }
+        // A boolean connective — each operand must be Bool (core-semantics.md §Boolean Connectives
+        // Short-Circuit: conjunction/disjunction/negation are OVER boolean values). A non-Bool operand is
+        // a type mismatch (CDZ0203), the same class as a non-Bool `if` condition. Then descend for each
+        // operand's own faults.
+        Resolved::And { lhs, rhs, is_and } => {
+            let op = if is_and { "and" } else { "or" };
+            for &operand in &[lhs, rhs] {
+                let t = type_of(db, operand);
+                if !t.agrees_with(&Ty::Bool) {
+                    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: connective operand not Bool (CDZ0203)");
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!("`{op}` operand must be Bool, found {}", t.render_name()),
+                    ));
+                }
+                collect(db, operand, out);
+            }
+        }
+        Resolved::Not { operand } => {
+            let t = type_of(db, operand);
+            if !t.agrees_with(&Ty::Bool) {
+                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: not operand not Bool (CDZ0203)");
+                out.push(Reject::coded(
+                    Code::TypeMismatch,
+                    format!("`not` operand must be Bool, found {}", t.render_name()),
+                ));
+            }
+            collect(db, operand, out);
         }
         // Member access: the operand must be a record, and it must have the named field. Both faults
         // are CDZ0201 (`core-semantics.md` §Member Access Projects A Record Field — projecting a field

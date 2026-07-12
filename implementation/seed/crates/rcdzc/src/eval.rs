@@ -581,6 +581,13 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             collect_callees(db, then_, out);
             collect_callees(db, else_, out);
         }
+        // A boolean connective's operands can each contain a call (a self-call in a short-circuit operand
+        // is a real recursion edge) — descend both. A negation's single operand likewise.
+        Resolved::And { lhs, rhs, .. } => {
+            collect_callees(db, lhs, out);
+            collect_callees(db, rhs, out);
+        }
+        Resolved::Not { operand } => collect_callees(db, operand, out),
         // A match's scrutinee and every arm BODY run when this body runs — a self-call inside an arm
         // (e.g. `sum-to`'s match base case) is a real edge, so descend into each. (A pattern is not
         // executed code — it is a probe — so it contributes no callee.)

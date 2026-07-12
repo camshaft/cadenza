@@ -275,6 +275,12 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // The condition is unconditionally evaluated; the branches are not (they are guarded).
             collect_reached_poisons(db, cond, out);
         }
+        // A short-circuiting connective: the LEFT operand is unconditionally evaluated; the RIGHT is
+        // guarded (reached only on the non-short-circuit branch), so a provable trap in `rhs` is NOT a
+        // build failure — the same reachability rule as an `if`'s branches.
+        Core::And { lhs, .. } => {
+            collect_reached_poisons(db, lhs, out);
+        }
         // A record's field values are all unconditionally part of the value — descend into each. (A
         // record used only to read a field folds away before reaching here; one that survives is a
         // runtime value whose fields are all reached.)
@@ -436,6 +442,11 @@ fn walk_for_dead_traps(
         // The condition/scrutinee IS unconditionally evaluated, so a drop there is worth finding.
         Resolved::If { cond, .. } => walk_for_dead_traps(db, cond, out, seen),
         Resolved::Match { scrutinee, .. } => walk_for_dead_traps(db, scrutinee, out, seen),
+        // A short-circuiting connective SHIELDS its right operand exactly as a branch does (sanctioned
+        // laziness) — the LEFT operand is unconditionally evaluated (descend), the RIGHT is not. A
+        // negation's single operand is unconditionally evaluated.
+        Resolved::And { lhs, .. } => walk_for_dead_traps(db, lhs, out, seen),
+        Resolved::Not { operand } => walk_for_dead_traps(db, operand, out, seen),
         // Leaves and non-descending forms.
         Resolved::Int(_)
         | Resolved::Bool(_)

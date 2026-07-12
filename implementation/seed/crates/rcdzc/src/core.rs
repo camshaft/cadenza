@@ -183,6 +183,17 @@ pub enum Core {
         then_: StructId,
         else_: StructId,
     },
+    /// A SHORT-CIRCUITING boolean conjunction `(and lhs rhs)` / disjunction `(or lhs rhs)` — present only
+    /// when it did not fold to a constant in `lower`. `is_and` picks the semantics: `and` emits `if lhs
+    /// then rhs else false`, `or` emits `if lhs then true else rhs` — so the RIGHT operand is evaluated
+    /// only on the non-short-circuiting branch, shielding a trapping/effectful `rhs` exactly as a
+    /// conditional's unselected branch does (core-semantics.md §Boolean Connectives Short-Circuit). The
+    /// backend emits it as that `if` over the operands' i32 boolean values.
+    And {
+        lhs: StructId,
+        rhs: StructId,
+        is_and: bool,
+    },
     /// A scalar MATCH over `scrutinee` — arms tried top-to-bottom, each a [`MatchArm`] (a probe, an
     /// optional GUARD, and a body). A `Probe` is either a literal to compare the scrutinee against
     /// (`== literal`) or the wildcard (always matches); a `guard` is a boolean expression evaluated with

@@ -225,7 +225,9 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             }
             collect_call_callees(db, body, out);
         }
-        crate::core::Core::Arith { lhs, rhs, .. } | crate::core::Core::Compare { lhs, rhs, .. } => {
+        crate::core::Core::Arith { lhs, rhs, .. }
+        | crate::core::Core::Compare { lhs, rhs, .. }
+        | crate::core::Core::And { lhs, rhs, .. } => {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);
         }

@@ -265,6 +265,22 @@ pub enum Resolved {
         then_: StructId,
         else_: StructId,
     },
+    /// A logical conjunction `(and a b)` / disjunction `(or a b)` — a SHORT-CIRCUITING boolean connective
+    /// (core-semantics.md §Boolean Connectives Short-Circuit). Both operands are Bool; `and` evaluates
+    /// `rhs` only when `lhs` is true, `or` only when `lhs` is false — so a connective SHIELDS a trapping/
+    /// effectful right operand exactly as a conditional's unselected branch does. Control flow, not a
+    /// strict value operator, so it is grammar (like `if`), not a prelude record (which would eval both).
+    /// `is_and` distinguishes the two (they share the same short-circuit shape, differing only in which
+    /// constant the shielding branch yields). Lowers to a `Core::And`/`Core::Or` the backend emits as an
+    /// `if`. (Negation `(not a)` is a strict one-operand form — `Resolved::Not`.)
+    And {
+        lhs: StructId,
+        rhs: StructId,
+        is_and: bool,
+    },
+    /// A logical negation `(not a)` — `a` is a Bool, the result its complement. Strict (one operand,
+    /// nothing to shield). Lowers to `Core::Not` (emitted `i32.eqz`).
+    Not { operand: StructId },
     /// A `(match scrutinee (pattern body)…)` — the pattern engine's surface. `scrutinee` is the value
     /// examined; each arm is a `(pattern-occ, body-occ)` pair, tried top-to-bottom. A pattern is carried
     /// as its AST occurrence (NOT a `Pattern` enum — `intermediate-representations.md`: patterns are

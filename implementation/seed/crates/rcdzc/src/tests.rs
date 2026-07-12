@@ -2788,7 +2788,10 @@ mod recursion {
         .expect("compile");
         // Counts down to 0 regardless of which member the last hop lands on — the cycle always reaches
         // some member's `(< k 1)` base at k=0 and returns 0. A million iterations run in O(1) stack.
-        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(1_000_002)]), 0);
+        assert_eq!(
+            run_returns_with::<i64>(&c, "main", &[Val::S64(1_000_002)]),
+            0
+        );
         assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(0)]), 0);
     }
 
@@ -2909,6 +2912,77 @@ mod match_engine {
             ),
             99
         );
+    }
+
+    #[test]
+    fn boolean_connectives_evaluate_and_fold() {
+        // core-semantics.md §Boolean Connectives Short-Circuit: and/or/not over booleans. Constant fold
+        // (each is a `main` returning a Bool / an Int64 selected by the connective).
+        let b = |body: &str| -> bool {
+            run_returns::<bool>(
+                &component(&format!("(module m (def (main) {body}) (export main))")),
+                "main",
+            )
+        };
+        let i = |body: &str| -> i64 {
+            run_returns::<i64>(
+                &component(&format!("(module m (def (main) {body}) (export main))")),
+                "main",
+            )
+        };
+        assert!(!b("(and true false)"));
+        assert!(b("(and true true)"));
+        assert!(b("(or false true)"));
+        assert!(!b("(or false false)"));
+        assert!(b("(not false)"));
+        assert!(!b("(not true)"));
+        // Nested / composed with comparisons (a range guard, the pervasive idiom).
+        assert_eq!(i("(if (and (> 5 0) (< 5 10)) 1 0)"), 1);
+        assert_eq!(i("(if (and (> 5 0) (< 5 3)) 1 0)"), 0);
+    }
+
+    #[test]
+    fn a_boolean_connective_operand_must_be_bool() {
+        // A non-Bool operand is a type mismatch (CDZ0203), the same class as a non-Bool `if` condition.
+        assert_eq!(
+            reject_code("(module m (def (main) (and true 1)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (or 5 false)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (not 7)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn a_conjunction_short_circuits_shielding_a_trapping_right_operand() {
+        // core-semantics.md §Boolean Connectives Short-Circuit: `and` evaluates its RIGHT operand ONLY
+        // when the left is true. `(f n) = (and (> n 0) (> (/ 10 n) 1))` — for n=0 the left is false, so
+        // the trapping `(/ 10 0)` right operand is NEVER evaluated: f(0) returns 0, NO trap. f(2) = 1
+        // (10/2=5>1). This is the SHIELD the spec requires — a connective guards a trapping/effectful
+        // right operand exactly as a conditional's unselected branch does.
+        let src =
+            "(module m (def (f (: n Int64)) (if (and (> n 0) (> (/ 10 n) 1)) 1 0)) (export f))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile short-circuit");
+        for (arg, want) in [("0", "0"), ("2", "1"), ("20", "0")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("f".to_string()),
+                args: vec![arg.to_string()],
+                runtime: None,
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "f {arg}"),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("short-circuit failed to shield (trapped): {t} at {arg}")
+                }
+            }
+        }
     }
 
     #[test]
@@ -3581,8 +3655,9 @@ mod diagnostics {
             "an observed provable trap must deny the component"
         );
         assert_eq!(
-            out.diagnostics.iter().find(|d| d.severity
-                == crate::abi::Severity::Error)
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
                 .and_then(|d| d.code.clone())
                 .as_deref(),
             Some("CDZ0304")

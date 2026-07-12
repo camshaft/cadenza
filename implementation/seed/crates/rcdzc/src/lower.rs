@@ -258,6 +258,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
             _ => Core::If { cond, then_, else_ },
         },
+        // A SHORT-CIRCUITING connective. Fold on a constant LEFT operand — the short-circuit rule decides
+        // the result WITHOUT evaluating `rhs` (so a trapping/ill-formed `rhs` is shielded, exactly as an
+        // `if`'s unselected branch): `(and false _)`→false, `(and true rhs)`→rhs; `(or true _)`→true,
+        // `(or false rhs)`→rhs. A non-constant `lhs` (or a poison `lhs`, which propagates) emits a
+        // `Core::And` the backend lowers to `if lhs then/else <rhs|const>`.
+        Resolved::And { lhs, rhs, is_and } => match core_of(db, lhs) {
+            Core::ConstBool(b) => {
+                // `and`: left decides when false (short-circuit to false), else the result is rhs.
+                // `or`:  left decides when true  (short-circuit to true),  else the result is rhs.
+                if b == is_and {
+                    core_of(db, rhs) // and-true → rhs ; or-false → rhs
+                } else {
+                    Core::ConstBool(!is_and) // and-false → false ; or-true → true
+                }
+            }
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::And { lhs, rhs, is_and },
+        },
+        // Negation: fold a constant, else `Core::Not` (emitted `i32.eqz`).
+        Resolved::Not { operand } => match core_of(db, operand) {
+            Core::ConstBool(b) => Core::ConstBool(!b),
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Not { operand },
+        },
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
         Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
@@ -792,7 +816,9 @@ fn pattern_constraints(
     // against the scrutinee `ty`'s `decl` — a mismatch is CDZ0203, the same type error `(: 5 Bool)` gets.
     // (A bare nullary-variant name took the `variant_disc_by_name` path above, which is already scoped to
     // this sum's declaration, so only a COMPOUND ctor pattern reaches here needing the check.)
-    if let crate::ty::Ty::Sum { decl: scrut_decl, .. } = ty
+    if let crate::ty::Ty::Sum {
+        decl: scrut_decl, ..
+    } = ty
         && crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl)
     {
         return Err(Reject::coded(
@@ -1245,6 +1271,10 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
                 || ref_escapes_whole(db, then_, init)
                 || ref_escapes_whole(db, else_, init)
         }
+        Resolved::And { lhs, rhs, .. } => {
+            ref_escapes_whole(db, lhs, init) || ref_escapes_whole(db, rhs, init)
+        }
+        Resolved::Not { operand } => ref_escapes_whole(db, operand, init),
         Resolved::Let { bindings, body } => {
             bindings
                 .iter()
@@ -1803,6 +1833,8 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::If { cond, then_, else_ } => {
             uses_in(db, cond, init) + uses_in(db, then_, init) + uses_in(db, else_, init)
         }
+        Resolved::And { lhs, rhs, .. } => uses_in(db, lhs, init) + uses_in(db, rhs, init),
+        Resolved::Not { operand } => uses_in(db, operand, init),
         Resolved::Let { bindings, body } => {
             let mut n = 0;
             for (_, value) in &bindings {
