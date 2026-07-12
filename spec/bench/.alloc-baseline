@@ -7,6 +7,7 @@
 6418	map_insert_shared_newkey x1000
 3	map_iterate x1000
 0	map_lookup x1000
+7000	map_lookup_nestedkey x1000
 1000	map_lookup_tuplekey x1000
 0	map_remove x1000
 6685	map_remove_shared x1000
@@ -16,7 +17,7 @@
 376	set_union x1000
 1000	sum_new x1000
 1000	tuple2_build x1000
-1600	vec_concat x100
+1200	vec_concat x100
 0	vec_get x1000
 197	vec_push x1000
 7000	vec_push_shared x1000

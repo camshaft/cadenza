@@ -2129,7 +2129,9 @@ fn op_vec_concat(a: Handle, b: Handle) -> Handle {
     op_dup(root_b);
     let grown_a = vec_grow_to_shift(root_a, shift_a, max_shift);
     let grown_b = vec_grow_to_shift(root_b, shift_b, max_shift);
-    let mut children: Vec<Handle> = Vec::new();
+    // Pre-size to the known maximum (each root has ≤`cap`=32 children after growth, so ≤64 total) — one
+    // allocation, skipping the 1→2→…→64 realloc chain a growing `Vec` would do while gathering.
+    let mut children: Vec<Handle> = Vec::with_capacity(2 * cap);
     vec_collect_children_dup(grown_a, &mut children);
     vec_collect_children_dup(grown_b, &mut children);
     op_drop(grown_a); // releases the grown wrappers + our root dups; the dup'd children survive in `children`
@@ -5067,6 +5069,42 @@ mod tests {
         // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
         assert!(clookup <= 1500, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)");
         op_drop(cm);
+
+        // (H2) map lookup by a NESTED-COMPOUND key (a 4-deep nested tuple) — the key falls THROUGH the
+        // shallow-compound fast path into champ_hash's general iterative walk, so this guards that walk's
+        // pre-sized worklists (`Vec::with_capacity` — a growing Vec would realloc 1→2→4→8 per hash, ~29%
+        // slower; @c467820). Each iteration builds a fresh nested probe (4 arr nodes) + looks it up. The
+        // allocation is the probe's nodes; the pre-sized hash worklists must NOT realloc-churn on top.
+        let nested = |seed: i64| -> Handle {
+            let mut t = op_box_int(seed);
+            for d in 1..4i64 {
+                let outer = op_arr_alloc(2);
+                op_arr_set(outer, 0, op_box_int(seed + d));
+                op_arr_set(outer, 1, t);
+                t = outer;
+            }
+            t
+        };
+        let mut nm = op_map_empty();
+        for k in 0..N {
+            nm = op_map_insert(nm, nested(k), op_box_int(k));
+        }
+        let nlookup = measure(&mut || {
+            for k in 0..N {
+                let probe = nested(k);
+                let _ = op_map_lookup(nm, probe);
+                op_drop(probe);
+            }
+        });
+        println!("ALLOC map_lookup_nestedkey x{N}: {nlookup}");
+        // ~7/op for N=1000: the 4-deep probe's 3 arr nodes + the general-walk champ_hash's 2 pre-sized
+        // worklists (`work` + `results`, one `with_capacity` alloc each per hash — pre-sizing traded a
+        // realloc CHAIN for a single fixed alloc per buffer, the ~29% CPU win @c467820, but the buffers
+        // are still heap). Guards that: (a) the pre-size didn't regress to the realloc chain (which would
+        // push this much higher), and (b) is the target for a future stack-buffered general walk (bounded
+        // depth ⇒ the 2 worklists could be inline, dropping this toward the probe-only ~3000).
+        assert!(nlookup <= 7500, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 7500 (probe arr nodes + the 2 pre-sized general-walk hash worklists; a realloc-chain regression would exceed it)");
+        op_drop(nm);
 
         // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
         // inline `Raw`, the 4-byte disc no longer allocates a heap Vec — a sum node is now the node Box
