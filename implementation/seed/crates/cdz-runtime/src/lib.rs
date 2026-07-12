@@ -2071,6 +2071,37 @@ fn is_collision_node(node: Handle) -> bool {
 
 // ── Structural hash (FNV-1a), ITERATIVE ─────────────────────────────────────────────────
 
+/// FNV-1a over `h`'s OWN canonical raw bytes (no children), starting from the offset basis — the
+/// per-node "leaf hash" both the arity-0 fast path and the general walk's Combine step fold. Folds
+/// the SAME little-endian bytes a boxed twin carries, so an inline value hashes equal to its boxed
+/// twin (open-Q#8): an immediate contributes unit → no bytes, bool → one byte, int → 8 LE bytes; a
+/// real node contributes its `n.raw`; a null handle contributes nothing (bare offset basis). Unlike
+/// the old `imm_canonical_raw`-based fold this allocates NO intermediate `Vec`.
+#[inline]
+fn champ_node_raw_hash(h: Handle) -> u32 {
+    if is_immediate(h) {
+        let mut acc = FNV_OFFSET;
+        match imm_kind(h) {
+            ImmKind::Unit => {}
+            ImmKind::Bool => acc = fnv_step(acc, imm_as_bool(h) as u8),
+            ImmKind::Int => {
+                for b in (imm_as_int(h) as u64).to_le_bytes() {
+                    acc = fnv_step(acc, b);
+                }
+            }
+        }
+        acc
+    } else {
+        with_node(h, FNV_OFFSET, |n| {
+            let mut acc = FNV_OFFSET;
+            for &b in &n.raw {
+                acc = fnv_step(acc, b);
+            }
+            acc
+        })
+    }
+}
+
 /// A deterministic structural hash of the whole subtree rooted at `root`: FNV-1a over each node's
 /// raw bytes folded with its children's hashes. Because the rep is canonical, structurally-equal
 /// subtrees hash equal; differing raw or structure (very likely) differs.
@@ -2080,6 +2111,13 @@ fn is_collision_node(node: Handle) -> bool {
 /// of trie depth. Null handles fold as the empty (offset-basis) hash. Does NOT cache — v1 recomputes.
 #[allow(dead_code)]
 fn champ_hash(root: Handle) -> u32 {
+    // Fast path — the hot map/set KEY case. An arity-0 node (an immediate, or a scalar/string/bytes
+    // leaf) hashes to exactly FNV-1a over its own canonical raw bytes with NO child folds, which is
+    // precisely what the general walk produces from a single Visit→Combine of a childless node. Take
+    // it directly and allocate NEITHER the `work`/`results` worklists below NOR any canonical-raw Vec.
+    if is_immediate(root) || with_node(root, 0usize, |n| n.handles.len()) == 0 {
+        return champ_node_raw_hash(root);
+    }
     // Two-phase task: Visit expands a node's children; Combine folds this node's raw + the child
     // hashes now sitting on `results`. Children are pushed Visit-first so their Combine completes
     // before their parent's — a standard single-stack iterative post-order.
@@ -2106,23 +2144,9 @@ fn champ_hash(root: Handle) -> u32 {
                 });
             }
             Task::Combine(h, arity) => {
-                // Fold the SAME LE bytes a boxed twin would carry, so an inline value hashes equal to
-                // its boxed twin (open-Q#8). An immediate never touches `n.raw`.
-                let mut s = if is_immediate(h) {
-                    let mut acc = FNV_OFFSET;
-                    for &b in &imm_canonical_raw(h) {
-                        acc = fnv_step(acc, b);
-                    }
-                    acc
-                } else {
-                    with_node(h, FNV_OFFSET, |n| {
-                        let mut acc = FNV_OFFSET;
-                        for &b in &n.raw {
-                            acc = fnv_step(acc, b);
-                        }
-                        acc
-                    })
-                };
+                // Fold this node's own canonical raw bytes (the SAME LE bytes a boxed twin carries, so
+                // an inline value hashes equal to its boxed twin, open-Q#8), then the child hashes.
+                let mut s = champ_node_raw_hash(h);
                 // Consume the `arity` child hashes on top of `results` (deterministic order).
                 let start = results.len().saturating_sub(arity);
                 for &child_hash in &results[start..] {
@@ -6326,6 +6350,104 @@ mod tests {
         op_drop(b);
         op_drop(c);
         assert_eq!(live_nodes(), before, "hash test reclaimed all nodes");
+    }
+
+    /// An INDEPENDENT, naive RECURSIVE reference for the structural hash: FNV-1a over a node's own
+    /// canonical raw bytes, then over each child's reference hash (LE). Deliberately written
+    /// differently from the production iterative walk — no worklist, no leaf fast path — so it is a
+    /// genuine oracle for `champ_hash`, not a copy of it. Children are folded in REVERSE index order
+    /// because the production walk pushes children onto its worklist in order and pops them LIFO, so
+    /// `results` presents them last-child-first; reproducing that here makes this a faithful oracle
+    /// (the exact byte discipline the fast path and refactor must not disturb, not a re-invented one).
+    fn champ_hash_ref(h: Handle) -> u32 {
+        let (raw, arity) = node_raw_arity(h);
+        let mut acc = FNV_OFFSET;
+        for &b in &raw {
+            acc = fnv_step(acc, b);
+        }
+        if !is_immediate(h) {
+            with_node(h, (), |n| {
+                for i in (0..arity).rev() {
+                    let ch = champ_hash_ref(n.handles[i]);
+                    for b in ch.to_le_bytes() {
+                        acc = fnv_step(acc, b);
+                    }
+                }
+            });
+        }
+        acc
+    }
+
+    /// The allocation-free arity-0 fast path in `champ_hash` must be BYTE-IDENTICAL to the general
+    /// worklist walk (a hash drift would silently corrupt map/set placement and cross-version stability).
+    /// Assert equality against the independent recursive oracle across the leaf cases the fast path
+    /// covers — immediates (inline unit/bool/int), boxed out-of-window ints, floats, strings, empty
+    /// bytes — AND across compounds (arrays, sums, a real CHAMP node, deep nesting) that take the
+    /// general walk, so the shared `champ_node_raw_hash` fold is pinned on both branches at once.
+    #[test]
+    fn champ_hash_matches_naive_reference_across_shapes() {
+        reset();
+        let before = live_nodes();
+
+        // Leaf / immediate cases — these hit the arity-0 fast path.
+        let leaves = [
+            imm_unit(),
+            imm_bool(false),
+            imm_bool(true),
+            op_box_int(0),
+            op_box_int(7),
+            op_box_int(-1),
+            op_box_int(FIXNUM_MAX),           // largest inline fixnum
+            op_box_int(FIXNUM_MAX + 1),       // first BOXED int (out of the inline window)
+            op_box_int(FIXNUM_MIN - 1),       // first boxed negative
+            op_box_float(3.5),
+            op_box_float(-0.0),               // distinct bits from 0.0
+            op_str_new(String::new()),
+            op_str_new("cadenza".to_string()),
+            op_bytes_alloc(0),
+            Handle::NULL,                     // null folds to the bare offset basis on both paths
+        ];
+        for &h in &leaves {
+            assert_eq!(
+                champ_hash(h),
+                champ_hash_ref(h),
+                "leaf/immediate fast path must match the naive reference",
+            );
+        }
+
+        // An inline int and its BOXED twin must hash equal (open-Q#8) — one takes the fast path, the
+        // other would too (both arity 0), but the bytes folded must be the canonical LE bytes alike.
+        assert_eq!(
+            champ_hash(imm_int(5)),
+            champ_hash_ref(op_box_int(5)),
+            "inline and boxed twin of the same int hash equal",
+        );
+
+        // Compound cases — these take the general worklist walk (arity > 0), exercising the shared
+        // `champ_node_raw_hash` fold plus child folding.
+        let arr = op_arr_alloc(2);
+        op_arr_set(arr, 0, op_box_int(FIXNUM_MAX + 100)); // boxed child so a real leaf node is walked
+        op_arr_set(arr, 1, imm_bool(true));               // immediate child folded via the fast leaf
+        let sum = op_sum_new(3, op_box_int(9));
+        let kv = champ_kv_node(10, 20);                    // a real CHAMP node with a set datamap bit
+        let nested = op_arr_alloc(2);
+        op_arr_set(nested, 0, arr); // arr's ownership moves into `nested`
+        op_arr_set(nested, 1, sum); // sum's ownership moves into `nested`
+        for &h in &[nested, kv] {
+            assert_eq!(
+                champ_hash(h),
+                champ_hash_ref(h),
+                "compound general walk must match the naive reference",
+            );
+        }
+
+        // Reclaim everything (the boxed leaves, the strings, and the compounds).
+        for &h in &leaves {
+            op_drop(h);
+        }
+        op_drop(nested); // frees arr + sum + their children transitively
+        op_drop(kv);
+        assert_eq!(live_nodes(), before, "reference-hash test reclaimed all nodes");
     }
 
     #[test]
