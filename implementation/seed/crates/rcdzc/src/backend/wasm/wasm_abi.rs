@@ -18,6 +18,7 @@ pub mod op {
     pub const IF: u8 = 0x04;
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0b;
+    pub const SELECT: u8 = 0x1b;
     pub const LOOP: u8 = 0x03;
     pub const BR: u8 = 0x0c;
     pub const LOCAL_GET: u8 = 0x20;

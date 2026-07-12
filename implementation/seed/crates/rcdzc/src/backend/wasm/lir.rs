@@ -106,6 +106,11 @@ pub enum Lir {
     Else,
     /// `end`.
     End,
+    /// `select` — branchless conditional. Pops `[a, b, cond]` (cond on top) and pushes `a` if `cond` is
+    /// nonzero, else `b`. BOTH operands are evaluated unconditionally, so it replaces a two-branch `if`
+    /// ONLY when both branches are cheap, trap-free, and effect-free (a value the condition picks
+    /// between, not control flow) — `(if c a b)` with leaf branches. No block, no jump.
+    Select,
     /// `unreachable` — an unconditional trap.
     Unreachable,
     /// `if (empty) unreachable end` — trap when the i32 condition on the stack is nonzero, leaving

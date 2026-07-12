@@ -636,8 +636,30 @@ fn emit_tail(
         // An `if` in tail position: its condition is not tail (a value the branch selects on), but BOTH
         // branches are — a tail call in either branch is the function's result.
         Core::If { cond, then_, else_ } => {
-            emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
             let result = type_of(db, id);
+            // BRANCHLESS SELECT (see the non-tail `emit` arm for the full rationale): when both branches
+            // are cheap trap-free leaves and the result is a non-heap scalar, a `select` beats an `if`.
+            // A leaf branch is never a tail call, so dropping the tail context here loses no `return_call`
+            // /loop-`br` — the whole `if` becomes one value expression the caller consumes. (An exported
+            // body emitted in tail position — `(def (f p a b) (if p a b))` — reaches HERE, not the
+            // non-tail arm, so the select must be handled in both places.)
+            if !matches!(result, Ty::Unit)
+                && !is_heap_type(&result)
+                && valtype_of(&result).is_some()
+                && is_select_leaf(db, then_)
+                && is_select_leaf(db, else_)
+            {
+                emit_branch(
+                    db, then_, &result, slots, base, high, scratch_ty, layout, out,
+                )?;
+                emit_branch(
+                    db, else_, &result, slots, base, high, scratch_ty, layout, out,
+                )?;
+                emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
+                out.push(Lir::Select);
+                return Ok(());
+            }
+            emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
             let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
@@ -1015,10 +1037,35 @@ fn emit(
             Ok(())
         }
         Core::If { cond, then_, else_ } => {
+            let result = type_of(db, id);
+            // BRANCHLESS SELECT: when both branches are cheap trap-free leaves (a param/local/constant)
+            // and the result is a SCALAR (not unit, not a heap handle), emit wasm's `select` instead of
+            // an `if`/`else`/`end` block — one instruction, no branch. `select` pops `[a, b, cond]` and
+            // pushes `a` if `cond` is nonzero else `b`, evaluating BOTH unconditionally; that is sound
+            // here precisely because each leaf is trap-free, allocation-free, and cheap (so nothing is
+            // wasted vs the branch it replaces). A HEAP result is excluded: `select` would evaluate both
+            // handles and discard one WITHOUT the Perceus `drop` that owning branch would run, leaking
+            // its cell — the `if` (which evaluates only the taken branch) stays for those. This is the
+            // classic `min`/`max`/conditional-value idiom `(if (< a b) a b)`.
+            if !matches!(result, Ty::Unit)
+                && !is_heap_type(&result)
+                && valtype_of(&result).is_some()
+                && is_select_leaf(db, then_)
+                && is_select_leaf(db, else_)
+            {
+                emit_branch(
+                    db, then_, &result, slots, base, high, scratch_ty, layout, out,
+                )?;
+                emit_branch(
+                    db, else_, &result, slots, base, high, scratch_ty, layout, out,
+                )?;
+                emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
+                out.push(Lir::Select);
+                return Ok(());
+            }
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
             emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
-            let result = type_of(db, id);
             let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
@@ -1901,6 +1948,18 @@ fn emit_branch(
     emit(db, id, slots, base, high, scratch_ty, layout, out)
 }
 
+/// Whether an `if`'s BRANCH is cheap enough to compute UNCONDITIONALLY for a branchless `select`: a
+/// leaf that costs one instruction and can neither trap nor allocate — a parameter, a kept `let`-local,
+/// or a compile-time constant. A `select` evaluates BOTH operands (there is no short-circuit), so a
+/// heavier branch would waste the work the `if` avoided, and a trapping/allocating branch would change
+/// behavior (a trap on the untaken side, a leaked heap cell); a leaf is safe on both counts.
+fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        core_of(db, id),
+        Core::Param { .. } | Core::LocalRef { .. } | Core::ConstInt(_) | Core::ConstBool(_)
+    )
+}
+
 /// How a checked-arith operand is pushed onto the stack at each of its use sites (the machine op AND
 /// every guard re-read). An operand read many times need not be copied into a scratch local IF it is
 /// cheap and side-effect-free to re-materialize:
@@ -2754,10 +2813,14 @@ mod tests {
     }
 
     #[test]
-    fn selects_a_runtime_if_to_a_structured_block() {
-        // A RUNTIME condition (a bool param `p`) — an unfoldable `if` selects to a structured wasm
-        // block: `local.get 0 ; if (result i64) ; i64.const 1 ; else ; i64.const 2 ; end`. (A CONSTANT
-        // condition folds away in `lower`; this exercises the surviving `Core::If` emission.)
+    fn selects_a_runtime_if_with_leaf_branches_to_a_branchless_select() {
+        // A RUNTIME condition (a bool param `p`) with two CHEAP TRAP-FREE LEAF branches (constants) —
+        // the `if` selects to wasm's BRANCHLESS `select`, not a structured block: push the two branch
+        // values then the condition, then `select` (which pops `[then, else, cond]` and pushes `then`
+        // if `cond` is nonzero). `local.get 0` is the condition `p`. This replaces the old
+        // `if (result i64) … else … end` control block — one instruction, no branch. (A CONSTANT
+        // condition folds away in `lower`; a NON-leaf/heap/effecting branch keeps the structured `if`,
+        // covered by `keeps_the_structured_if_when_a_branch_is_not_a_cheap_leaf`.)
         let ast = crate::testkit::parse(
             "(module m (def (f (: p Bool)) (if p 1 2)) (def (main) 0) (export main))",
         );
@@ -2768,13 +2831,37 @@ mod tests {
         assert_eq!(
             f.code,
             vec![
-                Lir::LocalGet(0),
-                Lir::If(BlockType::Val(ValType::I64)),
                 Lir::ConstI64(1),
-                Lir::Else,
                 Lir::ConstI64(2),
-                Lir::End,
+                Lir::LocalGet(0),
+                Lir::Select,
             ]
+        );
+    }
+
+    #[test]
+    fn keeps_the_structured_if_when_a_branch_is_not_a_cheap_leaf() {
+        // A branch that is NOT a cheap trap-free leaf (here `(+ a a)`, a checked add) must keep the
+        // structured `if`/`else`/`end`: `select` evaluates BOTH branches unconditionally, so converting
+        // a heavier/possibly-trapping branch would waste the work the `if` avoids (and could surface a
+        // trap on the untaken side). So the wasm block survives with a real `if`. This pins the
+        // eligibility gate `is_select_leaf` alongside the positive case above.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: p Bool) (: a Int64)) (if p a (+ a a))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::If(BlockType::Val(ValType::I64))),
+            "a non-leaf branch keeps the structured if, got: {:?}",
+            f.code
+        );
+        assert!(
+            !f.code.contains(&Lir::Select),
+            "a non-leaf branch must NOT use select, got: {:?}",
+            f.code
         );
     }
 
