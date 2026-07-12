@@ -221,25 +221,24 @@ pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt
         Err(_) => return Ok(None), // a buffer that won't parse has no type-at
     };
     let Some(spans) = spans else { return Ok(None) };
-    // The innermost containing user node: the span that contains the offset with the SMALLEST length
-    // (deepest in the tree). Node ids `0..user_node_count` are the user program; the span table only
-    // holds user spans, so any hit is a user node.
+    // Resolve the offset to the innermost containing node via the SHARED helper — the SAME
+    // offset→node resolution the `cdz type-at` CLI uses (`SpanTable::node_at_offset`), so the browser
+    // IDE's "type at cursor" and the CLI agree by construction rather than by two copies of the loop.
+    // (The span table only holds user nodes, so any hit is a user node.)
     let off = byte_offset as usize;
-    let mut best: Option<(u32, cadenza_syntax::span::Span)> = None;
-    for id in 0..(spans.len() as u32) {
-        if let Some(s) = spans.get(cadenza_syntax::ast::StructId(id)) {
-            if s.contains(off) && best.map_or(true, |(_, b)| s.len() < b.len()) {
-                best = Some((id, s));
-            }
-        }
-    }
-    let Some((node, span)) = best else { return Ok(None) };
+    let Some(node) = spans.node_at_offset(off) else {
+        return Ok(None);
+    };
+    let span = spans.get(node).expect("node_at_offset returned a spanned node");
     let arenas = match rcdzc::codec::decode(&ast_bytes) {
         Some(a) => a,
         None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
     };
     let mut db = rcdzc::db::Db::load(arenas);
-    let ty = rcdzc::infer::type_of(&mut db, rcdzc::ast::StructId(node));
+    // The node id crosses the copy-don't-depend boundary as its raw index (`cadenza_syntax` and
+    // `rcdzc` each have their own `StructId`, but the byte-identical codec keeps the index space
+    // aligned — the same invariant `type-at` relies on).
+    let ty = rcdzc::infer::type_of(&mut db, rcdzc::ast::StructId(node.0));
     let name = ty.render_name();
     Ok(Some(TypeAt {
         type_name: name,
