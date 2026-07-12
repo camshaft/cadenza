@@ -46,6 +46,7 @@ pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
 pass	a correctly-annotated function parameter is accepted
+pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a decimal integer literal
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
@@ -69,6 +70,7 @@ pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
 pass	a function open over a record's extra fields accepts any record with the used field
 pass	a function returning a boolean predicate result
+pass	a function returns a heap sub-node selected by a match arm
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a function-typed parameter annotation is not silently discarded in the body
@@ -98,6 +100,7 @@ pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a match arm binds a nested tuple inside a sum payload
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
@@ -224,6 +227,8 @@ pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
+pass	a wildcard in a nested pattern position ignores that element
+pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-bit integer width is rejected
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
@@ -239,6 +244,7 @@ pass	an element is projected from a tuple returned by a nullary function
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
+pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an inner binding shadows an outer one only within its scope
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
@@ -309,6 +315,7 @@ pass	multi-argument application is curried application
 pass	multiplication
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	nested patterns deconstruct recursively
 pass	overflow of the default integer traps deterministically
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
@@ -419,7 +426,6 @@ todo	a conjunction guards a let over a runtime value inside a conditional
 todo	a constructor pattern in a tuple payload slot is matched in one arm
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a constructor whose payload is a constructor keeps the outer variant tag
-todo	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 todo	a curried function can be partially applied
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a declaration in a do block shadows an outer binding
@@ -447,7 +453,6 @@ todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
 todo	a function returning None or a nested Some infers its compound result shape
-todo	a function returns a heap sub-node selected by a match arm
 todo	a function stored in a record field is called after extraction
 todo	a function stored in a tuple element is called after extraction
 todo	a function whose body always diverges has result type Never
@@ -494,7 +499,6 @@ todo	a map with a duplicate key is a type error
 todo	a map with record values of different field sets is a type error
 todo	a map with tuple values of different arities is a type error
 todo	a map with values of two different types is a type error
-todo	a match arm binds a nested tuple inside a sum payload
 todo	a match arm building a fresh runtime compound infers its shape
 todo	a match not covering the scrutinee is a compile-time rejection
 todo	a match on an open sum omitting the open-tail arm is rejected
@@ -667,8 +671,6 @@ todo	a value definition may carry a leading doc, like a function definition
 todo	a variant with a wrong-type payload as a direct match scrutinee is a type error
 todo	a whole rational carries a denominator of one
 todo	a wide fixed-size integer width is reserved, not yet a valid type
-todo	a wildcard in a nested pattern position ignores that element
-todo	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 todo	a zero-length slice is the empty byte sequence
 todo	adding quantities of incompatible dimension is a compile-time error
 todo	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
@@ -701,7 +703,6 @@ todo	an expect of a list index result is an integer usable in arithmetic
 todo	an explicit annotation overrides the default-integer pragma
 todo	an explicit conversion makes the operation well-typed
 todo	an export and a like-named metadata key do not collide
-todo	an expression tree built at run time is evaluated by matching its node variants
 todo	an in-bounds slice yields Some of the bytes at that range
 todo	an integer if condition is a type error, not a running conditional
 todo	an integer width above the 64-bit ceiling is rejected
@@ -872,7 +873,6 @@ todo	negation inverts a boolean
 todo	negative integer to byte uses two's complement
 todo	negative zero is distinct in the canonical value form
 todo	negative zero is not equal to positive zero
-todo	nested patterns deconstruct recursively
 todo	nested patterns with literals
 todo	nullary constructor patterns are uniform with unary
 todo	ordering a string against an integer is a type error regardless of operand order

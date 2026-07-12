@@ -138,19 +138,38 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // `x` as `Int64`, not a free var. For a MONOMORPHIC sum the scheme has no vars, so the payload is
         // read directly. `Any` if the head is not a single-payload variant (a fault the match reports).
         Resolved::SumPayload {
-            scrutinee, heads, ..
+            scrutinee,
+            steps,
+            heads,
         } => {
-            // Walk the scrutinee's solved type down the payload path, one `heads` level at a time: at
-            // each variant head, the next sub-value's type is that variant's payload AT THE CURRENT
+            // Walk the scrutinee's solved type down the access PATH. A `Payload` step descends into a
+            // variant's payload: the next sub-value's type is that variant's payload AT THE CURRENT
             // instantiation (`payload_ty_at_instantiation` unifies the head's `(-> payload Sum)` result
-            // against the current type). The final level's payload is the binder's type. A nested `(Some
-            // (Some y))` on `Option (Option Int64)`: `Some` on `Option (Option Int64)` → `Option Int64`,
-            // then `Some` on that → `Int64` = `y`'s type.
+            // against the current type). `heads` supplies the variant head at each `Payload` step, in
+            // order (a queue — one head per Payload step). An `Elem(i)` step descends into a tuple element
+            // (a variant whose payload is a tuple, destructured by a nested `(tuple …)` pattern): the next
+            // type is the tuple's i-th element. A nested `(Some (Some y))` on `Option (Option Int64)`
+            // walks two Payload steps; `(Exp.Add (tuple a b))` walks `[Payload, Elem(0/1)]`.
             let mut cur = type_of(db, scrutinee);
-            for &head in heads.iter() {
-                cur = match payload_ty_at_instantiation(db, head, &cur) {
-                    Some(t) => t,
-                    None => return Ty::Any,
+            let mut heads = heads.iter();
+            for step in steps.iter() {
+                cur = match step {
+                    crate::core::PathStep::Payload => {
+                        let Some(&head) = heads.next() else {
+                            return Ty::Any; // malformed path (fewer heads than Payload steps)
+                        };
+                        match payload_ty_at_instantiation(db, head, &cur) {
+                            Some(t) => t,
+                            None => return Ty::Any,
+                        }
+                    }
+                    crate::core::PathStep::Elem(i) => match &cur {
+                        Ty::Tuple(elems) => match elems.get(*i) {
+                            Some(t) => t.clone(),
+                            None => return Ty::Any,
+                        },
+                        _ => return Ty::Any,
+                    },
                 };
             }
             cur

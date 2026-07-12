@@ -2882,6 +2882,64 @@ mod match_engine {
     }
 
     #[test]
+    fn a_variant_tuple_payload_is_destructured_by_a_nested_pattern() {
+        // core-semantics.md §Patterns Compose: a tagged value carrying a TUPLE of sub-values is
+        // destructured in ONE arm by a nested tuple pattern — `(Pair.Both (tuple a b))` binds `a`/`b` to
+        // the payload tuple's elements (path `[Payload, Elem(0/1)]`). Over a CONSTANT scrutinee it folds:
+        // `(Pair.Both (tuple 3 4))` → the `Both` arm binds a=3, b=4 → 7. The nullary `Neither` arm is
+        // covered too (exhaustive). No runtime (the fold erases the heap sum + tuple).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Pair (Both (Tuple Int64 Int64)) Neither) \
+                       (def (main) (match (Pair.Both (tuple 3 4)) \
+                          ((Pair.Both (tuple a b)) (+ a b)) \
+                          (Pair.Neither 0))) \
+                       (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn a_variant_tuple_payload_destructure_runs_at_runtime() {
+        // The runtime heap walk: `(classify n)` builds `(Both (tuple n (+ n 1)))` for n>0 else `Neither`,
+        // then destructures the tuple payload — `(Both (tuple a b))` → `(+ a b)` reads the payload tuple's
+        // two elements via `sum-payload` then `arr-get 0/1`. classify(4) = 4+5 = 9; classify(0) = -1.
+        let src = "(module m \
+                     (type Pair (Both (Tuple Int64 Int64)) Neither) \
+                     (def (classify (: n Int64)) \
+                        (match (if (> n 0) (Pair.Both (tuple n (+ n 1))) Pair.Neither) \
+                          ((Pair.Both (tuple a b)) (+ a b)) \
+                          (Pair.Neither (- 0 1)))) \
+                     (export classify))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile tuple-payload destructure");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime tuple-payload match imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed tuple-payload run");
+            return;
+        };
+        for (arg, want) in [("4", "9"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("classify".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("tuple-payload destructure trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_guarded_arm_over_a_constant_folds_by_its_guard() {
         // A guarded arm `(guard x (< x 0))` over a CONSTANT scrutinee folds: the binder `x` binds the
         // constant, the guard folds, and the arm is selected iff both the (Wild) probe and the guard hold.

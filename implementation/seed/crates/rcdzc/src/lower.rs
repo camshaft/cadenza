@@ -710,6 +710,54 @@ fn pattern_constraints(
         }
         return Ok(Vec::new()); // a binder / wildcard — no constraint
     }
+    // A TUPLE pattern `(tuple p0 p1…)` at `path` — a variant's tuple PAYLOAD, destructured positionally
+    // (core-semantics.md §Patterns Compose: a tagged value carrying a tuple is one nested pattern). A
+    // tuple has no discriminant, so it imposes NO constraint of its own; each element sub-pattern
+    // descends at `path + [Elem(i)]`, of the tuple element's type. (Reached only inside a variant
+    // payload — the top-level scrutinee is a sum, so `pattern_constraints` is entered on a variant.)
+    if is_tuple_pattern(db, pat) {
+        let elems: Vec<StructId> = db
+            .ast
+            .as_form(pat, "tuple")
+            .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+            .unwrap_or(&[])
+            .to_vec();
+        // The payload MUST be a tuple, and the pattern's ARITY must match it — a tuple pattern against a
+        // non-tuple payload, or one naming the wrong number of elements (`(tuple a b c)` against a
+        // 2-tuple), is an ill-typed destructure the compiler REJECTS (CDZ0201), never a silent match on a
+        // wrong shape. (type-system.md: two tuples agree only when their arities are identical.)
+        let elem_tys: &[crate::ty::Ty] = match ty {
+            crate::ty::Ty::Tuple(ts) if ts.len() == elems.len() => ts,
+            // `Any` payload (an unsolved/unknown type) can't be arity-checked here — descend permissively
+            // (each element `Any`), the same not-yet-constrained treatment a projection of an `Any` gets.
+            crate::ty::Ty::Any => {
+                let mut out = Vec::new();
+                for (i, &elem) in elems.iter().enumerate() {
+                    let mut deeper = path.clone();
+                    deeper.push(crate::core::PathStep::Elem(i));
+                    out.extend(pattern_constraints(db, elem, &crate::ty::Ty::Any, deeper)?);
+                }
+                return Ok(out);
+            }
+            _ => {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "a tuple pattern of {} element(s) does not match the payload type {}",
+                        elems.len(),
+                        ty.render_name()
+                    ),
+                ));
+            }
+        };
+        let mut out = Vec::new();
+        for (i, &elem) in elems.iter().enumerate() {
+            let mut deeper = path.clone();
+            deeper.push(crate::core::PathStep::Elem(i));
+            out.extend(pattern_constraints(db, elem, &elem_tys[i], deeper)?);
+        }
+        return Ok(out);
+    }
     // A compound pattern. Its head is the variant CONSTRUCTOR — a member `(. Sum V)` or a bare variant
     // name — and the remaining children are payload sub-patterns.
     let (head, args): (StructId, Vec<StructId>) = match db.ast.get(pat) {
@@ -751,6 +799,13 @@ fn pattern_constraints(
         }
     }
     Ok(out)
+}
+
+/// Whether `id` is a tuple PATTERN `(tuple …)` — a `tuple` NAME head (the alias the reader keeps in a
+/// pattern) or the `"tuple"` string-literal primitive. Mirrors `resolve::is_tuple_pattern` (kept local
+/// so lower does not depend on resolve's private helpers).
+fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
 /// The discriminant of the variant named `name` in the sum `ty`, or `None` if `ty` is not a sum or has

@@ -574,8 +574,11 @@ fn match_arm_variant_binds(
 /// Descend a variant PATTERN looking for the payload binder `name`, appending its access-path steps to
 /// `path` and the variant head at each `Payload` step to `heads`. Returns `true` if found. A variant
 /// pattern is `(head arg…)` where `head` is a member `(. Sum V)` or a bare variant name; its single
-/// payload arg is either the bare binder (found — one `Payload` step, this head) or a NESTED variant
-/// pattern (recurse, adding a `Payload` step + this head). (A tuple-payload arg is not descended yet.)
+/// payload arg is either the bare binder (found — one `Payload` step, this head), a NESTED variant
+/// pattern (recurse, adding a `Payload` step + this head), or a nested TUPLE pattern `(tuple p0 p1…)`
+/// (the payload is a tuple — a `Payload` step to reach the tuple, then descend each element by `Elem(i)`
+/// via `find_binder_in_tuple`). `heads` carries one entry per `Payload` step only (an `Elem` step needs
+/// no head — its type is read by tuple-indexing in `infer`).
 fn find_binder_in_pattern(
     db: &Db,
     pattern: StructId,
@@ -596,8 +599,9 @@ fn find_binder_in_pattern(
         return false;
     }
     let arg = app[1];
-    // The payload arg is either the bare binder `name` (found here) or a NESTED variant pattern to
-    // descend into — either way this level contributes one `Payload` step + this `head`.
+    // The payload arg is the bare binder `name` (found here), a nested TUPLE pattern (the payload is a
+    // tuple — descend its elements), or a NESTED variant pattern (recurse) — each adds one `Payload`
+    // step + this `head` to reach the payload, then continues into the arg.
     if let Some(arg_name) = db.ast.as_name(arg) {
         if arg_name == name && arg_name != "_" {
             path.push(crate::core::PathStep::Payload);
@@ -608,7 +612,56 @@ fn find_binder_in_pattern(
     }
     path.push(crate::core::PathStep::Payload);
     heads.push(head);
+    if is_tuple_pattern(db, arg) {
+        return find_binder_in_tuple(db, arg, name, path, heads);
+    }
     find_binder_in_pattern(db, arg, name, path, heads)
+}
+
+/// Whether `id` is a tuple PATTERN `(tuple p0 p1…)` — a `tuple` NAME head (the shadowable alias the
+/// reader keeps in a pattern) or the `"tuple"` string-literal primitive. Used to route a variant's
+/// tuple payload into element-by-element descent.
+fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
+}
+
+/// Descend a TUPLE pattern `(tuple p0 p1…)` looking for the binder `name` in one of its element
+/// positions, appending an `Elem(i)` step for the element that (transitively) binds `name`. An element
+/// may itself be a bare binder (found — one `Elem(i)` step), a nested variant pattern (recurse via
+/// `find_binder_in_pattern`), or a nested tuple pattern (recurse here). No head is pushed for an `Elem`
+/// step (its type comes from tuple-indexing, not a variant head).
+fn find_binder_in_tuple(
+    db: &Db,
+    pattern: StructId,
+    name: &str,
+    path: &mut Vec<crate::core::PathStep>,
+    heads: &mut Vec<StructId>,
+) -> bool {
+    let elems: &[StructId] = db
+        .ast
+        .as_form(pattern, "tuple")
+        .or_else(|| db.ast.as_ctor_form(pattern, "tuple"))
+        .unwrap_or(&[]);
+    for (i, &elem) in elems.iter().enumerate() {
+        // Try this element position. Record the `Elem(i)` step, then match the element pattern; on a
+        // miss, undo the step and try the next position (so `path`/`heads` reflect only the found path).
+        let path_len = path.len();
+        let heads_len = heads.len();
+        path.push(crate::core::PathStep::Elem(i));
+        let found = if let Some(elem_name) = db.ast.as_name(elem) {
+            elem_name == name && elem_name != "_"
+        } else if is_tuple_pattern(db, elem) {
+            find_binder_in_tuple(db, elem, name, path, heads)
+        } else {
+            find_binder_in_pattern(db, elem, name, path, heads)
+        };
+        if found {
+            return true;
+        }
+        path.truncate(path_len);
+        heads.truncate(heads_len);
+    }
+    false
 }
 
 // (The parameter-name extraction that `binder_in`'s Case-3/Case-4 used lives in `db::build_scope_binders`
