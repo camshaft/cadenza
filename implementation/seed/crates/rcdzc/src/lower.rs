@@ -87,10 +87,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // analogue of a constant tuple projection folding). Otherwise it is a runtime read:
         // `sum-payload(scrutinee)` then unbox by the payload's solved type. The disc is not needed
         // (control is already in the matched arm).
-        Resolved::SumPayload { scrutinee, .. } => match core_of(db, scrutinee) {
-            Core::SumNew { payloads, .. } if payloads.len() == 1 => core_of(db, payloads[0]),
-            _ => Core::SumPayload { scrutinee },
-        },
+        Resolved::SumPayload {
+            scrutinee, steps, ..
+        } => {
+            // FOLD when the whole path lands in constant `Core::SumNew` payloads — a constant `(match
+            // (Some 5) ((Some x) x))` yields `5`, no heap read (extends to nesting: `(Some (Some 5))`
+            // through `[Payload, Payload]` folds to `5`). Otherwise emit a runtime `Core::SumPayload`
+            // that walks the path.
+            if let Some(folded) = fold_sum_path(db, scrutinee, &steps) {
+                folded
+            } else {
+                Core::SumPayload {
+                    scrutinee,
+                    path: steps.to_vec(),
+                }
+            }
+        }
         // A `let` — A-NORMALIZE its bindings: a binding whose value is a runtime computation used more
         // than once is NAMED (a `Core::Let` binding, computed once, read by `LocalRef`); a single-use
         // or constant binding is copy-propagated / erased (its references follow through to its value).
@@ -547,6 +559,24 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 }
 
+/// Walk a constant-value path from `root` down `steps`, returning the leaf's core if EVERY step lands
+/// in a compile-time-constant compound (`Core::SumNew` payloads / `Core::Tuple` elements). This folds a
+/// nested payload binder over a constant scrutinee — `(match (Some (Some 5)) ((Some (Some y)) y))`
+/// through `[Payload, Payload]` yields the constant `5`, no heap read. `None` if any step hits a runtime
+/// value (then the binder emits a runtime `Core::SumPayload` walk).
+fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -> Option<Core> {
+    use crate::core::PathStep;
+    let mut cur = root;
+    for step in steps {
+        cur = match (step, core_of(db, cur)) {
+            (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => payloads[0],
+            (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            _ => return None,
+        };
+    }
+    Some(core_of(db, cur))
+}
+
 /// Lower a match over a SUM scrutinee — dispatch on the variant DISCRIMINANT. Each arm's pattern is
 /// classified into `(disc, body)`: a variant pattern `(Sum.V binder)` or bare `Sum.V` → `Some(k)` (its
 /// discriminant), a bare binder/`_` → `None` (the wildcard tail). Exhaustiveness (`type-system.md §A
@@ -612,8 +642,12 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         return Core::Poison(r);
     }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = sum_arms.len(), "sum match stays runtime (sum-disc probe chain)");
+    // The OUTER switch dispatches on the scrutinee itself — an empty path. (A NESTED switch, when a
+    // decision tree recurses into a variant's payload, carries a `[Payload…]` path; that recursion is a
+    // later increment — the flat classifier declines a nested pattern, so every arm here is flat.)
     Core::MatchSum {
         scrutinee,
+        path: Vec::new(),
         arms: sum_arms,
     }
 }

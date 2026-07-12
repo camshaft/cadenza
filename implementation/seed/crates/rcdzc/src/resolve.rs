@@ -394,14 +394,16 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(scrutinee) = match_arm_binds(db, form, from, name) {
         return Some(Resolved::Ref { value: scrutinee });
     }
-    // Case 6: `form` is a MATCH ARM whose pattern is a VARIANT pattern `((. Sum V) binder)`, ascended
-    // from `body`, and `binder` is `name` → the binder binds the variant's PAYLOAD (not the whole
-    // scrutinee, unlike Case 5). It resolves to a `SumPayload` reading `sum-payload(scrutinee)`; its
-    // type is the variant's payload type. Scoped to this arm.
-    if let Some((scrutinee, variant_head)) = match_arm_variant_binds(db, form, from, name) {
+    // Case 6: `form` is a MATCH ARM whose pattern binds `name` at a variant PAYLOAD, possibly NESTED —
+    // `((. Sum V) binder)` (path `[Payload]`) or `(Some (Some binder))` (path `[Payload, Payload]`). The
+    // binder binds the sub-value at that path (not the whole scrutinee, unlike Case 5). It resolves to a
+    // `SumPayload` reading the path from the scrutinee; its type is the innermost variant's payload type.
+    // Scoped to this arm.
+    if let Some((scrutinee, steps, heads)) = match_arm_variant_binds(db, form, from, name) {
         return Some(Resolved::SumPayload {
             scrutinee,
-            variant_head,
+            steps: steps.into(),
+            heads: heads.into(),
         });
     }
     None
@@ -438,18 +440,19 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     Some(scrutinee)
 }
 
-/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a VARIANT
-/// pattern `((. Sum V) binder)` binding `name`, return `(scrutinee, variant_head)` — the enclosing
-/// match's scrutinee occurrence and the pattern's variant-constructor occurrence `(. Sum V)`. The
-/// binder binds the variant's PAYLOAD (via `sum-payload(scrutinee)`), so a reference resolves to a
-/// `SumPayload`. `None` otherwise. Stage-5 handles a SINGLE bare binder as the payload; a destructuring
-/// payload pattern (`(NPrim (tuple h a b))`) is a later increment.
+/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern binds `name` at a
+/// variant PAYLOAD — possibly NESTED — return `(scrutinee, path, innermost_variant_head)`. The scrutinee
+/// is the enclosing match's; the path is the `Payload`/`Elem` steps from the scrutinee down to the
+/// binder; the innermost head is the variant constructor directly enclosing the binder (its `(-> payload
+/// Sum)` gives the binder's type). `None` if the arm's pattern does not bind `name` at a variant
+/// payload. Handles `(Some x)` (path `[Payload]`) and `(Some (Some y))` (path `[Payload, Payload]`); a
+/// tuple-payload destructure (`(NPrim (tuple h a b))`) is a later increment (the descent stops at it).
 fn match_arm_variant_binds(
     db: &Db,
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, StructId)> {
+) -> Option<(StructId, Vec<crate::core::PathStep>, Vec<StructId>)> {
     // `form` = `(pattern body)`, ascended from body.
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
@@ -458,29 +461,6 @@ fn match_arm_variant_binds(
         return None;
     }
     let pattern = pb[0];
-    // The pattern must be an application `(variant_head binder)`: a 2-element list whose head is a
-    // MEMBER access `(. Sum V)` (a variant constructor) and whose sole argument is the bare binder
-    // `name`. (A bare-member nullary pattern `(. Sum V)` binds nothing — not this case.)
-    let Struct::List(app) = db.ast.get(pattern) else {
-        return None;
-    };
-    if app.len() != 2 {
-        return None;
-    }
-    let variant_head = app[0];
-    // The head is the variant CONSTRUCTOR — either a `(. Sum V)` member access (`Option.Some`) OR a
-    // bare variant NAME (`Some`, a prelude or in-scope ctor). Both are valid pattern heads; a head that
-    // is neither (a bare-literal head, an arbitrary form) is not a variant pattern.
-    let head_ok =
-        db.ast.as_form(variant_head, ".").is_some() || db.ast.as_name(variant_head).is_some();
-    if !head_ok {
-        return None;
-    }
-    // The argument must be the bare binder `name` (not a literal, not `_`).
-    let arg_name = db.ast.as_name(app[1])?;
-    if arg_name != name || arg_name == "_" {
-        return None;
-    }
     // `form`'s parent must be a `(match scrutinee arm…)`, with `form` an arm (not the scrutinee).
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;
@@ -488,7 +468,54 @@ fn match_arm_variant_binds(
     if form == scrutinee {
         return None;
     }
-    Some((scrutinee, variant_head))
+    // Descend the pattern to find where `name` is bound, accumulating the access path + per-step heads.
+    let mut path = Vec::new();
+    let mut heads = Vec::new();
+    if find_binder_in_pattern(db, pattern, name, &mut path, &mut heads) {
+        Some((scrutinee, path, heads))
+    } else {
+        None
+    }
+}
+
+/// Descend a variant PATTERN looking for the payload binder `name`, appending its access-path steps to
+/// `path` and the variant head at each `Payload` step to `heads`. Returns `true` if found. A variant
+/// pattern is `(head arg…)` where `head` is a member `(. Sum V)` or a bare variant name; its single
+/// payload arg is either the bare binder (found — one `Payload` step, this head) or a NESTED variant
+/// pattern (recurse, adding a `Payload` step + this head). (A tuple-payload arg is not descended yet.)
+fn find_binder_in_pattern(
+    db: &Db,
+    pattern: StructId,
+    name: &str,
+    path: &mut Vec<crate::core::PathStep>,
+    heads: &mut Vec<StructId>,
+) -> bool {
+    let Struct::List(app) = db.ast.get(pattern) else {
+        return false;
+    };
+    if app.len() != 2 {
+        return false; // a single-payload variant pattern is handled; other arities decline.
+    }
+    let head = app[0];
+    // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME.
+    let head_ok = db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some();
+    if !head_ok {
+        return false;
+    }
+    let arg = app[1];
+    // The payload arg is either the bare binder `name` (found here) or a NESTED variant pattern to
+    // descend into — either way this level contributes one `Payload` step + this `head`.
+    if let Some(arg_name) = db.ast.as_name(arg) {
+        if arg_name == name && arg_name != "_" {
+            path.push(crate::core::PathStep::Payload);
+            heads.push(head);
+            return true;
+        }
+        return false; // a different bare binder / wildcard — not `name`
+    }
+    path.push(crate::core::PathStep::Payload);
+    heads.push(head);
+    find_binder_in_pattern(db, arg, name, path, heads)
 }
 
 // (The parameter-name extraction that `binder_in`'s Case-3/Case-4 used lives in `db::build_scope_binders`

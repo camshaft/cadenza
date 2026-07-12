@@ -257,13 +257,15 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         // A sum match: the scrutinee + every arm body are reachable code (a self-call in an arm is a
         // recursion edge, like an `if` branch). A sum-payload read evaluates the scrutinee.
-        crate::core::Core::MatchSum { scrutinee, arms } => {
+        crate::core::Core::MatchSum { scrutinee, arms, .. } => {
             collect_call_callees(db, scrutinee, out);
             for arm in arms {
                 collect_call_callees(db, arm.body, out);
             }
         }
-        crate::core::Core::SumPayload { scrutinee } => collect_call_callees(db, scrutinee, out),
+        crate::core::Core::SumPayload { scrutinee, .. } => {
+            collect_call_callees(db, scrutinee, out)
+        }
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)

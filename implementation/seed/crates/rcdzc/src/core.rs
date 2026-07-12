@@ -32,6 +32,22 @@ use crate::diag::Reject;
 use crate::resolved::{Prim, Symbol};
 use std::collections::BTreeMap;
 
+/// One step of a match ACCESS PATH — how to reach a SUB-VALUE of the scrutinee at run time, for a
+/// NESTED pattern. A match over `(Some (Some x))` dispatches on the outer discriminant, then on the
+/// INNER one (`sum-disc(sum-payload(scrutinee))`), and binds `x` at `sum-payload(sum-payload(…))`. Each
+/// nesting level is a `Payload` step (into a variant's payload); a tuple/record position is an `Elem`
+/// step (into an array cell). A path is a `Vec<PathStep>` from the scrutinee root; the empty path is the
+/// scrutinee itself. This is what lets the decision-tree matcher share a prefix (one outer `sum-disc`
+/// switch) AND reach a binder at any depth (`type-system.md §Patterns Compose`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PathStep {
+    /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
+    /// multi-payload variant's payload is a tuple, reached with a following `Elem`.)
+    Payload,
+    /// Descend into a tuple/record ARRAY cell at `index` — `arr-get(handle, index)`.
+    Elem(usize),
+}
+
 /// A match-arm PROBE — the test that decides whether an arm is taken, over a SCALAR scrutinee. A
 /// literal probe compares the scrutinee against a constant; the wildcard always matches (the arm is
 /// the unconditional tail). A bare binder is ALSO a `Wild` probe — the binding is a scope concern
@@ -108,14 +124,24 @@ pub enum Core {
     /// an arm needs only its discriminant + body.
     MatchSum {
         scrutinee: StructId,
+        /// The access PATH from `scrutinee` to the sub-value whose discriminant this switch tests —
+        /// empty for the OUTER switch (dispatch on the scrutinee itself), a `[Payload]`/`[Payload,
+        /// Elem(i)]`/… path for a NESTED switch the decision tree recurses into (dispatch on
+        /// `sum-disc(<sub-value>)`). Sharing the outer switch + recursing at deeper paths is how nested
+        /// patterns compile to a decision TREE (shared prefix), not a linear re-probe.
+        path: Vec<PathStep>,
         arms: Vec<SumArm>,
     },
-    /// The PAYLOAD of a sum scrutinee, extracted by a variant pattern's binder. `(match s ((Some x) x))`
-    /// — the `x` reference lowers to this: `sum-payload(scrutinee)` then unbox by the payload's solved
-    /// type (`get-int`/`get-bool`, or the handle as-is for a compound payload). The disc is not needed at
-    /// run time (control is already in the matched arm); the payload type (read via `type_of`) chooses
-    /// the unbox.
-    SumPayload { scrutinee: StructId },
+    /// The SUB-VALUE of a sum scrutinee at an access PATH, extracted by a variant pattern's binder.
+    /// `(match s ((Some x) x))` → `x` reads `sum-payload(scrutinee)` (path `[Payload]`); `(match s
+    /// ((Some (Some y)) y))` → `y` reads `sum-payload(sum-payload(scrutinee))` (path `[Payload,
+    /// Payload]`). The backend walks each step (`sum-payload`/`arr-get`) then unboxes by the leaf's
+    /// solved type (`get-int`/`get-bool`, or the handle as-is for a compound). The path's discriminants
+    /// are not needed at run time (control is already in the matched arm).
+    SumPayload {
+        scrutinee: StructId,
+        path: Vec<PathStep>,
+    },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If {
         cond: StructId,

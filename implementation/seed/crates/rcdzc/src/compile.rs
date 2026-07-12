@@ -327,7 +327,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // (only the matching arm runs), so a trap inside an arm is NOT a build failure — same as `Match`
         // and `if`. Do not descend into arm bodies. A sum-payload read evaluates the scrutinee.
         Core::MatchSum { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
-        Core::SumPayload { scrutinee } => collect_reached_poisons(db, scrutinee, out),
+        Core::SumPayload { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }

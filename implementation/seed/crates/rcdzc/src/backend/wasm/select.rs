@@ -114,7 +114,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             .iter()
             .any(|&p| binding_escapes(db, p, binder, false)),
         // A sum match: the binding escapes if it escapes the scrutinee or any arm body.
-        Core::MatchSum { scrutinee, arms } => {
+        Core::MatchSum { scrutinee, arms, .. } => {
             binding_escapes(db, scrutinee, binder, false)
                 || arms
                     .iter()
@@ -122,7 +122,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
-        Core::SumPayload { scrutinee } => binding_escapes(db, scrutinee, binder, true),
+        Core::SumPayload { scrutinee, .. } => binding_escapes(db, scrutinee, binder, true),
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -312,18 +312,35 @@ pub fn collect_used_ops(
                 }
             }
         }
-        // A sum match calls `sum-disc` to dispatch; the scrutinee + every arm body are emitted (any op
-        // an arm uses must be imported). A sum-payload read calls `sum-payload` + the payload's `get-*`.
-        Core::MatchSum { scrutinee, arms } => {
+        // A sum match calls `sum-disc` to dispatch; a NESTED switch (a non-empty `path`) first WALKS to
+        // its sub-value (`sum-payload`/`arr-get` per step) before the disc. The scrutinee + every arm
+        // body are emitted (any op an arm uses must be imported).
+        Core::MatchSum {
+            scrutinee,
+            path,
+            arms,
+        } => {
             out.insert(OP_SUM_DISC);
+            for step in &path {
+                match step {
+                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
+                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                };
+            }
             collect_used_ops(db, scrutinee, out);
             for arm in &arms {
                 collect_used_ops(db, arm.body, out);
             }
         }
-        Core::SumPayload { scrutinee } => {
-            out.insert(OP_SUM_PAYLOAD);
-            // The payload's unbox op, by THIS node's solved type (the bound payload's type).
+        // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
+        // by THIS node's solved type (`get-*`).
+        Core::SumPayload { scrutinee, path } => {
+            for step in &path {
+                match step {
+                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
+                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                };
+            }
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
@@ -929,12 +946,23 @@ fn emit(
             }
             Ok(())
         }
-        // A sum-variant pattern's payload binder — `sum-payload(scrutinee)` then unbox by THIS node's
-        // solved type (the payload's type). Mirrors `Core::Proj`'s unbox, but the descent op is
-        // `sum-payload` (not `arr-get` + index): the payload handle is the sum's single payload cell.
-        Core::SumPayload { scrutinee } => {
-            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [sum-handle]
-            out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
+        // A sum-variant pattern's payload binder — WALK the access `path` from the scrutinee handle
+        // (`sum-payload` per `Payload` step, `arr-get i` per `Elem` step), then unbox the leaf by THIS
+        // node's solved type. A single `[Payload]` path is the flat `(Some x)` case; `[Payload, Payload]`
+        // is the nested `(Some (Some y))` binder.
+        Core::SumPayload { scrutinee, path } => {
+            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            for step in &path {
+                match step {
+                    crate::core::PathStep::Payload => {
+                        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
+                    }
+                    crate::core::PathStep::Elem(i) => {
+                        out.push(Lir::ConstI32(*i as i32));
+                        out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
+                    }
+                }
+            }
             if let Some(op) = get_op(db, id)? {
                 out.push(Lir::CallImport(op)); // → [scalar]
                 if is_narrow_int(db, id).is_some() {
@@ -1006,7 +1034,11 @@ fn emit(
         // None`) is the unconditional `else` tail. The scrutinee is a heap handle (an i32 local reload
         // per probe, cheap). A payload binder in a body reads `sum-payload(scrutinee)` on its own
         // (`Core::SumPayload`), so the arm dispatch needs only the disc.
-        Core::MatchSum { scrutinee, arms } => {
+        Core::MatchSum {
+            scrutinee,
+            path,
+            arms,
+        } => {
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(&other) {
@@ -1023,8 +1055,8 @@ fn emit(
                 _ => None,
             };
             emit_sum_match_arms(
-                db, scrutinee, &arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out,
+                db, scrutinee, &path, &arms, result_it, block_ty, slots, base, high, scratch_ty,
+                layout, out,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -1460,15 +1492,17 @@ fn emit_probe_chain(
     }
 }
 
-/// Emit a SUM match arm chain: for each variant arm, `sum-disc(scrutinee) == disc`, then
+/// Emit a SUM match arm chain: for each variant arm, `sum-disc(<sub-value at path>) == disc`, then
 /// `if (block_ty) body else <rest>`; a wildcard/binder arm (`disc: None`) or the LAST arm (exhaustive,
-/// so redundant probe) is the unconditional tail. Mirrors `emit_match_arms_tailable` but probes the
-/// discriminant (`sum-disc` + an i32 compare) instead of a scalar equality. A bare-`ConstInt` arm body
-/// is grounded to the match's result width (`result_it`), same reconciliation the scalar arms do.
+/// so redundant probe) is the unconditional tail. The `path` reaches the sub-value the switch dispatches
+/// on — empty for the OUTER switch (the scrutinee itself), a `[Payload…]` path for a NESTED switch a
+/// decision tree recurses into. Mirrors `emit_match_arms_tailable` but probes the discriminant. A
+/// bare-`ConstInt` arm body is grounded to the match's result width (`result_it`).
 #[allow(clippy::too_many_arguments)]
 fn emit_sum_match_arms(
     db: &mut Db,
     scrutinee: StructId,
+    path: &[crate::core::PathStep],
     arms: &[crate::core::SumArm],
     result_it: Option<IntTy>,
     block_ty: BlockType,
@@ -1503,8 +1537,17 @@ fn emit_sum_match_arms(
         }
         Some((arm, rest)) => {
             let disc = arm.disc.expect("non-None handled above");
-            // sum-disc(scrutinee) == disc.
+            // sum-disc(<scrutinee walked down `path`>) == disc.
             emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+                    crate::core::PathStep::Elem(i) => {
+                        out.push(Lir::ConstI32(*i as i32));
+                        out.push(Lir::CallImport(OP_ARR_GET));
+                    }
+                }
+            }
             out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc]
             out.push(Lir::ConstI32(disc as i32));
             out.push(Lir::I32Eq);
@@ -1512,8 +1555,8 @@ fn emit_sum_match_arms(
             emit_body(db, arm.body, base, high, scratch_ty, out)?;
             out.push(Lir::Else);
             emit_sum_match_arms(
-                db, scrutinee, rest, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out,
+                db, scrutinee, path, rest, result_it, block_ty, slots, base, high, scratch_ty,
+                layout, out,
             )?;
             out.push(Lir::End);
             Ok(())

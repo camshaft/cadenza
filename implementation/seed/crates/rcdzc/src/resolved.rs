@@ -309,17 +309,21 @@ pub enum Resolved {
     /// a COMPILE-TIME type error (CDZ0201), never a runtime trap (`type-system.md` §A Tuple Is Split At A
     /// Position Into A Prefix And A Suffix).
     Proj { operand: StructId, index: usize },
-    /// The PAYLOAD a sum-variant pattern's binder binds — `(match s ((Some x) x))` resolves the `x`
-    /// reference to this. `scrutinee` is the match scrutinee occurrence; `variant_head` is the pattern's
-    /// variant-constructor occurrence (`(. Sum Variant)`), which carries the variant's discriminant (for
-    /// the payload's type) via its `(meta variant)` + payload arrow. Its type is the variant's payload
-    /// type (read from the constructor's `(-> payload Sum)`); at lowering it becomes
-    /// `Core::SumPayload { scrutinee }` (a `sum-payload` read + unbox). A pattern binder is scoped to its
-    /// arm (resolve Case 6), the sum analogue of the scalar binder-binds-the-scrutinee Case 5 — but here
-    /// the binder binds the PAYLOAD, not the whole scrutinee.
+    /// The SUB-VALUE a sum-variant pattern's binder binds, at an access PATH from the scrutinee.
+    /// `(match s ((Some x) x))` resolves `x` here with `path=[Payload]`; `(match s ((Some (Some y)) y))`
+    /// resolves `y` with `path=[Payload, Payload]` — the NESTED binder reaches the payload's payload.
+    /// `scrutinee` is the match scrutinee occurrence; `steps` is the access path (`Payload`/`Elem`);
+    /// `variant_head` is the INNERMOST variant-constructor occurrence (`(. Sum Variant)` or bare `Some`)
+    /// whose `(-> payload Sum)` gives the binder's type at the scrutinee's instantiation. At lowering it
+    /// becomes `Core::SumPayload { scrutinee, path }` (walk the path, unbox). A pattern binder is scoped
+    /// to its arm (resolve Case 6), the sum analogue of the scalar Case 5 — but binding a nested payload.
     SumPayload {
         scrutinee: StructId,
-        variant_head: StructId,
+        steps: std::sync::Arc<[crate::core::PathStep]>,
+        /// The variant-constructor head at EACH `Payload` step, in order — so inference can walk the
+        /// scrutinee's type level by level (each head's `(-> payload Sum)` gives the next sub-value's
+        /// type at that instantiation). The last head encloses the binder. One entry per `Payload` step.
+        heads: std::sync::Arc<[StructId]>,
     },
     /// A NATIVE primitive value — what a prelude `(intrinsic …)` node resolves to (an arithmetic
     /// operation or a type constructor). The irreducible bottom a `Meta.apply` names; carried as a

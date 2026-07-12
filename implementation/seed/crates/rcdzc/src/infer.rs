@@ -138,11 +138,22 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // `x` as `Int64`, not a free var. For a MONOMORPHIC sum the scheme has no vars, so the payload is
         // read directly. `Any` if the head is not a single-payload variant (a fault the match reports).
         Resolved::SumPayload {
-            variant_head,
-            scrutinee,
+            scrutinee, heads, ..
         } => {
-            let scrut_ty = type_of(db, scrutinee);
-            payload_ty_at_instantiation(db, variant_head, &scrut_ty).unwrap_or(Ty::Any)
+            // Walk the scrutinee's solved type down the payload path, one `heads` level at a time: at
+            // each variant head, the next sub-value's type is that variant's payload AT THE CURRENT
+            // instantiation (`payload_ty_at_instantiation` unifies the head's `(-> payload Sum)` result
+            // against the current type). The final level's payload is the binder's type. A nested `(Some
+            // (Some y))` on `Option (Option Int64)`: `Some` on `Option (Option Int64)` → `Option Int64`,
+            // then `Some` on that → `Int64` = `y`'s type.
+            let mut cur = type_of(db, scrutinee);
+            for &head in heads.iter() {
+                cur = match payload_ty_at_instantiation(db, head, &cur) {
+                    Some(t) => t,
+                    None => return Ty::Any,
+                };
+            }
+            cur
         }
         Resolved::If { cond, then_, else_ } => {
             // Reading the children's types is the backward demand: each is a lazy `type_of`.
