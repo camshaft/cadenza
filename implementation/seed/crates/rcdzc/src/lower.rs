@@ -65,6 +65,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A FLOAT literal has a type (`Ty::Float`, so a mix rejects at the type check) but no runnable
+        // core yet — there is no float arithmetic or boundary representation. Decline: a pure-float
+        // program is Todo, never a miscompile.
+        Resolved::Float(_) => Core::Poison(Reject::decline(
+            "a floating-point value does not yet run (float arithmetic/boundary is a later increment)",
+        )),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -704,13 +710,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // rewritten BODY occurrence, which we then lower by the ordinary path (so `select` sees only
         // plain `Core`). A case the tail path cannot serve (a non-tail/absent resume, a cross-function or
         // recursive perform) makes `reduce_handle` return `None` → DECLINE (a Todo, never a miscompile).
-        Resolved::Handle { init, arms, body } => match crate::effects::reduce_handle(db, init, &arms, body) {
-            Some(rewritten) => core_of(db, rewritten),
-            None => Core::Poison(Reject::decline(
-                "this handler is not yet reducible by the tail-resumptive fold (cross-function \
+        Resolved::Handle { init, arms, body } => {
+            match crate::effects::reduce_handle(db, init, &arms, body) {
+                Some(rewritten) => core_of(db, rewritten),
+                None => Core::Poison(Reject::decline(
+                    "this handler is not yet reducible by the tail-resumptive fold (cross-function \
                  or non-tail resume arrives in a later increment)",
-            )),
-        },
+                )),
+            }
+        }
         Resolved::Host { .. } => Core::Poison(Reject::decline(
             "a host delegation is not yet lowered (the boundary import arrives in E2)",
         )),
@@ -2018,6 +2026,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }
@@ -2651,7 +2660,9 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // AMBIGUOUS-TYPE guard in `backend/wasm/mod.rs` (`has_free_var` → CDZ0203, "annotate it") rather
         // than crossing with an invented type. type-system.md §An Escaping Value MUST Have A Fully
         // Determined Type; corpus 07 "an escaped value with an unresolved payload type is rejected".
-        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
+        // A float has no boundary value form yet (no float value runs / crosses), so no type surface —
+        // like a function/type-value. A float program declines before reaching the escape anyway.
+        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any | Ty::Float => None,
     }
 }
 
@@ -2742,6 +2753,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

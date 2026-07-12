@@ -6645,6 +6645,23 @@ mod stage1 {
     }
 
     #[test]
+    fn mixing_an_integer_and_a_float_is_rejected_no_silent_promotion() {
+        // 06-numeric-model: `(+ 2 2.0)` mixes an Int64 and a Float64, which do NOT silently promote —
+        // rejected (numeric-model.md §Numeric Types Do Not Silently Promote). The float literal gets
+        // `Ty::Float`, distinct from the operator's `(Int a)`, so unification FAILS (coded CDZ0301, both
+        // numeric-but-different). Every integer operator (arith/bitwise/shift) mixed with a float rejects
+        // the same way — the one generic operand-unification rule, no float special case. The message
+        // names the two conflicting types.
+        for op in ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"] {
+            let msg = expect_decline(&format!("({op} 2 2.0)"));
+            assert!(
+                msg.contains("Float64") && (msg.contains("Int") || msg.contains("unify")),
+                "int↔float mix under `{op}` should cite the numeric mismatch; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn signed_and_unsigned_of_the_same_width_do_not_promote() {
         // `(+ (: 1 Int8) (: 2 UInt8))` — same width (8), different SIGNEDNESS → still rejected (no
         // implicit promotion). Pins that signedness alone is a mismatch, not just width.

@@ -162,7 +162,10 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             Leaf::Bytes(_) => Resolved::Poison(Reject::decline(
                 "a bytes literal is not yet supported in source",
             )),
-            Leaf::Float(_) => Resolved::Poison(Reject::decline("float literals not yet supported")),
+            // A FLOAT literal — types as `Ty::Float`, distinct from `Ty::Int` (so mixing rejects, no
+            // silent promotion). Its VALUE does not run yet (`core_of` declines): a pure-float program
+            // declines, an int↔float mix rejects at the type check.
+            Leaf::Float(d) => Resolved::Float(d.clone()),
         },
         Struct::List(children) => {
             // `()` — the empty list — is unit.
@@ -1230,6 +1233,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             "Unit" => Some(Ty::Unit),
             "Bytes" => Some(Ty::Bytes),
             "String" => Some(Ty::String),
+            "Float64" => Some(Ty::Float),
             _ => None,
         };
     }

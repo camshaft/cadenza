@@ -701,6 +701,7 @@ fn walk_for_dead_traps(
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
         | Resolved::Param { .. }

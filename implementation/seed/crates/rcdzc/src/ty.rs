@@ -166,6 +166,14 @@ pub enum Ty {
     /// `Bytes` renders `\xNN`). This increment realizes the CONSTANT string (a literal folds + equality);
     /// runtime string ops (`concat`/`len`/`at`) + string escape arrive later.
     String,
+    /// A FLOATING-POINT number (`numeric-model.md` §Numeric Types Do Not Silently Promote). One
+    /// monomorphic leaf for now (the corpus uses only `Float64`-shaped literals like `2.0`); a
+    /// width-parameterized float can refine this later, mirroring `Ty::Int`. Its role in THIS increment
+    /// is purely to give a float LITERAL a type DISTINCT from `Ty::Int`, so mixing the two in one
+    /// arithmetic operator — `(+ 2 2.0)` — fails to unify and is REJECTED (CDZ0301, no silent promotion)
+    /// rather than declining. Float VALUES do not yet run (no float arithmetic, no boundary rep): a
+    /// pure-float program declines, an int↔float MIX rejects — both decline-don't-miscompile-safe.
+    Float,
     /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
     /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
     /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
@@ -251,7 +259,14 @@ impl Ty {
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
             // Bytes and String are leaves — no inner type, so no free variable.
-            Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes | Ty::String => false,
+            Ty::Int(_)
+            | Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Any
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Float => false,
         }
     }
 
@@ -320,6 +335,9 @@ impl Ty {
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
+            // `Float` is a monomorphic leaf — a float agrees only with another float, NOT with an integer
+            // (numeric-model.md §Numeric Types Do Not Silently Promote — the whole point of the type).
+            (Ty::Float, Ty::Float) => true,
             _ => false,
         }
     }
@@ -405,6 +423,7 @@ impl Ty {
             Ty::Unit => "Unit".to_string(),
             // A string renders as `String` — one monomorphic type, no parameters.
             Ty::String => "String".to_string(),
+            Ty::Float => "Float64".to_string(),
             // A record renders as `(record (name Type) …)` in canonical (sorted) field order — the
             // shape the renderer walks. The runtime holds no field names; this type does.
             Ty::Record(fields) => {
