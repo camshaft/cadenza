@@ -49,6 +49,9 @@ pub const KIND_TYPE_AT: &str = "type-at";
 /// The output artifact kind for a `Diagnostics` query result — the program's well-formedness faults.
 pub const KIND_DIAGNOSTICS: &str = "diagnostics";
 
+/// The output artifact kind for a `ResolveOf` query result — the defining occurrence's node id.
+pub const KIND_RESOLVE: &str = "resolve";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -85,6 +88,15 @@ pub enum Query {
     /// front-end owns spans). Total: a node id past the program, or one with no meaningful type, yields
     /// a defined "unknown" answer rather than an error.
     TypeAt { node: u32 },
+    /// The DEFINING OCCURRENCE a reference node resolves to, by its `StructId` — a read of the
+    /// resolution column (`resolve::resolved_of`), the go-to-definition counterpart of `UsesOf` (which
+    /// is the reverse index). A name reference resolves to `Ref { value }` (a nullary def's body, a
+    /// `let` initializer, a parameter binder, a sum/prelude binding) or `Lambda { body }` (a def WITH
+    /// parameters — the function case); the answer is that target occurrence's node id, which the
+    /// consumer maps to a source range. Node-id-keyed and span-free, like `TypeAt`: the consumer
+    /// resolves a cursor OFFSET to the reference node and asks this. Total: a node that is not a
+    /// navigable reference (a literal, a prim, an unbound name) yields the EMPTY result (no line).
+    ResolveOf { node: u32 },
     /// EVERY well-formedness fault in the program — a read of the fault set (`compile::diagnostics`),
     /// WITHOUT requiring the program to export anything or emit. This is the "diagnostics as you type"
     /// primitive: the same faults `compile` reports (type mismatch, unbound name, duplicate def/field,
@@ -115,6 +127,7 @@ mod tag {
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
     pub const QUERY_DIAGNOSTICS: u8 = 0x13;
+    pub const QUERY_RESOLVE_OF: u8 = 0x14;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -152,6 +165,9 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
             node: u32::try_from(r.read_varu64()?).ok()?,
         })),
         tag::QUERY_DIAGNOSTICS => Some(Request::Query(Query::Diagnostics)),
+        tag::QUERY_RESOLVE_OF => Some(Request::Query(Query::ResolveOf {
+            node: u32::try_from(r.read_varu64()?).ok()?,
+        })),
         _ => None,
     }
 }
@@ -187,6 +203,10 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
             leb128::write_u64(out, *node as u64);
         }
         Request::Query(Query::Diagnostics) => out.push(tag::QUERY_DIAGNOSTICS),
+        Request::Query(Query::ResolveOf { node }) => {
+            out.push(tag::QUERY_RESOLVE_OF);
+            leb128::write_u64(out, *node as u64);
+        }
     }
 }
 
@@ -281,6 +301,26 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::ResolveOf { node } => {
+            let id = crate::ast::StructId(*node);
+            // The defining occurrence a reference resolves to: `Ref { value }` (a nullary def body, a
+            // let initializer, a parameter binder, a sum/prelude binding) or `Lambda { body }` (a def
+            // with parameters). Anything else — a literal, a prim, an unbound name, a non-user id — is
+            // NOT a navigable reference: the empty result (total). The consumer maps the id to a span.
+            let mut text = String::new();
+            if db.is_user_node(id) {
+                match crate::resolve::resolved_of(db, id) {
+                    Resolved::Ref { value } => text = format!("{}\n", value.0),
+                    Resolved::Lambda { body, .. } => text = format!("{}\n", body.0),
+                    _ => {}
+                }
+            }
+            QueryResult {
+                kind: KIND_RESOLVE,
+                name: node.to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
 }
 
@@ -372,6 +412,7 @@ mod tests {
             }),
             Request::Query(Query::TypeAt { node: 42 }),
             Request::Query(Query::Diagnostics),
+            Request::Query(Query::ResolveOf { node: 7 }),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

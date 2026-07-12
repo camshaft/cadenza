@@ -77,6 +77,9 @@ enum Cmd {
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
     /// exits non-zero if any error-severity fault is present.
     Check(CheckArgs),
+    /// Go-to-definition: the defining occurrence of the name at a source BYTE OFFSET in FILE, as
+    /// `file:line:col`.
+    Def(DefArgs),
 }
 
 fn main() -> ExitCode {
@@ -100,6 +103,7 @@ fn main() -> ExitCode {
         Cmd::TypeAt(a) => run_type_at(&a),
         Cmd::Uses(a) => run_uses(&a),
         Cmd::Check(a) => run_check(&a),
+        Cmd::Def(a) => run_def(&a),
     }
 }
 
@@ -125,6 +129,14 @@ struct UsesArgs {
 struct CheckArgs {
     /// The program file to check (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+}
+
+#[derive(clap::Args)]
+struct DefArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// The source BYTE OFFSET of the reference to jump from (0-based, UTF-8 bytes).
+    offset: usize,
 }
 
 #[derive(clap::Args)]
@@ -302,6 +314,56 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `cdz def FILE OFFSET` — go-to-definition. Resolves the offset to the reference node (shared
+/// `SpanTable::node_at_offset`), drives the compiler's `ResolveOf { node }` query to the defining
+/// occurrence's node id, and maps THAT to a source `file:line:col`. The offset→node and id→location
+/// mapping stay at the boundary (span-owning); the compiler answers by node identity.
+fn run_def(args: &DefArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(node) = spans.node_at_offset(args.offset) else {
+        eprintln!(
+            "{PROG}: no node at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf { node: node.0 }),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_RESOLVE) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    // The result is the defining occurrence's node id (empty = not a navigable reference).
+    let Some(target) = text.trim().parse::<u32>().ok() else {
+        eprintln!(
+            "{PROG}: no definition for the token at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    match spans.get(cadenza_syntax::StructId(target)) {
+        Some(span) => {
+            let (line, col) = cadenza_syntax::query::driver::line_col(&source, span.start);
+            println!("{}:{line}:{col}", args.file);
+            ExitCode::SUCCESS
+        }
+        // The definition has no source span (a prelude/built-in binding) — nothing to jump to.
+        None => {
+            eprintln!("{PROG}: the definition is a built-in (no source location)");
+            ExitCode::FAILURE
+        }
     }
 }
 

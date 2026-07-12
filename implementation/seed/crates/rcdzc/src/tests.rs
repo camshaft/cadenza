@@ -10033,7 +10033,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_RESOLVE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
+        Request,
     };
     use crate::testkit::parse;
 
@@ -10375,6 +10376,69 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Diagnostics)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_DIAGNOSTICS).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_resolve_of_query_finds_the_defining_occurrence() {
+        // Go-to-definition: a reference to `helper` resolves to `helper`'s def body. The consumer maps
+        // an offset to the reference node; ResolveOf answers the DEFINING occurrence's node id.
+        let src = "(module m (def (helper) 1) (def (main) helper) (export main))";
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse with spans");
+        // The reference is the `helper` in `(def (main) helper)` — the LAST occurrence of "helper".
+        let ref_off = src.rfind("helper").expect("a reference to helper");
+        let ref_node = spans
+            .node_at_offset(ref_off)
+            .expect("a node at the reference");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::ResolveOf { node: ref_node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error());
+        let target: u32 = artifact_text(&out, KIND_RESOLVE)
+            .expect("a resolve artifact")
+            .trim()
+            .parse()
+            .expect("a node id");
+        // The target is helper's def body — spot-check via a fresh resolve (the same occurrence).
+        let mut db = crate::db::Db::load(parse(src));
+        let helper_body = db.defs[db.def_by_name("helper").unwrap()].body.unwrap();
+        assert_eq!(
+            crate::ast::StructId(target),
+            helper_body,
+            "ResolveOf points at helper's def body"
+        );
+    }
+
+    #[test]
+    fn a_resolve_of_query_for_a_non_reference_is_empty() {
+        // A literal (or any non-navigable node) resolves to nothing — the empty result, total.
+        let src = "(module m (def (main) 42) (export main))";
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let lit = spans
+            .node_at_offset(src.find("42").unwrap())
+            .expect("the literal node");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::ResolveOf { node: lit.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_RESOLVE).as_deref(), Some(""));
     }
 }
 

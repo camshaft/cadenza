@@ -1130,3 +1130,36 @@ fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     assert_eq!(stdout.trim(), "", "and prints no diagnostics: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- `cdz def FILE OFFSET` — go-to-definition (Query::ResolveOf) ----
+
+#[test]
+fn def_jumps_from_a_reference_to_its_definition() {
+    let dir = scratch_dir("def_go");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (helper) 1) (def (main) helper) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    // The reference is the last `helper` (in `(def (main) helper)`).
+    let ref_off = src.rfind("helper").unwrap();
+    let (ok, stdout, _) = run(&["def", f.to_str().unwrap(), &ref_off.to_string()], "");
+    assert!(ok, "go-to-def succeeds on a reference");
+    // Jumps to helper's def body — line 1, the column of `1` (helper's body).
+    assert!(
+        stdout.contains("prog.sexp:1:"),
+        "points at a file:line:col: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn def_on_a_non_reference_reports_no_definition() {
+    let dir = scratch_dir("def_lit");
+    let f = dir.join("prog.sexp");
+    let src = "(module m (def (main) 42) (export main))\n";
+    std::fs::write(&f, src).unwrap();
+    let lit_off = src.find("42").unwrap();
+    let (ok, _, stderr) = run(&["def", f.to_str().unwrap(), &lit_off.to_string()], "");
+    assert!(!ok, "a literal has no definition to jump to");
+    assert!(stderr.contains("no definition"), "clear message: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
