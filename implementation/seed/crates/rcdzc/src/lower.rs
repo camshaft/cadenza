@@ -569,7 +569,9 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
     let mut cur = root;
     for step in steps {
         cur = match (step, core_of(db, cur)) {
-            (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => payloads[0],
+            (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
+                payloads[0]
+            }
             (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
             _ => return None,
         };
@@ -577,129 +579,372 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
     Some(core_of(db, cur))
 }
 
-/// Lower a match over a SUM scrutinee — dispatch on the variant DISCRIMINANT. Each arm's pattern is
-/// classified into `(disc, body)`: a variant pattern `(Sum.V binder)` or bare `Sum.V` → `Some(k)` (its
-/// discriminant), a bare binder/`_` → `None` (the wildcard tail). Exhaustiveness (`type-system.md §A
-/// Match Is Exhaustive Against The Sum Type's Variant Set`): every variant must be covered, OR a
-/// wildcard tail present; else CDZ0210. A constant sum FOLDS to the selected arm (like a scalar match);
-/// a runtime sum emits `Core::MatchSum`. A payload binder resolves to a `SumPayload` on its own (via
-/// resolve Case 6), so the arm carries only its discriminant + body.
+/// Lower a match over a SUM scrutinee to a DECISION TREE (Maranget). Dispatch on the variant
+/// DISCRIMINANT at each level; a NESTED pattern shares its outer probe and splits on the inner
+/// discriminant, so `(Some (Some x))`, `(Some None)`, `None` test the outer `Some` tag ONCE and only
+/// then the inner tag — two tag checks on the deep path, not a linear re-probe per arm
+/// (`type-system.md §Patterns Compose`). Exhaustiveness (`type-system.md §A Match Is Exhaustive Against
+/// The Sum Type's Variant Set`) is checked at EACH switch: every variant covered OR a default arm; else
+/// CDZ0210. A constant sum FOLDS to the selected body (like a scalar match); a runtime sum emits a
+/// `Core::MatchSum` tree. A payload binder resolves to a `SumPayload` on its own (resolve Case 6), so an
+/// arm carries only its discriminant + continuation.
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // The sum's declaration (for its variant set + count) — from the scrutinee's `Ty::Sum { decl }`.
-    let decl = match crate::infer::type_of(db, scrutinee) {
-        crate::ty::Ty::Sum { decl, .. } => decl,
-        _ => return Core::Poison(Reject::decline("sum match scrutinee is not a sum")),
-    };
-    let variant_count = match db.type_decl_by_occ(decl) {
-        Some(t) => t.variants.len(),
-        None => return Core::Poison(Reject::decline("sum match scrutinee has no declaration")),
-    };
-    // Classify each arm: `Some(disc)` for a variant pattern, `None` for a wildcard/binder tail.
-    let mut sum_arms: Vec<crate::core::SumArm> = Vec::new();
-    let mut covered: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut has_wild = false;
+    // The scrutinee must be a sum (its solved type gives the root variant set). A poisoned scrutinee
+    // propagates its poison; a non-sum is a decline (the caller only routes sums here).
+    let scrut_ty = crate::infer::type_of(db, scrutinee);
+    if !matches!(scrut_ty, crate::ty::Ty::Sum { .. }) {
+        if let Core::Poison(r) = core_of(db, scrutinee) {
+            return Core::Poison(r);
+        }
+        return Core::Poison(Reject::decline("sum match scrutinee is not a sum"));
+    }
+    // Build the initial pattern MATRIX: one row per arm, each a `(constraints, body)` where a constraint
+    // is `(path, disc)` — "the sub-value at `path` must have discriminant `disc`". A row's constraints
+    // start from its top-level pattern (path `[]`) and may nest. A malformed/unsupported pattern declines
+    // the whole match (a heap walk / literal-in-sum is a later increment), never a silent match.
+    let mut rows: Vec<MatchRow> = Vec::new();
     for &(pat, body) in arms {
-        match classify_sum_pattern(db, pat) {
-            SumPattern::Variant(disc) => {
-                covered.insert(disc);
-                sum_arms.push(crate::core::SumArm {
-                    disc: Some(disc),
-                    body,
-                });
-            }
-            SumPattern::Wild => {
-                has_wild = true;
-                sum_arms.push(crate::core::SumArm { disc: None, body });
-            }
-            SumPattern::NotSupported => {
-                return Core::Poison(Reject::decline(
-                    "a sum match pattern that is not a variant or `_` is not yet supported \
-                     (a nested destructure payload arrives in a later increment)",
-                ));
-            }
+        match pattern_constraints(db, pat, &scrut_ty, Vec::new()) {
+            Ok(constraints) => rows.push(MatchRow { constraints, body }),
+            Err(r) => return Core::Poison(r),
         }
     }
-    // Exhaustiveness: a wildcard tail covers the rest, else every variant must be named (§190).
-    if !has_wild && covered.len() < variant_count {
-        return Core::Poison(Reject::coded(
+    // Compile the matrix into a decision tree rooted at the scrutinee (path `[]`, type `scrut_ty`).
+    let mut path_types: std::collections::HashMap<Vec<crate::core::PathStep>, crate::ty::Ty> =
+        std::collections::HashMap::new();
+    path_types.insert(Vec::new(), scrut_ty);
+    match build_tree(db, scrutinee, &rows, &path_types) {
+        // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
+        Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
+        Ok(crate::core::SumCont::Switch { path, arms }) => Core::MatchSum {
+            scrutinee,
+            path,
+            arms,
+        },
+        Err(r) => Core::Poison(r),
+    }
+}
+
+/// One row of the pattern matrix: the discriminant CONSTRAINTS this arm imposes (each a `(path, disc)`),
+/// and the arm's body. An empty constraint set is a catch-all (a bare binder / `_` top-level pattern) —
+/// it matches regardless of any discriminant. Constraints are ordered outer-to-inner (a shorter path
+/// first), which is the order the tree tests them.
+struct MatchRow {
+    constraints: Vec<(Vec<crate::core::PathStep>, u32)>,
+    body: StructId,
+}
+
+/// Collect the discriminant constraints a PATTERN imposes on the sub-value at `path` (of type `ty`),
+/// appending `(deeper-path, disc)` per variant test. A bare NAME is a binder/wildcard — NO constraint
+/// (it matches any value; its binding is resolved independently). A variant pattern `(V arg…)` / bare
+/// nullary `V` adds `(path, disc(V))` and recurses into its single payload arg at `path + [Payload]`
+/// (a multi-payload variant's payload is a tuple — the arg descends through `Elem` in a later increment).
+/// A variant name is distinguished from a binder by RESOLVING it against `ty`'s variant set: `None`
+/// against `Option` is the nullary variant (a constraint), `x` is a binder (none). Errs (declines) on a
+/// pattern this increment does not compile — a tuple/record destructure, a literal, a wrong-arity ctor.
+fn pattern_constraints(
+    db: &mut Db,
+    pat: StructId,
+    ty: &crate::ty::Ty,
+    path: Vec<crate::core::PathStep>,
+) -> Result<Vec<(Vec<crate::core::PathStep>, u32)>, Reject> {
+    // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
+    // the sum's variant set — a name that IS a variant contributes that discriminant (no payload to
+    // recurse into); any other bare name binds and contributes nothing.
+    if let Some(name) = db.ast.as_name(pat) {
+        let name = name.to_string();
+        if name != "_"
+            && let Some(disc) = variant_disc_by_name(db, ty, &name)
+        {
+            return Ok(vec![(path, disc)]);
+        }
+        return Ok(Vec::new()); // a binder / wildcard — no constraint
+    }
+    // A compound pattern. Its head is the variant CONSTRUCTOR — a member `(. Sum V)` or a bare variant
+    // name — and the remaining children are payload sub-patterns.
+    let (head, args): (StructId, Vec<StructId>) = match db.ast.get(pat) {
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            // A bare member `(. Sum V)` used as a whole pattern — the ctor, no payload args.
+            Some(first) if db.ast.as_name(first) == Some(".") => (pat, Vec::new()),
+            Some(first) => (first, children[1..].to_vec()),
+            None => return Err(Reject::decline("an empty sum match pattern")),
+        },
+        crate::ast::Struct::Atom(_) => {
+            return Err(Reject::decline("a malformed sum match pattern"));
+        }
+    };
+    let Some(disc) = crate::eval::variant_disc_of(db, head) else {
+        return Err(Reject::decline(
+            "a sum match pattern head is not a variant constructor",
+        ));
+    };
+    let mut out = vec![(path.clone(), disc)];
+    // Recurse into the payload. A single-payload variant `(Some p)` descends into `p` at `path +
+    // [Payload]`; the payload's TYPE is the variant's payload type at this instantiation, so a nested
+    // variant name there resolves against the right sum. A NULLARY variant pattern `(None)`/bare `None`
+    // has no payload arg — nothing to recurse. Multiple payload args (a multi-payload variant destructure)
+    // is a later increment — decline rather than silently drop the extra constraints.
+    match args.len() {
+        0 => {}
+        1 => {
+            let payload_ty = crate::infer::payload_ty_at_instantiation(db, head, ty)
+                .unwrap_or(crate::ty::Ty::Any);
+            let mut deeper = path;
+            deeper.push(crate::core::PathStep::Payload);
+            let sub = pattern_constraints(db, args[0], &payload_ty, deeper)?;
+            out.extend(sub);
+        }
+        _ => {
+            return Err(Reject::decline(
+                "a multi-payload variant destructure is not yet supported",
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// The discriminant of the variant named `name` in the sum `ty`, or `None` if `ty` is not a sum or has
+/// no such variant. This is what distinguishes a bare NULLARY-VARIANT pattern (`None` against `Option`)
+/// from a binder (`x`) — the name is looked up in the scrutinee sum's own declaration (occurrence-keyed,
+/// so a same-named variant in another sum does not leak in).
+fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u32> {
+    let decl = match ty {
+        crate::ty::Ty::Sum { decl, .. } => *decl,
+        _ => return None,
+    };
+    let t = db.type_decl_by_occ(decl)?;
+    t.variants
+        .iter()
+        .position(|v| v.name == name)
+        .map(|i| i as u32)
+}
+
+/// A map from an access PATH to the solved TYPE of the sub-value there — populated as the tree descends
+/// (the root `[]` maps to the scrutinee type; entering a variant arm at `switch_path` extends it with
+/// that variant's payload type at `switch_path + [Payload]`). Keyed per-branch (not global), because the
+/// SAME path under different parent variants has different types (`Result`'s `[Payload]` is `a` in the
+/// `Ok` arm, `e` in the `Err` arm) — a global map would collide; a branch-local one is always consistent.
+type PathTypes = std::collections::HashMap<Vec<crate::core::PathStep>, crate::ty::Ty>;
+
+/// Compile a pattern MATRIX (`rows`) into a decision-tree CONTINUATION for the value at `scrutinee`. If
+/// the FIRST row is a catch-all (no constraints), it matches unconditionally → its body is the leaf (later
+/// rows unreachable). Otherwise switch on the discriminant at the SHALLOWEST path any row constrains:
+/// gather the discs tested there in source order, and for each build a specialized sub-matrix — rows
+/// constraining that path with this disc (constraint removed) PLUS rows not constraining it (they match
+/// any disc, flowing into every arm) — then recurse. A default arm (`disc: None`) covers the rows that
+/// don't constrain the switch path. Exhaustiveness is checked at EACH switch (every variant tested, or a
+/// default). A constant sub-value FOLDS to the matching arm's continuation (no runtime switch).
+fn build_tree(
+    db: &mut Db,
+    scrutinee: StructId,
+    rows: &[MatchRow],
+    path_types: &PathTypes,
+) -> Result<crate::core::SumCont, Reject> {
+    // The FIRST row matches unconditionally when it has no constraints — a top-level binder/wildcard.
+    match rows.first() {
+        None => {
+            return Err(Reject::coded(
+                Code::NonExhaustive,
+                "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
+            ));
+        }
+        Some(row) if row.constraints.is_empty() => {
+            return Ok(crate::core::SumCont::Leaf(row.body));
+        }
+        _ => {}
+    }
+    // Pick the SWITCH path — the shallowest path any row constrains (outer patterns first, so the outer
+    // probe is shared). Its TYPE (from `path_types`) gives the variant set for exhaustiveness + recursion.
+    let switch_path = shallowest_path(rows);
+    let sub_ty = match path_types.get(&switch_path) {
+        Some(t) => t.clone(),
+        None => return Err(Reject::decline("sum match switch path has no solved type")),
+    };
+    let (decl, variant_count) = match &sub_ty {
+        crate::ty::Ty::Sum { decl, .. } => match db.type_decl_by_occ(*decl) {
+            Some(t) => (*decl, t.variants.len()),
+            None => return Err(Reject::decline("sum match sub-value has no declaration")),
+        },
+        _ => {
+            return Err(Reject::decline(
+                "sum match dispatches on a non-sum sub-value",
+            ));
+        }
+    };
+    // The discriminants tested at `switch_path`, in first-appearance (source) order — fixes the arm order.
+    let mut tested: Vec<u32> = Vec::new();
+    for row in rows {
+        if let Some((_, d)) = row.constraints.iter().find(|(p, _)| *p == switch_path)
+            && !tested.contains(d)
+        {
+            tested.push(*d);
+        }
+    }
+    // A DEFAULT here is a row that does NOT constrain `switch_path` (matches any disc) — it covers the
+    // untested variants. Exhaustiveness: every variant tested, or a default present (else CDZ0210).
+    let has_default = rows
+        .iter()
+        .any(|r| !r.constraints.iter().any(|(p, _)| *p == switch_path));
+    if !has_default && tested.len() < variant_count {
+        return Err(Reject::coded(
             Code::NonExhaustive,
             "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
         ));
     }
-    // FOLD a constant sum: select the first arm whose discriminant matches (or a wildcard).
-    if let Core::SumNew { disc, .. } = core_of(db, scrutinee) {
+    // One arm per tested discriminant, then the default arm (if any). Each arm specializes the matrix and
+    // recurses under a `path_types` extended with THIS variant's payload type at `switch_path+[Payload]`.
+    let mut sum_arms: Vec<crate::core::SumArm> = Vec::new();
+    for &d in &tested {
+        let sub_rows = specialize(rows, &switch_path, Some(d));
+        let child_types = extend_path_types(db, path_types, &switch_path, &sub_ty, decl, d);
+        let cont = build_tree(db, scrutinee, &sub_rows, &child_types)?;
+        sum_arms.push(crate::core::SumArm {
+            disc: Some(d),
+            cont,
+        });
+    }
+    if has_default {
+        let sub_rows = specialize(rows, &switch_path, None);
+        // The default arm switches on nothing new at `switch_path` — its rows only reach paths they
+        // already constrain (all in `path_types`), so no extension is needed.
+        let cont = build_tree(db, scrutinee, &sub_rows, path_types)?;
+        sum_arms.push(crate::core::SumArm { disc: None, cont });
+    }
+    // FOLD when the switched sub-value is a compile-time-constant `SumNew`: pick the matching arm's
+    // continuation directly (no runtime switch). A partly-constant scrutinee folds each constant level and
+    // leaves the runtime remainder as a nested switch (the inner `build_tree` already declined to fold).
+    if let Some(Core::SumNew { disc, .. }) = const_at_path(db, scrutinee, &switch_path) {
         for arm in &sum_arms {
             if arm.disc.is_none() || arm.disc == Some(disc) {
-                trace!(target: "rcdzc::fold", "sum match folds to a selected arm (constant sum scrutinee)");
-                return core_of(db, arm.body);
+                trace!(target: "rcdzc::fold", "sum match folds to a selected arm (constant sub-value)");
+                return Ok(arm.cont.clone());
             }
         }
-        return Core::Poison(Reject::decline(
-            "sum match: no arm matched a constant (unreachable)",
-        ));
     }
-    if let Core::Poison(r) = core_of(db, scrutinee) {
-        return Core::Poison(r);
-    }
-    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, arms = sum_arms.len(), "sum match stays runtime (sum-disc probe chain)");
-    // The OUTER switch dispatches on the scrutinee itself — an empty path. (A NESTED switch, when a
-    // decision tree recurses into a variant's payload, carries a `[Payload…]` path; that recursion is a
-    // later increment — the flat classifier declines a nested pattern, so every arm here is flat.)
-    Core::MatchSum {
-        scrutinee,
-        path: Vec::new(),
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, depth = switch_path.len(), arms = sum_arms.len(), "sum switch (decision-tree node)");
+    Ok(crate::core::SumCont::Switch {
+        path: switch_path,
         arms: sum_arms,
-    }
+    })
 }
 
-/// How a sum-match pattern classifies.
-enum SumPattern {
-    /// A variant pattern `(Sum.V binder)` or bare `Sum.V` — matches discriminant `k`.
-    Variant(u32),
-    /// A bare binder / wildcard `_` — always matches.
-    Wild,
-    /// A pattern this increment does not handle (a nested destructure, a literal).
-    NotSupported,
+/// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,
+/// declaration `decl`): the sub-value at `switch_path + [Payload]` has the type of THAT variant's payload
+/// at `sub_ty`'s instantiation. Read via the variant's constructor record (its `(meta t)` scheme unified
+/// against `sub_ty`), so a generic sum's payload is instantiated (`Ok`'s payload in `Result Int Str` is
+/// `Int`). A nullary variant has no payload — no extension. The map is CLONED so sibling arms don't share.
+fn extend_path_types(
+    db: &mut Db,
+    path_types: &PathTypes,
+    switch_path: &[crate::core::PathStep],
+    sub_ty: &crate::ty::Ty,
+    decl: StructId,
+    disc: u32,
+) -> PathTypes {
+    let mut out = path_types.clone();
+    // The variant's constructor occurrence — via the synthesized sum record's variant field, which
+    // carries the `(meta t)` scheme `payload_ty_at_instantiation` reads. (The declaration name occurrence
+    // does not resolve to a scheme; the synthesized ctor field does.)
+    let ctor = db
+        .type_decl_by_occ(decl)
+        .and_then(|t| {
+            t.variants
+                .get(disc as usize)
+                .map(|v| (t.synth, v.name.clone()))
+        })
+        .and_then(|(synth, vname)| {
+            synth.and_then(|rec| crate::sums::variant_ctor_field(&db.ast, rec, &vname))
+        });
+    if let Some(ctor) = ctor
+        && let Some(payload_ty) = crate::infer::payload_ty_at_instantiation(db, ctor, sub_ty)
+    {
+        let mut child = switch_path.to_vec();
+        child.push(crate::core::PathStep::Payload);
+        out.insert(child, payload_ty);
+    }
+    out
 }
 
-/// Classify a sum-match pattern. A bare NAME (`_` or a binder) is `Wild`. A variant pattern is either a
-/// bare member `(. Sum V)` / bare variant name (nullary) or an application `((. Sum V) binder)` / `(Some
-/// binder)` — its head resolves to a variant constructor, whose `(meta variant)` gives the discriminant.
-/// A variant pattern whose payload argument is NOT a bare binder/wildcard — a NESTED pattern `(Some
-/// (tuple a b c))` or `(Some (Some x))` — is `NotSupported` (the flat matcher binds a single payload; a
-/// nested destructure needs the decision-tree matcher). Declining a nested pattern rather than ignoring
-/// it is what makes `(Some (tuple a b c))` against a 2-tuple payload a rejection, not a silent match.
-fn classify_sum_pattern(db: &mut Db, pat: StructId) -> SumPattern {
-    // A bare name — wildcard or binder — always matches.
-    if db.ast.as_name(pat).is_some() {
-        return SumPattern::Wild;
-    }
-    // A variant pattern's discriminant: read the pattern HEAD (the member `(. Sum V)` or a bare variant
-    // name). For an application `(head arg…)` the head is the first child; for a bare member the pattern
-    // IS the head. `variant_disc_of` on the reduced head record gives the discriminant.
-    let (head, args): (StructId, &[StructId]) = match db.ast.get(pat) {
-        crate::ast::Struct::List(children) => match children.first().copied() {
-            // A bare member `(. Sum V)` — the whole pattern is the ctor, no payload args.
-            Some(first) if db.ast.as_name(first) == Some(".") => (pat, &[]),
-            // An application `(head arg…)` — the ctor is the head, the rest are payload patterns.
-            Some(first) => (first, &children[1..]),
-            None => return SumPattern::NotSupported,
-        },
-        crate::ast::Struct::Atom(_) => return SumPattern::NotSupported,
-    };
-    // Each payload pattern this increment binds must be a bare binder/wildcard (a single scalar/handle
-    // payload); a NESTED pattern (`(tuple a b c)`, `(Some x)`) is a destructure the flat matcher does not
-    // check — decline so it is not silently matched (the decision-tree matcher handles nesting).
-    let args: Vec<StructId> = args.to_vec();
-    for &arg in &args {
-        if db.ast.as_name(arg).is_none() {
-            return SumPattern::NotSupported;
+/// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site.
+fn shallowest_path(rows: &[MatchRow]) -> Vec<crate::core::PathStep> {
+    rows.iter()
+        .flat_map(|r| r.constraints.iter().map(|(p, _)| p.clone()))
+        .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| path_cmp(a, b)))
+        .unwrap_or_default()
+}
+
+/// A total order on paths for a deterministic switch choice (Payload < Elem, Elem by index).
+fn path_cmp(a: &[crate::core::PathStep], b: &[crate::core::PathStep]) -> std::cmp::Ordering {
+    use crate::core::PathStep::{Elem, Payload};
+    for (x, y) in a.iter().zip(b.iter()) {
+        let o = match (x, y) {
+            (Payload, Payload) => std::cmp::Ordering::Equal,
+            (Payload, Elem(_)) => std::cmp::Ordering::Less,
+            (Elem(_), Payload) => std::cmp::Ordering::Greater,
+            (Elem(i), Elem(j)) => i.cmp(j),
+        };
+        if o != std::cmp::Ordering::Equal {
+            return o;
         }
     }
-    match crate::eval::variant_disc_of(db, head) {
-        Some(disc) => SumPattern::Variant(disc),
-        None => SumPattern::NotSupported,
+    a.len().cmp(&b.len())
+}
+
+/// Specialize the matrix to the arm switching on `switch_path == disc` (or the DEFAULT arm, `disc:
+/// None`). A row is KEPT if either it constrains `switch_path` with THIS disc (drop that constraint — now
+/// satisfied by control being in this arm) or it does NOT constrain `switch_path` at all (it matches any
+/// disc, so it flows into every arm INCLUDING the default). A row constraining `switch_path` with a
+/// DIFFERENT disc is excluded. For the default arm (`disc: None`), only rows that don't constrain
+/// `switch_path` survive. Row ORDER is preserved (arm priority is source order).
+fn specialize(
+    rows: &[MatchRow],
+    switch_path: &[crate::core::PathStep],
+    disc: Option<u32>,
+) -> Vec<MatchRow> {
+    let mut out = Vec::new();
+    for row in rows {
+        let here = row.constraints.iter().find(|(p, _)| p == switch_path);
+        match (here, disc) {
+            // Row tests this path with the arm's disc — keep it, minus the now-satisfied constraint.
+            (Some((_, d)), Some(target)) if *d == target => {
+                out.push(MatchRow {
+                    constraints: row
+                        .constraints
+                        .iter()
+                        .filter(|(p, _)| p != switch_path)
+                        .cloned()
+                        .collect(),
+                    body: row.body,
+                });
+            }
+            // Row tests this path with a DIFFERENT disc — excluded from this arm.
+            (Some(_), _) => {}
+            // Row does not test this path — flows into every arm (variant arms AND the default).
+            (None, _) => out.push(MatchRow {
+                constraints: row.constraints.clone(),
+                body: row.body,
+            }),
+        }
     }
+    out
+}
+
+/// The compile-time-constant `Core` at `path` from `scrutinee`, if every step lands in a constant
+/// compound (`SumNew` payload / `Tuple` element) — else `None` (a runtime step). Drives the constant fold
+/// at each switch. Mirrors `fold_sum_path` but starts from an occurrence and returns the leaf core.
+fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep]) -> Option<Core> {
+    use crate::core::PathStep;
+    let mut cur = scrutinee;
+    for step in path {
+        cur = match (step, core_of(db, cur)) {
+            (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
+                payloads[0]
+            }
+            (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            _ => return None,
+        };
+    }
+    Some(core_of(db, cur))
 }
 
 /// Classify a match PATTERN occurrence into a [`Probe`], or `None` if it is not a Stage-3 scalar

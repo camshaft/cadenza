@@ -113,12 +113,15 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::SumNew { payloads, .. } => payloads
             .iter()
             .any(|&p| binding_escapes(db, p, binder, false)),
-        // A sum match: the binding escapes if it escapes the scrutinee or any arm body.
-        Core::MatchSum { scrutinee, arms, .. } => {
+        // A sum match: the binding escapes if it escapes the scrutinee or any arm's continuation (a leaf
+        // body, or a nested switch's arms — recursed via `cont_binding_escapes`).
+        Core::MatchSum {
+            scrutinee, arms, ..
+        } => {
             binding_escapes(db, scrutinee, binder, false)
                 || arms
                     .iter()
-                    .any(|a| binding_escapes(db, a.body, binder, false))
+                    .any(|a| cont_binding_escapes(db, &a.cont, binder))
         }
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
@@ -132,6 +135,18 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
     }
 }
 
+/// Whether `binder` escapes through a sum-match CONTINUATION — a leaf's body, or a nested switch's arms
+/// (each recursed). The `Payload`/`Elem` path steps are heap reads that carry no binding, so only the arm
+/// continuations matter (mirrors the `MatchSum` arm walk in `binding_escapes`).
+fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: StructId) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => binding_escapes(db, *body, binder, false),
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| cont_binding_escapes(db, &a.cont, binder)),
+    }
+}
+
 /// The runtime op that BOXES the node at `id` (a tuple/record element) into a u32 heap handle, by its
 /// solved type: an integer → `box-int` (an i64 payload), a boolean → `box-bool`. A COMPOUND element (a
 /// nested tuple/record) is ALREADY a u32 handle — it is `arr-set` into the parent array as-is, with no
@@ -141,8 +156,9 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
-        // A nested compound is already a handle — store it directly, no box.
-        Ty::Tuple(_) | Ty::Record(_) => Ok(None),
+        // A nested compound — a tuple/record, or a SUM (its `sum-new` handle) — is already a u32 handle,
+        // so it is `arr-set` into the parent array as-is, no box op.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } => Ok(None),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -159,7 +175,8 @@ fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     match type_of(db, id) {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
-        Ty::Tuple(_) | Ty::Record(_) => Ok(None),
+        // A nested compound / SUM handle `arr-get` yields is used as-is — no unbox.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } => Ok(None),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -312,9 +329,10 @@ pub fn collect_used_ops(
                 }
             }
         }
-        // A sum match calls `sum-disc` to dispatch; a NESTED switch (a non-empty `path`) first WALKS to
-        // its sub-value (`sum-payload`/`arr-get` per step) before the disc. The scrutinee + every arm
-        // body are emitted (any op an arm uses must be imported).
+        // A sum match calls `sum-disc` to dispatch at each switch; a switch on a deeper sub-value (a
+        // non-empty `path`) first WALKS there (`sum-payload`/`arr-get` per step) before the disc. The
+        // scrutinee + every arm's continuation are emitted (any op reachable in the tree must be
+        // imported) — `collect_cont_ops` recurses nested switches, inserting their walk ops too.
         Core::MatchSum {
             scrutinee,
             path,
@@ -329,7 +347,7 @@ pub fn collect_used_ops(
             }
             collect_used_ops(db, scrutinee, out);
             for arm in &arms {
-                collect_used_ops(db, arm.body, out);
+                collect_cont_ops(db, &arm.cont, out);
             }
         }
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
@@ -353,6 +371,31 @@ pub fn collect_used_ops(
         | Core::Param { .. }
         | Core::LocalRef { .. }
         | Core::Poison(_) => {}
+    }
+}
+
+/// Collect the runtime ops a sum-match CONTINUATION uses — a leaf's body, or a nested switch (its own
+/// `sum-disc` + path walk ops + its arms, recursed). Mirrors the `MatchSum` arm walk in `collect_used_ops`
+/// so an op used only deep in the tree is still imported.
+fn collect_cont_ops(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => collect_used_ops(db, *body, out),
+        crate::core::SumCont::Switch { path, arms } => {
+            out.insert(OP_SUM_DISC);
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
+                    crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
+                };
+            }
+            for arm in arms {
+                collect_cont_ops(db, &arm.cont, out);
+            }
+        }
     }
 }
 
@@ -1492,12 +1535,13 @@ fn emit_probe_chain(
     }
 }
 
-/// Emit a SUM match arm chain: for each variant arm, `sum-disc(<sub-value at path>) == disc`, then
-/// `if (block_ty) body else <rest>`; a wildcard/binder arm (`disc: None`) or the LAST arm (exhaustive,
-/// so redundant probe) is the unconditional tail. The `path` reaches the sub-value the switch dispatches
-/// on — empty for the OUTER switch (the scrutinee itself), a `[Payload…]` path for a NESTED switch a
-/// decision tree recurses into. Mirrors `emit_match_arms_tailable` but probes the discriminant. A
-/// bare-`ConstInt` arm body is grounded to the match's result width (`result_it`).
+/// Emit one SWITCH of the decision tree: for each variant arm, `sum-disc(<scrutinee walked to `path`>)
+/// == disc`, then `if (block_ty) <continuation> else <rest>`; a default arm (`disc: None`) or the LAST
+/// arm (its probe redundant — every earlier disc has been tested and this is the only one left) is the
+/// unconditional tail. `path` reaches the sub-value THIS switch dispatches on — empty for the ROOT (the
+/// scrutinee itself), a `[Payload…]` path for a NESTED switch. Each arm's CONTINUATION is a leaf body or
+/// a deeper switch (`emit_sum_cont`), which is what makes the whole match a decision tree that shares the
+/// outer probe. Mirrors `emit_match_arms_tailable` but probes the discriminant.
 #[allow(clippy::too_many_arguments)]
 fn emit_sum_match_arms(
     db: &mut Db,
@@ -1513,28 +1557,20 @@ fn emit_sum_match_arms(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
-    let emit_body = |db: &mut Db,
-                     body: StructId,
-                     base: u32,
-                     high: &mut u32,
-                     scratch_ty: &mut HashMap<u32, ValType>,
-                     out: &mut Vec<Lir>|
-     -> Result<(), Reject> {
-        if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
-            return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
-        }
-        emit(db, body, slots, base, high, scratch_ty, layout, out)
-    };
     match arms.split_first() {
         None => Err(Reject::decline(
             "sum match ran off the end with no covering arm",
         )),
-        // A wildcard/binder tail, or the last arm of an exhaustive match — its probe is redundant (every
-        // earlier variant disc has been tested and this is the only one left), so emit unconditionally.
-        Some((arm, [])) => emit_body(db, arm.body, base, high, scratch_ty, out),
-        Some((arm, _)) if arm.disc.is_none() => {
-            emit_body(db, arm.body, base, high, scratch_ty, out)
-        }
+        // A default arm, or the last arm of an exhaustive switch — its probe is redundant, so emit its
+        // continuation unconditionally.
+        Some((arm, [])) => emit_sum_cont(
+            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out,
+        ),
+        Some((arm, _)) if arm.disc.is_none() => emit_sum_cont(
+            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out,
+        ),
         Some((arm, rest)) => {
             let disc = arm.disc.expect("non-None handled above");
             // sum-disc(<scrutinee walked down `path`>) == disc.
@@ -1552,7 +1588,10 @@ fn emit_sum_match_arms(
             out.push(Lir::ConstI32(disc as i32));
             out.push(Lir::I32Eq);
             out.push(Lir::If(block_ty));
-            emit_body(db, arm.body, base, high, scratch_ty, out)?;
+            emit_sum_cont(
+                db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
+                layout, out,
+            )?;
             out.push(Lir::Else);
             emit_sum_match_arms(
                 db, scrutinee, path, rest, result_it, block_ty, slots, base, high, scratch_ty,
@@ -1561,6 +1600,39 @@ fn emit_sum_match_arms(
             out.push(Lir::End);
             Ok(())
         }
+    }
+}
+
+/// Emit a matched arm's CONTINUATION: a LEAF emits its body (a bare-`ConstInt` body grounded to the
+/// match's result width `result_it`, as the scalar-match arms are); a nested SWITCH emits a fresh switch
+/// chain on its deeper sub-value (`emit_sum_match_arms`), which is the decision tree recursing to share
+/// the outer probe. The nested switch's `if`s reuse the SAME `block_ty` (both branches yield the match's
+/// one result type at every depth).
+#[allow(clippy::too_many_arguments)]
+fn emit_sum_cont(
+    db: &mut Db,
+    scrutinee: StructId,
+    cont: &crate::core::SumCont,
+    result_it: Option<IntTy>,
+    block_ty: BlockType,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Vec<Lir>,
+) -> Result<(), Reject> {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
+                return emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out);
+            }
+            emit(db, *body, slots, base, high, scratch_ty, layout, out)
+        }
+        crate::core::SumCont::Switch { path, arms } => emit_sum_match_arms(
+            db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out,
+        ),
     }
 }
 

@@ -255,17 +255,18 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, p, out);
             }
         }
-        // A sum match: the scrutinee + every arm body are reachable code (a self-call in an arm is a
-        // recursion edge, like an `if` branch). A sum-payload read evaluates the scrutinee.
-        crate::core::Core::MatchSum { scrutinee, arms, .. } => {
+        // A sum match: the scrutinee + every arm's continuation are reachable code (a self-call in an arm
+        // is a recursion edge, like an `if` branch). A nested switch's arms recurse. A sum-payload read
+        // evaluates the scrutinee.
+        crate::core::Core::MatchSum {
+            scrutinee, arms, ..
+        } => {
             collect_call_callees(db, scrutinee, out);
             for arm in arms {
-                collect_call_callees(db, arm.body, out);
+                collect_cont_callees(db, &arm.cont, out);
             }
         }
-        crate::core::Core::SumPayload { scrutinee, .. } => {
-            collect_call_callees(db, scrutinee, out)
-        }
+        crate::core::Core::SumPayload { scrutinee, .. } => collect_call_callees(db, scrutinee, out),
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)
@@ -273,6 +274,20 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::Param { .. }
         | crate::core::Core::LocalRef { .. }
         | crate::core::Core::Poison(_) => {}
+    }
+}
+
+/// Collect the callees reachable through a sum-match CONTINUATION — a leaf's body, or a nested switch's
+/// arms (each recursing). Mirrors the `MatchSum` arm walk so a self-call at any tree depth is a recursion
+/// edge (the `Payload`/`Elem` steps are heap reads, no calls).
+fn collect_cont_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<usize>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => collect_call_callees(db, *body, out),
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                collect_cont_callees(db, &arm.cont, out);
+            }
+        }
     }
 }
 

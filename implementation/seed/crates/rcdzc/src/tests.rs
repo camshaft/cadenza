@@ -5071,6 +5071,95 @@ mod stage1 {
     }
 
     #[test]
+    fn a_nested_sum_match_is_a_decision_tree() {
+        // The Maranget decision tree over MONOMORPHIC nested sums: `Box` wraps an `Inner` (itself a sum),
+        // so `(match b ((Full (Pos x)) x) ((Full (Neg y)) y) (Empty -1))` shares the OUTER `Full` probe
+        // and only then splits on the INNER `Pos`/`Neg` discriminant — three arms, ONE outer `sum-disc`
+        // switch whose `Full` arm recurses into an inner switch, not three re-probes. `(build n)` makes
+        // `(Full (Pos n))` for n>0, `(Full (Neg n))` for n<0, `Empty` for 0. Composed + run.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (type Inner (Pos Int64) (Neg Int64)) \
+                     (type Box (Full Inner) Empty) \
+                     (def (classify (: b Box)) \
+                        (match b \
+                          ((Box.Full (Inner.Pos x)) x) \
+                          ((Box.Full (Inner.Neg y)) y) \
+                          (Box.Empty -1))) \
+                     (def (build (: n Int64)) \
+                        (classify (if (> n 0) (Box.Full (Inner.Pos n)) \
+                                     (if (< n 0) (Box.Full (Inner.Neg n)) Box.Empty)))) \
+                     (export build))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile a nested sum match");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a nested runtime sum match imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed nested-match run");
+            return;
+        };
+        for (arg, want) in [("9", "9"), ("-3", "-3"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("build".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("composed nested-match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_exhaustive_nested_sum_match_is_rejected() {
+        // A nested match missing the inner `Neg` case with no wildcard is NON-EXHAUSTIVE at the INNER
+        // switch (the outer `Full` is reached, but its inner `Inner` leaves `Neg` uncovered). The
+        // decision tree checks exhaustiveness at EACH switch, so this is CDZ0210 — not a silent
+        // fallthrough. `(Full (Pos x))` + `Empty` leaves the inner `Neg` uncovered.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (type Inner (Pos Int64) (Neg Int64)) \
+                     (type Box (Full Inner) Empty) \
+                     (def (classify (: b Box)) \
+                        (match b ((Box.Full (Inner.Pos x)) x) (Box.Empty -1))) \
+                     (export classify))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a non-exhaustive nested match must be rejected")
+            .message;
+        assert!(
+            msg.contains("non-exhaustive") || msg.contains("cover every variant"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_nested_sum_match_folds_over_a_constant() {
+        // A constant nested scrutinee FOLDS to the selected arm through both switch levels — no runtime
+        // match. Over monomorphic `Box`/`Inner`, `(Full (Pos 7))` folds outer `Full` then inner `Pos`,
+        // binds `x = 7`, and the whole match reduces to the constant 7 (a plain scalar, no heap sum).
+        let src = "(module m \
+                     (type Inner (Pos Int64) (Neg Int64)) \
+                     (type Box (Full Inner) Empty) \
+                     (def (main) \
+                        (match (Box.Full (Inner.Pos 7)) \
+                          ((Box.Full (Inner.Pos x)) x) \
+                          ((Box.Full (Inner.Neg y)) y) \
+                          (Box.Empty -1))) \
+                     (export main))";
+        use crate::testkit::parse;
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_multi_param_function() {
         // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
         assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);

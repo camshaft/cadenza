@@ -3,6 +3,7 @@ pass	Result type for fallible operations
 pass	a Bool match with its arms in either order is exhaustive
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
+pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a binary integer literal
@@ -90,6 +91,7 @@ pass	a narrow-width parameter plus a bare literal computes inside a helper funct
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a nested application of a let-bound lambda resolves each argument at its call site
+pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested match on a runtime scrutinee
 pass	a nested runtime tuple built behind a recursive call escapes to the host
@@ -104,6 +106,7 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a pattern binds a name scoped to its branch
 pass	a program that delegates no effect is pure and never suspends
+pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a record is constructed and a field is read
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record with a runtime field is returned as a program result
@@ -132,6 +135,7 @@ pass	a runtime truncation to an unsigned byte keeps the low bits, total on negat
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -157,6 +161,7 @@ pass	a two-arm Bool match selects its second (false) arm
 pass	a type annotation consistent with the value is transparent
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
+pass	an Option carrying a Result is matched across two different sum types
 pass	an annotated value takes a narrower integer width
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an element is projected from a runtime-constructed tuple
@@ -270,7 +275,6 @@ todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
 todo	a NaN nested in a tuple compares equal under the canonical byte form
 todo	a RECURSIVE effectful walk accumulates into a list-state handler
-todo	a Result carrying a Result is matched by a nested pattern to its inner value
 todo	a Sign match missing two of three variants is non-exhaustive
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bare arithmetic keyword is rejected, not a crash
@@ -451,7 +455,6 @@ todo	a negative zero in a record field is distinct from positive zero
 todo	a negative zero nested in a tuple is distinct from positive zero
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested Result pattern selects the inner Err arm
-todo	a nested constructor payload that misses the inner variant falls through to the outer sibling
 todo	a nested element kind mismatch in equality is a type error
 todo	a nested literal pattern of the wrong type is a type error
 todo	a nested option value annotated with the wrong inner payload type is rejected
@@ -478,7 +481,6 @@ todo	a positional tuple access out of the tuple's static arity is a type error
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a program's syntax tree is an ordinary value walked recursively across calls
-todo	a program's unary variant reusing a prelude nullary variant name is unary
 todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a quantity's erased value is the identical numeric value the bare literal has
@@ -554,7 +556,6 @@ todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a runtime three-variant classifier dispatches to the middle arm
 todo	a runtime three-variant classifier dispatches to the negative arm
-todo	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 todo	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 todo	a scalar element is projected from a let-bound runtime tuple
 todo	a sequencing block discards a pure compound intermediate
@@ -639,7 +640,6 @@ todo	an AST from quasiquoting a runtime value equals the same AST built by quote
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an Int argument to a Bool-annotated parameter is rejected
 todo	an Int argument to a parameter used as a Bool condition is rejected
-todo	an Option carrying a Result is matched across two different sum types
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an absurd runtime width is rejected, not silently ignored
 todo	an annotation that contradicts the value is rejected

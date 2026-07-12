@@ -731,7 +731,11 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
 /// `Int64`, not a free var. For a MONOMORPHIC ctor the scheme has no vars and the result unify is a
 /// no-op, so the payload is the declared type directly. `None` if the ctor has no payload (a nullary
 /// variant — no binding) or its scheme is not a single-payload arrow.
-fn payload_ty_at_instantiation(db: &mut Db, variant_head: StructId, scrut_ty: &Ty) -> Option<Ty> {
+pub(crate) fn payload_ty_at_instantiation(
+    db: &mut Db,
+    variant_head: StructId,
+    scrut_ty: &Ty,
+) -> Option<Ty> {
     let mut fresh = Fresh::new();
     let scheme = crate::eval::scheme_of(db, variant_head, &mut fresh)?;
     let inst = crate::unify::instantiate(&scheme, &mut fresh);

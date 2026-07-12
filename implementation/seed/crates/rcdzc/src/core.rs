@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 /// step (into an array cell). A path is a `Vec<PathStep>` from the scrutinee root; the empty path is the
 /// scrutinee itself. This is what lets the decision-tree matcher share a prefix (one outer `sum-disc`
 /// switch) AND reach a binder at any depth (`type-system.md §Patterns Compose`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
     /// multi-payload variant's payload is a tuple, reached with a following `Elem`.)
@@ -64,17 +64,37 @@ pub enum Probe {
     Wild,
 }
 
-/// One arm of a [`Core::MatchSum`]: which variant it matches (by discriminant) and its body. A
-/// `disc: Some(k)` arm matches when `sum-disc(scrutinee) == k`; a `disc: None` arm is the wildcard/
-/// binder tail (always matches). A payload binder is not carried here — it resolves to a
-/// [`Core::SumPayload`] on its own (a reference in `body` reads the payload), so the arm needs only its
-/// discriminant probe + body occurrence.
+/// One arm of a sum SWITCH (`Core::MatchSum` or a nested [`SumCont::Switch`]): which variant it matches
+/// (by discriminant) and what happens next. A `disc: Some(k)` arm matches when the switched-on
+/// discriminant `== k`; a `disc: None` arm is the DEFAULT (wildcard) tail (always matches). What
+/// follows a match is a [`SumCont`] — a leaf body, or a NESTED switch on a deeper sub-value (the
+/// decision tree recursing to share the outer discriminant probe, `type-system.md §Patterns Compose`).
+/// A payload binder is not carried here — it resolves to a [`Core::SumPayload`] on its own (a reference
+/// in the body reads the payload at its path), so an arm needs only its discriminant + continuation.
 #[derive(Clone, PartialEq, Debug)]
 pub struct SumArm {
-    /// The variant discriminant this arm matches, or `None` for a wildcard/binder tail.
+    /// The variant discriminant this arm matches, or `None` for the DEFAULT (wildcard) tail.
     pub disc: Option<u32>,
-    /// The arm's body occurrence (lowered on demand).
-    pub body: StructId,
+    /// What happens when this arm matches — a leaf body or a nested switch.
+    pub cont: SumCont,
+}
+
+/// The CONTINUATION of a matched sum arm: either a LEAF (the arm's body occurrence, lowered on demand)
+/// or a nested SWITCH the decision tree recurses into. A nested switch dispatches on the discriminant of
+/// a DEEPER sub-value (reached by its own `path` from the root scrutinee), which is how `(Some (Some x))`
+/// and `(Some None)` share the ONE outer `Some` probe and then split on the inner discriminant — the
+/// Maranget decision-tree shape (only two tag checks on the `Some (Some …)` path, not a linear re-probe).
+#[derive(Clone, PartialEq, Debug)]
+pub enum SumCont {
+    /// The matched arm's body occurrence (lowered on demand).
+    Leaf(StructId),
+    /// A nested switch on the sub-value at `path` (from the ROOT scrutinee) — try each arm's disc, else
+    /// the default arm. `path` is the full path from the scrutinee (not relative to the parent switch),
+    /// so the backend walks it from the scrutinee handle uniformly at every depth.
+    Switch {
+        path: Vec<PathStep>,
+        arms: Vec<SumArm>,
+    },
 }
 
 /// The core (A-normal) form of one node.
@@ -114,21 +134,23 @@ pub enum Core {
     /// for a one-payload variant, or a tuple handle built from the payloads for a multi-payload variant.
     /// The nominal tag is compile-time only — the runtime holds only `(disc, payload)`.
     SumNew { disc: u32, payloads: Vec<StructId> },
-    /// A MATCH over a SUM scrutinee — arms tried top-to-bottom, each a `(SumArm)`. Present only when the
-    /// scrutinee is a RUNTIME sum (a constant sum folds to the selected arm's core in `lower`, like a
-    /// scalar match). The backend probes `sum-disc(scrutinee)` against each arm's discriminant and takes
-    /// the matching arm's body; a wildcard/binder arm (`disc: None`) is the unconditional tail. Distinct
-    /// from `Match` (a scalar scrutinee, equality probes) because a sum walks the heap handle — the
-    /// discriminant, not a scalar value, drives the dispatch. A payload binder in an arm is NOT carried
-    /// here: it resolves to a `SumPayload` independently (a reference reads `sum-payload(scrutinee)`), so
-    /// an arm needs only its discriminant + body.
+    /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
+    /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf
+    /// body or a NESTED switch on a deeper sub-value ([`SumCont`]). This is what lets `(Some (Some x))`,
+    /// `(Some None)`, and `None` share the ONE outer `Some` probe and then split on the inner
+    /// discriminant — the Maranget shape (two tag checks on the deep path, not a linear re-probe per arm).
+    /// Present only when the scrutinee is a RUNTIME sum (a constant sum folds to the selected arm's core
+    /// in `lower`, like a scalar match). The backend walks each switch's `path` from the scrutinee handle
+    /// (`sum-payload`/`arr-get`) then probes `sum-disc` against each arm's discriminant; a `disc: None`
+    /// arm is the unconditional default tail. Distinct from `Match` (a scalar scrutinee, equality probes)
+    /// because a sum walks the heap handle — the discriminant, not a scalar value, drives the dispatch. A
+    /// payload binder in an arm body is NOT carried here: it resolves to a `SumPayload` independently (a
+    /// reference reads `sum-payload` at the binder's path), so an arm needs only its discriminant + cont.
     MatchSum {
         scrutinee: StructId,
-        /// The access PATH from `scrutinee` to the sub-value whose discriminant this switch tests —
-        /// empty for the OUTER switch (dispatch on the scrutinee itself), a `[Payload]`/`[Payload,
-        /// Elem(i)]`/… path for a NESTED switch the decision tree recurses into (dispatch on
-        /// `sum-disc(<sub-value>)`). Sharing the outer switch + recursing at deeper paths is how nested
-        /// patterns compile to a decision TREE (shared prefix), not a linear re-probe.
+        /// The access PATH from `scrutinee` to the sub-value the ROOT switch tests — always empty (the
+        /// root dispatches on the scrutinee itself); a nested switch carries its own full path in
+        /// [`SumCont::Switch`]. Kept for uniform emit (every switch walks a path from the scrutinee).
         path: Vec<PathStep>,
         arms: Vec<SumArm>,
     },
