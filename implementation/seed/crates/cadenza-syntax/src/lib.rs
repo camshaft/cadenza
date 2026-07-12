@@ -20,6 +20,7 @@ pub mod lexer;
 pub mod literal;
 pub mod parser;
 pub mod printer;
+pub mod query;
 pub mod sexpr;
 pub mod span;
 pub mod spans;
