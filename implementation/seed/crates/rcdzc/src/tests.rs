@@ -9594,10 +9594,11 @@ mod bench {
 // denies a component), an Emit request is today's `Target` reached through the list, and the no-sidecar
 // path is unchanged.
 mod sidecar_driven {
+
     use crate::abi::{Artifact, Severity};
     use crate::backend::Target;
     use crate::compile::compile;
-    use crate::sidecar::{self, KIND_TYPE_INFO, KIND_USES, Query, Request};
+    use crate::sidecar::{self, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request};
     use crate::testkit::parse;
 
     /// Build the two input artifacts (the AST + a sidecar request list) for `src` and `requests`.
@@ -9842,6 +9843,64 @@ mod sidecar_driven {
         );
         // No component: the request list could not be understood, so nothing was driven.
         assert!(out.artifact("component").is_none());
+    }
+
+    #[test]
+    fn a_type_at_query_types_the_node_at_a_source_offset() {
+        // The "type at cursor" query: the CONSUMER resolves a source offset to the innermost node id
+        // (via the span table it holds), then asks `TypeAt { node }`. This proves the split — offset→node
+        // at the boundary (span-owning), node→type in the compiler (span-free). Here the literal `42` is
+        // annotated Int64; hovering it yields `Int64`.
+        let src = "(module m (def (main) (: 42 Int64)) (export main))";
+        // The consumer parses WITH spans and maps the offset of `42` to its node. Use `read_spanned`
+        // (a SINGLE top-level form stays bare) — the same root convention the real `cdz` CLI uses; the
+        // whole-program `read_all_spanned` would wrap a lone `(module …)` in `(do …)`, and the
+        // compiler's top-level scan would then miss the module's defs. The AST crosses to the compiler
+        // as BYTES (the copy-don't-depend bridge): `cadenza_syntax`'s codec produces the byte-identical
+        // form `rcdzc::codec::decode` reads, so the `StructId`s line up — which is exactly what lets the
+        // span-resolved node id name the same node inside the compiler.
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse with spans");
+        // Hover the `42` literal — the innermost node there is the literal itself, whose width the
+        // annotation `(: 42 Int64)` pins to Int64 (the type column carries the SOLVED type, not the
+        // bare-literal deferred one). `node_at_offset` maps the offset to that literal node.
+        let off = src.find("42").expect("the literal is in the source");
+        let node = spans
+            .node_at_offset(off)
+            .expect("a node at the literal offset");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    }
+
+    #[test]
+    fn a_type_at_query_for_a_non_user_node_is_total() {
+        // A node id past the program is not a user node — a DEFINED "unknown", never a crash (the query
+        // is total, guarding a malformed request the span table would never actually produce).
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(src, &[Request::Query(Query::TypeAt { node: 100_000 })]),
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_AT).as_deref(),
+            Some("unknown")
+        );
     }
 }
 
