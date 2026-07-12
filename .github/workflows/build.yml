@@ -76,7 +76,11 @@ jobs:
 
   runtime:
     name: value-heap runtime
-    runs-on: ubuntu-latest
+    # aarch64: the published runtime must be the canonical build whose content hash matches the
+    # committed REQUIRED_RUNTIME_HASH (recorded on aarch64). The runtime wasm is not yet byte-
+    # identical across host arches (a function-order canonicalizer is planned); until then we publish
+    # the aarch64 artifact so its hash is the one programs pin. See runtime-cross-arch-determinism.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust

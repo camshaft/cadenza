@@ -68,8 +68,13 @@ jobs:
     # The staleness gate: regenerates the runtime-ABI table + REQUIRED_RUNTIME_HASH in memory and
     # fails if the committed source drifted. Reproducible only on the pinned rustc (see
     # rust-toolchain.toml) — this job is why the toolchain is pinned.
-    name: codegen (ABI staleness)
-    runs-on: ubuntu-latest
+    #
+    # Runs on aarch64: REQUIRED_RUNTIME_HASH is recorded on the (aarch64) dev machines, and the
+    # runtime wasm is NOT yet byte-identical across host arches — LTO lays core/alloc functions out
+    # in a host-dependent order (same functions, same bodies, reordered). Until the planned function-
+    # order canonicalizer lands, this job must match the arch the committed hash was recorded on, or
+    # it flakes. See the memory note runtime-cross-arch-determinism.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -101,8 +106,12 @@ jobs:
     # The behavior gate: compile+run every corpus case and compare to the recorded verdict.
     # MUST build the runtime store first (`xtask build`) or every heap case is a false "runtime
     # missing" failure. `gate --check` fails only on a REGRESSION vs the committed baseline.
-    name: behavior gate
-    runs-on: ubuntu-latest
+    #
+    # Runs on aarch64 for the same reason as `codegen`: it builds the runtime whose content hash a
+    # compiled program pins, and that hash must match REQUIRED_RUNTIME_HASH (recorded on aarch64)
+    # until the runtime is byte-identical across arches. On x86 every runtime-heap case would trap
+    # with "no runtime of content address … in the store". See runtime-cross-arch-determinism.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
