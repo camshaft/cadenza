@@ -1,0 +1,43 @@
+# cdz-wasm — the browser-facing wrapper around the pure compiler core.
+#
+# A thin `wasm-bindgen` cdylib that exposes the two pure libraries the interactive guide needs from
+# JavaScript, and NO NEW COMPILER LOGIC:
+#   - `compile(text, from)`  : cadenza-syntax reads the chosen text surface into the binary AST, then
+#                              rcdzc `compile_component` lowers it to a WebAssembly component. Returns
+#                              the component bytes, or the diagnostics (code + message + node).
+#   - `render_syntax(...)`   : re-serialize one program between surfaces (ml <-> sexpr <-> debug) — the
+#                              guide's global syntax toggle, backed by `cadenza_syntax::convert`.
+#   - `render_value(bytes)`  : decode canonical value-form bytes to their `(: value type)` text, so the
+#                              run worker can display a compound result the emitted program `encode`s.
+#
+# STANDALONE WORKSPACE (like cdz-runtime): its own `[workspace]` + lockfile so the native seed
+# workspace's `cargo build`/gate never compiles wasm-bindgen. It is ALSO named in the seed workspace's
+# `exclude` list. It only ever builds for wasm32-unknown-unknown (via `wasm-pack build --target web`).
+# The path deps on `rcdzc`/`cadenza-syntax` resolve across workspaces — a path dependency needs no
+# shared membership.
+[workspace]
+
+[package]
+name = "cdz-wasm"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The pure compiler core and the front-end reader/printer — both already proven to build for
+# wasm32-unknown-unknown (their lib cores carry no native-only dependency).
+rcdzc = { path = "../rcdzc" }
+cadenza-syntax = { path = "../cadenza-syntax" }
+
+# The JS <-> wasm type bridge. `wasm-pack build --target web` runs the matching wasm-bindgen CLI over
+# the built cdylib to emit the JS glue + .d.ts the guide imports.
+wasm-bindgen = "0.2"
+
+[profile.release]
+# Small, fast-loading wasm for the browser.
+opt-level = "s"
+lto = true
+codegen-units = 1

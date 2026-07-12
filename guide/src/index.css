@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/* Cadenza guide theme tokens. A calm, warm-dark editor-forward palette; the "cadenza" accent is a
+   musical amber. Light + dark are both first-class (the toggle flips the root `.dark` class). */
+@theme {
+  --color-cadenza-50: oklch(0.98 0.02 85);
+  --color-cadenza-100: oklch(0.95 0.04 85);
+  --color-cadenza-300: oklch(0.83 0.11 80);
+  --color-cadenza-500: oklch(0.72 0.15 65);
+  --color-cadenza-600: oklch(0.64 0.15 60);
+  --color-cadenza-700: oklch(0.52 0.13 55);
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
