@@ -4,14 +4,18 @@
 //! One concern: lowering the resolved tree to the A-normal core. [`core_of`] reads a node's resolved
 //! form (via [`crate::resolve::resolved_of`]) and produces its core form, memoizing into `db.core`;
 //! it is the ONLY module that fills that column. Where a lowering decision needs the solved type it
-//! READS it (via [`crate::infer::type_of`]) rather than recomputing one
-//! (`reference-compiler.md` §One Pass Owns One Concern) — Stage 0's structural lowering does not yet
-//! branch on the type, but the read is available so the read-off discipline holds as constructs grow.
+//! READS it (via [`crate::infer::type_of`]) rather than recomputing one (`reference-compiler.md`
+//! §One Pass Owns One Concern — architecture, not duvet-cited). Lowering DOES branch on the solved
+//! type: a comparison folds constants but stays runtime for a scalar parameter, a match classifies
+//! its scrutinee, and a runtime compound's value form is templated off its `Ty`.
 //!
-//! For the Stage-0 slice every leaf is already an atom, so lowering is close to a structural map: a
-//! literal → a `Const*`, an `if` → a core `If` referencing the same child ids (lowered on their own
-//! demand). No administrative binding is introduced yet (nothing non-atomic to name); those, and the
-//! core's own fresh-id space, arrive with the stage that first needs them.
+//! Lowering is mostly a structural map — a literal → a `Const*`, an `if` → a core `If` on the same
+//! child ids (lowered on their own demand) — with three constructs that name intermediate values:
+//! [`lower_let`] A-normalizes a multi-use runtime `let` into `Core::Let`/`LocalRef` (a single-use or
+//! constant `let` is erased by copy-propagation), a lambda application β-reduces and lowers its result
+//! (so a non-recursive call monomorphizes away), and a recursive call whose callee has a determined
+//! signature lowers to a real `Core::Call`. The core's own fresh-id space is still unneeded: every
+//! binding it introduces is keyed by an existing source occurrence.
 
 use crate::arena::Slot;
 use crate::ast::{IntValue, StructId};
@@ -311,17 +315,22 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
 }
 
 /// Lower a `(match scrutinee (pattern body)…)` over a SCALAR scrutinee. Each pattern classifies to a
-/// [`Probe`] (an integer/boolean literal, or the wildcard `_`); a pattern that is neither declines
-/// (binder/sum/tuple patterns are a later increment). If the scrutinee FOLDS to a constant, select the
-/// first arm whose probe it satisfies and lower THAT arm's body (no runtime match — like the const
-/// `if` fold). Otherwise the scrutinee is a runtime scalar: emit a `Core::Match` the backend lowers to
-/// a probe chain. A match with no arm that can match a runtime scrutinee (no wildcard and the literals
-/// are not exhaustive) is non-exhaustive — for a scalar that is almost always non-exhaustive, so Stage
-/// 3a REQUIRES a wildcard tail for a runtime match (else declines, CDZ0210 territory) rather than
-/// emitting a fallthrough with no defined value.
+/// [`Probe`] (an integer/boolean literal, a binder, or the wildcard `_`); a pattern that is none of
+/// these declines (sum/tuple/record patterns walk the value heap — a separate path). If the scrutinee
+/// FOLDS to a constant, select the first arm whose probe it satisfies and lower THAT arm's body (no
+/// runtime match — like the const `if` fold). Otherwise the scrutinee is a runtime scalar: emit a
+/// `Core::Match` the backend lowers to a probe chain.
+///
+//= spec/capabilities/core-semantics.md#matching-is-exhaustive-or-rejected
+//# A match whose patterns do not cover every value of the scrutinee's type MUST be a compile-time error.
+///
+/// A wildcard/binder tail covers the rest, and for an OPEN type (an integer) it is the only cover — no
+/// finite literal set exhausts the integers. A FINITE type is exhausted by its literals instead: a Bool
+/// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
+/// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
-    // Classify each arm's pattern into a probe + keep its body. A non-scalar pattern declines the whole
-    // match (a later increment handles binder/sum/tuple patterns).
+    // Classify each arm's pattern into a probe + keep its body. A pattern that is not a scalar literal,
+    // binder, or wildcard declines the whole match (a compound pattern needs a heap walk).
     let mut probes: Vec<(crate::core::Probe, StructId)> = Vec::new();
     for &(pat, body) in arms {
         match classify_probe(db, pat) {
@@ -490,8 +499,9 @@ fn lower_recursive_call_or_decline(
         None => return Core::Poison(Reject::decline(msg)),
     };
     // The callee must have a DETERMINED signature to be emitted (its params need machine valtypes). An
-    // annotated recursive def qualifies (types by absorption); an unannotated one does not yet — it
-    // declines until the connected parameter solve (A2) lands.
+    // annotated recursive def qualifies (types by absorption); an unannotated one is solved by the
+    // connected parameter solve (`solve_recursive_params`, A2) — it stays undetermined only when no use
+    // in the body constrains a parameter (it grounds to `Any`), in which case the call still declines.
     if crate::infer::def_scheme(db, callee).is_none() {
         trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
         return Core::Poison(Reject::decline(
