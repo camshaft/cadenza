@@ -537,30 +537,40 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
         return;
     }
 
-    // Grade every case, collecting a verdict per description (for the baseline) plus the tally.
+    // Gather every case (file then case order) into one flat list, then grade them in PARALLEL. Each
+    // case is independent — `grade` only READS `tools`/`store` and spawns its own subprocess pipeline,
+    // with no shared mutable state — so grading is embarrassingly parallel. The serial loop spent ~all
+    // its wall time waiting on ~3 spawned processes per case (cdz-syntax → rcdzc → cdz-run) over 1000+
+    // cases; fanning the cases across cores collapses that wait. Order is PRESERVED (each result is
+    // written to its own index) because the baseline compare (`check_baseline`/`save_baseline`) is
+    // positional — a race in verdict order would spuriously flag regressions.
+    let records: Vec<CorpusRecord> = files
+        .iter()
+        .flat_map(|file| read_corpus(&tools, file))
+        .collect();
+    let graded = grade_all_parallel(&tools, &opts.store, records);
+
+    // Reassemble the tally + the ordered verdict list from the in-order graded results.
     let (mut pass, mut todo, mut fail) = (0u32, 0u32, 0u32);
     let mut failures: Vec<String> = Vec::new();
     let mut verdicts: Vec<(String, Verdict)> = Vec::new();
-
-    for file in &files {
-        for rec in read_corpus(&tools, file) {
-            let v = match grade(&tools, &opts.store, &rec) {
-                Grade::Pass => {
-                    pass += 1;
-                    Verdict::Pass
-                }
-                Grade::Todo => {
-                    todo += 1;
-                    Verdict::Todo
-                }
-                Grade::Fail(why) => {
-                    fail += 1;
-                    failures.push(format!("{}: {why}", rec.description));
-                    Verdict::Fail
-                }
-            };
-            verdicts.push((rec.description, v));
-        }
+    for (description, grade) in graded {
+        let v = match grade {
+            Grade::Pass => {
+                pass += 1;
+                Verdict::Pass
+            }
+            Grade::Todo => {
+                todo += 1;
+                Verdict::Todo
+            }
+            Grade::Fail(why) => {
+                fail += 1;
+                failures.push(format!("{description}: {why}"));
+                Verdict::Fail
+            }
+        };
+        verdicts.push((description, v));
     }
 
     println!("\ngate: {pass} pass, {todo} todo, {fail} fail");
@@ -588,6 +598,63 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     if fail > 0 {
         std::process::exit(1);
     }
+}
+
+/// Grade every record in PARALLEL, returning `(description, grade)` in the SAME order as `records`.
+///
+/// The work is process-bound (each `grade` spawns cdz-syntax → rcdzc → cdz-run and waits), so a pool
+/// of worker threads pulling from a shared cursor keeps many pipelines in flight at once. Uses
+/// `std::thread::scope` — the workers borrow `tools`/`store`/`records` for the scope's lifetime, so no
+/// `Arc`/clone and no extra dependency. Order is preserved by writing each result into its own slot
+/// (indexed by the case's position), never by push order — the baseline compare is positional, so a
+/// reordering would read as a spurious regression. The worker count is bounded by the machine's
+/// parallelism but not below 1; the cases-per-core ratio is high, so a simple shared atomic cursor
+/// (no work-stealing) balances well enough.
+fn grade_all_parallel(
+    tools: &Tools,
+    store: &Option<PathBuf>,
+    records: Vec<CorpusRecord>,
+) -> Vec<(String, Grade)> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let n = records.len();
+    // One result slot per case, filled by index (order-preserving). `Mutex<Option<_>>` is the simplest
+    // sound cell here; contention is nil (each slot is written once, by one worker).
+    let slots: Vec<Mutex<Option<(String, Grade)>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let cursor = AtomicUsize::new(0);
+
+    // Cap workers at the machine's parallelism (min 1). More threads than cores buys nothing here —
+    // the pipeline stages are separate processes the OS already schedules across cores.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let cursor = &cursor;
+            let slots = &slots;
+            let records = &records;
+            scope.spawn(move || {
+                loop {
+                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                    if i >= records.len() {
+                        break;
+                    }
+                    let rec = &records[i];
+                    let grade = grade(tools, store, rec);
+                    *slots[i].lock().unwrap() = Some((rec.description.clone(), grade));
+                }
+            });
+        }
+    });
+
+    // All workers joined at scope end; every slot is filled exactly once.
+    slots
+        .into_iter()
+        .map(|slot| slot.into_inner().unwrap().expect("every case graded"))
+        .collect()
 }
 
 /// Run only the case(s) whose description contains `needle`, printing each one's normalized program,
