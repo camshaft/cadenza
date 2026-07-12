@@ -3084,6 +3084,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_update_replaces_and_its_length_is_unchanged() {
+        // `List.update(l, i, x)` replaces the element at index `i`, returning a new list of the SAME
+        // length (a replacement, not a growth). The result never folds (a `Core::ListUpdate`), so
+        // `List.len` of it emits the runtime `vec-len`: `(List.len (List.update (list 10 20 30) 1 99))`
+        // = 3. Pins the runtime `vec-update` path and that update preserves the element count.
+        let Some(out) = run_on_heap(
+            "(module m (def (main) ((. List len) ((. List update) (list 10 20 30) 1 99))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "3", "update preserves length");
+    }
+
+    #[test]
+    fn a_list_update_type_mismatch_is_rejected() {
+        // `List.update : ∀a. (List a) → Int64 → a → (List a)` — the replacement element must match the
+        // list's element type. `(List.update (list 1 2 3) 1 true)` puts a Bool where an Int64 was — a
+        // non-homogeneous result (CDZ0203), the `List.update` companion of the push mismatch. Pins that
+        // the update type lambda's element unification enforces homogeneity like push does.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. List len) ((. List update) (list 1 2 3) 1 true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_constant_scrutinee_folds_to_the_selected_arm() {
         // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
         assert_eq!(

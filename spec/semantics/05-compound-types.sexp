@@ -2006,15 +2006,15 @@
 (case "updating a list slot with an element of a different type is a type error"
   (doc    "`(List.update (list 1 2 3) 1 true)` replaces an Int64 slot with a Bool — the result is not
            homogeneous (collections-and-text.md #A List Is An Ordered Homogeneous Sequence), a type error
-           (CDZ0201), the `List.update` companion of the `List.push` case above. Like push, an unchecked
-           update miscompiles by rendering the result at the replacement element's type: `(List.update
-           (list 10 20 30) 0 false)` → `(list false true true)`, projecting the untouched integers 20 and
-           30 as booleans — a wrong value. Pins that both functional-construction operators enforce the
-           element-type rule the literal does. A generation that does not yet check the replacement
-           element's type declines rather than building the mistyped list.")
+           (CDZ0203, the same element-type conflict the `List.push` and literal cases raise). Like push,
+           an unchecked update miscompiles by rendering the result at the replacement element's type:
+           `(List.update (list 10 20 30) 0 false)` → `(list false true true)`, projecting the untouched
+           integers 20 and 30 as booleans — a wrong value. Pins that both functional-construction
+           operators enforce the element-type rule the literal does. A generation that does not yet check
+           the replacement element's type declines rather than building the mistyped list.")
   (needs     collections)
   (input     (List.update (list 1 2 3) 1 true))
-  (error     CDZ0201))
+  (error     CDZ0203))
 
 ; Homogeneity is by element TYPE, and two compound values of the same KIND but different SHAPE are
 ; different types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match:

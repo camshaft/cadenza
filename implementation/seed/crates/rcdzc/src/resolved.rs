@@ -158,6 +158,10 @@ pub enum Prim {
     /// `List.concat` — concatenate two lists of the same element type into one. `∀a. (List a) → (List a)
     /// → (List a)`. Lowers to the runtime `vec-concat` op.
     ListConcat,
+    /// `List.update` — replace the element at an index, returning the new list. `∀a. (List a) → Int64 →
+    /// a → (List a)`. Lowers to the runtime `vec-update` op (persistent — returns a new handle; an
+    /// out-of-bounds index TRAPS). The functional-construction companion of `List.push`.
+    ListUpdate,
     /// `List : Type → Type` — the list-TYPE constructor. `(List Int64)` in type position builds the
     /// type-value `Ty::List(Int64)` (used in annotations `(: e (List Int64))` and in `List.len`'s scheme
     /// `∀a. (List a) → Int64`). One element type, unlike `Tuple`'s variadic — the list companion of the
@@ -202,6 +206,7 @@ impl Prim {
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),
             "list-concat" => Some(Prim::ListConcat),
+            "list-update" => Some(Prim::ListUpdate),
             "List" => Some(Prim::ListCtor),
             _ => None,
         }

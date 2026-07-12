@@ -176,11 +176,13 @@ fn list_module(ast: &mut Arenas) -> StructId {
     let len_lambda = list_len_type_lambda(ast);
     let push_lambda = list_push_type_lambda(ast);
     let concat_lambda = list_concat_type_lambda(ast);
+    let update_lambda = list_update_type_lambda(ast);
     let mut children = vec![head, apply_field];
     for (name, prim, lambda) in [
         ("len", "list-len", len_lambda),
         ("push", "list-push", push_lambda),
         ("concat", "list-concat", concat_lambda),
+        ("update", "list-update", update_lambda),
     ] {
         let op = list_op_record(ast, prim, lambda);
         let k = push_atom(ast, Leaf::Name(name.to_string()));
@@ -229,6 +231,20 @@ fn list_concat_type_lambda(ast: &mut Arenas) -> StructId {
     let inner = arrow_type(ast, list_2, list_r); // (-> (List a) (List a))
     let list_1 = list_a_type(ast);
     let body = arrow_type(ast, list_1, inner); // (-> (List a) (-> (List a) (List a)))
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (a) (-> (List a) (-> Int64 (-> a (List a)))))` for `List.update` — `∀a. (List a)
+/// → Int64 → a → (List a)`: take a list, an Int64 index, and a replacement element of the list's type,
+/// return the new list. The functional-construction companion of `List.push`.
+fn list_update_type_lambda(ast: &mut Arenas) -> StructId {
+    let list_r = list_a_type(ast);
+    let elem = push_atom(ast, Leaf::Name("a".to_string()));
+    let elem_arrow = arrow_type(ast, elem, list_r); // (-> a (List a))
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let index_arrow = arrow_type(ast, int64, elem_arrow); // (-> Int64 (-> a (List a)))
+    let list_l = list_a_type(ast);
+    let body = arrow_type(ast, list_l, index_arrow); // (-> (List a) (-> Int64 (-> a (List a))))
     list_type_lambda(ast, body)
 }
 

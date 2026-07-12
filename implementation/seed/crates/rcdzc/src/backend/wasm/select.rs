@@ -55,6 +55,9 @@ const OP_VEC_PUSH: &str = "vec-push";
 const OP_VEC_LEN: &str = "vec-len";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
+/// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
+/// out-of-bounds `index` traps).
+const OP_VEC_UPDATE: &str = "vec-update";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
@@ -106,6 +109,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         Core::ListConcat { lhs, rhs } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
+        // `List.update` CONSUMES the list and the replacement element into the new list; the `index` is a
+        // scalar (passed by value, never a heap handle) so it cannot escape into the result.
+        Core::ListUpdate { list, elem, .. } => {
+            binding_escapes(db, list, binder, false) || binding_escapes(db, elem, binder, false)
         }
         // A call CONSUMES its arguments.
         Core::Call { args, .. } => args.iter().any(|&a| binding_escapes(db, a, binder, false)),
@@ -316,6 +324,16 @@ pub fn collect_used_ops(
             out.insert(OP_VEC_CONCAT);
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
+        }
+        // `List.update` uses `vec-update` (the replacement element boxed by its type, like a push).
+        Core::ListUpdate { list, index, elem } => {
+            out.insert(OP_VEC_UPDATE);
+            if let Ok(Some(op)) = box_op(db, elem) {
+                out.insert(op);
+            }
+            collect_used_ops(db, list, out);
+            collect_used_ops(db, index, out);
+            collect_used_ops(db, elem, out);
         }
         Core::If { cond, then_, else_ } => {
             collect_used_ops(db, cond, out);
@@ -1450,6 +1468,28 @@ fn emit(
             emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
             emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
             out.push(Lir::CallImport(OP_VEC_CONCAT)); // → [a++b]
+            Ok(())
+        }
+        // `List.update(l, i, x)` — emit the list handle, the index WRAPPED to the `u32` the op takes (the
+        // language index is `Int64`, an i64 slot), then the element boxed to a u32 handle by its type (a
+        // narrow int extended i32→i64 first, exactly as a push), then `vec-update` (RETURNS the new list
+        // handle; an out-of-bounds index traps). Order matches `vec-update(v, index, elem)`.
+        Core::ListUpdate { list, index, elem } => {
+            emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
+            emit(db, index, slots, base, high, scratch_ty, layout, out)?; // [list, index:i64]
+            out.push(Lir::I32WrapI64); // [list, index:i32] — vec-update takes a u32 index
+            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, index, elem]
+            if let Some(op) = box_op(db, elem)? {
+                if let Some(m) = is_narrow_int(db, elem) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::CallImport(op)); // [list, index, handle]
+            }
+            out.push(Lir::CallImport(OP_VEC_UPDATE)); // → [list']
             Ok(())
         }
         // A runtime SUM construction — `(Option.Some 5)` or a nullary `None`. Build the PAYLOAD handle,

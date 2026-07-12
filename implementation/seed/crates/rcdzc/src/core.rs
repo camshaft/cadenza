@@ -154,6 +154,15 @@ pub enum Core {
     /// `List.concat` — concatenate `lhs` and `rhs` into one list (runtime `vec-concat`). Both are list
     /// handles of the same element type.
     ListConcat { lhs: StructId, rhs: StructId },
+    /// `List.update` — replace the element at `index` of `list` with `elem`, returning the new list
+    /// (runtime `vec-update`; persistent, no mutation; an out-of-bounds `index` traps). `index` is an
+    /// `Int64` occurrence wrapped to the `u32` the op takes; `elem` is boxed by its type before the
+    /// update, exactly as a list element is at construction/push.
+    ListUpdate {
+        list: StructId,
+        index: StructId,
+        elem: StructId,
+    },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

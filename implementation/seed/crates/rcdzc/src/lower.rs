@@ -443,6 +443,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         }
                     }
                 }
+                // `List.update` — replace the element at an index (runtime `vec-update`). Three args:
+                // the list, the Int64 index, the replacement element. Any poison operand propagates;
+                // otherwise emit the runtime op (no constant fold — a persistent update builds a new
+                // heap value, like push/concat).
+                Some(Prim::ListUpdate) if args.len() == 3 => {
+                    if let Core::Poison(r) = core_of(db, args[0]) {
+                        Core::Poison(r)
+                    } else if let Core::Poison(r) = core_of(db, args[1]) {
+                        Core::Poison(r)
+                    } else if let Core::Poison(r) = core_of(db, args[2]) {
+                        Core::Poison(r)
+                    } else {
+                        Core::ListUpdate {
+                            list: args[0],
+                            index: args[1],
+                            elem: args[2],
+                        }
+                    }
+                }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2244,6 +2263,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListLen
         | Prim::ListPush
         | Prim::ListConcat
+        | Prim::ListUpdate
         | Prim::ListCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
@@ -2497,6 +2517,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",
         Prim::ListConcat => "list-concat",
+        Prim::ListUpdate => "list-update",
         Prim::ListCtor => "List",
     }
 }

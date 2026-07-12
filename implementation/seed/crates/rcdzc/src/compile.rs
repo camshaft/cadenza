@@ -340,6 +340,12 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
+        // `List.update` unconditionally evaluates all three operands — descend into each.
+        Core::ListUpdate { list, index, elem } => {
+            collect_reached_poisons(db, list, out);
+            collect_reached_poisons(db, index, out);
+            collect_reached_poisons(db, elem, out);
+        }
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
             for p in payloads {
