@@ -121,6 +121,19 @@ fn parse_spanned(
     }
 }
 
+/// Decode `ast_bytes` into a `Db` and run one sidecar `Query`, returning its result artifact's bytes
+/// as UTF-8 text. This is the ONE path every IDE fact read goes through — the browser IDE speaks the
+/// same sidecar query vocabulary as the `cdz` CLI (`cdz type-at`/`def`/`check`/`uses`), so a fact the
+/// editor shows equals what the CLI would answer, by construction. (The span table stays a front-end
+/// concern: the consumer maps a query's node ids to source ranges, per the query-engine contract.)
+fn run_query_text(ast_bytes: &[u8], query: &rcdzc::Query) -> Result<String, JsError> {
+    let arenas = rcdzc::codec::decode(ast_bytes)
+        .ok_or_else(|| JsError::new("internal: re-encoded AST failed to decode"))?;
+    let mut db = rcdzc::db::Db::load(arenas);
+    let result = rcdzc::sidecar::run_query(&mut db, query);
+    String::from_utf8(result.bytes).map_err(|_| JsError::new("query result was not valid UTF-8"))
+}
+
 /// Compile Cadenza source in the given surface format to a WebAssembly component.
 ///
 /// The pipeline is exactly the reference toolchain's, run in-process: read `text` (in `from` format)
@@ -242,16 +255,35 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
             }]);
         }
     };
-    let arenas = match rcdzc::codec::decode(&ast_bytes) {
-        Some(a) => a,
-        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
-    };
-    let mut db = rcdzc::db::Db::load(arenas);
-    let diags = rcdzc::diagnostics(&mut db);
-    Ok(diags
-        .iter()
-        .map(|d| to_js_diag(d, spans.as_ref()))
-        .collect())
+    // Ride the first-class `Diagnostics` sidecar query (the same one `cdz check` runs) — a total fault
+    // read that needs no export. Its result is one fault per line: `severity<TAB>code<TAB>node<TAB>msg`
+    // (`code`/`node` are `-` when absent). We resolve each fault's node id to a byte span here.
+    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Diagnostics)?;
+    let mut out = Vec::new();
+    for line in text_out.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(4, '\t');
+        let severity = parts.next().unwrap_or("error");
+        let code = parts.next().unwrap_or("-");
+        let node_field = parts.next().unwrap_or("-");
+        let message = parts.next().unwrap_or("").to_string();
+        let node = node_field.parse::<u32>().ok();
+        let (span_from, span_to) = node
+            .and_then(|n| spans.as_ref()?.get(cadenza_syntax::ast::StructId(n)))
+            .map(|s| (s.start as u32, s.end as u32))
+            .unwrap_or((0, 0));
+        out.push(Diagnostic {
+            error: severity != "warning",
+            code: if code == "-" { String::new() } else { code.to_string() },
+            message,
+            node: node.unwrap_or(u32::MAX),
+            from: span_from,
+            to: span_to,
+        });
+    }
+    Ok(out)
 }
 
 /// The inferred type at a source byte offset — for a hover tooltip. Finds the innermost user node
@@ -286,16 +318,10 @@ pub fn type_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<TypeAt
     let span = spans
         .get(node)
         .expect("node_at_offset returned a spanned node");
-    let arenas = match rcdzc::codec::decode(&ast_bytes) {
-        Some(a) => a,
-        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
-    };
-    let mut db = rcdzc::db::Db::load(arenas);
-    // The node id crosses the copy-don't-depend boundary as its raw index (`cadenza_syntax` and
-    // `rcdzc` each have their own `StructId`, but the byte-identical codec keeps the index space
-    // aligned — the same invariant `type-at` relies on).
-    let ty = rcdzc::infer::type_of(&mut db, rcdzc::ast::StructId(node.0));
-    let name = ty.render_name();
+    // Ride the `TypeAt` sidecar query (the same one `cdz type-at` runs) — the node id crosses the
+    // copy-don't-depend boundary as its raw index (the byte-identical codec keeps the index space
+    // aligned). The result is the rendered type text (or "unknown" for a non-user/unsolved node).
+    let name = run_query_text(&ast_bytes, &rcdzc::Query::TypeAt { node: node.0 })?;
     Ok(Some(TypeAt {
         type_name: name,
         from: span.start as u32,
@@ -335,24 +361,17 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
     let ref_span = spans
         .get(node)
         .expect("node_at_offset returned a spanned node");
-    let arenas = match rcdzc::codec::decode(&ast_bytes) {
-        Some(a) => a,
-        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
+    // Ride the `ResolveOf` sidecar query (the same one `cdz def` runs): it resolves the reference at
+    // this node to its defining occurrence's node id (following `Ref`/`Lambda`), or an empty result for
+    // a non-navigable token or a span-less binding. One node id, or empty.
+    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::ResolveOf { node: node.0 })?;
+    let Some(target_id) = text_out.lines().next().and_then(|l| l.trim().parse::<u32>().ok()) else {
+        return Ok(None); // not a navigable reference
     };
-    let mut db = rcdzc::db::Db::load(arenas);
-    // A name reference resolves to the occurrence it denotes:
-    //   - `Ref { value }`  — a nullary def's body, a `let` initializer, a parameter binder, a sum-type
-    //                        or prelude binding (prelude ones have no span, filtered below);
-    //   - `Lambda { body }` — a def WITH parameters (a function). Its body is where the definition is.
-    // That occurrence's source span IS the definition to jump to.
-    let target = match rcdzc::resolve::resolved_of(&mut db, rcdzc::ast::StructId(node.0)) {
-        rcdzc::resolved::Resolved::Ref { value } => value,
-        rcdzc::resolved::Resolved::Lambda { body, .. } => body,
-        _ => return Ok(None), // not a navigable reference (a literal, a prim, an unbound name, …)
-    };
+    let target = cadenza_syntax::ast::StructId(target_id);
     // The target must be a USER node with a source span (a prelude binding has none — nothing to jump
     // to in the editor). The span table is keyed in the shared index space (codec keeps ids aligned).
-    let Some(def_span) = spans.get(cadenza_syntax::ast::StructId(target.0)) else {
+    let Some(def_span) = spans.get(target) else {
         return Ok(None);
     };
     // Don't offer a no-op jump to the same place the cursor already is.
@@ -454,6 +473,44 @@ pub fn render_value(bytes: &[u8]) -> Result<String, JsError> {
     let text = convert::convert(bytes, Format::Binary, Format::Sexpr)
         .map_err(|e| JsError::new(&format!("decode value form: {}", e.0)))?;
     String::from_utf8(text).map_err(|_| JsError::new("decoded value was not valid UTF-8"))
+}
+
+/// Emit the program as Rust SOURCE — the compiler's second backend. Cadenza is target-neutral above
+/// the backend seam, so the same typed core lowers to a self-contained `.rs` module (one `pub fn` per
+/// export). `is_async` selects the ASYNC, gas-metered calling convention (every emitted function is an
+/// `async fn` threading an `env`, so a long computation yields rather than blocking) instead of the
+/// plain synchronous form. Returns the Rust text, or the first error's message (a program that
+/// declines emits no source). Lets the playground show "what this compiles to" beyond wasm.
+#[wasm_bindgen]
+pub fn emit_rust(text: &str, from: &str, is_async: bool) -> Result<String, JsError> {
+    let from = parse_format(from)?;
+    let (ast_bytes, _spans) = parse_spanned(text, from).map_err(|m| JsError::new(&m))?;
+    let target = if is_async {
+        rcdzc::Target::RustAsync
+    } else {
+        rcdzc::Target::Rust
+    };
+    let out = rcdzc::compile(
+        &[rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes)],
+        &[target],
+    );
+    match out.artifact(target.artifact_kind()) {
+        Some(bytes) => {
+            String::from_utf8(bytes.to_vec()).map_err(|_| JsError::new("Rust output was not valid UTF-8"))
+        }
+        None => {
+            let msg = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == rcdzc::Severity::Error)
+                .map(|d| match &d.code {
+                    Some(c) => format!("{c}: {}", d.message),
+                    None => d.message.clone(),
+                })
+                .unwrap_or_else(|| "this program does not emit Rust".to_string());
+            Ok(format!("// declined:\n// {msg}"))
+        }
+    }
 }
 
 /// The content-address (SHA-256, hex) of the value-heap runtime this compiler emits imports against.

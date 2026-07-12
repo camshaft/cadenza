@@ -51,6 +51,11 @@ export function renderValue(bytes: Uint8Array): Promise<string> {
   return client().renderValue(bytes);
 }
 
+/// Emit the program as Rust source (sync, or gas-metered async) — for the playground's output views.
+export function emitRust(text: string, from: Surface, isAsync: boolean): Promise<string> {
+  return client().emitRust(text, from, isAsync);
+}
+
 export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }

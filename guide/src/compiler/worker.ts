@@ -12,6 +12,7 @@ import init, {
   type_at as wasmTypeAt,
   define_at as wasmDefineAt,
   references_at as wasmReferencesAt,
+  emit_rust as wasmEmitRust,
   render_syntax as wasmRenderSyntax,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
@@ -118,6 +119,12 @@ const api = {
   async renderValue(bytes: Uint8Array): Promise<string> {
     await ensureReady();
     return wasmRenderValue(bytes);
+  },
+
+  /// Emit the program as Rust source — sync or (gas-metered) async — for the "Compiled" output views.
+  async emitRust(text: string, from: Surface, isAsync: boolean): Promise<string> {
+    await ensureReady();
+    return wasmEmitRust(text, from, isAsync);
   },
 
   async runtimeHash(): Promise<string> {

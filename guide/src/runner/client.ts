@@ -5,7 +5,7 @@
 /// timeout; on timeout we `terminate()` the (now-dead) worker, report "timed out", and drop the
 /// reference so the NEXT run spins up a fresh worker. A completed run reuses the same worker.
 
-import { renderValue } from "../compiler/client.ts";
+import { renderValue, renderSyntax, type Surface } from "../compiler/client.ts";
 import runtimeUrl from "../wasm/runtime.wasm?url";
 import type { RunJob, RunResult } from "./runWorker.ts";
 
@@ -35,9 +35,18 @@ function loadRuntime(): Promise<Uint8Array | null> {
   return runtimeBytes;
 }
 
-/// Execute a compiled component, rendering a compound value to canonical text. Serialized: one run
-/// at a time (the guide runs a single example on demand), so a simple `busy` guard suffices.
-export async function run(component: Uint8Array): Promise<RunOutcome> {
+/// Render a value form (an s-expression `(: value type)` string) into the reader's chosen surface, so
+/// the Result reads in the same syntax as the code (`5 : Int64` vs `(: 5 Int64)`, `tuple(1, 2)` vs
+/// `(tuple 1 2)`). A no-op for the s-expr surface; falls back to the raw text if it won't re-render.
+async function renderValueInSurface(sexprValue: string, surface: Surface): Promise<string> {
+  if (surface === "sexpr") return sexprValue;
+  return renderSyntax(sexprValue, "sexpr", surface).catch(() => sexprValue);
+}
+
+/// Execute a compiled component, rendering a compound value to canonical text in `surface` (default
+/// s-expr). Serialized: one run at a time (the guide runs a single example on demand), so a simple
+/// `busy` guard suffices.
+export async function run(component: Uint8Array, surface: Surface = "sexpr"): Promise<RunOutcome> {
   if (busy) return { kind: "error", message: "a run is already in progress" };
   busy = true;
   try {
@@ -70,9 +79,10 @@ export async function run(component: Uint8Array): Promise<RunOutcome> {
       case "timeout":
         return { kind: "timeout" };
       case "scalar":
+        // A scalar renders identically in both surfaces (a bare number/bool), so no re-render needed.
         return { kind: "value", text: raw.value };
       case "value-bytes":
-        return { kind: "value", text: await renderValue(raw.bytes) };
+        return { kind: "value", text: await renderValueInSurface(await renderValue(raw.bytes), surface) };
       case "trap":
         return { kind: "trap", message: raw.message };
       default:

@@ -102,7 +102,7 @@ export function useCadenzaEditor(
     const program = wrap ? wrapModule(text, shownSurface.current) : text;
     const out = await compile(program, shownSurface.current);
     if (!out.component) return { kind: "declined", diags: out.diagnostics };
-    const result: RunOutcome = await runComponent(out.component);
+    const result: RunOutcome = await runComponent(out.component, shownSurface.current);
     switch (result.kind) {
       case "value":
         return { kind: "value", text: result.text };
