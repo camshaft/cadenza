@@ -3340,7 +3340,9 @@ mod match_engine {
         // A wrapping OOB index (2^32 → 0) must TRAP, not silently update element 0.
         assert!(
             matches!(
-                run("(module m (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main))"),
+                run(
+                    "(module m (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main))"
+                ),
                 cdz_run::Outcome::Trap(_)
             ),
             "an index that wraps below the length must trap, not alias into a valid slot"
@@ -3348,7 +3350,9 @@ mod match_engine {
         // A real OOB index (no wrap) still traps.
         assert!(
             matches!(
-                run("(module m (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main))"),
+                run(
+                    "(module m (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main))"
+                ),
                 cdz_run::Outcome::Trap(_)
             ),
             "a genuinely out-of-bounds index must trap"

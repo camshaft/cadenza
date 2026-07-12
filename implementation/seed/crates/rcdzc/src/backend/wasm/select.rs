@@ -975,7 +975,9 @@ fn emit_tail(
                 )?;
                 return Ok(());
             }
-            emit_call_args(db, callee, &args, slots, base, high, scratch_ty, layout, out)?;
+            emit_call_args(
+                db, callee, &args, slots, base, high, scratch_ty, layout, out,
+            )?;
             match layout.abs(callee) {
                 Some(idx) => {
                     trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
@@ -1829,7 +1831,9 @@ fn emit(
         // layout's emission order). The callee is reachable (`layout` added it), so its index exists; a
         // callee not in the emission order is a compiler bug (reachability missed it) → decline.
         Core::Call { callee, args } => {
-            emit_call_args(db, callee, &args, slots, base, high, scratch_ty, layout, out)?;
+            emit_call_args(
+                db, callee, &args, slots, base, high, scratch_ty, layout, out,
+            )?;
             match layout.abs(callee) {
                 Some(idx) => {
                     trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit runtime call");

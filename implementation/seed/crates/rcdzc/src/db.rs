@@ -365,8 +365,7 @@ pub struct Db {
     /// non-lambda head / recursive / partial application — the caller falls back to its other path).
     /// Keyed by `(head, args.to_vec())` — the same identity `build_cache` uses for a constructor
     /// application, here for a function application.
-    pub(crate) reduce_cache:
-        crate::fxhash::FxHashMap<(StructId, Vec<StructId>), Option<StructId>>,
+    pub(crate) reduce_cache: crate::fxhash::FxHashMap<(StructId, Vec<StructId>), Option<StructId>>,
 
     /// Memo of the FAULTS a subtree collects (`infer::collect`) — the type-agreement rejections reachable
     /// from a node, keyed by its occurrence. A node's faults are a pure function of its resolved

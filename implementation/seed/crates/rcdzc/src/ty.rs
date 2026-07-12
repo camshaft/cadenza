@@ -334,20 +334,21 @@ impl Ty {
             // "projecting a tuple element of type ?0 needs the value heap". Joining the args makes the
             // conditional's type ORDER-INDEPENDENT: the payload-carrying branch fixes the parameter in
             // either position. (`agrees_with` guarantees same `decl` + arg arity.)
-            (Ty::Sum { decl, name, args: aa }, Ty::Sum { args: ab, .. })
-                if self.agrees_with(other) =>
-            {
+            (
                 Ty::Sum {
-                    decl: *decl,
-                    name: name.clone(),
-                    args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
-                }
-            }
+                    decl,
+                    name,
+                    args: aa,
+                },
+                Ty::Sum { args: ab, .. },
+            ) if self.agrees_with(other) => Ty::Sum {
+                decl: *decl,
+                name: name.clone(),
+                args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
+            },
             // Two agreeing lists join their element type — a deferred element (`List ?0`, the empty list)
             // is fixed by the other branch's `List Int64`, the list analogue of the sum-arg join above.
-            (Ty::List(a), Ty::List(b)) if self.agrees_with(other) => {
-                Ty::List(Box::new(a.join(b)))
-            }
+            (Ty::List(a), Ty::List(b)) if self.agrees_with(other) => Ty::List(Box::new(a.join(b))),
             _ => self.clone(),
         }
     }

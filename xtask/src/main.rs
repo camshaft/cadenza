@@ -394,6 +394,7 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
 ///   1. `wasm-pack build --target web --release` on `crates/cdz-wasm` → the JS glue + wasm in `pkg/`.
 ///   2. the guide's `scripts/stage-wasm.mjs` → copies `pkg/` and the pinned value-heap runtime into
 ///      `guide/src/wasm/`, where Vite picks them up.
+///
 /// Run `cargo xtask build` first so the store holds the runtime whose hash the compiler pins.
 fn guide_wasm(paths: &Paths, store: Option<PathBuf>) {
     let sh = Shell::new().expect("open a shell for the guide wasm build");

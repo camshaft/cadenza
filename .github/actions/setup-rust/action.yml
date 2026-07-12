@@ -54,6 +54,7 @@ runs:
       shell: bash
       run: |
         curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-        cargo binstall -y --no-confirm cargo-component@0.21.1 wasm-tools@1.253.0
+        # `-y` IS `--no-confirm`; passing both errors "cannot be used multiple times".
+        cargo binstall -y cargo-component@0.21.1 wasm-tools@1.253.0
         cargo component --version
         wasm-tools --version
