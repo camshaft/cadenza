@@ -218,11 +218,17 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
     let ty_val = intrinsic_node(ast, "bytes-ty");
     let t_field = meta_field(ast, "t", ty_val);
     // One field per realized operation — each an operator record `(name <op-record>)` whose `(meta t)`
-    // is a monomorphic arrow type. `of : (List Int64) → Bytes`; `len : Bytes → Int64`.
+    // is a monomorphic arrow type. `of : (List Int64) → Bytes`; `len : Bytes → Int64`; `at : Bytes →
+    // Int64 → (Option Int64)` (the FALLIBLE indexed byte read — the byte companion of `List.at`).
     let of_type = bytes_of_type(ast);
     let len_type = bytes_len_type(ast);
+    let at_type = bytes_at_type(ast);
     let mut children = vec![head, t_field];
-    for (name, prim, ty) in [("of", "bytes-of", of_type), ("len", "bytes-len", len_type)] {
+    for (name, prim, ty) in [
+        ("of", "bytes-of", of_type),
+        ("len", "bytes-len", len_type),
+        ("at", "bytes-at", at_type),
+    ] {
         let op = list_op_record(ast, prim, ty);
         let k = push_atom(ast, Leaf::Name(name.to_string()));
         children.push(push_list(ast, vec![k, op]));
@@ -254,6 +260,23 @@ fn string_module(ast: &mut Arenas) -> StructId {
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
+}
+
+/// The type `(-> Bytes (-> Int64 (Option Int64)))` for `Bytes.at` — the FALLIBLE indexed read: take a
+/// byte sequence and an `Int64` index, return `(Option Int64)` (`Some` of the byte in range, `None`
+/// out of range). Monomorphic (a byte is always an `Int64`), unlike `List.at`'s element-generic scheme.
+/// The `Bytes` parameter is `(intrinsic bytes-ty)` directly (a bare name would mis-resolve inside the
+/// module being built); `Option`/`Int64` are ordinary prelude names resolved when the scheme reduces.
+fn bytes_at_type(ast: &mut Arenas) -> StructId {
+    let option_int64 = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+        push_list(ast, vec![option, int64])
+    };
+    let int64_idx = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let index_arrow = arrow_type(ast, int64_idx, option_int64); // (-> Int64 (Option Int64))
+    let bytes = intrinsic_node(ast, "bytes-ty");
+    arrow_type(ast, bytes, index_arrow) // (-> Bytes (-> Int64 (Option Int64)))
 }
 
 /// The type `(-> (List Int64) Bytes)` for `Bytes.of` — a monomorphic arrow (no type parameter), taking

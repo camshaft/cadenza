@@ -3503,6 +3503,71 @@ mod match_engine {
     }
 
     #[test]
+    fn bytes_at_folds_some_and_none_over_a_constant() {
+        // `Bytes.at : Bytes → Int64 → (Option Int64)` — the fallible byte read. A CONSTANT `Bytes.of`
+        // indexed by a CONSTANT folds at compile time (no `bytes-get`): in range → `(Some byte)`, out of
+        // range/negative/empty → `None`. Consumed by a match so `main` returns a scalar (the boundary
+        // `(Some …)` render is exercised by the sum-escape path). `(Bytes.at (Bytes.of (list 10 20 30)) 1)`
+        // → 20; index 5 / -1 (must NOT wrap unsigned) / the empty sequence → the None arm → -1.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list 10 20 30)) 1) ((Some x) x) (None -1))) (export main))"
+                ),
+                "main"
+            ),
+            20,
+            "in-bounds → Some(byte)"
+        );
+        for (src, label) in [
+            (
+                "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list 10 20 30)) 5) ((Some x) x) (None -1))) (export main))",
+                "over-large",
+            ),
+            (
+                "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list 10 20 30)) -1) ((Some x) x) (None -1))) (export main))",
+                "negative",
+            ),
+            (
+                "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list)) 0) ((Some x) x) (None -1))) (export main))",
+                "empty",
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(&component(src), "main"),
+                -1,
+                "out of bounds ({label}) → None"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runtime_bytes_at_reads_the_byte_under_wasmtime() {
+        // The RUNTIME `Core::BytesAt` path (not a fold): the index is a PARAMETER, so `bytes-get` runs. A
+        // recursive byte-sum over a runtime sequence via `Bytes.at` + match — the CBOR-reader idiom. `sum`
+        // folds `Bytes.at bs i` for i in 0..len, adding each byte; `(Bytes.of (list 10 20 30))` sums to 60.
+        // Out-of-bounds returns None → the base case (0), so the recursion terminates on the fallible read.
+        let src = "(module m \
+                     (def (sum bs i) (match ((. Bytes at) bs i) ((Some b) (+ b (sum bs (+ i 1)))) (None 0))) \
+                     (def (main) (sum ((. Bytes of) (list 10 20 30)) 0)) (export main))";
+        let bytes = component(src);
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed bytes-at run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "60", "runtime Bytes.at byte-sum"),
+            cdz_run::Outcome::Trap(t) => panic!("runtime bytes-at run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_compile_time_trap() {
         // A byte must be 0..=255 (collections-and-text.md). A constant element out of range is a provable
         // trap → CDZ0304 (the build fails, matching the runtime `bytes-set` guard): 256 is too large, -1 is

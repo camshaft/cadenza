@@ -204,6 +204,19 @@ pub enum Core {
     /// when the operand is a RUNTIME bytes value (a compile-time-visible `Bytes.of` folds its length to
     /// a `ConstInt` in `lower`, so it never reaches here). The bytes companion of `ListLen`.
     BytesLen { operand: StructId },
+    /// `Bytes.at` — the FALLIBLE indexed byte read, present when the bytes operand is a RUNTIME value (a
+    /// constant `Bytes.of` + constant index FOLDS to a `SumNew` in `lower`, so it never reaches here). The
+    /// backend emits a bounds-checked runtime form: read `bytes-len`, and if `0 <= index < len` build
+    /// `Some(box-int(bytes-get(bytes, index)))` — a byte is a raw i32 VALUE (`bytes-get` returns it), so
+    /// unlike `ListAt` there is no borrowed-handle `dup`; the value is zero-extended and boxed into the
+    /// `Some` payload — else `None`. `disc_some`/`disc_none` are the built-in Option variants' discs. The
+    /// byte companion of `ListAt`; the result element is always `Int64`.
+    BytesAt {
+        bytes: StructId,
+        index: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

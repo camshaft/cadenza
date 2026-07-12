@@ -245,6 +245,10 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, list, out);
             collect_call_callees(db, index, out);
         }
+        crate::core::Core::BytesAt { bytes, index, .. } => {
+            collect_call_callees(db, bytes, out);
+            collect_call_callees(db, index, out);
+        }
         crate::core::Core::Convert { operand, .. } | crate::core::Core::Not { operand } => {
             collect_call_callees(db, operand, out)
         }

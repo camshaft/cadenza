@@ -59,6 +59,9 @@ const OP_BYTES_ALLOC: &str = "bytes-alloc";
 const OP_BYTES_SET: &str = "bytes-set";
 /// `bytes-len(b) -> u32` — the byte count of a byte sequence (extended to `Int64` at the boundary).
 const OP_BYTES_LEN: &str = "bytes-len";
+/// `bytes-get(b, index) -> u32` — the byte at `index`, a RAW value in `0..=255` (NOT a heap handle,
+/// unlike `vec-get`), so no `dup` is needed; the caller bounds-checks (an OOB index TRAPS).
+const OP_BYTES_GET: &str = "bytes-get";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -121,6 +124,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // index is a scalar. Recurse borrowing the list; the index cannot hold a heap reference.
         Core::ListAt { list, index, .. } => {
             binding_escapes(db, list, binder, true) || binding_escapes(db, index, binder, false)
+        }
+        // `Bytes.at` BORROWS its bytes (`bytes-len`/`bytes-get` both borrow; the byte read is a raw i32
+        // VALUE, not a heap handle, so nothing is retained from the sequence). The index is a scalar.
+        Core::BytesAt { bytes, index, .. } => {
+            binding_escapes(db, bytes, binder, true) || binding_escapes(db, index, binder, false)
         }
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
@@ -391,6 +399,18 @@ pub fn collect_used_ops(
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, list, out);
+            collect_used_ops(db, index, out);
+        }
+        // A RUNTIME `Bytes.at`: `bytes-len` (bounds test) + `bytes-get` (the raw byte VALUE, in bounds),
+        // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
+        // unit payload. No `dup` — `bytes-get` returns a value, not a borrowed handle. Mirrors `emit`.
+        Core::BytesAt { bytes, index, .. } => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
+            out.insert(OP_BOX_INT);
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            collect_used_ops(db, bytes, out);
             collect_used_ops(db, index, out);
         }
         Core::If { cond, then_, else_ } => {
@@ -1752,6 +1772,58 @@ fn emit(
             out.push(Lir::LocalTee(elem_slot)); // [disc_some, elem], elem_slot = elem
             out.push(Lir::CallImport(OP_DUP)); // pops elem, rc++ → [disc_some]
             out.push(Lir::LocalGet(elem_slot)); // [disc_some, elem] (the retained handle)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None: the unit payload is an empty array.
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
+        // A runtime `Bytes.at` — the fallible byte read. Bounds-check `0 <= index < bytes-len`, then in
+        // bounds build `Some(box-int(bytes-get))`, else `None`. Unlike `ListAt`, `bytes-get` returns a
+        // RAW byte VALUE (i32 `0..=255`), so there is no borrowed handle to `dup`: zero-extend it to i64
+        // and `box-int` it into an `Int64` for the `Some` payload. Two scratch slots (bytes handle i32,
+        // index i64) above `base`; operand recursions float above them.
+        Core::BytesAt {
+            bytes,
+            index,
+            disc_some,
+            disc_none,
+        } => {
+            let bytes_slot = base;
+            let index_slot = base + 1;
+            if index_slot + 1 > *high {
+                *high = index_slot + 1;
+            }
+            scratch_ty.insert(bytes_slot, ValType::I32);
+            scratch_ty.insert(index_slot, ValType::I64);
+            emit(db, bytes, slots, base + 2, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalSet(bytes_slot));
+            emit(db, index, slots, base + 2, high, scratch_ty, layout, out)?; // [index:i64]
+            out.push(Lir::LocalSet(index_slot));
+            // in_bounds = (index >= 0) & (index < len), all in i64.
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64GeS); // [index >= 0]
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [.., index, len:i32]
+            out.push(Lir::I64ExtendI32U); // [.., index, len:i64]
+            out.push(Lir::I64LtS); // [index >= 0, index < len]
+            out.push(Lir::I32And); // [in_bounds]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(box-int(bytes-get(bytes, index))). `bytes-get` yields the byte as an i32 VALUE
+            // (0..=255); zero-extend to i64 and box it into an `Int64` handle for the `Some` payload.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(bytes_slot));
+            out.push(Lir::LocalGet(index_slot));
+            out.push(Lir::I32WrapI64); // [disc_some, bytes, index:i32] — bytes-get takes a u32
+            out.push(Lir::CallImport(OP_BYTES_GET)); // [disc_some, byte:i32] (raw value 0..=255)
+            out.push(Lir::I64ExtendI32U); // [disc_some, byte:i64] (a byte is non-negative)
+            out.push(Lir::CallImport(OP_BOX_INT)); // [disc_some, Int64-handle]
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.

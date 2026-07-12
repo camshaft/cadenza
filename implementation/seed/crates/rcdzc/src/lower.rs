@@ -524,6 +524,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         )),
                     }
                 }
+                // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
+                // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
+                // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
+                Some(Prim::BytesAt) if args.len() == 2 => lower_bytes_at(db, id, args[0], args[1]),
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
@@ -2570,7 +2574,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BytesTy
         | Prim::StrScalarLen
         | Prim::StrByteLen
-        | Prim::StringTy => {
+        | Prim::StringTy
+        | Prim::BytesAt => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -2844,6 +2849,52 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
     Core::BytesOf { elems }
 }
 
+/// Lower `(Bytes.at bytes index)` — the fallible indexed byte read. FOLD when `bytes` is a visible
+/// `Core::BytesOf` AND `index` folds to a constant: an in-range index (`0 <= i < len`) yields `(Some
+/// byte)` — a `Core::SumNew` at the `Some` disc carrying the byte as a constant `Int64` — and an
+/// out-of-range index (negative or `>= len`) yields `None`. Otherwise emit the runtime `Core::BytesAt`
+/// (a bounds-checked `bytes-get`). Mirrors `lower_list_at`, but the element is always a byte → `Int64`.
+fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, bytes) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, index) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Bytes.at result is not the built-in Option sum",
+        ));
+    };
+    // FOLD a constant `Bytes.of` indexed by a constant integer.
+    if let (Core::BytesOf { elems }, Core::ConstInt(i)) = (core_of(db, bytes), core_of(db, index)) {
+        match i.to_i64() {
+            Some(n) if n >= 0 && (n as usize) < elems.len() => {
+                // The byte at `n` is a constant `Int64` element occurrence — its own core is the payload.
+                trace!(target: "rcdzc::fold", node = id.0, index = n, "Bytes.at folds to Some (in-bounds constant index)");
+                return Core::SumNew {
+                    disc: disc_some,
+                    payloads: vec![elems[n as usize]],
+                };
+            }
+            _ => {
+                trace!(target: "rcdzc::fold", node = id.0, "Bytes.at folds to None (out-of-bounds constant index)");
+                return Core::SumNew {
+                    disc: disc_none,
+                    payloads: Vec::new(),
+                };
+            }
+        }
+    }
+    // A runtime bytes or runtime index — emit the bounds-checked runtime read.
+    Core::BytesAt {
+        bytes,
+        index,
+        disc_some,
+        disc_none,
+    }
+}
+
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
@@ -2955,6 +3006,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BytesTy => "bytes-ty",
         Prim::StrScalarLen => "str-scalar-len",
         Prim::StrByteLen => "str-byte-len",
+        Prim::BytesAt => "bytes-at",
     }
 }
 

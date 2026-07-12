@@ -662,7 +662,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::ListAt { .. }
         | Core::ConstStr(_)
         | Core::BytesOf { .. }
-        | Core::BytesLen { .. } => Err(Reject::decline(
+        | Core::BytesLen { .. }
+        | Core::BytesAt { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),
     }

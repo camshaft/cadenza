@@ -199,6 +199,11 @@ pub enum Prim {
     /// Int64`). On a CONSTANT string it FOLDS to the UTF-8 byte count (`"café"` → 5); the byte companion
     /// of `scalar-len`, differing exactly on a multi-byte string.
     StrByteLen,
+    /// `Bytes.at` — the FALLIBLE indexed byte read `Bytes → Int64 → (Option Int64)`. The `(meta apply)`
+    /// of the `at` field of the `Bytes` module. A constant `Bytes.of` indexed by a constant folds to
+    /// `(Some byte)` / `(None unit)`; a runtime read emits `Core::BytesAt` (a bounds-checked `bytes-get`
+    /// boxed into `Some`, else `None`). The byte companion of `List.at`; monomorphic (a byte is Int64).
+    BytesAt,
 }
 
 impl Prim {
@@ -247,6 +252,7 @@ impl Prim {
             "bytes-ty" => Some(Prim::BytesTy),
             "str-scalar-len" => Some(Prim::StrScalarLen),
             "str-byte-len" => Some(Prim::StrByteLen),
+            "bytes-at" => Some(Prim::BytesAt),
             _ => None,
         }
     }
