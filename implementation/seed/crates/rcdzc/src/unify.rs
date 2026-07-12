@@ -296,80 +296,120 @@ impl Fresh {
         self.next += 1;
         n
     }
+
+    /// Reserve a CONTIGUOUS block of `n` fresh numbers, returning the first. Equivalent to calling
+    /// [`var`] `n` times (the block is `[base, base+n)`), but in one bump — what `instantiate` uses to
+    /// map a scheme's bound-var list to a fresh block without a per-var map. `base` is meaningful only
+    /// when `n > 0` (a zero-length reservation returns the current counter and bumps nothing).
+    ///
+    /// [`var`]: Fresh::var
+    pub fn reserve(&mut self, n: u32) -> u32 {
+        let base = self.next;
+        self.next += n;
+        base
+    }
 }
 
 /// Instantiate a scheme: replace each bound type/width/sign variable with a FRESH one, so this use is
 /// independent of every other. Returns the freshened type. This is what makes `+`'s `∀a. (Int a) →
 /// (Int a) → (Int a)` apply at a fresh `a` each time — generic over the integer type.
 pub fn instantiate(scheme: &Scheme, fresh: &mut Fresh) -> Ty {
-    let mut ty_map: FxHashMap<u32, u32> = FxHashMap::default();
-    for &v in &scheme.ty_vars {
-        ty_map.insert(v, fresh.var());
-    }
-    let mut width_map: FxHashMap<u32, u32> = FxHashMap::default();
-    for &v in &scheme.width_vars {
-        width_map.insert(v, fresh.var());
-    }
-    let mut sign_map: FxHashMap<u32, u32> = FxHashMap::default();
-    for &v in &scheme.sign_vars {
-        sign_map.insert(v, fresh.var());
-    }
-    rename(&scheme.ty, &ty_map, &width_map, &sign_map)
+    // The bound variables map to a CONTIGUOUS block of fresh numbers, so no per-var hashmap is needed:
+    // `fresh.var()` returns sequential ids, and the old code called it for each ty var (in order), then
+    // each width var, then each sign var — assigning `ty_vars[i] → base+i`,
+    // `width_vars[j] → base+|ty|+j`, `sign_vars[l] → base+|ty|+|width|+l`. So a bound var's fresh number
+    // is `axis_base + its INDEX in the scheme's var list` (a linear scan over the already-`&[u32]` list
+    // — no allocation). `instantiate` was called ~226k times on a deep call chain, each building THREE
+    // 1-entry `FxHashMap`s (~677k allocs, the bulk of a manydefs profile's malloc/free); the block
+    // scheme is alloc-free. Numbering is byte-IDENTICAL to the map version (same call order), including
+    // the case where a scheme's `ty_vars` and `width_vars` share a number `n` — it renames to `base+i`
+    // in type position and `base+|ty|+j` in width position exactly as two separate maps did.
+    let ty_base = fresh.reserve(scheme.ty_vars.len() as u32);
+    let width_base = fresh.reserve(scheme.width_vars.len() as u32);
+    let sign_base = fresh.reserve(scheme.sign_vars.len() as u32);
+    let m = Rename {
+        ty_vars: &scheme.ty_vars,
+        ty_base,
+        width_vars: &scheme.width_vars,
+        width_base,
+        sign_vars: &scheme.sign_vars,
+        sign_base,
+    };
+    rename(&scheme.ty, &m)
 }
 
-/// Rename the bound variables of a type per the fresh maps (a variable not in a map is free and kept).
-fn rename(
-    ty: &Ty,
-    ty_map: &FxHashMap<u32, u32>,
-    width_map: &FxHashMap<u32, u32>,
-    sign_map: &FxHashMap<u32, u32>,
-) -> Ty {
+/// The (allocation-free) instantiation mapping: per axis, the scheme's bound-var list and the base
+/// fresh number its block starts at. A bound var renames to `base + its index in the list`; a var not
+/// in the list is FREE and kept. Linear scan — the lists are tiny (an operator scheme has one var per
+/// axis), so this beats a hashmap and allocates nothing.
+struct Rename<'a> {
+    ty_vars: &'a [u32],
+    ty_base: u32,
+    width_vars: &'a [u32],
+    width_base: u32,
+    sign_vars: &'a [u32],
+    sign_base: u32,
+}
+
+impl Rename<'_> {
+    fn ty_var(&self, v: u32) -> u32 {
+        match self.ty_vars.iter().position(|&x| x == v) {
+            Some(i) => self.ty_base + i as u32,
+            None => v,
+        }
+    }
+    fn width_var(&self, v: u32) -> u32 {
+        match self.width_vars.iter().position(|&x| x == v) {
+            Some(i) => self.width_base + i as u32,
+            None => v,
+        }
+    }
+    fn sign_var(&self, v: u32) -> u32 {
+        match self.sign_vars.iter().position(|&x| x == v) {
+            Some(i) => self.sign_base + i as u32,
+            None => v,
+        }
+    }
+}
+
+/// Rename the bound variables of a type per the fresh mapping (a variable not in an axis list is free
+/// and kept).
+fn rename(ty: &Ty, m: &Rename) -> Ty {
     match ty {
-        Ty::Var(v) => Ty::Var(*ty_map.get(v).unwrap_or(v)),
+        Ty::Var(v) => Ty::Var(m.ty_var(*v)),
         Ty::Int(it) => Ty::Int(IntTy {
-            sign: rename_sign(it.sign, sign_map),
-            width: rename_width(it.width, width_map),
+            sign: rename_sign(it.sign, m),
+            width: rename_width(it.width, m),
         }),
-        Ty::Fn(p, r) => Ty::Fn(
-            Box::new(rename(p, ty_map, width_map, sign_map)),
-            Box::new(rename(r, ty_map, width_map, sign_map)),
-        ),
+        Ty::Fn(p, r) => Ty::Fn(Box::new(rename(p, m)), Box::new(rename(r, m))),
         Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
             fields
                 .iter()
-                .map(|(k, t)| (k.clone(), rename(t, ty_map, width_map, sign_map)))
+                .map(|(k, t)| (k.clone(), rename(t, m)))
                 .collect(),
         )),
-        Ty::Tuple(elems) => Ty::Tuple(
-            elems
-                .iter()
-                .map(|t| rename(t, ty_map, width_map, sign_map))
-                .collect(),
-        ),
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| rename(t, m)).collect()),
         // A GENERIC sum scheme's type ARGS may hold bound variables (a `(fn (a) … (Option a))` variant
         // ctor scheme) — rename each. A monomorphic sum has empty args; nothing to rename.
         Ty::Sum { decl, name, args } => Ty::Sum {
             decl: *decl,
             name: name.clone(),
-            args: args
-                .iter()
-                .map(|t| rename(t, ty_map, width_map, sign_map))
-                .collect(),
+            args: args.iter().map(|t| rename(t, m)).collect(),
         },
         Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 
-fn rename_width(w: Width, width_map: &FxHashMap<u32, u32>) -> Width {
+fn rename_width(w: Width, m: &Rename) -> Width {
     match w {
-        Width::Var(v) => Width::Var(*width_map.get(&v).unwrap_or(&v)),
+        Width::Var(v) => Width::Var(m.width_var(v)),
         other => other,
     }
 }
 
-fn rename_sign(s: Sign, sign_map: &FxHashMap<u32, u32>) -> Sign {
+fn rename_sign(s: Sign, m: &Rename) -> Sign {
     match s {
-        Sign::Var(v) => Sign::Var(*sign_map.get(&v).unwrap_or(&v)),
+        Sign::Var(v) => Sign::Var(m.sign_var(v)),
         other => other,
     }
 }
@@ -462,5 +502,43 @@ mod tests {
         } else {
             panic!("expected a function type");
         }
+    }
+
+    #[test]
+    fn instantiate_numbers_axes_as_contiguous_blocks() {
+        // The alloc-free block scheme must reproduce the old per-axis numbering: each ty var → its
+        // index in `ty_vars`, each width var → `|ty_vars| + its index`, each sign var → `|ty_vars| +
+        // |width_vars| + its index`. This mirrors an operator scheme like `+`'s
+        // `∀(ty a=0, width a=0, sign s=1). (Int^s_a) → (Int^s_a) → (Int^s_a)` — note ty var 0 and width
+        // var 0 SHARE the source number 0 but live on different axes, so they must rename to DIFFERENT
+        // fresh numbers (0 in ty position, 1 in width position) exactly as two separate maps did.
+        let scheme = Scheme {
+            ty_vars: vec![0],
+            width_vars: vec![0],
+            sign_vars: vec![1],
+            // A type mentioning all three axes: a bare `Var(0)` (ty), and an `Int` whose width is
+            // `Var(0)` and sign is `Var(1)`.
+            ty: Ty::Fn(
+                Box::new(Ty::Var(0)),
+                Box::new(Ty::Int(IntTy {
+                    sign: Sign::Var(1),
+                    width: Width::Var(0),
+                })),
+            ),
+        };
+        let mut fresh = Fresh::new();
+        let inst = instantiate(&scheme, &mut fresh);
+        // ty block = [0,1) → 0; width block = [1,2) → 1; sign block = [2,3) → 2.
+        let Ty::Fn(p, r) = &inst else {
+            panic!("expected a function type");
+        };
+        assert_eq!(**p, Ty::Var(0), "the ty var renames to the ty block base (0)");
+        let Ty::Int(it) = &**r else {
+            panic!("expected an Int result");
+        };
+        assert_eq!(it.width, Width::Var(1), "the width var renames to the width block base (1)");
+        assert_eq!(it.sign, Sign::Var(2), "the sign var renames to the sign block base (2)");
+        // And the whole reservation advanced the counter past all three (next fresh is 3).
+        assert_eq!(fresh.var(), 3);
     }
 }
