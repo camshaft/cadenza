@@ -65,6 +65,10 @@ pub mod backend;
 // part that ports to the Cadenza self-host). A CLI bin puts filesystem/args on top of `compile`.
 pub mod abi;
 pub mod compile;
+// Package linking — merge N named `ast` input artifacts into ONE compilation unit (one merged arena
+// under a synthesized `(do …)` root) BEFORE the pure pipeline runs, so `Db::load` sees one program
+// assembled from many files (`DESIGN-package-linking.md`).
+pub mod link;
 // The sidecar request list — the program that DRIVES a compilation (Emit an output column / Query a
 // fact column), crossing as one more kinded input artifact. Generalizes `compile`'s `targets`.
 pub mod sidecar;

@@ -77,6 +77,9 @@ enum Cmd {
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
     /// exits non-zero if any error-severity fault is present.
     Check(CheckArgs),
+    /// Go-to-definition: the defining occurrence of the name at a source BYTE OFFSET in FILE, as
+    /// `file:line:col`.
+    Def(DefArgs),
 }
 
 fn main() -> ExitCode {
@@ -93,14 +96,148 @@ fn main() -> ExitCode {
         Cmd::Diff(a) => syntax_cli::run(syntax_cli::Cmd::Diff(a), PROG),
         Cmd::Lint(a) => syntax_cli::run(syntax_cli::Cmd::Lint(a), PROG),
         Cmd::Clones(a) => syntax_cli::run(syntax_cli::Cmd::Clones(a), PROG),
-        // The compiler command defers to the rcdzc CLI.
-        Cmd::Compile(a) => compiler_cli::run(a, PROG),
+        // The compiler command. `cdz` (unlike bare `rcdzc`) holds the front-end, so it can accept a
+        // SOURCE file directly — parsing it in-process to the `ast` artifact, and (for a debug target)
+        // the `spans` artifact too — rather than requiring a pre-built binary AST.
+        Cmd::Compile(a) => run_compile(a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
         Cmd::TypeAt(a) => run_type_at(&a),
         Cmd::Uses(a) => run_uses(&a),
         Cmd::Check(a) => run_check(&a),
+        Cmd::Def(a) => run_def(&a),
     }
+}
+
+// ── compile (with in-process source parsing + auto-spans for debug) ──────────────────────────────
+
+/// A source-file extension `cdz compile` can parse in-process (vs a pre-built binary AST). `.cdz`/`.ml`
+/// read as the ml surface, `.sexp`/`.sexpr` as s-expressions — mirroring `load_program_spanned`.
+fn is_source_file(spec: &str) -> bool {
+    // Only a bare `path` spec (no `kind:`/`name=`) with a source extension is auto-parsed; an explicit
+    // `kind:name=path` (e.g. `ast:m=…`, `spans:m=…`) is passed through as a raw artifact untouched.
+    if spec.contains(':') || spec.contains('=') {
+        return false;
+    }
+    [".cdz", ".ml", ".sexp", ".sexpr"]
+        .iter()
+        .any(|ext| spec.ends_with(ext))
+}
+
+/// Run `cdz compile`. Because `cdz` holds the front-end, a SOURCE file input is parsed in-process to
+/// the `ast` artifact — and, when a debug target (`wasm-debug`/`dwarf`) is requested, also to the
+/// `spans` artifact (projected into rcdzc's wire form), so a user gets DWARF without hand-building a
+/// spans artifact. With no source input (the pure artifacts-in path), it delegates to the compiler CLI
+/// unchanged — the `rcdzc` bin's behavior is untouched.
+fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
+    let specs = args.input_specs().to_vec();
+    // Fast path: no source-file input → the ordinary artifacts-in compile, byte-for-byte as before.
+    if !specs.iter().any(|s| is_source_file(s)) {
+        return compiler_cli::run(args, PROG);
+    }
+
+    // A debug target draws source positions from the `spans` artifact — so when one is requested, a
+    // parsed source input contributes BOTH `ast` and `spans`. (An explicit `spans:` input still works
+    // and takes precedence for its own program.)
+    let targets = args.targets();
+    let want_spans = targets.iter().any(|t| t.needs_spans());
+
+    let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
+    for spec in &specs {
+        if is_source_file(spec) {
+            // Parse the source in-process, keeping the span table (the whole-program form, as the gate
+            // and the semantic queries use).
+            let (source, arenas, spantable) = match load_program_spanned(spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("{PROG}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let name = program_name(spec);
+            inputs.push(rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                name.clone(),
+                cadenza_syntax::codec::encode(&arenas),
+            ));
+            if want_spans {
+                let span_data = span_data_of(spec, &source, &spantable);
+                inputs.push(rcdzc::Artifact::new(
+                    rcdzc::spans::KIND_SPANS,
+                    name,
+                    rcdzc::spans::encode(&span_data),
+                ));
+            }
+        } else {
+            // A raw artifact spec (`kind:name=path`) — read it from disk, kind/name from the spec.
+            match read_artifact_spec(spec) {
+                Ok(a) => inputs.push(a),
+                Err(e) => {
+                    eprintln!("{PROG}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+    compiler_cli::run_prepared(inputs, &targets, args.out_path(), PROG)
+}
+
+/// The artifact NAME for a source file — its file stem (so `add.cdz` → `add`), matching the compiler
+/// CLI's default naming; falls back to `main`.
+fn program_name(spec: &str) -> String {
+    std::path::Path::new(spec)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("main")
+        .to_string()
+}
+
+/// Project the front-end `SpanTable` (+ the source text) into rcdzc's `spans::SpanData` wire form — the
+/// `(start, len)` byte range per `StructId`, the tree-relative module path, and the source text (for
+/// line derivation). This MIRRORS rcdzc's format (copy-don't-depend: the two crates share no code, so
+/// the mapping lives here at the driver that holds both). The module path is the source file path as
+/// given — a tree-relative path when the caller invokes with one (`DESIGN-debug-info-rcdzc.md` §4).
+fn span_data_of(
+    spec: &str,
+    source: &str,
+    spantable: &cadenza_syntax::spans::SpanTable,
+) -> rcdzc::spans::SpanData {
+    let spans: Vec<(u32, u32)> = (0..spantable.len())
+        .map(
+            |i| match spantable.get(cadenza_syntax::StructId(i as u32)) {
+                Some(sp) => (sp.start as u32, (sp.end - sp.start) as u32),
+                None => (0, 0),
+            },
+        )
+        .collect();
+    rcdzc::spans::SpanData {
+        module_path: spec.to_string(),
+        spans,
+        source: source.to_string(),
+    }
+}
+
+/// Read a raw artifact from a `kind:name=path` (or `name=path`, or `path`) spec — the same spec grammar
+/// the compiler CLI parses, so a mixed `cdz compile prog.cdz sidecar:d=drive.bin` works. `-` reads stdin.
+fn read_artifact_spec(spec: &str) -> Result<rcdzc::Artifact, String> {
+    // Split an optional `kind:` prefix (only when it looks like one), then an optional `name=` prefix.
+    let (kind, rest) = match spec.split_once(':') {
+        Some((k, r)) if !k.contains('/') && !k.contains('=') => (k.to_string(), r),
+        _ => (rcdzc::Artifact::KIND_AST.to_string(), spec),
+    };
+    let (name, path) = match rest.split_once('=') {
+        Some((n, p)) => (n.to_string(), p.to_string()),
+        None => (program_name(rest), rest.to_string()),
+    };
+    let bytes = if path == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
+            .map_err(|e| format!("cannot read stdin: {e}"))?;
+        buf
+    } else {
+        std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?
+    };
+    Ok(rcdzc::Artifact::new(kind, name, bytes))
 }
 
 // ── the semantic queries ─────────────────────────────────────────────────────────────────────────
@@ -125,6 +262,14 @@ struct UsesArgs {
 struct CheckArgs {
     /// The program file to check (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+}
+
+#[derive(clap::Args)]
+struct DefArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// The source BYTE OFFSET of the reference to jump from (0-based, UTF-8 bytes).
+    offset: usize,
 }
 
 #[derive(clap::Args)]
@@ -302,6 +447,56 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `cdz def FILE OFFSET` — go-to-definition. Resolves the offset to the reference node (shared
+/// `SpanTable::node_at_offset`), drives the compiler's `ResolveOf { node }` query to the defining
+/// occurrence's node id, and maps THAT to a source `file:line:col`. The offset→node and id→location
+/// mapping stay at the boundary (span-owning); the compiler answers by node identity.
+fn run_def(args: &DefArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(node) = spans.node_at_offset(args.offset) else {
+        eprintln!(
+            "{PROG}: no node at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::ResolveOf { node: node.0 }),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_RESOLVE) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    // The result is the defining occurrence's node id (empty = not a navigable reference).
+    let Some(target) = text.trim().parse::<u32>().ok() else {
+        eprintln!(
+            "{PROG}: no definition for the token at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    match spans.get(cadenza_syntax::StructId(target)) {
+        Some(span) => {
+            let (line, col) = cadenza_syntax::query::driver::line_col(&source, span.start);
+            println!("{}:{line}:{col}", args.file);
+            ExitCode::SUCCESS
+        }
+        // The definition has no source span (a prelude/built-in binding) — nothing to jump to.
+        None => {
+            eprintln!("{PROG}: the definition is a built-in (no source location)");
+            ExitCode::FAILURE
+        }
     }
 }
 

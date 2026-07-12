@@ -10,8 +10,9 @@ description: >-
   near-clone / anti-unification), counting occurrences of a form, extracting spans of matching nodes,
   or building on the query/Tree matcher API — OR when the task is a SEMANTIC query the shape layer
   can't answer: the type of a definition (`cdz type`), every source location that references a
-  name (`cdz uses`, a span-mapped go-to-references), or every well-formedness fault (`cdz check`,
-  "diagnostics as you type"). Covers the `,x`/`,@xs` pattern language,
+  name (`cdz uses`, a span-mapped go-to-references), every well-formedness fault (`cdz check`,
+  "diagnostics as you type"), or a name's definition (`cdz def`, go-to-definition). Covers the
+  `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
   (structural tree-diff) and `clones` (content-hash duplicate + `--near` anti-unification)
@@ -206,7 +207,7 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
-## Semantic queries (`cdz type` / `cdz uses` / `cdz check`) — the compiler as oracle
+## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def`) — the compiler as oracle
 
 The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
 duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
@@ -234,6 +235,10 @@ prog.cdz:4:5
 # Exits non-zero on any error; a clean file prints nothing. An editor's inline squiggles / a CI gate.
 $ cdz check prog.cdz
 prog.cdz:2:16: error [CDZ0203]: if condition must be Bool, found Int64
+
+# cdz def FILE OFFSET — go-to-definition: the definition of the name at the cursor, as file:line:col.
+$ cdz def prog.cdz 49
+prog.cdz:1:25
 ```
 
 - **Why these are here and not codemod guards.** `type`/`uses` reach into `rcdzc` (inference,
@@ -251,6 +256,9 @@ prog.cdz:2:16: error [CDZ0203]: if condition must be Bool, found Int64
   def/field, …) read WITHOUT gating on export/emit, so a mid-edit buffer with no `(export …)` still
   reports. Each fault → `file:line:col: severity [CODE]: message`; exits non-zero iff any error-severity
   fault. This is the "as you type" primitive an editor's inline diagnostics (and a CI lint) ride on.
+- **`def`** drives `Query::ResolveOf` — the go-to-definition counterpart of `uses`: the reference node
+  at the cursor → its defining occurrence (`resolve::resolved_of` → `Ref`/`Lambda`), mapped to
+  `file:line:col`. A non-navigable token (a literal, an unbound name) reports no definition.
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
 

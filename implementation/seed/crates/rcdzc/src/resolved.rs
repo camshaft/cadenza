@@ -235,6 +235,31 @@ pub enum Prim {
     /// a runtime string declines (the byte-rope slice arrives later). The string companion of
     /// `Bytes.slice`, but cut by scalar offset and with an `(start, end)` — not `(start, len)` — range.
     StrSlice,
+    /// `Option.expect` / `Result.expect` — the unwrap-or-trap accessor `∀a. Sum<a> → String → a`. The
+    /// `(meta apply)` of the `expect` field on the synthesized Option/Result records. Applying it to a
+    /// present variant (`Some`/`Ok`, discriminant 0) yields the payload; the absent variant TRAPS
+    /// (core-semantics.md §Requiring The Value Of An Optional Traps On Absence). A constant present
+    /// variant FOLDS to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
+    /// The message argument is a `String` (for a human), dropped by the pure core (the wasm trap is
+    /// textless). ONE prim for both Option and Result — present is discriminant 0 in each.
+    SumExpect,
+    /// `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic companions of the trapping `+`/`*`:
+    /// `T → T → (Option T)`, the exact result wrapped in `Some` when it fits the width, `None` on overflow
+    /// (numeric-model.md §Overflow Is Defined — the defined value outcome alongside the trap). The `(meta
+    /// apply)` of the `checked-add`/`checked-mul` field of an integer module. A CONSTANT operand pair
+    /// FOLDS (`i64::checked_add`/`checked_mul` → `Some result` / `None`); a runtime operand emits the
+    /// overflow-detecting `Some`/`None` build (a later increment). The target width is the module's own,
+    /// read off the solved type.
+    CheckedAdd,
+    CheckedMul,
+    /// `Int64.wrapping-add` / `wrapping-mul` — two's-complement wraparound modulo 2^width: `T → T → T`,
+    /// NEVER trapping (numeric-model.md §Overflow Is Defined — the modular value outcome). The `(meta
+    /// apply)` of the `wrapping-add`/`wrapping-mul` field of an integer module. A CONSTANT operand pair
+    /// FOLDS (`i64::wrapping_add`/`wrapping_mul`); a runtime operand emits the RAW machine `i64.add`/
+    /// `i64.mul` (wasm's add/mul already wrap — no overflow guard, unlike the trapping `+`/`*`). The
+    /// target width is the module's own, read off the solved type (a narrow width masks after the op).
+    WrappingAdd,
+    WrappingMul,
 }
 
 impl Prim {
@@ -290,6 +315,11 @@ impl Prim {
             "str-at" => Some(Prim::StrAt),
             "str-concat" => Some(Prim::StrConcat),
             "str-slice" => Some(Prim::StrSlice),
+            "sum-expect" => Some(Prim::SumExpect),
+            "checked-add" => Some(Prim::CheckedAdd),
+            "checked-mul" => Some(Prim::CheckedMul),
+            "wrapping-add" => Some(Prim::WrappingAdd),
+            "wrapping-mul" => Some(Prim::WrappingMul),
             _ => None,
         }
     }
@@ -517,7 +547,57 @@ pub enum Resolved {
         params: std::sync::Arc<[StructId]>,
         body: StructId,
     },
+    /// A `(handle INIT (ARM…) BODY)` — an in-program effect handler establishing a context for `body`
+    /// (`capabilities-and-effects.md` §An Effect That Does Not Escape Is Discharged By A Handler). `init`
+    /// is the seed state (evaluated where the handle is installed); each arm discharges one operation; the
+    /// whole form's value is `body`'s value, with the accumulated state observable only through the
+    /// operations. Children are AST occurrences resolved on demand. The compile-time evaluator reduces a
+    /// `handle` away — resolving each enclosed performance to a concrete arm (a compile-time constant) and,
+    /// for the tail-resumptive shipping surface, rewriting it to plain code (`reference-compiler.md`
+    /// §Effects Are Classified First And Resolved By Monomorphization). Until that lowering lands, a
+    /// `handle` DECLINES (the surface is recognized so a handled perform stops erroring on unbound
+    /// `resume`; it does not yet run).
+    Handle {
+        init: StructId,
+        arms: Vec<HandleArm>,
+        body: StructId,
+    },
+    /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that
+    /// performed the operation and thread `next_state` forward as the state the rest of the handled region
+    /// sees (`capabilities-and-effects.md` §A Handler Threads State`). Modeled as a NODE (not a
+    /// fold-time-only rewrite marker) so the tail-resumptive rewrite (`Resume{v,s'}` → `v`, thread `s'`) is
+    /// a structural classification, and so an abortive arm (no `Resume`) and a general arm (a non-tail
+    /// `Resume`, or `k` captured as a value) are representable without an IR migration
+    /// (`DESIGN-effects-rcdzc.md` §2.3). Outside a handler arm, `resume` is meaningless — a `Resume` that
+    /// is not consumed by an enclosing arm's lowering is a decline.
+    Resume {
+        value: StructId,
+        next_state: StructId,
+    },
+    /// A `(host (EFFECT…) BODY)` — an ENTRYPOINT delegation routing its listed effects to the component
+    /// boundary (`capabilities-and-effects.md` §Host-Binding Is A Routing Decision Made At The Entrypoint).
+    /// `effects` are the delegated effects' name occurrences; `body` is the delegated computation. Admitted
+    /// only at an entrypoint; its manifest contribution is handled at serialization (E2). Until host
+    /// lowering lands, a `host` DECLINES (surface recognized, not yet run).
+    Host {
+        effects: Vec<StructId>,
+        body: StructId,
+    },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),
+}
+
+/// One arm of a [`Resolved::Handle`] — the discharge of a single operation `(E.op (params…) state body)`.
+/// `op` is the operation's projection occurrence (`(. E op)`), which carries the op's identity via its
+/// `(meta effect-op)` channel; `params` are the operation's parameter binders (bound in `body`); `state`
+/// is the current-state binder (the left-fold accumulator, bound in `body`); `body` is the arm body,
+/// containing the `Resume` node(s). Children are AST occurrences; scope for `params`/`state` is handled by
+/// the ordinary parent-walk (a reference in `body` finds its binder), so the arm records only the shape.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HandleArm {
+    pub op: StructId,
+    pub params: Vec<StructId>,
+    pub state: StructId,
+    pub body: StructId,
 }

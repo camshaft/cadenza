@@ -293,6 +293,18 @@ pub enum Core {
         scrutinee: StructId,
         path: Vec<PathStep>,
     },
+    /// `Option.expect` / `Result.expect` on a RUNTIME sum — unwrap the PRESENT variant's payload or TRAP
+    /// on absence (core-semantics.md §Requiring The Value Of An Optional Traps On Absence). The present
+    /// variant is discriminant `disc_present` (Some/Ok = 0); the backend probes `sum-disc(scrutinee) ==
+    /// disc_present`, and on a match reads `sum-payload` + unboxes by this node's solved type (the payload
+    /// type), else emits `unreachable` (an unconditional trap). The `"message"` operand is DROPPED — the
+    /// wasm trap carries no text (the corpus `(trap MSG)` grades on the trap, not its message). Present
+    /// only when the scrutinee is a runtime sum; a constant present variant FOLDS to its payload in
+    /// `lower` (a constant absent variant is a provable trap — not yet folded, declines).
+    SumExpect {
+        scrutinee: StructId,
+        disc_present: u32,
+    },
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If {
         cond: StructId,

@@ -701,6 +701,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::SumPayload { scrutinee, path } => {
             emit_sum_payload(db, id, scrutinee, &path, env, ctx)
         }
+        // `Option.expect`/`Result.expect` → `match <scrut> { <Enum>::<Present>(p) => p, _ => panic!() }`.
+        // The present variant is `disc_present` (Some/Ok = 0); its single payload binds to a fresh name
+        // and IS the expression's value; any other variant panics (the absent-variant trap — a Rust panic
+        // is a Cadenza trap, matching the wasm `unreachable`). Scrutinee is pure (a param/local/call), so
+        // matching it inline is sound.
+        Core::SumExpect {
+            scrutinee,
+            disc_present,
+        } => emit_sum_expect(db, scrutinee, disc_present, env, ctx),
         Core::ListNew { .. }
         | Core::ListLen { .. }
         | Core::ListPush { .. }
@@ -821,6 +830,17 @@ fn emit_arith(
                 _ => "^",
             };
             Ok(format!("({l} {sym} {r})"))
+        }
+        // WRAPPING arithmetic → Rust's own `wrapping_add`/`wrapping_mul` — two's-complement wraparound,
+        // never panics (the native mirror of the wasm backend's raw `i64.add`/`i64.mul`). `it` is the
+        // aliased width N, so the operands are the N-bit type and the wrap is modulo 2^N.
+        Prim::WrappingAdd | Prim::WrappingMul => {
+            let method = if matches!(op, Prim::WrappingAdd) {
+                "wrapping_add"
+            } else {
+                "wrapping_mul"
+            };
+            Ok(format!("({l}).{method}({r})"))
         }
         // A runtime shift, honoring the numeric model's trapping semantics exactly (mirroring the wasm
         // backend's `emit_shift` — `numeric-model.md` §A Shift Is Not Exempt From Overflow Is Defined):
@@ -1234,6 +1254,32 @@ fn emit_sum_payload(
     }
     Err(Reject::decline(
         "sum payload has no bound match arm (unsupported pattern shape)",
+    ))
+}
+
+/// Emit `Option.expect`/`Result.expect` → `match <scrut> { <Enum>::<Present>(p) => p, _ => panic!("…") }`.
+/// The present variant is `disc_present` (Some/Ok = 0), which carries exactly one payload (the shape the
+/// `expect` field is added for); its binding IS the expression's value. Any other variant panics — a Rust
+/// panic is a Cadenza trap, the native mirror of the wasm `unreachable` (core-semantics.md §Requiring The
+/// Value Of An Optional Traps On Absence). The scrutinee is pure (param/local/call), so matching it inline
+/// evaluates it once, observably as the wasm path's single materialization.
+fn emit_sum_expect(
+    db: &mut Db,
+    scrutinee: StructId,
+    disc_present: u32,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    let vpath = sum_variant_path(db, scrutinee, disc_present)?;
+    if variant_payload_arity(db, scrutinee, disc_present) != 1 {
+        return Err(Reject::decline(
+            "expect's present variant does not carry exactly one payload",
+        ));
+    }
+    let scrut = emit(db, scrutinee, env, ctx)?;
+    // The payload binds to `__expect` and is the match's value directly (a single-payload present arm).
+    Ok(format!(
+        "match {scrut} {{ {vpath}(__expect) => __expect, _ => panic!(\"expect\") }}"
     ))
 }
 

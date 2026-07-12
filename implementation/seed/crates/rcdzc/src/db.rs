@@ -49,6 +49,76 @@ pub struct Def {
     pub body: Option<StructId>,
 }
 
+/// The file-scoped name-resolution table for a multi-file PACKAGE (`DESIGN-package-linking.md` §4),
+/// derived once at load from the [`crate::link::Linkage`]. It answers the two file-scoped questions
+/// `resolve_name` asks when a package is linked:
+///  - which FILE a reference's node belongs to (`file_of` — a `StructId` range lookup over the demux
+///    table, with a `None` fallback for a synthesized / β-copied / prelude node);
+///  - what a bare NAME resolves to WITHIN a given file — its own top-level def, or an imported name
+///    (mapped to the exporting file's def), or nothing (fall through to prelude / unbound).
+pub(crate) struct FileScopeTable {
+    /// The `StructId → file` demux ranges, splice order.
+    files: Vec<crate::link::FileSpan>,
+    /// Per file, the visible top-level VALUE names → their index in [`Db::defs`]. Own defs plus the
+    /// file's imports (an import maps the local name to the exporting file's def). A name absent here
+    /// is not a package-level def in that file — resolution falls through to the prelude, then unbound.
+    visible: Vec<crate::fxhash::FxHashMap<String, usize>>,
+}
+
+impl FileScopeTable {
+    /// The file whose demux range contains `id`, or `None` for a node in no file (synthesized /
+    /// β-copied / prelude / the `(do …)` root).
+    fn file_of(&self, id: StructId) -> Option<usize> {
+        self.files.iter().position(|f| f.contains(id))
+    }
+}
+
+/// Build the file-scoped resolution table from a package's [`crate::link::Linkage`]. For each file:
+///  - its OWN top-level value defs — a def whose signature occurrence (`Def::sig_occ`) falls in that
+///    file's demux range;
+///  - its IMPORTS — each `(import "p" (name…))` local name mapped to the def index the exporting file
+///    `p` defines under that name (the link step already verified `p` exports it).
+///
+/// A def-name lookup against this table is thus confined to one file's surface, which is what makes a
+/// sibling file's same-named def invisible unless explicitly imported (`DESIGN-package-linking.md` §4).
+fn build_file_scope(
+    linkage: &crate::link::Linkage,
+    defs: &[Def],
+    def_by_name: &crate::fxhash::FxHashMap<String, usize>,
+) -> FileScopeTable {
+    let files = linkage.files.clone();
+    let mut visible: Vec<crate::fxhash::FxHashMap<String, usize>> =
+        vec![crate::fxhash::FxHashMap::default(); files.len()];
+
+    // Own defs: assign each def to the file whose range contains its signature occurrence. First-wins
+    // per (file, name) mirrors the flat `def_name_index` (a duplicate name within a file is a separate
+    // well-formedness concern; here we just pick the first, deterministically).
+    for (i, d) in defs.iter().enumerate() {
+        if let Some(fi) = files.iter().position(|f| f.contains(d.sig_occ)) {
+            visible[fi].entry(d.name.clone()).or_insert(i);
+        }
+    }
+
+    // Imports: bind each imported local name to the def the exporting file defines under the exported
+    // name. Resolved via the exporting file's OWN visible map (built above), so an import re-exports
+    // exactly the sibling's def — no global scan. (`def_by_name` is the package-wide first-wins index,
+    // used only as a last resort if the exporting file's own map somehow lacks it — it will not for a
+    // well-formed export, since the link step validated visibility.)
+    for (fi, scope) in linkage.scopes.iter().enumerate() {
+        for imp in &scope.imports {
+            let idx = visible
+                .get(imp.from_file)
+                .and_then(|m| m.get(&imp.exported).copied())
+                .or_else(|| def_by_name.get(&imp.exported).copied());
+            if let Some(idx) = idx {
+                visible[fi].insert(imp.local.clone(), idx);
+            }
+        }
+    }
+
+    FileScopeTable { files, visible }
+}
+
 /// A requested export: the name to emit (verbatim) and the definition it names, resolved against the
 /// scan index by name.
 #[derive(Clone, PartialEq, Debug)]
@@ -325,6 +395,13 @@ pub struct Db {
     /// shadows a built-in by the ordinary lookup precedence.
     pub prelude: BTreeMap<String, StructId>,
 
+    /// PACKAGE LINKAGE — `Some` only for a multi-file package (`DESIGN-package-linking.md`), `None` for
+    /// the single-file compile (whose namespace is flat, byte-identical to the pre-linking compiler).
+    /// When present it makes name resolution FILE-SCOPED: a bare name in file `f` resolves against
+    /// `f`'s own top-level defs and `f`'s imports, never a sibling file's defs (`resolve::resolve_name`
+    /// step 2 reads `file_scope` instead of the global `def_by_name` when this is `Some`).
+    pub(crate) file_scope: Option<FileScopeTable>,
+
     /// The evaluator's current β-reduction nesting depth. β-reduction inlines a callee's body; a
     /// TERMINATING fold bottoms out at a bounded depth, while a RECURSIVE function inlines without end.
     /// So a bounded depth is the sound guard: past [`REDUCE_DEPTH_LIMIT`] the evaluator declines rather
@@ -508,6 +585,16 @@ impl Db {
     /// leave every derived column empty. Nothing below the top level is touched until a query demands
     /// it.
     pub fn load(ast: Arenas) -> Db {
+        Db::load_linked(ast, None)
+    }
+
+    /// Build a database over a decoded program that MAY be a linked multi-file package. `linkage` is
+    /// `Some` only for a package of >1 file (`DESIGN-package-linking.md`): it carries the `StructId →
+    /// file` demux table and each file's import/export surface, from which this derives the file-scoped
+    /// resolution table ([`FileScopeTable`]). `None` is the ordinary single-file compile — flat
+    /// namespace, byte-identical to before linking existed. Everything else about load is unchanged; a
+    /// linked package is just one bigger arena with a resolution overlay.
+    pub fn load_linked(ast: Arenas, linkage: Option<crate::link::Linkage>) -> Db {
         let mut ast = ast;
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
@@ -575,6 +662,12 @@ impl Db {
             }
             def_by_name.entry(d.name.clone()).or_insert(i);
         }
+        // Derive the file-scoped resolution table from the package linkage (`Some` only for a >1-file
+        // package). For each file: its own top-level VALUE defs (a def whose signature occurrence falls
+        // in that file's `StructId` range), plus its imports (each local name → the exporting file's
+        // def of that name). A single-file compile carries no linkage, so this stays `None` and every
+        // lookup falls through to the flat `def_name_index` — byte-identical to before.
+        let file_scope = linkage.map(|lk| build_file_scope(&lk, &defs, &def_by_name));
         Db {
             ast,
             defs,
@@ -588,6 +681,7 @@ impl Db {
             def_name_index: def_by_name,
             scope_binders,
             prelude,
+            file_scope,
             user_node_count,
             reduce_depth: 0,
             descent_depth: 0,
@@ -801,6 +895,37 @@ impl Db {
         self.def_name_index.get(name).copied()
     }
 
+    /// File-scoped def lookup for a multi-file PACKAGE (`DESIGN-package-linking.md` §4). Resolves the
+    /// VALUE name `name`, referenced from node `at`, to a def index — but ONLY the defs visible in
+    /// `at`'s own file (its own top-level defs + its imports), never a sibling file's defs. Returns:
+    ///  - `Some(Ok(idx))` — `name` resolves to def `idx` in `at`'s file scope;
+    ///  - `Some(Err(()))` — a package is linked and `at`'s file is KNOWN, but `name` is not visible there (caller must NOT fall back to the global scan — that would leak a sibling's def; fall through to the prelude / unbound instead);
+    ///  - `None` — no package linkage, OR `at` is a synthesized / β-copied / prelude node whose file is indeterminate; caller uses the flat `def_by_name` path.
+    ///
+    /// The `None`-for-indeterminate case is the β-copy-hygiene fallback: a copied node lies outside
+    /// every `FileSpan`, so its file is unknown here; the resolver handles that separately (a name
+    /// defined in exactly one file across the whole package is unambiguous and resolves flat; a name
+    /// defined in more than one file is ambiguous under a copy and DECLINES rather than guessing).
+    pub(crate) fn file_scoped_def(&self, at: StructId, name: &str) -> Option<Result<usize, ()>> {
+        let fs = self.file_scope.as_ref()?;
+        let file = fs.file_of(at)?;
+        Some(fs.visible[file].get(name).copied().ok_or(()))
+    }
+
+    /// Whether a package is linked (multi-file). When false, resolution is the flat single-file path.
+    pub(crate) fn is_linked_package(&self) -> bool {
+        self.file_scope.is_some()
+    }
+
+    /// How many top-level defs across the WHOLE package share the value name `name` — the ambiguity
+    /// count the β-copy fallback consults: 0 = unbound, 1 = unambiguous (resolve flat), >1 = ambiguous
+    /// under a synthesized node whose file is unknown, so a copied reference to it DECLINES. Only
+    /// meaningful for a linked package; a single-file program has one file, so it never exceeds 1 for a
+    /// well-formed program (a duplicate def name there is a separate well-formedness concern).
+    pub(crate) fn package_def_name_count(&self, name: &str) -> usize {
+        self.defs.iter().filter(|d| d.name == name).count()
+    }
+
     /// The index in [`defs`] of the def whose body is the occurrence `body`, if any — an O(1) reverse
     /// lookup of `defs[i].body`, built at load. This is the hot query the recursion analysis makes of
     /// every callee edge and lowering/inference make per call; it replaces the equivalent linear
@@ -933,6 +1058,17 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
         if tail.first().copied() != Some(form) && tail.contains(&form) {
             return true;
         }
+    }
+    // A HANDLE ARM binds the operation's params + the state binder in its body (`binder_in`'s Case 7).
+    // The arm's parent `p` is the handle's ARMS-LIST (the handle's 2nd tail element), so `form` is an arm
+    // iff `p`'s own parent is a `(handle …)` whose arms-list is `p` and `p` holds `form`. Without the arm
+    // as a candidate the scope-skip index would hop PAST it and Case 7 would never fire, so an arm-body
+    // reference to a param/state binder would be spuriously unbound (the `is_binding_candidate` trap:
+    // every binding form MUST be listed here).
+    if let Some(pp) = parent.get(p.0 as usize).copied().flatten()
+        && ast.as_form(pp, "handle").and_then(|t| t.get(1).copied()) == Some(p)
+    {
+        return true;
     }
     false
 }

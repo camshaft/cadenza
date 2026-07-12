@@ -1,0 +1,827 @@
+//! `link` — package linking: merge N named `ast` artifacts into ONE compilation unit before the
+//! pure pipeline runs (`DESIGN-package-linking.md`). Each file is a module; all files are spliced
+//! into one [`Arenas`] under a synthesized `(do …)` root, so the existing `Db::load` sees exactly
+//! one program in one arena — the same thing it sees for a single file, just assembled from many.
+//!
+//! This is INTRA-PACKAGE linking only: nothing crosses a component boundary, so there is zero
+//! component-ABI / envelope work. Monomorphization is the existing β-reduction; one component is the
+//! existing backend. The link step is the structured analogue of the bootstrap Makefile's `cat`, but
+//! at the arena level with real ids: it appends each file's `leaves`/`structure` with a per-file id
+//! offset and re-parents every file's top-level items under one `(do …)`.
+//!
+//! Increment status (`DESIGN-package-linking.md` §8): this module realizes steps 2, 3, and 4 — the
+//! arena splice + `FileSpan` demux table (step 2), explicit `(import …)` + per-file visibility (step
+//! 3), and cyclic-import + colliding-import rejection (step 4). `link()` reads each file's `(import
+//! "path" (name…))` clauses (compile-time LINK DIRECTIVES, NOT spliced as runtime items) and each
+//! file's `(export …)` public surface into a per-file [`FileScope`]; only the ENTRY file's `(export
+//! …)` survives into the merged `(do …)`, so `db.exports` IS the component boundary. Name resolution
+//! is then FILE-SCOPED (`resolve.rs`): a bare name in file `f` resolves against `f`'s own defs and
+//! `f`'s imports, never a sibling's defs. A colliding imported name → CDZ0201; an import cycle
+//! (`find_import_cycle`, a back-edge DFS over the import graph) → CDZ0201. The diagnostics link-map
+//! artifact (step 5) and the bootstrap re-author (step 6) are the remaining steps.
+
+use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
+use crate::diag::Reject;
+
+/// The input-artifact kind that names the package ENTRY file. Its bytes are the entry's artifact name
+/// (a UTF-8 string) — the file whose `(export …)` forms the component boundary. It rides the artifact
+/// stream exactly like the `sidecar`/`spans` inputs (`DESIGN-package-linking.md` §3c): a new kind, a
+/// `.find(kind == KIND_ENTRY)`, no change to `compile`'s signature. Absent + a single `ast` = today's
+/// single-file compile; absent + multiple `ast` = a package with no named entry, which declines.
+pub const KIND_ENTRY: &str = "entry";
+
+/// One file's contribution to the merged arena — the span of structure ids it owns, so a global
+/// `StructId` demuxes back to `(path, local id)` for source mapping (`DESIGN-package-linking.md` §6).
+/// A diagnostic's global node id `n` falls in exactly one file's `[struct_base, struct_base +
+/// struct_count)` range; `n - struct_base` is the per-file local id that file's own span table is
+/// keyed by. The link-synthesized `(do …)` root sits OUTSIDE every file's range (it belongs to no
+/// source file), so it never mis-demuxes to a file.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FileSpan {
+    /// The file's artifact name (the `<path>` an `(import …)` names it by).
+    pub path: String,
+    /// The first merged `StructId` this file's structure entries occupy.
+    pub struct_base: u32,
+    /// How many structure entries this file contributed (its range length).
+    pub struct_count: u32,
+}
+
+impl FileSpan {
+    /// Whether the global structure id `id` falls in this file's range.
+    pub fn contains(&self, id: StructId) -> bool {
+        let n = id.0;
+        n >= self.struct_base && n < self.struct_base + self.struct_count
+    }
+}
+
+/// One resolved `(import "path" (name…))` binding: a public name of another file brought into the
+/// importing file's scope under `local` (the named-list form binds `local == exported`). Resolved at
+/// link time: `from_file` is the SPLICED index of the module named by `"path"`, and `exported` has
+/// already been checked to be in that module's `(export …)` list (`DESIGN-package-linking.md` §4).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Import {
+    /// The name introduced into the importing file's scope.
+    pub local: String,
+    /// The SPLICED index (into `LinkedProgram.files`/`scopes`) of the module this name comes from.
+    pub from_file: usize,
+    /// The name as the source module exports it (== `local` for the named-list form).
+    pub exported: String,
+    /// The `(import …)` clause's GLOBAL occurrence, for a diagnostic to anchor to.
+    pub occ: StructId,
+}
+
+/// One file's link-time surface: the names it makes public (`(export …)`) and the names it pulls in
+/// (`(import …)`). Parallel to `LinkedProgram.files` (same spliced index). A file's importable surface
+/// IS its export list (`modules-and-namespaces.md` §Visibility Is Explicit — one mechanism, reused).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct FileScope {
+    /// The public names this file exports (its `(export …)` clause names).
+    pub exports: Vec<String>,
+    /// The names this file imports from sibling modules.
+    pub imports: Vec<Import>,
+}
+
+/// The per-file linkage a merged multi-file arena carries into `Db::load_linked` — the demux table +
+/// import/export scopes that make name resolution FILE-SCOPED. A SINGLE-file compile carries NO
+/// linkage (`None`): its namespace is flat, byte-identical to the pre-linking compiler. This is
+/// `Some` only for a genuine package (>1 file), so the file-scoping logic never touches the
+/// overwhelmingly-common single-file path.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Linkage {
+    /// The `StructId → file` demux table (splice order), keyed by structure-id range.
+    pub files: Vec<FileSpan>,
+    /// Per-file import/export surface, parallel to `files`.
+    pub scopes: Vec<FileScope>,
+}
+
+impl Linkage {
+    /// The index of the file whose `FileSpan` contains `id`, or `None` for a node in no file — a
+    /// prelude/evaluator-synthesized node (a β-reduced body copy, a built `(Int W)` module) or the
+    /// synthesized `(do …)` root. A `None` result is the signal for resolution to fall back safely
+    /// (`DESIGN-package-linking.md` §4, the β-copy-hygiene note).
+    pub fn file_of(&self, id: StructId) -> Option<usize> {
+        self.files.iter().position(|f| f.contains(id))
+    }
+}
+
+/// The result of linking a package: the merged arena (ready for `Db::load`), the per-file demux table,
+/// the per-file import/export surface, and which file is the entry. Files are in the CALLER's order
+/// (request order — deterministic; a topological order is a later refinement, §3a/§10). Correctness
+/// does not depend on the order: a reference resolves against ITS OWN file's scope (own defs +
+/// imports), never a global first-wins scan, so a same-named sibling def is invisible unless imported.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LinkedProgram {
+    /// All files' structure/leaves appended (ids offset per file), re-rooted under a `(do …)`.
+    pub arenas: Arenas,
+    /// One entry per input file, in splice order — the `StructId → file` demux table.
+    pub files: Vec<FileSpan>,
+    /// Per-file import/export surface, parallel to `files`.
+    pub scopes: Vec<FileScope>,
+    /// Index into `files` of the entry file (whose `(export …)` forms the component boundary).
+    pub entry: usize,
+}
+
+impl LinkedProgram {
+    /// The linkage (demux + scopes) this program carries into `Db::load_linked`.
+    pub fn linkage(&self) -> Linkage {
+        Linkage {
+            files: self.files.clone(),
+            scopes: self.scopes.clone(),
+        }
+    }
+}
+
+/// Link a package of named `ast` artifacts into one compilation unit. `files` is `(artifact name,
+/// decoded arena)` in the order the caller supplied them; `entry` names the entry file (its
+/// `(export …)` forms the component boundary). Splice order is the given order (a topological order
+/// over the import graph is a later refinement, `DESIGN-package-linking.md` §3a/§10 — with no imports
+/// yet, request order is already deterministic and dependency-respecting).
+///
+/// Returns a [`Reject`] if `files` is empty (nothing to compile) or `entry` names no supplied file
+/// (the caller asked to build a package whose entry is absent — decline, don't guess).
+pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Reject> {
+    if files.is_empty() {
+        return Err(Reject::decline("package has no `ast` input files to link"));
+    }
+    let entry_ix = match files.iter().position(|(name, _)| name == entry) {
+        Some(i) => i,
+        None => {
+            return Err(Reject::decline(format!(
+                "package entry `{entry}` names no supplied `ast` file"
+            )));
+        }
+    };
+
+    // Index every file by name, so an `(import "path" …)` resolves its target module to a spliced
+    // index. A duplicate file name is ambiguous — decline (which module does `"path"` mean?).
+    let mut name_to_ix: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, (name, _)) in files.iter().enumerate() {
+        if name_to_ix.insert(name.as_str(), i).is_some() {
+            return Err(Reject::decline(format!(
+                "package has two `ast` files named `{name}` (ambiguous import target)"
+            )));
+        }
+    }
+
+    // Combined arenas, built by append-with-offset. Leaves are copied verbatim (they are values —
+    // dedup across files is unnecessary for correctness); structure entries are remapped by this
+    // file's leaf/struct base. We gather each file's remapped TOP-LEVEL items to re-parent under one
+    // synthesized `(do …)` root at the end.
+    let mut leaves: Vec<Leaf> = Vec::new();
+    let mut structure: Vec<Struct> = Vec::new();
+    let mut file_spans: Vec<FileSpan> = Vec::with_capacity(files.len());
+    let mut do_children: Vec<StructId> = Vec::new();
+    // Per-file export NAME sets, gathered in the first pass so an import can be validated against the
+    // target module's public surface in the second (a file may import a name from a file spliced later).
+    let mut exports_of: Vec<Vec<String>> = Vec::with_capacity(files.len());
+    // Per-file base offsets, kept so the second pass can map an import clause's local id → global.
+    let mut struct_bases: Vec<u32> = Vec::with_capacity(files.len());
+
+    for (path, ast) in files {
+        let leaf_base = leaves.len() as u32;
+        let struct_base = structure.len() as u32;
+        struct_bases.push(struct_base);
+
+        // Copy this file's leaves verbatim.
+        leaves.extend(ast.leaves.iter().cloned());
+
+        // Copy this file's structure, shifting every embedded id by this file's base.
+        for entry in &ast.structure {
+            structure.push(match entry {
+                Struct::Atom(LeafId(l)) => Struct::Atom(LeafId(l + leaf_base)),
+                Struct::List(children) => Struct::List(
+                    children
+                        .iter()
+                        .map(|c| StructId(c.0 + struct_base))
+                        .collect(),
+                ),
+            });
+        }
+
+        // This file's top-level items, remapped, become children of the combined `(do …)` — EXCEPT:
+        //  - `(import …)` clauses are compile-time LINK DIRECTIVES, not runtime items: they are read
+        //    into `FileScope.imports` (below) and NOT spliced (a spliced `(import …)` would be an
+        //    unmodeled top-level form and decline the whole program).
+        //  - a NON-ENTRY file's `(export …)` clauses do not form the component boundary, so they are
+        //    dropped from the merged `(do …)` (their names still populate `exports_of` for import
+        //    visibility). Only the ENTRY file's `(export …)` survives → `db.exports` IS the boundary.
+        let is_entry = path == entry;
+        for item in top_items(ast) {
+            if ast.as_form(item, "import").is_some() {
+                continue;
+            }
+            if ast.as_form(item, "export").is_some() && !is_entry {
+                continue;
+            }
+            do_children.push(StructId(item.0 + struct_base));
+        }
+
+        // Gather this file's public surface (its `(export …)` names) for import validation.
+        let mut exports = Vec::new();
+        for item in top_items(ast) {
+            if let Some(tail) = ast.as_form(item, "export")
+                && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))
+            {
+                exports.push(name.to_string());
+            }
+        }
+        exports_of.push(exports);
+
+        file_spans.push(FileSpan {
+            path: path.clone(),
+            struct_base,
+            struct_count: ast.structure.len() as u32,
+        });
+    }
+
+    // Second pass: resolve each file's `(import "path" (name…))` clauses against the (now fully
+    // gathered) per-file export sets. An import of an unknown module, or of a name that module does
+    // not export, is a coded reject (`DESIGN-package-linking.md` §7) — never a silent bind-to-nothing.
+    let mut scopes: Vec<FileScope> = Vec::with_capacity(files.len());
+    for (fi, (_, ast)) in files.iter().enumerate() {
+        let mut imports = Vec::new();
+        for item in top_items(ast) {
+            if let Some(tail) = ast.as_form(item, "import") {
+                resolve_import_clause(
+                    ast,
+                    item,
+                    tail,
+                    struct_bases[fi],
+                    &name_to_ix,
+                    &exports_of,
+                    &mut imports,
+                )?;
+            }
+        }
+        scopes.push(FileScope {
+            exports: exports_of[fi].clone(),
+            imports,
+        });
+    }
+
+    // CYCLIC IMPORTS (`modules-and-namespaces.md` §Cyclic Module Dependencies Are Rejected): the
+    // import graph (file → each file it imports FROM) must be acyclic. A back-edge in a DFS is a cycle
+    // → a coded reject (CDZ0201). The same shape as the static-recursion call-graph DFS
+    // (`eval::is_recursive`), here over the fixed link-time import edges. (Value-level mutual recursion
+    // across files is fine — that is a runtime call, not an import edge; only a compile-time dependency
+    // LOOP is forbidden.)
+    if let Some(cycle) = find_import_cycle(&scopes) {
+        let names: Vec<&str> = cycle.iter().map(|&i| files[i].0.as_str()).collect();
+        return Err(Reject::coded(
+            crate::diag::Code::Malformed,
+            format!("cyclic module imports: {}", names.join(" → ")),
+        ));
+    }
+
+    // Synthesize the `(do …)` root: a fresh `do` name leaf + its atom, then the list whose head is
+    // that atom and whose tail is every file's top-level items. These nodes sit AFTER all files, so
+    // they are outside every `FileSpan` (they belong to no source file).
+    let do_leaf = LeafId(leaves.len() as u32);
+    leaves.push(Leaf::Name("do".to_string()));
+    let do_atom = StructId(structure.len() as u32);
+    structure.push(Struct::Atom(do_leaf));
+    let mut root_children = Vec::with_capacity(do_children.len() + 1);
+    root_children.push(do_atom);
+    root_children.extend(do_children);
+    let root = StructId(structure.len() as u32);
+    structure.push(Struct::List(root_children));
+
+    Ok(LinkedProgram {
+        arenas: Arenas {
+            leaves,
+            structure,
+            root,
+        },
+        files: file_spans,
+        scopes,
+        entry: entry_ix,
+    })
+}
+
+/// Resolve one `(import "path" (name…))` clause of the file at spliced index whose base is `base`,
+/// appending an [`Import`] per imported name. `tail` is the clause's arguments in the file's LOCAL
+/// arena `ast`; `item` is the clause's LOCAL occurrence (its global id is `item + base`, used to
+/// anchor a diagnostic). Rejects (never silently binds nothing):
+///  - a malformed clause (not `("path" (name…))`);
+///  - the ALIAS form `(import "path" alias)` — deferred to the module-as-record phase (§2/§7);
+///  - an unknown module `"path"`;
+///  - a name the target module does not `(export …)` (visibility, §4).
+fn resolve_import_clause(
+    ast: &Arenas,
+    item: StructId,
+    tail: &[StructId],
+    base: u32,
+    name_to_ix: &std::collections::HashMap<&str, usize>,
+    exports_of: &[Vec<String>],
+    out: &mut Vec<Import>,
+) -> Result<(), Reject> {
+    let occ = StructId(item.0 + base);
+    // `(import "path" <spec>)` — exactly two arguments: the module path string and the name spec.
+    let (Some(&path_id), Some(&spec_id)) = (tail.first(), tail.get(1)) else {
+        return Err(Reject::decline(
+            "malformed `(import …)`: expected `(import \"path\" (name…))`",
+        )
+        .at(occ));
+    };
+    let Some(path) = ast.as_str(path_id) else {
+        return Err(Reject::decline(
+            "`(import …)` path must be a string literal naming a package file",
+        )
+        .at(occ));
+    };
+    // The name spec must be a `(name…)` LIST (the named-list form). A bare NAME spec is the ALIAS
+    // form `(import "path" alias)`, which needs module-as-record projection — deferred (§2/§7).
+    let names: &[StructId] = match ast.get(spec_id) {
+        Struct::List(items) => items,
+        Struct::Atom(_) => {
+            return Err(Reject::decline(
+                "qualified import `(import \"path\" alias)` is a later phase; \
+                 use the named-list form `(import \"path\" (name…))`",
+            )
+            .at(occ));
+        }
+    };
+    let Some(&from_file) = name_to_ix.get(path) else {
+        return Err(
+            Reject::decline(format!("`(import …)` names unknown package file `{path}`")).at(occ),
+        );
+    };
+
+    for &name_id in names {
+        let Some(name) = ast.as_name(name_id) else {
+            return Err(
+                Reject::decline("`(import …)` name list may contain only bare names").at(occ),
+            );
+        };
+        if !exports_of[from_file].iter().any(|e| e == name) {
+            return Err(Reject::decline(format!(
+                "`(import …)`: `{path}` does not export `{name}`"
+            ))
+            .at(occ));
+        }
+        // COLLIDING IMPORTED NAMES (`modules-and-namespaces.md` §Colliding Imported Names Are
+        // Rejected): two imports binding the SAME local name into one file's scope is a compile-time
+        // error (CDZ0201), never resolved by an implicit precedence. This is a positively-proven
+        // ill-formed program — a CODED reject, not a decline.
+        if out.iter().any(|i| i.local == name) {
+            return Err(Reject::coded(
+                crate::diag::Code::Malformed,
+                format!("`(import …)`: `{name}` is imported more than once into this file"),
+            )
+            .at(occ));
+        }
+        out.push(Import {
+            local: name.to_string(),
+            from_file,
+            exported: name.to_string(),
+            occ,
+        });
+    }
+    Ok(())
+}
+
+/// Find an import CYCLE in the package's import graph (file `i` → each `imp.from_file` it imports),
+/// returning the files on the cycle (in dependency order, closing back to the first) if one exists.
+/// An iterative DFS with a three-colour marking (unvisited / on-stack / done): a back-edge to an
+/// on-stack node is a cycle. Deterministic (files + edges are fixed), the link-time twin of
+/// `eval::is_recursive`'s call-graph DFS. `None` = the import graph is acyclic.
+fn find_import_cycle(scopes: &[FileScope]) -> Option<Vec<usize>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Unvisited,
+        OnStack,
+        Done,
+    }
+    let n = scopes.len();
+    let mut mark = vec![Mark::Unvisited; n];
+    // Explicit DFS stack of (node, path-so-far) so the cycle can be reconstructed; no native recursion
+    // over a potentially-large graph.
+    for start in 0..n {
+        if mark[start] != Mark::Unvisited {
+            continue;
+        }
+        let mut stack: Vec<(usize, Vec<usize>)> = vec![(start, vec![start])];
+        mark[start] = Mark::OnStack;
+        while let Some((node, path)) = stack.pop() {
+            let mut advanced = false;
+            for imp in &scopes[node].imports {
+                let to = imp.from_file;
+                match mark[to] {
+                    Mark::OnStack => {
+                        // Back-edge → cycle. Reconstruct from where `to` first appears on the path.
+                        let mut cyc: Vec<usize> =
+                            if let Some(pos) = path.iter().position(|&x| x == to) {
+                                path[pos..].to_vec()
+                            } else {
+                                vec![to]
+                            };
+                        cyc.push(to); // close the loop back to the re-entered node
+                        return Some(cyc);
+                    }
+                    Mark::Unvisited => {
+                        mark[to] = Mark::OnStack;
+                        let mut child_path = path.clone();
+                        child_path.push(to);
+                        // Re-push the current node so its remaining edges are explored after `to`'s
+                        // subtree completes (its on-stack mark is cleared when it is fully done, below).
+                        stack.push((node, path.clone()));
+                        stack.push((to, child_path));
+                        advanced = true;
+                        break;
+                    }
+                    Mark::Done => {}
+                }
+            }
+            if !advanced {
+                // No unvisited edge left from `node`: it and its subtree are fully explored.
+                mark[node] = Mark::Done;
+            }
+        }
+    }
+    None
+}
+
+/// The top-level items of one file's arena — the SAME rule `db::top_items` applies (a `(module …)`
+/// or `(do …)` root contributes its children; any other root contributes itself). Duplicated here
+/// (rather than depending on `db`) because linking runs BEFORE `Db::load` and operates on a bare
+/// `Arenas`; the two must stay in lock-step (a change to how a root is unwrapped belongs in both).
+fn top_items(ast: &Arenas) -> Vec<StructId> {
+    let root = ast.root;
+    if let Some(tail) = ast.as_form(root, "module") {
+        return tail.get(1..).unwrap_or(&[]).to_vec();
+    }
+    if let Some(tail) = ast.as_form(root, "do") {
+        return tail.to_vec();
+    }
+    vec![root]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Read a one-file arena from a small program via the real s-expr reader (the path the corpus
+    /// uses), so the tests exercise real decoded arenas rather than hand-built ones.
+    fn arena_of(src: &str) -> Arenas {
+        crate::testkit::parse(src)
+    }
+
+    #[test]
+    fn link_of_one_file_reroots_under_a_do() {
+        let a = arena_of("(do (def (main) 42) (export main))");
+        let linked = link(&[("only".to_string(), a)], "only").expect("link");
+        // The merged root is a `(do …)` whose children are the file's two top-level items.
+        assert_eq!(linked.entry, 0);
+        assert_eq!(linked.files.len(), 1);
+        assert_eq!(linked.arenas.head_name(linked.arenas.root), Some("do"));
+        let items = match linked.arenas.get(linked.arenas.root) {
+            Struct::List(items) => items.len(),
+            _ => panic!("root is not a list"),
+        };
+        assert_eq!(items, 3); // `do` head + def + export
+    }
+
+    #[test]
+    fn link_merges_two_files_and_offsets_ids() {
+        let a = arena_of("(do (def (a) 1) (export a))");
+        let b = arena_of("(do (def (b) 2) (export b))");
+        let a_structs = a.structure.len() as u32;
+        let linked = link(&[("a".to_string(), a), ("b".to_string(), b)], "b").expect("link");
+        assert_eq!(linked.entry, 1); // `b` is the named entry
+        assert_eq!(linked.files.len(), 2);
+        // File A starts at 0; file B is offset by A's structure length.
+        assert_eq!(linked.files[0].struct_base, 0);
+        assert_eq!(linked.files[1].struct_base, a_structs);
+        // The two file ranges are disjoint and adjacent.
+        assert_eq!(
+            linked.files[0].struct_base + linked.files[0].struct_count,
+            linked.files[1].struct_base
+        );
+        // The merged `(do …)` gathers both files' DEFS but only the ENTRY (`b`) file's `(export …)`:
+        // head + def a + def b + export b = 4 (non-entry `a`'s `(export a)` is dropped — only the
+        // entry's exports form the component boundary).
+        let items = match linked.arenas.get(linked.arenas.root) {
+            Struct::List(items) => items.len(),
+            _ => panic!("root is not a list"),
+        };
+        assert_eq!(items, 4);
+        // Each file still records its own public surface for import visibility.
+        assert_eq!(linked.scopes[0].exports, vec!["a".to_string()]);
+        assert_eq!(linked.scopes[1].exports, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn link_rejects_a_missing_entry() {
+        let a = arena_of("(do (def (main) 1) (export main))");
+        let r = link(&[("only".to_string(), a)], "absent");
+        assert!(r.is_err(), "an entry that names no file must decline");
+    }
+
+    #[test]
+    fn link_rejects_an_empty_package() {
+        let files: Vec<(String, Arenas)> = Vec::new();
+        assert!(link(&files, "any").is_err());
+    }
+
+    /// The Inc-3 GATE (`DESIGN-package-linking.md` §8.3): a cross-file call resolves through an EXPLICIT
+    /// `(import …)`, monomorphizes, and emits one component. File `app` imports `helper` from `lib`,
+    /// which `lib` exports; `main` calls it. Drives the full `compile()` path (decode → link → Db::load
+    /// → resolve → layout → emit) and asserts a real component comes out. The companion test
+    /// `an_unimported_sibling_def_is_not_visible` witnesses the other half: WITHOUT the import the same
+    /// call is unbound (file-scoping isolates the sibling).
+    #[test]
+    fn a_cross_file_import_resolves_and_emits_a_component() {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+
+        // File `lib` defines + exports a helper; file `app` (the entry) imports and calls it.
+        let lib = crate::codec::encode(&arena_of("(do (def (helper) 40) (export helper))"));
+        let app = crate::codec::encode(&arena_of(
+            "(do (import \"lib\" (helper)) (def (main) (+ (helper) 2)) (export main))",
+        ));
+        let inputs = vec![
+            Artifact::new(Artifact::KIND_AST, "lib", lib),
+            Artifact::new(Artifact::KIND_AST, "app", app),
+            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+        ];
+        let out = crate::compile(&inputs, &[Target::Wasm]);
+        assert!(
+            !out.has_error(),
+            "cross-file import should compile clean; diagnostics: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_some(),
+            "a wasm component should be produced from the spliced package"
+        );
+    }
+
+    /// A multi-file package with NO `entry` marker declines — there is no rule to pick the entry, so
+    /// the compiler rejects rather than guessing (`DESIGN-package-linking.md` §3c).
+    #[test]
+    fn a_multi_file_package_without_an_entry_declines() {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+
+        let a = crate::codec::encode(&arena_of("(do (def (a) 1) (export a))"));
+        let b = crate::codec::encode(&arena_of("(do (def (b) 2) (export b))"));
+        let inputs = vec![
+            Artifact::new(Artifact::KIND_AST, "a", a),
+            Artifact::new(Artifact::KIND_AST, "b", b),
+        ];
+        let out = crate::compile(&inputs, &[Target::Wasm]);
+        assert!(
+            out.has_error(),
+            "a multi-file package with no entry must decline"
+        );
+    }
+
+    #[test]
+    fn a_file_span_demuxes_a_global_id_to_its_file() {
+        let a = arena_of("(do (def (a) 1) (export a))");
+        let b = arena_of("(do (def (b) 2) (export b))");
+        let linked = link(&[("a".to_string(), a), ("b".to_string(), b)], "a").expect("link");
+        // A node in B's range is claimed by B, not A.
+        let in_b = StructId(linked.files[1].struct_base);
+        assert!(!linked.files[0].contains(in_b));
+        assert!(linked.files[1].contains(in_b));
+        // The synthesized `(do …)` root sits outside every file's range (it belongs to no file).
+        assert!(!linked.files[0].contains(linked.arenas.root));
+        assert!(!linked.files[1].contains(linked.arenas.root));
+    }
+
+    use crate::abi::Artifact;
+    use crate::backend::Target;
+
+    /// Compile a two-file package and return its `CompileOutput` — a helper for the visibility tests.
+    fn compile_package(lib_src: &str, app_src: &str) -> crate::abi::CompileOutput {
+        let lib = crate::codec::encode(&arena_of(lib_src));
+        let app = crate::codec::encode(&arena_of(app_src));
+        let inputs = vec![
+            Artifact::new(Artifact::KIND_AST, "lib", lib),
+            Artifact::new(Artifact::KIND_AST, "app", app),
+            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+        ];
+        crate::compile(&inputs, &[Target::Wasm])
+    }
+
+    /// The other half of file-scoping: WITHOUT an `(import …)`, a sibling file's def is INVISIBLE.
+    /// `app`'s `main` calls `helper` (defined + exported by `lib`) but does not import it → unbound.
+    #[test]
+    fn an_unimported_sibling_def_is_not_visible() {
+        let out = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (def (main) (+ (helper) 2)) (export main))",
+        );
+        assert!(out.has_error(), "an unimported sibling must be unbound");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("helper")),
+            "expected an unbound-name error for `helper`; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// Visibility is the export list: importing a name a module does NOT export is a reject, even
+    /// though the def exists in that file (`DESIGN-package-linking.md` §4).
+    #[test]
+    fn importing_a_non_exported_name_declines() {
+        // `lib` defines `helper` but does NOT export it.
+        let out = compile_package(
+            "(do (def (helper) 40))",
+            "(do (import \"lib\" (helper)) (def (main) (helper)) (export main))",
+        );
+        assert!(
+            out.has_error(),
+            "importing an unexported name must be rejected"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("does not export")),
+            "expected a 'does not export' diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// An import naming an unknown package file declines.
+    #[test]
+    fn importing_from_an_unknown_module_declines() {
+        let out = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (import \"nope\" (helper)) (def (main) (helper)) (export main))",
+        );
+        assert!(
+            out.has_error(),
+            "an import of an unknown module must decline"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("unknown package file")),
+            "expected an 'unknown package file' diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// The ALIAS form `(import "path" alias)` is a later phase — it declines for now (§2/§7).
+    #[test]
+    fn the_alias_import_form_declines() {
+        let out = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (import \"lib\" lib) (def (main) 1) (export main))",
+        );
+        assert!(
+            out.has_error(),
+            "the alias import form must decline for now"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("qualified import")),
+            "expected a 'qualified import' decline; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// β-COPY HYGIENE (`DESIGN-package-linking.md` §4 note): `app` imports `pub-helper` from `lib`;
+    /// `pub-helper`'s body calls a PRIVATE sibling `priv-helper` (also in `lib`, NOT imported by
+    /// `app`). When `pub-helper` inlines into `app`'s `main`, its copied body's reference to
+    /// `priv-helper` must still resolve in `lib`'s scope — not become unbound, and not bind to any
+    /// same-named def in `app`. Here `priv-helper` is defined only in `lib`, so it is unambiguous and
+    /// resolves; the package compiles clean.
+    #[test]
+    fn an_inlined_import_reaches_its_own_files_private_sibling() {
+        let out = compile_package(
+            "(do (def (priv-helper) 40) \
+                 (def (pub-helper) (+ (priv-helper) 1)) \
+                 (export pub-helper))",
+            "(do (import \"lib\" (pub-helper)) (def (main) (+ (pub-helper) 1)) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "an inlined import reaching its own file's private sibling should compile clean; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// Compile an N-file package: `files` is `(name, source)` pairs, `entry` names the entry file.
+    fn compile_files(files: &[(&str, &str)], entry: &str) -> crate::abi::CompileOutput {
+        let mut inputs: Vec<Artifact> = files
+            .iter()
+            .map(|(name, src)| {
+                Artifact::new(
+                    Artifact::KIND_AST,
+                    *name,
+                    crate::codec::encode(&arena_of(src)),
+                )
+            })
+            .collect();
+        inputs.push(Artifact::new(
+            KIND_ENTRY,
+            "entry",
+            entry.as_bytes().to_vec(),
+        ));
+        crate::compile(&inputs, &[Target::Wasm])
+    }
+
+    /// Importing the same local name twice into one file → CDZ0201 (`modules-and-namespaces.md`
+    /// §Colliding Imported Names Are Rejected), never resolved by an implicit precedence.
+    #[test]
+    fn a_colliding_import_is_rejected() {
+        let out = compile_files(
+            &[
+                ("a", "(do (def (x) 1) (export x))"),
+                ("b", "(do (def (x) 2) (export x))"),
+                (
+                    "app",
+                    "(do (import \"a\" (x)) (import \"b\" (x)) (def (main) (x)) (export main))",
+                ),
+            ],
+            "app",
+        );
+        assert!(out.has_error(), "a colliding import must be rejected");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("more than once")),
+            "expected a CDZ0201 colliding-import reject; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A two-file import CYCLE (`a` imports from `b`, `b` imports from `a`) is rejected
+    /// (`modules-and-namespaces.md` §Cyclic Module Dependencies Are Rejected).
+    #[test]
+    fn a_two_file_import_cycle_is_rejected() {
+        let out = compile_files(
+            &[
+                ("a", "(do (import \"b\" (g)) (def (f) (g)) (export f))"),
+                ("b", "(do (import \"a\" (f)) (def (g) (f)) (export g))"),
+            ],
+            "a",
+        );
+        assert!(out.has_error(), "a two-file import cycle must be rejected");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("cyclic module imports")),
+            "expected a cyclic-import diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A three-file cycle (a→b→c→a) is rejected too — the DFS finds the back-edge regardless of length.
+    #[test]
+    fn a_three_file_import_cycle_is_rejected() {
+        let out = compile_files(
+            &[
+                ("a", "(do (import \"b\" (gb)) (def (ga) (gb)) (export ga))"),
+                ("b", "(do (import \"c\" (gc)) (def (gb) (gc)) (export gb))"),
+                ("c", "(do (import \"a\" (ga)) (def (gc) (ga)) (export gc))"),
+            ],
+            "a",
+        );
+        assert!(
+            out.has_error(),
+            "a three-file import cycle must be rejected"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("cyclic module imports")),
+            "expected a cyclic-import diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A DIAMOND (app→util, app→helper, helper→util) is ACYCLIC — it must link cleanly. `util` is
+    /// imported by two files but there is no back-edge, so the cycle check must not false-positive.
+    #[test]
+    fn an_acyclic_diamond_links_cleanly() {
+        let out = compile_files(
+            &[
+                ("util", "(do (def (base) 10) (export base))"),
+                (
+                    "helper",
+                    "(do (import \"util\" (base)) (def (mid) (+ (base) 1)) (export mid))",
+                ),
+                (
+                    "app",
+                    "(do (import \"util\" (base)) (import \"helper\" (mid)) \
+                         (def (main) (+ (base) (mid))) (export main))",
+                ),
+            ],
+            "app",
+        );
+        assert!(
+            !out.has_error(),
+            "an acyclic diamond must link cleanly; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+}

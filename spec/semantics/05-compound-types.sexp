@@ -367,6 +367,21 @@
   (call   main (: true Bool))
   (output (: 2 Int64)))
 
+(case "reading a member from an if-of-records resolves each branch's field by its own sorted order"
+  (doc    "`(. (if b (record (a 1) (b 2)) (record (b 4) (a 3))) a)` reads field `a` from a record chosen by
+           the runtime Bool. The two branch records list their fields in DIFFERENT textual order — `(a b)`
+           vs `(b a)` — but a record's heap layout is its fields in SORTED-KEY order, so `a` is slot 0 in
+           BOTH. A compiler that sinks the member read into each branch — `(if b <a-of-first> <a-of-second>)`
+           — must resolve `a` to each branch's OWN sorted index, not carry one branch's slot to the other:
+           with `b` = false the second record `(record (b 4) (a 3))` is selected and `a` is 3, not 4 (which
+           would be reading slot 0 = `b` had the write order leaked). Pins that member-read-into-if-of-records
+           keeps the per-branch sorted-index resolution the sorted-order case above requires.")
+  (input  (do
+            (def (main (: b Bool)) (. (if b (record (a 1) (b 2)) (record (b 4) (a 3))) a))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
 (case "projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling"
   (doc    "`(. (if b (tuple 5 6) (tuple (/ 1 x) 8)) 0)` projects element 0 of a tuple chosen by the runtime
            Bool `b`. With `b` = true the FIRST tuple is selected, so the result is 5; the SECOND tuple's
@@ -3211,6 +3226,24 @@
             (match pair
               ((tuple a b) (+ a b)))))
   (output (: 10 Int64)))
+
+(case "a tuple of two sums is matched with nested constructor patterns"
+  (doc    "The structural-editing idiom: matching directly on a TUPLE whose elements are SUM values, with
+           nested constructor patterns in the tuple positions. `(match (tuple a b) ((tuple (E.Lit x) (E.Lit
+           y)) …) (_ …))` matches only when BOTH elements are `E.Lit`, binding their payloads; any other
+           pairing falls to the wildcard. For `(tuple (E.Lit 3) (E.Lit 4))` the first arm fires → 7; for a
+           `(tuple (E.Lit 3) (E.Add …))` it falls through → -1. Pins that a tuple scrutinee's ELEMENTS may
+           themselves be constructor patterns (the decision tree descends `[Elem(i)]` then switches on each
+           element's discriminant) — the pair-of-sums shape a self-hosted compiler folds two sub-trees
+           with.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type E (Lit Int64) (Add (Tuple E E)))
+            (def (f a b) (match (tuple a b)
+                           ((tuple (E.Lit x) (E.Lit y)) (+ x y))
+                           (_ -1)))
+            (def (main) (f (E.Lit 3) (E.Lit 4))) (export main)))
+  (output (: 7 Int64)))
 
 ; --- A pattern is LINEAR: it binds each name at most once ------------------------------------
 ; core-semantics.md #Bindings Introduced By A Pattern Are Scoped To Its Branch: "A pattern MUST bind

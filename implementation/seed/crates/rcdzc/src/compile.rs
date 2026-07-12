@@ -24,6 +24,7 @@ use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::infer::type_errors;
 use crate::layout;
+use crate::link;
 use crate::lower::core_of;
 use crate::sidecar;
 use crate::spans;
@@ -34,18 +35,25 @@ use tracing::trace;
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
 pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), "compile requested");
-    // Select the `ast` input artifact and decode it.
-    let ast_art = inputs.iter().find(|a| a.kind == Artifact::KIND_AST);
-    let ast_bytes = match ast_art {
-        Some(a) => &a.bytes,
-        None => return fail(vec![Reject::decline("no `ast` input artifact")]),
-    };
-    let arenas = match crate::codec::decode(ast_bytes) {
-        Some(a) => a,
-        None => return fail(vec![Reject::decline("binary AST failed to decode")]),
+    // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
+    // case) decodes directly — byte-identical to today. TWO OR MORE `ast` artifacts (or an explicit
+    // `entry` marker) is a PACKAGE: the files are spliced into one arena under a synthesized `(do …)`
+    // root by `link()` before `Db::load` (`DESIGN-package-linking.md` §3). Everything downstream of the
+    // splice is unchanged — it sees one program in one arena.
+    let ast_arts: Vec<&Artifact> = inputs
+        .iter()
+        .filter(|a| a.kind == Artifact::KIND_AST)
+        .collect();
+    let entry_name = inputs
+        .iter()
+        .find(|a| a.kind == link::KIND_ENTRY)
+        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+    let (arenas, linkage) = match link_inputs(&ast_arts, entry_name.as_deref()) {
+        Ok(a) => a,
+        Err(r) => return fail(vec![r]),
     };
 
-    let mut db = Db::load(arenas);
+    let mut db = Db::load_linked(arenas, linkage);
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
 
     // Decode the optional `sidecar` request list — the program that DRIVES this compilation
@@ -153,12 +161,30 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // Its Computation Is Observed) but almost always a defect, so warn — the build still succeeds.
     let mut diagnostics = collect_dead_trap_warnings(&mut db);
 
+    // A run that emits BOTH a plain component (`Wasm`) AND a detached DWARF sidecar (`Dwarf`) links the
+    // two: the component carries an `external_debug_info` custom section naming the sidecar file, so a
+    // debugger auto-loads the symbols (`DESIGN-debug-info-rcdzc.md` §9.2, Mode S). The name is the
+    // sidecar artifact's on-disk file (`<program>.dwarf`, matching the CLI's `ext_for_kind`). Only when
+    // a LEAN `Wasm` is paired with a `Dwarf` — a `WasmDebug` embeds its own DWARF and needs no pointer.
+    let external_debug_info =
+        if emit_targets.contains(&Target::Wasm) && emit_targets.contains(&Target::Dwarf) {
+            Some(format!("{}.dwarf", program_name(&db)))
+        } else {
+            None
+        };
+
     // Clean: ask each requested target's backend to fill its artifact. The query artifacts (facts
     // read above) lead, then each emitted backend artifact — all one kinded-artifact list, selected by
     // kind (`build-tool-interface.md`).
     let mut artifacts = query_artifacts;
     for &target in &emit_targets {
-        match backend::emit(target, &mut db, &layout, span_data.as_ref()) {
+        match backend::emit(
+            target,
+            &mut db,
+            &layout,
+            span_data.as_ref(),
+            external_debug_info.as_deref(),
+        ) {
             Ok(bytes) => artifacts.push(Artifact::new(
                 target.artifact_kind(),
                 program_name(&db),
@@ -542,6 +568,9 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // and `if`. Do not descend into arm bodies. A sum-payload read evaluates the scrutinee.
         Core::MatchSum { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         Core::SumPayload { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
+        // `expect` unconditionally evaluates its scrutinee (descend); the absent-variant trap is a RUNTIME
+        // trap on a runtime discriminant, not a compile-time provable poison — nothing to collect there.
+        Core::SumExpect { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }
@@ -650,6 +679,11 @@ fn walk_for_dead_traps(
         // negation's single operand is unconditionally evaluated.
         Resolved::And { lhs, .. } => walk_for_dead_traps(db, lhs, out, seen),
         Resolved::Not { operand } => walk_for_dead_traps(db, operand, out, seen),
+        // Effect control forms decline at lowering (E1a), so no `handle`/`host`/`resume` reaches
+        // emission — the dead-trap walk over one is moot (it emits nothing). Treated as non-descending,
+        // like any form that lowers to a poison; when E1 lowers them, revisit whether an unconditionally-
+        // evaluated sub-position (a handler's init/body) warrants descent.
+        Resolved::Handle { .. } | Resolved::Host { .. } | Resolved::Resume { .. } => {}
         // Leaves and non-descending forms.
         Resolved::Int(_)
         | Resolved::Bool(_)
@@ -682,6 +716,56 @@ fn dropped_trap_anchor(db: &mut Db, id: StructId) -> Option<StructId> {
 
 /// The program's name for artifact labelling — the first exported name, or "main". (A cosmetic label;
 /// the artifact's identity is its kind + bytes.)
+/// Decode the `ast` input artifact(s) into ONE arena plus optional LINKAGE — the front-end link step
+/// (`DESIGN-package-linking.md`). A SINGLE `ast` decodes directly with `None` linkage, byte-identically
+/// to the pre-linking path (flat namespace, no synthesized-root splice, no entry needed). TWO OR MORE
+/// `ast` artifacts, OR a single `ast` accompanied by an explicit `entry` marker, is a PACKAGE: the files
+/// are spliced by `link()` under a synthesized `(do …)` root, `entry` names which file's exports form
+/// the component boundary, and the returned `Some(Linkage)` makes name resolution FILE-SCOPED.
+///
+/// A package with no named entry declines (there is no rule to pick one — reject, don't guess), except
+/// the degenerate single-file package, whose lone file IS the entry. A decode failure of any file, or
+/// an entry naming no supplied file, declines with a specific diagnostic.
+fn link_inputs(
+    ast_arts: &[&Artifact],
+    entry_name: Option<&str>,
+) -> Result<(crate::ast::Arenas, Option<crate::link::Linkage>), Reject> {
+    match ast_arts {
+        [] => Err(Reject::decline("no `ast` input artifact")),
+        // The overwhelmingly common case: exactly one file, no package framing. Decode it as-is — flat
+        // namespace, no linkage — so a one-file program compiles through the identical path it always
+        // did.
+        [only] if entry_name.is_none() => crate::codec::decode(&only.bytes)
+            .map(|a| (a, None))
+            .ok_or_else(|| Reject::decline("binary AST failed to decode")),
+        // A package: decode every file, then splice. The entry defaults to the sole file's name when
+        // exactly one file was supplied (a single-file package needs no explicit entry); otherwise the
+        // caller must name the entry. A single-file package still carries linkage (its `(import …)`
+        // clauses, if any, are validated), but with one file there is no cross-file scoping to enforce.
+        _ => {
+            let mut files = Vec::with_capacity(ast_arts.len());
+            for art in ast_arts {
+                let arena = crate::codec::decode(&art.bytes).ok_or_else(|| {
+                    Reject::decline(format!("binary AST for `{}` failed to decode", art.name))
+                })?;
+                files.push((art.name.clone(), arena));
+            }
+            let entry = match entry_name {
+                Some(e) => e.to_string(),
+                None if files.len() == 1 => files[0].0.clone(),
+                None => {
+                    return Err(Reject::decline(
+                        "a multi-file package needs an `entry` input artifact naming the entry file",
+                    ));
+                }
+            };
+            let linked = crate::link::link(&files, &entry)?;
+            let linkage = linked.linkage();
+            Ok((linked.arenas, Some(linkage)))
+        }
+    }
+}
+
 fn program_name(db: &Db) -> String {
     db.exports
         .first()
