@@ -2750,15 +2750,22 @@ mod recursion {
             run_returns_with::<i64>(&f, "main", &[Val::S64(1_000_000)]),
             1_000_000
         );
-        // MUTUAL tail recursion (cross-function tail calls) also runs in constant stack — even/odd at
-        // depth 100000 (a self-tail-call→loop optimization would not cover this; `return_call` does).
+        // MUTUAL tail recursion (cross-function tail calls) also runs in constant stack — even/odd are a
+        // SAME-SIGNATURE tail-recursive group, so each compiles to ONE shared `loop` with a `which`
+        // dispatch: a cross-call sets `which` + `br`s back (no call frame), like the self-loop above.
+        // A million iterations complete in O(1) stack (a per-call frame would trap far below that).
         let eo = compile_component(&crate::codec::encode(&parse(
             "(module m (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1)))) (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1)))) (def (main (: n Int64)) (even n)) (export main))",
         )))
         .expect("compile");
         assert_eq!(
-            run_returns_with::<i64>(&eo, "main", &[Val::S64(100_000)]),
+            run_returns_with::<i64>(&eo, "main", &[Val::S64(1_000_000)]),
             1
+        );
+        // The odd starting parity too (odd(1_000_001) → even → … → even(0)=1).
+        assert_eq!(
+            run_returns_with::<i64>(&eo, "main", &[Val::S64(999_999)]),
+            0
         );
     }
 
