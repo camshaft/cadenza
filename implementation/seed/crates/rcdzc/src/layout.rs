@@ -305,6 +305,20 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // `expect` evaluates its scrutinee (which may CALL — a `checked-add` composes here); the trap path
         // calls nothing.
         crate::core::Core::SumExpect { scrutinee, .. } => collect_call_callees(db, scrutinee, out),
+        // A closure's captured values are unconditionally evaluated at construction — descend for their
+        // calls. The lifted function's OWN body is reached via the lifted-def worklist (a lifted lambda is
+        // a synthetic def added to the emission set separately), not here.
+        crate::core::Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_call_callees(db, c, out);
+            }
+        }
+        // A closure application evaluates the closure value and its argument; the callee is dynamic
+        // (`call_indirect`), so no static callee to add — the lifted functions are already in the set.
+        crate::core::Core::CallClosure { closure, arg } => {
+            collect_call_callees(db, closure, out);
+            collect_call_callees(db, arg, out);
+        }
         // Leaves and references have no sub-calls.
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)

@@ -217,6 +217,16 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // `expect` reads the scrutinee's payload (a borrow, like `SumPayload`) — a `LocalRef` reached
         // through it does not escape (the payload is unboxed/used in place, not moved out).
         Core::SumExpect { scrutinee, .. } => binding_escapes(db, scrutinee, binder, true),
+        // A closure CONSUMES each captured value (it becomes part of the closure cell); a closure
+        // application consumes both the closure value and its argument. (This increment's no-capture
+        // closure has an empty `captures`, so it references no binding — but the arm is written for the
+        // general case so a captured binding is correctly seen as escaping when captures land.)
+        Core::Closure { captures, .. } => captures
+            .iter()
+            .any(|&c| binding_escapes(db, c, binder, false)),
+        Core::CallClosure { closure, arg } => {
+            binding_escapes(db, closure, binder, false) || binding_escapes(db, arg, binder, false)
+        }
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -599,6 +609,18 @@ pub fn collect_used_ops(
                 out.insert(op);
             }
             collect_used_ops(db, scrutinee, out);
+        }
+        // A closure VALUE: a no-capture closure is a plain table-slot i32 constant (no heap op). Its
+        // captured values (when captures land) would need `arr-alloc`/`arr-set` — added then. A closure
+        // APPLICATION uses `call_indirect` (a core instruction, not a runtime import), plus its operands.
+        Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_used_ops(db, c, out);
+            }
+        }
+        Core::CallClosure { closure, arg } => {
+            collect_used_ops(db, closure, out);
+            collect_used_ops(db, arg, out);
         }
         // Leaves and references emit no runtime op. (A constant string CROSSES only via the escape
         // path's baked bytes — it emits no in-body op; a runtime string handle op arrives later.)
@@ -2615,6 +2637,15 @@ fn emit(
             out.push(Lir::End);
             Ok(())
         }
+        // A runtime CLOSURE VALUE and its application — emitted below (`emit_closure` /
+        // `emit_call_closure`). Placeholder declines until wired; kept as explicit arms so the match
+        // stays exhaustive.
+        Core::Closure { .. } => Err(Reject::decline(
+            "a runtime closure value is not yet emitted (call_indirect path in progress)",
+        )),
+        Core::CallClosure { .. } => Err(Reject::decline(
+            "a runtime closure application is not yet emitted (call_indirect path in progress)",
+        )),
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),

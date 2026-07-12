@@ -626,6 +626,17 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // `expect` unconditionally evaluates its scrutinee (descend); the absent-variant trap is a RUNTIME
         // trap on a runtime discriminant, not a compile-time provable poison — nothing to collect there.
         Core::SumExpect { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
+        // A closure's captured values are unconditionally part of the value; a closure application
+        // unconditionally evaluates the closure and its argument. Descend for their provable faults.
+        Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_reached_poisons(db, c, out);
+            }
+        }
+        Core::CallClosure { closure, arg } => {
+            collect_reached_poisons(db, closure, out);
+            collect_reached_poisons(db, arg, out);
+        }
         // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
         Core::LocalRef { .. }
         | Core::Param { .. }
