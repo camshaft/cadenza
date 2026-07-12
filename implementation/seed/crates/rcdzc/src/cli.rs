@@ -55,6 +55,13 @@ pub struct CompileArgs {
 enum TargetArg {
     /// A WebAssembly component.
     Wasm,
+    /// A WebAssembly component carrying EMBEDDED DWARF debug info (Mode E) — steps through Cadenza
+    /// source and inspects scalar arguments in GDB/LLDB/Chrome. Needs a `spans` input (supply it as
+    /// `spans:NAME=path.spans`); without it the compile declines. Debug sections are inert + strippable.
+    WasmDebug,
+    /// A DETACHED DWARF sidecar (Mode S) — a `<name>.dwarf` file carrying only the debug sections, for a
+    /// debugger to load alongside a lean (undecorated) component. Also needs a `spans` input.
+    Dwarf,
     /// Rust source (a `.rs` module linking into a Rust codebase, no FFI).
     Rust,
     /// Rust source in ASYNC, GAS-METERED form: every fn is `async` and threads `env: &mut impl CdzEnv`,
@@ -66,6 +73,8 @@ impl From<TargetArg> for Target {
     fn from(t: TargetArg) -> Target {
         match t {
             TargetArg::Wasm => Target::Wasm,
+            TargetArg::WasmDebug => Target::WasmDebug,
+            TargetArg::Dwarf => Target::Dwarf,
             TargetArg::Rust => Target::Rust,
             TargetArg::RustAsync => Target::RustAsync,
         }
@@ -270,6 +279,9 @@ fn ext_for_kind(kind: &str) -> &str {
     match kind {
         "component" => "wasm",
         "rust" => "rs",
+        // A detached DWARF sidecar (Mode S) is a bare `.wasm`-format core module of debug sections;
+        // written with a `.dwarf` extension so it is distinct from the runnable `<name>.wasm`.
+        "dwarf" => "dwarf",
         // Sidecar QUERY results are UTF-8 text (a rendered type, a newline-separated node-id list) —
         // written with a `.txt` extension. A `sidecar` INPUT is read generically as `kind:name=path`,
         // so no case is needed for it here (this maps only produced OUTPUT kinds).
