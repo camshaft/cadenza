@@ -2830,22 +2830,17 @@ fn champ_insert_fbip(
         return champ_become_hdr(node, handles, datamap, nodemap, size + delta);
     }
 
-    // EMPTY slot: place a new inline entry in canonical (ascending-bit) order.
+    // EMPTY slot: place a new inline entry in canonical (ascending-bit) order. The entry region sits
+    // BEFORE the subnodes (`subbase = stride*dcount`) and `new_eidx ≤ dcount`, so splicing the entry's
+    // `stride` columns into the taken `handles` at `stride*new_eidx` lands them among the entries and
+    // shifts the subnodes right — exactly the canonical layout. Reuse the taken vector (rc==1) rather
+    // than building a fresh one: `Vec::insert` may grow it once, but there is no separate full-copy pass.
     let new_datamap = datamap | bit;
     let new_eidx = entry_index_for_slot(new_datamap, i) as usize;
-    let mut new_handles: Vec<Handle> = Vec::with_capacity(handles.len() + stride);
-    for e in 0..dcount {
-        for t in 0..stride {
-            new_handles.push(handles[stride * e + t]); // carried, no dup
-        }
-    }
     for (off, &h) in entry.iter().enumerate() {
-        new_handles.insert(stride * new_eidx + off, h); // incoming entry (owned), no dup
+        handles.insert(stride * new_eidx + off, h); // incoming entry column (owned), no dup
     }
-    for s in 0..scount {
-        new_handles.push(handles[subbase + s]); // carried, no dup
-    }
-    champ_become_hdr(node, new_handles, new_datamap, nodemap, size + 1)
+    champ_become_hdr(node, handles, new_datamap, nodemap, size + 1)
 }
 
 /// Insert `key => val`, returning the new map. CONSUMES `m`, `key`, `val`. Inserting an existing key
@@ -3828,9 +3823,9 @@ mod tests {
     /// so it catches a future change that reintroduces the per-spine-node `new_handles`/`champ_header`
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
-    /// champ_eq/cmp worklist work (insert 3589, remove 1953, iterate 2248, push 197, get 0, lookup 0);
-    /// they are UPPER BOUNDS so ordinary noise never trips them but a regression toward the old
-    /// 6779/8397/5248/1000 does.
+    /// champ_eq/cmp worklist + EMPTY-slot in-place splice work (insert 3057, remove 1953, iterate 2248,
+    /// push 197, get 0, lookup 0); they are UPPER BOUNDS so ordinary noise never trips them but a
+    /// regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -3857,7 +3852,7 @@ mod tests {
             }
         });
         println!("ALLOC map_insert x{N}: {insert}");
-        assert!(insert <= 4200, "unique map_insert x{N} allocs {insert} exceeds ceiling 4200 (6779 → 3907 champ_become_hdr+in-place → ~3589 lazy champ_eq worklist)");
+        assert!(insert <= 3400, "unique map_insert x{N} allocs {insert} exceeds ceiling 3400 (6779 → 3907 champ_become_hdr+in-place → 3589 lazy champ_eq worklist → ~3057 EMPTY-slot in-place splice)");
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
@@ -8091,6 +8086,72 @@ mod tests {
         assert_eq!(champ_hash(m), champ_hash(fresh_empty));
         op_drop(fresh_empty);
         op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn champ_insert_fbip_empty_slot_splice_past_subnode_is_canonical() {
+        reset();
+        let before = live_nodes();
+        // Guards the EMPTY-slot in-place splice (Vec::insert the entry columns into the taken `handles`
+        // instead of rebuilding a fresh Vec). The load-bearing invariant is that the entry region sits
+        // BEFORE the subnodes, so splicing at `stride*new_eidx` must SHIFT the subnodes right and land
+        // the entry in canonical order. Build a root node that has a subnode (from a low-5 split), then
+        // insert a fresh key whose slot is an empty datamap bit — exercising the splice on a node that
+        // already holds a subnode — and assert byte-identical (champ_eq + champ_hash) to the copy-path
+        // build, plus every key present. Do it for keys landing both before AND after the subnode's slot.
+        let (a, b) = low5_split_pair(); // share low-5 ⇒ a level-0 subnode
+        // Pick fresh keys that occupy DISTINCT level-0 slots (so they land in empty datamap bits, not
+        // the subnode's slot and not each other's). Just search a few small ints for distinct low-5.
+        let slot_of = |x: i64| -> u32 {
+            let k = op_box_int(x);
+            let s = champ_hash(k) & 0x1f;
+            op_drop(k);
+            s
+        };
+        let subnode_slot = slot_of(a); // a and b share low-5, so this is the subnode's level-0 slot
+        let mut extras: Vec<(i64, u32)> = Vec::new();
+        let mut v = 0i64;
+        while extras.len() < 4 && v < 100_000 {
+            let slot = slot_of(v);
+            if v != a && v != b && slot != subnode_slot && !extras.iter().any(|&(_, s)| s == slot) {
+                extras.push((v, slot));
+            }
+            v += 1;
+        }
+        let extra_keys: Vec<i64> = extras.iter().map(|&(k, _)| k).collect();
+
+        let build = |shared: bool| -> Handle {
+            let mut m = op_map_empty();
+            // First the split pair (creates the subnode), then the extras (each an empty-slot splice on
+            // a node that already contains the subnode).
+            let mut all: Vec<(i64, i64)> = vec![(a, 1), (b, 2)];
+            for (i, &k) in extra_keys.iter().enumerate() {
+                all.push((k, 100 + i as i64));
+            }
+            for &(k, val) in &all {
+                if shared {
+                    op_dup(m);
+                    let old = m;
+                    m = minsert_int(m, k, val);
+                    op_drop(old);
+                } else {
+                    m = minsert_int(m, k, val);
+                }
+            }
+            m
+        };
+        let fbip = build(false);
+        let copy = build(true);
+        assert!(champ_eq(fbip, copy), "empty-slot splice past a subnode == copy-path build (canonical)");
+        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert_eq!(mlookup_int(fbip, a), Some(1));
+        assert_eq!(mlookup_int(fbip, b), Some(2));
+        for (i, &k) in extra_keys.iter().enumerate() {
+            assert_eq!(mlookup_int(fbip, k), Some(100 + i as i64), "spliced key {k} present");
+        }
+        op_drop(fbip);
+        op_drop(copy);
         assert_eq!(live_nodes(), before, "no leak");
     }
 
