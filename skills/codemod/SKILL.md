@@ -119,8 +119,11 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
   src/a.ml:1:11 …
 ```
 
-- **Multiple FILEs and directories** are accepted (a DIR is recursed by extension); with no FILE,
-  input is stdin. Human output over several files is grouped by `=== file ===`.
+- **Multiple FILEs and directories** are accepted (a DIR is recursed and FILTERED to source
+  extensions — READMEs/dotfiles skipped; `--from` overrides the format, not which files are included;
+  a named file always honors `--from`); with no FILE, input is stdin. Empty dir warns; in a sweep, one
+  bad file is skipped-with-warning (a single named target is a hard error). Human output over several
+  files is grouped by `=== file ===`.
 - `query` prints matches (span + bindings), `--count` the number (per file + a `total:`), or `--json`
   a flat array `[{file?, span, matched, bindings}]`. No match ⇒ empty, exit 0. Filter by structural
   context: `--inside`/`--has`/`--not-inside`/`--not-has PAT` (repeatable, conjunctive; ancestry/

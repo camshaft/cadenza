@@ -105,8 +105,12 @@ cdz-syntax clones  [FILE|DIR…] [--min-size N] [--near] [--from FMT] [--json]  
 
 `--from`/`--to` are inferred from each FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
 binary); `--to` defaults to the input format. With no FILE (or `-`), input is stdin. **Multiple FILEs
-and directories** are accepted; a directory is recursed, picking up every file whose extension maps to
-a surface (`--from` forces one). Results are path-sorted.
+and directories** are accepted, path-sorted. A **directory** is recursed and always FILTERED to
+recognized source extensions (README/dotfiles skipped) — `--from` there overrides only the *format*
+the matched files are read as, never which files are included, so pointing at a dir can't try to parse
+a README. An **explicitly-named** file always honors `--from` (you asked for it). A directory with no
+source files warns; in a multi-target sweep, one unreadable/unparseable file warns and is **skipped**
+(the rest still run) — a single named target is a hard error.
 
 ```console
 $ printf 'f(a + 0, b * 1)' | cdz-syntax query '(+ ,x 0)' --from ml

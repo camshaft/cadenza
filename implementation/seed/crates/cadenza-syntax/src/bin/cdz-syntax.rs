@@ -331,8 +331,13 @@ fn collect_targets(files: &[String], from: Option<Fmt>) -> Result<Vec<TargetSpec
     for f in files {
         let p = std::path::Path::new(f);
         if p.is_dir() {
+            let before = out.len();
             collect_dir(p, from, &mut out)?;
+            if out.len() == before {
+                eprintln!("cdz-syntax: {f}: no source files (.cdz/.ml/.sexp/.bin) found");
+            }
         } else {
+            // An explicitly-named file honors --from (or its extension); the user asked for it.
             let format = resolve_from(from, Some(f))?;
             out.push(TargetSpec {
                 path: Some(f.clone()),
@@ -344,8 +349,38 @@ fn collect_targets(files: &[String], from: Option<Fmt>) -> Result<Vec<TargetSpec
     Ok(out)
 }
 
-/// Recurse `dir`, adding every file with a recognized surface extension (or all files, if `--from`
-/// forces a format). Skips unreadable entries with a stderr warning rather than aborting the walk.
+/// Load one target, choosing between HARD-error and skip-with-warning. In a multi-target run
+/// (`resilient == true`) a read/parse failure on one file warns to stderr and returns `None` (skip),
+/// so one broken file can't abort a whole directory sweep; for a single target it propagates as an
+/// error. Recoverable parse warnings (the recovering ML parser) are always reported, never fatal.
+fn load_target(
+    spec: &TargetSpec,
+    resilient: bool,
+) -> Result<Option<(query::driver::Target, String)>, String> {
+    let load = || -> Result<(query::driver::Target, String), String> {
+        let input = read_input(spec.path.as_deref())?;
+        let src = String::from_utf8_lossy(&input).into_owned();
+        let (target, errors) =
+            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
+        report_input_errors(spec.path.as_deref(), &errors);
+        Ok((target, src))
+    };
+    match load() {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if resilient => {
+            eprintln!("cdz-syntax: skipping {e}");
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Recurse `dir`, adding every file with a RECOGNIZED surface extension (`.cdz`/`.ml`/`.sexp`/
+/// `.sexpr`/`.bin`/`.cdzb`). A directory walk always filters by extension — non-source files (README,
+/// `.gitignore`, …) are skipped. `--from` overrides only the FORMAT the matched files are read as
+/// (e.g. treat every `.cdz` as sexpr), NOT which files are included — so pointing at a dir can never
+/// try to parse a README. (An explicitly-NAMED file always honors `--from`, since the user asked for
+/// it; that path is in `collect_targets`, not here.) Unreadable entries warn and are skipped.
 fn collect_dir(dir: &std::path::Path, from: Option<Fmt>, out: &mut Vec<TargetSpec>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("reading dir {}: {e}", dir.display()))?;
     for entry in entries {
@@ -361,17 +396,12 @@ fn collect_dir(dir: &std::path::Path, from: Option<Fmt>, out: &mut Vec<TargetSpe
             collect_dir(&path, from, out)?;
         } else {
             let path_str = path.to_string_lossy().into_owned();
-            // With no --from, only files whose extension maps to a surface are eligible.
-            match (from, Format::from_extension(&path_str)) {
-                (Some(f), _) => out.push(TargetSpec {
+            // Only recognized source files. `--from` picks the format; the extension gates inclusion.
+            if let Some(inferred) = Format::from_extension(&path_str) {
+                out.push(TargetSpec {
                     path: Some(path_str),
-                    format: f.into(),
-                }),
-                (None, Some(fmt)) => out.push(TargetSpec {
-                    path: Some(path_str),
-                    format: fmt,
-                }),
-                (None, None) => {} // not a recognized source file; skip
+                    format: from.map(Format::from).unwrap_or(inferred),
+                });
             }
         }
     }
@@ -394,10 +424,9 @@ fn run_query(args: &QueryArgs) -> Result<(), String> {
     let mut json_objs: Vec<String> = Vec::new();
 
     for spec in &targets {
-        let input = read_input(spec.path.as_deref())?;
-        let (target, errors) = query::driver::load(&input, spec.format)
-            .map_err(|e| with_path(&spec.path, &e))?;
-        report_input_errors(spec.path.as_deref(), &errors);
+        let Some((target, _src)) = load_target(spec, multi)? else {
+            continue;
+        };
 
         if args.json {
             json_objs.push(query::driver::matches_json(
@@ -474,13 +503,12 @@ fn run_clones(args: &ClonesArgs) -> Result<(), String> {
         target: query::driver::Target,
         src: String,
     }
+    let multi = targets.len() > 1;
     let mut loaded: Vec<Loaded> = Vec::new();
     for spec in &targets {
-        let input = read_input(spec.path.as_deref())?;
-        let src = String::from_utf8_lossy(&input).into_owned();
-        let (target, errors) =
-            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
-        report_input_errors(spec.path.as_deref(), &errors);
+        let Some((target, src)) = load_target(spec, multi)? else {
+            continue;
+        };
         loaded.push(Loaded {
             label: label(&spec.path),
             target,
@@ -548,16 +576,14 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
     }
 
     let targets = collect_targets(&args.files, args.from)?;
+    let multi = targets.len() > 1;
     let mut any_error = false;
     let mut json_objs: Vec<String> = Vec::new();
 
     for spec in &targets {
-        let input = read_input(spec.path.as_deref())?;
-        // line:col needs the source text; text surfaces decode as UTF-8, binary has no source lines.
-        let src = String::from_utf8_lossy(&input).into_owned();
-        let (target, errors) =
-            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
-        report_input_errors(spec.path.as_deref(), &errors);
+        let Some((target, src)) = load_target(spec, multi)? else {
+            continue;
+        };
         let lbl = label(&spec.path);
 
         if args.json {
@@ -628,14 +654,22 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
             .or_else(|| spec.path.as_deref().and_then(Format::from_extension))
             .unwrap_or(spec.format);
 
-        let input = read_input(spec.path.as_deref())?;
-        let (target, errors) =
-            query::driver::load(&input, spec.format).map_err(|e| with_path(&spec.path, &e))?;
-        report_input_errors(spec.path.as_deref(), &errors);
+        let Some((target, _src)) = load_target(spec, multi)? else {
+            continue;
+        };
 
-        let outcome =
-            query::driver::apply_rewrite(&rules, strategy, &target, to, args.width, args.fixpoint)
-                .map_err(|e| with_path(&spec.path, &e))?;
+        let outcome = match query::driver::apply_rewrite(
+            &rules, strategy, &target, to, args.width, args.fixpoint,
+        ) {
+            Ok(o) => o,
+            // A rewrite that fails its validated-transaction check on one file of many warns and
+            // skips (the other files still get rewritten); a single target is a hard error.
+            Err(e) if multi => {
+                eprintln!("cdz-syntax: skipping {}", with_path(&spec.path, &e));
+                continue;
+            }
+            Err(e) => return Err(with_path(&spec.path, &e)),
+        };
 
         if args.json {
             json_objs.push(query::driver::rewrite_json(

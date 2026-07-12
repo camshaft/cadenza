@@ -604,3 +604,64 @@ fn near_clone_pattern_feeds_back_into_rewrite() {
     assert!(ok);
     assert_eq!(stdout.trim(), "g(scaled(x, 2), scaled(x, 7))");
 }
+
+// ---- multi-file UX: extension filtering, resilience, empty feedback ----
+
+#[test]
+fn directory_walk_skips_non_source_files_even_with_from() {
+    // The original trap: `--from sexpr` over a dir must NOT try to parse a README.
+    let dir = scratch_dir("uxfilter");
+    std::fs::write(dir.join("a.sexp"), "(f a)\n").unwrap();
+    std::fs::write(dir.join("README.md"), "# not source )(][\n").unwrap();
+    std::fs::write(dir.join(".gitignore"), "target\n").unwrap();
+    let (ok, stdout, stderr) = run(&["query", "(f ,@_)", dir.to_str().unwrap(), "--from", "sexpr", "--count"], "");
+    assert!(ok, "no crash on the README: {stderr}");
+    assert_eq!(stdout.trim(), "1", "only the .sexp counted: {stdout}");
+    assert!(!stderr.contains("README"), "README silently skipped: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn directory_with_no_source_files_warns() {
+    let dir = scratch_dir("uxempty");
+    std::fs::write(dir.join("notes.txt"), "hi\n").unwrap();
+    let (ok, _stdout, stderr) = run(&["query", "(f ,@_)", dir.to_str().unwrap(), "--count"], "");
+    assert!(ok);
+    assert!(stderr.contains("no source files"), "warns on empty dir: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn one_broken_file_in_a_dir_is_skipped_not_fatal() {
+    let dir = scratch_dir("uxresil");
+    std::fs::write(dir.join("good.sexp"), "(f a)\n").unwrap();
+    std::fs::write(dir.join("broken.sexp"), "(f a\n").unwrap(); // unterminated
+    std::fs::write(dir.join("good2.sexp"), "(f b)\n").unwrap();
+    let (ok, stdout, stderr) = run(&["query", "(f ,@_)", dir.to_str().unwrap(), "--count"], "");
+    assert!(ok, "the sweep survives one broken file");
+    assert!(stderr.contains("skipping") && stderr.contains("broken.sexp"), "{stderr}");
+    assert!(stdout.contains("total: 2"), "both good files counted: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_single_broken_file_is_still_a_hard_error() {
+    let dir = scratch_dir("uxhard");
+    std::fs::write(dir.join("broken.sexp"), "(f a\n").unwrap();
+    let (ok, _stdout, stderr) = run(&["query", "(f ,@_)", dir.join("broken.sexp").to_str().unwrap(), "--count"], "");
+    assert!(!ok, "single broken target fails");
+    assert!(!stderr.contains("skipping"), "not a skip — a hard error: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn named_file_still_honors_from() {
+    // An explicitly-named file with a non-matching extension is still read via --from.
+    let dir = scratch_dir("uxnamed");
+    let f = dir.join("prog.txt"); // .txt has no inferred format
+    std::fs::write(&f, "(f a b)\n").unwrap();
+    let (ok, stdout, _) = run(&["query", "(f ,@_)", f.to_str().unwrap(), "--from", "sexpr", "--count"], "");
+    assert!(ok);
+    assert_eq!(stdout.trim(), "1", "named .txt read as sexpr: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
