@@ -509,6 +509,26 @@
   (call   main (: 9223372036854775807 Int64) (: 1 Int64))
   (output (: -1 Int64)))
 
+(case "the slice overflow guard holds on a chained slice-of-a-slice"
+  (doc    "The overflow-safe bounds check lives in the ONE shared `Core::BytesSlice` emit, so it holds at
+           EVERY call site — not only over a fresh `Bytes.of`. The outer `(Bytes.slice b 1 3)` yields a
+           3-byte view `[20 30 40]`; slicing THAT view with `start = len = 2^62` must decline to None (a
+           wrapping-i64 `start + len` would overflow the inner view's own length check identically and
+           return an empty `Some`). Pins that the shared-emit fix covers a view's length feeding the same
+           predicate — a slice-of-a-slice is guarded exactly as a slice-of-a-fresh-sequence. Expected None
+           (-1); the outer slice is in range so the -2 arm is not taken.")
+  (input  (do
+            (def (main (: ss Int64) (: sl Int64))
+              (match (Bytes.slice (Bytes.of (list 10 20 30 40 50)) 1 3)
+                ((Some s1)
+                  (match (Bytes.slice s1 ss sl)
+                    ((Some s2) (Bytes.len s2))
+                    ((None _) -1)))
+                ((None _) -2)))
+            (export main)))
+  (call   main (: 4611686018427387904 Int64) (: 4611686018427387904 Int64))
+  (output (: -1 Int64)))
+
 (case "compacting a byte sequence built at run time preserves its bytes"
   (doc    "`(Bytes.compact b)` on a runtime-built `b` = `b`: compact re-bases the value into storage
            independent of any larger buffer it was sliced from (memory-and-resource-model.md #Retained

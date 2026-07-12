@@ -264,6 +264,8 @@ pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
+pass	a runtime string slice out of range yields None
+pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime truncation into a signed byte sign-extends
@@ -285,6 +287,10 @@ pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a slice whose end is beyond the string length yields None
+pass	a slice whose end precedes its start yields None
+pass	a slice whose start equals its end is Some of the empty string
+pass	a slice with a negative start yields None
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
@@ -338,6 +344,7 @@ pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
+pass	an effect that declares an operation name twice is rejected
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
@@ -488,6 +495,7 @@ pass	string indexing returns Some of the character
 pass	string inequality
 pass	string length
 pass	string length counts scalar values after normalization
+pass	string slicing yields Some of the substring
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
@@ -525,6 +533,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the runtime-if list takes its else branch and measures that length
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	true is greater than false
@@ -735,8 +744,6 @@ todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime string is sliced by scalar offsets
 todo	a runtime string returned across the run boundary renders as its quoted text
 todo	a runtime string slice addresses scalar values, not bytes
-todo	a runtime string slice out of range yields None
-todo	a runtime string slice with an empty in-range span is Some of the empty string
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a runtime three-variant classifier dispatches to the middle arm
@@ -753,10 +760,6 @@ todo	a signed i8 segment encodes as two's complement
 todo	a signed pattern segment reads a two's-complement integer as negative
 todo	a single-form body admits a sequence by holding a do block
 todo	a slice spanning a concatenation sees the logical bytes
-todo	a slice whose end is beyond the string length yields None
-todo	a slice whose end precedes its start yields None
-todo	a slice whose start equals its end is Some of the empty string
-todo	a slice with a negative start yields None
 todo	a stateful handler threads its counter across a function boundary
 todo	a string compared to a symbol is a type error
 todo	a string literal
@@ -814,7 +817,6 @@ todo	an effect operation reached with neither a handler nor a delegation is reje
 todo	an effect performed in a callee is discharged by the caller's handler
 todo	an effect resolves past an intermediate frame that installs no handler
 todo	an effect resolves through a deep chain of intermediate functions
-todo	an effect that declares an operation name twice is rejected
 todo	an element pattern matches a list by its length and elements
 todo	an element read across a concatenation boundary is the right value
 todo	an empty binary form is the empty byte sequence
@@ -1013,7 +1015,6 @@ todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	string concatenation
-todo	string slicing yields Some of the substring
 todo	string to bytes (UTF-8)
 todo	string to bytes encodes multi-byte characters
 todo	subtracting quantities of incompatible dimension is a compile-time error
