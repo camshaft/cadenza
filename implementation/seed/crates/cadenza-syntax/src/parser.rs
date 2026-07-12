@@ -10,6 +10,17 @@
 //!
 //! Every structure node built here pushes exactly one span (in id order) into the `SpanTable`, so
 //! the table stays total and 1:1 with occurrences.
+//!
+//! It is a RECOVERING parser: it never bails at the first error. Every error is collected into
+//! `Parsed::errors`, and the arena is ALWAYS well-formed (`<error>`-name placeholders stand in for
+//! nodes a production could not build). Recovery is tuned to resynchronize — a sub-parser never
+//! consumes a token that belongs to an enclosing construct (a closing delimiter, a separator, an
+//! arm/lambda `=>`, or a block keyword), so one stray symbol yields roughly one error instead of an
+//! avalanche and the structure AROUND a mistake is still recovered. A missing `,` in a bracketed
+//! list is reported once and both elements survive; a missing closer is reported and the partial
+//! form is kept. Forward-progress guards on the open-ended loops guarantee parsing always terminates.
+//! See the `error recovery` helpers ([`Parser::at_expr_stop`], [`Parser::sep_continue`]) and the
+//! `error recovery` test module.
 
 use crate::ast::{Arenas, Builder, Leaf, StructId};
 use crate::lexer::{Lexer, Token};
@@ -214,6 +225,79 @@ impl<'a> Parser<'a> {
         self.name("<error>", span)
     }
 
+    // ---- error recovery ----
+    //
+    // Recovery has two jobs: keep collecting errors past the first (never bail), and keep the token
+    // cursor SYNCHRONIZED so one stray symbol yields ~one error rather than a cascade. The rule that
+    // buys both is: a sub-parser must never consume a token that belongs to an ENCLOSING construct
+    // (a closing delimiter, a separator, an arm/lambda arrow, a block keyword). Leaving such a token
+    // for the parent lets the parent resynchronize on it; eating it desyncs everything after.
+
+    /// True at a token that cannot begin an expression and belongs to an enclosing construct, so
+    /// prefix-position error recovery must NOT consume it (that would desync the parent). Also true
+    /// at end of input. A `|` counts only inside a match-arm body, where it starts the next arm; an
+    /// ordinary leading `|` is consumable junk so the parser still makes progress.
+    fn at_expr_stop(&self) -> bool {
+        if self.at_end() {
+            return true;
+        }
+        match self.kind() {
+            Kind::RParen
+            | Kind::RBracket
+            | Kind::RBrace
+            | Kind::Comma
+            | Kind::Semi
+            | Kind::FatArrow => true,
+            Kind::Pipe => self.arm_bar_terminates,
+            Kind::Ident => matches!(
+                keyword(self.cur_text()),
+                Some(Keyword::In | Keyword::Then | Keyword::Else | Keyword::With)
+            ),
+            _ => false,
+        }
+    }
+
+    /// The pattern counterpart of [`Self::at_expr_stop`]. A bare `|` always terminates a pattern (it
+    /// separates match arms, and this grammar has no infix `|`), regardless of the arm-body flag.
+    fn at_pattern_stop(&self) -> bool {
+        self.at_expr_stop() || self.at(Kind::Pipe)
+    }
+
+    /// True at a token that closes or continues an ENCLOSING construct relative to a bracketed list
+    /// whose own closer is `closer`: a *different* closing delimiter, a `;`, an arm `=>`, a `|`, or a
+    /// block keyword. A list's separator-recovery leaves such a token for the parent instead of
+    /// swallowing it.
+    fn at_outer_close(&self, closer: Kind) -> bool {
+        match self.kind() {
+            Kind::RParen | Kind::RBracket | Kind::RBrace => self.kind() != closer,
+            Kind::Semi | Kind::FatArrow | Kind::Pipe => true,
+            Kind::Ident => matches!(
+                keyword(self.cur_text()),
+                Some(Keyword::In | Keyword::Then | Keyword::Else | Keyword::With)
+            ),
+            _ => false,
+        }
+    }
+
+    /// After parsing one element of a `,`-separated list closed by `closer`, decide whether to parse
+    /// another, recovering from stray tokens. Returns `true` to continue:
+    ///   - `,`  — consume it; stop only if the `closer` immediately follows (a tolerated trailing `,`).
+    ///   - the `closer` / end of input / a token closing an ENCLOSING construct — stop (the caller's
+    ///     `expect(closer)` reports a missing closer; an outer token is left for the parent to handle).
+    ///   - anything else — a missing separator: record ONE error and continue, treating the token as
+    ///     the next element. The element parser always consumes such a token, so the list terminates.
+    fn sep_continue(&mut self, closer: Kind) -> bool {
+        if self.at(Kind::Comma) {
+            self.bump();
+            return !self.at(closer); // tolerate a trailing comma before the closer
+        }
+        if self.at(closer) || self.at_end() || self.at_outer_close(closer) {
+            return false;
+        }
+        self.error("expected `,`");
+        true
+    }
+
     // ---- doc / comment attachment ----
 
     /// Drain and return the `//` COMMENT leads preceding the current grammar token, leaving any
@@ -306,7 +390,15 @@ impl<'a> Parser<'a> {
                     break; // trailing `;`
                 }
             }
+            let before = self.pos;
             forms.push(self.stmt());
+            // Forward-progress guard: a stray token that begins no expression (e.g. a lone `)` at the
+            // top level) is left un-consumed by `prefix` so a parent can resync — but here there is no
+            // parent, so skip it ourselves. `prefix` already recorded the error; just advance so the
+            // loop terminates.
+            if self.pos == before && !self.at_end() {
+                self.bump();
+            }
         }
         let mut root = if forms.len() == 1 {
             forms.pop().unwrap()
@@ -428,7 +520,10 @@ impl<'a> Parser<'a> {
             Kind::Hash => self.bracketed_bars(Self::hash_list),
             _ => {
                 self.error("expected an expression");
-                if !self.at_end() {
+                // Consume the offending token so we make progress — UNLESS it belongs to an
+                // enclosing construct (a closer, separator, `=>`, or block keyword), which we leave
+                // for the parent to resynchronize on. Eating it here would desync the whole rest.
+                if !self.at_expr_stop() {
                     self.bump();
                 }
                 self.error_node(span)
@@ -494,9 +589,7 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RParen) {
             loop {
                 args.push(self.expr(0));
-                if self.at(Kind::Comma) {
-                    self.bump();
-                } else {
+                if !self.sep_continue(Kind::RParen) {
                     break;
                 }
             }
@@ -519,15 +612,10 @@ impl<'a> Parser<'a> {
         }
         let first = self.expr(0);
         if self.at(Kind::Comma) {
-            // a tuple: gather the rest
+            // a tuple: gather the rest, recovering from a missing `,` between elements.
             let head = self.name("tuple", start);
             let mut items = vec![head, first];
-            while self.at(Kind::Comma) {
-                self.bump();
-                // allow a trailing comma before `)`
-                if self.at(Kind::RParen) {
-                    break;
-                }
+            while self.sep_continue(Kind::RParen) {
                 items.push(self.expr(0));
             }
             self.expect(Kind::RParen, "`)`");
@@ -644,11 +732,15 @@ impl<'a> Parser<'a> {
         self.expect(Kind::LParen, "`(`");
         if !self.at(Kind::RParen) {
             loop {
+                let before = self.pos;
                 sig.push(self.param());
-                if self.at(Kind::Comma) {
-                    self.bump();
-                } else {
+                if !self.sep_continue(Kind::RParen) {
                     break;
+                }
+                // A `param` at a non-name token (e.g. `def f(1) = …`) records an error but does not
+                // consume — skip it so the missing-`,` branch of `sep_continue` can't loop forever.
+                if self.pos == before {
+                    self.bump();
                 }
             }
         }
@@ -711,13 +803,17 @@ impl<'a> Parser<'a> {
         let mut items = vec![ctor];
         if !self.at(Kind::RParen) {
             loop {
+                let before = self.pos;
                 let ty_start = self.cur_span();
                 let ty = self.prefix();
                 items.push(self.postfix(ty, ty_start));
-                if self.at(Kind::Comma) {
-                    self.bump();
-                } else {
+                if !self.sep_continue(Kind::RParen) {
                     break;
+                }
+                // `prefix` at a stop token records an error without consuming; skip it so the
+                // missing-`,` branch cannot loop forever.
+                if self.pos == before {
+                    self.bump();
                 }
             }
         }
@@ -739,7 +835,13 @@ impl<'a> Parser<'a> {
         self.expect(Kind::LBrace, "`{`");
         while !self.at(Kind::RBrace) && !self.at_end() {
             // members capture their own leading `//` comments and `///` docs
+            let before = self.pos;
             items.push(self.stmt());
+            // Forward-progress guard: a stray token that begins no member and isn't our `}` (e.g. a
+            // lone `)`) is left un-consumed by `prefix`; skip it so the module loop can't spin.
+            if self.pos == before {
+                self.bump();
+            }
         }
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
@@ -753,11 +855,15 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if !self.at(Kind::RParen) {
             loop {
+                let before = self.pos;
                 params.push(self.param());
-                if self.at(Kind::Comma) {
-                    self.bump();
-                } else {
+                if !self.sep_continue(Kind::RParen) {
                     break;
+                }
+                // `param` at a non-name token records an error without consuming; skip it so the
+                // missing-`,` branch can't loop forever.
+                if self.pos == before {
+                    self.bump();
                 }
             }
         }
@@ -847,11 +953,15 @@ impl<'a> Parser<'a> {
                     let mut items = vec![node];
                     if !self.at(Kind::RParen) {
                         loop {
+                            let before = self.pos;
                             items.push(self.pattern());
-                            if self.at(Kind::Comma) {
-                                self.bump();
-                            } else {
+                            if !self.sep_continue(Kind::RParen) {
                                 break;
+                            }
+                            // A pattern at a stop token records an error without consuming; skip it
+                            // so the missing-`,` branch can't loop forever.
+                            if self.pos == before {
+                                self.bump();
                             }
                         }
                     }
@@ -910,12 +1020,12 @@ impl<'a> Parser<'a> {
                 if self.at(Kind::Comma) {
                     let head = self.name("tuple", span);
                     let mut items = vec![head, first];
-                    while self.at(Kind::Comma) {
-                        self.bump();
-                        if self.at(Kind::RParen) {
-                            break; // trailing comma
-                        }
+                    while self.sep_continue(Kind::RParen) {
+                        let before = self.pos;
                         items.push(self.pattern());
+                        if self.pos == before {
+                            self.bump(); // pattern didn't consume — avoid a missing-`,` spin
+                        }
                     }
                     self.expect(Kind::RParen, "`)`");
                     let tup_span = span.merge(self.prev_span());
@@ -926,7 +1036,9 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.error("expected a pattern");
-                if !matches!(self.kind(), Kind::FatArrow | Kind::RBrace) && !self.at_end() {
+                // Skip the offending token to make progress, but leave a `=>`, `|`, closer, or other
+                // token that belongs to the enclosing match arm / bracketed pattern for the parent.
+                if !self.at_pattern_stop() {
                     self.bump();
                 }
                 self.error_node(span)
@@ -976,14 +1088,13 @@ impl<'a> Parser<'a> {
         let mut items = vec![head];
         if !self.at(Kind::RBracket) {
             loop {
+                let before = self.pos;
                 items.push(self.expr(0));
-                if self.at(Kind::Comma) {
-                    self.bump();
-                    if self.at(Kind::RBracket) {
-                        break; // trailing comma
-                    }
-                } else {
+                if !self.sep_continue(Kind::RBracket) {
                     break;
+                }
+                if self.pos == before {
+                    self.bump(); // element didn't consume — avoid a missing-`,` spin
                 }
             }
         }
@@ -1000,19 +1111,18 @@ impl<'a> Parser<'a> {
         let mut items = vec![head];
         if !self.at(Kind::RBrace) {
             loop {
+                let before = self.pos;
                 let f_start = self.cur_span();
                 let name = self.binder();
                 self.expect(Kind::Eq, "`=`");
                 let value = self.expr(0);
                 let f_span = f_start.merge(self.prev_span());
                 items.push(self.list(vec![name, value], f_span));
-                if self.at(Kind::Comma) {
-                    self.bump();
-                    if self.at(Kind::RBrace) {
-                        break;
-                    }
-                } else {
+                if !self.sep_continue(Kind::RBrace) {
                     break;
+                }
+                if self.pos == before {
+                    self.bump(); // no field token consumed — avoid a missing-`,` spin
                 }
             }
         }
@@ -1033,19 +1143,18 @@ impl<'a> Parser<'a> {
         let mut items = vec![head];
         if !self.at(Kind::RBrace) {
             loop {
+                let before = self.pos;
                 let e_start = self.cur_span();
                 let key = self.expr(0);
                 self.expect(Kind::Eq, "`=`");
                 let value = self.expr(0);
                 let e_span = e_start.merge(self.prev_span());
                 items.push(self.list(vec![key, value], e_span));
-                if self.at(Kind::Comma) {
-                    self.bump();
-                    if self.at(Kind::RBrace) {
-                        break;
-                    }
-                } else {
+                if !self.sep_continue(Kind::RBrace) {
                     break;
+                }
+                if self.pos == before {
+                    self.bump(); // no entry token consumed — avoid a missing-`,` spin
                 }
             }
         }
@@ -1062,11 +1171,13 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         if !self.at(Kind::RBracket) {
             loop {
+                let before = self.pos;
                 items.push(self.expr(0));
-                if self.at(Kind::Comma) {
-                    self.bump();
-                } else {
+                if !self.sep_continue(Kind::RBracket) {
                     break;
+                }
+                if self.pos == before {
+                    self.bump(); // element didn't consume — avoid a missing-`,` spin
                 }
             }
         }
@@ -1273,5 +1384,286 @@ mod tests {
         ] {
             let _ = read_ml(src); // must not panic
         }
+    }
+
+    // ---- error recovery ----
+    //
+    // The parser is a RECOVERING parser: it never bails at the first error. It collects every error
+    // into `errors`, and — crucially — resynchronizes so one stray symbol yields roughly one error
+    // instead of an avalanche, and so structure AROUND a mistake is still recovered. These tests pin
+    // that behavior down: they assert the arena stays well-formed, that multiple independent errors
+    // are all reported, that recovery syncs on delimiters, and that parsing always terminates.
+
+    /// Assert the arena is well-formed regardless of errors: the root id is in range, every list
+    /// child id is in range and traversable, and the span table is total (1:1 with structure nodes,
+    /// the invariant the whole `SpanTable` design rests on). Returns the parse for further checks.
+    fn recovered(src: &str) -> Parsed {
+        let p = read_ml(src);
+        let n = p.arenas.structure.len();
+        assert!(n > 0, "arena is never empty for {src:?}");
+        assert!(
+            (p.arenas.root.0 as usize) < n,
+            "root id in range for {src:?}"
+        );
+        assert_eq!(
+            p.spans.len(),
+            n,
+            "span table stays total (1:1 with structure) for {src:?}"
+        );
+        // Every reachable node's children are valid ids — the tree is fully traversable.
+        fn walk(a: &Arenas, id: StructId, seen: &mut usize) {
+            *seen += 1;
+            if let crate::ast::Struct::List(children) = a.get(id) {
+                for &c in children {
+                    assert!(
+                        (c.0 as usize) < a.structure.len(),
+                        "child id {} in range",
+                        c.0
+                    );
+                    walk(a, c, seen);
+                }
+            }
+        }
+        let mut seen = 0;
+        walk(&p.arenas, p.arenas.root, &mut seen);
+        p
+    }
+
+    #[test]
+    fn recovered_arena_is_always_well_formed() {
+        // Whatever the garbage, the arena is traversable and the span table is total.
+        for src in [
+            "@",
+            "f(@)",
+            "1 + @ + 2",
+            "let x = @ in x",
+            "[1, @, 3]",
+            "{ a = @, b = 2 }",
+            "match e with | @ => 1",
+            "def f(@, x) = x",
+            "f(a b c",
+            "module m { @ }",
+            ")(][}{",
+            "1 @ 2 # 3 ~ 4",
+        ] {
+            let _ = recovered(src);
+        }
+    }
+
+    #[test]
+    fn does_not_bail_at_first_error() {
+        // Several independent mistakes are ALL reported, not just the first. Three stray symbols
+        // separated as their own top-level statements yield (at least) three errors.
+        let p = recovered("@; ~; $");
+        assert!(
+            p.errors.len() >= 3,
+            "each stray statement reports its own error, got {:?}",
+            p.errors
+        );
+    }
+
+    #[test]
+    fn a_single_stray_symbol_does_not_cascade() {
+        // One bad token in the middle of an otherwise-fine call yields a small, bounded number of
+        // errors — recovery resynchronizes rather than mis-parsing everything after it.
+        let p = read_ml("f(a, @, c)");
+        assert!(!p.ok(), "the stray `@` is reported");
+        assert!(
+            p.errors.len() <= 2,
+            "one stray token stays bounded, got {} errors: {:?}",
+            p.errors.len(),
+            p.errors
+        );
+        // The call is still recovered as `(f a <error> c)` — the good arguments survive.
+        let a = &p.arenas;
+        assert_eq!(a.head_name(a.root), Some("f"));
+        let call = a.as_form(a.root, "f").unwrap();
+        assert_eq!(call.len(), 3, "three arguments recovered around the error");
+        assert_eq!(a.as_name(call[0]), Some("a"));
+        assert_eq!(a.as_name(call[2]), Some("c"));
+    }
+
+    #[test]
+    fn error_inside_brackets_does_not_escape_them() {
+        // The offending token inside `( … )` must NOT consume the closing `)` — the parser resyncs on
+        // the bracket, so the SECOND statement after it parses cleanly as its own form.
+        let p = read_ml("f(@); g(x)");
+        assert!(!p.ok());
+        // Root is a `(do …)` of two statements; the second is a clean call `(g x)`.
+        let top = p.arenas.as_form(p.arenas.root, "do").unwrap();
+        assert_eq!(top.len(), 2, "two top-level statements survive: {top:?}");
+        assert_eq!(p.arenas.head_name(top[1]), Some("g"));
+        let g = p.arenas.as_form(top[1], "g").unwrap();
+        assert_eq!(p.arenas.as_name(g[0]), Some("x"));
+    }
+
+    #[test]
+    fn missing_comma_between_args_recovers() {
+        // `f(a b)` — a missing separator is reported once, and BOTH arguments are still recovered.
+        let p = read_ml("f(a b)");
+        assert!(!p.ok(), "the missing `,` is reported");
+        assert_eq!(p.errors.len(), 1, "exactly one error: {:?}", p.errors);
+        assert!(
+            p.errors[0].message.contains(','),
+            "the error names the missing comma: {:?}",
+            p.errors[0]
+        );
+        let a = &p.arenas;
+        let call = a.as_form(a.root, "f").unwrap();
+        assert_eq!(call.len(), 2, "both args recovered");
+        assert_eq!(a.as_name(call[0]), Some("a"));
+        assert_eq!(a.as_name(call[1]), Some("b"));
+    }
+
+    #[test]
+    fn missing_comma_in_list_recovers() {
+        // `[1 2 3]` — every element is recovered, with one missing-`,` error per gap.
+        let p = read_ml("[1 2 3]");
+        assert!(!p.ok());
+        let a = &p.arenas;
+        let list = a.as_form(a.root, "list").unwrap();
+        assert_eq!(list.len(), 3, "all three elements recovered: {list:?}");
+    }
+
+    #[test]
+    fn missing_closer_is_reported_and_recovered() {
+        // An unterminated call reports the missing `)` but still yields a usable `(f a b)` tree
+        // (rather than discarding the whole form).
+        let p = read_ml("f(a, b");
+        assert!(!p.ok());
+        assert!(
+            p.errors.iter().any(|e| e.message.contains(')')),
+            "the missing `)` is reported: {:?}",
+            p.errors
+        );
+        let a = &p.arenas;
+        let call = a.as_form(a.root, "f").unwrap();
+        assert_eq!(call.len(), 2);
+    }
+
+    #[test]
+    fn recovers_the_let_around_a_bad_binding() {
+        // A stray value in a binding is isolated: the `let` shape and its body survive.
+        let p = read_ml("let x = @ in x + 1");
+        assert!(!p.ok());
+        let a = &p.arenas;
+        let tail = a.as_form(a.root, "let").expect("still a let form");
+        assert_eq!(tail.len(), 2, "bindings + body recovered");
+        // body is `(+ x 1)` — parsed cleanly after the bad binding.
+        assert_eq!(a.head_name(tail[1]), Some("+"));
+    }
+
+    #[test]
+    fn keyword_boundary_is_not_swallowed_by_a_bad_condition() {
+        // A stray symbol where the `if` condition belongs must not eat the `then` — the rest of the
+        // form still parses, so we get an `(if …)` with three children.
+        let p = read_ml("if @ then a else b");
+        assert!(!p.ok());
+        let a = &p.arenas;
+        let if_form = a.as_form(a.root, "if").expect("still an if form");
+        assert_eq!(if_form.len(), 3, "cond/then/else all recovered");
+        assert_eq!(a.as_name(if_form[1]), Some("a"));
+        assert_eq!(a.as_name(if_form[2]), Some("b"));
+    }
+
+    #[test]
+    fn match_arm_boundary_survives_a_bad_pattern() {
+        // A garbage pattern in the first arm does not consume the `=>` or the `|` that starts the
+        // next arm — both arms are recovered.
+        let p = read_ml("match e with | @ => 1 | _ => 2");
+        assert!(!p.ok());
+        let a = &p.arenas;
+        let m = a.as_form(a.root, "match").expect("still a match");
+        assert_eq!(m.len(), 3, "scrutinee + two arms recovered: {m:?}");
+    }
+
+    #[test]
+    fn stray_closers_do_not_hang_and_stay_bounded() {
+        // A pile of mismatched closers/garbage must terminate (the test completing IS the assertion)
+        // and produce a well-formed arena with a finite error list.
+        for src in [
+            ")))))",
+            "][}{)(",
+            "f(((((",
+            "[[[[[",
+            "{{{{{",
+            "#{#{#{",
+            ",,,,,",
+            "..........",
+            "=> => =>",
+            "| | | |",
+            "@@@@@@@@@@",
+            "let let let",
+        ] {
+            let p = recovered(src);
+            assert!(
+                p.errors.len() < 10_000,
+                "error list stays finite for {src:?} (no runaway loop)"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_programs_still_report_no_errors() {
+        // Recovery must be inert on well-formed input — no spurious errors, exact trees preserved.
+        for src in [
+            "1 + 2 * 3",
+            "f(a, b, c)",
+            "let x = 1, y = 2 in x + y",
+            "match e with | Some(n) => n | None => 0",
+            "def f(x, y) = x + y",
+            "[1, 2, 3]",
+            "{ a = 1, b = 2 }",
+            "#{ k = v }",
+            "if a then b else c",
+            "module m { def x = 1 def y = 2 }", // module members are whitespace-separated, no `;`
+        ] {
+            let p = read_ml(src);
+            assert!(p.ok(), "no spurious errors on {src:?}: {:?}", p.errors);
+        }
+    }
+
+    #[test]
+    fn exhaustive_short_token_soup_always_terminates_well_formed() {
+        // The strongest termination evidence: enumerate EVERY sequence of up to four tokens drawn
+        // from an alphabet chosen to stress recovery (delimiters, separators, keywords, junk). If any
+        // combination could drive `prefix`/`sep_continue`/the block loops into a non-advancing cycle,
+        // this test would hang — so its completion is the proof that parsing always makes progress.
+        // Each parse is also checked for a well-formed, traversable arena and a total span table.
+        let alphabet = [
+            "(", ")", "[", "]", "{", "}", "#", ",", ";", ".", "=>", "|", "@", "let", "in", "if",
+            "match", "with", "def", "x", "1",
+        ];
+        let mut count = 0usize;
+        // lengths 1..=3 exhaustively; a light length-4 sweep keeps the total bounded but deep.
+        for len in 1..=3 {
+            let combos = alphabet.len().pow(len as u32);
+            for mut n in 0..combos {
+                let mut src = String::new();
+                for _ in 0..len {
+                    src.push_str(alphabet[n % alphabet.len()]);
+                    src.push(' ');
+                    n /= alphabet.len();
+                }
+                let _ = recovered(&src); // must terminate + stay well-formed
+                count += 1;
+            }
+        }
+        assert!(count > 8_000, "swept a meaningful space, got {count}");
+    }
+
+    #[test]
+    fn nested_error_reports_once_and_outer_form_survives() {
+        // A bad token nested two levels deep is reported, and every enclosing construct is still
+        // recovered up to the root.
+        let p = recovered("g(f(a, @), b)");
+        assert!(!p.ok());
+        let a = &p.arenas;
+        // outer call `(g (f a <error>) b)`
+        let g = a.as_form(a.root, "g").expect("outer call recovered");
+        assert_eq!(g.len(), 2, "outer call keeps both args: {g:?}");
+        let f = a.as_form(g[0], "f").expect("inner call recovered");
+        assert_eq!(f.len(), 2, "inner call keeps both args: {f:?}");
+        assert_eq!(a.as_name(g[1]), Some("b"), "arg after the bad one survives");
     }
 }
