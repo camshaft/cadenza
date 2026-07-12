@@ -4613,8 +4613,15 @@ fn emit_shift(
             OperandSrc::Slot(s)
         }
     };
-    let sr = claim(high);
-    scratch_ty.insert(sr, m.slot());
+    // `$r` (the result scratch) is needed ONLY by `<<`, which reads it back for the overflow round-trip
+    // + range-check. `>>` leaves its exact result on the stack, so it claims no `$r` slot (no dead local).
+    let sr = if matches!(op, Prim::Shl) {
+        let s = claim(high);
+        scratch_ty.insert(s, m.slot());
+        s
+    } else {
+        0 // unused for `>>` — the result stays on the stack.
+    };
     let operand_base = next_scratch;
     // Stash a non-reusable value/count into its scratch slot (a nested op writes it directly).
     if sa_src.is_none()
@@ -4660,7 +4667,11 @@ fn emit_shift(
         out.push(m.ge_u());
         out.push(Lir::IfUnreachableEnd);
     }
-    // push$a push$b <machine-shift> local.set $r
+    // push$a push$b <machine-shift>. `>>` (`shr`) is EXACT — its result only shrinks in magnitude, so it
+    // needs NO overflow round-trip and NO range-check (a right-shift of an in-range value stays in
+    // range). So `>>` leaves the result directly on the stack: no `$r` store, no `$r` local — the `set
+    // $r ; get $r` round-trip the old code emitted for BOTH shifts was pure dead motion for `>>`. Only
+    // `<<` needs `$r`: it is read back for the overflow round-trip check and the narrow range-check.
     sa.push(out);
     sb.push(out);
     out.push(match op {
@@ -4668,8 +4679,8 @@ fn emit_shift(
         Prim::Shr => m.shr(),
         _ => return Err(Reject::decline("not a shift op")),
     });
-    out.push(Lir::LocalSet(sr));
     if matches!(op, Prim::Shl) {
+        out.push(Lir::LocalSet(sr));
         // Round-trip: shifting `$r` back right by `$b` must recover `$a`; else the shift dropped bits out
         // of the SLOT (overflow). The inverse shift matches signedness so the round-trip is exact.
         out.push(Lir::LocalGet(sr));
@@ -4680,8 +4691,9 @@ fn emit_shift(
         out.push(Lir::IfUnreachableEnd);
         // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
         emit_range_check(m, sr, ReachableBounds::Both, out);
+        out.push(Lir::LocalGet(sr));
     }
-    out.push(Lir::LocalGet(sr));
+    // `>>`: the result is already on the stack — nothing more to do.
     Ok(())
 }
 
@@ -5134,6 +5146,32 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::I64Shl)),
             "a non-power-of-two multiply does not become a shift"
+        );
+    }
+
+    #[test]
+    fn a_right_shift_leaves_its_result_on_the_stack_without_a_dead_store() {
+        // (def (f (: a Int64)) (>> a 3)) — a `>>` is EXACT (its result only shrinks), so it needs no
+        // overflow round-trip and no range-check. The result stays on the stack: just `get a ; const 3 ;
+        // shr_s`, with NO `$r` store and NO declared local. (The old code routed EVERY shift through a
+        // `set $r ; get $r` round-trip — dead motion + a dead local for `>>`, since only `<<` reads `$r`
+        // back for its overflow check.)
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (>> a 3)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![Lir::LocalGet(0), Lir::ConstI64(3), Lir::I64ShrS],
+            "a constant-count `>>` is exactly the machine shift — no dead round-trip"
+        );
+        assert!(
+            f.declared.is_empty(),
+            "a `>>` claims no result scratch local, got: {:?}",
+            f.declared
         );
     }
 
