@@ -4196,8 +4196,13 @@ fn op_set_union(a: Handle, b: Handle) -> Handle {
         if e == Handle::NULL {
             break;
         }
+        // Hash `e` ONCE and pass it to the insert (via `set_insert_h`) rather than `op_set_insert`,
+        // which would re-`champ_hash(e)` internally — a full subtree re-walk per element for a
+        // compound/string element (free for scalars via the arity-0 fast path). Mirrors the hash-once
+        // discipline already used by ∩/∖ below.
+        let h = champ_hash(e);
         op_dup(e); // carried into the result; cursor only BORROWS it
-        acc = op_set_insert(acc, e);
+        acc = set_insert_h(acc, e, h);
         cur = op_set_iter_next(cur);
     }
     op_drop(cur);
@@ -4701,6 +4706,80 @@ mod tests {
         });
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 2200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
+    }
+
+    /// CPU-scaling PROBE (diagnostic, not a regression gate): times set ∩/∖ at growing N to reveal
+    /// whether they are linear-ish or super-linear (the alloc bench can't see the O(log) contains-probe
+    /// factor — evidence for whether the O(min) node-merge redesign is worth a future tick). Also times
+    /// UNION over COMPOUND (tuple) elements, where hashing an element walks its whole subtree — this is
+    /// what the `set_insert_h` hash-once change in `op_set_union` sped up (a scalar union can't show it,
+    /// its element hash is O(1)). `#[ignore]`d, prints ns/element, no assertion.
+    #[test]
+    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    fn set_algebra_cpu_scaling_probe() {
+        let build = |lo: i64, hi: i64| -> Handle {
+            let mut s = op_set_empty();
+            for k in lo..hi {
+                s = op_set_insert(s, op_box_int(k));
+            }
+            s
+        };
+        for &n in &[1000i64, 4000, 16000, 64000] {
+            let sa = build(0, n);
+            let sb = build(n / 2, n + n / 2); // 50% overlap
+            let reps = (64000 / n).max(1);
+            let t0 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(sa);
+                op_dup(sb);
+                op_drop(op_set_intersection(sa, sb));
+            }
+            let inter_ns = t0.elapsed().as_nanos() as f64 / (reps as f64 * n as f64);
+            let t1 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(sa);
+                op_dup(sb);
+                op_drop(op_set_difference(sa, sb));
+            }
+            let diff_ns = t1.elapsed().as_nanos() as f64 / (reps as f64 * n as f64);
+            println!("SETSCALE n={n:>6}  ∩ {inter_ns:6.1} ns/elem   ∖ {diff_ns:6.1} ns/elem");
+            op_drop(sa);
+            op_drop(sb);
+        }
+        // Compound-element UNION: each element is a 3-deep nested tuple, so `champ_hash(e)` walks a real
+        // subtree. Times union of a SMALL set into a LARGER base (the walk-the-smaller fold) — the case
+        // the hash-once change targets. `n_small` elements are hashed once each now (was twice: probe +
+        // the re-hash inside op_set_insert).
+        let deep = |seed: i64| -> Handle {
+            let inner = op_arr_alloc(2);
+            op_arr_set(inner, 0, op_box_int(seed));
+            op_arr_set(inner, 1, op_box_int(seed * 2));
+            let outer = op_arr_alloc(2);
+            op_arr_set(outer, 0, inner);
+            op_arr_set(outer, 1, op_box_int(seed * 3));
+            outer
+        };
+        let n_big = 4000i64;
+        let n_small = 500i64;
+        let mut big = op_set_empty();
+        for k in 0..n_big {
+            big = op_set_insert(big, deep(k));
+        }
+        let mut small = op_set_empty();
+        for k in (n_big - n_small / 2)..(n_big + n_small / 2) {
+            small = op_set_insert(small, deep(k)); // 50% overlap with big's tail
+        }
+        let reps = 40;
+        let t = std::time::Instant::now();
+        for _ in 0..reps {
+            op_dup(big);
+            op_dup(small);
+            op_drop(op_set_union(big, small));
+        }
+        let union_ns = t.elapsed().as_nanos() as f64 / (reps as f64 * n_small as f64);
+        println!("SETSCALE compound-union (small={n_small} into big={n_big})  {union_ns:6.1} ns/elem-walked");
+        op_drop(big);
+        op_drop(small);
     }
 
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
