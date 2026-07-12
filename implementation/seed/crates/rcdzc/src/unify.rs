@@ -63,7 +63,7 @@ impl Subst {
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
             },
-            Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+            Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => ty.clone(),
         }
     }
 
@@ -114,6 +114,8 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             Ok(())
         }
         (Ty::Bool, Ty::Bool) | (Ty::Unit, Ty::Unit) | (Ty::Type, Ty::Type) => Ok(()),
+        // Bytes is a leaf — two bytes unify reflexively (no element type to descend into).
+        (Ty::Bytes, Ty::Bytes) => Ok(()),
         // Integers unify on BOTH axes — sign and width. A variable/deferred axis resolves to the
         // other's fixed value; two DIFFERENT fixed values conflict (no implicit promotion — neither a
         // width nor a signedness silently changes). Unifying the sign first lets a `mismatch` name the
@@ -261,7 +263,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, &elem),
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => false,
     }
 }
 
@@ -406,7 +408,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => ty.clone(),
     }
 }
 
@@ -491,7 +493,7 @@ fn freshen_free_go(
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => ty.clone(),
     }
 }
 

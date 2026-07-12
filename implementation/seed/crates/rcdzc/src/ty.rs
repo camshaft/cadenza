@@ -152,6 +152,13 @@ pub enum Ty {
     /// `List Bool` are distinct; the element type is held behind a `Box` (one type, unlike the tuple's
     /// slice). Backed at run time by the persistent `vec-*` RRB heap ops.
     List(Box<Ty>),
+    /// A BYTES sequence: a homogeneous, variable-length sequence of BYTES (`collections-and-text.md` §A
+    /// Byte Sequence Is A Sequence Of Bytes). NOT parametric — a byte is a byte, so unlike `List` it
+    /// carries no element type (a LEAF in the type universe). Distinct from `List Int64`: a `Bytes` packs
+    /// its bytes and renders `b"…"` (the byte-string form), whereas a list renders `(list …)`; the
+    /// compiler keeps them separate types even though a byte is an integer. Backed at run time by the
+    /// persistent rope `bytes-*` heap ops; its observable form is the byte-string literal.
+    Bytes,
     /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
     /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
     /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
@@ -236,7 +243,8 @@ impl Ty {
             Ty::List(elem) => elem.has_free_var(),
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
-            Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
+            // Bytes is a leaf — no inner type, so no free variable.
+            Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any | Ty::Bytes => false,
         }
     }
 
@@ -286,6 +294,8 @@ impl Ty {
             // Two lists agree iff their ELEMENT types agree — `List Int64` ≠ `List Bool`, and a list of a
             // deferred element type is compatible via the recursive `agrees_with` (the empty-list case).
             (Ty::List(a), Ty::List(b)) => a.agrees_with(b),
+            // Bytes is a leaf — a bytes agrees only with another bytes (no element type to compare).
+            (Ty::Bytes, Ty::Bytes) => true,
             // Two sums agree iff their DECLARATIONS match AND their type ARGS agree pairwise — a sum's
             // identity is its declaration (`type-system.md §160`: distinct FQNs ⇒ distinct types, so
             // module A's `Foo` ≠ module B's `Foo`) TOGETHER WITH its instantiation (`Option Int64 ≠
@@ -407,6 +417,9 @@ impl Ty {
             }
             // A list renders as `(List Elem)` — the element type is its only type parameter.
             Ty::List(elem) => format!("(List {})", elem.render_name()),
+            // Bytes renders as the bare type name `Bytes` (its VALUES render `b"…"`, but the type
+            // annotation is the name — the corpus `(: b"…" Bytes)` form).
+            Ty::Bytes => "Bytes".to_string(),
             // A sum renders as its NOMINAL NAME, applied to its type ARGS when generic: a monomorphic
             // sum (`args: []`) is the bare name (`(: (Neg unit) Sign)`); a generic sum is `(Name arg…)`
             // — `(: (Some 5) (Option Int64))` (`type-system.md §158`; the corpus form). The variant set

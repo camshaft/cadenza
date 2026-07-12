@@ -902,6 +902,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
         return match name {
             "Bool" => Some(Ty::Bool),
             "Unit" => Some(Ty::Unit),
+            "Bytes" => Some(Ty::Bytes),
             _ => None,
         };
     }

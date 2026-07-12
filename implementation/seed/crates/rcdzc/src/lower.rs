@@ -1953,6 +1953,9 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             let ety = type_ast(b, elem)?;
             Some(b.list(vec![head, ety]))
         }
+        // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
+        // `render_name`; its VALUE renders `b"…"` (built in `const_value_ast` / the escape walker).
+        Ty::Bytes => Some(b.name("Bytes".to_string())),
         Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
     }
 }
