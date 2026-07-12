@@ -2294,6 +2294,68 @@ mod runtime_ops {
         ));
     }
 
+    /// STRENGTH REDUCTION: an UNSIGNED `/`/`%` by a constant POWER OF TWO lowers to a shift/mask instead
+    /// of the slow hardware `div_u`/`rem_u`. `(/ a 4)` → `a >>ᵤ 2`, `(% a 4)` → `a & 3`. Only unsigned
+    /// (a signed divide rounds toward zero, unlike an arithmetic shift) and only a power-of-two constant
+    /// (a non-power keeps the divide, a signed operand keeps `div_s`). Verified at the Lir level (no
+    /// `div_u`/`rem_u` survives; the shift/mask is present) and by value.
+    #[test]
+    fn unsigned_div_rem_by_a_power_of_two_strength_reduces() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // (/ a 4) UInt64 → shr_u (no div_u).
+        let divc = lir("(: a UInt64)", "(/ a 4)");
+        assert!(
+            divc.contains(&Lir::I64ShrU) && !divc.contains(&Lir::I64DivU),
+            "unsigned /2^k must be a shr_u, not div_u; got: {divc:?}"
+        );
+        // (% a 4) UInt64 → and (no rem_u).
+        let remc = lir("(: a UInt64)", "(% a 4)");
+        assert!(
+            remc.contains(&Lir::I64And) && !remc.contains(&Lir::I64RemU),
+            "unsigned %2^k must be an and-mask, not rem_u; got: {remc:?}"
+        );
+        // A non-power-of-two divisor keeps div_u; a SIGNED divide keeps div_s.
+        assert!(lir("(: a UInt64)", "(/ a 3)").contains(&Lir::I64DivU));
+        assert!(lir("(: a Int64)", "(/ a 4)").contains(&Lir::I64DivS));
+
+        // Value parity: the shift/mask computes the same unsigned quotient/remainder as the divide.
+        assert_eq!(run::<u64>("(: a UInt64)", "(/ a 4)", &[Val::U64(17)]), 4);
+        assert_eq!(run::<u64>("(: a UInt64)", "(% a 4)", &[Val::U64(17)]), 1);
+        assert_eq!(
+            run::<u64>("(: a UInt64)", "(/ a 2)", &[Val::U64(u64::MAX)]),
+            u64::MAX / 2,
+            "the shift is UNSIGNED — the top bit is not treated as a sign"
+        );
+        assert_eq!(run::<u32>("(: a UInt32)", "(/ a 8)", &[Val::U32(100)]), 12);
+        assert_eq!(run::<u32>("(: a UInt32)", "(% a 8)", &[Val::U32(100)]), 4);
+    }
+
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
 
     #[test]

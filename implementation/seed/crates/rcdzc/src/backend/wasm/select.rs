@@ -4324,11 +4324,36 @@ fn emit_div_rem(
     layout: &Layout,
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
+    let ot = IntTy::fixed(m.signed, m.width);
+    // STRENGTH REDUCTION: an UNSIGNED `/`/`%` by a constant POWER OF TWO becomes a shift/mask — far
+    // cheaper than the hardware `div_u`/`rem_u`. `(/ a 2^k)` = `a >>ᵤ k`; `(% a 2^k)` = `a & (2^k - 1)`.
+    // Only UNSIGNED: a signed `div_s`/`rem_s` rounds toward ZERO, which differs from an arithmetic shift
+    // for negatives (`-1 / 2 = 0` but `-1 >>ₛ 1 = -1`), so a signed divide is left as-is. The constant
+    // divisor is a nonzero power of two, so the ÷0 trap the machine op carries is provably not needed
+    // (and `2^k - 1` for `%` is likewise exact). Applies at every width (the operand is already
+    // range-valid; a shift/mask keeps it in range — an unsigned quotient/remainder only shrinks). `k=0`
+    // (divisor 1) is excluded: `/1` is identity and `%1` is 0, both folded in `lower` before here.
+    if !m.signed
+        && let Core::ConstInt(v) = core_of(db, rhs)
+        && let Some(d) = v.to_i64()
+        && d > 1
+        && (d & (d - 1)) == 0
+    {
+        let k = d.trailing_zeros() as i64;
+        emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
+        if matches!(op, Prim::Div) {
+            out.push(m.konst(k));
+            out.push(m.shr()); // unsigned width → `shr_u`
+        } else {
+            out.push(m.konst(d - 1));
+            out.push(m.and());
+        }
+        return Ok(());
+    }
     // A narrow signed division needs a range-check on the quotient (its `min_N / -1` overflows the type
     // but not the slot). Every other case — `%` (bounded by the divisor), unsigned `/` (magnitude only
     // shrinks), full-width signed `/` (the machine `div_s` traps MIN/-1 itself) — is exact after the
     // native trap, so no scratch is needed.
-    let ot = IntTy::fixed(m.signed, m.width);
     let needs_range_check = matches!(op, Prim::Div) && m.signed && m.narrow();
     if !needs_range_check {
         emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
