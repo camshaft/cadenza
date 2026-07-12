@@ -7,10 +7,13 @@
 //! Downstream). Asking one node's type solves only the nodes that answer reaches — the query stays
 //! demand-driven.
 //!
-//! Stage 0 is monomorphic: a literal's type is a signed integer of DEFERRED width (numeric-literal
-//! polymorphism — inference or the backend grounds it), a boolean is `Bool`, an `if` is the join of
-//! its branches, and a poison is `Ty::Any` (compatible with everything, so a "no" never cascades
-//! into a spurious mismatch). Real Hindley-Milner slots in behind this same `type_of` seam later.
+//! A literal's type is a signed integer of DEFERRED width and sign (numeric-literal polymorphism —
+//! inference or the backend grounds it), a boolean is `Bool`, an `if` is the join of its branches, and
+//! a poison is `Ty::Any` (compatible with everything, so a "no" never cascades into a spurious
+//! mismatch). Polymorphism is real Hindley-Milner: an operator's scheme is instantiated with fresh
+//! variables and its operands UNIFIED (via [`crate::unify`]) — a generic operation, a recursive def's
+//! parameters ([`solve_recursive_params`]), and an annotation constraint all solve through the one
+//! unify seam, not a per-node coarse rule.
 //!
 //! [`type_errors`] is a SEPARATE query — a read over the (demand-filled) type column that reports
 //! type-agreement faults (an `if` whose condition is not `Bool`, or whose branches disagree). Keeping
@@ -933,7 +936,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A match: every arm body must AGREE in type with the first (like an `if`'s branches), and the
         // scrutinee + bodies are checked for their own faults. (Exhaustiveness — a scalar match with no
-        // covering arm — is a lowering decision for now; the arms-agree check is the type fault here.)
+        // covering arm — is checked in `lower::lower_match`, where the pattern shapes are classified;
+        // the arms-agree check is the type fault here.)
         Resolved::Match { scrutinee, arms } => {
             if let Some((_, first_body)) = arms.first() {
                 let first_ty = type_of(db, *first_body);
