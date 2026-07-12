@@ -2917,9 +2917,8 @@ fn champ_insert_fbip(
     };
 
     let dcount = data_count(datamap) as usize;
-    let scount = subnode_count(nodemap) as usize;
-    let subbase = stride * dcount;
-    let i = level_index(hash, level);
+    let subbase = stride * dcount; // subnodes follow the `dcount` entries; the SPLIT/EMPTY paths now
+    let i = level_index(hash, level); // rebuild in place, so `scount` is no longer needed here
     let bit = 1u32 << i;
 
     if datamap & bit != 0 {
@@ -2946,22 +2945,16 @@ fn champ_insert_fbip(
         let new_datamap = datamap & !bit;
         let new_nodemap = nodemap | bit;
         let new_sidx = subnode_index_for_slot(new_nodemap, i) as usize;
-        let mut new_handles = Vec::with_capacity(handles.len() + 1);
-        for e in 0..dcount {
-            if e == eidx {
-                continue;
-            }
-            for t in 0..stride {
-                new_handles.push(handles[stride * e + t]); // carried, no dup
-            }
-        }
-        let mut subs: Vec<Handle> = Vec::with_capacity(scount + 1);
-        for s in 0..scount {
-            subs.push(handles[subbase + s]); // carried, no dup
-        }
-        subs.insert(new_sidx, sub);
-        new_handles.extend(subs);
-        return champ_become_hdr(node, new_handles, new_datamap, new_nodemap, size + 1);
+        // Transform the taken `handles` IN PLACE rather than building a fresh `new_handles` + `subs`:
+        // (1) DRAIN the split entry's `stride` columns — their handles have already relocated into
+        //     `sub` (via `stored_entry_from` + `merge_two_entries`), so DO NOT op_drop them; the drain
+        //     just removes the now-duplicate pointers and shifts the tail (remaining entries+subnodes)
+        //     left by `stride`. (2) INSERT `sub` at its canonical subnode position: after the drain the
+        //     entry region holds `dcount-1` entries, so subnodes start at `stride*(dcount-1)`, and `sub`
+        //     goes at `+ new_sidx`. The only allocation left is `sub` itself (intrinsic — a new node).
+        handles.drain(base..base + stride);
+        handles.insert(stride * (dcount - 1) + new_sidx, sub);
+        return champ_become_hdr(node, handles, new_datamap, new_nodemap, size + 1);
     }
 
     if nodemap & bit != 0 {
@@ -4039,9 +4032,9 @@ mod tests {
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
-    /// in-place remove-drain + inline-Slots cursor work (insert 1740, remove 954, iterate 3, push 197,
-    /// get 0, lookup 0; set union 783 / ∩ 729 / ∖ 735); they are UPPER BOUNDS so ordinary noise never
-    /// trips them but a regression toward the old 6779/8397/5248/1000 does.
+    /// in-place remove-drain + inline-Slots cursor + in-place SPLIT work (insert 1084, remove 954,
+    /// iterate 3, push 197, get 0, lookup 0; set union 595 / ∩ 482 / ∖ 491); they are UPPER BOUNDS so
+    /// ordinary noise never trips them but a regression toward the old 6779/8397/5248/1000 does.
     ///
     /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
@@ -4068,7 +4061,7 @@ mod tests {
             }
         });
         println!("ALLOC map_insert x{N}: {insert}");
-        assert!(insert <= 2000, "unique map_insert x{N} allocs {insert} exceeds ceiling 2000 (6779 → 3907 champ_become_hdr+in-place → 3589 lazy champ_eq worklist → 3057 EMPTY-slot splice → ~1740 inline Entry, no per-insert Vec)");
+        assert!(insert <= 1200, "unique map_insert x{N} allocs {insert} exceeds ceiling 1200 (6779 → 3907 → 3589 → 3057 → 1740 inline Entry → ~1084 in-place SPLIT; residual is the intrinsic subnode alloc + vec grow)");
 
         // (B) full iteration (unique cursor walk).
         let iterate = measure(&mut || {
@@ -4158,21 +4151,21 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        assert!(union <= 900, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 900");
+        assert!(union <= 700, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 700");
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 900, "set_intersection x{N} allocs {inter} exceeds ceiling 900");
+        assert!(inter <= 650, "set_intersection x{N} allocs {inter} exceeds ceiling 650");
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 900, "set_difference x{N} allocs {diff} exceeds ceiling 900");
+        assert!(diff <= 650, "set_difference x{N} allocs {diff} exceeds ceiling 650");
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -8471,6 +8464,50 @@ mod tests {
         assert_eq!(mlookup_int(fbip, b), Some(2));
         for (i, &k) in extra_keys.iter().enumerate() {
             assert_eq!(mlookup_int(fbip, k), Some(100 + i as i64), "spliced key {k} present");
+        }
+        op_drop(fbip);
+        op_drop(copy);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn champ_insert_fbip_split_in_place_places_subnode_canonically() {
+        reset();
+        let before = live_nodes();
+        // Guards the in-place SPLIT (drain the split entry's columns from the taken vec, then insert the
+        // new subnode at `stride*(dcount-1) + new_sidx`). The load-bearing invariant is that after the
+        // entry region shrinks by one, the new subnode lands at its CANONICAL subnode slot among any
+        // pre-existing subnodes. Build a root that already holds MULTIPLE inline entries AND ≥1 subnode,
+        // then insert a key that COLLIDES (at level 0) with one of the inline entries — forcing that
+        // entry to split into a new subnode while other entries + the existing subnode stay put — and
+        // assert byte-identical (champ_eq + champ_hash) to the copy-path build, all keys correct, no leak.
+        let (sa, sb) = low5_split_pair();     // sa,sb share low-5 ⇒ an existing subnode at the root
+        let (ca, cb) = full_hash_collision_pair(); // a distinct pair that also splits (to a collision node)
+        let build = |shared: bool| -> Handle {
+            let mut m = op_map_empty();
+            // First sa,sb (creates subnode #1) + ordinary inline entries + ca alone (inline).
+            let mut seq: Vec<(i64, i64)> = vec![(sa, 1), (sb, 2), (ca, 3), (1i64, 10), (2, 20), (3, 30)];
+            // Then insert cb: it collides with ca (full-hash), so ca's inline entry SPLITS into a new
+            // subnode #2 that must slot canonically alongside the existing subnode #1.
+            seq.push((cb, 4));
+            for &(k, v) in &seq {
+                if shared {
+                    op_dup(m);
+                    let old = m;
+                    m = minsert_int(m, k, v);
+                    op_drop(old);
+                } else {
+                    m = minsert_int(m, k, v);
+                }
+            }
+            m
+        };
+        let fbip = build(false);
+        let copy = build(true);
+        assert!(champ_eq(fbip, copy), "in-place SPLIT == copy-path build (canonical subnode placement)");
+        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        for &(k, v) in &[(sa, 1i64), (sb, 2), (ca, 3), (cb, 4), (1, 10), (2, 20), (3, 30)] {
+            assert_eq!(mlookup_int(fbip, k), Some(v), "key {k} present after the in-place split");
         }
         op_drop(fbip);
         op_drop(copy);
