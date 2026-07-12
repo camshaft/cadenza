@@ -6,15 +6,16 @@
 //! (`backends-and-targets.md` §The Boundary Layout Is Computed Once, Target-Neutrally, And Reused).
 //!
 //! The interface is read from each export's DECLARED signature, never inferred from a body
-//! (`reference-compiler.md` §The Exported Interface Is The Declared Signature). Stage 0 exports are
-//! nullary, so an export's signature is its solved result type — obtained by demanding `type_of` on
-//! the export's definition body (a lazy read of the type column). The export NAME crosses verbatim;
-//! no export is recognized by name or body shape.
+//! (`reference-compiler.md` §The Exported Interface Is The Declared Signature). An export's signature
+//! is its solved parameter types (each `(name-occurrence, type)`) and result type, obtained by
+//! demanding `type_of`/`def_scheme` (a lazy read of the type column). The export NAME crosses
+//! verbatim; no export is recognized by name or body shape.
 //!
 //! Reachability lives here: an export drives which definitions are reached, and only reachable
-//! definitions are emitted (dead code dropped once, target-neutrally). Stage 0's slice has no calls,
-//! so the reachable set is exactly the exported definitions — but this is the place that set, the
-//! emission order, and each function's absolute index are fixed for every backend.
+//! definitions are emitted (dead code dropped once, target-neutrally). A runtime `Core::Call` reaches
+//! its callee, so the reachable set is grown by a worklist over each reachable body's calls (not just
+//! the exports — a recursive or helper def a call names is emitted too). This is the place that set,
+//! the emission order, and each function's absolute index are fixed for every backend.
 
 use crate::ast::StructId;
 use crate::db::Db;
