@@ -316,8 +316,8 @@ fn check_no_home_walk(
             // enclose the callee's performs). A recursive callee is not followed (E3), so an ungranted
             // perform only reachable through recursion is not reported here — a conservative miss, safe
             // (it declines at lowering rather than mis-reporting).
-            if let Some(callee) =
-                crate::eval::lambda_body(db, head).or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
                 && !crate::eval::is_recursive(db, callee)
             {
                 check_no_home_walk(db, callee, handled, out, depth + 1);
@@ -408,8 +408,8 @@ fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bo
         return true;
     }
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some(callee) =
-            crate::eval::lambda_body(db, head).or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        && let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
         && !crate::eval::is_recursive(db, callee)
         && body_reaches_effect(db, callee, decl, depth + 1)
     {
@@ -664,7 +664,9 @@ fn call_reaches_discharged_effect(db: &mut Db, head: StructId, ctx: &HandlerCtx)
     // The callee body, without reducing — a lambda body (parameterized def) OR a nullary def body (whose
     // name resolves straight to its body, no lambda wrapper). `None` for a non-function head (an
     // operator, a perform, a bare value).
-    let Some(body) = crate::eval::lambda_body(db, head).or_else(|| crate::eval::lambda_body_of_nullary(db, head)) else {
+    let Some(body) = crate::eval::lambda_body(db, head)
+        .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+    else {
         return false;
     };
     // A RECURSIVE callee cannot be inlined (it would not terminate) — exclude it (E3 specializes it).
@@ -692,8 +694,8 @@ fn body_reaches_discharged(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth:
     // A call to a NON-RECURSIVE function whose body reaches a discharged op — follow it (a parameterized
     // OR a nullary-def callee).
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some(callee) =
-            crate::eval::lambda_body(db, head).or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        && let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
         && !crate::eval::is_recursive(db, callee)
         && body_reaches_discharged(db, callee, ctx, depth + 1)
     {
