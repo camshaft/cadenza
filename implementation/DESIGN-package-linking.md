@@ -361,9 +361,13 @@ Per reference-compiler.md §Outcomes Are Ordered By Safety, anything not-yet-han
 
 ## 8. Increment plan (each independently gate-able)
 
-> **Landed status (2026-07-12):** steps 2 and 3 are **DONE** on branch `imports` (module
-> `rcdzc/src/link.rs` + `Db::load_linked` + a file-scoped step 2 in `resolve.rs`). Step 1 (spec/corpus
-> witnesses) is **blocked on a corpus-format gap** — see the note under it. Steps 4–6 remain.
+> **Landed status (2026-07-12):** steps **2, 3, 4, and 5 are DONE** on `spec` (module
+> `rcdzc/src/link.rs` + `Db::load_linked` + a file-scoped step 2 in `resolve.rs` + `find_import_cycle` +
+> the `link-map` artifact), PLUS the **CLI delivery** (`cdz compile … --entry <NAME>`) so a package is
+> reachable end-to-end — verified: a two-file package compiles to a 92-byte component and runs to 42,
+> an unimported sibling → CDZ0101, an a↔b cycle → CDZ0201. Step 1 (spec/corpus witnesses) is **blocked
+> on a corpus-format gap** — see the note under it. Step 6 (bootstrap payoff) is now UNBLOCKED by the
+> `--entry` CLI but not yet done.
 
 1. **Spec-first (§2):** pin `(import "path" (names…))` as a core form + add the deferred multi-file
    cases to `11-modules.sexp`. ⚠ **BLOCKED / re-scoped.** The behavior is already normative in
