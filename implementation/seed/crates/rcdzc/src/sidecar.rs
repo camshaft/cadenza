@@ -29,7 +29,7 @@
 //! request as a one-byte TAG followed by its operands. A malformed request list is a DECLINE (a
 //! diagnostic), never a panic or a silent drop — reject-don't-miscompile at the tool edge.
 
-use crate::ast::StructId;
+use crate::ast::{Struct, StructId};
 use crate::db::Db;
 use crate::leb128::{self, Reader};
 use crate::resolved::Resolved;
@@ -51,6 +51,12 @@ pub const KIND_DIAGNOSTICS: &str = "diagnostics";
 
 /// The output artifact kind for a `ResolveOf` query result — the defining occurrence's node id.
 pub const KIND_RESOLVE: &str = "resolve";
+
+/// The output artifact kind for a `ScopeAt` query result — the bindings visible at a node.
+pub const KIND_SCOPE: &str = "scope";
+
+/// The output artifact kind for an `Exports` query result — the module's exported names + types.
+pub const KIND_EXPORTS: &str = "exports";
 
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
@@ -105,6 +111,22 @@ pub enum Query {
     /// <TAB>message` (node-id-keyed like `UsesOf` — the consumer maps the node to a source range). Total:
     /// a clean program yields the empty result.
     Diagnostics,
+    /// The BINDINGS VISIBLE at a node, by its `StructId` — "variable scope tracking" (the operator's
+    /// original motivating example). Walks the lexical scope (`db.parent_of`, the same substrate
+    /// `resolve::lookup_scope` uses) collecting every binder in scope: a `let`'s bindings visible from
+    /// the point (earlier bindings from a later initializer; all from the body), an enclosing `fn`/`def`'s
+    /// parameters, a match-arm binder. Answered as one binding per line, `name<TAB>type<TAB>binder-node-id`
+    /// (the type read from the binder's `infer::type_of`; node-id-keyed like the others). INNERMOST wins:
+    /// a shadowed name appears once, bound to the nearest enclosing binder. Total: at the top level (no
+    /// enclosing binder) the result is empty. This is the query an editor's autocomplete / scope panel
+    /// rides on.
+    ScopeAt { node: u32 },
+    /// The MODULE's EXPORTS — each exported name paired with its type, one per line as
+    /// `name<TAB>type<TAB>def-name-node-id`. Reads `db.exports` (the `(export …)` clauses) and each
+    /// export's def scheme (`infer::def_scheme` → the signature). The node id is the exported def's NAME
+    /// occurrence, so a consumer can jump to it. Node-id-keyed like the others; TOTAL — a module with no
+    /// exports yields the empty result. This is the "module interface at a glance" query.
+    Exports,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -128,6 +150,8 @@ mod tag {
     pub const QUERY_TYPE_AT: u8 = 0x12;
     pub const QUERY_DIAGNOSTICS: u8 = 0x13;
     pub const QUERY_RESOLVE_OF: u8 = 0x14;
+    pub const QUERY_SCOPE_AT: u8 = 0x15;
+    pub const QUERY_EXPORTS: u8 = 0x16;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -168,6 +192,10 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_RESOLVE_OF => Some(Request::Query(Query::ResolveOf {
             node: u32::try_from(r.read_varu64()?).ok()?,
         })),
+        tag::QUERY_SCOPE_AT => Some(Request::Query(Query::ScopeAt {
+            node: u32::try_from(r.read_varu64()?).ok()?,
+        })),
+        tag::QUERY_EXPORTS => Some(Request::Query(Query::Exports)),
         _ => None,
     }
 }
@@ -207,6 +235,11 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
             out.push(tag::QUERY_RESOLVE_OF);
             leb128::write_u64(out, *node as u64);
         }
+        Request::Query(Query::ScopeAt { node }) => {
+            out.push(tag::QUERY_SCOPE_AT);
+            leb128::write_u64(out, *node as u64);
+        }
+        Request::Query(Query::Exports) => out.push(tag::QUERY_EXPORTS),
     }
 }
 
@@ -264,14 +297,11 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::TypeAt { node } => {
             let id = crate::ast::StructId(*node);
-            // Total: a node id past the program is not a user node — a defined "unknown", not a crash.
-            // (The consumer resolves an offset to a node via the span table, which only holds user
-            // nodes, so a well-formed request always names a user node; this guards a malformed one.)
-            let text = if db.is_user_node(id) {
-                crate::infer::type_of(db, id).render_name()
-            } else {
-                "unknown".to_string()
-            };
+            // A HOVER answer, not just a raw type: a grammar keyword names itself, a definition shows
+            // its signature (`name : type`), an untypeable/poison node says "unknown" — never the bare
+            // fallback `Any` or a leaked internal operator record. A genuinely-typed node renders its
+            // type (a function name already renders as its arrow `(-> A B)`).
+            let text = hover_text(db, id);
             QueryResult {
                 kind: KIND_TYPE_AT,
                 name: node.to_string(),
@@ -321,7 +351,320 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::ScopeAt { node } => {
+            // Every binding visible at the node, INNERMOST-first, one per line as
+            // `name<TAB>type<TAB>binder-node-id`. Collected by the scope walk, then each binder typed.
+            let binders = scope_at(db, crate::ast::StructId(*node));
+            let mut text = String::new();
+            for (name, binder) in binders {
+                let ty = crate::infer::type_of(db, binder).render_name();
+                text.push_str(&format!("{name}\t{ty}\t{}\n", binder.0));
+            }
+            QueryResult {
+                kind: KIND_SCOPE,
+                name: node.to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
+        Query::Exports => {
+            // The module's interface: each `(export NAME)` clause paired with the named def's type
+            // (its signature, via `def_scheme`), one per line `name<TAB>type<TAB>def-name-node-id`.
+            // The node id is the exported def's NAME occurrence (sig's first child) so a consumer can
+            // jump to it; `-` when the export names no definition. Deterministic (export order).
+            let exports: Vec<(String, Option<usize>, StructId)> = db
+                .exports
+                .iter()
+                .map(|e| (e.name.clone(), e.def, e.occ))
+                .collect();
+            let mut text = String::new();
+            for (name, def, occ) in exports {
+                let (ty, name_node) = match def {
+                    Some(d) => {
+                        let ty = match crate::infer::def_scheme(db, d) {
+                            Some(scheme) => scheme.ty.render_name(),
+                            None => "unknown".to_string(),
+                        };
+                        // The def's NAME occurrence (the sig's first child), for go-to; fall back to the
+                        // export clause occurrence if the sig is malformed.
+                        let sig = db.defs[d].sig_occ;
+                        let name_node = match db.ast.get(sig) {
+                            Struct::List(kids) => kids.first().copied().unwrap_or(sig),
+                            _ => sig,
+                        };
+                        (ty, name_node.0.to_string())
+                    }
+                    // An export naming no definition — a diagnostic elsewhere; here, report it as unknown.
+                    None => ("unknown".to_string(), "-".to_string()),
+                };
+                let _ = occ;
+                text.push_str(&format!("{name}\t{ty}\t{name_node}\n"));
+            }
+            QueryResult {
+                kind: KIND_EXPORTS,
+                name: "exports".to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
+}
+
+/// The bindings visible at `node`, innermost-first, deduplicated by name (a shadowed name keeps the
+/// nearest enclosing binder). Walks parents (the same `parent_of` substrate `resolve::lookup_scope`
+/// uses), and at each enclosing form collects the binders it introduces AS SEEN from the child we
+/// ascended through:
+///  - a `let` ascended from its BODY → all its bindings; ascended from a bindings-list PAIR → the
+///    bindings strictly before that pair (sequential scope: an initializer sees earlier bindings);
+///  - a `fn`/`def` ascended from its BODY → its parameters (`db.scope_binders_of`);
+///  - a match ARM ascended from its body, whose pattern is a bare binder → that binder (binds the
+///    scrutinee for the arm).
+///
+/// Returns `(name, binder-name-occurrence)` pairs; the caller types each binder. A non-user or unknown
+/// node yields the empty scope (total).
+fn scope_at(db: &Db, node: StructId) -> Vec<(String, StructId)> {
+    let mut out: Vec<(String, StructId)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !db.is_user_node(node) {
+        return out;
+    }
+    // Ascend parent by parent; `from` is the child we came up through (its position in a `let`
+    // bindings-list decides which bindings are visible).
+    let mut from = node;
+    let mut cursor = db.parent_of(node);
+    while let Some(form) = cursor {
+        let mut add = |name: &str, occ: StructId, out: &mut Vec<(String, StructId)>| {
+            // Innermost wins: only the first sighting of a name (nearest enclosing binder) is kept.
+            if seen.insert(name.to_string()) {
+                out.push((name.to_string(), occ));
+            }
+        };
+        match db.ast.head_name(form) {
+            // `let` ascended from the BODY → every binding; ascended from a pair (handled below via
+            // the bindings-list form) is a different shape.
+            Some("let") => {
+                if let Some(tail) = db.ast.as_form(form, "let") {
+                    let bindings_occ = tail.first().copied();
+                    let body_occ = tail.get(1).copied();
+                    if Some(from) == body_occ
+                        && let Some(bindings_occ) = bindings_occ
+                    {
+                        collect_let_bindings(db, bindings_occ, None, &mut |n, occ| {
+                            add(n, occ, &mut out)
+                        });
+                    }
+                }
+            }
+            // `fn`/`def` ascended from the BODY → its parameters (the precomputed binder index).
+            Some("fn") | Some("def") => {
+                let tail = db
+                    .ast
+                    .as_form(form, "fn")
+                    .or_else(|| db.ast.as_form(form, "def"));
+                let body_occ = tail.and_then(|t| t.get(1).copied());
+                if Some(from) == body_occ {
+                    // Sorted for determinism (the index is a hash map).
+                    let mut params: Vec<(String, StructId)> = db
+                        .scope_binders_of(form)
+                        .map(|(n, occ)| (n.to_string(), occ))
+                        .collect();
+                    params.sort();
+                    for (n, occ) in params {
+                        add(&n, occ, &mut out);
+                    }
+                }
+            }
+            _ => {
+                // A let's BINDINGS-LIST (a headless list of pairs) ascended from a pair → the bindings
+                // strictly before that pair are visible (an initializer sees the earlier ones).
+                if let_of_bindings_list(db, form) {
+                    collect_let_bindings(db, form, Some(from), &mut |n, occ| add(n, occ, &mut out));
+                }
+                // A match ARM `(pattern body)` ascended from `body`, pattern a bare binder → it binds.
+                if let Some((n, occ)) = match_arm_binder(db, form, from) {
+                    add(&n, occ, &mut out);
+                }
+            }
+        }
+        from = form;
+        cursor = db.parent_of(form);
+    }
+    out
+}
+
+/// Collect a let bindings-list's `(name init)` pairs as `(name, name-occurrence)`, calling `add` for
+/// each. When `stop_before` is `Some(pair)`, only the pairs STRICTLY BEFORE it (sequential scope);
+/// `None` = all. Later-bound names naturally shadow earlier ones because `add`'s caller keeps the FIRST
+/// sighting — so we emit in REVERSE (last binding first) to make the innermost/last win.
+fn collect_let_bindings(
+    db: &Db,
+    bindings_occ: StructId,
+    stop_before: Option<StructId>,
+    add: &mut dyn FnMut(&str, StructId),
+) {
+    let Struct::List(pairs) = db.ast.get(bindings_occ) else {
+        return;
+    };
+    let end = match stop_before {
+        None => pairs.len(),
+        Some(from) => db.child_ix_of(from).min(pairs.len()),
+    };
+    for &pair in pairs[..end].iter().rev() {
+        if let Struct::List(kv) = db.ast.get(pair)
+            && kv.len() == 2
+            && let Some(name) = db.ast.as_name(kv[0])
+        {
+            // The binder's TYPE is its initializer's type — key the binding on the init occurrence
+            // (what a `Resolved::Ref` to this name points at), so `type_of` gives the bound value's type.
+            add(name, kv[1]);
+        }
+    }
+}
+
+/// Whether `form` is a `let`'s bindings-list (its parent is a `let` and `form` is that let's first
+/// tail element). Mirrors `resolve::let_of_bindings_list` but returns a bool.
+fn let_of_bindings_list(db: &Db, form: StructId) -> bool {
+    db.parent_of(form)
+        .and_then(|p| {
+            db.ast
+                .as_form(p, "let")
+                .map(|t| t.first().copied() == Some(form))
+        })
+        .unwrap_or(false)
+}
+
+/// If `form` is a match ARM `(pattern body)`, ascended from `body`, whose `pattern` is a bare BINDER
+/// name (not a literal, not the wildcard `_`), return that binder `(name, name-occurrence)`. The binder
+/// binds the scrutinee for the arm; its type is the scrutinee's, so key on the scrutinee occurrence.
+fn match_arm_binder(db: &Db, form: StructId, from: StructId) -> Option<(String, StructId)> {
+    let Struct::List(arm) = db.ast.get(form) else {
+        return None;
+    };
+    if arm.len() != 2 || Some(from) != arm.get(1).copied() {
+        return None;
+    }
+    let pattern = arm[0];
+    let name = db.ast.as_name(pattern)?;
+    if name == "_" {
+        return None;
+    }
+    // The parent must be a `(match …)` for this to be a match arm (not any 2-element list).
+    let parent = db.parent_of(form)?;
+    let scrutinee = db.ast.as_form(parent, "match")?.first().copied()?;
+    // The binder's value is the scrutinee — type/flow through it — so key the binding there.
+    Some((name.to_string(), scrutinee))
+}
+
+/// The HOVER text for a node — a presentation answer, not a raw type. In priority order:
+///  1. a non-user node (past the program, or a synthesized one with no source) → `unknown`;
+///  2. a DEFINITION the node identifies (its `(def …)` form, its signature list, or its NAME atom) →
+///     the def's SIGNATURE, `name : <type>` (a function reads as `name : (-> A B)`, a value as
+///     `name : T`) — so hovering a def shows what it defines, not its body's type alone;
+///  3. a GRAMMAR KEYWORD atom (`def`/`export`/`module`/`if`/`let`/`match`/`fn`/`:`/`and`/`or`/`not`/`.`)
+///     → `keyword <kw>` — these are syntax, not expressions, so they have no type;
+///  4. otherwise the node's solved type (`type_of` → `render_name`), with the two poor renderings
+///     cleaned up: the fallback `Any` (an untypeable/poison node) → `unknown`, and a leaked operator
+///     RECORD (`(record (apply …) (t …))`, a prelude operator value) → its callable `(t …)` field.
+fn hover_text(db: &mut Db, id: StructId) -> String {
+    if !db.is_user_node(id) {
+        return "unknown".to_string();
+    }
+    // (2) A definition the node identifies → its signature.
+    if let Some(def) = def_identified_by(db, id) {
+        let name = db.defs[def].name.clone();
+        let sig = match crate::infer::def_scheme(db, def) {
+            Some(scheme) => scheme.ty.render_name(),
+            None => "unknown".to_string(),
+        };
+        return format!("{name} : {sig}");
+    }
+    // (3) A grammar keyword atom.
+    if let Some(kw) = grammar_keyword(db, id) {
+        return format!("keyword {kw}");
+    }
+    // (4) The solved type, cleaned up.
+    let ty = crate::infer::type_of(db, id).render_name();
+    clean_hover_type(&ty)
+}
+
+/// The definition a node IDENTIFIES, if any: the def's `(def …)` form, its signature list
+/// (`(NAME param…)`), or its NAME atom (the signature's first child). Returns the `db.defs` index.
+/// Used so hovering any part of a definition's "header" shows the def's signature rather than the
+/// body's type (the form) or `Any` (the `def` keyword handled separately).
+fn def_identified_by(db: &Db, id: StructId) -> Option<usize> {
+    for (i, d) in db.defs.iter().enumerate() {
+        // The def FORM `(def sig body)` — its parent-less shape is `(def …)`; match by its signature's
+        // parent (the form) or the signature/name directly.
+        let name_occ = if let Struct::List(kids) = db.ast.get(d.sig_occ) {
+            kids.first().copied()
+        } else {
+            None
+        };
+        // The `(def …)` form is the parent of the signature occurrence.
+        let def_form = db.parent_of(d.sig_occ);
+        if id == d.sig_occ || Some(id) == name_occ || Some(id) == def_form {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// The grammar keyword this atom spells, if it is one — the syntactic heads that are NOT expressions
+/// (they head a form; they have no type). Only recognized in HEAD position (the first child of a list)
+/// or as the annotation colon, so a user value that happens to share the spelling is not mislabeled.
+fn grammar_keyword(db: &Db, id: StructId) -> Option<&'static str> {
+    const KEYWORDS: &[&str] = &[
+        "module", "def", "export", "import", "if", "let", "match", "fn", ":", "and", "or", "not",
+        ".", "type", "effect", "handle", "do",
+    ];
+    let name = db.ast.as_name(id)?;
+    let kw = KEYWORDS.iter().find(|k| **k == name)?;
+    // Confirm it's in a syntactic position: the head (first child) of its parent list. (A bare atom
+    // elsewhere with the same spelling is a value/label, not the keyword.)
+    let parent = db.parent_of(id)?;
+    if let Struct::List(kids) = db.ast.get(parent)
+        && kids.first() == Some(&id)
+    {
+        return Some(kw);
+    }
+    None
+}
+
+/// Clean up a rendered type for hover: the untypeable fallback `Any` reads as `unknown`, and a leaked
+/// prelude-operator RECORD (`(record (apply …) (t T))` — the value an operator name resolves to) reads
+/// as its callable `(t …)` field, the operator's actual scheme. Any other type passes through.
+fn clean_hover_type(ty: &str) -> String {
+    if ty == "Any" {
+        return "unknown".to_string();
+    }
+    // An operator record leaks as `(record (apply …) (t <scheme>))` — surface the `(t …)` payload.
+    if let Some(rest) = ty.strip_prefix("(record ")
+        && let Some(t_at) = rest.find("(t ")
+    {
+        // Extract the balanced parenthesized group after `(t `.
+        let after = &rest[t_at + 3..];
+        if let Some(scheme) = balanced_prefix(after) {
+            return scheme.to_string();
+        }
+    }
+    ty.to_string()
+}
+
+/// The balanced-parenthesis prefix of `s` starting mid-group: read until the paren depth (which starts
+/// at 1, accounting for the enclosing `(t …)` we're inside) returns to 0. Returns the inner text.
+fn balanced_prefix(s: &str) -> Option<&str> {
+    let mut depth = 1i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The occurrences that RESOLVE to the top-level definition or sum type named `name`, in ascending id
@@ -413,6 +756,8 @@ mod tests {
             Request::Query(Query::TypeAt { node: 42 }),
             Request::Query(Query::Diagnostics),
             Request::Query(Query::ResolveOf { node: 7 }),
+            Request::Query(Query::ScopeAt { node: 9 }),
+            Request::Query(Query::Exports),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

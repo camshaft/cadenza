@@ -773,6 +773,16 @@ impl Db {
         self.scope_binders.get(&scope)?.get(name).copied()
     }
 
+    /// EVERY parameter binder a scope form declares — `(name, name-occurrence)` pairs for a `fn`/`def`'s
+    /// parameters. The enumeration companion of [`binder_in_scope`] (which looks one up): a scope query
+    /// (`ScopeAt`) needs ALL names visible at a point, not one. Empty iterator for a non-scope form.
+    pub fn scope_binders_of(&self, scope: StructId) -> impl Iterator<Item = (&str, StructId)> {
+        self.scope_binders
+            .get(&scope)
+            .into_iter()
+            .flat_map(|m| m.iter().map(|(n, &occ)| (n.as_str(), occ)))
+    }
+
     /// Whether `id` is a genuine USER-PROGRAM node — one the decoded program contained, which the
     /// front-end's span table can map to a text region. A prelude binding or an evaluator-synthesized
     /// node (β-reduced body, built `(Int W)` module) is NOT one: it has no source position, so its id

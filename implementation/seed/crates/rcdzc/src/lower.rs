@@ -65,12 +65,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
-        // A FLOAT literal has a type (`Ty::Float`, so a mix rejects at the type check) but no runnable
-        // core yet — there is no float arithmetic or boundary representation. Decline: a pure-float
-        // program is Todo, never a miscompile.
-        Resolved::Float(_) => Core::Poison(Reject::decline(
-            "a floating-point value does not yet run (float arithmetic/boundary is a later increment)",
-        )),
+        // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
+        // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
+        // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
+        // they consume it; the CONSTANT itself is now a real core value.
+        Resolved::Float(d) => Core::ConstFloat(d),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -265,54 +264,78 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // `(if true 1 3.5)`) — is a static well-formedness fault the program must be REJECTED for,
         // reachability notwithstanding. So keep the `Core::If` when the untaken branch is a non-trap
         // poison, letting that fault surface; fold otherwise. A runtime condition stays a `Core::If`.
-        Resolved::If { cond, then_, else_ } => match core_of(db, cond) {
-            Core::ConstBool(b) => {
-                let (taken, dropped) = if b { (then_, else_) } else { (else_, then_) };
-                let untaken_is_illformed = matches!(
-                    core_of(db, dropped),
-                    Core::Poison(r) if r.code != Some(Code::ConstTrap)
-                );
-                if untaken_is_illformed {
-                    Core::If { cond, then_, else_ }
+        Resolved::If { cond, then_, else_ } => {
+            // CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition (runtime `c` only). Within the
+            // THEN-branch `c` is known TRUE, within the ELSE-branch FALSE — so a branch that is ITSELF
+            // `(if c' A B)` with `c'` EQUIVALENT to `c` (a syntactically-equal PURE condition; with no
+            // mutation it re-evaluates identically) is redundant: take `A` in the then-branch, `B` in the
+            // else-branch. Rewrite the branch to that inner arm, REUSING its existing occurrence (no
+            // synthesis), so the folds below see the simplified branches (`(if c (if c A B) E)` →
+            // `(if c A E)`, collapsing further if that leaves identical branches). Only a RUNTIME `c` is
+            // rewritten: for a CONSTANT `c` the untaken branch is dead and the `ConstBool` arm's
+            // untaken-illformed check must see the ORIGINAL branch (skip the rewrite), and a poison `c`
+            // propagates. The inner `if`'s DROPPED arm may hide a runtime trap — unreachable under `c`, so
+            // dropping it mirrors the reachability model (as the constant-condition fold drops a
+            // `ConstTrap` untaken branch). `core_equiv`'s pure-core matching guarantees `c'` carries no
+            // new effect (params/locals/consts/arith/compare/convert only).
+            let (then_, else_) =
+                if matches!(core_of(db, cond), Core::ConstBool(_) | Core::Poison(_)) {
+                    (then_, else_)
                 } else {
-                    trace!(target: "rcdzc::lower", node = id.0, taken = b, "if with a constant condition folds to the taken branch");
-                    core_of(db, taken)
+                    (
+                        collapse_repeated_cond(db, cond, then_, true).unwrap_or(then_),
+                        collapse_repeated_cond(db, cond, else_, false).unwrap_or(else_),
+                    )
+                };
+            match core_of(db, cond) {
+                Core::ConstBool(b) => {
+                    let (taken, dropped) = if b { (then_, else_) } else { (else_, then_) };
+                    let untaken_is_illformed = matches!(
+                        core_of(db, dropped),
+                        Core::Poison(r) if r.code != Some(Code::ConstTrap)
+                    );
+                    if untaken_is_illformed {
+                        Core::If { cond, then_, else_ }
+                    } else {
+                        trace!(target: "rcdzc::lower", node = id.0, taken = b, "if with a constant condition folds to the taken branch");
+                        core_of(db, taken)
+                    }
                 }
+                // A condition that is a poison propagates (the ill-formed condition is the fault).
+                Core::Poison(r) => Core::Poison(r),
+                // A runtime condition. If BOTH branches are the SAME value (`(if c x x)`, or two branches
+                // that FOLD to the same core — e.g. `(if c (+ x 0) x)` after the identity fold), the `if`
+                // computes that value regardless, so it collapses to the branch — BUT only when the
+                // condition is TRAP-FREE: the condition is still evaluated at run time, so if it could trap
+                // (a call, a checked op) that trap must be preserved (keep the `if`). A trap-free condition
+                // (a param/local, a comparison, a bitwise op) has no observable effect to keep.
+                _ if core_equiv(db, then_, else_) && is_trap_free(db, cond) => {
+                    trace!(target: "rcdzc::lower", node = id.0, "if with identical branches folds to the branch (trap-free condition)");
+                    core_of(db, then_)
+                }
+                // BOOLEAN COERCION: `(if c true false)` is just `c` — the `if` computes the condition's own
+                // value. `c` is a `Bool` (an `if` condition must be), and it is evaluated on BOTH branches of
+                // the original, so returning it drops the `if` with no change (including any trap in `c`,
+                // which still fires — `c` is unconditionally evaluated here just as it was as the condition).
+                _ if matches!(core_of(db, then_), Core::ConstBool(true))
+                    && matches!(core_of(db, else_), Core::ConstBool(false)) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "if c true false folds to the condition c");
+                    core_of(db, cond)
+                }
+                // BOOLEAN NEGATION: `(if c false true)` is `!c`. `c` is unconditionally evaluated (as the
+                // condition), so negating its value drops the `if` with no other change (any trap in `c`
+                // still fires). A runtime `c` becomes `Core::Not{c}` (emitted as `i32.eqz`); a constant `c`
+                // would already have folded via the `ConstBool` arm above, so here `c` is a runtime bool.
+                _ if matches!(core_of(db, then_), Core::ConstBool(false))
+                    && matches!(core_of(db, else_), Core::ConstBool(true)) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "if c false true folds to the negation !c");
+                    Core::Not { operand: cond }
+                }
+                _ => Core::If { cond, then_, else_ },
             }
-            // A condition that is a poison propagates (the ill-formed condition is the fault).
-            Core::Poison(r) => Core::Poison(r),
-            // A runtime condition. If BOTH branches are the SAME value (`(if c x x)`, or two branches
-            // that FOLD to the same core — e.g. `(if c (+ x 0) x)` after the identity fold), the `if`
-            // computes that value regardless, so it collapses to the branch — BUT only when the
-            // condition is TRAP-FREE: the condition is still evaluated at run time, so if it could trap
-            // (a call, a checked op) that trap must be preserved (keep the `if`). A trap-free condition
-            // (a param/local, a comparison, a bitwise op) has no observable effect to keep.
-            _ if core_equiv(db, then_, else_) && is_trap_free(db, cond) => {
-                trace!(target: "rcdzc::lower", node = id.0, "if with identical branches folds to the branch (trap-free condition)");
-                core_of(db, then_)
-            }
-            // BOOLEAN COERCION: `(if c true false)` is just `c` — the `if` computes the condition's own
-            // value. `c` is a `Bool` (an `if` condition must be), and it is evaluated on BOTH branches of
-            // the original, so returning it drops the `if` with no change (including any trap in `c`,
-            // which still fires — `c` is unconditionally evaluated here just as it was as the condition).
-            _ if matches!(core_of(db, then_), Core::ConstBool(true))
-                && matches!(core_of(db, else_), Core::ConstBool(false)) =>
-            {
-                trace!(target: "rcdzc::lower", node = id.0, "if c true false folds to the condition c");
-                core_of(db, cond)
-            }
-            // BOOLEAN NEGATION: `(if c false true)` is `!c`. `c` is unconditionally evaluated (as the
-            // condition), so negating its value drops the `if` with no other change (any trap in `c`
-            // still fires). A runtime `c` becomes `Core::Not{c}` (emitted as `i32.eqz`); a constant `c`
-            // would already have folded via the `ConstBool` arm above, so here `c` is a runtime bool.
-            _ if matches!(core_of(db, then_), Core::ConstBool(false))
-                && matches!(core_of(db, else_), Core::ConstBool(true)) =>
-            {
-                trace!(target: "rcdzc::lower", node = id.0, "if c false true folds to the negation !c");
-                Core::Not { operand: cond }
-            }
-            _ => Core::If { cond, then_, else_ },
-        },
+        }
         // A SHORT-CIRCUITING connective. Fold on a constant LEFT operand — the short-circuit rule decides
         // the result WITHOUT evaluating `rhs` (so a trapping/ill-formed `rhs` is shielded, exactly as an
         // `if`'s unselected branch): `(and false _)`→false, `(and true rhs)`→rhs; `(or true _)`→true,
@@ -2687,6 +2710,30 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
     }
 }
 
+/// Conditional-constant-propagation helper: if `branch` reduces to an inner `(if c' A B)` whose
+/// condition `c'` is EQUIVALENT to the enclosing `cond` (via `core_equiv` — a pure-core structural
+/// match), return the occurrence of the arm the enclosing branch's known truth of `cond` selects — `A`
+/// when `cond_is_true` (the then-branch, where `cond` holds), `B` otherwise (the else-branch, where it
+/// does not). `None` if `branch` is not such a nested `if` (leave it unchanged). The returned occurrence
+/// is REUSED as-is (no synthesis); it was resolved in the same scope, so lowering it in the branch's
+/// place is sound. `reduce_to_if` chases refs/annotations and stops at a kept multi-use binding, so a
+/// `let`-named inner `if` is not peeled (its value lives in a slot). Only the DIRECT nested `if` is
+/// collapsed here; deeper propagation happens because the rewritten branch re-lowers and can collapse
+/// again.
+fn collapse_repeated_cond(
+    db: &mut Db,
+    cond: StructId,
+    branch: StructId,
+    cond_is_true: bool,
+) -> Option<StructId> {
+    let (inner_cond, inner_then, inner_else) = crate::eval::reduce_to_if(db, branch)?;
+    if core_equiv(db, cond, inner_cond) {
+        Some(if cond_is_true { inner_then } else { inner_else })
+    } else {
+        None
+    }
+}
+
 /// The number of times the binding whose initializer is `init` is REFERENCED within the resolved
 /// subtree rooted at `node` — a use is a `Resolved::Ref { value: init }` (the identity a reference to
 /// the binding resolves to). Walks the resolved tree structurally without lowering; a nested `let`
@@ -3171,6 +3218,33 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant string comparison");
             Core::ConstBool(r)
         }
+        // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
+        // form.md #Numeric Values Serialize Deterministically — floats equal under structural equality
+        // share a canonical form, distinct floats have distinct forms). EQUALITY (`=`) is by RAW BITS, so
+        // `-0.0 ≠ 0.0` (distinct bit patterns → the canonical form distinguishes them) and a NaN is
+        // unequal to itself. `1e19` and `1e20` round to different doubles → unequal. Ordering (`<`/`>`)
+        // uses the IEEE partial order (`f64::partial_cmp`); an unordered pair (NaN) declines rather than
+        // inventing a total order. Only the fold — no float runtime is needed for a Bool result.
+        (Core::ConstFloat(a), Core::ConstFloat(b)) => {
+            let (ba, bb) = (a.to_f64_bits(), b.to_f64_bits());
+            if matches!(op, Prim::Eq) {
+                let r = ba == bb;
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float equality (by canonical bits)");
+                Core::ConstBool(r)
+            } else {
+                match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
+                    Some(ord) => {
+                        let r = compare_ord(op, ord);
+                        trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float comparison");
+                        Core::ConstBool(r)
+                    }
+                    // An unordered pair (a NaN operand) has no defined `<`/`>` result — decline.
+                    None => Core::Poison(Reject::decline(
+                        "an ordering comparison with a NaN operand has no defined result",
+                    )),
+                }
+            }
+        }
         // Two UNIT values — there is exactly ONE unit value, so two units always compare EQUAL. Fold at
         // compile time to the ordering-`Equal` result for the operator (`= unit ()` → true, `< unit ()`
         // → false, `<= unit ()` → true). No heap walk and no runtime op: unit carries no data to
@@ -3233,6 +3307,11 @@ fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
+        // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
+        // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false) and a nested NaN equals a nested NaN (identical
+        // bits under the canonical byte form; contracts/deterministic-value-form.md). By-bits, NOT
+        // `f64` `==`, precisely so `-0.0`/`0.0` differ and NaN self-equals — the structural byte-form rule.
+        (Core::ConstFloat(x), Core::ConstFloat(y)) => Some(x.to_f64_bits() == y.to_f64_bits()),
         (Core::Unit, Core::Unit) => Some(true),
         // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
         // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same

@@ -151,6 +151,12 @@ pub enum Core {
     /// A string constant — the canonical text of a string literal. A `Ty::String` value; escapes as its
     /// baked UTF-8 bytes (like a constant compound). Runtime string ops are a later stage.
     ConstStr(String),
+    /// A FLOATING-POINT constant — the EXACT `Decimal` of a float literal (no `f64` rounding until a
+    /// width is chosen). A `Ty::Float` value. This increment folds float EQUALITY (two constants compared
+    /// by their canonical Float64 value — `1e19` and `1e20` differ, `-0.0` and `0.0` differ); float
+    /// ARITHMETIC and crossing the boundary as a float value are later increments (a float value at the
+    /// boundary / an arithmetic operand still declines — no f64 machine path yet).
+    ConstFloat(crate::ast::Decimal),
     /// The unit value.
     Unit,
     /// A record value — a fixed set of named fields, each field's value referenced by its AST
