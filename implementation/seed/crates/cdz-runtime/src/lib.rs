@@ -5503,6 +5503,42 @@ mod tests {
         }
     }
 
+    /// CPU-scaling PROBE (diagnostic, not a gate) for the SHARED/PERSISTENT CHAMP map copy path — the
+    /// functional-update pattern on a map (keep the base version, derive a new one). This is the second-
+    /// largest realistic allocator (map_insert_shared 6143, map_remove_shared 6685 allocs/1000); the
+    /// alloc bench tracks the COUNT, this times where the CPU goes under `perf`. Each op path-copies the
+    /// touched spine root→leaf via `champ_insert_node`/`champ_remove_node` (clone-once-and-mutate,
+    /// dup every off-path sibling). Complements `shared_vec_copy_path_cpu_scaling_probe`; the map copy
+    /// path was never dedicated-CPU-profiled.
+    #[test]
+    #[ignore] // diagnostic timing — run with --ignored --nocapture
+    fn shared_map_copy_path_cpu_scaling_probe() {
+        for &n in &[1000i64, 4000, 16000, 64000] {
+            // Build an N-entry base map, kept shared (rc>1) so each op path-copies instead of FBIP.
+            let mut base = op_map_empty();
+            for k in 0..n {
+                base = op_map_insert(base, op_box_int(k), op_box_int(k));
+            }
+            let reps = 1_000_000i64;
+            // Shared INSERT (overwrite an existing key → OVERWRITE/DESCEND path-copy).
+            let t0 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(base);
+                op_drop(op_map_insert(base, op_box_int(0), op_box_int(1)));
+            }
+            let ins_ns = t0.elapsed().as_nanos() as f64 / reps as f64;
+            // Shared REMOVE of a present key (found-entry drop → path-copy up the spine).
+            let t1 = std::time::Instant::now();
+            for _ in 0..reps {
+                op_dup(base);
+                op_drop(op_map_remove(base, op_box_int(0)));
+            }
+            let rem_ns = t1.elapsed().as_nanos() as f64 / reps as f64;
+            println!("MAPSHARED n={n:>6}  insert {ins_ns:7.1} ns/op   remove {rem_ns:7.1} ns/op");
+            op_drop(base);
+        }
+    }
+
     /// The STATIC shape descriptor the compiler holds at each use site. There is no runtime type
     /// tag, so the renderer is driven ENTIRELY by this compile-time knowledge: the SAME heap node
     /// renders differently under different shapes (an `Arr[3,1]` is `(tuple 3 1)` under `Tuple` and
