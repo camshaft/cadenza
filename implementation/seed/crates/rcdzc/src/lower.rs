@@ -280,11 +280,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
             }
             Core::Poison(r) => Core::Poison(r),
-            _ => Core::And { lhs, rhs, is_and },
+            // A constant RIGHT operand (the left is a non-constant runtime bool, ALWAYS evaluated — it is
+            // the short-circuit condition). `(and p true)` / `(or p false)` → `p` (the neutral element,
+            // keeps `p` so its effects/traps stay). `(and p false)` → `false` / `(or p true)` → `true`
+            // (the ABSORBING element) — this DISCARDS `p`, so it is applied only when `p` is trap-free
+            // (else `p`'s trap must still fire, so keep the `Core::And`). Mirrors the constant-left fold
+            // above; completes the boolean-identity set. (Both-constant folded via the left arm already.)
+            lc => match core_of(db, rhs) {
+                Core::ConstBool(rb) if rb == is_and => lc, // and-true / or-false → p (neutral, keeps p)
+                Core::ConstBool(_) if is_trap_free(db, lhs) => Core::ConstBool(!is_and), // absorbing
+                _ => Core::And { lhs, rhs, is_and },
+            },
         },
-        // Negation: fold a constant, else `Core::Not` (emitted `i32.eqz`).
+        // Negation: fold a constant, `(not (not x))` → x (double negation), else `Core::Not` (i32.eqz).
         Resolved::Not { operand } => match core_of(db, operand) {
             Core::ConstBool(b) => Core::ConstBool(!b),
+            // Double negation: the operand is itself a `Not` — the two cancel, so the result is the INNER
+            // operand's core. `not` is total (no trap, no effect), so cancelling the pair changes nothing.
+            Core::Not { operand: inner } => core_of(db, inner),
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Not { operand },
         },
