@@ -400,6 +400,27 @@ pub enum Core {
     /// constant. (Only present when a function body is lowered STANDALONE — i.e. it is emitted as a real
     /// wasm function, not inlined-and-folded at a constant call site.)
     Param { binder: StructId },
+    /// A RUNTIME CLOSURE VALUE — a flat closure built on the value heap. The backend builds a product
+    /// cell (the same tagless `arr` cell a tuple uses) whose slot 0 is `box-int(code)` — the funcref
+    /// TABLE slot naming the lambda-lifted function's code — and whose remaining slots are the
+    /// `captures` (the lambda's free variables, captured BY VALUE, each an ordinary runtime handle).
+    /// Present only when a lambda must survive to run time (it could not be β-reduced away — it is
+    /// passed as an argument to a RECURSIVE function, so the call cannot inline). A recursive closure's
+    /// `code` is a STATIC table slot, never a heap pointer into itself, so the heap stays acyclic
+    /// (`memory-and-resource-model.md` §The Value Heap Is Acyclic). `DESIGN-runtime-closures-rcdzc.md`
+    /// §3. (This increment builds the EMPTY-capture combinator; a non-empty capture set is a later
+    /// increment — a lambda with free variables declines the lift.)
+    Closure {
+        code: usize,
+        captures: Vec<StructId>,
+    },
+    /// Apply a RUNTIME CLOSURE VALUE to one argument via `call_indirect` through the funcref table. The
+    /// `closure` operand is the closure cell (slot 0 holds the table slot the `call_indirect` reads); the
+    /// lifted function is invoked with `(env = the closure cell, arg)`. Present only when the applied head
+    /// is a runtime function value — a function-typed PARAMETER `g` applied inside a (recursive) body.
+    /// Single-arity (`core-semantics.md` §Functions Are Single-Arity). `DESIGN-runtime-closures-rcdzc.md`
+    /// §3.
+    CallClosure { closure: StructId, arg: StructId },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

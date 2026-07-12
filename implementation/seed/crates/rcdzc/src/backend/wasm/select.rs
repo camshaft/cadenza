@@ -217,6 +217,16 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // `expect` reads the scrutinee's payload (a borrow, like `SumPayload`) — a `LocalRef` reached
         // through it does not escape (the payload is unboxed/used in place, not moved out).
         Core::SumExpect { scrutinee, .. } => binding_escapes(db, scrutinee, binder, true),
+        // A closure CONSUMES each captured value (it becomes part of the closure cell); a closure
+        // application consumes both the closure value and its argument. (This increment's no-capture
+        // closure has an empty `captures`, so it references no binding — but the arm is written for the
+        // general case so a captured binding is correctly seen as escaping when captures land.)
+        Core::Closure { captures, .. } => captures
+            .iter()
+            .any(|&c| binding_escapes(db, c, binder, false)),
+        Core::CallClosure { closure, arg } => {
+            binding_escapes(db, closure, binder, false) || binding_escapes(db, arg, binder, false)
+        }
         // Leaves reference no binding.
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -599,6 +609,18 @@ pub fn collect_used_ops(
                 out.insert(op);
             }
             collect_used_ops(db, scrutinee, out);
+        }
+        // A closure VALUE: a no-capture closure is a plain table-slot i32 constant (no heap op). Its
+        // captured values (when captures land) would need `arr-alloc`/`arr-set` — added then. A closure
+        // APPLICATION uses `call_indirect` (a core instruction, not a runtime import), plus its operands.
+        Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_used_ops(db, c, out);
+            }
+        }
+        Core::CallClosure { closure, arg } => {
+            collect_used_ops(db, closure, out);
+            collect_used_ops(db, arg, out);
         }
         // Leaves and references emit no runtime op. (A constant string CROSSES only via the escape
         // path's baked bytes — it emits no in-body op; a runtime string handle op arrives later.)
@@ -2615,6 +2637,15 @@ fn emit(
             out.push(Lir::End);
             Ok(())
         }
+        // A runtime CLOSURE VALUE and its application — emitted below (`emit_closure` /
+        // `emit_call_closure`). Placeholder declines until wired; kept as explicit arms so the match
+        // stays exhaustive.
+        Core::Closure { .. } => Err(Reject::decline(
+            "a runtime closure value is not yet emitted (call_indirect path in progress)",
+        )),
+        Core::CallClosure { .. } => Err(Reject::decline(
+            "a runtime closure application is not yet emitted (call_indirect path in progress)",
+        )),
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
@@ -4613,8 +4644,15 @@ fn emit_shift(
             OperandSrc::Slot(s)
         }
     };
-    let sr = claim(high);
-    scratch_ty.insert(sr, m.slot());
+    // `$r` (the result scratch) is needed ONLY by `<<`, which reads it back for the overflow round-trip
+    // + range-check. `>>` leaves its exact result on the stack, so it claims no `$r` slot (no dead local).
+    let sr = if matches!(op, Prim::Shl) {
+        let s = claim(high);
+        scratch_ty.insert(s, m.slot());
+        s
+    } else {
+        0 // unused for `>>` — the result stays on the stack.
+    };
     let operand_base = next_scratch;
     // Stash a non-reusable value/count into its scratch slot (a nested op writes it directly).
     if sa_src.is_none()
@@ -4660,7 +4698,11 @@ fn emit_shift(
         out.push(m.ge_u());
         out.push(Lir::IfUnreachableEnd);
     }
-    // push$a push$b <machine-shift> local.set $r
+    // push$a push$b <machine-shift>. `>>` (`shr`) is EXACT — its result only shrinks in magnitude, so it
+    // needs NO overflow round-trip and NO range-check (a right-shift of an in-range value stays in
+    // range). So `>>` leaves the result directly on the stack: no `$r` store, no `$r` local — the `set
+    // $r ; get $r` round-trip the old code emitted for BOTH shifts was pure dead motion for `>>`. Only
+    // `<<` needs `$r`: it is read back for the overflow round-trip check and the narrow range-check.
     sa.push(out);
     sb.push(out);
     out.push(match op {
@@ -4668,8 +4710,8 @@ fn emit_shift(
         Prim::Shr => m.shr(),
         _ => return Err(Reject::decline("not a shift op")),
     });
-    out.push(Lir::LocalSet(sr));
     if matches!(op, Prim::Shl) {
+        out.push(Lir::LocalSet(sr));
         // Round-trip: shifting `$r` back right by `$b` must recover `$a`; else the shift dropped bits out
         // of the SLOT (overflow). The inverse shift matches signedness so the round-trip is exact.
         out.push(Lir::LocalGet(sr));
@@ -4680,8 +4722,9 @@ fn emit_shift(
         out.push(Lir::IfUnreachableEnd);
         // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
         emit_range_check(m, sr, ReachableBounds::Both, out);
+        out.push(Lir::LocalGet(sr));
     }
-    out.push(Lir::LocalGet(sr));
+    // `>>`: the result is already on the stack — nothing more to do.
     Ok(())
 }
 
@@ -5134,6 +5177,32 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::I64Shl)),
             "a non-power-of-two multiply does not become a shift"
+        );
+    }
+
+    #[test]
+    fn a_right_shift_leaves_its_result_on_the_stack_without_a_dead_store() {
+        // (def (f (: a Int64)) (>> a 3)) — a `>>` is EXACT (its result only shrinks), so it needs no
+        // overflow round-trip and no range-check. The result stays on the stack: just `get a ; const 3 ;
+        // shr_s`, with NO `$r` store and NO declared local. (The old code routed EVERY shift through a
+        // `set $r ; get $r` round-trip — dead motion + a dead local for `>>`, since only `<<` reads `$r`
+        // back for its overflow check.)
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (>> a 3)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![Lir::LocalGet(0), Lir::ConstI64(3), Lir::I64ShrS],
+            "a constant-count `>>` is exactly the machine shift — no dead round-trip"
+        );
+        assert!(
+            f.declared.is_empty(),
+            "a `>>` claims no result scratch local, got: {:?}",
+            f.declared
         );
     }
 

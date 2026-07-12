@@ -75,6 +75,17 @@
   (input  (Bytes.len (String.to-bytes "café")))
   (output (: 5 Int64)))
 
+(case "string to bytes produces the exact UTF-8 byte values, not just the right count"
+  (doc    "String.to-bytes must produce the exact UTF-8 BYTES, not merely the right byte count — a
+           length-only check would pass a Latin-1 encoding or a wrong continuation byte. `é` (U+00E9)
+           encodes as the two bytes 0xC3 0xA9 = 195 169, and the 4-byte astral `😀` (U+1F600) as 0xF0 0x9F
+           0x98 0x80 = 240 159 152 128. `(String.to-bytes \"é😀\")` therefore equals `(Bytes.of (list 195
+           169 240 159 152 128))` — the 2-byte then 4-byte sequences concatenated. Pins the byte-level
+           correctness of the UTF-8 encoder across the 2-byte and 4-byte forms (the boundaries a naive
+           encoder gets wrong), the value companion of the byte-count cases above.")
+  (input  (= (String.to-bytes "é😀") (Bytes.of (list 195 169 240 159 152 128))))
+  (output (: true Bool)))
+
 (case "string equality"
   (input  (= "hello" "hello"))
   (output (: true Bool)))
