@@ -32,17 +32,19 @@ use crate::diag::Reject;
 use crate::resolved::{Prim, Symbol};
 use std::collections::BTreeMap;
 
-/// A match-arm PROBE — the test that decides whether an arm is taken (Stage 3a: scalar patterns). A
+/// A match-arm PROBE — the test that decides whether an arm is taken, over a SCALAR scrutinee. A
 /// literal probe compares the scrutinee against a constant; the wildcard always matches (the arm is
-/// the unconditional tail). Carried as DATA (not a synthesized comparison node), so lowering a `match`
-/// builds no AST. Binder/sum/tuple probes extend this enum in later increments.
+/// the unconditional tail). A bare binder is ALSO a `Wild` probe — the binding is a scope concern
+/// (`resolve` points a body reference at the scrutinee), so it needs no probe variant. Carried as DATA
+/// (not a synthesized comparison node), so lowering a `match` builds no AST. A sum/tuple/record
+/// scrutinee walks the value heap rather than probing a scalar, so it does not extend this enum.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Probe {
     /// `scrutinee == this integer` — an integer-literal pattern.
     Int(IntValue),
     /// `scrutinee == this boolean` — a boolean-literal pattern.
     Bool(bool),
-    /// The wildcard `_` (or a bare binder in a later increment) — always matches.
+    /// The wildcard `_` OR a bare binder — always matches.
     Wild,
 }
 
@@ -57,10 +59,10 @@ pub enum Core {
     /// The unit value.
     Unit,
     /// A record value — a fixed set of named fields, each field's value referenced by its AST
-    /// occurrence. Stage 1 FOLDS a record at a field read (`core_of` of a member projects the field's
-    /// core directly), so a `Record` that SURVIVES to selection is one used as a runtime value (e.g.
-    /// returned) — which needs the value heap and therefore DECLINES for now. Carrying the variant
-    /// lets member-access fold read the field set.
+    /// occurrence. A field read FOLDS (`core_of` of a member projects the field's core directly), so a
+    /// `Record` that SURVIVES to selection is one used as a runtime value (e.g. returned) — the backend
+    /// builds it on the value heap (`arr-alloc` + per-field `box-*`/`arr-set`, fields in canonical
+    /// order). Carrying the variant lets member-access fold read the field set.
     Record { fields: BTreeMap<Symbol, StructId> },
     /// A TUPLE value — a fixed-arity positional product, each element referenced by its AST occurrence.
     /// Present only when the tuple SURVIVES to selection as a RUNTIME value (constructed from runtime
