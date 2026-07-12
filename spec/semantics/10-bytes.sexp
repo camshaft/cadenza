@@ -65,29 +65,30 @@
   (input  (Bytes.at (Bytes.of (list 7 8 9)) 1))
   (output (: (Some 8) (Option Int64))))
 
-(case "constructing a byte sequence with a value out of range traps"
-  (doc    "Witnesses that a byte outside 0..=255 has no defined result, so the program
-           traps rather than producing an unspecified value (core-semantics.md #Partial
-           Operations Have A Defined Outcome). 256 is out of range.")
+(case "constructing a byte sequence with a value out of range is a type error"
+  (doc    "A byte IS a UInt8 (collections-and-text.md #A Byte Is A UInt8), so `Bytes.of` takes a `(List
+           UInt8)`: a byte outside 0..=255 has NO UInt8 value, so `256` is rejected at COMPILE TIME as an
+           out-of-range width literal (CDZ0302) rather than trapping at run time. This is stronger than a
+           runtime trap — the ill-formed byte cannot even be constructed. To turn a wider integer into a
+           byte, TRUNCATE deliberately with `(UInt8.wrap n)` (total, never traps); a bare `256` is not a
+           truncation request, it is an ill-typed literal.")
   (needs  bytes)
   (input  (Bytes.of (list 0 256)))
-  (trap   "byte value out of range"))
+  (error  CDZ0302))
 
-; The out-of-range case above tests the HIGH end (256 > 255); a byte value is in 0..=255, so the LOW
-; end matters too — a NEGATIVE value has no byte representation and MUST trap, not wrap. A construction
-; that checks only `> 255` and then narrows with a truncating `as u8` (or masks the low 8 bits) would
-; silently turn -1 into 255 — producing an unspecified value the #Partial Operations Have A Defined
-; Outcome requirement forbids. This pins the lower bound of the byte range, the companion of the 256 case.
+; The out-of-range case above tests the HIGH end (256 > 255); a byte value is a UInt8, bounded on BOTH
+; sides, so the LOW end matters too — a NEGATIVE literal is not a UInt8 either and is rejected the same
+; way at compile time. Neither is silently masked into range: truncation into a byte is the explicit
+; `UInt8.wrap`, never an implicit narrowing of an out-of-range literal.
 
-(case "constructing a byte sequence with a negative value traps"
-  (doc    "`(Bytes.of (list -1))` gives a byte value below 0 — outside 0..=255, with no byte
-           representation — so it MUST trap (core-semantics.md #Partial Operations Have A Defined
-           Outcome), NOT wrap to 255 via a truncating `as u8`. The low-end companion of the `256`
-           out-of-range case: a byte range is bounded on BOTH sides, so both a too-large and a negative
-           value are rejected, never masked into range.")
+(case "constructing a byte sequence with a negative value is a type error"
+  (doc    "`(Bytes.of (list -1))` gives a byte value below 0 — no UInt8 has value -1 — so it is rejected
+           at COMPILE TIME (CDZ0302), the low-end companion of the `256` case. A byte is a UInt8; a UInt8
+           literal is bounded on BOTH sides. NOT wrapped to 255 via a truncating `as u8`: to truncate a
+           wider value into a byte you write `(UInt8.wrap -1)` = 255 explicitly.")
   (needs  bytes)
   (input  (Bytes.of (list -1)))
-  (trap   "byte value out of range"))
+  (error  CDZ0302))
 
 (case "indexing a byte sequence out of bounds yields None"
   (doc    "Witnesses fallible Bytes indexing on the absent side, mirroring List.at
@@ -290,17 +291,19 @@
             (def (main)  (mk 65)) (export main)))
   (output (: b"ABC" Bytes)))
 
-(case "constructing a byte sequence with a runtime value out of range traps"
-  (doc    "The runtime companion of the const `256`/`-1` out-of-range cases: when the byte value is a
-           runtime parameter, the range check `0..=255` must still fire at run time — a byte outside the
-           range has no defined result, so the program traps (core-semantics.md #Partial Operations Have
-           A Defined Outcome) rather than truncating `256` to `0` via a wrapping `as u8`. Pins that the
-           bound is enforced on the value, not only on a compile-time literal.")
+(case "a runtime wider integer is truncated into a byte by wrap"
+  (doc    "The runtime companion of the byte-construction cases: `Bytes.of` takes a `(List UInt8)`, so a
+           byte built from a WIDER runtime integer is truncated with `(UInt8.wrap n)` — total, keeping the
+           low 8 bits (numeric-model.md #wrap Never Traps). `(UInt8.wrap 258)` = 2 (258 mod 256), so
+           `(Bytes.of (list (UInt8.wrap 258)))` is the one-byte `b\"\\x02\"`, whose length is 1. Pins that
+           the byte bound is carried by the UInt8 TYPE and that crossing into it from a wider value is the
+           explicit total `wrap`, not a runtime range trap — there is no out-of-range byte to trap on,
+           because a UInt8 is in range by construction. `Bytes.len` reads the result to a scalar (1).")
   (needs  bytes)
   (input  (do
-            (def (mk n) (Bytes.of (list n)))
-            (def (main)  (mk 256)) (export main)))
-  (trap   "byte value out of range"))
+            (def (mk n) (Bytes.len (Bytes.of (list (UInt8.wrap n)))))
+            (def (main)  (mk 258)) (export main)))
+  (output (: 1 Int64)))
 
 (case "the length of a runtime byte sequence is its byte count"
   (doc    "`Bytes.len` of a byte sequence carrying a runtime byte: the seed folds a runtime Bytes value
@@ -346,7 +349,8 @@
            encoder that produces every section length, vector count, and u32 operand in a wasm module.
            It composes the primitives the numeric cases pin individually — `(< n 128)` (terminator
            test), `(& n 127)` (low 7 bits), `(| … 128)` (continuation bit), `(>> n 7)` (next group),
-           `Int.to-byte`, and `Bytes.concat` — into a recursion whose depth is the number of output
+           `UInt8.wrap` (truncate the composed 7-bit-plus-continuation value to a byte), and `Bytes.concat`
+           — into a recursion whose depth is the number of output
            bytes. `(uleb 624485)` is the canonical multibyte value from the LEB128 spec: 624485 =
            0b10011_0001110_1100101, so the little-endian 7-bit groups are 0x65, 0x0E, 0x26, and with
            the continuation bit set on all but the last the bytes are `E5 8E 26` = `b\"\\xe5\\x8e&\"`
@@ -358,8 +362,8 @@
   (input  (do
             (def (uleb n)
               (if (< n 128)
-                  (Bytes.of (list (Int.to-byte n)))
-                  (Bytes.concat (Bytes.of (list (Int.to-byte (| (& n 127) 128)))) (uleb (>> n 7)))))
+                  (Bytes.of (list (UInt8.wrap n)))
+                  (Bytes.concat (Bytes.of (list (UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
             (def (main) (uleb 624485)) (export main)))
   (output (: b"\xe5\x8e&" Bytes)))
 
@@ -372,8 +376,8 @@
   (input  (do
             (def (uleb n)
               (if (< n 128)
-                  (Bytes.of (list (Int.to-byte n)))
-                  (Bytes.concat (Bytes.of (list (Int.to-byte (| (& n 127) 128)))) (uleb (>> n 7)))))
+                  (Bytes.of (list (UInt8.wrap n)))
+                  (Bytes.concat (Bytes.of (list (UInt8.wrap (| (& n 127) 128)))) (uleb (>> n 7)))))
             (def (main) (uleb 100)) (export main)))
   (output (: b"d" Bytes)))
 
@@ -419,7 +423,7 @@
             (type BL BNil (BCons (Tuple Bytes BL)))
             (def (build n) (if (< n 1)
                                (BL.BNil ())
-                               (BL.BCons (tuple (Bytes.of (list (Int.to-byte (+ 64 n)))) (build (- n 1))))))
+                               (BL.BCons (tuple (Bytes.of (list (UInt8.wrap (+ 64 n)))) (build (- n 1))))))
             (def (cat-all xs) (match xs
                                 ((BL.BNil _)            (Bytes.of (list)))
                                 ((BL.BCons (tuple h t)) (Bytes.concat h (cat-all t)))))

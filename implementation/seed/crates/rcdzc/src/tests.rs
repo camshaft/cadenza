@@ -3663,23 +3663,25 @@ mod match_engine {
     }
 
     #[test]
-    fn bytes_of_out_of_range_element_is_a_compile_time_trap() {
-        // A byte must be 0..=255 (collections-and-text.md). A constant element out of range is a provable
-        // trap → CDZ0304 (the build fails, matching the runtime `bytes-set` guard): 256 is too large, -1 is
-        // negative. (Used via `len` so `main` returns a scalar — a bytes result's boundary form is B2.)
+    fn bytes_of_out_of_range_element_is_a_width_error() {
+        // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
+        // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
+        // UInt8 model the ill-typed byte cannot be constructed. 256 is too large, -1 negative. To truncate
+        // a wider value into a byte, the program writes `(UInt8.wrap n)` explicitly (total, never traps).
+        // (Used via `len` so `main` returns a scalar.)
         assert_eq!(
             reject_code(
                 "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0304")
+            Some("CDZ0302")
         );
         assert_eq!(
             reject_code(
                 "(module m (def (main) ((. Bytes len) ((. Bytes of) (list -1)))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0304")
+            Some("CDZ0302")
         );
     }
 

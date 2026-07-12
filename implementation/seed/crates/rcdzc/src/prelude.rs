@@ -346,20 +346,33 @@ fn bytes_compact_type(ast: &mut Arenas) -> StructId {
     arrow_type(ast, b_in, b_out) // (-> Bytes Bytes)
 }
 
-/// The type `(-> (List Int64) Bytes)` for `Bytes.of` — a monomorphic arrow (no type parameter), taking
-/// a list of `Int64` and returning `Bytes`. The `Bytes` result is the `(intrinsic bytes-ty)` type-value
-/// DIRECTLY, not a bare `Bytes` NAME: this arrow is a field INSIDE the `Bytes` module record, so a name
-/// `Bytes` would try to resolve in scope (a forward reference to the module being built) and reduce
-/// wrong — the intrinsic is the ground type-value with no scope lookup. Reduced to the scheme `(List
-/// Int64) → Bytes` by `infer` (`typeval_of` → `Ty::Fn(List Int64, Bytes)`).
+/// The type `(-> (List UInt8) Bytes)` for `Bytes.of` — a monomorphic arrow taking a list of `UInt8`
+/// and returning `Bytes`, TOTAL (never traps, no Option): a `UInt8` element is in `0..=255` by its TYPE,
+/// so a byte sequence is well-formed by construction (`collections-and-text.md` §A Byte Is A UInt8). To
+/// build a byte from a wider integer, TRUNCATE with `(UInt8.wrap n)` (total) at the call site — the LEB128
+/// encoder's `(UInt8.wrap (| (& n 127) 128))` — rather than validating inside `Bytes.of`. So an
+/// out-of-range LITERAL `(Bytes.of (list 256))` is a compile-time WIDTH reject (256 is not a UInt8), not a
+/// runtime trap. The element type is `(UInt N)` where `N=8` — built via the same `(UInt 8)` type
+/// constructor a `UInt8` annotation reduces to; `Bytes`/result is `(intrinsic bytes-ty)` directly (a bare
+/// name would mis-resolve inside the module being built). Reduced to `(List UInt8) → Bytes` by `infer`.
 fn bytes_of_type(ast: &mut Arenas) -> StructId {
-    let list_int64 = {
+    let list_u8 = {
         let list = push_atom(ast, Leaf::Name("List".to_string()));
-        let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
-        push_list(ast, vec![list, int64])
+        // `(UInt 8)` — the UInt8 type, applied via the `UInt` type constructor (the same reduction a
+        // `UInt8` annotation takes). A `List` element of this type makes each byte a UInt8.
+        let uint = push_atom(ast, Leaf::Name("UInt".to_string()));
+        let eight = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(8),
+                radix: Radix::Dec,
+            },
+        );
+        let u8_ty = push_list(ast, vec![uint, eight]);
+        push_list(ast, vec![list, u8_ty])
     };
     let bytes = intrinsic_node(ast, "bytes-ty");
-    arrow_type(ast, list_int64, bytes)
+    arrow_type(ast, list_u8, bytes)
 }
 
 /// The type `(-> Bytes Int64)` for `Bytes.len` — a monomorphic arrow taking a `Bytes` and returning its

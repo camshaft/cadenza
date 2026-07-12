@@ -3022,22 +3022,26 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
             "Bytes.of of a runtime list is not yet supported (only a visible list literal)",
         ));
     };
-    // Range-check each element NOW: it must fold to a constant integer in `0..=255`.
+    // Each element is a `UInt8` (the `Bytes.of : (List UInt8) → Bytes` scheme). A byte outside `0..=255`
+    // is not a UInt8 — reject it as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap (CDZ0304):
+    // under the UInt8 model an ill-typed byte cannot be constructed at all, and to truncate a wider value
+    // into a byte the program writes `(UInt8.wrap n)` explicitly. (The list-element width-check does not
+    // yet flow the UInt8 bound through `(list …)` unification on its own, so this is where the bound is
+    // enforced — with the width code, matching the type story.) A non-constant element declines (runtime
+    // construction is a later increment).
     for &e in &elems {
         match core_of(db, e) {
             Core::Poison(r) => return Core::Poison(r),
             Core::ConstInt(v) => match v.to_i64() {
                 Some(n) if (0..=255).contains(&n) => {}
                 _ => {
-                    trace!(target: "rcdzc::fold", node = id.0, "Bytes.of element out of 0..=255 → CDZ0304 (fails build)");
+                    trace!(target: "rcdzc::fold", node = id.0, "Bytes.of element is not a UInt8 → CDZ0302");
                     return Core::Poison(Reject::coded(
-                        Code::ConstTrap,
-                        "a Bytes.of element is out of range (a byte must be 0..=255)",
+                        Code::IntOutOfRange,
+                        "a byte must be a UInt8 (0..=255); truncate a wider value with UInt8.wrap",
                     ));
                 }
             },
-            // A non-constant element in a visible list literal (e.g. a runtime operand): the bytes
-            // cannot be baked at compile time yet. Decline — runtime construction is a later increment.
             _ => {
                 return Core::Poison(Reject::decline(
                     "Bytes.of with a non-constant element is not yet supported",
@@ -3045,7 +3049,7 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
             }
         }
     }
-    trace!(target: "rcdzc::lower", node = id.0, len = elems.len(), "Bytes.of → Core::BytesOf (constant byte literal)");
+    trace!(target: "rcdzc::lower", node = id.0, len = elems.len(), "Bytes.of → Core::BytesOf (constant UInt8 literal)");
     Core::BytesOf { elems }
 }
 

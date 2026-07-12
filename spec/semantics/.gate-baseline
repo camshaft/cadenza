@@ -273,6 +273,7 @@ pass	a runtime truncation to an unsigned byte keeps the low bits, total on negat
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
+pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
@@ -409,6 +410,8 @@ pass	concatenating two runtime strings and measuring the result
 pass	concatenating with the empty list on the right is identity
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
+pass	constructing a byte sequence with a negative value is a type error
+pass	constructing a byte sequence with a value out of range is a type error
 pass	constructor pattern binders capture the payload uniformly
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
@@ -881,9 +884,6 @@ todo	concatenating two byte sequences appends their bytes in order
 todo	concatenating two tuples appends their elements
 todo	concatenation is associative by content
 todo	constructing a bit-field from a value wider than its width traps
-todo	constructing a byte sequence with a negative value traps
-todo	constructing a byte sequence with a runtime value out of range traps
-todo	constructing a byte sequence with a value out of range traps
 todo	constructing a rational with a zero denominator traps
 todo	constructing a sized bytes segment whose value length differs from the size traps
 todo	constructing a u8 segment from a value above its range traps
