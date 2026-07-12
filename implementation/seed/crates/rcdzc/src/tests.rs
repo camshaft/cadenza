@@ -4565,6 +4565,32 @@ mod stage1 {
                 other.map(|t| t.render_name())
             ),
         }
+        // NESTED: `(Option (Option Int64))` reduces to a `Ty::Sum` whose arg is ITSELF a `Ty::Sum`.
+        // `typeval_of` on the SumCtor application returns the `Ty` DIRECTLY (no arena encode→decode
+        // round-trip — that round-trip made a deeply-nested generic annotation O(N²); see
+        // `eval::reduce_sum_ctor`). The nested structure and rendering must survive that direct path.
+        let option_rec2 = db.type_decl_by_name("Option").expect("Option bound");
+        let inner = db.push_list(vec![option_rec2, int64]); // (Option Int64)
+        let option_rec3 = db.type_decl_by_name("Option").expect("Option bound");
+        let outer = db.push_list(vec![option_rec3, inner]); // (Option (Option Int64))
+        match typeval_of(&mut db, outer) {
+            Some(t @ Ty::Sum { .. }) => {
+                assert_eq!(
+                    t.render_name(),
+                    "(Option (Option Int64))",
+                    "nested generic sum resolves through the direct (round-trip-free) path"
+                );
+                let Ty::Sum { args, .. } = &t else { unreachable!() };
+                assert!(
+                    matches!(&args[0], Ty::Sum { .. }),
+                    "the outer arg is itself a Ty::Sum"
+                );
+            }
+            other => panic!(
+                "expected (Option (Option Int64)) to reduce to a nested Ty::Sum, got {:?}",
+                other.map(|t| t.render_name())
+            ),
+        }
     }
 
     #[test]

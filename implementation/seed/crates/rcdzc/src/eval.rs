@@ -1053,14 +1053,19 @@ pub fn reduce_ctor(
     }
 }
 
-/// Reduce a GENERIC SUM type-constructor application `(Option Int64)` to its built sum type-value node
-/// `(typeval (Sum NAME <decl> arg…))`. `head` is the applied sum record (`Option`), carrying the owning
-/// declaration on its `(meta sum-decl)` channel; `args` are the type arguments, each reduced to a `Ty`.
-/// The built `Ty::Sum { decl, name, args }` is encoded back to an arena `(typeval …)` node so it flows
-/// through the ordinary type path. `None` if the head has no `(meta sum-decl)` (not a generic sum), an
-/// arg is not a type, or the declaration is unknown. (The analogue of `reduce_ctor` for `TupleCtor`, but
-/// keyed on the head's metadata rather than the prim alone — one prim serves every generic sum.)
-pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option<StructId> {
+/// Reduce a GENERIC SUM type-constructor application `(Option Int64)` to its `Ty::Sum { decl, name,
+/// args }` DIRECTLY. `head` is the applied sum record (`Option`), carrying the owning declaration on
+/// its `(meta sum-decl)` channel; `args` are the type arguments, each reduced to a `Ty`. `None` if the
+/// head has no `(meta sum-decl)` (not a generic sum), an arg is not a type, or the declaration is
+/// unknown. (The analogue of `reduce_ctor` for `TupleCtor`, but keyed on the head's metadata rather
+/// than the prim alone — one prim serves every generic sum.)
+///
+/// ⚡ Returns the `Ty` value, NOT an encoded `(typeval …)` arena node: its one caller (`typeval_of`'s
+/// `SumCtor` arm) wants the `Ty` and previously got it by `encode_typeval`-ing this result then
+/// `typeval_of`-DECODING it right back — a full encode→decode arena round-trip PER LEVEL, so a
+/// deeply-nested `(Option (Option … Int64))` annotation was O(N²) in arena node churn (measured: 400
+/// deep = 179ms, 800 = 697ms, pure quadratic). Handing back the `Ty` skips both halves.
+pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option<crate::ty::Ty> {
     let decl_field = project_meta(db, head, "sum-decl")?;
     let decl = match resolved_of(db, decl_field) {
         Resolved::Int(v) => crate::ast::StructId(v.to_i64().and_then(|n| u32::try_from(n).ok())?),
@@ -1077,7 +1082,7 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
         args: arg_tys,
     };
     trace!(target: "rcdzc::eval", ty = %sum.render_name(), "ctor (Sum): built generic sum type-value");
-    Some(encode_typeval(db, &sum))
+    Some(sum)
 }
 
 /// The type-VALUE the node at `id` reduces to, if any — a ground type (`Bool`/`Unit` via `(meta t)`),
@@ -1115,9 +1120,10 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
             }
             // A GENERIC SUM application `(Option Int64)` — build `Ty::Sum{decl,args}` from the head's
             // `(meta sum-decl)` + the applied type args (keyed on the head's metadata, not the prim).
+            // `reduce_sum_ctor` returns the `Ty` directly (no arena encode→decode round-trip — that was
+            // the O(N²) on deeply-nested generic annotations).
             if prim == Prim::SumCtor {
-                let built = reduce_sum_ctor(db, head, &args)?;
-                return typeval_of(db, built);
+                return reduce_sum_ctor(db, head, &args);
             }
             let built = reduce_ctor(db, prim, id, &args).ok()?;
             typeval_of(db, built)
