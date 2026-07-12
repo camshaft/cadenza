@@ -380,7 +380,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         vec![0],
         1,
     );
-    let ours = core_module(&[func], &[OPS.arr_alloc], &layout).expect("core module");
+    let ours = core_module(&[func], &[OPS.arr_alloc], &layout, None).expect("core module");
 
     // The oracle: a core module importing `heap."arr-alloc" : (i32) -> i32`, then one defined
     // `() -> i64` func (function index 1) exported as `main`, returning 42.
@@ -9640,5 +9640,221 @@ mod sidecar_driven {
         );
         // No component: the request list could not be understood, so nothing was driven.
         assert!(out.artifact("component").is_none());
+    }
+}
+
+/// Debug information (D0 of `DESIGN-debug-info-rcdzc.md`) — the wasm `name` custom section, enabled by
+/// a Mode-E `EMIT_WASM_DEBUG` sidecar request (`Target::WasmDebug`). Two load-bearing properties: the
+/// `name` section actually carries the source function names (readable frames), and it is INERT +
+/// STRIPPABLE — the debug component stripped of custom sections is byte-identical to the plain one (the
+/// §5 reproducibility anchor). The strip is done with `wasm-tools` (the same section-remover the spec
+/// mandates); the test skips gracefully if `wasm-tools` is not on PATH.
+#[cfg(test)]
+mod debug_info {
+    use crate::abi::Artifact;
+    use crate::backend::Target;
+    use crate::compile::compile;
+    use crate::sidecar::{self, Request};
+    use crate::testkit::parse;
+
+    /// Compile `src` to a `component` under `target`, returning the component bytes.
+    fn component_of(src: &str, target: Target) -> Vec<u8> {
+        let out = compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[target],
+        );
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        out.artifact("component")
+            .expect("a component artifact")
+            .to_vec()
+    }
+
+    /// Extract the embedded core module's `name`-section function names from a component's bytes, using
+    /// `wasmparser` (a dev-only validator, never in the compile path). Returns `(module_name,
+    /// [(func_index, name)])`; `None` if there is no `name` section.
+    fn name_section_of(component: &[u8]) -> Option<(Option<String>, Vec<(u32, String)>)> {
+        use wasmparser::{Chunk, Parser, Payload};
+        // Find the embedded core module: the component is a wrapper; a `ModuleSection` payload gives the
+        // byte range of the core module, which itself carries the `name` custom section.
+        let mut parser = Parser::new(0);
+        let mut offset = 0usize;
+        let mut core: Option<&[u8]> = None;
+        let mut buf = component;
+        loop {
+            match parser.parse(buf, true).expect("parse component") {
+                Chunk::NeedMoreData(_) => break,
+                Chunk::Parsed { consumed, payload } => {
+                    if let Payload::ModuleSection {
+                        unchecked_range, ..
+                    } = &payload
+                    {
+                        core = Some(&component[unchecked_range.start..unchecked_range.end]);
+                        break;
+                    }
+                    offset += consumed;
+                    buf = &component[offset..];
+                    if let Payload::End(_) = payload {
+                        break;
+                    }
+                }
+            }
+        }
+        let core = core?;
+        // Now parse the core module for its `name` custom section.
+        let mut module_name = None;
+        let mut func_names = Vec::new();
+        let mut found = false;
+        for payload in Parser::new(0).parse_all(core) {
+            if let Payload::CustomSection(reader) = payload.expect("parse core") {
+                if reader.name() == "name" {
+                    found = true;
+                    let name_reader = wasmparser::NameSectionReader::new(
+                        wasmparser::BinaryReader::new(reader.data(), reader.data_offset()),
+                    );
+                    for subsection in name_reader {
+                        match subsection.expect("name subsection") {
+                            wasmparser::Name::Module { name, .. } => {
+                                module_name = Some(name.to_string())
+                            }
+                            wasmparser::Name::Function(map) => {
+                                for naming in map {
+                                    let naming = naming.expect("naming");
+                                    func_names.push((naming.index, naming.name.to_string()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        found.then_some((module_name, func_names))
+    }
+
+    #[test]
+    fn a_plain_component_carries_no_name_section() {
+        // Baseline: without a debug request, there is no `name` section — today's exact bytes.
+        let src = "(module m (def (main) 42) (export main))";
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            name_section_of(&plain).is_none(),
+            "a plain component must carry no `name` section (byte-identical to today)"
+        );
+    }
+
+    #[test]
+    fn a_debug_component_names_its_functions() {
+        // A program with an exported `main` calling a RECURSIVE internal callee `countdown`. The callee
+        // is recursive so it cannot be inlined away — it survives as a real emitted function, so the
+        // `name` section names both `main` and `countdown` (a non-recursive helper would β-reduce into
+        // its caller and no longer be a function to name). The module name is the first export, `main`.
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let (module_name, func_names) =
+            name_section_of(&debug).expect("a debug component carries a `name` section");
+        assert_eq!(module_name.as_deref(), Some("main"));
+        // The source names appear in the function-name map (order/index is emission-determined; assert
+        // membership so the test is robust to which index each lands at).
+        let names: Vec<&str> = func_names.iter().map(|(_, n)| n.as_str()).collect();
+        assert!(names.contains(&"main"), "names = {names:?}");
+        assert!(names.contains(&"countdown"), "names = {names:?}");
+    }
+
+    #[test]
+    fn a_debug_component_only_adds_custom_sections() {
+        // The debug component must differ from the plain one ONLY by added custom sections — i.e. the
+        // debug bytes are strictly longer (the `name` section is appended, moving no executed byte).
+        let src = "(module m (def (main) 42) (export main))";
+        let plain = component_of(src, Target::Wasm);
+        let debug = component_of(src, Target::WasmDebug);
+        assert!(
+            debug.len() > plain.len(),
+            "the debug component must be larger (it carries an extra `name` section): plain {} vs debug {}",
+            plain.len(),
+            debug.len()
+        );
+        assert!(
+            name_section_of(&debug).is_some() && name_section_of(&plain).is_none(),
+            "only the debug component carries the `name` section"
+        );
+    }
+
+    #[test]
+    fn strip_recovers_the_undecorated_component_byte_for_byte() {
+        // The reproducibility anchor (§5): `strip(emit(debug)) == emit(no-debug)`, byte-for-byte, where
+        // `strip` is a SECTION REMOVER (`wasm-tools strip`), never a re-serializer. Proves inertness,
+        // strippability, and reproducibility in one cheap check. Skips if `wasm-tools` is not installed.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m (def (main) 42) (export main))";
+        let plain = component_of(src, Target::Wasm);
+        let debug = component_of(src, Target::WasmDebug);
+
+        // Write the debug component to a temp file and strip its custom sections.
+        let dir = std::env::temp_dir();
+        let in_path = dir.join(format!("cdz-dbg-{}.wasm", std::process::id()));
+        let out_path = dir.join(format!("cdz-dbg-{}-stripped.wasm", std::process::id()));
+        std::fs::File::create(&in_path)
+            .and_then(|mut f| f.write_all(&debug))
+            .expect("write debug component");
+
+        // `wasm-tools strip --all` removes every custom section (including `name`).
+        let status = Command::new("wasm-tools")
+            .args(["strip", "--all"])
+            .arg(&in_path)
+            .arg("-o")
+            .arg(&out_path)
+            .status();
+        let status = match status {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("wasm-tools not found on PATH; skipping strip round-trip");
+                let _ = std::fs::remove_file(&in_path);
+                return;
+            }
+        };
+        assert!(status.success(), "wasm-tools strip failed");
+        let stripped = std::fs::read(&out_path).expect("read stripped");
+        let _ = std::fs::remove_file(&in_path);
+        let _ = std::fs::remove_file(&out_path);
+
+        assert_eq!(
+            stripped, plain,
+            "stripping a debug component's custom sections must recover the undecorated bytes exactly"
+        );
+    }
+
+    #[test]
+    fn a_sidecar_emit_wasm_debug_request_drives_the_debug_component() {
+        // Mode-E enablement end-to-end: an `EMIT_WASM_DEBUG` request in the sidecar list drives a
+        // debug-carrying `component` — the debug directive is a request, not a build flag.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&parse(src))),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Emit(Target::WasmDebug)]),
+                ),
+            ],
+            &[],
+        );
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let component = out.artifact("component").expect("a component artifact");
+        assert!(
+            name_section_of(component).is_some(),
+            "an EMIT_WASM_DEBUG request must produce a component carrying the `name` section"
+        );
+        // The round-trip through the sidecar codec preserves the debug request.
+        let reqs = sidecar::decode(&sidecar::encode(&[Request::Emit(Target::WasmDebug)]));
+        assert_eq!(reqs, Some(vec![Request::Emit(Target::WasmDebug)]));
     }
 }

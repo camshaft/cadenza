@@ -28,6 +28,14 @@ use tracing::trace;
 pub enum Target {
     /// A WebAssembly component (the Stage-0 backend).
     Wasm,
+    /// A WebAssembly component carrying EMBEDDED debug information (Mode E of
+    /// `DESIGN-debug-info-rcdzc.md`) — the same component as [`Target::Wasm`] with the wasm `name`
+    /// custom section (and, later increments, `.debug_*` DWARF) appended to its embedded core module.
+    /// The debug sections are inert (they move no executed byte) and strippable, so a `WasmDebug`
+    /// artifact stripped of custom sections is byte-identical to the `Wasm` artifact — the
+    /// reproducibility anchor (§5). Its artifact kind stays `"component"`: it is a decorated component,
+    /// not a new output kind (that is Mode S, [`Target::Dwarf`], a separate `"dwarf"` artifact).
+    WasmDebug,
     /// Rust source — a self-contained `.rs` module (one `pub fn` per export) that links into an
     /// existing Rust codebase as ordinary source, with no component boundary and no FFI. The
     /// structured second backend (`backends-and-targets.md` §A Backend Linearizes The Core Only If Its
@@ -47,7 +55,8 @@ impl Target {
     /// interface.md`; `backends-and-targets.md` §The Emitted Artifact Is Self-Describing By Kind).
     pub fn artifact_kind(self) -> &'static str {
         match self {
-            Target::Wasm => "component",
+            // A debug-carrying component is still a `component` — a decorated one, not a new kind.
+            Target::Wasm | Target::WasmDebug => "component",
             // Both Rust forms are `rust`-kinded `.rs` source — they differ in calling convention, not
             // in artifact kind (a consumer picks the flavor by which target it asked to emit).
             Target::Rust | Target::RustAsync => "rust",
@@ -59,7 +68,8 @@ impl Target {
 /// chosen backend, each a producer of the artifact column over the same upstream columns.
 pub fn emit(target: Target, db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let result = match target {
-        Target::Wasm => wasm::emit(db, layout),
+        Target::Wasm => wasm::emit(db, layout, false),
+        Target::WasmDebug => wasm::emit(db, layout, true),
         Target::Rust => rust::emit(db, layout, rust::Mode::Sync),
         Target::RustAsync => rust::emit(db, layout, rust::Mode::Async),
     };

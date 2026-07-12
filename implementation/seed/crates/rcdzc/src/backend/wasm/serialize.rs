@@ -228,6 +228,56 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Debug metadata the backend injects into the embedded core module — the `name` custom section's
+/// inputs (D0 of `DESIGN-debug-info-rcdzc.md`). `module_name` is the program's name (its first export);
+/// `func_names` are `(defined-function index, source name)` pairs for the program's OWN functions, in
+/// ascending index order (a nameless def is omitted). The imported runtime ops are named from the
+/// `imports` slice inside `core_module`, so they are not repeated here. Present only when a debug `Emit`
+/// request drives the compile (Mode E); absent → byte-identical to today (the reproducibility anchor).
+pub struct DebugInfo<'a> {
+    pub module_name: &'a str,
+    pub func_names: &'a [(u32, String)],
+}
+
+/// A length-prefixed name string, the wasm `name` section's string form: `<uleb len> <utf8 bytes>`.
+fn name_string(s: &str) -> Vec<u8> {
+    let mut out = uleb_bytes(s.len() as u64);
+    out.extend_from_slice(s.as_bytes());
+    out
+}
+
+/// One `name` subsection: `<id byte> <uleb payload-len> <payload>` (the same framing as a section, but
+/// the id is one byte and it lives inside the custom section's contents).
+fn name_subsection(id: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![id];
+    uleb128(payload.len() as u64, &mut out);
+    out.extend_from_slice(payload);
+    out
+}
+
+/// The wasm `name` CUSTOM section (id 0, name `"name"`) — a module-name subsection (id 0) + a
+/// function-name subsection (id 1) mapping a function index to its source name. Inert by construction:
+/// a custom section moves no byte of the executed (type/func/export/code) sections, so appending it
+/// changes no observable behavior and `wasm-tools strip` recovers the undecorated bytes (the D0/§5
+/// guarantees). `func_names` must be ASCENDING by index (the name-map's wire form is ordered); the
+/// caller concatenates imports-then-defined, which is already ascending. Turns `func[N]` into a source
+/// name in every trace, profile, and debugger frame — DWARF-independent, highest value-per-line.
+fn name_section(module_name: &str, func_names: &[(u32, String)]) -> Vec<u8> {
+    // Contents: the section-name string "name", then the subsections in id order.
+    let mut contents = name_string("name");
+    // Subsection 0 — module name.
+    contents.extend_from_slice(&name_subsection(0, &name_string(module_name)));
+    // Subsection 1 — function names: a name map `<count> <(idx, name)…>` in ascending index order.
+    let mut map = uleb_bytes(func_names.len() as u64);
+    for (idx, name) in func_names {
+        uleb128(*idx as u64, &mut map);
+        map.extend_from_slice(&name_string(name));
+    }
+    contents.extend_from_slice(&name_subsection(1, &map));
+    // Custom section: id 0.
+    section(0, &contents)
+}
+
 /// Assemble the embedded core module for a module's selected functions. `funcs[k]` is the function at
 /// emission position `k` (already in the layout's order). `imports` is the program's per-program set of
 /// runtime ops (ordered — the same order `layout` numbered them), imported from module `"heap"` at core
@@ -235,10 +285,17 @@ fn functype(f: &SelectedFunc) -> Result<Vec<u8>, String> {
 /// `imports.len()`, and the export section (and every `Lir::Call`, via `layout.abs`) account for that
 /// shift. An empty `imports` emits no import section and no shift — byte-identical to a runtime-free
 /// program (`component-abi.md` v3 migration: a program importing nothing crosses as under v2).
+///
+/// `debug` carries the `name`-section inputs when a debug `Emit` request drives the compile (Mode E);
+/// `None` (the common case) appends nothing, so the bytes are exactly today's. The `name` section is
+/// appended LAST — after the code section — so it is inert by construction (`DESIGN-debug-info-rcdzc.md`
+/// §1: appending a custom section moves no executed byte, so the byte-oracle tests over the executed
+/// sections still hold and `wasm-tools strip` recovers the undecorated module).
 pub fn core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     layout: &Layout,
+    debug: Option<&DebugInfo>,
 ) -> Result<Vec<u8>, String> {
     let n = funcs.len();
     let import_count = imports.len();
@@ -318,6 +375,19 @@ pub fn core_module(
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&code_sec);
+    // DEBUG (Mode E): append the `name` custom section LAST, after every executed section — so it is
+    // inert (moves no executed byte) and strippable. The function-name map names the imported runtime
+    // ops (indices `0..import_count`, from `imports`) then the program's own defined functions (indices
+    // `import_count..`, from `debug.func_names`), concatenated so the whole map is ascending by index.
+    if let Some(dbg) = debug {
+        let mut func_names: Vec<(u32, String)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (i as u32, o.name.to_string()))
+            .collect();
+        func_names.extend(dbg.func_names.iter().cloned());
+        core.extend_from_slice(&name_section(dbg.module_name, &func_names));
+    }
     Ok(core)
 }
 

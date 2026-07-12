@@ -41,7 +41,14 @@ use crate::layout::Layout;
 
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
-pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
+///
+/// `debug` (Mode E of `DESIGN-debug-info-rcdzc.md`) appends the wasm `name` custom section to the
+/// embedded core module — inert and strippable, so a debug component stripped of custom sections is
+/// byte-identical to the `debug = false` component (§5). `debug = false` is byte-for-byte today's
+/// output. D0 covers the ordinary multi-export path; the resource-escape shapes (a nullary compound
+/// export) are still emitted undecorated (their synthesized `make`/`t-encode` funcs get names in a
+/// later increment) — passing `debug` through them changes nothing yet.
+pub fn emit(db: &mut Db, layout: &Layout, debug: bool) -> Result<Vec<u8>, Reject> {
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
@@ -135,8 +142,40 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
 
+    // DEBUG (Mode E, D0): the `name`-section inputs — the module name (the first export's name) and a
+    // `(defined-function index, source name)` pair per program function, in emission order. A defined
+    // function at emission position `k` is core function index `import_base + k` (`layout.abs`); its
+    // source name is the def's name. Built only when `debug`; `None` otherwise → byte-identical output.
+    let func_names: Vec<(u32, String)> = if debug {
+        layout
+            .order
+            .iter()
+            .enumerate()
+            .filter_map(|(k, &def)| {
+                let name = &db.defs[def].name;
+                if name.is_empty() {
+                    None
+                } else {
+                    Some((layout.import_base + k as u32, name.clone()))
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let module_name = layout
+        .exports
+        .first()
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| "main".to_string());
+    let debug_info = debug.then_some(serialize::DebugInfo {
+        module_name: &module_name,
+        func_names: &func_names,
+    });
+
     // Serialize the embedded core module (multi-export core module, functions in emission order).
-    let core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
+    let core = serialize::core_module(&funcs, &imports, layout, debug_info.as_ref())
+        .map_err(Reject::decline)?;
 
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).

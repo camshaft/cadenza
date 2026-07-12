@@ -77,6 +77,12 @@ mod tag {
     pub const EMIT_WASM: u8 = 0x00;
     pub const EMIT_RUST: u8 = 0x01;
     pub const EMIT_RUST_ASYNC: u8 = 0x02;
+    /// Emit a WebAssembly component carrying EMBEDDED debug info (Mode E of
+    /// `DESIGN-debug-info-rcdzc.md`) — a `Target::WasmDebug`. The additive tag that enables debug output
+    /// as a sidecar request, not a `--debug` flag: a driver puts this in the request list (and supplies
+    /// the `spans` input for the DWARF increments) rather than passing a build flag. Its artifact is a
+    /// `component`, decorated and strippable (§5). (Mode S — a separate `dwarf` file — is a later tag.)
+    pub const EMIT_WASM_DEBUG: u8 = 0x03;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
 }
@@ -102,6 +108,7 @@ pub fn decode(bytes: &[u8]) -> Option<Vec<Request>> {
 fn decode_one(r: &mut Reader) -> Option<Request> {
     match r.byte()? {
         tag::EMIT_WASM => Some(Request::Emit(crate::backend::Target::Wasm)),
+        tag::EMIT_WASM_DEBUG => Some(Request::Emit(crate::backend::Target::WasmDebug)),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
         tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
@@ -128,6 +135,7 @@ pub fn encode(requests: &[Request]) -> Vec<u8> {
 fn encode_one(out: &mut Vec<u8>, req: &Request) {
     match req {
         Request::Emit(crate::backend::Target::Wasm) => out.push(tag::EMIT_WASM),
+        Request::Emit(crate::backend::Target::WasmDebug) => out.push(tag::EMIT_WASM_DEBUG),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
         Request::Query(Query::TypeOf { name }) => {
