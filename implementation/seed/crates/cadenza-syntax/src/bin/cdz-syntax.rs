@@ -21,7 +21,7 @@
 //! crate that touches the filesystem/stdio.
 
 use cadenza_syntax::convert::{self, Format, Options};
-use cadenza_syntax::query::{self, Pattern, Template};
+use cadenza_syntax::query::{self, Pattern, Query, Rule, RuleSet, Strategy, Template};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::io::{Read, Write};
 use std::process::ExitCode;
@@ -48,7 +48,8 @@ enum Cmd {
 
 #[derive(Args)]
 struct QueryArgs {
-    /// The s-expression pattern, with `,x` (bind a node) / `,@xs` (bind a run) metavariables.
+    /// The s-expression pattern. Metavariables: `,x` (bind a node), `,@xs` (bind a run), `,_`
+    /// (wildcard), `,(x GUARD…)` (guarded, e.g. `,(x is-literal)` / `,(x (head-is +))`).
     pattern: String,
 
     /// Input file; omit or use `-` to read stdin.
@@ -61,15 +62,31 @@ struct QueryArgs {
     /// Print only the number of matches, not the matches themselves.
     #[arg(short, long)]
     count: bool,
+
+    /// Keep only matches that occur INSIDE some ancestor matching this pattern (repeatable).
+    #[arg(long)]
+    inside: Vec<String>,
+
+    /// Keep only matches that CONTAIN some descendant matching this pattern (repeatable).
+    #[arg(long)]
+    has: Vec<String>,
+
+    /// Drop matches that occur inside an ancestor matching this pattern (repeatable).
+    #[arg(long = "not-inside")]
+    not_inside: Vec<String>,
+
+    /// Drop matches that contain a descendant matching this pattern (repeatable).
+    #[arg(long = "not-has")]
+    not_has: Vec<String>,
 }
 
 #[derive(Args)]
 struct RewriteArgs {
-    /// The s-expression pattern to match, with `,x` / `,@xs` metavariables.
-    pattern: String,
+    /// The s-expression pattern to match (with `,x` / `,@xs` / guards). Omit with `--rules`.
+    pattern: Option<String>,
 
     /// The s-expression replacement template; its metavariables are filled from the match.
-    template: String,
+    template: Option<String>,
 
     /// Input file; omit or use `-` to read stdin.
     file: Option<String>,
@@ -86,9 +103,18 @@ struct RewriteArgs {
     #[arg(short, long, default_value_t = Options::default().width)]
     width: usize,
 
-    /// Re-apply the rule until the tree stops changing (bounded). Off by default (one bottom-up pass).
+    /// Re-apply until the tree stops changing (bounded). Off by default (one pass).
     #[arg(long)]
     fixpoint: bool,
+
+    /// A file of `(rule PATTERN TEMPLATE)` forms applied together (first match wins). Replaces the
+    /// positional PATTERN/TEMPLATE — a peephole simplifier in one pass.
+    #[arg(long)]
+    rules: Option<String>,
+
+    /// Traverse top-down (match outermost first) instead of the default bottom-up.
+    #[arg(long = "top-down")]
+    top_down: bool,
 }
 
 #[derive(Args)]
@@ -168,26 +194,39 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Search the target for a pattern, printing matches (or a count).
+/// Compile a list of pattern strings into patterns (for the relational flags).
+fn compile_patterns(srcs: &[String]) -> Result<Vec<Pattern>, String> {
+    srcs.iter()
+        .map(|s| Pattern::compile(s).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// Search the target for a pattern (with optional structural context), printing matches (or a count).
 fn run_query(args: &QueryArgs) -> Result<(), String> {
     let from = resolve_from(args.from, args.file.as_deref())?;
     let input = read_input(args.file.as_deref())?;
     let pattern = Pattern::compile(&args.pattern).map_err(|e| e.to_string())?;
+    let relquery = Query {
+        inside: compile_patterns(&args.inside)?,
+        has: compile_patterns(&args.has)?,
+        not_inside: compile_patterns(&args.not_inside)?,
+        not_has: compile_patterns(&args.not_has)?,
+    };
 
     let (target, errors) = query::driver::load(&input, from)?;
     report_input_errors(&errors);
 
     if args.count {
-        println!("{}", query::count(&pattern, &target.tree));
+        println!("{}", query::count_with(&pattern, &relquery, &target.tree));
     } else {
-        let report = query::driver::report_matches(&pattern, &target);
+        let report = query::driver::report_matches(&pattern, &relquery, &target);
         // Print the report as-is (each match already ends in a newline); empty means no matches.
         print!("{report}");
     }
     Ok(())
 }
 
-/// Rewrite the target: replace every pattern match with the template, validated, then project.
+/// Rewrite the target: apply the rule (or rule set) under the chosen strategy, validated, then project.
 fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
     let from = resolve_from(args.from, args.file.as_deref())?;
     // Default the output format to the input format (a rewrite usually stays on the same surface),
@@ -197,15 +236,39 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
         .map(Format::from)
         .or_else(|| args.file.as_deref().and_then(Format::from_extension))
         .unwrap_or(from);
-    let input = read_input(args.file.as_deref())?;
-    let pattern = Pattern::compile(&args.pattern).map_err(|e| e.to_string())?;
-    let template = Template::compile(&args.template).map_err(|e| e.to_string())?;
 
+    // The rule set comes from either --rules FILE, or the positional PATTERN + TEMPLATE.
+    let rules = match &args.rules {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+            RuleSet::compile(&text).map_err(|e| e.to_string())?
+        }
+        None => {
+            let pattern = args
+                .pattern
+                .as_deref()
+                .ok_or("a PATTERN (or --rules FILE) is required")?;
+            let template = args
+                .template
+                .as_deref()
+                .ok_or("a TEMPLATE is required (or use --rules FILE)")?;
+            let p = Pattern::compile(pattern).map_err(|e| e.to_string())?;
+            let t = Template::compile(template).map_err(|e| e.to_string())?;
+            RuleSet::new(vec![Rule::new(p, t)])
+        }
+    };
+    let strategy = if args.top_down {
+        Strategy::TopDown
+    } else {
+        Strategy::BottomUp
+    };
+
+    let input = read_input(args.file.as_deref())?;
     let (target, errors) = query::driver::load(&input, from)?;
     report_input_errors(&errors);
 
     let outcome =
-        query::driver::apply_rewrite(&pattern, &template, &target, to, args.width, args.fixpoint)?;
+        query::driver::apply_rewrite(&rules, strategy, &target, to, args.width, args.fixpoint)?;
     // Report the site count to stderr (so stdout is exactly the rewritten program, pipeable).
     eprintln!("cdz-syntax: rewrote {} site(s)", outcome.count);
     print!("{}", outcome.output);

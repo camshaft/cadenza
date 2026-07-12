@@ -124,10 +124,51 @@ fn tree_eq(a: &Tree, b: &Tree) -> bool {
     }
 }
 
-/// A compiled structural pattern (an owned `Tree`; metavariables are recognized structurally).
+/// A compiled structural pattern.
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    tree: Tree,
+    pat: Pat,
+}
+
+/// The compiled pattern tree. A pattern is either a literal to match exactly, a list (which may
+/// contain at most one splice among its direct children), a single-node metavariable (with optional
+/// structural guards), or a splice metavariable.
+#[derive(Clone, Debug)]
+enum Pat {
+    /// A literal atom that must match an equal leaf value.
+    Lit(Leaf),
+    /// A list; children matched positionally, honoring at most one splice.
+    List(Vec<Pat>),
+    /// `,x` / `,(x guard…)` — binds one node to `name` if every guard holds. `_` is the wildcard.
+    Meta { name: String, guards: Vec<Guard> },
+    /// `,@xs` — binds a run of sibling nodes. Only valid as a direct child of a [`Pat::List`].
+    Splice { name: String },
+}
+
+/// A purely-STRUCTURAL constraint on the node a metavariable binds. Deliberately no scope/binding or
+/// type predicates (`refs`/`defines`/`type-of`) — those need the compiler's resolver/checker and
+/// live there, not in this syntax-only layer. Guards on a metavar are conjunctive (all must hold).
+#[derive(Clone, Debug)]
+enum Guard {
+    /// The node is any literal atom (int/float/string/bool — NOT a name).
+    IsLiteral,
+    /// The node is a name atom.
+    IsName,
+    /// The node is an integer / float / string / bool literal.
+    IsInt,
+    IsFloat,
+    IsStr,
+    IsBool,
+    /// The node is any atom (leaf), or any list.
+    IsAtom,
+    IsList,
+    /// The node is a list whose head name is this string (`(head-is +)`).
+    HeadIs(String),
+    /// The node itself matches this sub-pattern (`(matches PAT)`). The sub-pattern's captures are a
+    /// pure test — they do NOT leak into the outer bindings.
+    Matches(Box<Pat>),
+    /// Negation of a guard (`(not GUARD)`).
+    Not(Box<Guard>),
 }
 
 /// A compiled replacement template (same `,x` / `,@xs` sigils, filled from bindings on instantiate).
@@ -201,21 +242,30 @@ pub struct Rewrite {
 // Metavariable recognition — the sole coupling to the `unquote` surface.
 // ============================================================================================
 
-/// If `t` is a single-node metavariable `(unquote NAME)`, its name. `,_` yields `"_"`.
-fn as_metavar(t: &Tree) -> Option<&str> {
-    metavar_of(t, "unquote")
-}
-
-/// If `t` is a splice metavariable `(unquote-splicing NAME)`, its name. `,@_` yields `"_"`.
-fn as_splice(t: &Tree) -> Option<&str> {
-    metavar_of(t, "unquote-splicing")
-}
-
-/// Shared shape check: a two-element list `(head NAME)` where NAME is a bare name atom.
-fn metavar_of<'a>(t: &'a Tree, head: &str) -> Option<&'a str> {
+/// The payload of a single-node metavariable `,X` (an `(unquote X)` form), where X is either a bare
+/// name (`,x`) or a guarded form `(name guard…)` (`,(x is-literal)`). Returns `None` if `t` is not
+/// an `unquote` form at all.
+fn as_metavar_tree(t: &Tree) -> Option<&Tree> {
     match t {
         Tree::List(items, _) => match items.as_slice() {
-            [h, name] if h.as_name() == Some(head) => name.as_name(),
+            [h, payload] if h.as_name() == Some("unquote") => Some(payload),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A TEMPLATE metavariable `,x` — a bare-name `(unquote NAME)` payload. Templates take no guards
+/// (guards are match-side only), so a guarded payload is not a template metavariable.
+fn template_metavar(t: &Tree) -> Option<&str> {
+    as_metavar_tree(t).and_then(|payload| payload.as_name())
+}
+
+/// If `t` is a splice metavariable `(unquote-splicing NAME)`, its name.
+fn as_splice(t: &Tree) -> Option<&str> {
+    match t {
+        Tree::List(items, _) => match items.as_slice() {
+            [h, name] if h.as_name() == Some("unquote-splicing") => name.as_name(),
             _ => None,
         },
         _ => None,
@@ -232,20 +282,20 @@ fn is_wildcard(name: &str) -> bool {
 // ============================================================================================
 
 impl Pattern {
-    /// Compile a pattern from s-expression text (e.g. `"(+ ,x 0)"`).
+    /// Compile a pattern from s-expression text (e.g. `"(+ ,x 0)"`, `"(f ,(x is-literal) ,@rest)"`).
     ///
-    /// Rejects a list with more than one splice among its direct children (ambiguous run boundary).
+    /// Rejects a list with more than one splice among its direct children (ambiguous run boundary),
+    /// a splice used outside list-child position, and an unknown/ill-formed guard.
     pub fn compile(src: &str) -> Result<Pattern, PatternError> {
         let arena = sexpr::read(src).map_err(|e| PatternError(format!("pattern parse: {}", e.0)))?;
-        let tree = Tree::of(&arena);
-        check_at_most_one_splice(&tree)?;
-        Ok(Pattern { tree })
+        let pat = compile_pat(&Tree::of(&arena))?;
+        Ok(Pattern { pat })
     }
 
     /// Try to match this pattern against `subject`, filling `binds`. On a mismatch, `binds` may have
     /// been partially extended and must be discarded by the caller.
     fn matches(&self, subject: &Tree, binds: &mut Bindings) -> bool {
-        match_node(&self.tree, subject, binds)
+        match_pat(&self.pat, subject, binds)
     }
 }
 
@@ -260,49 +310,174 @@ impl Template {
     }
 }
 
-/// Reject any list that contains two or more direct-child splices — the run boundary would be
-/// ambiguous. One splice plus fixed nodes on either side is fine (matched uniquely).
-fn check_at_most_one_splice(t: &Tree) -> Result<(), PatternError> {
-    if let Tree::List(items, _) = t {
-        if items.iter().filter(|c| as_splice(c).is_some()).count() > 1 {
-            return Err(PatternError(
-                "a pattern list may contain at most one `,@` splice".into(),
-            ));
-        }
-        for c in items {
-            check_at_most_one_splice(c)?;
+/// Compile a pattern `Tree` into a [`Pat`]. A splice at the top level (not a list child) is an error.
+fn compile_pat(t: &Tree) -> Result<Pat, PatternError> {
+    if let Some(payload) = as_metavar_tree(t) {
+        return compile_meta(payload);
+    }
+    if as_splice(t).is_some() {
+        return Err(PatternError(
+            "a `,@` splice is only valid as a direct child of a list".into(),
+        ));
+    }
+    match t {
+        Tree::Atom(l, _) => Ok(Pat::Lit(l.clone())),
+        Tree::List(items, _) => {
+            if items.iter().filter(|c| as_splice(c).is_some()).count() > 1 {
+                return Err(PatternError(
+                    "a pattern list may contain at most one `,@` splice".into(),
+                ));
+            }
+            let mut kids = Vec::with_capacity(items.len());
+            for c in items {
+                if let Some(name) = as_splice(c) {
+                    kids.push(Pat::Splice {
+                        name: name.to_string(),
+                    });
+                } else {
+                    kids.push(compile_pat(c)?);
+                }
+            }
+            Ok(Pat::List(kids))
         }
     }
-    Ok(())
+}
+
+/// Compile the payload of an `,X` metavariable: a bare name (`,x`), or `(name guard…)` with guards.
+fn compile_meta(payload: &Tree) -> Result<Pat, PatternError> {
+    // Bare `,x` (or `,_`).
+    if let Some(name) = payload.as_name() {
+        return Ok(Pat::Meta {
+            name: name.to_string(),
+            guards: Vec::new(),
+        });
+    }
+    // Guarded `,(name guard…)`.
+    if let Tree::List(items, _) = payload {
+        let name = items
+            .first()
+            .and_then(|t| t.as_name())
+            .ok_or_else(|| PatternError("a guarded metavariable needs a name: `,(name guard…)`".into()))?;
+        let guards = items[1..].iter().map(compile_guard).collect::<Result<_, _>>()?;
+        return Ok(Pat::Meta {
+            name: name.to_string(),
+            guards,
+        });
+    }
+    Err(PatternError(
+        "a metavariable must be `,name` or `,(name guard…)`".into(),
+    ))
+}
+
+/// Compile one structural guard. Unknown guard names are rejected at compile time.
+fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
+    // A bare-name guard.
+    if let Some(name) = t.as_name() {
+        return match name {
+            "is-literal" => Ok(Guard::IsLiteral),
+            "is-name" => Ok(Guard::IsName),
+            "is-int" => Ok(Guard::IsInt),
+            "is-float" => Ok(Guard::IsFloat),
+            "is-str" => Ok(Guard::IsStr),
+            "is-bool" => Ok(Guard::IsBool),
+            "is-atom" => Ok(Guard::IsAtom),
+            "is-list" => Ok(Guard::IsList),
+            other => Err(PatternError(format!("unknown guard `{other}`"))),
+        };
+    }
+    // A guard form: `(head-is NAME)`, `(matches PAT)`, `(not GUARD)`.
+    if let Tree::List(items, _) = t {
+        match items.first().and_then(|h| h.as_name()) {
+            Some("head-is") => {
+                let name = items
+                    .get(1)
+                    .and_then(|t| t.as_name())
+                    .ok_or_else(|| PatternError("`head-is` needs a name: `(head-is +)`".into()))?;
+                Ok(Guard::HeadIs(name.to_string()))
+            }
+            Some("matches") => {
+                let sub = items
+                    .get(1)
+                    .ok_or_else(|| PatternError("`matches` needs a sub-pattern".into()))?;
+                Ok(Guard::Matches(Box::new(compile_pat(sub)?)))
+            }
+            Some("not") => {
+                let inner = items
+                    .get(1)
+                    .ok_or_else(|| PatternError("`not` needs a guard: `(not is-literal)`".into()))?;
+                Ok(Guard::Not(Box::new(compile_guard(inner)?)))
+            }
+            _ => Err(PatternError(format!(
+                "ill-formed guard `{}`",
+                t.to_sexpr()
+            ))),
+        }
+    } else {
+        Err(PatternError(format!("ill-formed guard `{}`", t.to_sexpr())))
+    }
 }
 
 // ============================================================================================
 // Matching
 // ============================================================================================
 
-/// Match pattern node `p` against subject node `s`, extending `binds`.
-fn match_node(p: &Tree, s: &Tree, binds: &mut Bindings) -> bool {
-    // A single-node metavariable binds `s` (subject to consistency).
-    if let Some(name) = as_metavar(p) {
-        return bind_single(binds, name, s);
-    }
-    match (p, s) {
-        (Tree::Atom(pl, _), Tree::Atom(sl, _)) => pl == sl,
-        (Tree::List(pitems, _), Tree::List(sitems, _)) => match_seq(pitems, sitems, binds),
-        _ => false,
+/// Match a compiled pattern `p` against subject node `s`, extending `binds`.
+fn match_pat(p: &Pat, s: &Tree, binds: &mut Bindings) -> bool {
+    match p {
+        Pat::Meta { name, guards } => {
+            guards.iter().all(|g| guard_holds(g, s)) && bind_single(binds, name, s)
+        }
+        Pat::Splice { .. } => unreachable!("a splice is only matched inside a list sequence"),
+        Pat::Lit(pl) => matches!(s, Tree::Atom(sl, _) if pl == sl),
+        Pat::List(pitems) => match s {
+            Tree::List(sitems, _) => match_seq(pitems, sitems, binds),
+            _ => false,
+        },
     }
 }
 
-/// Match a pattern child-sequence against a subject child-sequence, handling at most one splice.
-fn match_seq(pitems: &[Tree], sitems: &[Tree], binds: &mut Bindings) -> bool {
-    let splice_at = pitems.iter().position(|c| as_splice(c).is_some());
+/// Does structural guard `g` hold for node `s`? Purely syntactic — no scope or type lookup.
+fn guard_holds(g: &Guard, s: &Tree) -> bool {
+    match g {
+        Guard::IsLiteral => matches!(s, Tree::Atom(l, _) if !matches!(l, Leaf::Name(_))),
+        Guard::IsName => matches!(s, Tree::Atom(Leaf::Name(_), _)),
+        Guard::IsInt => matches!(s, Tree::Atom(Leaf::Int { .. }, _)),
+        Guard::IsFloat => matches!(s, Tree::Atom(Leaf::Float(_), _)),
+        Guard::IsStr => matches!(s, Tree::Atom(Leaf::Str(_), _)),
+        Guard::IsBool => matches!(s, Tree::Atom(Leaf::Bool(_), _)),
+        Guard::IsAtom => matches!(s, Tree::Atom(_, _)),
+        Guard::IsList => matches!(s, Tree::List(_, _)),
+        Guard::HeadIs(name) => head_name(s) == Some(name.as_str()),
+        // A sub-pattern test: its captures are local (discarded), so `matches` is a pure predicate.
+        Guard::Matches(sub) => {
+            let mut scratch = Bindings::default();
+            match_pat(sub, s, &mut scratch)
+        }
+        Guard::Not(inner) => !guard_holds(inner, s),
+    }
+}
+
+/// The head name of a list node (its first child, if a name atom).
+fn head_name(t: &Tree) -> Option<&str> {
+    match t {
+        Tree::List(items, _) => items.first().and_then(|h| h.as_name()),
+        _ => None,
+    }
+}
+
+/// Match a compiled pattern child-sequence against a subject child-sequence, honoring at most one
+/// splice.
+fn match_seq(pitems: &[Pat], sitems: &[Tree], binds: &mut Bindings) -> bool {
+    let splice_at = pitems
+        .iter()
+        .position(|c| matches!(c, Pat::Splice { .. }));
     match splice_at {
         None => {
             pitems.len() == sitems.len()
                 && pitems
                     .iter()
                     .zip(sitems)
-                    .all(|(p, s)| match_node(p, s, binds))
+                    .all(|(p, s)| match_pat(p, s, binds))
         }
         Some(k) => {
             let before = &pitems[..k];
@@ -311,18 +486,20 @@ fn match_seq(pitems: &[Tree], sitems: &[Tree], binds: &mut Bindings) -> bool {
                 return false;
             }
             for (p, s) in before.iter().zip(&sitems[..before.len()]) {
-                if !match_node(p, s, binds) {
+                if !match_pat(p, s, binds) {
                     return false;
                 }
             }
             let suffix_start = sitems.len() - after.len();
             for (p, s) in after.iter().zip(&sitems[suffix_start..]) {
-                if !match_node(p, s, binds) {
+                if !match_pat(p, s, binds) {
                     return false;
                 }
             }
             let mid = &sitems[before.len()..suffix_start];
-            let name = as_splice(&pitems[k]).expect("splice present");
+            let Pat::Splice { name } = &pitems[k] else {
+                unreachable!("splice_at points at a splice")
+            };
             bind_run(binds, name, mid)
         }
     }
@@ -387,60 +564,311 @@ pub fn count(pattern: &Pattern, subject: &Tree) -> usize {
 }
 
 // ============================================================================================
-// Rewrite — bottom-up, template-instantiated
+// Relational search — a pattern filtered by STRUCTURAL context (ancestors / descendants)
 // ============================================================================================
 
-/// Rewrite `subject` bottom-up: transform children first, then try `pattern` at each node (matched
-/// against its ALREADY-REWRITTEN form) and, on a match, replace it with `template` instantiated from
-/// the captures. Returns the new tree and the rewrite count.
+/// A query is a main [`Pattern`] plus optional STRUCTURAL context constraints. A node matches the
+/// query iff it matches `pattern` AND every constraint holds. All constraints are purely structural
+/// (ancestry / containment) — no scope or type context, which belongs to the compiler.
 ///
-/// Bottom-up + match-against-rewritten-children means a captured metavariable reflects prior child
-/// rewrites (so `(+ (+ x 0) 0)` collapses fully under `(+ ,x 0) → ,x` in one pass). A template
-/// metavariable with no binding, or used with the wrong arity (single vs splice), makes that site
-/// fail to instantiate: the node is left as its rewritten-children form and NOT counted
-/// (reject-don't-corrupt).
+/// - `inside` — some ANCESTOR of the node matches this pattern.
+/// - `has` — some (strict) DESCENDANT of the node matches this pattern.
+/// - `not_inside` / `not_has` — the negations.
+#[derive(Clone, Debug, Default)]
+pub struct Query {
+    pub inside: Vec<Pattern>,
+    pub has: Vec<Pattern>,
+    pub not_inside: Vec<Pattern>,
+    pub not_has: Vec<Pattern>,
+}
+
+impl Query {
+    pub fn new() -> Query {
+        Query::default()
+    }
+    pub fn inside(mut self, p: Pattern) -> Query {
+        self.inside.push(p);
+        self
+    }
+    pub fn has(mut self, p: Pattern) -> Query {
+        self.has.push(p);
+        self
+    }
+    pub fn not_inside(mut self, p: Pattern) -> Query {
+        self.not_inside.push(p);
+        self
+    }
+    pub fn not_has(mut self, p: Pattern) -> Query {
+        self.not_has.push(p);
+        self
+    }
+
+    /// Whether any constraints are set (an empty query is just the bare pattern).
+    fn is_empty(&self) -> bool {
+        self.inside.is_empty()
+            && self.has.is_empty()
+            && self.not_inside.is_empty()
+            && self.not_has.is_empty()
+    }
+}
+
+/// Does any node in the subtree rooted at `node` match `pattern`? (Reflexive — includes `node`.)
+fn any_match(pattern: &Pattern, node: &Tree) -> bool {
+    let mut binds = Bindings::default();
+    if pattern.matches(node, &mut binds) {
+        return true;
+    }
+    match node {
+        Tree::List(items, _) => items.iter().any(|c| any_match(pattern, c)),
+        Tree::Atom(_, _) => false,
+    }
+}
+
+/// Does any STRICT descendant of `node` match `pattern`? (Non-reflexive — excludes `node` itself.)
+fn any_descendant_match(pattern: &Pattern, node: &Tree) -> bool {
+    match node {
+        Tree::List(items, _) => items.iter().any(|c| any_match(pattern, c)),
+        Tree::Atom(_, _) => false,
+    }
+}
+
+/// Find every node matching `pattern` AND satisfying `query`'s structural constraints, pre-order.
+/// The `ancestors` for `inside`/`not_inside` are the nodes strictly enclosing a candidate.
+pub fn search_with(
+    pattern: &Pattern,
+    query: &Query,
+    subject: &Tree,
+    spans: Option<&SpanTable>,
+) -> Vec<Match> {
+    let mut out = Vec::new();
+    let mut ancestors: Vec<&Tree> = Vec::new();
+    search_with_at(pattern, query, subject, &mut ancestors, spans, &mut out);
+    out
+}
+
+fn search_with_at<'t>(
+    pattern: &Pattern,
+    query: &Query,
+    node: &'t Tree,
+    ancestors: &mut Vec<&'t Tree>,
+    spans: Option<&SpanTable>,
+    out: &mut Vec<Match>,
+) {
+    let mut binds = Bindings::default();
+    if pattern.matches(node, &mut binds) && constraints_hold(query, node, ancestors) {
+        out.push(Match {
+            node: node.clone(),
+            span: node.origin().and_then(|id| spans.and_then(|s| s.get(id))),
+            bindings: binds,
+        });
+    }
+    if let Tree::List(items, _) = node {
+        ancestors.push(node);
+        for c in items {
+            search_with_at(pattern, query, c, ancestors, spans, out);
+        }
+        ancestors.pop();
+    }
+}
+
+/// Evaluate the structural constraints of `query` for a candidate `node` with the given `ancestors`.
+fn constraints_hold(query: &Query, node: &Tree, ancestors: &[&Tree]) -> bool {
+    let inside_ok = |p: &Pattern| {
+        ancestors.iter().any(|a| {
+            let mut b = Bindings::default();
+            p.matches(a, &mut b)
+        })
+    };
+    query.inside.iter().all(inside_ok)
+        && !query.not_inside.iter().any(inside_ok)
+        && query.has.iter().all(|p| any_descendant_match(p, node))
+        && !query.not_has.iter().any(|p| any_descendant_match(p, node))
+}
+
+/// Count matches of a relational query.
+pub fn count_with(pattern: &Pattern, query: &Query, subject: &Tree) -> usize {
+    if query.is_empty() {
+        return count(pattern, subject);
+    }
+    search_with(pattern, query, subject, None).len()
+}
+
+// ============================================================================================
+// Rewrite — template-instantiated, single- or multi-rule, choice of traversal strategy
+// ============================================================================================
+
+/// One rewrite rule: match `pattern`, replace with `template` instantiated from the captures.
+#[derive(Clone, Debug)]
+pub struct Rule {
+    pub pattern: Pattern,
+    pub template: Template,
+}
+
+impl Rule {
+    pub fn new(pattern: Pattern, template: Template) -> Rule {
+        Rule { pattern, template }
+    }
+
+    /// Compile a rule from a `(rule PATTERN TEMPLATE)` s-expression form.
+    pub fn compile_form(t: &Tree) -> Result<Rule, PatternError> {
+        match t {
+            Tree::List(items, _) if items.first().and_then(|h| h.as_name()) == Some("rule") => {
+                match items.as_slice() {
+                    [_, p, tmpl] => Ok(Rule {
+                        pattern: Pattern { pat: compile_pat(p)? },
+                        template: Template { tree: tmpl.clone() },
+                    }),
+                    _ => Err(PatternError(
+                        "a rule is `(rule PATTERN TEMPLATE)`".into(),
+                    )),
+                }
+            }
+            _ => Err(PatternError("expected a `(rule …)` form".into())),
+        }
+    }
+
+    /// Try this rule at `node`: on a match, the instantiated replacement; else `None`.
+    fn fire(&self, node: &Tree) -> Option<Tree> {
+        let mut binds = Bindings::default();
+        if self.pattern.matches(node, &mut binds) {
+            return instantiate(&self.template.tree, &binds);
+        }
+        None
+    }
+}
+
+/// An ordered set of rules applied together: at each node, the FIRST rule that matches (and
+/// instantiates) fires. This is the peephole-simplifier shape — many small `pattern→template`
+/// identities in one traversal.
+#[derive(Clone, Debug, Default)]
+pub struct RuleSet {
+    pub rules: Vec<Rule>,
+}
+
+impl RuleSet {
+    pub fn new(rules: Vec<Rule>) -> RuleSet {
+        RuleSet { rules }
+    }
+
+    /// Compile a rule set from s-expression text: a sequence of `(rule PATTERN TEMPLATE)` forms
+    /// (whitespace/`;`-comment separated, the same surface `sexpr::read_all` reads).
+    pub fn compile(src: &str) -> Result<RuleSet, PatternError> {
+        let arena = sexpr::read_all(src).map_err(|e| PatternError(format!("rules parse: {}", e.0)))?;
+        // read_all wraps the forms in a synthetic `(do form…)`; the rules are its tail.
+        let tree = Tree::of(&arena);
+        let forms = match &tree {
+            Tree::List(items, _) if items.first().and_then(|h| h.as_name()) == Some("do") => {
+                &items[1..]
+            }
+            _ => std::slice::from_ref(&tree),
+        };
+        let rules = forms.iter().map(Rule::compile_form).collect::<Result<_, _>>()?;
+        Ok(RuleSet::new(rules))
+    }
+
+    /// The first rule that fires at `node`, with its replacement.
+    fn fire(&self, node: &Tree) -> Option<Tree> {
+        self.rules.iter().find_map(|r| r.fire(node))
+    }
+}
+
+/// The traversal order a rewrite uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Strategy {
+    /// Rewrite children first, then match the node against its already-rewritten form. A rule that
+    /// exposes a new match in its result is caught within the same pass at the parent. (The default —
+    /// terminating, predictable, and what a constant-fold/peephole pass wants.)
+    #[default]
+    BottomUp,
+    /// Match the node first; if it fires, DO NOT descend into the replacement in this pass (the
+    /// replacement is taken as-is). Otherwise descend into children. Catches an outermost match once.
+    TopDown,
+}
+
+/// Rewrite `subject` with a single `pattern → template` rule (bottom-up). Kept for the common case;
+/// [`rewrite_rules`] generalizes to a rule set and a strategy.
+///
+/// A template metavariable with no binding, or used with the wrong arity (single vs splice), makes a
+/// site fail to instantiate: the node is left unchanged and NOT counted (reject-don't-corrupt).
 pub fn rewrite(pattern: &Pattern, template: &Template, subject: &Tree) -> Rewrite {
+    let set = RuleSet::new(vec![Rule::new(pattern.clone(), template.clone())]);
+    rewrite_rules(&set, subject, Strategy::BottomUp)
+}
+
+/// Rewrite `subject` with a rule set under a traversal `strategy`. At each visited node the first
+/// matching rule fires; the count is the number of sites rewritten.
+pub fn rewrite_rules(rules: &RuleSet, subject: &Tree, strategy: Strategy) -> Rewrite {
     let mut count = 0;
-    let tree = rewrite_node(pattern, template, subject, &mut count);
+    let tree = rewrite_node(rules, subject, strategy, &mut count);
     Rewrite { tree, count }
 }
 
-fn rewrite_node(pattern: &Pattern, template: &Template, node: &Tree, count: &mut usize) -> Tree {
-    // Bottom-up: rewrite children first.
-    let rewritten = match node {
-        Tree::Atom(l, o) => Tree::Atom(l.clone(), *o),
-        Tree::List(items, o) => Tree::List(
-            items
-                .iter()
-                .map(|c| rewrite_node(pattern, template, c, count))
-                .collect(),
-            *o,
-        ),
-    };
-    // Then match this node in its rewritten form; on a match, instantiate the template.
-    let mut binds = Bindings::default();
-    if pattern.matches(&rewritten, &mut binds)
-        && let Some(new_tree) = instantiate(&template.tree, &binds)
-    {
-        *count += 1;
-        return new_tree;
+fn rewrite_node(rules: &RuleSet, node: &Tree, strategy: Strategy, count: &mut usize) -> Tree {
+    match strategy {
+        Strategy::BottomUp => {
+            // Rewrite children first, then fire at this node's rewritten form.
+            let rewritten = match node {
+                Tree::Atom(l, o) => Tree::Atom(l.clone(), *o),
+                Tree::List(items, o) => Tree::List(
+                    items
+                        .iter()
+                        .map(|c| rewrite_node(rules, c, strategy, count))
+                        .collect(),
+                    *o,
+                ),
+            };
+            if let Some(new_tree) = rules.fire(&rewritten) {
+                *count += 1;
+                new_tree
+            } else {
+                rewritten
+            }
+        }
+        Strategy::TopDown => {
+            // Fire at this node first; if it fires, keep the replacement as-is (don't re-descend this
+            // pass — run to a fixpoint for saturation). Otherwise descend into children.
+            if let Some(new_tree) = rules.fire(node) {
+                *count += 1;
+                return new_tree;
+            }
+            match node {
+                Tree::Atom(l, o) => Tree::Atom(l.clone(), *o),
+                Tree::List(items, o) => Tree::List(
+                    items
+                        .iter()
+                        .map(|c| rewrite_node(rules, c, strategy, count))
+                        .collect(),
+                    *o,
+                ),
+            }
+        }
     }
-    rewritten
 }
 
-/// Rewrite to a fixed point: repeat [`rewrite`] until no site matches or `max_passes` is reached.
-/// `count` is the total across all passes. `max_passes` bounds a rule whose output re-matches its
-/// input (which would otherwise loop forever).
+/// Rewrite to a fixed point: repeat the single-rule [`rewrite`] until no site matches or `max_passes`
+/// is reached. `count` is the total across all passes; `max_passes` bounds a rule whose output
+/// re-matches its input (which would otherwise loop forever).
 pub fn rewrite_fixpoint(
     pattern: &Pattern,
     template: &Template,
     subject: &Tree,
     max_passes: usize,
 ) -> Rewrite {
+    let set = RuleSet::new(vec![Rule::new(pattern.clone(), template.clone())]);
+    rewrite_rules_fixpoint(&set, subject, Strategy::BottomUp, max_passes)
+}
+
+/// Rewrite a rule set to a fixed point under `strategy`, bounded by `max_passes`.
+pub fn rewrite_rules_fixpoint(
+    rules: &RuleSet,
+    subject: &Tree,
+    strategy: Strategy,
+    max_passes: usize,
+) -> Rewrite {
     let mut current = subject.clone();
     let mut total = 0;
     for _ in 0..max_passes {
-        let r = rewrite(pattern, template, &current);
+        let r = rewrite_rules(rules, &current, strategy);
         if r.count == 0 {
             break;
         }
@@ -458,7 +886,7 @@ pub fn rewrite_fixpoint(
 /// valid as a direct child of a list (handled in the list arm); at the top level or in single
 /// position it is a failure.
 fn instantiate(t: &Tree, binds: &Bindings) -> Option<Tree> {
-    if let Some(name) = as_metavar(t) {
+    if let Some(name) = template_metavar(t) {
         return binds.get(name).cloned();
     }
     if as_splice(t).is_some() {
@@ -557,11 +985,11 @@ pub mod driver {
         }
     }
 
-    /// Render every match of `pattern` in `target` as a report, one per line:
-    /// `byte START-END: <matched s-expr>` when a span is known, else `<index>: <matched s-expr>`.
-    /// The captured bindings are appended as `  $name = <sexpr>` lines.
-    pub fn report_matches(pattern: &Pattern, target: &Target) -> String {
-        let matches = search(pattern, &target.tree, target.spans.as_ref());
+    /// Render every match of `pattern` (filtered by `query`'s structural constraints) in `target` as
+    /// a report, one per line: `byte START-END: <matched s-expr>` when a span is known, else
+    /// `<index>: <matched s-expr>`. The captured bindings are appended as `  $name = <sexpr>` lines.
+    pub fn report_matches(pattern: &Pattern, query: &Query, target: &Target) -> String {
+        let matches = search_with(pattern, query, &target.tree, target.spans.as_ref());
         let mut out = String::new();
         for (i, m) in matches.iter().enumerate() {
             let loc = match m.span {
@@ -590,23 +1018,23 @@ pub mod driver {
         pub count: usize,
     }
 
-    /// Apply `pattern → template` to `target` (optionally to a fixed point) and project the result in
-    /// `to` format. VALIDATES the result as a transaction: the rewritten tree is re-printed to ML and
-    /// re-parsed; if that fails, the rewrite is REJECTED (no output) with the parse error — never a
-    /// half-applied edit. (Type-checking the result is the Rung-3 step, requiring the compiler crate;
-    /// re-parse well-formedness is what this dependency-free layer can guarantee.)
+    /// Apply a `rules` set to `target` under `strategy` (optionally to a fixed point) and project the
+    /// result in `to` format. VALIDATES the result as a transaction: the rewritten tree is re-printed
+    /// to ML and re-parsed; if that fails, the rewrite is REJECTED (no output) with the parse error —
+    /// never a half-applied edit. (Type-checking the result is the Rung-3 step, requiring the compiler
+    /// crate; re-parse well-formedness is what this dependency-free layer can guarantee.)
     pub fn apply_rewrite(
-        pattern: &Pattern,
-        template: &Template,
+        rules: &RuleSet,
+        strategy: Strategy,
         target: &Target,
         to: Format,
         width: usize,
         fixpoint: bool,
     ) -> Result<RewriteOutcome, String> {
         let r = if fixpoint {
-            rewrite_fixpoint(pattern, template, &target.tree, 64)
+            rewrite_rules_fixpoint(rules, &target.tree, strategy, 64)
         } else {
-            rewrite(pattern, template, &target.tree)
+            rewrite_rules(rules, &target.tree, strategy)
         };
         let arena = r.tree.to_arena();
 
@@ -778,6 +1206,164 @@ mod tests {
         assert_eq!(&"f(a, b)"[span.start..span.end], "f(a, b)");
     }
 
+    // ---- guards (structural predicates on a metavar) ----
+
+    #[test]
+    fn guard_is_literal_and_is_name_discriminate() {
+        // `(+ ,(x is-literal) ,y)` — the first operand must be a literal.
+        let lit = pat("(+ ,(x is-literal) ,y)");
+        assert_eq!(count(&lit, &subj("(+ 1 a)")), 1);
+        assert_eq!(count(&lit, &subj("(+ a 1)")), 0, "a is a name, not a literal");
+        // is-name is the complement for atoms.
+        let nm = pat("(+ ,(x is-name) ,y)");
+        assert_eq!(count(&nm, &subj("(+ a 1)")), 1);
+        assert_eq!(count(&nm, &subj("(+ 1 a)")), 0);
+    }
+
+    #[test]
+    fn guard_typed_literals() {
+        assert_eq!(count(&pat("(f ,(x is-int))"), &subj("(f 42)")), 1);
+        assert_eq!(count(&pat("(f ,(x is-int))"), &subj("(f 4.2)")), 0);
+        assert_eq!(count(&pat("(f ,(x is-str))"), &subj("(f \"hi\")")), 1);
+        assert_eq!(count(&pat("(f ,(x is-bool))"), &subj("(f true)")), 1);
+        assert_eq!(count(&pat("(f ,(x is-float))"), &subj("(f 4.2)")), 1);
+    }
+
+    #[test]
+    fn guard_is_atom_vs_is_list() {
+        assert_eq!(count(&pat("(f ,(x is-atom))"), &subj("(f a)")), 1);
+        assert_eq!(count(&pat("(f ,(x is-atom))"), &subj("(f (g a))")), 0);
+        assert_eq!(count(&pat("(f ,(x is-list))"), &subj("(f (g a))")), 1);
+        assert_eq!(count(&pat("(f ,(x is-list))"), &subj("(f a)")), 0);
+    }
+
+    #[test]
+    fn guard_head_is_constrains_a_list_operand() {
+        // match a call whose single argument is itself a `*` application.
+        let p = pat("(f ,(inner (head-is *)))");
+        assert_eq!(count(&p, &subj("(f (* a b))")), 1);
+        assert_eq!(count(&p, &subj("(f (+ a b))")), 0);
+        assert_eq!(count(&p, &subj("(f a)")), 0, "a name has no head");
+    }
+
+    #[test]
+    fn guard_matches_subpattern_and_still_binds_outer() {
+        // `,(x (matches (lit ,_)))` — x must itself match `(lit ,_)`, and x is still bound.
+        let p = pat("(node ,(x (matches (lit ,_))))");
+        let s = subj("(node (lit 7))");
+        let m = search(&p, &s, None);
+        assert_eq!(m.len(), 1);
+        // the sub-pattern's own capture does NOT leak; only the outer `x` is bound.
+        assert_eq!(m[0].bindings.get("x").unwrap().to_sexpr(), "(lit 7)");
+        assert!(m[0].bindings.get_run("_").is_none());
+        assert_eq!(count(&p, &subj("(node (var 7))")), 0);
+    }
+
+    #[test]
+    fn guard_not_negates() {
+        // match `(f ,x)` where x is NOT a literal.
+        let p = pat("(f ,(x (not is-literal)))");
+        assert_eq!(count(&p, &subj("(f a)")), 1);
+        assert_eq!(count(&p, &subj("(f 1)")), 0);
+    }
+
+    #[test]
+    fn multiple_guards_are_conjunctive() {
+        // an atom that is not a name ⇒ a literal atom; equivalently `is-atom` AND `(not is-name)`.
+        let p = pat("(f ,(x is-atom (not is-name)))");
+        assert_eq!(count(&p, &subj("(f 1)")), 1);
+        assert_eq!(count(&p, &subj("(f a)")), 0);
+        assert_eq!(count(&p, &subj("(f (g))")), 0);
+    }
+
+    #[test]
+    fn guarded_metavar_still_enforces_consistency() {
+        // `(+ ,(x is-name) ,(x is-name))` — both operands must be names AND equal.
+        let p = pat("(+ ,(x is-name) ,(x is-name))");
+        assert_eq!(count(&p, &subj("(+ a a)")), 1);
+        assert_eq!(count(&p, &subj("(+ a b)")), 0);
+        assert_eq!(count(&p, &subj("(+ 1 1)")), 0, "guard fails: not names");
+    }
+
+    #[test]
+    fn unknown_guard_is_rejected_at_compile_time() {
+        let e = Pattern::compile("(f ,(x is-frobnicated))").unwrap_err();
+        assert!(e.0.contains("unknown guard"), "got {e}");
+    }
+
+    #[test]
+    fn top_level_splice_is_rejected() {
+        let e = Pattern::compile(",@xs").unwrap_err();
+        assert!(e.0.contains("direct child of a list"), "got {e}");
+    }
+
+    // ---- relational context (inside / has) ----
+
+    #[test]
+    fn inside_restricts_to_a_matching_ancestor() {
+        // Match `x` only where it occurs inside a `(danger …)`.
+        let s = subj("(do (safe x) (danger (g x)))");
+        let q = Query::new().inside(pat("(danger ,@_)"));
+        let m = search_with(&pat("x"), &q, &s, None);
+        assert_eq!(m.len(), 1, "only the x under (danger …): {m:?}");
+        // Without the constraint, both `x` occurrences match.
+        assert_eq!(count(&pat("x"), &s), 2);
+    }
+
+    #[test]
+    fn not_inside_excludes_a_matching_ancestor() {
+        let s = subj("(do (safe x) (danger (g x)))");
+        let q = Query::new().not_inside(pat("(danger ,@_)"));
+        let m = search_with(&pat("x"), &q, &s, None);
+        assert_eq!(m.len(), 1, "only the x NOT under (danger …)");
+    }
+
+    #[test]
+    fn has_requires_a_matching_descendant() {
+        // Match a `(fn …)` that CONTAINS a `(raise ,_)` somewhere inside.
+        let s = subj("(do (fn a (raise e)) (fn b (return c)))");
+        let q = Query::new().has(pat("(raise ,_)"));
+        let m = search_with(&pat("(fn ,@_)"), &q, &s, None);
+        assert_eq!(m.len(), 1);
+        assert!(m[0].node.to_sexpr().contains("raise"), "the fn with raise");
+    }
+
+    #[test]
+    fn not_has_excludes_a_matching_descendant() {
+        let s = subj("(do (fn a (raise e)) (fn b (return c)))");
+        let q = Query::new().not_has(pat("(raise ,_)"));
+        let m = search_with(&pat("(fn ,@_)"), &q, &s, None);
+        assert_eq!(m.len(), 1);
+        assert!(m[0].node.to_sexpr().contains("return"), "the fn without raise");
+    }
+
+    #[test]
+    fn has_is_strict_not_reflexive() {
+        // A `(raise ,_)` does not "have" itself as a descendant.
+        let s = subj("(raise e)");
+        let q = Query::new().has(pat("(raise ,_)"));
+        assert_eq!(search_with(&pat("(raise ,_)"), &q, &s, None).len(), 0);
+    }
+
+    #[test]
+    fn constraints_compose_conjunctively() {
+        // Find a `(call …)` that is inside a `(module …)` AND does NOT contain a `(deprecated)` node.
+        let s = subj("(module (call (deprecated)) (call ok))");
+        let q = Query::new()
+            .inside(pat("(module ,@_)"))
+            .not_has(pat("(deprecated ,@_)"));
+        let m = search_with(&pat("(call ,@_)"), &q, &s, None);
+        let texts: Vec<_> = m.iter().map(|x| x.node.to_sexpr()).collect();
+        // (call ok) qualifies; (call (deprecated)) is excluded by not_has; both are inside module.
+        assert_eq!(texts, ["(call ok)"], "got {texts:?}");
+    }
+
+    #[test]
+    fn empty_query_equals_bare_search() {
+        let s = subj("(+ (+ x 0) 0)");
+        assert_eq!(count_with(&pat("(+ ,e 0)"), &Query::new(), &s), 2);
+    }
+
     // ---- rewriting ----
 
     #[test]
@@ -884,6 +1470,75 @@ mod tests {
         assert!(back.structurally_eq(&a));
     }
 
+    // ---- multi-rule sets + strategy ----
+
+    fn rule(p: &str, t: &str) -> Rule {
+        Rule::new(pat(p), tmpl(t))
+    }
+
+    #[test]
+    fn rule_set_applies_several_identities_in_one_pass() {
+        // A little arithmetic-identity peephole: +0, *1, *0.
+        let rules = RuleSet::new(vec![
+            rule("(+ ,x 0)", ",x"),
+            rule("(* ,x 1)", ",x"),
+            rule("(* ,_ 0)", "0"),
+        ]);
+        let s = subj("(f (+ a 0) (* b 1) (* c 0))");
+        let r = rewrite_rules(&rules, &s, Strategy::BottomUp);
+        assert_eq!(r.count, 3);
+        assert_eq!(r.tree.to_sexpr(), "(f a b 0)");
+    }
+
+    #[test]
+    fn rule_set_fires_first_matching_rule() {
+        // Two rules both match `(x)`; the FIRST one wins.
+        let rules = RuleSet::new(vec![rule("(x)", "first"), rule("(x)", "second")]);
+        let r = rewrite_rules(&rules, &subj("(x)"), Strategy::BottomUp);
+        assert_eq!(r.tree.to_sexpr(), "first");
+    }
+
+    #[test]
+    fn rule_set_compiles_from_text() {
+        let rules = RuleSet::compile("(rule (+ ,x 0) ,x)\n(rule (* ,x 1) ,x)").unwrap();
+        assert_eq!(rules.rules.len(), 2);
+        let r = rewrite_rules(&rules, &subj("(+ (* q 1) 0)"), Strategy::BottomUp);
+        assert_eq!(r.tree.to_sexpr(), "q");
+    }
+
+    #[test]
+    fn bad_rule_form_is_rejected() {
+        assert!(RuleSet::compile("(notarule x y)").is_err());
+        assert!(RuleSet::compile("(rule onlyone)").is_err());
+    }
+
+    #[test]
+    fn strategy_topdown_vs_bottomup_differ_on_nested_matches() {
+        // `(wrap ,x) -> ,x` on `(wrap (wrap a))`.
+        let rules = RuleSet::new(vec![rule("(wrap ,x)", ",x")]);
+        let s = subj("(wrap (wrap a))");
+        // Bottom-up: inner unwraps to `(wrap a)`... then outer matches `(wrap a)` -> `a`. Fully peels.
+        let bu = rewrite_rules(&rules, &s, Strategy::BottomUp);
+        assert_eq!(bu.tree.to_sexpr(), "a");
+        assert_eq!(bu.count, 2);
+        // Top-down: outer fires first to `(wrap a)` and is NOT re-descended this pass -> one unwrap.
+        let td = rewrite_rules(&rules, &s, Strategy::TopDown);
+        assert_eq!(td.tree.to_sexpr(), "(wrap a)");
+        assert_eq!(td.count, 1);
+        // Top-down to a fixpoint peels fully.
+        let td_fp = rewrite_rules_fixpoint(&rules, &s, Strategy::TopDown, 10);
+        assert_eq!(td_fp.tree.to_sexpr(), "a");
+    }
+
+    #[test]
+    fn rule_set_fixpoint_saturates() {
+        // A cascading simplification that needs more than one interleaving.
+        let rules = RuleSet::new(vec![rule("(+ ,x 0)", ",x"), rule("(neg (neg ,x))", ",x")]);
+        let s = subj("(+ (neg (neg (+ y 0))) 0)");
+        let r = rewrite_rules_fixpoint(&rules, &s, Strategy::BottomUp, 10);
+        assert_eq!(r.tree.to_sexpr(), "y");
+    }
+
     // ---- driver ----
 
     mod driver_tests {
@@ -896,10 +1551,19 @@ mod tests {
             let src = "f(a, b)\ng(c)";
             let (target, errors) = driver::load(src.as_bytes(), Format::Ml).unwrap();
             assert!(errors.is_empty());
-            let report = driver::report_matches(&pat("(g ,@xs)"), &target);
+            let report = driver::report_matches(&pat("(g ,@xs)"), &Query::new(), &target);
             // g(c) -> (g c); the report line names its byte span and the matched form.
             assert!(report.contains("(g c)"), "report: {report}");
             assert!(report.contains("byte "), "has a span: {report}");
+        }
+
+        #[test]
+        fn report_matches_honors_a_relational_query() {
+            let (target, _) = driver::load(b"(do (safe x) (danger (g x)))", Format::Sexpr).unwrap();
+            let q = Query::new().inside(pat("(danger ,@_)"));
+            let report = driver::report_matches(&pat("x"), &q, &target);
+            // only the x under (danger …) — one line.
+            assert_eq!(report.lines().filter(|l| l.contains(": x")).count(), 1, "{report}");
         }
 
         #[test]
@@ -908,21 +1572,16 @@ mod tests {
             let (target, errors) = driver::load(b"f(@)", Format::Ml).unwrap();
             assert!(!errors.is_empty(), "recoverable errors surfaced");
             // still queryable: the call `f(...)` is present.
-            assert!(driver::report_matches(&pat("(f ,@xs)"), &target).contains("f"));
+            assert!(driver::report_matches(&pat("(f ,@xs)"), &Query::new(), &target).contains("f"));
         }
 
         #[test]
         fn apply_rewrite_projects_ml_and_validates() {
             let (target, _) = driver::load(b"(+ x 0)", Format::Sexpr).unwrap();
-            let out = driver::apply_rewrite(
-                &pat("(+ ,e 0)"),
-                &tmpl(",e"),
-                &target,
-                Format::Ml,
-                100,
-                false,
-            )
-            .unwrap();
+            let rules = RuleSet::new(vec![Rule::new(pat("(+ ,e 0)"), tmpl(",e"))]);
+            let out =
+                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Ml, 100, false)
+                    .unwrap();
             assert_eq!(out.count, 1);
             assert_eq!(out.output.trim(), "x");
         }
@@ -930,17 +1589,23 @@ mod tests {
         #[test]
         fn apply_rewrite_can_emit_sexpr() {
             let (target, _) = driver::load(b"(g (* a 1) (* b 1))", Format::Sexpr).unwrap();
-            let out = driver::apply_rewrite(
-                &pat("(* ,x 1)"),
-                &tmpl(",x"),
-                &target,
-                Format::Sexpr,
-                100,
-                false,
-            )
-            .unwrap();
+            let rules = RuleSet::new(vec![Rule::new(pat("(* ,x 1)"), tmpl(",x"))]);
+            let out =
+                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Sexpr, 100, false)
+                    .unwrap();
             assert_eq!(out.count, 2);
             assert_eq!(out.output.trim(), "(g a b)");
+        }
+
+        #[test]
+        fn apply_rewrite_runs_a_multi_rule_set() {
+            let (target, _) = driver::load(b"(f (+ a 0) (* b 1))", Format::Sexpr).unwrap();
+            let rules = RuleSet::compile("(rule (+ ,x 0) ,x) (rule (* ,x 1) ,x)").unwrap();
+            let out =
+                driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Sexpr, 100, false)
+                    .unwrap();
+            assert_eq!(out.count, 2);
+            assert_eq!(out.output.trim(), "(f a b)");
         }
 
         #[test]

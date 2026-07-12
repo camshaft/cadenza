@@ -4,9 +4,10 @@ description: >-
   How to structurally search and rewrite Cadenza programs with the `cdz-syntax query` / `rewrite`
   codemod tool (in the cadenza-syntax crate). Read this whenever the task is finding or transforming
   code by SHAPE rather than text — structural search-and-replace, a rename/peephole/wrap refactor,
-  counting occurrences of a form, extracting spans of matching nodes, or building on the query/Tree
-  matcher API. Covers the `,x`/`,@xs` pattern language, the CLI, the library API, and how it maps to
-  the eventual self-hosted sidecar.
+  a multi-rule simplifier pass, counting occurrences of a form, extracting spans of matching nodes,
+  or building on the query/Tree matcher API. Covers the `,x`/`,@xs` pattern language, structural
+  guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`), multi-rule
+  sets + traversal strategy, the CLI, the library API, and how it maps to the self-hosted sidecar.
 ---
 
 # Structural query & rewrite (codemod) for Cadenza
@@ -42,6 +43,13 @@ Rules to know:
 These are the same quote-pattern shapes (`` `(+ ,x 0) ``) that `spec/semantics/20-structural-editing.sexp`
 pins as the self-hosted end state, so a rule written today reads identically later.
 
+**Guards** constrain a metavar structurally: `,(name guard…)` (conjunctive). Guards are
+`is-literal`, `is-name`, `is-int`/`is-float`/`is-str`/`is-bool`, `is-atom`/`is-list`,
+`(head-is NAME)`, `(matches PAT)`, `(not GUARD)`. E.g. `(+ ,(x is-literal) ,y)`, `(f ,(g (head-is *)))`.
+An unknown guard is rejected at compile time. **All guards are purely structural — there are NO
+scope/binding or type guards** (`refs`/`defines`/`type-of`); binding analysis is the compiler's job,
+not this layer's, to avoid duplicating the resolver.
+
 ## CLI
 
 The binary is `cdz-syntax` (at `target/<profile>/cdz-syntax`, or `cargo run -p cadenza-syntax --bin
@@ -66,11 +74,25 @@ f(a, b)
 # wrap a call with a splice template
 $ printf '(risky a b)' | cdz-syntax rewrite '(risky ,@args)' '(log (risky ,@args))' --from sexpr
 (log (risky a b))
+
+# a guard + a relational constraint
+$ printf '(do (+ 1 a) (+ b c))' | cdz-syntax query '(+ ,(x is-literal) ,y)' --from sexpr --count
+1
+$ printf '(do (safe x) (danger (g x)))' | cdz-syntax query 'x' --from sexpr --inside '(danger ,@_)'
+#0: x
+
+# a multi-rule peephole set (first match wins), applied in one bottom-up pass
+$ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz-syntax rewrite --rules peephole.rules --from sexpr
+(f a b 0)
 ```
 
 - `query` prints matches (span + bindings) or, with `--count`, the number. No match ⇒ empty, exit 0.
-- `rewrite PATTERN TEMPLATE` prints the rewritten program to **stdout** and the site count to
-  **stderr** (so stdout stays a clean, pipeable program). `--fixpoint` re-applies until stable
+  Filter by structural context: `--inside PAT` / `--has PAT` / `--not-inside PAT` / `--not-has PAT`
+  (repeatable, conjunctive; ancestry/containment only — no scope).
+- `rewrite PATTERN TEMPLATE` (or `rewrite --rules FILE`) prints the rewritten program to **stdout** and
+  the site count to **stderr** (so stdout stays a clean, pipeable program). `--rules FILE` is a
+  sequence of `(rule PATTERN TEMPLATE)` forms applied together (first match wins). Traversal is
+  bottom-up by default; `--top-down` matches outermost-first. `--fixpoint` re-applies until stable
   (bounded). It **validates as a transaction**: the result is re-printed to ML and re-parsed; if it
   doesn't round-trip, the rewrite is **rejected** (non-zero exit, no output) — never a half-applied edit.
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
@@ -95,20 +117,34 @@ let n     = query::count(&pat, &tree);
 let out   = query::rewrite(&pat, &tmpl, &tree);          // Rewrite { tree, count }; bottom-up
 let sat   = query::rewrite_fixpoint(&pat, &tmpl, &tree, 64);
 
+// relational context (structural only): search filtered by ancestry/containment
+use query::Query;
+let q     = Query::new().inside(Pattern::compile("(danger ,@_)")?).not_has(Pattern::compile("(ok)")?);
+let hits2 = query::search_with(&pat, &q, &tree, Some(&spans));
+
+// multi-rule set + strategy
+use query::{Rule, RuleSet, Strategy};
+let rules = RuleSet::compile("(rule (+ ,x 0) ,x) (rule (* ,x 1) ,x)")?;   // or RuleSet::new(vec![Rule::new(p, t)])
+let out2  = query::rewrite_rules(&rules, &tree, Strategy::BottomUp);       // or Strategy::TopDown
+let sat2  = query::rewrite_rules_fixpoint(&rules, &tree, Strategy::BottomUp, 64);
+
 // or the whole driver (what the CLI uses): load a target + project output, with validation
 let (target, warnings) = query::driver::load(bytes, Format::Ml)?;
-let report  = query::driver::report_matches(&pat, &target);
-let outcome = query::driver::apply_rewrite(&pat, &tmpl, &target, Format::Ml, 100, false)?;
+let report  = query::driver::report_matches(&pat, &q, &target);
+let outcome = query::driver::apply_rewrite(&rules, Strategy::BottomUp, &target, Format::Ml, 100, false)?;
 ```
 
 `search` is top-down (nested matches included). `rewrite` is **bottom-up** — a node is matched against
 its already-rewritten children, so a rule that exposes a new match collapses in one pass
 (`(+ ,x 0) → ,x` fully reduces `(+ (+ x 0) 0)`).
 
-## What is NOT here (yet)
+## What is NOT here (and why)
 
-- **Type-directed queries** (`type-of`, `defines`, `refs`) — those reach into the compiler; this layer
-  is dependency-free. They belong to the driver once it links `rcdzc` (Rung 3).
+- **Scope- / binding-based queries and guards** (`refs`, `defines`, scope-aware rename) — these need
+  a name resolver, which the **compiler** owns. Kept out on purpose to avoid duplicating scope logic;
+  every guard and relational constraint here is purely structural (shape/ancestry/containment).
+- **Type-directed queries** (`type-of`, typed metavars) — reach into the checker; this layer is
+  dependency-free. They belong to the driver once it links `rcdzc` (Rung 3).
 - **Addressed edits** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the
   `options/structural-interface/content-addressed-nodes.md` layer, above these primitives.
 - **Type-checking a rewrite result** — the tool validates *well-formedness* (re-parse + round-trip);

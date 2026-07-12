@@ -126,3 +126,93 @@ fn rewrite_no_match_is_a_no_op_that_reprints() {
     assert_eq!(stdout.trim(), "a - 1");
     assert!(stderr.contains("rewrote 0 site(s)"), "0 sites: {stderr}");
 }
+
+// ---- matcher enrichment: guards, relational context, multi-rule, strategy ----
+
+#[test]
+fn query_guard_filters_by_structure() {
+    // `(+ ,(x is-literal) ,y)` matches only the site whose first operand is a literal.
+    let (ok, stdout, _) = run(
+        &["query", "(+ ,(x is-literal) ,y)", "--from", "sexpr", "--count"],
+        "(do (+ 1 a) (+ b c))",
+    );
+    assert!(ok);
+    assert_eq!(stdout.trim(), "1");
+}
+
+#[test]
+fn query_unknown_guard_is_rejected() {
+    let (ok, _, stderr) = run(&["query", "(f ,(x is-bogus))", "--from", "sexpr"], "(f a)");
+    assert!(!ok);
+    assert!(stderr.contains("unknown guard"), "reason: {stderr}");
+}
+
+#[test]
+fn query_inside_restricts_to_ancestor() {
+    let (ok, stdout, _) = run(
+        &["query", "x", "--from", "sexpr", "--inside", "(danger ,@_)"],
+        "(do (safe x) (danger (g x)))",
+    );
+    assert!(ok);
+    // exactly one `x` line (the one under danger).
+    assert_eq!(stdout.lines().filter(|l| l.contains(": x")).count(), 1, "{stdout}");
+}
+
+#[test]
+fn query_has_requires_descendant() {
+    let (ok, stdout, _) = run(
+        &["query", "(fn ,@_)", "--from", "sexpr", "--has", "(raise ,_)"],
+        "(do (fn a (raise e)) (fn b (return c)))",
+    );
+    assert!(ok);
+    assert!(stdout.contains("raise"), "the fn with raise: {stdout}");
+    assert!(!stdout.contains("return"), "not the other fn: {stdout}");
+}
+
+#[test]
+fn rewrite_with_a_rules_file_applies_a_peephole_set() {
+    // Write a 3-rule peephole set to a temp file and apply it.
+    let dir = std::env::temp_dir();
+    let path = dir.join("cdz_cli_peephole.rules");
+    std::fs::write(
+        &path,
+        "(rule (+ ,x 0) ,x)\n(rule (* ,x 1) ,x)\n(rule (* ,_ 0) 0)\n",
+    )
+    .unwrap();
+    let (ok, stdout, stderr) = run(
+        &[
+            "rewrite",
+            "--rules",
+            path.to_str().unwrap(),
+            "--from",
+            "sexpr",
+            "--to",
+            "sexpr",
+        ],
+        "(f (+ a 0) (* b 1) (* c 0))",
+    );
+    let _ = std::fs::remove_file(&path);
+    assert!(ok, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "(f a b 0)");
+    assert!(stderr.contains("rewrote 3 site(s)"), "count: {stderr}");
+}
+
+#[test]
+fn rewrite_top_down_does_a_single_pass_unwrap() {
+    let (ok, stdout, _) = run(
+        &[
+            "rewrite", "(wrap ,x)", ",x", "--from", "sexpr", "--to", "sexpr", "--top-down",
+        ],
+        "(wrap (wrap a))",
+    );
+    assert!(ok);
+    assert_eq!(stdout.trim(), "(wrap a)");
+}
+
+#[test]
+fn rewrite_requires_a_pattern_or_rules() {
+    // Neither positional PATTERN/TEMPLATE nor --rules given.
+    let (ok, _, stderr) = run(&["rewrite", "--from", "sexpr"], "(f a)");
+    assert!(!ok);
+    assert!(stderr.contains("required"), "reason: {stderr}");
+}

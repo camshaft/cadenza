@@ -39,11 +39,64 @@ These sigils are exactly the quote-pattern surface the structural-editing corpus
 end-state (`spec/semantics/20-structural-editing.sexp`: `` `(+ ,x 0) `` ⇒ `x`), so patterns written
 today against the prototype read identically to the self-hosted rewrite rules later.
 
+### Guards (structural predicates on a metavar)
+
+A metavariable can carry conjunctive **structural** constraints: `,(name guard…)`. All guards are
+purely syntactic — deliberately no scope/binding or type predicates (`refs`/`defines`/`type-of`),
+which need the compiler's resolver/checker and live there, not in this syntax-only layer.
+
+| Guard              | Holds when the node is…                              |
+|--------------------|------------------------------------------------------|
+| `is-literal`       | a literal atom (int/float/string/bool — not a name)  |
+| `is-name`          | a name atom                                          |
+| `is-int` / `is-float` / `is-str` / `is-bool` | that specific literal kind |
+| `is-atom` / `is-list` | any atom / any list                               |
+| `(head-is NAME)`   | a list whose head name is `NAME`                     |
+| `(matches PAT)`    | itself matches sub-pattern `PAT` (its captures are a pure test, not leaked) |
+| `(not GUARD)`      | the negation                                         |
+
+```
+(+ ,(x is-literal) ,y)      # an addition whose first operand is a literal
+(f ,(g (head-is *)))        # a call whose argument is a `*` application
+(f ,(x is-atom (not is-name)))   # conjunctive: a non-name atom, i.e. a literal
+```
+An unknown guard is rejected at compile time. Guards compose with consistency: `(+ ,(x is-name) ,(x is-name))` needs two *equal names*.
+
+### Relational context (structural ancestry / containment)
+
+A `query` can be filtered by where a match sits in the tree (purely structural — no scope):
+
+| Constraint            | Keeps a match when…                                        |
+|-----------------------|------------------------------------------------------------|
+| `--inside PAT`        | some **ancestor** matches `PAT`                            |
+| `--has PAT`           | some strict **descendant** matches `PAT`                   |
+| `--not-inside PAT`    | no ancestor matches `PAT`                                  |
+| `--not-has PAT`       | no descendant matches `PAT`                               |
+
+Each is repeatable and they compose conjunctively (`Query::inside/has/not_inside/not_has` in the API).
+
+### Multi-rule sets & traversal strategy
+
+A `rewrite` can apply an ordered **rule set** in one traversal — the peephole-simplifier shape. A
+rules file is a sequence of `(rule PATTERN TEMPLATE)` forms; at each node the **first** matching rule
+fires. Traversal is **bottom-up** by default (children first, so a rule that exposes a new match is
+caught in the same pass); `--top-down` matches outermost-first (one rewrite per node per pass; combine
+with `--fixpoint` to saturate).
+
+```
+;; peephole.rules
+(rule (+ ,x 0) ,x)
+(rule (* ,x 1) ,x)
+(rule (* ,_ 0) 0)
+```
+
 ## CLI
 
 ```text
-cdz-syntax query   PATTERN          [FILE] [--from FMT] [--count]
-cdz-syntax rewrite PATTERN TEMPLATE [FILE] [--from FMT] [--to FMT] [--width N] [--fixpoint]
+cdz-syntax query   PATTERN [FILE] [--from FMT] [--count]
+                   [--inside PAT] [--has PAT] [--not-inside PAT] [--not-has PAT]
+cdz-syntax rewrite PATTERN TEMPLATE [FILE] [--from FMT] [--to FMT] [--width N] [--fixpoint] [--top-down]
+cdz-syntax rewrite --rules FILE     [FILE] [--from FMT] [--to FMT] [--width N] [--fixpoint] [--top-down]
 ```
 
 `--from`/`--to` are inferred from the FILE extension (`.cdz`/`.ml` → ml, `.sexp` → sexpr, `.bin` →
@@ -64,6 +117,19 @@ f(a, b)
 $ printf '(risky a b)' | cdz-syntax rewrite '(risky ,@args)' '(log (risky ,@args))' --from sexpr
 cdz-syntax: rewrote 1 site(s)
 (log (risky a b))
+
+# guard: only additions with a literal first operand
+$ printf '(do (+ 1 a) (+ b c))' | cdz-syntax query '(+ ,(x is-literal) ,y)' --from sexpr --count
+1
+
+# relational: an `x` only where it sits inside a (danger …)
+$ printf '(do (safe x) (danger (g x)))' | cdz-syntax query 'x' --from sexpr --inside '(danger ,@_)'
+#0: x
+
+# a multi-rule peephole set applied in one pass
+$ printf '(f (+ a 0) (* b 1) (* c 0))' | cdz-syntax rewrite --rules peephole.rules --from sexpr
+cdz-syntax: rewrote 3 site(s)
+(f a b 0)
 ```
 
 - **query** prints each match as `byte START-END: <matched s-expr>` (the span comes from the parser's
@@ -92,17 +158,29 @@ over incomplete source" the tooling capability calls for.
 ## Library API (`cadenza_syntax::query`)
 
 ```rust
-Pattern::compile(&str)  -> Result<Pattern, PatternError>
+Pattern::compile(&str)  -> Result<Pattern, PatternError>   // supports `,(x guard…)` guards
 Template::compile(&str) -> Result<Template, PatternError>
 search(&Pattern, &Tree, Option<&SpanTable>) -> Vec<Match>   // Match { node, span, bindings }
 count(&Pattern, &Tree)  -> usize
-rewrite(&Pattern, &Template, &Tree)              -> Rewrite  // Rewrite { tree, count }
+
+// relational context (structural ancestry / containment; no scope)
+Query { inside, has, not_inside, not_has: Vec<Pattern> }    // builder: .inside(p).has(p)…
+search_with(&Pattern, &Query, &Tree, Option<&SpanTable>) -> Vec<Match>
+count_with(&Pattern, &Query, &Tree) -> usize
+
+// single-rule (convenience) and multi-rule + strategy
+rewrite(&Pattern, &Template, &Tree)               -> Rewrite   // Rewrite { tree, count }
 rewrite_fixpoint(&Pattern, &Template, &Tree, max) -> Rewrite
+Rule::new(Pattern, Template) / Rule::compile_form(&Tree)
+RuleSet::new(Vec<Rule>) / RuleSet::compile(&str)            // "(rule PAT TMPL) …"
+Strategy::{BottomUp, TopDown}
+rewrite_rules(&RuleSet, &Tree, Strategy)          -> Rewrite
+rewrite_rules_fixpoint(&RuleSet, &Tree, Strategy, max) -> Rewrite
 
 // driver: load a target + project output; the CLI is a thin shell over this
-query::driver::load(&[u8], Format)               -> Result<(Target, Vec<String /*warnings*/>), String>
-query::driver::report_matches(&Pattern, &Target) -> String
-query::driver::apply_rewrite(&Pattern, &Template, &Target, Format, width, fixpoint) -> Result<RewriteOutcome, String>
+query::driver::load(&[u8], Format)                       -> Result<(Target, Vec<String /*warnings*/>), String>
+query::driver::report_matches(&Pattern, &Query, &Target) -> String
+query::driver::apply_rewrite(&RuleSet, Strategy, &Target, Format, width, fixpoint) -> Result<RewriteOutcome, String>
 ```
 
 ## Mapping to the self-hosted end state (Rung 3)
@@ -120,9 +198,13 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
 
 ## What is deliberately NOT here
 
-- **Type-directed queries** (`type-of`, `defines`, `refs`) — those reach into the compiler; this layer
-  is dependency-free (`cadenza-syntax` depends on no compiler crate). They belong to the driver once
-  it links `rcdzc`.
+- **Scope- / binding-based queries and guards** (`refs`, `defines`, scope-aware rename, free-var
+  analysis) — these need a name resolver, which the **compiler** owns. Keeping them out avoids
+  duplicating the compiler's scope logic; every guard and relational constraint here is purely
+  structural (ancestry/containment/shape), never scope.
+- **Type-directed queries** (`type-of`, typed metavars) — those reach into the checker; this layer is
+  dependency-free (`cadenza-syntax` depends on no compiler crate). They belong to the driver once it
+  links `rcdzc`.
 - **Addressed edits** (`insert`/`replace`/`delete`/`move` by node path/content-id) — the
   `content-addressed-nodes` structural-interface layer, above these primitives.
 - **Type-checking the rewrite result** — the prototype validates *well-formedness* (re-parse +
@@ -130,7 +212,11 @@ prototype's `Tree` matcher is the executable spec for what those combinators mus
 
 ## Tests
 
-- `query` module unit tests (28): matching (metavars, consistency, variadic + anchoring, wildcard),
-  rewriting (bottom-up, splice templates, unbound-var no-op, fixpoint bound), the driver.
-- `tests/query_cli.rs` (9): the built binary driven over stdin — query/count/rewrite, cross-surface,
-  broken-input recovery, bad-pattern rejection, no-op reprint.
+- `query` module unit tests (53): matching (metavars, consistency, variadic + anchoring, wildcard),
+  **guards** (each predicate, `matches`/`not`, conjunction, consistency interaction, compile-time
+  rejection), **relational context** (inside/has/not-*, strict-descendant, composition), **multi-rule
+  sets + strategy** (first-match-wins, rule-file compile, bottom-up vs top-down, fixpoint), and the
+  driver.
+- `tests/query_cli.rs` (16): the built binary driven over stdin — query/count/rewrite, guards,
+  relational flags, `--rules` file, `--top-down`, cross-surface, broken-input recovery, bad-pattern /
+  unknown-guard rejection, no-op reprint.
