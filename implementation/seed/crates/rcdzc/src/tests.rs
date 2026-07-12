@@ -7831,6 +7831,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_effectful_function_is_specialized_per_context() {
+        // E3: a recursive function that performs a discharged op is SPECIALIZED under its handler context
+        // — the handler's state threads as a trailing parameter (`DESIGN-effects-rcdzc.md` §4.3).
+        // `loop` performs `(Countdown.tick)` and recurses; the arm resumes the current counter and
+        // threads `s-1`, so ticks read 3,2,1,0 and `loop` returns `1+1+1+0` = 3. `loop#ctx(s)` becomes
+        // `(if (= s 0) 0 (+ 1 (loop#ctx (- s 1))))` — a single-return recursive fn, no multi-value.
+        let src = "(do (effect Countdown (op tick (-> Unit Int64))) \
+                   (def (loop) (if (= (Countdown.tick) 0) 0 (+ 1 (loop)))) \
+                   (def (main) (handle 3 ((Countdown.tick (u) s (resume s (- s 1)))) (loop))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a recursive effectful function is specialized and runs"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn a_recursive_effectful_case_the_fold_cannot_serve_declines_not_hangs() {
+        // E3 boundary: a recursive effectful walk the single-state fast path cannot serve (a 2-arm
+        // handler over a compound list state) must DECLINE cleanly — NOT hang. Regression guard for the
+        // unbounded-inline loop (a recursive callee β-reduced to a fresh non-self-referential copy each
+        // level would unroll forever without `THREAD_INLINE_LIMIT`). It compiles (declines) in bounded
+        // time; the point is the compiler returns rather than spinning.
+        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+                   (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
+                   (def (main) (handle (list) \
+                     ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
+                     (List.len (walk 3)))) (export main))";
+        // Declines (not yet served) — but crucially TERMINATES (no hang). `is_err` = the decline; the
+        // test would time out (not fail) if the fold looped, so reaching this assertion IS the guard.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a not-yet-served recursive effectful case must decline (and must terminate, not hang)"
+        );
+    }
+
+    #[test]
     fn resuming_with_a_wrong_type_value_is_cdz0201() {
         // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
         // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
