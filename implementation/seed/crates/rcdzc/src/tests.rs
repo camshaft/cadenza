@@ -3437,7 +3437,8 @@ mod recursion {
                (def (be (: b Bytes) i n) (if (< n 1) 0 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1))))) \
                (def (main) (be (Bytes.of (list 1 2)) 0 2)) (export main))",
         );
-        wasmparser::validate(&bytes).expect("a heap-match composed with checked arith must emit valid wasm");
+        wasmparser::validate(&bytes)
+            .expect("a heap-match composed with checked arith must emit valid wasm");
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping composed run");
             return;
@@ -8127,6 +8128,44 @@ mod stage1 {
                     assert_eq!(s, want.to_string(), "built-in Sign match: {ctor}")
                 }
                 cdz_run::Outcome::Trap(t) => panic!("Sign match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn compare_yields_the_three_way_ordering() {
+        // `compare : ∀a. a → a → Ordering` — the three-way comparison (core-semantics.md §A Total Order
+        // Is Observed Through A Three-Way Comparison). A constant scalar/string pair FOLDS to the matching
+        // `Ordering` variant; deconstructed by a three-arm match → -1/0/1. Covers int, string, and the
+        // agreement with `<` (all three relations across two operand types).
+        for (prog, want) in [
+            ("(compare 1 2)", -1),         // Less
+            ("(compare 2 2)", 0),          // Equal
+            ("(compare 3 2)", 1),          // Greater
+            ("(compare \"a\" \"b\")", -1), // strings order lexicographically
+            ("(compare \"b\" \"b\")", 0),
+        ] {
+            let src = format!(
+                "(module m (def (main) (match {prog} \
+                   ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1))) (export main))"
+            );
+            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect("compile compare match");
+            let Some(runtime) = super::find_runtime_wasm() else {
+                eprintln!("runtime wasm not found; skipping compare run");
+                return;
+            };
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(s, want.to_string(), "compare fold: {prog}")
+                }
+                cdz_run::Outcome::Trap(t) => panic!("compare run trapped: {t}"),
             }
         }
     }

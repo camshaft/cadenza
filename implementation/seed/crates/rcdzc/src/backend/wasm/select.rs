@@ -4048,16 +4048,7 @@ fn emit_checked_arith_to(
         && let OperandSrc::Slot(sb_slot) = sb
     {
         emit_operand_into(
-            db,
-            rhs,
-            ot,
-            sb_slot,
-            slots,
-            b_base,
-            high,
-            scratch_ty,
-            layout,
-            out,
+            db, rhs, ot, sb_slot, slots, b_base, high, scratch_ty, layout, out,
         )?;
     }
     // push$a push$b <machine-op> local.set $r

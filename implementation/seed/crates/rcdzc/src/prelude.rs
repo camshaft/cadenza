@@ -110,6 +110,15 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         );
     }
 
+    // `compare` — the THREE-WAY comparison `∀a. a → a → Ordering` (core-semantics.md §A Total Order Is
+    // Observed Through A Three-Way Comparison). The PRIMITIVE the boolean `<`/`>`/… agree with; its
+    // result is the `Ordering` sum (Less/Equal/Greater), not a Bool. Same operator-record mechanism as
+    // the relational comparisons; only the result type differs.
+    names.insert(
+        "compare".to_string(),
+        operator_record(ast, "compare", OpShape::Compare),
+    );
+
     // The named fixed-width integer modules — `Int8`/`Int16`/`Int32`/`Int64` and
     // `UInt8`/`UInt16`/`UInt32`/`UInt64`. Each is an ALIAS for the module `(Int N)` / `(UInt N)`
     // reduces to: a record whose `(meta t)` is that width's concrete type-value and whose `max`/`min`
@@ -567,6 +576,8 @@ enum OpShape {
     IntBinary,
     /// `∀a. a → a → Bool` — the relational comparisons (bare operand var, `Bool` result).
     Comparison,
+    /// `∀a. a → a → Ordering` — the three-way `compare` (bare operand var, `Ordering` sum result).
+    Compare,
 }
 
 /// An operator record `(record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic PRIM)))`. `(meta t)`
@@ -577,6 +588,7 @@ fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
     let lambda = match shape {
         OpShape::IntBinary => binop_type_lambda(ast),
         OpShape::Comparison => comparison_type_lambda(ast),
+        OpShape::Compare => compare_type_lambda(ast),
     };
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, op);
@@ -631,6 +643,26 @@ fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
     let bool_res = push_atom(ast, Leaf::Name("Bool".to_string()));
     let inner = arrow(ast, a2, bool_res); // (-> a Bool)
     let body = arrow(ast, a1, inner); // (-> a (-> a Bool))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type-lambda `(fn (a) (-> a (-> a Ordering)))` for the three-way `compare` — the comparison shape
+/// but yielding the `Ordering` sum instead of `Bool`. The result `Ordering` is a bare NAME resolving to
+/// the built-in prelude sum's type-value (like `Bool`), so the scheme reduces to `∀a. a → a → Ordering`.
+fn compare_type_lambda(ast: &mut Arenas) -> StructId {
+    let a_ref = |ast: &mut Arenas| -> StructId { push_atom(ast, Leaf::Name("a".to_string())) };
+    let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
+        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        push_list(ast, vec![arr, l, r])
+    };
+    let a1 = a_ref(ast);
+    let a2 = a_ref(ast);
+    let ordering_res = push_atom(ast, Leaf::Name("Ordering".to_string()));
+    let inner = arrow(ast, a2, ordering_res); // (-> a Ordering)
+    let body = arrow(ast, a1, inner); // (-> a (-> a Ordering))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let a_param = push_atom(ast, Leaf::Name("a".to_string()));
     let params = push_list(ast, vec![a_param]);

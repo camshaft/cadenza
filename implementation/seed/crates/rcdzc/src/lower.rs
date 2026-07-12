@@ -520,6 +520,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
                 }
+                // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
+                // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
+                // declines (as the comparison prims do).
+                Some(Prim::Compare) if args.len() == 2 => lower_compare(db, id, args[0], args[1]),
                 Some(prim) if prim.is_comparison() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: comparison prim");
                     lower_comparison(db, prim, &args)
@@ -3164,6 +3168,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::Le
         | Prim::Ge
         | Prim::Eq
+        | Prim::Compare
         | Prim::Wrap
         | Prim::IntCtor
         | Prim::UIntCtor
@@ -3256,6 +3261,73 @@ fn checked_shr_i64(x: i64, count: i64) -> Option<i64> {
 /// parameter) becomes a `Core::Compare` the backend emits as a machine comparison. A COMPOUND operand
 /// (a record/heap value) still declines — structural comparison over the value heap is a later stage.
 /// The operator's type stays fully generic (`∀a. a → a → Bool`). A poison operand propagates.
+/// The Less/Equal/Greater discriminants of the built-in `Ordering` sum (this node's solved result type),
+/// read off the declaration by variant NAME (not baked) — the `Ordering` analogue of `option_discs`.
+fn ordering_discs(db: &mut Db, id: StructId) -> Option<(u32, u32, u32)> {
+    let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, id) else {
+        return None;
+    };
+    let decl_ref = db.type_decl_by_occ(decl)?;
+    let (mut lt, mut eq, mut gt) = (None, None, None);
+    for (i, v) in decl_ref.variants.iter().enumerate() {
+        match v.name.as_str() {
+            "Less" => lt = Some(i as u32),
+            "Equal" => eq = Some(i as u32),
+            "Greater" => gt = Some(i as u32),
+            _ => {}
+        }
+    }
+    Some((lt?, eq?, gt?))
+}
+
+/// Lower `(compare a b)` — the three-way comparison yielding an `Ordering` (core-semantics.md §A Total
+/// Order Is Observed Through A Three-Way Comparison). FOLD a constant scalar/string operand pair to the
+/// matching `Ordering` variant — `Less`/`Equal`/`Greater` by the operands' `cmp`, built as a NULLARY
+/// `Core::SumNew` at the result Ordering's discs (`ordering_discs`), so it rides the ordinary sum
+/// fold/escape/match exactly as a variant constructor does. A float pair compares by canonical value
+/// (IEEE partial order; a NaN pair — unordered — declines). A compound or runtime operand declines (the
+/// heap-walk / runtime three-way compare is a later stage), mirroring `lower_comparison`.
+fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Core {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let Some((lt, eq, gt)) = ordering_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "compare result is not the built-in Ordering sum",
+        ));
+    };
+    // The ordering of the two constant operands, or `None` to decline (non-constant / non-scalar / a NaN
+    // pair / an operand beyond the fold's machine range).
+    let ord = match (core_of(db, lhs), core_of(db, rhs)) {
+        (Core::ConstInt(a), Core::ConstInt(b)) => match (a.to_i64(), b.to_i64()) {
+            (Some(x), Some(y)) => Some(x.cmp(&y)),
+            _ => None,
+        },
+        (Core::ConstBool(a), Core::ConstBool(b)) => Some(a.cmp(&b)),
+        (Core::ConstStr(a), Core::ConstStr(b)) => Some(a.cmp(&b)),
+        (Core::ConstFloat(a), Core::ConstFloat(b)) => {
+            f64::from_bits(a.to_f64_bits()).partial_cmp(&f64::from_bits(b.to_f64_bits()))
+        }
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => return Core::Poison(r),
+        _ => None,
+    };
+    match ord {
+        Some(o) => {
+            let disc = match o {
+                Less => lt,
+                Equal => eq,
+                Greater => gt,
+            };
+            trace!(target: "rcdzc::fold", node = id.0, ?o, "compare folds to an Ordering variant");
+            Core::SumNew {
+                disc,
+                payloads: Vec::new(),
+            }
+        }
+        None => Core::Poison(Reject::decline(
+            "compare of a runtime/compound operand (or a NaN pair) is not yet computed (constant scalars only)",
+        )),
+    }
+}
+
 fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(Reject::coded(
@@ -4064,6 +4136,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::Le => "<=",
         Prim::Ge => ">=",
         Prim::Eq => "=",
+        Prim::Compare => "compare",
         Prim::Wrap => "wrap",
         Prim::IntCtor => "Int",
         Prim::UIntCtor => "UInt",
