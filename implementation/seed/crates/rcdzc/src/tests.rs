@@ -5184,6 +5184,79 @@ mod match_engine {
         );
     }
 
+    /// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
+    /// chain is dropped (the match analogue of `(if c x x)` → `x`). `(match a (1 x) (2 x) (_ x))` always
+    /// returns `x`, so it lowers to just `x` with no `i64.eq`/branch on `a`. Sound because the scrutinee
+    /// here is a trap-free parameter (nothing to preserve by evaluating it); a trapping scrutinee is
+    /// covered by `a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated`.
+    #[test]
+    fn an_all_same_body_match_collapses_to_the_body() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: a Int64) (: x Int64)) \
+                     (match a (1 x) (2 x) (_ x))) (export f))";
+        // The collapse dropped the dispatch entirely: no equality probe on the scrutinee survives in the Lir.
+        let code = {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        assert!(
+            !code.contains(&Lir::I64Eq) && !code.iter().any(|i| matches!(i, Lir::If(_))),
+            "an all-same-body match must collapse to its body (no probe chain / branch), got: {code:?}"
+        );
+        // Every scrutinee value yields x — verify across a matched literal and the wildcard.
+        let bytes = component(src);
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(1), Val::S64(7)]),
+            7
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(9), Val::S64(7)]),
+            7
+        );
+    }
+
+    /// The all-same-body collapse is gated on a TRAP-FREE scrutinee: the discriminant is unused after the
+    /// collapse, but the scrutinee was evaluated to drive the (now-gone) probes, so a scrutinee that could
+    /// trap must STILL be evaluated. `(match (/ 10 b) (1 x) (_ x))` always yields `x`, but the division
+    /// must still run — `b = 0` traps rather than returning `x`.
+    #[test]
+    fn a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated() {
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: b Int64) (: x Int64)) \
+                     (match (/ 10 b) (1 x) (_ x))) (export f))";
+        let bytes = component(src);
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(2), Val::S64(7)]),
+            7,
+            "a non-trapping scrutinee still yields the common body"
+        );
+        assert!(
+            call_traps(&bytes, "f", &[Val::S64(0), Val::S64(7)]),
+            "a div-by-zero scrutinee must trap even though every arm yields the same value"
+        );
+    }
+
     #[test]
     fn a_large_scalar_match_beyond_the_br_table_cap_compiles_and_dispatches() {
         // A scalar match with MORE arms than the br_table density cap (>256 int arms) is INELIGIBLE for
@@ -6235,13 +6308,57 @@ mod stage1 {
     }
 
     #[test]
-    fn comparison_of_a_compound_declines() {
-        // Structural comparison over the value heap is a later stage — comparing records declines
-        // cleanly (the operator's type stays generic; only the fold's coverage is bounded).
-        let msg = expect_decline("(= (record (x 1)) (record (x 1)))");
+    fn constant_compound_equality_folds_but_a_runtime_one_declines() {
+        // Equality of two CONSTANT compounds folds STRUCTURALLY (core-semantics.md §Equality Is
+        // Structural: same type + component-wise equal). `(= (Some 1) (Some 1))` → true; `(= (Some 1)
+        // (Some 2))` → false; `(= None None)` → true; `(= (tuple 1 2) (tuple 1 2))` → true; a nested
+        // compound recurses. Was declined "comparison of a compound value needs a heap walk".
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= (Some 1) (Some 1)) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (Some 1) (Some 2)) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= None None) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (tuple 1 2) (tuple 1 2)) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (tuple 1 2) (tuple 1 3)) 1 0)) (export main))",
+                0,
+            ),
+            (
+                "(module m (def (main) (if (= (Some (Some 1)) (Some (Some 1))) 1 0)) (export main))",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant compound equality folds: {body}"
+            );
+        }
+        // A genuinely-RUNTIME compound comparison (a recursive result, not constant-foldable) still
+        // DECLINES — the heap-walk equality is a later stage. `dn 3` recurses (cannot fold), so `(= (dn 3)
+        // (Some 0))` reaches the compound-comparison boundary.
+        let runtime = "(module m (def (dn n) (if (< n 1) (Some 0) (dn (- n 1)))) \
+                        (def (main) (if (= (dn 3) (Some 0)) 1 0)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(runtime)))
+            .expect_err("a runtime compound comparison must still decline")
+            .message;
         assert!(
-            msg.contains("compound") || msg.contains("value heap") || msg.contains("not yet"),
-            "got: {msg}"
+            msg.contains("compound") || msg.contains("heap walk"),
+            "a runtime compound comparison declines (heap walk not yet built); got: {msg}"
         );
     }
 
@@ -6642,6 +6759,23 @@ mod stage1 {
                 || msg.contains("UInt"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn mixing_an_integer_and_a_float_is_rejected_no_silent_promotion() {
+        // 06-numeric-model: `(+ 2 2.0)` mixes an Int64 and a Float64, which do NOT silently promote —
+        // rejected (numeric-model.md §Numeric Types Do Not Silently Promote). The float literal gets
+        // `Ty::Float`, distinct from the operator's `(Int a)`, so unification FAILS (coded CDZ0301, both
+        // numeric-but-different). Every integer operator (arith/bitwise/shift) mixed with a float rejects
+        // the same way — the one generic operand-unification rule, no float special case. The message
+        // names the two conflicting types.
+        for op in ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"] {
+            let msg = expect_decline(&format!("({op} 2 2.0)"));
+            assert!(
+                msg.contains("Float64") && (msg.contains("Int") || msg.contains("unify")),
+                "int↔float mix under `{op}` should cite the numeric mismatch; got: {msg}"
+            );
+        }
     }
 
     #[test]
@@ -7109,18 +7243,64 @@ mod stage1 {
     }
 
     #[test]
-    fn a_handle_arm_binds_its_params_and_state_in_scope() {
-        // E1b: an arm `(op (params…) state body)` binds the operation parameters AND the state binder in
-        // the arm body — so a reference to `s` (state) in a `resume` is IN SCOPE, not an unbound-name
-        // error. Full lowering is still declined (E1c consumes the scope), so the program declines; the
-        // point is it must NOT crash and must NOT fault CDZ0101 on the arm binders. Before E1b this
-        // faulted CDZ0101 (unbound `s`); after, it declines cleanly on the not-yet-lowered handler.
+    fn a_stateful_handler_threads_its_state_across_performs() {
+        // E1c-2: a handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and
+        // threads `s+1` forward — is reduced by the evaluation-order fold. `(Fresh.next)` reads state
+        // `0`; three performs in a `do` see 0, 1, 2, and the `do` yields the last (2). The state binder
+        // `s` (bound in scope by E1b) is substituted with the threaded state at each perform. The whole
+        // handle becomes plain arithmetic, so it runs to 2 (`capabilities-and-effects.md` §A Handler
+        // Threads State Across The Operations It Discharges).
         let src = "(do (effect Fresh (op next (-> Unit Int64))) \
                    (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
-                   ((. Fresh next)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a handler with state declines until E1c lowers it (but scope resolves)"
+                   (do ((. Fresh next)) ((. Fresh next)) ((. Fresh next))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a stateful tail-resumptive handler compiles and runs"),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
+        // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
+        // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces
+        // the call) so its perform `(Bump.by 41)` resolves to the arm, which resumes `(+ n 1)` = 42.
+        // `gen` performing an effect is well-formed (its home is its caller's handler, not itself), so it
+        // is not independently faulted CDZ0401. (`capabilities-and-effects.md` §Handler Resolution Is
+        // Dynamic In Extent — a function may perform an operation its caller discharges.)
+        let src = "(do (effect Bump (op by (-> Int64 Int64))) \
+                   (def (gen) ((. Bump by) 41)) \
+                   (def (main) (handle unit (((. Bump by) (n) s (resume (+ n 1) s))) (gen))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a cross-function perform is discharged by the caller's handler"),
+                "main"
+            ),
+            42
+        );
+    }
+
+    #[test]
+    fn resuming_with_a_wrong_type_value_is_cdz0201() {
+        // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
+        // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
+        // Typed). `(resume true s)` for an `(-> Int64 Int64)` op resumes with a Bool — CDZ0201 (the
+        // result-type companion of the perform-argument check). Without the check the fold would silently
+        // substitute `true` as `(E.op 1)`'s value, a type-confusion miscompile.
+        let src = "(do (effect E (op op (-> Int64 Int64))) \
+                   (def (main) (handle unit ((E.op (n) s (resume true s))) (E.op 1))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a wrong-type resume value must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0201"),
+            "expected CDZ0201 (resume value vs result type), got: {}",
+            err.message
         );
     }
 

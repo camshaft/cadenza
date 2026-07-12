@@ -72,6 +72,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Int(_) => Ty::int(),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
+        Resolved::Float(_) => Ty::Float,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         Resolved::Ref { value } => type_of(db, value),
@@ -245,12 +246,21 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // The type of an un-typeable node: compatible with everything, so it cannot cascade.
         Resolved::Poison(_) => Ty::Any,
-        // EFFECT CONTROL FORMS (E1a: surface recognized, lowering declines). A `handle`/`host` evaluates
-        // to its body's value, so its type is its body's type — typed through now so a handled/delegated
-        // expression used in a typed context (e.g. `(+ (handle …) 1)`) does not spuriously fault while
-        // lowering is still declined. A `resume`'s value is handed back at the perform site; outside the
-        // tail-rewrite it has no independent type, so `Any` (it is consumed by the arm's lowering, E1c).
-        Resolved::Handle { body, .. } => type_of(db, body),
+        // EFFECT CONTROL FORMS. A `handle` evaluates to the value its FOLDED body produces (each perform
+        // resolved to its arm's resume value, state threaded away), so its type is the type of that
+        // rewritten body — reduce the handler and type the result. This is what lets a state-threading
+        // body whose surface uses a nested `(do …)` (which resolve does not model as an expression, so
+        // the ORIGINAL body types as `Any`) still get a definite type from its reduced form. If the fold
+        // declines (a case the tail path cannot serve), fall back to the original body's type — harmless,
+        // since lowering will decline it anyway.
+        Resolved::Handle { init, arms, body } => {
+            match crate::effects::reduce_handle(db, init, &arms, body) {
+                Some(rewritten) => type_of(db, rewritten),
+                None => type_of(db, body),
+            }
+        }
+        // A `host` evaluates to its body's value (E2 handles the boundary). A `resume`'s value is handed
+        // back at the perform site; outside the tail-rewrite it has no independent type, so `Any`.
         Resolved::Host { body, .. } => type_of(db, body),
         Resolved::Resume { .. } => Ty::Any,
         // A lambda/def parameter used as a value — a formal. If its binder is ANNOTATED (`(: a T)`),
@@ -954,6 +964,56 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
     db.def_index_by_body(body)
 }
 
+/// Check a handler arm's resume VALUE against the operation's declared RESULT type — the resume-value
+/// companion of the perform-argument check. The value in `(resume value state)` is returned to the
+/// perform site, so it must have the op's result type (`capabilities-and-effects.md` §Performing An
+/// Operation Is Typed). A mismatch is CDZ0201. Only checks a TAIL resume in the arm body (the shipping
+/// surface); an arm with no resume, or a non-tail resume, is out of scope (E4/E5) and not checked here.
+fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: &mut Vec<Reject>) {
+    // The op's result type: instantiate the op value's `(meta t)` scheme (`(fn () (-> P… Result))`) and
+    // peel to the final arrow result. `None` (a malformed op, or no scheme) → skip (its own fault surfaces).
+    let mut fresh = Fresh::new();
+    let Some(scheme) = crate::eval::scheme_of(db, arm.op, &mut fresh) else {
+        return;
+    };
+    let mut result = crate::unify::instantiate(&scheme, &mut fresh);
+    while let Ty::Fn(_, r) = result {
+        result = *r;
+    }
+    // The resume value at the arm body's TAIL. The arm binds its params + state, but the RESUME VALUE's
+    // type does not depend on those bindings here — its declared-type check is against a concrete op
+    // result type, and a value like `true`/`42`/`(tuple …)` types independently of the (unsubstituted)
+    // binders. So read the tail resume off the UN-substituted arm body and type its value.
+    let Some(value) = tail_resume_value(db, arm.body) else {
+        return; // no tail resume (abortive / non-tail) — out of scope for this check
+    };
+    let value_ty = type_of(db, value);
+    if !value_ty.agrees_with(&result) {
+        trace!(target: "rcdzc::infer", value = value.0, "fault: resume value's type does not match the operation's result type (CDZ0201)");
+        out.push(
+            Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a handler resumes with a value of type {} but the operation's result type is {}",
+                    value_ty.render_name(),
+                    result.render_name()
+                ),
+            )
+            .at(value),
+        );
+    }
+}
+
+/// The VALUE of a tail `(resume value next-state)` in an arm body `node`, if the body IS such a resume at
+/// the tail. `None` if the arm does not tail-resume (abortive, or a non-tail resume). Used by the
+/// resume-value/result-type check; reads the ORIGINAL (un-substituted) arm body.
+fn tail_resume_value(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Resume { value, .. } => Some(value),
+        _ => None,
+    }
+}
+
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
@@ -1508,6 +1568,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect(db, init, out);
             for arm in &arms {
                 collect(db, arm.op, out);
+                // RESUME-VALUE / RESULT-TYPE CHECK. The value a handler resumes with — `(resume value
+                // state)` — is returned to the perform site, so it MUST have the operation's declared
+                // RESULT type (`capabilities-and-effects.md` §Performing An Operation Is Typed And
+                // Contributes To The Row — a perform 'yields the operation's declared result type', so an
+                // operation is typed exactly as a function application whose body must return the declared
+                // type). A mismatch — `(resume true s)` for an `(-> Int64 Int64)` op — is CDZ0201 (the
+                // result-type companion of the perform-argument check). Without this the fold silently
+                // substitutes the mistyped value as the perform's result (a type-confusion miscompile).
+                check_resume_result_type(db, arm, out);
                 collect(db, arm.body, out);
             }
             collect(db, body, out);
@@ -1543,6 +1612,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)
         | Resolved::Lambda { .. } => {}

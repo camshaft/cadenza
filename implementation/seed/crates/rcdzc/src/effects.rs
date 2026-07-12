@@ -234,6 +234,125 @@ struct HandlerCtx {
 /// Reduce a `(handle init arms body)` to a rewritten BODY occurrence with every perform of a discharged
 /// operation resolved to its arm and rewritten tail-resumptively, or `None` to DECLINE (the case is not
 /// in the tail-resumptive shipping surface — `lower` then declines cleanly, a Todo). `init`/`arms`/`body`
+/// Report CDZ0401 for every effect operation reached from ENTRYPOINT body `node` with no home — neither
+/// an enclosing handler discharging its effect nor a host delegation of it
+/// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Walks the resolved tree
+/// tracking the set of effect-declaration occurrences currently HANDLED (by an enclosing `handle` arm)
+/// or DELEGATED (by an enclosing `host`), following non-recursive calls into their callee bodies (a
+/// perform may be cross-function). A perform whose effect is not in that set is ungranted → CDZ0401.
+pub fn check_no_home(db: &mut Db, node: StructId, out: &mut Vec<crate::diag::Reject>) {
+    let mut handled: Vec<u32> = Vec::new();
+    check_no_home_walk(db, node, &mut handled, out, 0);
+}
+
+fn check_no_home_walk(
+    db: &mut Db,
+    node: StructId,
+    handled: &mut Vec<u32>,
+    out: &mut Vec<crate::diag::Reject>,
+    depth: u32,
+) {
+    if depth > 64 {
+        return; // backstop — a deep call chain is left to the ordinary decline
+    }
+    match resolved_of(db, node) {
+        // A PERFORM `(E.op args…)`: if its effect is not currently handled/delegated, it has no home.
+        Resolved::Apply { head, args } => {
+            if let Some((decl, _idx)) = crate::eval::effect_op_of(db, head) {
+                if !handled.contains(&decl.0) {
+                    out.push(
+                        crate::diag::Reject::coded(
+                            crate::diag::Code::EffectNoHome,
+                            "this effect operation is reached with neither an enclosing handler nor a \
+                             host delegation, so it has no home (add a handler or delegate it at the \
+                             entrypoint)",
+                        )
+                        .at(node),
+                    );
+                }
+                // Still walk the args (they may perform other effects).
+                for &a in args.iter() {
+                    check_no_home_walk(db, a, handled, out, depth);
+                }
+                return;
+            }
+            // A CALL into a non-recursive callee — follow it (the perform may be cross-function). The
+            // callee's body is checked under the SAME handled set (dynamic extent: the caller's handlers
+            // enclose the callee's performs). A recursive callee is not followed (E3), so an ungranted
+            // perform only reachable through recursion is not reported here — a conservative miss, safe
+            // (it declines at lowering rather than mis-reporting).
+            if let Some(callee) = crate::eval::lambda_body(db, head)
+                .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                && !crate::eval::is_recursive(db, callee)
+            {
+                check_no_home_walk(db, callee, handled, out, depth + 1);
+            }
+            for &a in args.iter() {
+                check_no_home_walk(db, a, handled, out, depth);
+            }
+        }
+        // A `handle` — its arms DISCHARGE their effects for the BODY (dynamic extent). Push each arm's
+        // effect decl onto the handled set while walking the body, then pop. The arm BODIES themselves
+        // resolve their own performs at the arm's definition context (the under-frame) — but for the
+        // no-home check, an arm body performing its own effect re-performs OUTWARD, so we walk arm bodies
+        // under the OUTER handled set (without this handle's effects added), matching forwarding. The
+        // init is evaluated in the outer context too.
+        Resolved::Handle { init, arms, body } => {
+            check_no_home_walk(db, init, handled, out, depth);
+            // Arm bodies: outer context (a re-performed op forwards to the next-outer handler).
+            for arm in &arms {
+                check_no_home_walk(db, arm.body, handled, out, depth);
+            }
+            // Body: this handle's effects are now handled.
+            let added: Vec<u32> = arms
+                .iter()
+                .filter_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, _)| d.0))
+                .collect();
+            let before = handled.len();
+            handled.extend(&added);
+            check_no_home_walk(db, body, handled, out, depth);
+            handled.truncate(before);
+        }
+        // A `host` — its listed effects are DELEGATED for the body. Push each delegated effect's decl.
+        Resolved::Host { effects, body } => {
+            let added: Vec<u32> = effects
+                .iter()
+                .filter_map(|&e| {
+                    // Each `effect` element is a name occurrence resolving to the effect record; recover
+                    // its decl via the record's `(meta t)` = `(effect NAME <decl>)`.
+                    host_effect_decl(db, e)
+                })
+                .collect();
+            let before = handled.len();
+            handled.extend(&added);
+            check_no_home_walk(db, body, handled, out, depth);
+            handled.truncate(before);
+        }
+        // A resume's value/next-state, and every other structural form: descend into children.
+        _ => {
+            if let Struct::List(children) = db.ast.get(node).clone() {
+                for c in children {
+                    check_no_home_walk(db, c, handled, out, depth);
+                }
+            }
+        }
+    }
+}
+
+/// The effect-declaration occurrence a `host` delegation's effect-name occurrence `e` names — resolve it
+/// to its effect record and read the record's `(meta t)` = `(effect NAME <decl>)`. `None` if `e` does
+/// not name an effect (a malformed delegation, reported elsewhere).
+fn host_effect_decl(db: &mut Db, e: StructId) -> Option<u32> {
+    let field = crate::eval::project_meta(db, e, "t")?;
+    // `(effect NAME <decl>)` — decl is the third element (index 2), a decimal integer literal.
+    let tail = db.ast.as_form(field, "effect")?;
+    let decl_occ = tail.get(1).copied()?;
+    match resolved_of(db, decl_occ) {
+        Resolved::Int(v) => v.to_i64().and_then(|n| u32::try_from(n).ok()),
+        _ => None,
+    }
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,
@@ -247,6 +366,17 @@ pub fn reduce_handle(
     let mut map = HashMap::default();
     for arm in arms {
         let (decl, idx) = crate::eval::effect_op_of(db, arm.op)?;
+        // GUARD: the operation's declared RESULT type must be DETERMINED, and — for a tail resume — the
+        // resume VALUE must agree with it. If the result type is undetermined (a malformed op arrow the
+        // evaluator can't reduce, e.g. a single-arg `(-> T)`), the fold cannot safely substitute the
+        // resume value as the perform's result — decline (a Todo), so the fold NEVER runs a program whose
+        // resume value is unchecked against an unknown result type. A determined-but-MISMATCHED resume
+        // value (`(resume true s)` for an Int64 op) is reported CDZ0201 by `check_resume_result_type`;
+        // declining here as well keeps the fold from emitting the mistyped value (belt-and-suspenders —
+        // the fault side rejects, the value side declines, so neither a wrong VALUE nor a wrong CODE ships).
+        if !resume_result_type_ok(db, arm) {
+            return None;
+        }
         map.insert((decl.0, idx), arm.clone());
     }
     let ctx = HandlerCtx { arms: map };
@@ -255,6 +385,53 @@ pub fn reduce_handle(
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
     let (rewritten, _final_state) = thread(db, body, init, &ctx)?;
     Some(rewritten)
+}
+
+/// Whether the arm's tail resume VALUE agrees with the operation's declared RESULT type, AND that result
+/// type is DETERMINED (not `Any`). `true` when: the arm has no tail resume (out of scope — the fold will
+/// decline for other reasons), OR the result type is determined and the resume value's type agrees with
+/// it. `false` when the result type is undetermined (a malformed op arrow) or the resume value's type
+/// disagrees — either way the fold must decline rather than substitute an unverified/mistyped value.
+fn resume_result_type_ok(db: &mut Db, arm: &HandleArm) -> bool {
+    // The op's result type: peel the op value's `(meta t)` scheme `(fn () (-> P… Result))` to the final
+    // result. An op whose arrow does not reduce (`(-> (List Int64))` — a single-arg arrow the FnCtor
+    // can't build) yields no `Fn`, leaving a non-arrow / `Any` result → treat as UNDETERMINED (decline).
+    let mut fresh = crate::unify::Fresh::new();
+    let Some(scheme) = crate::eval::scheme_of(db, arm.op, &mut fresh) else {
+        return false;
+    };
+    let mut result = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut peeled_any = false;
+    while let crate::ty::Ty::Fn(_, r) = result {
+        result = *r;
+        peeled_any = true;
+    }
+    // If the op's `(meta t)` did not reduce to a function type at all (no arrow peeled), the operation's
+    // result type is undetermined — decline. (A well-formed op is `(fn () (-> P Result))`, always an arrow.)
+    if !peeled_any {
+        return false;
+    }
+    // An undetermined result (`Any`) — the arrow reduced but its result is unknown — is not safe to
+    // substitute against; decline.
+    if matches!(result, crate::ty::Ty::Any) {
+        return false;
+    }
+    // Check the tail resume value's type against the determined result type. No tail resume → not this
+    // fold's concern (it will decline elsewhere), so do not block on it here.
+    let Some(value) = tail_resume_value_of(db, arm.body) else {
+        return true;
+    };
+    let value_ty = crate::infer::type_of(db, value);
+    value_ty.agrees_with(&result)
+}
+
+/// The VALUE of a tail `(resume value next-state)` in the arm body, or `None` if the body is not a tail
+/// resume. Reads the ORIGINAL (un-substituted) arm body.
+fn tail_resume_value_of(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Resume { value, .. } => Some(value),
+        _ => None,
+    }
 }
 
 /// Rewrite `node` under handler context `ctx`, threading `state` (the current-state expression) through
@@ -286,20 +463,25 @@ fn thread(
             // The arm binds its params to the args and its state binder to the CURRENT state. Substitute
             // both into the arm body (a capture-safe arena substitution), then extract the tail resume.
             let mut subst: HashMap<StructId, StructId> = HashMap::default();
-            if arm.params.len() != rewritten_args.len() {
-                // Arity mismatch (e.g. a nullary op `()` arm with a spurious arg) — decline.
-                // A nullary op has one `()` "param" that binds nothing; treat a single `()` param and
-                // zero args as matching.
-                if !(arm.params.len() == 1
-                    && rewritten_args.is_empty()
-                    && is_unit_param(db, arm.params[0]))
-                {
-                    return None;
+            if arm.params.len() == rewritten_args.len() {
+                for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
+                    // The `()` placeholder param of a nullary op binds nothing — skip it.
+                    if !is_unit_param(db, p) {
+                        subst.insert(p, a);
+                    }
+                }
+            } else if arm.params.len() == 1 && rewritten_args.is_empty() {
+                // A NULLARY perform `(E.op)` for a `(-> Unit T)` op: the arm's single parameter is the
+                // ELIDED unit argument — either written `()` (binds nothing) or a named binder `u` (binds
+                // to unit). Supply a synthesized `unit` so a named unit binder resolves.
+                let p = arm.params[0];
+                if !is_unit_param(db, p) {
+                    let unit = db.push_list(vec![]); // `()` — the unit value
+                    subst.insert(p, unit);
                 }
             } else {
-                for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
-                    subst.insert(p, a);
-                }
+                // Any other arity mismatch — decline.
+                return None;
             }
             subst.insert(arm.state, cur);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
@@ -308,26 +490,56 @@ fn thread(
             let (value, next_state) = tail_resume(db, arm_body)?;
             Some((value, next_state))
         }
-        // A `do` sequence — `(do e0 e1 … en)`. Evaluate each in order, threading state; the sequence's
-        // value is the LAST expression's value, its state the last's next-state. (A `do` is grammar; the
-        // resolver does not model it as its own `Resolved`, so read it structurally.)
+        // A `do` sequence — `(do e0 e1 … en)`. Evaluate each in EVALUATION ORDER, threading state; the
+        // sequence's value is the LAST expression's value, its state the last's next-state. (A `do` is
+        // grammar; the resolver does not model a NESTED `do` as an expression at all — it declines — so we
+        // cannot rebuild a `do` node. Instead we return the LAST item's rewrite: after folding, each
+        // earlier item is a PURE value-expression (its effect was folded into the threaded state), so its
+        // value being discarded is exactly `do`'s semantics — evaluate for effect, yield the last. If an
+        // earlier item did NOT fold to a pure expression it would carry an unresolved perform and the
+        // whole handler would already have declined; and a `do` item that is a bare literal/constant has
+        // no effect to preserve. So dropping the earlier rewrites is sound for the tail-resumptive surface
+        // this fold serves. (A `do` item with a residual RUNTIME trap is out of scope here — that needs
+        // nested-`do` value support, an orthogonal feature.)
         _ if db.ast.as_form(node, "do").is_some() => {
             let items: Vec<StructId> = db.ast.as_form(node, "do").unwrap().to_vec();
             if items.is_empty() {
                 return None;
             }
             let mut cur = state;
-            let mut rewritten = Vec::with_capacity(items.len());
+            let mut last = None;
             for it in items {
                 let (r, next) = thread(db, it, cur, ctx)?;
-                rewritten.push(r);
+                last = Some(r);
                 cur = next;
             }
-            // Rebuild `(do …)` around the rewritten items so control/`do` semantics are preserved.
-            let do_head = db.push_atom(Leaf::Name("do".to_string()));
-            let mut children = vec![do_head];
-            children.extend(rewritten);
-            Some((db.push_list(children), cur))
+            Some((last.unwrap(), cur))
+        }
+        // A CROSS-FUNCTION perform: `(f args…)` where `f` is a NON-RECURSIVE function whose body reaches
+        // an operation this handler discharges (`DESIGN-effects-rcdzc.md` §3, the new inline trigger). The
+        // handler must be present in the callee, so INLINE `f` into the handled region — β-reduce the call
+        // (substitute args for params) and thread state through the reduced body, exactly as if the
+        // callee's body were written inline. This is what makes `(handle … (gen))` work when `gen`
+        // performs the discharged op. A RECURSIVE such callee cannot be inlined (E3 specializes it); it
+        // is not caught here (the reachability check excludes a recursive callee), so it declines below.
+        Resolved::Apply { head, args } if call_reaches_discharged_effect(db, head, ctx) => {
+            // Thread state through the arguments FIRST (they evaluate before the call, in order), then
+            // inline the callee and thread its (reduced) body.
+            let mut cur = state;
+            let mut rargs = Vec::with_capacity(args.len());
+            for &a in args.iter() {
+                let (ra, next) = thread(db, a, cur, ctx)?;
+                rargs.push(ra);
+                cur = next;
+            }
+            // A PARAMETERIZED callee β-reduces (substitute args for params); a NULLARY def `(gen)` has no
+            // lambda wrapper — its name resolves straight to its body, so `apply_lambda` yields nothing
+            // and we thread the body directly.
+            let reduced = match crate::eval::apply_lambda(db, head, &rargs).ok().flatten() {
+                Some(r) => r,
+                None => crate::eval::lambda_body_of_nullary(db, head)?,
+            };
+            thread(db, reduced, cur, ctx)
         }
         // An ordinary application / arithmetic / comparison / connective / `not` over sub-expressions:
         // thread state through the operands in left-to-right order, rebuilding the same head. This
@@ -355,6 +567,62 @@ fn thread(
         // Some other form that DOES contain a perform but is not one of the shapes we thread (e.g. an
         // `if`/`match`/`let` with a perform inside — E1c-2/E3 territory). Decline.
         _ => None,
+    }
+}
+
+/// Whether applying `head` (an application's head) REACHES an operation this handler discharges — the
+/// new inline trigger (`DESIGN-effects-rcdzc.md` §3). True when `head` is a NON-RECURSIVE function
+/// (a lambda / top-level def) whose body transitively performs a discharged operation. A recursive
+/// callee is EXCLUDED (it cannot be inlined — E3 specializes it), as is a head that is not a function
+/// (a perform head is caught by the perform arm; an operator/ctor reaches no effect). Bounded: the walk
+/// follows non-recursive calls, and `is_recursive` gates re-entry.
+fn call_reaches_discharged_effect(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> bool {
+    // The callee body, without reducing — a lambda body (parameterized def) OR a nullary def body (whose
+    // name resolves straight to its body, no lambda wrapper). `None` for a non-function head (an
+    // operator, a perform, a bare value).
+    let Some(body) = crate::eval::lambda_body(db, head)
+        .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+    else {
+        return false;
+    };
+    // A RECURSIVE callee cannot be inlined (it would not terminate) — exclude it (E3 specializes it).
+    if crate::eval::is_recursive(db, body) {
+        return false;
+    }
+    body_reaches_discharged(db, body, ctx, 0)
+}
+
+/// Whether the resolved subtree at `node` performs a discharged operation, following NON-RECURSIVE calls
+/// into their callee bodies (up to a small depth bound — a cross-function chain past it is left to E3's
+/// specialization / a clean decline). A syntactic perform of a discharged op is the base case.
+fn body_reaches_discharged(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+    // Depth backstop — a cross-function chain deeper than this declines (the inline trigger stays
+    // bounded, mirroring the evaluator's reduction guard).
+    if depth > 16 {
+        return false;
+    }
+    // A syntactic perform of a discharged operation.
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_some()
+    {
+        return true;
+    }
+    // A call to a NON-RECURSIVE function whose body reaches a discharged op — follow it (a parameterized
+    // OR a nullary-def callee).
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        && !crate::eval::is_recursive(db, callee)
+        && body_reaches_discharged(db, callee, ctx, depth + 1)
+    {
+        return true;
+    }
+    // Otherwise descend into children structurally.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_reaches_discharged(db, c, ctx, depth)),
+        Struct::Atom(_) => false,
     }
 }
 

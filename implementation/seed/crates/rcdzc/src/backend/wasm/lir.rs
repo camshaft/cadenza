@@ -257,6 +257,9 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // CONSTANT string folds (no runtime slot); a runtime string handle lives here (its runtime ops
         // arrive with the byte-rope heap ops).
         Ty::String => Some(ValType::I32),
+        // A float has no machine slot YET (no float arithmetic/runtime) — like a function/type value, a
+        // float reaching a real slot declines rather than guessing a representation.
+        Ty::Float => None,
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,
@@ -334,6 +337,8 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A string escapes as the canonical binary value form via the resource `encode()` path, like a
         // list/record/sum — no primitive boundary valtype. (Constant string escape is a later increment.)
         Ty::String => None,
+        // A float has no boundary form yet (no float value crosses the edge until float runtime lands).
+        Ty::Float => None,
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
