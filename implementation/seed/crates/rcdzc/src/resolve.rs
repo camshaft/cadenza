@@ -556,14 +556,27 @@ fn match_arm_variant_binds(
     from: StructId,
     name: &str,
 ) -> Option<(StructId, Vec<crate::core::PathStep>, Vec<StructId>)> {
-    // `form` = `(pattern body)`, ascended from body.
+    // `form` = `(pattern body)`. A variant payload binder from `(Some x)` is in scope in the arm's BODY
+    // and — for a GUARDED arm `((guard (Some x) <cond>) body)` — in the guard COND too (the guard
+    // `(> x 0)` reads the payload binder). So the PATTERN we descend is `pattern`, EXCEPT when it is a
+    // `(guard <inner-pattern> <cond>)` wrapper: then the binder-carrying pattern is `<inner-pattern>` and
+    // a reference is accepted from either the body OR the guard cond. (Case 5g handles the WHOLE-scrutinee
+    // bare-binder guard; this handles a guard over a VARIANT pattern, whose payload binder nests.)
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
-    if pb.len() != 2 || pb[1] != from {
+    if pb.len() != 2 {
         return None;
     }
-    let pattern = pb[0];
+    let body = pb[1];
+    let (pattern, guard_cond) = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pb[0], None),
+    };
+    // Accept a reference ascended from the body, or (for a guarded arm) from the guard cond.
+    if from != body && Some(from) != guard_cond {
+        return None;
+    }
     // `form`'s parent must be a `(match scrutinee arm…)`, with `form` an arm (not the scrutinee).
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;

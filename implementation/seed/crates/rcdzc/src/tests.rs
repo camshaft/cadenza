@@ -3439,6 +3439,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guard_over_a_variant_pattern_binds_the_payload_and_declines_cleanly() {
+        // A guard over a VARIANT pattern `(guard (Some x) (> x 0))` — the payload binder `x` must be in
+        // SCOPE for the guard cond (resolve Case 6 sees through the `(guard …)` wrapper to `(Some x)`),
+        // so the guard is NOT a spurious "unbound name `x`" (CDZ0101, the pre-fix diagnostic). The sum
+        // decision tree has no guard support yet, so the arm DECLINES — but CLEANLY, with an honest
+        // "guard over a variant pattern is not yet supported" message, NOT the misleading "a sum match
+        // pattern head is not a variant constructor" (misreading the `(guard …)` head). A decline is an
+        // uncoded reject: `reject_code` returns `None`, and the message names the real gap.
+        let src = "(module m \
+                     (def (f (: o (Option Int64))) \
+                        (match o ((guard (Some x) (> x 0)) x) ((Some y) (- 0 y)) ((None) 0))) \
+                     (def (main (: n Int64)) (f (Some n))) (export main))";
+        let out = compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::Wasm],
+        );
+        let err = out
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+            .expect("a guarded variant pattern declines");
+        // A DECLINE (uncoded), NOT the CDZ0101 unbound-name the resolve bug produced.
+        assert_eq!(err.code, None, "must be a clean decline, not a coded reject: {err:?}");
+        assert!(
+            err.message.contains("guard over a variant pattern"),
+            "the decline must name the real gap (guarded variant match), got: {}",
+            err.message
+        );
+        // CONTROLS unaffected: a plain `(Some x)` destructure compiles, and a scalar guard compiles.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: o (Option Int64))) (match o ((Some x) x) ((None) 0))) \
+                 (def (main (: n Int64)) (f (Some n))) (export main))"
+            )))
+            .is_ok(),
+            "a plain variant destructure must still compile"
+        );
+    }
+
+    #[test]
     fn a_match_whose_only_arm_is_guarded_is_non_exhaustive() {
         // A guard does NOT count toward exhaustiveness: a match on Int64 whose sole arm is guarded covers
         // no value unconditionally, so it is CDZ0210 (core-semantics.md #Matching Is Exhaustive Or

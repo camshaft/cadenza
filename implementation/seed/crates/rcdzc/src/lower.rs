@@ -794,6 +794,20 @@ fn pattern_constraints(
     ty: &crate::ty::Ty,
     path: Vec<crate::core::PathStep>,
 ) -> Result<Vec<(Vec<crate::core::PathStep>, u32)>, Reject> {
+    // A GUARDED variant pattern `(guard <variant-pattern> <cond>)` — the payload binder now resolves for
+    // the guard cond + body (resolve Case 6 sees through the guard), but the sum-match DECISION TREE has
+    // no guard support yet: a guarded arm must gate on (variant matches AND guard holds) and, when the
+    // guard is false, fall through to a LATER arm of the SAME variant — a per-variant fall-through the
+    // Maranget tree (`build_tree`) does not model (unlike the scalar probe-chain, which threads a guard
+    // per arm). Decline CLEANLY and HONESTLY rather than misreading the `(guard …)` head as "not a
+    // variant constructor" (the pre-fix diagnostic) — reject-don't-miscompile. (A guarded SCALAR match
+    // works; a guarded VARIANT match is a later increment — full guard support in the sum decision tree.)
+    if db.ast.as_form(pat, "guard").is_some() {
+        return Err(Reject::decline(
+            "a guard over a variant pattern is not yet supported (a guarded sum-match arm needs \
+             per-variant fall-through in the decision tree)",
+        ));
+    }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
     // the sum's variant set — a name that IS a variant contributes that discriminant (no payload to
     // recurse into); any other bare name binds and contributes nothing.
