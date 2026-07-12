@@ -2252,6 +2252,33 @@ fn champ_hash(root: Handle) -> u32 {
 /// `set-contains` / insert-overwrite-probe path, once per hash-collision key comparison).
 #[allow(dead_code)]
 fn champ_eq(a: Handle, b: Handle) -> bool {
+    // Shallow-compound fast path — the hot compound-KEY compare (a small tuple/record key on a slot
+    // hit): two equal-arity compounds whose children are ALL arity-0 are equal iff their raw bytes
+    // match and every child pair is `with_raw_arity`-equal, WITHOUT allocating the worklist Vec below.
+    // Only fires when NEITHER side is immediate and both are real nodes (the general path handles
+    // immediates/nulls); a nested child (arity > 0) falls through to the lazy worklist.
+    if !is_immediate(a) && !is_immediate(b) && a != b {
+        if let Some(result) = unsafe {
+            match (a.0.as_ref(), b.0.as_ref()) {
+                (Some(na), Some(nb)) => {
+                    if na.raw != nb.raw || na.handles.len() != nb.handles.len() {
+                        Some(false) // roots differ ⇒ not equal, no descent
+                    } else if na.handles.iter().chain(nb.handles.iter()).all(|&c| is_immediate(c) || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)) {
+                        // Shallow: every child on both sides is arity-0 → compare pairwise inline.
+                        let eq = na.handles.iter().zip(nb.handles.iter()).all(|(&cx, &cy)| {
+                            cx == cy || with_raw_arity(cx, |rx, ax| with_raw_arity(cy, |ry, ay| rx == ry && ax == ay))
+                        });
+                        Some(eq)
+                    } else {
+                        None // a nested child — use the general worklist walk
+                    }
+                }
+                _ => None, // a null side — general path
+            }
+        } {
+            return result;
+        }
+    }
     let mut work: Option<Vec<(Handle, Handle)>> = None;
     let mut pair = Some((a, b));
     while let Some((x, y)) = pair {
@@ -2304,6 +2331,40 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
 #[allow(dead_code)]
 fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
     use core::cmp::Ordering;
+    // Shallow-compound fast path (mirrors `champ_eq`): order two compounds whose children are ALL
+    // arity-0 by raw bytes, then arity, then children in INDEX order (the general walk descends index 0
+    // first), each via `with_raw_arity` — WITHOUT the worklist Vec. Consistent with the shallow
+    // `champ_eq` path (both reduce to the same per-child (raw, arity) compare). Nested ⇒ general walk.
+    if !is_immediate(a) && !is_immediate(b) && a != b {
+        if let Some(ord) = unsafe {
+            match (a.0.as_ref(), b.0.as_ref()) {
+                (Some(na), Some(nb)) => {
+                    let shallow = na.handles.iter().chain(nb.handles.iter()).all(|&c| {
+                        is_immediate(c) || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
+                    });
+                    if !shallow {
+                        None // a nested child — use the general worklist walk
+                    } else {
+                        let mut ord = na.raw.cmp(&nb.raw).then(na.handles.len().cmp(&nb.handles.len()));
+                        let mut i = 0;
+                        while ord == Ordering::Equal && i < na.handles.len() {
+                            let (cx, cy) = (na.handles[i], nb.handles[i]);
+                            if cx != cy {
+                                ord = with_raw_arity(cx, |rx, ax| {
+                                    with_raw_arity(cy, |ry, ay| rx.cmp(ry).then(ax.cmp(&ay)))
+                                });
+                            }
+                            i += 1;
+                        }
+                        Some(ord)
+                    }
+                }
+                _ => None, // a null side — general path
+            }
+        } {
+            return ord;
+        }
+    }
     let mut work: Option<Vec<(Handle, Handle)>> = None;
     let mut pair = Some((a, b));
     while let Some((x, y)) = pair {
@@ -4057,8 +4118,8 @@ mod tests {
     /// allocations this commit removed. Ceilings sit comfortably above the figures measured 2026-07-12
     /// after the champ_become_hdr + in-place-slot + allocation-lazy-remove + alloc-free-cursor + lazy
     /// champ_eq/cmp worklist + EMPTY-slot splice + inline-Entry + inline-refcount cursor advance +
-    /// in-place remove-drain + inline-Slots cursor + in-place SPLIT + shallow-compound-hash work
-    /// (insert 1084, remove 954, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 3000=probe-only;
+    /// in-place remove-drain + inline-Slots cursor + in-place SPLIT + shallow-compound hash+eq work
+    /// (insert 1084, remove 954, iterate 3, push 197, get 0, lookup 0, tuplekey-lookup 2000=probe-only;
     /// set union 595 / ∩ 482 / ∖ 491); they are UPPER BOUNDS so ordinary noise never trips them but a
     /// regression toward the old 6779/8397/5248/1000 does.
     ///
@@ -4218,10 +4279,11 @@ mod tests {
             }
         });
         println!("ALLOC map_lookup_tuplekey x{N}: {clookup}");
-        // Each iteration allocates ONLY the probe tuple (arr node = handles Vec + node Box + raw Vec,
-        // ~2-3); the shallow-compound hash fast path adds NO worklist. A regression to the general walk
-        // would add ~2 more per lookup. Ceiling leaves headroom for the intrinsic probe-tuple cost.
-        assert!(clookup <= 4000, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 4000 (probe tuple only; champ_hash fast path adds no worklist)");
+        // Each iteration allocates ONLY the probe tuple (arr node Box + its 2-slot handles Vec = 2);
+        // BOTH the shallow-compound champ_hash fast path AND the shallow-compound champ_eq fast path add
+        // NO worklist — so a hit costs exactly the probe. A regression to the general walk (hash and/or
+        // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
+        assert!(clookup <= 2500, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)");
         op_drop(cm);
     }
 
@@ -7115,6 +7177,57 @@ mod tests {
         op_drop(y);
         op_drop(z);
         assert_eq!(live_nodes(), before, "nested-compound eq/cmp test reclaimed all nodes");
+    }
+
+    #[test]
+    fn champ_eq_and_cmp_shallow_compound_fast_path_is_consistent() {
+        reset();
+        let before = live_nodes();
+        // Guards the SHALLOW-compound fast path in champ_eq/champ_key_cmp (both children arity-0, no
+        // worklist). It must agree with the general walk across every difference kind, and champ_key_cmp
+        // must stay CONSISTENT with champ_eq (cmp==Equal iff eq) and ANTISYMMETRIC. Build 2-tuples that
+        // differ at child 0, at child 1, in arity, in raw — plus a NESTED tuple (a tuple whose child is
+        // itself a tuple) to confirm the fast path correctly DECLINES (falls to the general walk) there.
+        let tup = |cols: &[Handle]| -> Handle {
+            let t = op_arr_alloc(cols.len() as u32);
+            for (i, &c) in cols.iter().enumerate() {
+                op_arr_set(t, i as u32, c);
+            }
+            t
+        };
+        // Shallow tuples over immediates + boxed leaves (out-of-window so real nodes).
+        let big = |v: i64| (1i64 << 40) + v;
+        let a = tup(&[op_box_int(1), op_box_int(2)]);
+        let a2 = tup(&[op_box_int(1), op_box_int(2)]); // structurally equal, distinct pointer
+        let b = tup(&[op_box_int(1), op_box_int(3)]); // differs at child 1
+        let c = tup(&[op_box_int(0), op_box_int(2)]); // differs at child 0
+        let d = tup(&[op_box_int(1)]);                // differs in arity
+        let e = tup(&[boxed_int_leaf(big(1)), boxed_int_leaf(big(2))]); // boxed-leaf children (shallow)
+        let e2 = tup(&[boxed_int_leaf(big(1)), boxed_int_leaf(big(2))]); // equal to e
+        let e3 = tup(&[boxed_int_leaf(big(1)), boxed_int_leaf(big(9))]); // differs at child 1 (boxed)
+        // A NESTED tuple: child 0 is itself a tuple → the fast path must decline to the general walk.
+        let nested = tup(&[tup(&[op_box_int(1), op_box_int(2)]), op_box_int(9)]);
+        let nested2 = tup(&[tup(&[op_box_int(1), op_box_int(2)]), op_box_int(9)]);
+
+        // Equalities.
+        assert!(champ_eq(a, a2), "equal shallow tuples are eq");
+        assert_eq!(champ_key_cmp(a, a2), core::cmp::Ordering::Equal, "equal shallow tuples cmp Equal");
+        assert!(champ_eq(e, e2), "equal shallow tuples over boxed leaves are eq");
+        assert_eq!(champ_key_cmp(e, e2), core::cmp::Ordering::Equal);
+        assert!(champ_eq(nested, nested2), "equal NESTED tuples are eq (via the general walk)");
+        assert_eq!(champ_key_cmp(nested, nested2), core::cmp::Ordering::Equal);
+        // Inequalities + eq/cmp consistency + antisymmetry across each difference kind.
+        for &(x, y) in &[(a, b), (a, c), (a, d), (e, e3), (nested, a)] {
+            assert!(!champ_eq(x, y), "differing tuples are not eq");
+            let ord = champ_key_cmp(x, y);
+            assert_ne!(ord, core::cmp::Ordering::Equal, "cmp finds the difference");
+            assert_eq!(champ_key_cmp(y, x), ord.reverse(), "cmp antisymmetric");
+            assert_eq!(champ_eq(x, y), champ_key_cmp(x, y) == core::cmp::Ordering::Equal, "cmp==Equal iff eq");
+        }
+        for &h in &[a, a2, b, c, d, e, e2, e3, nested, nested2] {
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "shallow-compound eq/cmp test reclaimed all nodes");
     }
 
     /// Guard the alloc-free `with_raw_arity` fast path in `champ_eq`/`champ_key_cmp` against the naive
