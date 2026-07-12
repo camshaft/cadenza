@@ -282,8 +282,8 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
-        // A conversion's operand is unconditionally evaluated.
-        Core::Convert { operand, .. } => {
+        // A conversion's or a boolean negation's operand is unconditionally evaluated.
+        Core::Convert { operand, .. } | Core::Not { operand } => {
             collect_reached_poisons(db, operand, out);
         }
         // An A-normal `let`: every bound value is unconditionally computed (a kept binding names a

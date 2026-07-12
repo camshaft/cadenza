@@ -228,13 +228,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // value. `c` is a `Bool` (an `if` condition must be), and it is evaluated on BOTH branches of
             // the original, so returning it drops the `if` with no change (including any trap in `c`,
             // which still fires — `c` is unconditionally evaluated here just as it was as the condition).
-            // (The dual `(if c false true)` is `!c`; a general boolean negation has no core/Lir op yet,
-            // so it is left as an `if` — a follow-up when `i32.eqz` is added.)
             _ if matches!(core_of(db, then_), Core::ConstBool(true))
                 && matches!(core_of(db, else_), Core::ConstBool(false)) =>
             {
                 trace!(target: "rcdzc::lower", node = id.0, "if c true false folds to the condition c");
                 core_of(db, cond)
+            }
+            // BOOLEAN NEGATION: `(if c false true)` is `!c`. `c` is unconditionally evaluated (as the
+            // condition), so negating its value drops the `if` with no other change (any trap in `c`
+            // still fires). A runtime `c` becomes `Core::Not{c}` (emitted as `i32.eqz`); a constant `c`
+            // would already have folded via the `ConstBool` arm above, so here `c` is a runtime bool.
+            _ if matches!(core_of(db, then_), Core::ConstBool(false))
+                && matches!(core_of(db, else_), Core::ConstBool(true)) =>
+            {
+                trace!(target: "rcdzc::lower", node = id.0, "if c false true folds to the negation !c");
+                Core::Not { operand: cond }
             }
             _ => Core::If { cond, then_, else_ },
         },
@@ -2136,16 +2144,16 @@ mod tests {
             matches!(core_of(&mut db, body), Core::Compare { .. }),
             "if c true false folds to the condition c"
         );
-        // The dual `(if c false true)` is a negation — no core op yet, so it stays a `Core::If` (NOT
-        // mis-folded to the condition, which would invert the result).
+        // The dual `(if c false true)` is a NEGATION `!c` — it folds to `Core::Not { operand: c }` (the
+        // backend emits `<c> ; i32.eqz`), NOT the bare condition (that would leave the result uninverted).
         let ast2 = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) false true)) (def (main) 0) (export main))",
         );
         let mut db2 = Db::load(ast2);
         let body2 = db2.defs[db2.def_by_name("f").unwrap()].body.unwrap();
         assert!(
-            matches!(core_of(&mut db2, body2), Core::If { .. }),
-            "if c false true (a negation) is not folded to the condition"
+            matches!(core_of(&mut db2, body2), Core::Not { .. }),
+            "if c false true folds to the negation !c"
         );
     }
 

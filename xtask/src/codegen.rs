@@ -587,6 +587,7 @@ mod wasm_abi {
             op("I32_SHR_S", Instruction::I32ShrS),
             op("I32_SHR_U", Instruction::I32ShrU),
             op("I32_EQ", Instruction::I32Eq),
+            op("I32_EQZ", Instruction::I32Eqz),
             op("I32_NE", Instruction::I32Ne),
             op("I32_LT_S", Instruction::I32LtS),
             op("I32_LT_U", Instruction::I32LtU),

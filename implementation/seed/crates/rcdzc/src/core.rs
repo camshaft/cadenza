@@ -174,6 +174,10 @@ pub enum Core {
     /// the node's solved TARGET width/signedness (read off at selection); a constant operand folds to a
     /// `ConstInt` in `lower`. The target is the conversion node's OWN solved type, not the operand's.
     Convert { op: Prim, operand: StructId },
+    /// A runtime boolean NEGATION `!operand` — the `operand` is a `Bool` (an i32 0/1). Present only from
+    /// the `(if c false true)` fold in `lower` (a boolean-coercion negation); a constant operand folds to
+    /// the negated `ConstBool` there instead. The backend emits `<operand> ; i32.eqz`.
+    Not { operand: StructId },
     /// A runtime CALL to a top-level function — `callee` is the `db.defs` index of the function, `args`
     /// the call-site argument occurrences (lowered in the CALLER's frame, pushed in order). Present only
     /// when the application could NOT β-reduce to a normal form at compile time — i.e. a RECURSIVE

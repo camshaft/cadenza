@@ -43,6 +43,7 @@ pub mod op {
     pub const I32_SHR_S: u8 = 0x75;
     pub const I32_SHR_U: u8 = 0x76;
     pub const I32_EQ: u8 = 0x46;
+    pub const I32_EQZ: u8 = 0x45;
     pub const I32_NE: u8 = 0x47;
     pub const I32_LT_S: u8 = 0x48;
     pub const I32_LT_U: u8 = 0x49;

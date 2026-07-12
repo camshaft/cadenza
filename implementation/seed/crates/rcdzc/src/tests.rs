@@ -1536,6 +1536,32 @@ fn an_if_true_false_coercion_runs_as_the_condition() {
     ));
 }
 
+/// `(if (< a b) false true)` is the boolean NEGATION `!(a < b)` — it folds to `Core::Not` (emitted as
+/// `i32.eqz`). Running it confirms the result is INVERTED relative to the comparison (`>=`).
+#[test]
+fn an_if_false_true_negation_runs_as_not_the_condition() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (ge (: a Int64) (: b Int64)) (if (< a b) false true)) (export ge))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // !(1 < 2) = false; !(5 < 5) = true; !(-1 < 1) = false — the inversion of `<`.
+    assert!(!run_returns_with::<bool>(
+        &bytes,
+        "ge",
+        &[Val::S64(1), Val::S64(2)]
+    ));
+    assert!(run_returns_with::<bool>(
+        &bytes,
+        "ge",
+        &[Val::S64(5), Val::S64(5)]
+    ));
+    assert!(!run_returns_with::<bool>(
+        &bytes,
+        "ge",
+        &[Val::S64(-1), Val::S64(1)]
+    ));
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]

@@ -153,6 +153,9 @@ pub enum Lir {
     I64GtU,
     I64LeU,
     I64GeU,
+    /// `i32.eqz` — 1 if the i32 on the stack is 0, else 0. On a boolean (an i32 0/1) it is logical NOT;
+    /// used to emit a boolean negation `!c` (the `(if c false true)` fold).
+    I32Eqz,
     /// 32-bit integer comparisons leaving an i32 boolean — for a ≤32-bit integer OR a boolean operand
     /// (a bool is an i32). Signed and unsigned variants (a ≤32-bit value is properly sign-/zero-extended
     /// in its slot, so `_s`/`_u` compare it correctly); `eq` is sign-agnostic.

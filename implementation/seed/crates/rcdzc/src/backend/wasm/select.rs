@@ -103,7 +103,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
-        Core::Convert { operand, .. } => binding_escapes(db, operand, binder, false),
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            binding_escapes(db, operand, binder, false)
+        }
         Core::Record { fields } => fields
             .values()
             .any(|&v| binding_escapes(db, v, binder, false)),
@@ -263,7 +265,9 @@ pub fn collect_used_ops(
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
-        Core::Convert { operand, .. } => collect_used_ops(db, operand, out),
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            collect_used_ops(db, operand, out)
+        }
         Core::Call { args, .. } => {
             for arg in args {
                 collect_used_ops(db, arg, out);
@@ -1201,6 +1205,13 @@ fn emit(
                 ),
                 _ => Err(Reject::decline("not a runtime conversion")),
             }
+        }
+        // A runtime boolean NEGATION `!operand` — emit the operand (a Bool i32), then `i32.eqz` (1 if 0,
+        // else 0 = logical NOT). From the `(if c false true)` fold.
+        Core::Not { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::I32Eqz);
+            Ok(())
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.

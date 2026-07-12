@@ -147,6 +147,7 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
         Lir::I64GtU => out.push(op::I64_GT_U),
         Lir::I64LeU => out.push(op::I64_LE_U),
         Lir::I64GeU => out.push(op::I64_GE_U),
+        Lir::I32Eqz => out.push(op::I32_EQZ),
         Lir::I32Eq => out.push(op::I32_EQ),
         Lir::I32LtS => out.push(op::I32_LT_S),
         Lir::I32GtS => out.push(op::I32_GT_S),
