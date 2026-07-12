@@ -16,7 +16,7 @@
 //! produces them, but a hand-built arena might) are dropped, which is correct for a normal form.
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
-use std::collections::HashMap;
+use crate::fxhash::FxHashMap;
 
 /// Return the canonical form of `arenas`: the same program, re-indexed so that any arena denoting
 /// this tree yields byte-identical output from [`crate::codec::encode`]. Idempotent.
@@ -24,7 +24,7 @@ pub fn canonicalize(arenas: &Arenas) -> Arenas {
     let mut c = Canon {
         src: arenas,
         leaves: Vec::new(),
-        leaf_map: HashMap::new(),
+        leaf_map: FxHashMap::default(),
         structure: Vec::new(),
     };
     let root = c.visit(arenas.root);
@@ -38,7 +38,7 @@ pub fn canonicalize(arenas: &Arenas) -> Arenas {
 struct Canon<'a> {
     src: &'a Arenas,
     leaves: Vec<Leaf>,
-    leaf_map: HashMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
+    leaf_map: FxHashMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
     structure: Vec<Struct>,
 }
 

@@ -19,7 +19,6 @@
 //! pre-expansion (rewriting uniform `(head child…)` structure) easy.
 
 use num_bigint::BigInt;
-use std::collections::HashMap;
 
 /// A leaf primitive value. Frozen at 5 variants.
 ///
@@ -96,7 +95,10 @@ pub struct Arenas {
 #[derive(Default)]
 pub struct Builder {
     leaves: Vec<Leaf>,
-    leaf_index: HashMap<Leaf, LeafId>,
+    // FxHash (not SipHash): the dedup key is the program's own leaf (a short identifier or literal),
+    // never untrusted input, and `leaf` runs once per token during parse — SipHash's `hash_one` was
+    // ~a quarter of front-end time. See `crate::fxhash`.
+    leaf_index: crate::fxhash::FxHashMap<Leaf, LeafId>,
     structure: Vec<Struct>,
 }
 
