@@ -608,6 +608,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
                 // trap).
                 Some(Prim::SumExpect) if args.len() == 2 => lower_sum_expect(db, id, args[0]),
+                // `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic. FOLD a constant operand
+                // pair to `(Some result)` in range / `(None unit)` on overflow; a runtime operand is a
+                // later increment (declines cleanly).
+                Some(prim @ (Prim::CheckedAdd | Prim::CheckedMul)) if args.len() == 2 => {
+                    lower_checked_arith(db, id, prim, args[0], args[1])
+                }
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
                 // concatenation (the result is another constant `String`). The value form is always NFC,
                 // and NFC is NOT closed under concatenation in general (a combining mark starting the RIGHT
@@ -2860,6 +2866,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrConcat
         | Prim::StrSlice
         | Prim::SumExpect
+        | Prim::CheckedAdd
+        | Prim::CheckedMul
         | Prim::StringTy
         | Prim::BytesAt
         | Prim::BytesConcat
@@ -3247,6 +3255,75 @@ fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
     }
 }
 
+/// Lower `(Int64.checked-add a b)` / `(Int64.checked-mul a b)` — the FALLIBLE arithmetic companions of
+/// the trapping `+`/`*`, returning `(Option T)`: `Some result` when it fits the width / `None` on
+/// overflow (numeric-model.md §Overflow Is Defined). FOLD a constant operand pair via `i64` checked
+/// arithmetic (the SAME `checked_add`/`checked_mul` `fold_arith` uses to prove the trapping op's overflow
+/// — but here overflow yields `None`, not a build error): in range → `Core::SumNew{disc_some, [result]}`
+/// (the result a fresh `Core::ConstInt` synthesized into the arena, the `Some` payload — the shape
+/// `List.at`/`String.at` use); overflow → `Core::SumNew{disc_none, []}`. Both fold to the ordinary Option
+/// construction, riding the sum fold/escape/match. A runtime operand is a later increment (declines
+/// cleanly); a poison operand propagates.
+fn lower_checked_arith(
+    db: &mut Db,
+    id: StructId,
+    prim: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "checked-arithmetic result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, lhs), core_of(db, rhs)) {
+        (Core::ConstInt(a), Core::ConstInt(b)) => {
+            // Evaluate over `i64` (the Stage default width) — the same range the trapping fold uses. A
+            // later width stage generalizes the overflow test to the solved width.
+            let (Some(x), Some(y)) = (a.to_i64(), b.to_i64()) else {
+                // An operand beyond the machine range — a later width stage handles it; decline for now.
+                return Core::Poison(Reject::decline(
+                    "checked arithmetic on an operand beyond the evaluated width is not yet folded",
+                ));
+            };
+            let checked = match prim {
+                Prim::CheckedAdd => x.checked_add(y),
+                _ => x.checked_mul(y),
+            };
+            match checked {
+                Some(n) => {
+                    trace!(target: "rcdzc::fold", node = id.0, ?prim, result = n, "checked arithmetic folds to Some (in range)");
+                    let payload = db.push_atom(crate::ast::Leaf::Int {
+                        value: IntValue::from_i64(n),
+                        radix: crate::ast::Radix::Dec,
+                    });
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, ?prim, "checked arithmetic folds to None (overflow)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        // A runtime operand — the overflow-detecting Some/None build is a later increment.
+        _ => Core::Poison(Reject::decline(
+            "checked arithmetic on a runtime operand is not yet computed (constant operands only)",
+        )),
+    }
+}
+
 /// Lower `(Bytes.of list)` — construct a byte sequence from a list of `Int64` in `0..=255`. Folds only
 /// a compile-time-visible `Core::ListNew` operand (a runtime list source is a later increment → declines
 /// cleanly). Each element must fold to a constant in range: a value `< 0` or `> 255` is a compile-time
@@ -3533,6 +3610,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
         Prim::SumExpect => "sum-expect",
+        Prim::CheckedAdd => "checked-add",
+        Prim::CheckedMul => "checked-mul",
     }
 }
 

@@ -4320,6 +4320,28 @@ mod match_engine {
     }
 
     #[test]
+    fn checked_arithmetic_folds_to_some_in_range_and_none_on_overflow() {
+        // `Int64.checked-add`/`checked-mul` — the FALLIBLE arithmetic (numeric-model.md §Overflow Is
+        // Defined). A constant operand pair FOLDS: in range → `(Some result)`, overflow → `(None unit)`.
+        // Consumed by a match so `main` returns a scalar (the Some payload or a -1 sentinel).
+        for (prog, want) in [
+            ("(Int64.checked-add 20 22)", 42),       // fits
+            ("(Int64.checked-add Int64.max 1)", -1), // overflows → None
+            ("(Int64.checked-mul 6 7)", 42),         // fits
+            ("(Int64.checked-mul Int64.max 2)", -1), // overflows → None
+        ] {
+            let src = format!(
+                "(module m (def (main) (match {prog} ((Some v) v) ((None _) -1))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "checked arithmetic fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
     fn option_expect_unwraps_a_runtime_optional_through_the_disc_probe() {
         // The RUNTIME `Option.expect` path: unwrap an optional a runtime op PRODUCED (not a constant), the
         // compiler's `List.at`+`Option.expect` idiom the spec cites. `build 0 3 (list)` = `[0 1 2]`;

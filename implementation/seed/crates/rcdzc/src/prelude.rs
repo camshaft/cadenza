@@ -682,16 +682,29 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // and whose `(meta apply)` is the `wrap` intrinsic. ONE such field per module (no per-source-type
     // explosion): the target is fixed by the module, the source by unification at the call site.
     fields.push(wrap_field(ast, signed, width));
+    // `checked-add`/`checked-mul` — the FALLIBLE arithmetic companions of the trapping `+`/`*`: `T → T →
+    // (Option T)`, the exact result wrapped in `Some` when it fits, `None` on overflow (numeric-model.md
+    // §Overflow Is Defined — the defined value outcome alongside the trap). Real operator records (the
+    // `(meta apply)` = the checked intrinsic); a constant folds, a runtime operand is a later increment.
+    fields.push(checked_field(
+        ast,
+        "checked-add",
+        "checked-add",
+        signed,
+        width,
+    ));
+    fields.push(checked_field(
+        ast,
+        "checked-mul",
+        "checked-mul",
+        signed,
+        width,
+    ));
     // Operations not yet realized — present, but their value declines when projected. `of` (the CHECKED
     // conversion) returns `Option<T>`; sum types now exist, so what remains is wiring `.of` to build a
-    // `(Some v)` in range / `(None)` out (task #59) — until that lands it stays an unrealized field.
-    for op in [
-        "of",
-        "checked-add",
-        "checked-mul",
-        "wrapping-add",
-        "wrapping-mul",
-    ] {
+    // `(Some v)` in range / `(None)` out (task #59) — until that lands it stays an unrealized field. The
+    // `wrapping-*` ops (two's-complement wraparound, returning a bare `T`) are a sibling arc.
+    for op in ["of", "wrapping-add", "wrapping-mul"] {
         fields.push(unrealized_field(ast, op));
     }
     let mut children = vec![head];
@@ -739,6 +752,54 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(wrap record)`.
     let k = push_atom(ast, Leaf::Name("wrap".to_string()));
+    push_list(ast, vec![k, record])
+}
+
+/// A `(name (record ((meta t) TYPE) ((meta apply) (intrinsic PRIM))))` field — a CHECKED arithmetic op
+/// on this module's width. `TYPE` is `(fn () (-> TARGET (-> TARGET (Option TARGET))))`: both operands and
+/// the `Some` payload are `TARGET` = `(Int width)`/`(UInt width)`, this module's own concrete type; the
+/// result is `(Option TARGET)`, `Some result` when it fits / `None` on overflow. The zero-param `fn`
+/// wrapper makes `scheme_of` read a monomorphic SCHEME, not a bare type-value (see `string_to_int64_type`
+/// for why a bare arrow would collapse the op record to `Ty::Type`). `(meta apply)` = the `PRIM`
+/// intrinsic (`checked-add`/`checked-mul`), whose target width is read off the solved type at lowering.
+fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: u32) -> StructId {
+    let target = |ast: &mut Arenas| {
+        let ctor = push_atom(
+            ast,
+            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
+        );
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    // `(Option TARGET)`.
+    let option_target = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let t = target(ast);
+        push_list(ast, vec![option, t])
+    };
+    // `(-> TARGET (Option TARGET))`.
+    let rhs = target(ast);
+    let inner = arrow_type(ast, rhs, option_target);
+    // `(-> TARGET (-> TARGET (Option TARGET)))`.
+    let lhs = target(ast);
+    let body = arrow_type(ast, lhs, inner);
+    // `(fn () body)`.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic prim)))`.
+    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim_node = intrinsic_node(ast, prim);
+    let apply_field = meta_field(ast, "apply", prim_node);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    let k = push_atom(ast, Leaf::Name(name.to_string()));
     push_list(ast, vec![k, record])
 }
 

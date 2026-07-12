@@ -243,6 +243,15 @@ pub enum Prim {
     /// The message argument is a `String` (for a human), dropped by the pure core (the wasm trap is
     /// textless). ONE prim for both Option and Result — present is discriminant 0 in each.
     SumExpect,
+    /// `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic companions of the trapping `+`/`*`:
+    /// `T → T → (Option T)`, the exact result wrapped in `Some` when it fits the width, `None` on overflow
+    /// (numeric-model.md §Overflow Is Defined — the defined value outcome alongside the trap). The `(meta
+    /// apply)` of the `checked-add`/`checked-mul` field of an integer module. A CONSTANT operand pair
+    /// FOLDS (`i64::checked_add`/`checked_mul` → `Some result` / `None`); a runtime operand emits the
+    /// overflow-detecting `Some`/`None` build (a later increment). The target width is the module's own,
+    /// read off the solved type.
+    CheckedAdd,
+    CheckedMul,
 }
 
 impl Prim {
@@ -299,6 +308,8 @@ impl Prim {
             "str-concat" => Some(Prim::StrConcat),
             "str-slice" => Some(Prim::StrSlice),
             "sum-expect" => Some(Prim::SumExpect),
+            "checked-add" => Some(Prim::CheckedAdd),
+            "checked-mul" => Some(Prim::CheckedMul),
             _ => None,
         }
     }
