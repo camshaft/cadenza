@@ -2300,22 +2300,24 @@ fn emit(
             let (arms_slots, arms_base) = if reusable_handle_src(db, scrutinee, slots) {
                 (slots.clone(), base)
             } else {
-                // Reserve slot `base` for the scrutinee (an i32 heap handle). Emit its value above that
-                // (floor `base + 1`), which may claim its OWN transient scratch (a `List.at` types slots
-                // for the list/index/element). Those slots carry a FIXED type, so the arm bodies must NOT
-                // reuse them at a different width — start the arm scratch ABOVE the high-water the
-                // scrutinee emit reached (`*high`), not at `base + 1`, or an i32 scrutinee-scratch slot
-                // would clash with an i64 arm temp (an invalid module).
-                let slot = base;
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
+                // Reserve a FRESH slot for the scrutinee (an i32 heap handle) ABOVE the running
+                // high-water — NOT `base` itself. When this `MatchSum` is an OPERAND of an enclosing op
+                // (`(* (match (Bytes.at b i) …) …)`), `base` is that op's operand-scratch floor, which the
+                // enclosing arith already TYPED (i64 for its operand/result slot); reusing `base` for the
+                // i32 handle would re-type a slot the enclosing op `local.set`s at i64 — an invalid module
+                // (`expected i64, found i32`). A slot at `*high` is guaranteed never pre-typed. Emit the
+                // scrutinee's value above THAT (its own transient scratch — a `List.at`/`Bytes.at` types
+                // slots for the buffer/index/element), then start the arm scratch above the high-water the
+                // scrutinee emit reached (`*high`), so an i32 scrutinee-scratch slot never clashes with an
+                // i64 arm temp.
+                let slot = *high;
+                *high = slot + 1;
                 scratch_ty.insert(slot, ValType::I32);
                 emit(
                     db,
                     scrutinee,
                     slots,
-                    base + 1,
+                    slot + 1,
                     high,
                     scratch_ty,
                     layout,
@@ -2324,7 +2326,7 @@ fn emit(
                 out.push(Lir::LocalSet(slot));
                 let mut m = slots.clone();
                 m.insert(scrutinee, slot);
-                (m, (*high).max(base + 1))
+                (m, (*high).max(slot + 1))
             };
             emit_sum_cont(
                 db,
@@ -2469,8 +2471,16 @@ fn emit(
                 });
                 return Ok(());
             }
+            // Both operands are simultaneously live on the stack for the compare, so — like sibling call
+            // args and checked-arith's A/B — the RHS emits ABOVE the LHS's high-water, never reusing an
+            // LHS scratch slot at a different width. An LHS that inlines a heap-match (`(= (cbor-major b
+            // i) 4)` — `cbor-major` β-reduces to a `Bytes.at` MatchSum materializing an i32 handle) types
+            // its slots i32; an RHS (or the LHS of a sibling compare) reusing them as an i64 arith temp
+            // would re-type one wasm local to two widths → an invalid module. Floating the RHS above
+            // `*high` hands it fresh, never-typed slots.
             emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
-            emit_operand(db, rhs, it, slots, base, high, scratch_ty, layout, out)?;
+            let rhs_base = base.max(*high);
+            emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
             out.push(compare_op(op, it));
             Ok(())
         }
@@ -4023,6 +4033,16 @@ fn emit_checked_arith_to(
     // <B> compute B into $b — only for a stashed operand that is NOT shared with A (CSE). When
     // `sb_shares_a`, B's value already sits in A's slot (computed once), so re-emitting it would both
     // recompute and clobber — skip it.
+    //
+    // B emits ABOVE A's high-water (`b_base = max(operand_base, *high)`), not at the shared
+    // `operand_base`. A's transient scratch is dead once A is stored in `$a`, so REUSING it would be
+    // sound by liveness — BUT a slot A typed one way (an inlined heap-match materializes its scrutinee
+    // as an i32 handle) and B reuses at another width (an i64 arith guard) re-types one wasm local to
+    // two types → an invalid module (`expected i64, found i32`). Floating B above A's high-water hands B
+    // fresh, never-typed slots — the same disjoint-slot discipline `emit_loop_iteration`/`emit_call_args`
+    // apply to sibling arguments (a slot's TYPE is fixed for the whole function, so width-disjoint temps
+    // must not alias even when their lifetimes don't overlap).
+    let b_base = operand_base.max(*high);
     if sb_src.is_none()
         && !sb_shares_a
         && let OperandSrc::Slot(sb_slot) = sb
@@ -4033,7 +4053,7 @@ fn emit_checked_arith_to(
             ot,
             sb_slot,
             slots,
-            operand_base,
+            b_base,
             high,
             scratch_ty,
             layout,

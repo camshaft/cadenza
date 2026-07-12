@@ -3419,6 +3419,40 @@ mod recursion {
         );
         assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
     }
+
+    #[test]
+    fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
+        // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
+        // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with
+        // checked ARITHMETIC over another helper's result (`(* (byte-at b i) (place …))`, whose overflow
+        // guards use i64 scratch slots) emitted an invalid module ("expected i64, found i32"): the i32
+        // handle slot and an i64 arith temp aliased ONE wasm local at two widths. A wasm local's type is
+        // fixed function-wide, so width-disjoint temps must occupy disjoint slots even when their
+        // lifetimes don't overlap. Fixed by (a) materializing a MatchSum scrutinee into a slot ABOVE the
+        // high-water (never a pre-typed operand slot), (b) floating checked-arith's B operand and (c) a
+        // comparison's RHS above the LHS's high-water. `be(b"\x01\x02", 0, 2)` = 1*256 + 2*1 = 258.
+        let bytes = component(
+            "(module m (def (byte-at (: b Bytes) i) (match (Bytes.at b i) ((Some x) x) ((None _) 0))) \
+               (def (place k) (if (< k 1) 1 (* 256 (place (- k 1))))) \
+               (def (be (: b Bytes) i n) (if (< n 1) 0 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1))))) \
+               (def (main) (be (Bytes.of (list 1 2)) 0 2)) (export main))",
+        );
+        wasmparser::validate(&bytes).expect("a heap-match composed with checked arith must emit valid wasm");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "258"),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────

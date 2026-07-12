@@ -11,6 +11,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
+pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a UInt32 holds a wasm section size at the width boundary
@@ -167,12 +168,14 @@ pass	a literal inside an Ok pattern refines a Result match
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
+pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
+pass	a match over multiple nullary constructors with uniform patterns
 pass	a match takes another match's result as its scrutinee
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded is non-exhaustive
@@ -232,6 +235,7 @@ pass	a non-first field is projected from a record returned across a call boundar
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a nullary Sign variant applied to a non-unit payload is a type error
+pass	a nullary constructor is a single-arity function taking unit
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
@@ -261,6 +265,7 @@ pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
@@ -308,6 +313,8 @@ pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
+pass	a runtime three-variant classifier dispatches to the middle arm
+pass	a runtime three-variant classifier dispatches to the negative arm
 pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
@@ -342,6 +349,8 @@ pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum value annotated as a scalar type is rejected
 pass	a sum-match recursion that accumulates a built-in list returns a list
+pass	a sum-type value is constructed through a variant
+pass	a sum-type value is deconstructed by an exhaustive match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a three-element runtime tuple is returned as a result
@@ -354,6 +363,7 @@ pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple is constructed with positional elements
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 pass	a tuple of two sums is matched with nested constructor patterns
+pass	a tuple pattern against a Sign scrutinee is a type error
 pass	a tuple pattern against a sum scrutinee is a type error
 pass	a tuple pattern of the wrong arity is a type error
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
@@ -552,6 +562,7 @@ pass	negation inverts a boolean
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
+pass	nullary constructor patterns are uniform with unary
 pass	one generic sum instantiated at two different types in one program
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
@@ -682,7 +693,6 @@ todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
 todo	a NaN nested in a tuple compares equal under the canonical byte form
 todo	a RECURSIVE effectful walk accumulates into a list-state handler
-todo	a Sign match missing two of three variants is non-exhaustive
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bare arithmetic keyword is rejected, not a crash
 todo	a bare equality keyword is rejected, not a crash
@@ -760,12 +770,10 @@ todo	a map with a duplicate key is a type error
 todo	a map with record values of different field sets is a type error
 todo	a map with tuple values of different arities is a type error
 todo	a map with values of two different types is a type error
-todo	a match not covering the scrutinee is a compile-time rejection
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
 todo	a match over bytes with only a bin arm and no catch-all is non-exhaustive
-todo	a match over multiple nullary constructors with uniform patterns
 todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
 todo	a module function is recursive
@@ -781,7 +789,6 @@ todo	a nominal record compared to a plain record of the same shape is a type err
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a non-final unsized bytes segment is ill-formed
-todo	a nullary constructor is a single-arity function taking unit
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
@@ -829,8 +836,6 @@ todo	a runtime string returned across the run boundary renders as its quoted tex
 todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
-todo	a runtime three-variant classifier dispatches to the middle arm
-todo	a runtime three-variant classifier dispatches to the negative arm
 todo	a scalar element is projected from a let-bound runtime tuple
 todo	a sequencing block discards a pure compound intermediate
 todo	a sequencing block discards a pure list intermediate
@@ -849,8 +854,6 @@ todo	a string literal is normalized to the canonical text form
 todo	a sum type can mix nullary and payload-carrying variants
 todo	a sum type is declared with named variants
 todo	a sum type variant can carry data
-todo	a sum-type value is constructed through a variant
-todo	a sum-type value is deconstructed by an exhaustive match
 todo	a symbol compared to a string is a type error
 todo	a symbol converts back to its content string
 todo	a symbol is constructed from a string
@@ -864,7 +867,6 @@ todo	a transformation maps a syntax tree to a syntax tree and preserves meaning
 todo	a transformation observably rewrites the tree, not just its value
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a tuple pattern against a Sign scrutinee is a type error
 todo	a u16 segment encodes an integer big-endian by default
 todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
@@ -1010,7 +1012,6 @@ todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
 todo	negative integer to byte uses two's complement
 todo	nested patterns with literals
-todo	nullary constructor patterns are uniform with unary
 todo	ordering a string against an integer is a type error regardless of operand order
 todo	ordering an integer against a string is a type error
 todo	parsing a length-framed message and rebuilding it yields the original bytes
