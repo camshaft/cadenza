@@ -34,6 +34,7 @@ pass	a let shadowing a parameter with a differently-typed value is not an invali
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match on a computed runtime value dispatches on the result
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
@@ -43,6 +44,7 @@ pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies to all its arguments at once
+pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
@@ -78,6 +80,7 @@ pass	a runtime truncation of a negative value uses two's complement and never tr
 pass	a runtime truncation to an unsigned byte keeps the low bits
 pass	a runtime unsigned-byte addition traps on overflow of its width
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
+pass	a signed narrow match binder returns the bound value
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a strict greater-than of equal operands is false

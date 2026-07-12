@@ -391,8 +391,18 @@ fn emit_tail(
                 },
             };
             let it = int_ty_of(db, scrutinee);
+            // The match's RESULT integer type (its arms' joined width), so a bare-literal arm body is
+            // grounded to it (like an operand of a binary op) — otherwise an arm that is a default-Int64
+            // literal beside an arm at a NARROW width would push a mismatched machine slot and wasm
+            // rejects the block. `None` for a non-integer result (e.g. Bool arms — a ConstBool is always
+            // i32, no width to reconcile).
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
             emit_match_arms_tailable(
-                db, scrutinee, &arms, it, block_ty, slots, base, high, scratch_ty, layout, out, true,
+                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out, true,
             )
         }
         // Everything else in tail position is an ordinary value (no tail call inside it) — emit normally.
@@ -521,8 +531,13 @@ fn emit(
                 },
             };
             let it = int_ty_of(db, scrutinee);
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
             emit_match_arms(
-                db, scrutinee, &arms, it, block_ty, slots, base, high, scratch_ty, layout, out,
+                db, scrutinee, &arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out,
             )
         }
         // A parameter reference — read its local slot. The slot was assigned in `select_function`; a
@@ -720,6 +735,7 @@ fn emit_match_arms(
     scrutinee: StructId,
     arms: &[(crate::core::Probe, StructId)],
     it: IntTy,
+    result_it: Option<IntTy>,
     block_ty: BlockType,
     slots: &HashMap<StructId, u32>,
     base: u32,
@@ -729,7 +745,8 @@ fn emit_match_arms(
     out: &mut Vec<Lir>,
 ) -> Result<(), Reject> {
     emit_match_arms_tailable(
-        db, scrutinee, arms, it, block_ty, slots, base, high, scratch_ty, layout, out, false,
+        db, scrutinee, arms, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+        false,
     )
 }
 
@@ -743,6 +760,7 @@ fn emit_match_arms_tailable(
     scrutinee: StructId,
     arms: &[(crate::core::Probe, StructId)],
     it: IntTy,
+    result_it: Option<IntTy>,
     block_ty: BlockType,
     slots: &HashMap<StructId, u32>,
     base: u32,
@@ -752,7 +770,12 @@ fn emit_match_arms_tailable(
     out: &mut Vec<Lir>,
     tail: bool,
 ) -> Result<(), Reject> {
-    // Emit an arm body in tail position when the match is tail, else normally.
+    // Emit an arm body. Every arm produces the match's RESULT type, so a bare-LITERAL arm body must be
+    // grounded to the result's integer width (`result_it`) — otherwise a default-Int64 literal arm
+    // beside a narrow-width arm pushes a mismatched machine slot and wasm rejects the block (the same
+    // width-reconciliation `emit_operand` does for a binary op's literal operand). A non-literal arm,
+    // or a non-integer result, emits normally. A tail arm goes through `emit_tail` (a `ConstInt` is
+    // never a tail call, so grounding is unaffected by tail-ness).
     let emit_body = |db: &mut Db,
                      body: StructId,
                      base: u32,
@@ -760,6 +783,9 @@ fn emit_match_arms_tailable(
                      scratch_ty: &mut HashMap<u32, ValType>,
                      out: &mut Vec<Lir>|
      -> Result<(), Reject> {
+        if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
+            return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
+        }
         if tail {
             emit_tail(db, body, slots, base, high, scratch_ty, layout, out)
         } else {
@@ -798,7 +824,8 @@ fn emit_match_arms_tailable(
             emit_body(db, *body, base, high, scratch_ty, out)?;
             out.push(Lir::Else);
             emit_match_arms_tailable(
-                db, scrutinee, rest, it, block_ty, slots, base, high, scratch_ty, layout, out, tail,
+                db, scrutinee, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
+                out, tail,
             )?;
             out.push(Lir::End);
             Ok(())

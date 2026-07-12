@@ -927,6 +927,38 @@
   (call   main (: 100 UInt8))
   (output (: 101 UInt8)))
 
+; A `match` over a NARROW-width scrutinee whose arms include both a bare-literal arm and a binder (or a
+; narrow value) arm must reconcile the arm widths: every arm produces the match's RESULT type, so a
+; bare-literal arm (which defaults to Int64 on its own) takes the result's narrow width — otherwise a
+; default-Int64 arm beside a narrow arm pushes a mismatched machine slot and wasm rejects the block.
+; This is the match-arm analogue of the bare-literal-operand width reconciliation above. The corpus
+; gates match binders only over Int64; these pin the narrow-scrutinee binder path.
+
+(case "a match binder over a narrow scrutinee returns the bound value"
+  (doc    "`(match x (0 100) (n n))` with `x : UInt8`, called with 5, binds the non-zero scrutinee to
+           `n` and returns it = 5. The literal arm `100` takes the match's UInt8 result width (so both
+           arms share the i32 slot); the binder arm returns the scrutinee at its UInt8 width. A binder
+           over an Int64 scrutinee already works; this pins the narrow scrutinee's binder.")
+  (input  (do (def (main (: x UInt8)) (match x (0 100) (n n))) (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 5 UInt8)))
+
+(case "a signed narrow match binder returns the bound value"
+  (doc    "The signed sibling: `(match x (0 100) (n n))` with `x : Int8`, called with 5 = 5. Confirms
+           the narrow-arm-width reconciliation spans every aliased narrow width, not just UInt8.")
+  (input  (do (def (main (: x Int8)) (match x (0 100) (n n))) (export main)))
+  (call   main (: 5 Int8))
+  (output (: 5 Int8)))
+
+(case "a narrow match binder used in arithmetic with the scrutinee"
+  (doc    "`(match x (0 0) (n (+ n x)))` with `x : UInt8`, called with 50 = 100. The binder `n` is the
+           narrow scrutinee, and the arithmetic arm combines it with `x` at UInt8; the zero-arm literal
+           `0` takes the UInt8 result width. Pins that the bound value is usable in a downstream op, not
+           only returned directly.")
+  (input  (do (def (main (: x UInt8)) (match x (0 0) (n (+ n x)))) (export main)))
+  (call   main (: 50 UInt8))
+  (output (: 100 UInt8)))
+
 (case "a signed-byte entrypoint returns its runtime argument"
   (doc    "`(def (main (: n Int8)) n)` called with -128 (Int8.min). The parameter crosses as the
            component `s8`, so the sign is preserved at the boundary (an s8 -128, not a widened s32). Pins

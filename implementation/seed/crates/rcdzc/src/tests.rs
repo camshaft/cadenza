@@ -2020,7 +2020,7 @@ mod recursion {
 // non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
 // wasmtime + assert the rejections.
 mod match_engine {
-    use super::run_returns;
+    use super::{run_returns, run_returns_with};
     use crate::backend::Target;
     use crate::compile::{compile, compile_component};
     use crate::testkit::parse;
@@ -2134,6 +2134,27 @@ mod match_engine {
             "(module m (def (f (: n Int64)) (match n (0 100) (k (+ k 1)))) (def (main) (f 7)) (export main))",
         );
         assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
+    }
+
+    #[test]
+    fn a_binder_over_a_narrow_scrutinee_normalizes_to_its_width() {
+        use wasmtime::component::Val;
+        // A binder over a NARROW-width scrutinee, beside a bare-LITERAL arm. Every arm produces the
+        // match's result type, so the literal arm (default Int64 on its own) must take the UInt8 result
+        // width — else a default-i64 arm beside the narrow-i32 binder arm is a mismatched block and wasm
+        // rejects the function. Regression for the narrow-match-binder MISCOMPILE (invalid component).
+        let uint8 = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main (: x UInt8)) (match x (0 100) (n n))) (export main))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<u8>(&uint8, "main", &[Val::U8(5)]), 5); // binder arm
+        assert_eq!(run_returns_with::<u8>(&uint8, "main", &[Val::U8(0)]), 100); // literal arm
+        // The bound narrow value is usable in a downstream op: 50 → (+ 50 50) = 100.
+        let arith = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main (: x UInt8)) (match x (0 0) (n (+ n x)))) (export main))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<u8>(&arith, "main", &[Val::U8(50)]), 100);
     }
 
     #[test]
