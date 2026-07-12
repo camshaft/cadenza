@@ -4248,6 +4248,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_built_bytes_escapes_via_the_looping_walker() {
+        // L2b — the FIRST looping `encode()`. A RUNTIME-built `Bytes` (a `concat`/recursion result, NOT a
+        // compile-time constant) escapes through the resource shape whose `encode()` LOOPS: it writes the
+        // static value-form prefix, the runtime `bytes-len` as a LEB, a `bytes-get` copy loop, then the
+        // static suffix (`DESIGN-runtime-bytes-escape-walker.md`). The canonical customer is the LEB128
+        // encoder — `(uleb 624485)` = `E5 8E 26` (`b"\xe5\x8e&"`, byte 0x26 = `&`), built by recursion +
+        // `Bytes.concat` + `(UInt8.wrap …)` on runtime values; and the base case `(uleb 100)` = `b"d"`.
+        let uleb = "(def (uleb n) (if (< n 128) \
+                        ((. Bytes of) (list ((. UInt8 wrap) n))) \
+                        ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))";
+        let Some(out) = escape_render(&format!(
+            "(module m {uleb} (def (main) (uleb 624485)) (export main))"
+        )) else {
+            eprintln!("runtime wasm not found; skipping composed runtime-bytes-escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: b\"\\xe5\\x8e&\" Bytes)",
+            "runtime LEB128 multibyte escape"
+        );
+
+        let out = escape_render(&format!(
+            "(module m {uleb} (def (main) (uleb 100)) (export main))"
+        ))
+        .expect("runtime present");
+        assert_eq!(out, "(: b\"d\" Bytes)", "runtime LEB128 single-byte escape");
+
+        // A direct runtime concat (no recursion): (concat b"AB" b"C") built from runtime bytes → b"ABC".
+        let out = escape_render(
+            "(module m (def (mk n) ((. Bytes of) (list ((. UInt8 wrap) n) 66))) \
+                       (def (main) ((. Bytes concat) (mk 65) ((. Bytes of) (list 67)))) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(out, "(: b\"ABC\" Bytes)", "runtime concat escape");
+    }
+
+    #[test]
     fn a_constant_list_of_tuples_escapes_nested() {
         // A list whose ELEMENTS are themselves compounds escapes with each element template nested inside
         // the `(list …)` — the type-directed renderer recurses through `List → Tuple`. `(list (tuple 1 2)

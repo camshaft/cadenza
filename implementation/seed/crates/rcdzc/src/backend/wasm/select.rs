@@ -1697,25 +1697,30 @@ fn emit(
             out.push(Lir::ConstI32(elems.len() as i32)); // [len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
             for (i, &elem) in elems.iter().enumerate() {
-                // The element folded to a constant byte at lowering; read it back as an i32 in 0..=255.
-                let byte = match core_of(db, elem) {
+                out.push(Lir::ConstI32(i as i32)); // [buf, index]
+                // Push the element's BYTE VALUE (an i32 in 0..=255). A CONSTANT folds to an inline
+                // `i32.const`; a RUNTIME element (a `UInt8` param, or `(UInt8.wrap n)`) is emitted — its
+                // solved type is a narrow UInt8, so it already lives in an i32 machine slot (no extend,
+                // no box: `bytes-set` takes a raw i32 byte). This is what lets the LEB128 encoder's
+                // `(Bytes.of (list (UInt8.wrap n)))` build a byte from a runtime value.
+                match core_of(db, elem) {
                     Core::ConstInt(v) => {
-                        v.to_i64()
-                            .filter(|n| (0..=255).contains(n))
-                            .ok_or_else(|| {
-                                Reject::decline(
-                                    "a Bytes.of element is not a constant byte in 0..=255",
-                                )
-                            })? as i32
+                        let byte =
+                            v.to_i64()
+                                .filter(|n| (0..=255).contains(n))
+                                .ok_or_else(|| {
+                                    Reject::coded(
+                                        Code::IntOutOfRange,
+                                        "a Bytes.of element is not a UInt8 (0..=255)",
+                                    )
+                                })? as i32;
+                        out.push(Lir::ConstI32(byte)); // [buf, index, byte]
                     }
                     _ => {
-                        return Err(Reject::decline(
-                            "Bytes.of with a non-constant element is not yet supported",
-                        ));
+                        // A runtime UInt8 — emit its value (an i32 slot); it is in 0..=255 by its type.
+                        emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [buf, index, byte]
                     }
-                };
-                out.push(Lir::ConstI32(i as i32)); // [buf, index]
-                out.push(Lir::ConstI32(byte)); // [buf, index, byte]
+                }
                 out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]  (bytes-set returns the buffer)
             }
             Ok(()) // leaves [buf] — the bytes handle
