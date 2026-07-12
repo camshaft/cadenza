@@ -432,6 +432,21 @@
   (call   main (: true Bool) (: 0 Int64))
   (trap   "division by zero"))
 
+(case "a chained access through an if-of-records composes and shields the untaken branch's trap"
+  (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
+           (itself a record) from the if-selected record, then field `x` from that — the projection sinks
+           into each branch as `(if b (. (. R1 a) x) (. (. R2 a) x))`, folding both nested records away with
+           no heap build. With `b` = true the first branch is taken → `x` of its inner record = 1; the SECOND
+           branch's inner `x` is `(/ 1 z)` with z = 0 — a division by zero — but it is in the untaken branch,
+           doubly unobserved, so its trap must not occur. Pins that the chained composition preserves both
+           the per-branch field resolution AND the untaken-branch trap shielding of the single-step fold.")
+  (input  (do
+            (def (main (: b Bool) (: z Int64))
+              (. (. (if b (record (a (record (x 1)))) (record (a (record (x (/ 1 z)))))) a) x))
+            (export main)))
+  (call   main (: true Bool) (: 0 Int64))
+  (output (: 1 Int64)))
+
 ; --- Positional access on a RUNTIME tuple bound by `let` -------------------------------------------
 ; A tuple returned from a function and BOUND BY `let` is a genuine runtime value (a value-heap
 ; positional array), not a compile-time structure. `(. x N)` on such a bound name reads element N from
