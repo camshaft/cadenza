@@ -228,6 +228,36 @@ fn node_raw_arity(h: Handle) -> (Vec<u8>, usize) {
     }
 }
 
+/// Call `f` with `h`'s canonical raw bytes (BORROWED) and child arity, allocating NOTHING — the
+/// alloc-free twin of `node_raw_arity` for the hot CHAMP eq/cmp immediate branches. A real node lends
+/// its `raw` slice directly (no clone); an immediate materializes its ≤8 canonical little-endian
+/// bytes — the SAME bytes a boxed twin carries (open-Q#8), so eq/cmp treat inline and boxed alike —
+/// into a stack buffer and lends a subslice; NULL folds as `(&[], 0)`. Extracted so the two callers
+/// stop cloning a `Vec` per comparison to inspect ≤8 bytes (mirrors the `champ_hash` scalar fast path).
+#[inline]
+fn with_raw_arity<T>(h: Handle, f: impl FnOnce(&[u8], usize) -> T) -> T {
+    if is_immediate(h) {
+        let mut buf = [0u8; 8];
+        let len = match imm_kind(h) {
+            ImmKind::Unit => 0usize,
+            ImmKind::Bool => {
+                buf[0] = imm_as_bool(h) as u8;
+                1
+            }
+            ImmKind::Int => {
+                buf = (imm_as_int(h) as u64).to_le_bytes();
+                8
+            }
+        };
+        f(&buf[..len], 0)
+    } else {
+        match unsafe { h.0.as_ref() } {
+            Some(node) => f(&node.raw, node.handles.len()),
+            None => f(&[], 0), // NULL folds as (empty, 0)
+        }
+    }
+}
+
 // Count of nodes currently allocated and not yet freed. Compiled under the native test suite AND the
 // `debug-counters` wasm feature: the native suite asserts exact reclamation and BOUNDED PEAK HEAP
 // across iterations (the Phase-D acceptance probe), and a wasm leak-check harness reads it via the
@@ -2182,9 +2212,13 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
         // to equal canonical raw bytes and equal (0) arity, which `node_raw_arity` supplies for a
         // boxed twin too (open-Q#8).
         if is_immediate(x) || is_immediate(y) {
-            let (rx, ax) = node_raw_arity(x);
-            let (ry, ay) = node_raw_arity(y);
-            if rx != ry || ax != ay {
+            // Compare canonical (raw, arity) WITHOUT allocating a Vec per side (the hot map/set
+            // slot-hit path: small-int/bool keys are always immediates). `with_raw_arity` lends the
+            // bytes; an immediate has arity 0 so equality reduces to equal bytes and equal arity.
+            let equal = with_raw_arity(x, |rx, ax| {
+                with_raw_arity(y, |ry, ay| rx == ry && ax == ay)
+            });
+            if !equal {
                 return false;
             }
             continue; // arity 0 for an immediate ⇒ no children to descend
@@ -2226,17 +2260,16 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
         // bytes then arity (0 for an immediate) — the SAME (raw, arity) `champ_eq` compares, so the
         // two stay consistent (`cmp == Equal` iff `champ_eq`). No children to descend past an immediate.
         if is_immediate(x) || is_immediate(y) {
-            let (rx, ax) = node_raw_arity(x);
-            let (ry, ay) = node_raw_arity(y);
-            match rx.cmp(&ry) {
-                Ordering::Equal => {}
+            // Order by canonical (raw bytes, arity) WITHOUT allocating a Vec per side — the SAME
+            // ordering `node_raw_arity` gave (slice `cmp` is byte-lexicographic like `Vec` `cmp`),
+            // so consistency with `champ_eq` is preserved. An immediate has arity 0, no children.
+            let ord = with_raw_arity(x, |rx, ax| {
+                with_raw_arity(y, |ry, ay| rx.cmp(ry).then(ax.cmp(&ay)))
+            });
+            match ord {
+                Ordering::Equal => continue,
                 ord => return ord,
             }
-            match ax.cmp(&ay) {
-                Ordering::Equal => {}
-                ord => return ord,
-            }
-            continue;
         }
         match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
             (None, None) => continue,           // both null (unreachable given x==y, but total)
@@ -6485,6 +6518,77 @@ mod tests {
         op_drop(c);
         op_drop(d);
         assert_eq!(live_nodes(), before, "eq test reclaimed all nodes");
+    }
+
+    /// Guard the alloc-free `with_raw_arity` fast path in `champ_eq`/`champ_key_cmp` against the naive
+    /// `node_raw_arity` (Vec-cloning) reference it replaced, across every shape whose comparison can
+    /// touch the immediate branch: inline unit/bool/int, a hand-BOXED int twin, an out-of-window boxed
+    /// int, floats (incl -0.0), empty/nonempty strings, empty bytes, and NULL. For each pair where at
+    /// least one side is IMMEDIATE — the only path my edit touched — the new `champ_eq` must equal
+    /// `rx==ry && ax==ay` over the old `node_raw_arity`, and `champ_key_cmp` must equal
+    /// `rx.cmp(&ry).then(ax.cmp(&ay))`. Since every operand here is arity-0, that single-node compare
+    /// IS the whole verdict, so the reference is exact. (Pairs where NEITHER side is immediate — e.g.
+    /// a real leaf vs NULL — go through `champ_eq`'s UNCHANGED non-immediate arm, which distinguishes
+    /// NULL from a non-null leaf; the `node_raw_arity` model folds both to `([],0)` and so does NOT
+    /// model that arm, hence they're excluded.) Catches any drift in the ≤8-byte materialization/borrow.
+    #[test]
+    fn with_raw_arity_matches_node_raw_arity_reference() {
+        reset();
+        let before = live_nodes();
+        // Reference verdicts computed the OLD (allocating) way, so the fast path is graded, not trusted.
+        fn ref_eq(x: Handle, y: Handle) -> bool {
+            let (rx, ax) = node_raw_arity(x);
+            let (ry, ay) = node_raw_arity(y);
+            rx == ry && ax == ay
+        }
+        fn ref_cmp(x: Handle, y: Handle) -> core::cmp::Ordering {
+            let (rx, ax) = node_raw_arity(x);
+            let (ry, ay) = node_raw_arity(y);
+            rx.cmp(&ry).then(ax.cmp(&ay))
+        }
+        // Every operand is arity-0 (immediate or leaf) so the immediate branch decides the verdict.
+        let operands = [
+            imm_unit(),
+            imm_bool(false),
+            imm_bool(true),
+            op_box_int(0),          // inline fixnum
+            op_box_int(-1),         // inline negative
+            op_box_int(536_870_912),// FIXNUM_MAX+1 ⇒ boxed leaf
+            boxed_int_leaf(0),      // hand-boxed twin of inline 0
+            boxed_int_leaf(-1),
+            op_box_float(0.0),
+            op_box_float(-0.0),     // -0.0 ≠ 0.0 by raw bytes
+            op_box_float(1.5),
+            op_str_new(String::new()),
+            op_str_new("hi".to_string()),
+            op_bytes_alloc(0),
+            Handle::NULL,
+        ];
+        for (i, &x) in operands.iter().enumerate() {
+            for (j, &y) in operands.iter().enumerate() {
+                // The fast path fires iff at least one side is immediate — the only code I changed.
+                if !is_immediate(x) && !is_immediate(y) {
+                    continue;
+                }
+                assert_eq!(
+                    champ_eq(x, y),
+                    ref_eq(x, y),
+                    "champ_eq disagrees with node_raw_arity reference at ({i},{j})"
+                );
+                assert_eq!(
+                    champ_key_cmp(x, y),
+                    ref_cmp(x, y),
+                    "champ_key_cmp disagrees with node_raw_arity reference at ({i},{j})"
+                );
+            }
+        }
+        // Immediates/NULL own no heap; free only the real leaves we allocated.
+        for &h in &operands {
+            if !is_immediate(h) && h != Handle::NULL {
+                op_drop(h);
+            }
+        }
+        assert_eq!(live_nodes(), before, "raw-arity reference test reclaimed all nodes");
     }
 
     // ── CHAMP persistent MAP: empty / lookup / insert / size ──────────────────────────────
