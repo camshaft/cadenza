@@ -367,6 +367,62 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
     }))
 }
 
+/// Every source occurrence that references the same definition as the name at a byte offset — for
+/// find-all-references / highlight-occurrences. Finds the name at the cursor, asks the compiler for
+/// every use of that name (the `UsesOf` sidecar query — the transpose of the resolution column), and
+/// returns the byte range of each use PLUS the cursor's own occurrence. A flat `[from0,to0,from1,to1,…]`
+/// so it crosses the wasm-bindgen boundary as one `Uint32Array`. Empty when the cursor isn't on a
+/// name, or the name has no references.
+#[wasm_bindgen]
+pub fn references_at(text: &str, from: &str, byte_offset: u32) -> Result<Vec<u32>, JsError> {
+    let from = parse_format(from)?;
+    let Ok((ast_bytes, Some(spans))) = parse_spanned(text, from) else {
+        return Ok(Vec::new());
+    };
+    let off = byte_offset as usize;
+    let Some(node) = spans.node_at_offset(off) else {
+        return Ok(Vec::new());
+    };
+    let arenas = match rcdzc::codec::decode(&ast_bytes) {
+        Some(a) => a,
+        None => return Err(JsError::new("internal: re-encoded AST failed to decode")),
+    };
+    let mut db = rcdzc::db::Db::load(arenas);
+    // The name at the cursor. Only a bare-name occurrence has references to find; anything else yields
+    // an empty set. (`as_name` returns the source spelling of a name leaf.)
+    let Some(name) = db.ast.as_name(rcdzc::ast::StructId(node.0)).map(|s| s.to_string()) else {
+        return Ok(Vec::new());
+    };
+    // The `UsesOf` sidecar query returns the referencing node ids (declaration sites + the definition
+    // excluded), one per line. Ride the first-class query so the browser IDE and `cdz uses` agree.
+    let result = rcdzc::sidecar::run_query(&mut db, &rcdzc::Query::UsesOf { name });
+    let text_ids = String::from_utf8(result.bytes).unwrap_or_default();
+    let mut out: Vec<u32> = Vec::new();
+    // Include the occurrence under the cursor itself (a use or the declaration — either way, highlight
+    // it), then every use the query found. De-dup by (from,to) so the cursor node isn't doubled.
+    let push_span = |id: u32, out: &mut Vec<u32>| {
+        if let Some(s) = spans.get(cadenza_syntax::ast::StructId(id)) {
+            let (f, t) = (s.start as u32, s.end as u32);
+            let mut k = 0;
+            while k + 1 < out.len() {
+                if out[k] == f && out[k + 1] == t {
+                    return;
+                }
+                k += 2;
+            }
+            out.push(f);
+            out.push(t);
+        }
+    };
+    push_span(node.0, &mut out);
+    for line in text_ids.lines() {
+        if let Ok(id) = line.trim().parse::<u32>() {
+            push_span(id, &mut out);
+        }
+    }
+    Ok(out)
+}
+
 /// Re-render one program from one surface to another — the guide's global syntax toggle.
 ///
 /// Because every surface is a lossless projection of the same binary AST, converting `text` from

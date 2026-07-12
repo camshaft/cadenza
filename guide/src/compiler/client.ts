@@ -35,6 +35,11 @@ export function defineAt(text: string, from: Surface, byteOffset: number): Promi
   return client().defineAt(text, from, byteOffset);
 }
 
+/// Byte ranges of every occurrence referencing the name at a byte offset (find-all-references), flat.
+export function references_at(text: string, from: Surface, byteOffset: number): Promise<Uint32Array> {
+  return client().referencesAt(text, from, byteOffset);
+}
+
 /// `to` may be a surface (`ml`/`sexpr`) or an output-only view (`debug`/`flat`) for "show the raw AST".
 export type RenderTarget = Surface | "debug" | "flat";
 

@@ -11,6 +11,7 @@ import { cadenzaLanguage } from "../editor/cadenzaLanguage.ts";
 import { cadenzaHighlighting } from "../editor/theme.ts";
 import { cadenzaHover } from "./cadenzaHover.ts";
 import { cadenzaGotoDef } from "./cadenzaGotoDef.ts";
+import { cadenzaHighlightRefs } from "./cadenzaHighlightRefs.ts";
 import { cadenzaLinter, lintGutter } from "./lintField.ts";
 import type { Diag, Surface } from "../compiler/client.ts";
 
@@ -32,6 +33,11 @@ const editorTheme = EditorView.theme({
     border: "1px solid #334155",
     borderRadius: "6px",
     padding: "3px 8px",
+  },
+  // Every occurrence of the name the caret rests on (find-all-references).
+  ".cm-cadenza-ref": {
+    backgroundColor: "rgba(251, 191, 36, 0.18)",
+    borderRadius: "2px",
   },
 });
 
@@ -71,6 +77,7 @@ export function PlaygroundEditor({ value, onChange, surface, onDiagnostics, onCu
       }),
       cadenzaHover({ surface: () => surfaceRef.current, prepare: identityPrepare }),
       cadenzaGotoDef({ surface: () => surfaceRef.current, prepare: identityPrepare }),
+      cadenzaHighlightRefs({ surface: () => surfaceRef.current, prepare: identityPrepare }),
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) {
           const head = u.state.selection.main.head;

@@ -11,6 +11,7 @@ import init, {
   diagnostics as wasmDiagnostics,
   type_at as wasmTypeAt,
   define_at as wasmDefineAt,
+  references_at as wasmReferencesAt,
   render_syntax as wasmRenderSyntax,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
@@ -99,6 +100,13 @@ const api = {
     await ensureReady();
     const d = wasmDefineAt(text, from, byteOffset);
     return d ? { from: d.from, to: d.to, refFrom: d.ref_from, refTo: d.ref_to } : null;
+  },
+
+  /// Byte ranges of every occurrence referencing the name at a UTF-8 byte offset (find-all-references),
+  /// as a flat [from0,to0,from1,to1,…]. Empty when the cursor isn't on a referenced name.
+  async referencesAt(text: string, from: Surface, byteOffset: number): Promise<Uint32Array> {
+    await ensureReady();
+    return new Uint32Array(wasmReferencesAt(text, from, byteOffset));
   },
 
   // `to` may be a surface or an output-only view ("debug"/"flat"); the wasm accepts the wider set.
