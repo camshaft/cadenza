@@ -206,6 +206,10 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // lives in an i32 local. (A compound consumed only to read a field/element folds at compile time
         // and keeps no runtime slot; one that survives to selection genuinely crosses through a handle.)
         Ty::Record(_) | Ty::Tuple(_) => Some(ValType::I32),
+        // A sum is a value-heap compound too — at run time an OPAQUE u32 HANDLE (the `sum-new`/
+        // `sum-disc`/`sum-payload` handle), the nominal tag adding nothing to the representation
+        // (`type-system.md §156`). So a runtime sum value lives in an i32 local, like a tuple/record.
+        Ty::Sum { .. } => Some(ValType::I32),
         // A function value has no scalar machine representation (runtime closures are a later stage);
         // one reaching a slot declines.
         Ty::Fn(_, _) => None,
@@ -273,6 +277,10 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // representation once its return path lands (H3c+); it still declines above until then.
         Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
+        // A sum is a runtime heap compound; its host-escape path (the resource `encode()` walk that
+        // renders `(disc payload)`) lands in a later tick. Until then it has no boundary form and
+        // declines like a record — no representation is invented for a value that cannot yet cross.
+        Ty::Sum { .. } => None,
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,

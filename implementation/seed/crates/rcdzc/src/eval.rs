@@ -984,6 +984,19 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             }
             db.push_list(items)
         }
+        // A sum type-value: `(Sum <name> <decl>)` — the nominal name (for rendering) and the
+        // declaration occurrence (the identity, encoded as an integer literal so it round-trips through
+        // the arena wire form). Round-trips with `resolve::decode_ty`'s `"Sum"` arm. This is the shape
+        // `sums::synthesize` also builds by hand for a sum record's `(meta t)`, so the two must agree.
+        Ty::Sum { decl, name } => {
+            let head = db.push_name("Sum");
+            let nm = db.push_name(name);
+            let d = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(decl.0 as i64),
+                radix: crate::ast::Radix::Dec,
+            });
+            db.push_list(vec![head, nm, d])
+        }
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

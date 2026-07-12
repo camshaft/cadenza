@@ -59,18 +59,43 @@ pub struct Export {
     pub occ: StructId,
 }
 
+/// One variant of a sum declaration — a `(name payload-type…)` list or a bare nullary name. Its
+/// position in [`TypeDecl::variants`] is its DISCRIMINANT (declaration order).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Variant {
+    /// The variant's declared name (`Some` in `(Some Int64)`).
+    pub name: String,
+    /// The variant's NAME occurrence — the head of its `(name payload…)` list, or the bare atom for a
+    /// nullary variant. A duplicate-variant diagnostic anchors here.
+    pub name_occ: StructId,
+    /// The variant's PAYLOAD TYPE occurrences, in declaration order (empty for a nullary variant). These
+    /// are the user-written type expressions after the name in `(name payload…)`; the sum-record
+    /// synthesis copies them into each constructor's arrow type `(-> payload… Sum)`.
+    pub payloads: Vec<StructId>,
+}
+
 /// A `(type NAME variant…)` sum-type declaration scanned from the top level. Each variant is a
 /// `(name payload-type…)` list or a bare nullary name; a sum's variant names are a fixed SET (like a
-/// record's fields), so a duplicate is ill-formed (CDZ0201). Stage: the declaration is scanned + its
-/// variant set validated here; construction/projection/match over the sum are later sub-increments.
+/// record's fields), so a duplicate is ill-formed (CDZ0201). Stage: the declaration is scanned, its
+/// variant set validated, and its record synthesized (`sums::synthesize`) so the type name + variant
+/// constructors resolve; construction/match over the sum are later sub-increments.
 #[derive(Clone, PartialEq, Debug)]
 pub struct TypeDecl {
     /// The type's name (`T` in `(type T …)`).
     pub name: String,
-    /// The declaration occurrence, for a diagnostic to anchor to.
+    /// The declaration occurrence — the NOMINAL IDENTITY of the sum (`type-system.md §158`, realized
+    /// as the arena occurrence) and the anchor for a declaration-level diagnostic. Because identity is
+    /// this occurrence and NOT the name, two `(type Foo …)` declared separately are DISTINCT types even
+    /// with the same name — the property no name-keyed map could preserve.
     pub occ: StructId,
-    /// Each variant's `(name, name-occurrence)` in declaration order — the discriminant is the index.
-    pub variants: Vec<(String, StructId)>,
+    /// The variants in declaration order — each position's index is its discriminant.
+    pub variants: Vec<Variant>,
+    /// The SYNTHESIZED record occurrence — the record (`crate::sums`) whose `(meta t)` is this sum's
+    /// type-value and whose fields are its variant constructors. `None` until `sums::synthesize` runs
+    /// during `Db::load`; ALWAYS `Some` once the `Db` exists. This is what the type NAME resolves to (a
+    /// `Ref` to it), reached by the ordinary scope→top-level lookup like a `def` — no separate name map
+    /// (which would collapse identity onto the name and clobber a same-named declaration).
+    pub synth: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -301,7 +326,12 @@ impl Db {
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let prelude = crate::prelude::install(&mut ast);
-        let (defs, exports, type_decls) = scan_top_level(&ast);
+        let (defs, exports, mut type_decls) = scan_top_level(&ast);
+        // Synthesize each `(type …)` sum as a record (fields = variants), appending its nodes to the
+        // arena and recording each on its `TypeDecl.synth` — AFTER the scan (it reads `type_decls`) and
+        // BEFORE the parent index (which must index the synthesized nodes so a name inside a synthesized
+        // ctor type resolves by the scope walk).
+        crate::sums::synthesize(&mut ast, &mut type_decls);
         let (parent, child_ix) = parent_index(&ast);
         // Index each def by its body occurrence — the reverse of `defs[i].body`, so a "which def owns
         // this body?" lookup is O(1) rather than a linear scan of `defs`. A def with no body (malformed)
@@ -449,6 +479,20 @@ impl Db {
     pub fn def_index_by_body(&self, body: StructId) -> Option<usize> {
         self.def_by_body.get(&body).copied()
     }
+
+    /// The synthesized SUM RECORD of the type named `name`, if one is declared — how a `(type NAME …)`
+    /// name resolves, exactly parallel to `def_by_name`. Returns the record occurrence a bare `NAME`
+    /// denotes (a `Ref` to it), so `Option`, `Option.Some`, and `(: x Option)` take the ordinary
+    /// member-access / `(meta t)` paths. First-wins on the name (like `def_by_name`); the record's own
+    /// `(meta t)` occurrence — NOT the name — is the type's IDENTITY, so two same-named declarations are
+    /// still distinct types (unlike a name-keyed map, which would clobber). A duplicate type NAME in one
+    /// scope is a well-formedness concern for the checker, not this index.
+    pub fn type_decl_by_name(&self, name: &str) -> Option<StructId> {
+        self.type_decls
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.synth)
+    }
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
@@ -514,23 +558,30 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>) {
                 .to_string();
             let mut variants = Vec::new();
             for &v in tail.iter().skip(1) {
-                let name_occ = match ast.get(v) {
-                    // A bare nullary variant name.
-                    Struct::Atom(_) => v,
-                    // `(vname payload…)` — the variant name is the list head.
+                let (name_occ, payloads) = match ast.get(v) {
+                    // A bare nullary variant name — no payloads.
+                    Struct::Atom(_) => (v, Vec::new()),
+                    // `(vname payload…)` — the variant name is the list head; the rest are payload
+                    // type occurrences in declaration order.
                     Struct::List(children) => match children.first() {
-                        Some(&head) => head,
+                        Some(&head) => (head, children.iter().skip(1).copied().collect()),
                         None => continue,
                     },
                 };
                 if let Some(vname) = ast.as_name(name_occ) {
-                    variants.push((vname.to_string(), name_occ));
+                    variants.push(Variant {
+                        name: vname.to_string(),
+                        name_occ,
+                        payloads,
+                    });
                 }
             }
             types.push(TypeDecl {
                 name,
                 occ: item,
                 variants,
+                // Filled by `sums::synthesize` after the scan; the scan only locates declarations.
+                synth: None,
             });
         }
     }

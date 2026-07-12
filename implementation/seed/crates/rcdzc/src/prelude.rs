@@ -104,8 +104,10 @@ fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
 }
 
 /// A meta field `((meta KEY) VALUE)` — a record field whose key is the `meta`-namespaced symbol
-/// `KEY`. This is how the reserved meta channel is written as ordinary record structure.
-fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> StructId {
+/// `KEY`. This is how the reserved meta channel is written as ordinary record structure. `pub(crate)`
+/// so the program-driven sum-record synthesis (`sum_synth`) writes its `(meta t)`/`(meta variant)`
+/// channels the same way the prelude writes its built-in records.
+pub(crate) fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> StructId {
     let meta_head = push_atom(ast, Leaf::Name("meta".to_string()));
     let key_name = push_atom(ast, Leaf::Name(key.to_string()));
     let meta_key = push_list(ast, vec![meta_head, key_name]);
@@ -355,8 +357,9 @@ fn unrealized_field(ast: &mut Arenas, name: &str) -> StructId {
 }
 
 /// Append a leaf and an `Atom` occurrence of it, returning the occurrence's id. (No dedup — the
-/// prelude is small and its leaves need not be interned against the program's.)
-fn push_atom(ast: &mut Arenas, leaf: Leaf) -> StructId {
+/// prelude is small and its leaves need not be interned against the program's.) `pub(crate)` so the
+/// program-driven sum-record synthesis appends its atoms through the same helper.
+pub(crate) fn push_atom(ast: &mut Arenas, leaf: Leaf) -> StructId {
     let lid = LeafId(ast.leaves.len() as u32);
     ast.leaves.push(leaf);
     let sid = StructId(ast.structure.len() as u32);
@@ -364,8 +367,9 @@ fn push_atom(ast: &mut Arenas, leaf: Leaf) -> StructId {
     sid
 }
 
-/// Append a `List` occurrence, returning its id.
-fn push_list(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
+/// Append a `List` occurrence, returning its id. `pub(crate)` so the program-driven sum-record
+/// synthesis builds its lists through the same helper.
+pub(crate) fn push_list(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
     let sid = StructId(ast.structure.len() as u32);
     ast.structure.push(Struct::List(children));
     sid

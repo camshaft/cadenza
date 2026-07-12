@@ -49,7 +49,9 @@ impl Subst {
                     .collect(),
             )),
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
-            Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+            // A sum carries no type variables (its identity is its `decl`; its shape lives in
+            // `db.type_decls`), so the substitution leaves it unchanged — like the ground types.
+            Ty::Sum { .. } | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
         }
     }
 
@@ -214,7 +216,9 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Fn(p, r) => occurs(subst, v, &p) || occurs(subst, v, &r),
         Ty::Record(fields) => fields.values().any(|ft| occurs(subst, v, ft)),
         Ty::Tuple(elems) => elems.iter().any(|ft| occurs(subst, v, ft)),
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
+        // A sum carries no inner type variables (its shape lives in `db.type_decls`), so no variable
+        // occurs in it — like the ground types.
+        Ty::Sum { .. } | Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => false,
     }
 }
 
@@ -307,7 +311,8 @@ fn rename(
                 .map(|t| rename(t, ty_map, width_map, sign_map))
                 .collect(),
         ),
-        Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
+        // A sum carries no bound variables (its shape lives in `db.type_decls`); nothing to rename.
+        Ty::Sum { .. } | Ty::Bool | Ty::Unit | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 

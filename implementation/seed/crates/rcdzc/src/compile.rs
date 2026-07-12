@@ -195,18 +195,18 @@ fn collect_faults(db: &mut Db, _layout: &Layout) -> Vec<Reject> {
     // occurrence. (Two different types may reuse a variant name — the set is per-declaration.)
     for ty in &db.type_decls {
         let mut seen_variants: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for (vname, name_occ) in &ty.variants {
-            if !seen_variants.insert(vname.as_str()) {
+        for variant in &ty.variants {
+            if !seen_variants.insert(variant.name.as_str()) {
                 faults.push(
                     Reject::coded(
                         Code::Malformed,
                         format!(
-                            "variant `{vname}` is declared more than once in sum `{}` (a sum has a \
+                            "variant `{}` is declared more than once in sum `{}` (a sum has a \
                              fixed set of variant names)",
-                            ty.name
+                            variant.name, ty.name
                         ),
                     )
-                    .at(*name_occ),
+                    .at(variant.name_occ),
                 );
             }
         }

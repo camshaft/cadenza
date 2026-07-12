@@ -230,7 +230,17 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
             )),
         };
     }
-    // 3. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
+    // 3. The module's own SUM declarations — `(type NAME …)` binds `NAME` to its synthesized record
+    // (fields = variants), resolved EXACTLY like a top-level def (step 2): a lookup against the
+    // occurrence-keyed `type_decls`, returning a `Ref` to the record. After defs (a def/local shadows a
+    // type name) and before the prelude (a type name shadows a built-in). So `Option`, `Option.Some`,
+    // and `(: x Option)` all take the ordinary member-access/`(meta t)` paths — no separate name map,
+    // no sum special-case in resolve.
+    if let Some(value) = db.type_decl_by_name(name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → sum type decl");
+        return Resolved::Ref { value };
+    }
+    // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → prelude");
@@ -618,6 +628,27 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 elems.push(decode_ty(db, e)?);
             }
             Some(Ty::Tuple(elems.into()))
+        }
+        // A sum type-value: `(Sum <name> <decl>)` — the dual of `eval::encode_ty`'s `Sum` arm (and of
+        // the shape `sums::synthesize` builds for a sum record's `(meta t)`). The nominal name is for
+        // rendering; the declaration occurrence (an integer literal) is the identity, so two sums are
+        // the same type iff their `decl` matches (module A's `Foo` ≠ module B's `Foo`).
+        "Sum" => {
+            let tail = db.ast.as_form(node, "Sum")?;
+            let name = db.ast.as_name(*tail.first()?)?.to_string();
+            let decl = match db.ast.get(*tail.get(1)?) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => {
+                        value.to_i64().and_then(|n| u32::try_from(n).ok())?
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some(Ty::Sum {
+                decl: StructId(decl),
+                name,
+            })
         }
         // A record type-value: `(Record (name T)…)` — each `(name T)` a field pair. The head is
         // capitalized `Record` (the TYPE; the VALUE head is lowercase `record`), matching `encode_ty`

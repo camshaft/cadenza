@@ -3928,6 +3928,107 @@ mod stage1 {
     }
 
     #[test]
+    fn a_sum_type_name_resolves_to_its_sum_type_in_type_position() {
+        // The records-everywhere realization: `(type Option (Some Int64) None)` binds `Option` to a
+        // synthesized RECORD whose `(meta t)` is the sum type-value. So `Option` used in a type
+        // annotation reduces to `Ty::Sum` through the ORDINARY `(meta t)` projection — the same path
+        // `(: e UInt8)` takes to `Ty::Int`, no sum special case. Its identity is the DECLARATION
+        // occurrence (`type-system.md §158`), and its render name is the declared name.
+        use crate::db::Db;
+        use crate::eval::typeval_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (type Option (Some Int64) None) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = db.type_decl_by_name("Option").expect("Option bound");
+        let ty = typeval_of(&mut db, occ).expect("Option is a type");
+        match ty {
+            Ty::Sum { name, decl } => {
+                assert_eq!(name, "Option");
+                // The identity is the declaration occurrence recorded in the scan.
+                let decl_occ = db
+                    .type_decls
+                    .iter()
+                    .find(|t| t.name == "Option")
+                    .unwrap()
+                    .occ;
+                assert_eq!(decl, decl_occ);
+            }
+            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+        }
+    }
+
+    #[test]
+    fn a_variant_constructor_is_a_member_typed_as_a_function_to_the_sum() {
+        // `Option.Some` is ORDINARY member access on the sum record (the `Int64.max` path), reaching a
+        // variant-constructor record whose `(meta t)` is `(-> Int64 Option)`. So `Some` types as a
+        // FUNCTION from its payload to the sum — read by the same `scheme_of`/`apply_type` machinery
+        // every operator uses, no per-variant rule. (Applying it to actually CONSTRUCT is a later tick;
+        // this pins that the constructor's TYPE is right.)
+        use crate::db::Db;
+        use crate::eval::{project_field, scheme_of};
+        use crate::resolved::Symbol;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        use crate::unify::Fresh;
+        let ast = parse("(module m (type Option (Some Int64) None) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let option = db.type_decl_by_name("Option").expect("Option bound");
+        // Project the `Some` field off the sum record (the member-access reduction).
+        let some = project_field(&mut db, option, &Symbol::plain("Some")).expect("Some field");
+        // Its `(meta t)` scheme is `(-> Int64 Option)`.
+        let mut fresh = Fresh::new();
+        let scheme = scheme_of(&mut db, some, &mut fresh).expect("Some has a type");
+        match scheme.ty {
+            Ty::Fn(param, result) => {
+                assert_eq!(param.render_name(), "Int64");
+                assert_eq!(result.render_name(), "Option");
+                assert!(matches!(*result, Ty::Sum { .. }));
+            }
+            other => panic!("expected (-> Int64 Option), got {}", other.render_name()),
+        }
+        // A NULLARY variant `None` types as the sum directly (no arrow).
+        let none = project_field(&mut db, option, &Symbol::plain("None")).expect("None field");
+        let none_scheme = scheme_of(&mut db, none, &mut fresh).expect("None has a type");
+        assert!(matches!(none_scheme.ty, Ty::Sum { .. }));
+        assert_eq!(none_scheme.ty.render_name(), "Option");
+    }
+
+    #[test]
+    fn two_same_named_sums_from_different_declarations_are_distinct_types() {
+        // A nominal sum's identity is its DECLARATION occurrence, NOT its local name (`type-system.md
+        // §160`: two nominal types are distinct whenever their FQNs differ, even with identical name +
+        // structure). Two `(type Foo …)` declarations — as two modules would produce, or an import
+        // would splice — carry distinct `TypeDecl.occ`, so their `Ty::Sum` do NOT agree. This is the
+        // property no name-keyed map could hold (the second would clobber the first); we get it for free
+        // by keying identity on the occurrence and resolving through the occurrence-keyed `type_decls`.
+        use crate::db::Db;
+        use crate::eval::typeval_of;
+        use crate::testkit::parse;
+        // Two identically-shaped, identically-NAMED sums declared separately (the cross-module case,
+        // simulated in one flat program). We reach each by its DECLARATION, not the shadowed name.
+        let ast = parse(
+            "(module m (type Foo (A Int64)) (type Foo (A Int64)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        // Both declarations are present (nothing was nuked) — the Vec holds two `Foo` entries.
+        let foos: Vec<_> = db.type_decls.iter().filter(|t| t.name == "Foo").collect();
+        assert_eq!(foos.len(), 2, "both same-named declarations are retained");
+        let synth0 = foos[0].synth.expect("synth 0");
+        let synth1 = foos[1].synth.expect("synth 1");
+        assert_ne!(synth0, synth1, "distinct declarations ⇒ distinct records");
+        let ty0 = typeval_of(&mut db, synth0).expect("Foo #0 is a type");
+        let ty1 = typeval_of(&mut db, synth1).expect("Foo #1 is a type");
+        // Different declarations ⇒ different identity ⇒ do NOT agree, despite identical name + shape.
+        assert!(
+            !ty0.agrees_with(&ty1),
+            "distinct declarations must be distinct types even when name + shape match"
+        );
+        // A sum agrees with ITSELF (same declaration).
+        assert!(ty0.agrees_with(&ty0));
+    }
+
+    #[test]
     fn a_multi_param_function() {
         // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
         assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);

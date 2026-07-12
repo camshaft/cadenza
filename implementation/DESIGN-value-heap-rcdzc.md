@@ -574,3 +574,71 @@ GLOBAL (§2d H2c-real).
 - H2: a runtime tuple constructed + projected runs under wasmtime (composed with the runtime) to the
   recorded value; the gate's compound-tuple corpus cases begin to flip.
 - Gate must never regress; fmt + clippy clean; baseline re-saved additively as cases flip.
+
+## 6. SUMS — a sum IS a record in scope (the records-everywhere realization)
+
+**Operator directive (2026-07-12):** "sum types are just records in the scope. If I say `Option.Some`
+then `Option` is a record with a `Some` field. We use all the existing meta infrastructure to avoid any
+special-casing. We can use the `t` as a closure that returns the type (a generic sum). What gets
+interesting is sum types need additional metadata on the variants to know which sum group it belongs
+to." And: "keep it going in the same direction where the compiler is just evaluating records at compile
+time."
+
+Spec grounding: a sum is one of the three structural types (`type-system.md §The Structural Types Are
+Record, Tuple, And Sum` — "a sum's variant names with their payload types"); a `(type …)` DECLARATION
+tags it nominal (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), identity = its
+fully-qualified name (`§158`), represented as the underlying structural value + a compile-time tag that
+adds NOTHING to the runtime representation (`§156`). Construction is through a variant (`§A Value Of A
+Sum Type Is Constructed Through A Variant`); a match is exhaustive against the variant set (`§190`).
+
+### A sum decl resolves EXACTLY like a `def` — no name map, identity is the occurrence
+A `(type Option (Some Int64) None)` SYNTHESIZES a record (the "records everywhere" twin of
+`prelude::install`, but PROGRAM-driven) and binds `Option` to it THROUGH THE SAME TOP-LEVEL LOOKUP a
+`def` uses. Concretely: `sums::synthesize` appends the record to the arena and records its occurrence on
+`TypeDecl.synth`; `resolve_name` consults `db.type_decl_by_name` right after `def_by_name` (and before
+the prelude), returning a `Ref` to the record. There is NO `name → record` map — a name-keyed map would
+make the NAME the identity and let module B's `Foo` clobber module A's `Foo`. Identity is the
+DECLARATION OCCURRENCE (`Ty::Sum.decl`), so two same-named declarations are distinct types and both
+survive in the occurrence-keyed `db.type_decls` Vec — and this is import-safe (a spliced declaration
+keeps its own occurrence). Which same-named decl a bare `Foo` resolves to is a scoping question the
+module/import layer answers; the type IDENTITY is always the occurrence, never the spelling.
+
+That record's FIELDS ARE ITS VARIANTS (`Some`, `None`). Then:
+- **`Option.Some`** = ordinary MEMBER ACCESS (the `Int64.max` path). No new resolve rule.
+- **`(Option.Some 5)`** = ordinary APPLICATION dispatched by the variant record's `(meta apply)` — the
+  same path `(+ a b)` / `(Int 64)` take. No new apply rule.
+- **`Option` in type position** = project `(meta t)`. For a MONOMORPHIC sum, `(meta t)` is the
+  type-value directly; for a GENERIC sum, `(meta t)` is a CLOSURE that returns the type — identical to
+  how `Int` is a `(meta apply)` closure that builds a width-specialized module (`(fn (a) …)`).
+- **A nullary variant** `None` = a variant record used AS A VALUE (not applied): its `(meta t)` is the
+  sum type, and it lowers to `sum-new(disc, unit)` directly.
+
+### The one genuinely-new piece — the `(meta variant)` channel
+A variant record carries a `(meta variant)` channel binding it to its sum GROUP: the discriminant
+(decl-order index), the owning sum's nominal identity, and the payload type(s). ONE shared
+`sum-construct` intrinsic reads its discriminant off this metadata and emits `sum-new(disc, payload)` —
+exactly how the single `Wrap` intrinsic reads its target width off the application's solved type rather
+than being one-prim-per-width. So still NO name matching: the metadata is data the generic construct
+path reads, like `(meta t)`/`(meta apply)` already are.
+
+`Ty::Sum` (NOMINAL): carries the fully-qualified name (identity, §158) + the variant set (name →
+payload types, the shape §72). Runtime representation = the heap sum handle (`sum-new`/`sum-disc`/
+`sum-payload`, WIT ops 10/11/12); the nominal tag is compile-time only (§156). `Never` = the zero-variant
+sum (`§Never Is The Empty Sum`) is `Ty::Sum` with an empty variant set — a later slice.
+
+### Tick plan (each gate-neutral until construction lands, then corpus flips)
+1. ✅ **#1 (`@efd60e7`)** — scan `(type …)` → `db.type_decls` + dup-variant reject CDZ0201.
+2. **#2 (THIS tick) — foundation, structure+types only:** add `Ty::Sum` to the closed type universe
+   (force every exhaustive `Ty` match to declare its sum behavior); synthesize the sum record + bind it
+   by name in the ordered lookup (a fourth lookup source after top-level defs, BEFORE the prelude, or
+   folded into the prelude-install path — decide by what keeps resolve generic); `Option` in type
+   position → `(meta t)` → `Ty::Sum`; `Option.Some` member access resolves to the variant record.
+   Construction/lowering/escape/match are NOT in this tick. Unit-tested; gate stays 192/0.
+3. **#3 — construction:** the `(meta variant)` channel + a `sum-construct` intrinsic; `(Option.Some 5)`
+   and nullary `None` lower to `sum-new(disc, payload)`; infer types the application as `Ty::Sum`.
+4. **#4 — escape rendering:** the value renderer + `encode()` walker emit `(disc payload)` for a sum
+   handle (`sum-disc`/`sum-payload`); a sum crosses the host boundary.
+5. **#5 — match patterns:** the pattern engine grows a sum-variant probe (`sum-disc` == variant index),
+   payload binding; exhaustiveness against the variant set (§190).
+6. **#6 — `.of`→Option (task #59):** `Option` as an ordinary prelude sum; `T.of` returns `(Some v)`/
+   `(None unit)`; rewrites numeric-model's trapping `.of` to the no-sharp-edges form.

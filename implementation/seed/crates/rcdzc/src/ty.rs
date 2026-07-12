@@ -141,6 +141,33 @@ pub enum Ty {
     /// shared tuple) was O(N²) in `Vec<Ty>` clone. Indexing/iterating are unchanged (it derefs to a
     /// slice); only construction differs (`.collect::<Vec<_>>().into()` or `vec![…].into()`).
     Tuple(std::sync::Arc<[Ty]>),
+    /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
+    /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
+    /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
+    /// identity is its fully-qualified NAME — "the module path in which it is declared together with
+    /// its declared name" (`§A Nominal Type's Identity Is Its Fully-Qualified Name`) — NOT its shape.
+    ///
+    /// We realize that FQN identity as the DECLARATION's arena occurrence `decl` (the `TypeDecl.occ`),
+    /// not the local name string. Two `(type Foo …)` declared in different modules are DISTINCT AST
+    /// nodes, so they carry distinct `decl` ids and are distinct types (`§160` — distinct whenever
+    /// their FQNs differ, even with identical structure and identical local name `Foo`). This is also
+    /// IMPORT-SAFE by construction: package linking splices each file's arena into one `Db`, so every
+    /// imported declaration keeps its own `StructId` — the "A's Foo ≠ B's Foo" property survives with
+    /// no module-path plumbing. (It is the columns-model realization of the seed's `Arc::ptr_eq`
+    /// identity — physical declaration identity, expressed as the node id everything is already keyed
+    /// by.) `name` is the declared LOCAL name, carried for rendering (`(: (Some 5) Option)`) only;
+    /// `decl` alone decides equality (a `decl` determines its `name`).
+    ///
+    /// The variant SET with its payload types — the shape a match's exhaustiveness (`§190`) and a
+    /// constructor's payload check read — lives in `db.type_decls` (found by `decl`), NOT here, which
+    /// also keeps `Ty` FINITE for a recursive sum (`(type Expr (Lit Int64) (Neg Expr))` — an eager
+    /// payload map mentioning the sum itself would be an infinite type). The runtime representation is
+    /// the heap sum handle (`sum-new`/`sum-disc`/`sum-payload`); the nominal tag is compile-time only
+    /// (`§156` — it "adds nothing to the value's runtime representation").
+    Sum {
+        decl: crate::ast::StructId,
+        name: String,
+    },
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
     /// against `param` and takes `result`.
@@ -214,6 +241,12 @@ impl Ty {
             (Ty::Tuple(a), Ty::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(ta, tb)| ta.agrees_with(tb))
             }
+            // Two sums agree iff their DECLARATIONS match — a sum's identity is its fully-qualified
+            // name, realized as the declaration occurrence (`type-system.md §160`: two nominal types
+            // are distinct whenever their FQNs differ, even with identical structure AND identical local
+            // name). Comparing `decl` (not `name`) is what makes module A's `Foo` and module B's `Foo`
+            // distinct. No structural descent (same `decl` ⇒ same declaration ⇒ same shape).
+            (Ty::Sum { decl: a, .. }, Ty::Sum { decl: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -294,6 +327,11 @@ impl Ty {
                 s.push(')');
                 s
             }
+            // A sum renders as its NOMINAL NAME — its identity is that name (`type-system.md §158`), and
+            // the observed value's annotation is the declared type (`(: (Some 5) Option)`). The variant
+            // set is not part of the rendered type name (a match/constructor reads it from
+            // `db.type_decls`); the name alone identifies the type.
+            Ty::Sum { name, .. } => name.clone(),
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
             Ty::Type => "Type".to_string(),
             Ty::Var(n) => format!("?{n}"),

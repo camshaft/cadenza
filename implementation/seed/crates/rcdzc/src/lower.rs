@@ -850,7 +850,10 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        Ty::Int(_) | Ty::Bool | Ty::Unit => Some(b.name(ty.render_name())),
+        // A sum's type surface is its nominal name (`(: (Some 5) Option)` annotates `Option`), like a
+        // scalar's. (No sum value can cross the boundary until construction lands in a later tick; the
+        // value-form surface — `(disc payload)` from the heap walk — is that tick's work.)
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::Sum { .. } => Some(b.name(ty.render_name())),
         Ty::Tuple(elems) => {
             let head = b.name("Tuple");
             let mut children = vec![head];

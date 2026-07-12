@@ -32,6 +32,11 @@ pub mod resolved;
 // built-in module is just a record; nothing is privileged by name or by shape.
 pub mod prelude;
 
+// Sum-type synthesis — a `(type NAME variant…)` declaration realized as ordinary records (the sum is a
+// record whose fields are its variants), the program-driven twin of `prelude`. Reuses the same member
+// access / application / `(meta t)` machinery, so nothing about sums is special-cased.
+pub mod sums;
+
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —
 // `resolve` fills `resolved`, `infer` fills `types`, `lower` fills `core`. A query reads another
