@@ -2696,6 +2696,25 @@ fn champ_node_raw_hash(h: Handle) -> u32 {
     }
 }
 
+/// One step of `champ_hash`'s iterative post-order walk (module-scoped so the reusable thread-local
+/// worklist below can name it). `Visit` expands a node's children; `Combine` folds the node's own raw
+/// with the `arity` child hashes now on the results stack.
+enum HashTask {
+    Visit(Handle),
+    Combine(Handle, usize),
+}
+
+thread_local! {
+    /// REUSED scratch worklists for `champ_hash`'s general (nested-compound) walk. A nested KEY is
+    /// hashed on every insert/lookup/remove, and each hash needs a `work` task stack + a `results`
+    /// hash stack — freshly allocating them (even pre-sized) was 2 heap allocs PER HASH. Caching them
+    /// thread-locally lets each hash `clear()` + reuse the buffers: they grow ONCE to the high-water
+    /// mark, then every subsequent hash is allocation-FREE. Safe because the runtime is single-threaded
+    /// and `champ_hash`'s walk is iterative + never re-enters `champ_hash` (so the borrow never nests).
+    static HASH_SCRATCH: std::cell::RefCell<(Vec<HashTask>, Vec<u32>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
 /// A deterministic structural hash of the whole subtree rooted at `root`: FNV-1a over each node's
 /// raw bytes folded with its children's hashes. Because the rep is canonical, structurally-equal
 /// subtrees hash equal; differing raw or structure (very likely) differs.
@@ -2737,53 +2756,51 @@ fn champ_hash(root: Handle) -> u32 {
     }) {
         return hash;
     }
-    // Two-phase task: Visit expands a node's children; Combine folds this node's raw + the child
-    // hashes now sitting on `results`. Children are pushed Visit-first so their Combine completes
-    // before their parent's — a standard single-stack iterative post-order.
-    enum Task {
-        Visit(Handle),
-        Combine(Handle, usize), // (node, arity — how many child hashes to consume)
-    }
-    // Pre-size both worklists to skip the 1→2→4→8→16 reallocation chain a growing `Vec` would do on a
-    // nested compound (profiled: the general-walk `realloc` was ~15% of hashing a deep nested key, on the
-    // insert+lookup hot path). 16 tasks / 8 results cover the common small-to-medium nested value in ONE
-    // allocation; a larger compound still grows correctly (this only sets the initial capacity).
-    let mut work: Vec<Task> = Vec::with_capacity(16);
-    work.push(Task::Visit(root));
-    let mut results: Vec<u32> = Vec::with_capacity(8);
-    while let Some(task) = work.pop() {
-        match task {
-            Task::Visit(h) => {
-                if is_immediate(h) {
-                    // Inline value: arity 0, no children to expand. Combine folds its canonical raw.
-                    work.push(Task::Combine(h, 0));
-                    continue;
-                }
-                let arity = with_node(h, 0usize, |n| n.handles.len());
-                work.push(Task::Combine(h, arity));
-                with_node(h, (), |n| {
-                    for &c in n.handles.iter() {
-                        work.push(Task::Visit(c));
+    // General nested-compound walk. Two-phase task: `Visit` expands a node's children; `Combine` folds
+    // this node's raw + the child hashes now on `results`. Children are pushed Visit-first so their
+    // Combine completes before their parent's — a standard single-stack iterative post-order. The two
+    // scratch stacks are REUSED from a thread-local (see `HASH_SCRATCH`): each call clears them and
+    // returns them empty-but-capacious, so after the first nested hash they never allocate again — the
+    // walk is allocation-FREE steady-state (was 2 allocs/hash even when pre-sized).
+    HASH_SCRATCH.with(|cell| {
+        let (work, results) = &mut *cell.borrow_mut();
+        work.clear();
+        results.clear();
+        work.push(HashTask::Visit(root));
+        while let Some(task) = work.pop() {
+            match task {
+                HashTask::Visit(h) => {
+                    if is_immediate(h) {
+                        // Inline value: arity 0, no children to expand. Combine folds its canonical raw.
+                        work.push(HashTask::Combine(h, 0));
+                        continue;
                     }
-                });
-            }
-            Task::Combine(h, arity) => {
-                // Fold this node's own canonical raw bytes (the SAME LE bytes a boxed twin carries, so
-                // an inline value hashes equal to its boxed twin, open-Q#8), then the child hashes.
-                let mut s = champ_node_raw_hash(h);
-                // Consume the `arity` child hashes on top of `results` (deterministic order).
-                let start = results.len().saturating_sub(arity);
-                for &child_hash in &results[start..] {
-                    for b in child_hash.to_le_bytes() {
-                        s = fnv_step(s, b);
-                    }
+                    let arity = with_node(h, 0usize, |n| n.handles.len());
+                    work.push(HashTask::Combine(h, arity));
+                    with_node(h, (), |n| {
+                        for &c in n.handles.iter() {
+                            work.push(HashTask::Visit(c));
+                        }
+                    });
                 }
-                results.truncate(start);
-                results.push(s);
+                HashTask::Combine(h, arity) => {
+                    // Fold this node's own canonical raw bytes (the SAME LE bytes a boxed twin carries, so
+                    // an inline value hashes equal to its boxed twin, open-Q#8), then the child hashes.
+                    let mut s = champ_node_raw_hash(h);
+                    // Consume the `arity` child hashes on top of `results` (deterministic order).
+                    let start = results.len().saturating_sub(arity);
+                    for &child_hash in &results[start..] {
+                        for b in child_hash.to_le_bytes() {
+                            s = fnv_step(s, b);
+                        }
+                    }
+                    results.truncate(start);
+                    results.push(s);
+                }
             }
         }
-    }
-    results.pop().unwrap_or(FNV_OFFSET)
+        results.pop().unwrap_or(FNV_OFFSET)
+    })
 }
 
 // ── Structural eq, ITERATIVE ────────────────────────────────────────────────────────────
@@ -5152,13 +5169,12 @@ mod tests {
             }
         });
         println!("ALLOC map_lookup_nestedkey x{N}: {nlookup}");
-        // ~7/op for N=1000: the 4-deep probe's 3 arr nodes + the general-walk champ_hash's 2 pre-sized
-        // worklists (`work` + `results`, one `with_capacity` alloc each per hash — pre-sizing traded a
-        // realloc CHAIN for a single fixed alloc per buffer, the ~29% CPU win @c467820, but the buffers
-        // are still heap). Guards that: (a) the pre-size didn't regress to the realloc chain (which would
-        // push this much higher), and (b) is the target for a future stack-buffered general walk (bounded
-        // depth ⇒ the 2 worklists could be inline, dropping this toward the probe-only ~3000).
-        assert!(nlookup <= 7500, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 7500 (probe arr nodes + the 2 pre-sized general-walk hash worklists; a realloc-chain regression would exceed it)");
+        // ~5/op for N=1000: ONLY the 4-deep probe's arr nodes. The general-walk champ_hash worklists are
+        // now REUSED from a thread-local (`HASH_SCRATCH`) — they grow once to the high-water mark then
+        // clear+reuse, so a nested hash is allocation-FREE (was 7/op = +2 per hash for the `work`+`results`
+        // buffers, @b3ac802). Guards that the thread-local reuse didn't regress (a per-hash Vec alloc, or
+        // the realloc chain, would push this back to ≥7000).
+        assert!(nlookup <= 5500, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 5500 (probe arr nodes only; the general-walk hash worklists are thread-local-reused, allocation-free)");
         op_drop(nm);
 
         // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
