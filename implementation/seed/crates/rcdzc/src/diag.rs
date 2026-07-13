@@ -679,6 +679,16 @@ pub mod suggest {
             if cand == name || cand == "_" || cand.is_empty() {
                 continue;
             }
+            // LENGTH-DIFFERENCE PREFILTER: the edit distance is at least the difference in char length
+            // (each insertion/deletion changes length by exactly one), so a candidate whose length differs
+            // from `name` by more than `max_dist` can NEVER be within the cutoff — skip it WITHOUT the
+            // O(name·cand) Levenshtein matrix. This is what keeps a "did you mean?" over a large candidate
+            // set cheap: `cdz check` on a file with many distinct unbound names ran `edit_distance` against
+            // EVERY in-scope name for EACH, O(names²·len); the prefilter rejects almost all pairs in O(len).
+            let cand_len = cand.chars().count();
+            if name_len.abs_diff(cand_len) > max_dist {
+                continue;
+            }
             let d = edit_distance(name, cand);
             if d > max_dist {
                 continue;
@@ -727,5 +737,71 @@ pub mod suggest {
             std::mem::swap(&mut prev, &mut cur);
         }
         prev[b.len()]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::nearest;
+
+        #[test]
+        fn nearest_keeps_real_near_matches_across_length_deltas() {
+            // The length-difference PREFILTER (skip a candidate whose char-length differs from the query
+            // by more than `max_dist` before running the O(len²) Levenshtein) must NOT drop a genuine
+            // typo whose length legitimately differs within the cutoff. Cover a substitution (same len),
+            // an insertion and a deletion (len ±1), and a transposition (same len).
+            let cands = ["compute", "fold", "helper", "value", "length"];
+            assert_eq!(nearest("computee", cands), Some("compute".into())); // 1 insertion (len +1)
+            assert_eq!(nearest("folds", cands), Some("fold".into())); // 1 deletion (len -1)
+            assert_eq!(nearest("helpe", cands), Some("helper".into())); // 1 deletion (len -1)
+            assert_eq!(nearest("lenght", cands), Some("length".into())); // transposition (same len)
+            // A candidate whose length is far from the query (beyond max_dist) is correctly NOT suggested —
+            // `x` (would need max_dist ≥ 5 to reach `length`); the prefilter and the distance cutoff agree.
+            assert_eq!(nearest("zzzzzzzz", cands), None);
+        }
+
+        #[test]
+        fn nearest_prefilter_agrees_with_the_unfiltered_distance_cutoff() {
+            // The prefilter is a pure optimization: for EVERY (query, candidate) pair the result must be
+            // identical to the unfiltered "closest within max(1, len/3)" search — the prefilter only skips
+            // pairs the distance cutoff would reject anyway (a length delta lower-bounds the edit distance).
+            let names = [
+                "fold",
+                "folder",
+                "f",
+                "compute",
+                "compote",
+                "abcdefghij",
+                "xy",
+            ];
+            let cands = ["fold", "folder", "compute", "abcdefghij", "value", "kez"];
+            for q in names {
+                // Reference implementation: the same cutoff, WITHOUT the length prefilter.
+                let name_len = q.chars().count();
+                let want = if name_len < 2 {
+                    None
+                } else {
+                    let max_dist = (name_len / 3).max(1);
+                    let mut best: Option<(usize, &str)> = None;
+                    for c in cands {
+                        if c == q || c == "_" || c.is_empty() {
+                            continue;
+                        }
+                        let d = super::edit_distance(q, c);
+                        if d > max_dist {
+                            continue;
+                        }
+                        if best.is_none_or(|(bd, bn)| d < bd || (d == bd && c < bn)) {
+                            best = Some((d, c));
+                        }
+                    }
+                    best.map(|(_, n)| n.to_string())
+                };
+                assert_eq!(
+                    nearest(q, cands),
+                    want,
+                    "prefilter changed the result for {q:?}"
+                );
+            }
+        }
     }
 }

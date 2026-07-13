@@ -543,10 +543,14 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
         eprintln!("{PROG}: no references to `{}` in {}", args.name, args.file);
         return ExitCode::SUCCESS;
     }
+    // ONE line-start index over the source, so each reference's line:col is a binary search, not a
+    // from-start newline scan — `cdz uses` over N references was O(N × source_len) = O(N²) (a name with
+    // 4000 references = 207ms, 99.9% in `line_col`); with the index it is linear.
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for id in ids {
         match spans.get(cadenza_syntax::StructId(id)) {
             Some(span) => {
-                let (line, col) = cadenza_syntax::query::driver::line_col(&source, span.start);
+                let (line, col) = index.line_col(&source, span.start);
                 println!("{}:{line}:{col}", args.file);
             }
             // A referencing occurrence with no recorded span (should not happen for a user node) still
@@ -910,11 +914,15 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         None
     };
     // A node id → its 1-based `(line, col)` start plus its `[from, to)` UTF-8 byte range, via the span
-    // table this process kept. `None` for an unanchored (`-`) or unmapped node.
+    // table this process kept. `None` for an unanchored (`-`) or unmapped node. One line-start index
+    // (binary-searched line:col) so a program with MANY diagnostics — each mapped here, some more than
+    // once via the source-order sort key — stays linear instead of O(diags × source_len) (500 unbound
+    // names = 73ms, growing ~2.8×/doubling in the from-start `line_col` scan).
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     let span_of = |node: &str| -> Option<(usize, usize, usize, usize)> {
         let n = node.parse::<u32>().ok()?;
         let span = spans.get(cadenza_syntax::StructId(n))?;
-        let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+        let (l, c) = index.line_col(&source, span.start);
         Some((l, c, span.start, span.end))
     };
     let loc_label = |node: &str| match span_of(node) {
@@ -1339,6 +1347,8 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Each line is `name<TAB>type<TAB>binder-node-id`; map the binder node to its source location.
+    // One line-start index (binary-searched line:col) so many bindings stay linear, not O(bindings×len).
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for line in text.lines() {
         let mut cols = line.splitn(3, '\t');
         let (name, ty, binder) = match (cols.next(), cols.next(), cols.next()) {
@@ -1351,7 +1361,7 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
             .and_then(|b| spans.get(cadenza_syntax::StructId(b)))
         {
             Some(span) => {
-                let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+                let (l, c) = index.line_col(&source, span.start);
                 format!("{}:{l}:{c}", args.file)
             }
             None => args.file.clone(),
@@ -1386,6 +1396,8 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Each line is `name<TAB>type<TAB>def-name-node-id` (`-` when the export names no def).
+    // One line-start index (binary-searched line:col) so a wide export list stays linear.
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for line in text.lines() {
         let mut cols = line.splitn(3, '\t');
         let (name, ty, node) = match (cols.next(), cols.next(), cols.next()) {
@@ -1398,7 +1410,7 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
         {
             Some(span) => {
-                let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+                let (l, c) = index.line_col(&source, span.start);
                 format!("{}:{l}:{c}", args.file)
             }
             None => args.file.clone(),
@@ -1745,10 +1757,13 @@ fn run_query_where(args: &syntax_cli::QueryArgs) -> ExitCode {
         println!("{}", kept.len());
         return ExitCode::SUCCESS;
     }
+    // One line-start index (binary-searched line:col) so a query with many matches stays linear rather
+    // than O(matches × source_len) — the same from-start-scan O(N²) the `uses`/`clones` paths had.
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
     for m in kept {
         let loc = match m.span {
             Some(s) => {
-                let (l, c) = cadenza_syntax::query::driver::line_col(&source, s.start);
+                let (l, c) = index.line_col(&source, s.start);
                 format!("{file}:{l}:{c}")
             }
             None => file.clone(),
