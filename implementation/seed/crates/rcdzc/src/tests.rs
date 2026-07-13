@@ -8211,7 +8211,9 @@ mod match_engine {
         );
         assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
         assert!(
-            errors[0].message.contains("cannot cross the component boundary"),
+            errors[0]
+                .message
+                .contains("cannot cross the component boundary"),
             "the surviving error is the coded boundary reject: {}",
             errors[0].message
         );
@@ -8926,7 +8928,9 @@ mod match_engine {
         // = 120. Its unannotated `n` is solved by the connected A2 param solve, keyed on the internal def.
         assert_eq!(
             run_returns::<i64>(
-                &component("(module top (def (main) (do (module lib (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))) ((. lib fac) 5))) (export main))"),
+                &component(
+                    "(module top (def (main) (do (module lib (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))) ((. lib fac) 5))) (export main))"
+                ),
                 "main"
             ),
             120
@@ -8935,7 +8939,9 @@ mod match_engine {
         // inner) fac)`, whose `Member` head `callee_def_index` reduces to the same registered internal def.
         assert_eq!(
             run_returns::<i64>(
-                &component("(module top (def (main) (do (module outer (module inner (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))))) ((. (. outer inner) fac) 5))) (export main))"),
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))))) ((. (. outer inner) fac) 5))) (export main))"
+                ),
                 "main"
             ),
             120
@@ -8944,7 +8950,9 @@ mod match_engine {
         // both lower to runtime calls. ev(10) = true → 1.
         assert_eq!(
             run_returns::<i64>(
-                &component("(module top (def (main) (do (module m (def (ev n) (if (= n 0) true (od (- n 1)))) (def (od n) (if (= n 0) false (ev (- n 1))))) (if ((. m ev) 10) 1 0))) (export main))"),
+                &component(
+                    "(module top (def (main) (do (module m (def (ev n) (if (= n 0) true (od (- n 1)))) (def (od n) (if (= n 0) false (ev (- n 1))))) (if ((. m ev) 10) 1 0))) (export main))"
+                ),
                 "main"
             ),
             1
@@ -11502,6 +11510,29 @@ mod match_engine {
             cadenza_syntax::sexpr::print(&arenas).trim(),
             "(: b\"\\xe5\\x8e&\" Bytes)",
             "encode still renders after the repeated len calls"
+        );
+        // VM-3: `to-bytes` returns the RAW payload (no value-form framing) — the exact 3 bytes E5 8E 26.
+        // Repeatable (borrow), so call it after len + encode; the handle is still live.
+        let to_bytes = get(&mut rt, "to-bytes");
+        let mut out = [Val::Bool(false)];
+        to_bytes
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("to-bytes");
+        to_bytes.post_return(&mut rt.store).expect("to-bytes post");
+        let raw: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("to-bytes expected list<u8>: {o:?}"),
+        };
+        assert_eq!(
+            raw,
+            vec![0xe5, 0x8e, 0x26],
+            "to-bytes returns the RAW payload (uleb 624485), not the value form"
         );
         if let Val::Resource(r) = handle[0] {
             let r: ResourceAny = r;

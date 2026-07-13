@@ -935,23 +935,36 @@ pub fn runtime_resource_core_module_form(
     export_abs: u32,
     form: EscapeForm,
 ) -> Result<Vec<u8>, String> {
-    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, false)
+    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, &[])
 }
 
-/// [`runtime_resource_core_module_form`] plus `with_len`: when true, the core ALSO exports a scalar
-/// `t-len : (borrow-rep i32) -> i32` method = `bytes-len(rep)` (a String/Bytes/List length query the host
-/// calls without decoding the whole value form — VM-1). The method is a borrow method: its i32 param IS
-/// the heap rep (wasmtime's `lift_borrow` passes the rep, not a table index), so `t-len` is
-/// `local.get 0; call bytes-len; end` — a repeatable read, no `resource.rep`, no drop. Its core func is
-/// emitted LAST (after make/t-encode/cabi_realloc), matching `assemble_runtime_resource_with_len`'s alias
-/// order (t-len at core func k+6). Only the RuntimeBytes form uses `with_len` today (the bytes `len` op is
-/// `bytes-len`; a List would use `vec-len`, a later increment).
+/// A value-resource METHOD the core module emits beyond make/t-encode/cabi_realloc (VM-1..VM-3). Each is a
+/// BORROW method — its i32 param IS the heap rep (wasmtime's `lift_borrow` passes the rep, not a table
+/// index), so the body reads it directly (no `resource.rep`, no drop — repeatable). Emitted AFTER
+/// cabi_realloc, in list order, so the core-func indices match the envelope's alias order (method i at
+/// core func k+6+i).
+#[derive(Clone, Copy, PartialEq)]
+pub enum CoreMethod {
+    /// `t-len : (rep i32) -> i32` = `bytes-len(rep)` — a scalar length query (VM-1).
+    Len,
+    /// `t-to-bytes : (rep i32) -> i32` = the RAW payload copied into the (ptr,len) retarea and `0` returned
+    /// (VM-3). A `bytes-get` copy loop with NO value-form framing (unlike `t-encode`). Exports memory +
+    /// cabi_realloc (already present for encode), so the canonical ABI reads the `list<u8>` from `(OUT, n)`.
+    ToBytes,
+}
+
+/// [`runtime_resource_core_module_form`] plus a set of extra value-resource `methods` the core also
+/// exports (VM-1..VM-3): `Len` (a scalar `bytes-len`) and/or `ToBytes` (the raw payload as `list<u8>`).
+/// Each is a borrow method (its i32 param IS the rep — no `resource.rep`, no drop, repeatable), emitted
+/// AFTER make/t-encode/cabi_realloc in list order so its core func index (k+6+i) matches the envelope's
+/// alias order. Empty `methods` = byte-identical to `runtime_resource_core_module_form`. Only the
+/// RuntimeBytes form uses these today (`bytes-len`/`bytes-get`; a List would use `vec-*`, later).
 pub fn runtime_resource_core_module_form_ex(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     export_abs: u32,
     form: EscapeForm,
-    with_len: bool,
+    methods: &[CoreMethod],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -996,12 +1009,14 @@ pub fn runtime_resource_core_module_form_ex(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    // t-len `(i32)->i32` (VM-1) — emitted only when `with_len`, after the three synthesized types.
-    let len_type_idx = realloc_type_idx + 1;
-    if with_len {
+    // Each extra method (`t-len`/`t-to-bytes`) is `(i32)->i32` — one functype per method, after the three
+    // synthesized types. `method_type_idx[i]` is method i's core type index.
+    let mut method_type_idx = Vec::new();
+    for _ in methods {
+        method_type_idx.push((realloc_type_idx + 1 + method_type_idx.len()) as u32);
         type_items.extend_from_slice(&i32_to_i32);
     }
-    let total_types = defined_type_base + n + 3 + if with_len { 1 } else { 0 };
+    let total_types = defined_type_base + n + 3 + methods.len();
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + resource-new + resource-rep, all from "heap". Also builds the
@@ -1028,10 +1043,10 @@ pub fn runtime_resource_core_module_form_ex(
     uleb128(make_type_idx as u64, &mut func_items);
     uleb128(encode_type_idx as u64, &mut func_items);
     uleb128(realloc_type_idx as u64, &mut func_items);
-    if with_len {
-        uleb128(len_type_idx as u64, &mut func_items);
+    for &ti in &method_type_idx {
+        uleb128(ti as u64, &mut func_items);
     }
-    let n_synth = 3 + if with_len { 1 } else { 0 };
+    let n_synth = 3 + methods.len();
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
         &wasm_vec(n + n_synth, &func_items),
@@ -1039,7 +1054,8 @@ pub fn runtime_resource_core_module_form_ex(
     let make_abs = (defined_type_base + n) as u32;
     let encode_abs = make_abs + 1;
     let realloc_abs = encode_abs + 1;
-    let len_abs = realloc_abs + 1; // valid only when `with_len` (t-len is the last defined func)
+    // Method i's core func index (the methods follow realloc, in list order).
+    let method_abs = |i: usize| realloc_abs + 1 + i as u32;
 
     // ── Memory section ── one memory, min 1 page.
     let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
@@ -1062,10 +1078,14 @@ pub fn runtime_resource_core_module_form_ex(
             wasm_abi::EXPORT_KIND_FUNC,
             realloc_abs,
         ));
-        if with_len {
-            items.extend_from_slice(&export("t-len", wasm_abi::EXPORT_KIND_FUNC, len_abs));
+        for (i, meth) in methods.iter().enumerate() {
+            let name = match meth {
+                CoreMethod::Len => "t-len",
+                CoreMethod::ToBytes => "t-to-bytes",
+            };
+            items.extend_from_slice(&export(name, wasm_abi::EXPORT_KIND_FUNC, method_abs(i)));
         }
-        let n_exports = 4 + if with_len { 1 } else { 0 };
+        let n_exports = 4 + methods.len();
         section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(n_exports, &items))
     };
 
@@ -1163,20 +1183,27 @@ pub fn runtime_resource_core_module_form_ex(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    // t-len(borrow rep) -> i32 (VM-1): the param IS the heap rep (a borrow), so `bytes-len(rep)` directly
-    // — a repeatable scalar read, no resource.rep, no drop. `local.get 0; call bytes-len; end`.
-    if with_len {
-        let f_bytes_len = *import_index
-            .get("bytes-len")
-            .expect("with_len requires the bytes-len op imported");
-        let mut inner = uleb_bytes(0); // no locals
-        inner.push(op::LOCAL_GET);
-        uleb128(0, &mut inner); // the borrow self param = the rep
-        inner.push(op::CALL);
-        uleb128(f_bytes_len as u64, &mut inner);
-        inner.push(op::END);
-        let mut e = uleb_bytes(inner.len() as u64);
-        e.extend_from_slice(&inner);
+    // Each extra method body (borrow rep = the i32 param — no resource.rep, no drop, repeatable):
+    for meth in methods {
+        let body = match meth {
+            // t-len(rep) -> i32: `bytes-len(rep)`.
+            CoreMethod::Len => {
+                let f_bytes_len = *import_index
+                    .get("bytes-len")
+                    .expect("Len method requires the bytes-len op imported");
+                let mut inner = uleb_bytes(0); // no locals
+                inner.push(op::LOCAL_GET);
+                uleb128(0, &mut inner); // the borrow self param = the rep
+                inner.push(op::CALL);
+                uleb128(f_bytes_len as u64, &mut inner);
+                inner.push(op::END);
+                inner
+            }
+            // t-to-bytes(rep) -> i32: copy the RAW payload into the (ptr=OUT,len=n) retarea, return 0.
+            CoreMethod::ToBytes => to_bytes_body(&import_index),
+        };
+        let mut e = uleb_bytes(body.len() as u64);
+        e.extend_from_slice(&body);
         code_items.extend_from_slice(&e);
     }
     let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + n_synth, &code_items));
@@ -2662,6 +2689,93 @@ fn encode_bytes_walk_body(
     let mut e = uleb_bytes(body.len() as u64);
     e.extend_from_slice(&body);
     e
+}
+
+/// The `t-to-bytes(borrow rep) -> i32` body (VM-3): copy the RAW byte payload of `rep` into the (ptr,len)
+/// retarea as a `list<u8>` — the raw content, NO value-form framing (unlike `t-encode`). The param IS the
+/// heap rep (borrow), so it reads directly (no `resource.rep`) and does NOT drop (repeatable). Retarea at
+/// `[0..8]` (ptr,len); the bytes are written starting at `OUT=8`; `n = bytes-len(rep)`, then a
+/// `bytes-get(rep,i)` → `store8(OUT+i)` copy loop, then store `(ptr=OUT, len=n)` and return `0`. Returns
+/// the body bytes WITHOUT the leading length ULEB (the caller prefixes it). No value-form prefix/LEB/suffix
+/// — this is the "just give me the bytes" affordance, distinct from `encode_bytes_walk_body`.
+fn to_bytes_body(import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    let store8 = |out: &mut Vec<u8>| {
+        out.push(op::I32_STORE8);
+        out.push(0x00);
+        out.push(0x00);
+    };
+    const OUT: i64 = 8;
+    let mut body = Vec::new();
+    // Locals after param 0 = rep: n(i32), i(i32). One i32 group of 2.
+    uleb128(1, &mut body);
+    uleb128(2, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let (rep, n, i) = (0u32, 1u32, 2u32);
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    // n = bytes-len(rep)  (borrows rep — no drop, the host owns it).
+    get(rep, &mut body);
+    call_op("bytes-len", &mut body);
+    set(n, &mut body);
+    // COPY LOOP: i = 0; block { loop { if i>=n br 1; store8(OUT+i, bytes-get(rep,i)); i++; br 0 } }.
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, &mut body);
+        get(n, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body);
+        // store8(OUT + i, bytes-get(rep, i))
+        const_i32(OUT, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD);
+        get(rep, &mut body);
+        get(i, &mut body);
+        call_op("bytes-get", &mut body);
+        store8(&mut body);
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END); // end loop
+    body.push(op::END); // end block
+    // retarea [0..8]: ptr = OUT, len = n.
+    const_i32(0, &mut body);
+    const_i32(OUT, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    const_i32(4, &mut body);
+    get(n, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    const_i32(0, &mut body); // return the retarea pointer (0)
+    body.push(op::END);
+    body
 }
 
 /// The `t-encode(handle) -> i32` walker for a RUNTIME RECURSIVE sum (a linked list, a tree). Unlike the
