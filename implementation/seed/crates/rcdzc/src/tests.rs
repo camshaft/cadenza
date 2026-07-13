@@ -8751,6 +8751,21 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_symbol_escapes_as_symbol_of() {
+        // 17-symbols "a symbol is constructed from a string": a CONSTANT Symbol returned as the program
+        // result crosses the host boundary through the resource-escape path (like a String), and renders
+        // its CONSTRUCTION form `((. Symbol of) "…")` under the `Symbol` type — NOT the bare string its
+        // ConstStr rep carries (recovered from the solved `Ty::Symbol`, as `Qty.of` is from `Ty::Qty`).
+        let Some(out) =
+            escape_render("(module m (def (main) (Symbol.of \"map-insert\")) (export main))")
+        else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "(: ((. Symbol of) \"map-insert\") Symbol)");
+    }
+
+    #[test]
     fn a_runtime_built_bytes_escapes_via_the_looping_walker() {
         // L2b — the FIRST looping `encode()`. A RUNTIME-built `Bytes` (a `concat`/recursion result, NOT a
         // compile-time constant) escapes through the resource shape whose `encode()` LOOPS: it writes the
@@ -13975,7 +13990,10 @@ mod stage1 {
             format!("(host (Ask) {})", crate::abi::WRAP_HOLE),
             "wraps the body in a host delegation of the named effect"
         );
-        assert!(!fix.verified, "delegating vs. handling is the author's choice → heuristic");
+        assert!(
+            !fix.verified,
+            "delegating vs. handling is the author's choice → heuristic"
+        );
     }
 
     #[test]
@@ -22677,7 +22695,7 @@ mod closure_host_resource {
         use crate::backend::wasm::lir::{Lir, ValType};
         use crate::backend::wasm::runtime_abi::OPS;
         use crate::backend::wasm::select::SelectedFunc;
-        use crate::backend::wasm::serialize::{ClosureMake, ClosureConsume, ConsumeParam};
+        use crate::backend::wasm::serialize::{ClosureConsume, ClosureMake, ConsumeParam};
         use crate::layout::{ExportPlan, Layout};
         use crate::lower::LiftedLambda;
         use crate::ty::{IntTy, Ty};

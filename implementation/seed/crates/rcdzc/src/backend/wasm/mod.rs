@@ -96,6 +96,13 @@ pub fn emit(
                 // time) has no constant form; `constant_value_form` returns None and it falls through to
                 // the decline below (the looping string-escape walker is a later increment, like a list).
                 | crate::ty::Ty::String
+                // A SYMBOL export crosses via the resource escape like a String (a symbol has no scalar
+                // boundary valtype — it is a heap-backed name value). Its CONSTANT bytes bake the value
+                // form `(: ((. Symbol of) "…") Symbol)` — the construction form `const_value_ast` renders
+                // from the `Ty::Symbol` type + `Core::ConstStr` rep. A runtime (interned-at-run-time)
+                // symbol has no constant form → `constant_value_form` returns None → falls through to the
+                // decline (the runtime intern + walker is a later increment).
+                | crate::ty::Ty::Symbol
                 // A NOMINAL newtype export crosses as its ERASED underlying value (the tag adds nothing to
                 // the runtime representation): a nominal-over-COMPOUND takes this resource escape (its
                 // constant/runtime value form is the underlying value, with `type_ast` tagging it under the

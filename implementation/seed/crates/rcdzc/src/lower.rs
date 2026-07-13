@@ -4716,6 +4716,19 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         let qty_of = member_access(b, "Qty", "of");
         return Some(b.list(vec![qty_of, inner_val, unit_ast]));
     }
+    // A SYMBOL value renders its CONSTRUCTION form `((. Symbol of) "text")` (17-symbols "a symbol is
+    // constructed from a string"), NOT the bare string its `Core::ConstStr` rep would otherwise render.
+    // A symbol shares the constant-string rep (its identity is its text — see `Resolved::SymbolConst`),
+    // so the core is a `ConstStr`; recover the SYMBOL surface from the SOLVED TYPE `Ty::Symbol` and
+    // re-materialize the `Symbol.of` construction as source, exactly as `Ty::Qty` recovers `Qty.of`.
+    // Checked FIRST (before the core match) since the erased core would otherwise render as a bare String.
+    if matches!(crate::infer::type_of(db, id), crate::ty::Ty::Symbol)
+        && let Core::ConstStr(s) = core_of(db, id)
+    {
+        let symbol_of = member_access(b, "Symbol", "of");
+        let text = b.atom_leaf(Leaf::Str(s));
+        return Some(b.list(vec![symbol_of, text]));
+    }
     match core_of(db, id) {
         Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
             value: v,
