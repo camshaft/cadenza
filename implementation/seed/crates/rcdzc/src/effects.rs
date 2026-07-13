@@ -71,12 +71,21 @@ pub fn synthesize(ast: &mut Arenas, decls: &mut [EffectDecl]) {
     }
 }
 
+/// The head of the INTERNAL handler node the desugar produces — DISTINCT from the source keyword
+/// `handle`, so the two shapes never share a spelling. `handle` (source) is EXCLUSIVELY the canonical
+/// 5-child `(handle E seed (bare-op-arm…) body)`; this internal 4-child `(handle-internal seed
+/// ((. E op)-arm…) body)` is what `resolve`/`infer`/`lower`/`compile` consume, and it can only ever be
+/// produced by this pass — a source program cannot write it (a `-` makes it un-lexable as a bare token,
+/// and it is not a keyword), so there is exactly ONE way to write a handler.
+pub(crate) const HANDLE_INTERNAL: &str = "handle-internal";
+
 /// Desugar every CANONICAL handler form `(handle E seed (arm…) body)` — where the effect `E` and the
 /// initial `seed` are PROMOTED into the head and each arm's operation is written BARE (`(op (p…) state
-/// body)`) — into the INTERNAL form the rest of the compiler consumes: `(handle seed (arm'…) body)`
-/// with `E` dropped from the head and each arm's op rewritten to its `(. E op)` projection. This lets
-/// the surface (both s-expr and ML) name the effect once, on the `handle`, while `resolve_handle` /
-/// `effects` / infer / lower / compile keep reading the projection-per-arm shape unchanged.
+/// body)`) — into the INTERNAL form the rest of the compiler consumes: `(handle-internal seed (arm'…)
+/// body)` with `E` dropped from the head, the head RE-SPELLED [`HANDLE_INTERNAL`], and each arm's op
+/// rewritten to its `(. E op)` projection. This lets the surface (both s-expr and ML) name the effect
+/// once, on the `handle`, while `resolve_handle` / `effects` / infer / lower / compile keep reading the
+/// projection-per-arm shape unchanged — under a head only this pass produces.
 ///
 /// Runs at load BEFORE the parent index is built, so the rewritten `(. E op)` projections resolve like
 /// hand-written member access. Mutates the arena IN PLACE (swapping a handle node's children vector),
@@ -85,9 +94,10 @@ pub fn synthesize(ast: &mut Arenas, decls: &mut [EffectDecl]) {
 /// The canonical shape also carries the language RULE that a `handle` discharges exactly ONE effect:
 /// its head names that effect, and every arm is one of that effect's operations. That is checked
 /// downstream — an arm op `(. E op)` that `E` does not declare is the ordinary undeclared-operation
-/// rejection (CDZ0403) — so this pass only performs the mechanical rewrite. A form that is NOT the
-/// canonical shape (already-internal `(handle seed (arm…) body)` with 4 children, or a malformed
-/// handle) is left untouched, so a hand-authored internal-shape program still compiles.
+/// rejection (CDZ0403) — so this pass only performs the mechanical rewrite. A source form still headed
+/// `handle` AFTER this pass is NOT the canonical shape (an effect-name-less legacy handle, or a
+/// malformed/too-short one); it is left untouched here and REJECTED downstream (`resolve_handle`) —
+/// there is one canonical way to write a handler, and the old effect-name-less shape is no longer it.
 pub fn desugar_handles(ast: &mut Arenas) {
     // Collect the rewrites first (an immutable scan), then apply — appends during apply must not
     // perturb the ids we scanned.
@@ -175,12 +185,15 @@ fn apply_handle_plan(ast: &mut Arenas, plan: HandlePlan) {
         new_children.extend(rest);
         ast.structure[arm.0 as usize] = Struct::List(new_children);
     }
-    // Drop the effect (index 1) from the handle head: [handle, effect, seed, arms, body] -> [handle,
-    // seed, arms, body]. The handle keeps its id/span.
+    // Rewrite the head to `handle-internal` and drop the effect (index 1): [handle, effect, seed, arms,
+    // body] -> [handle-internal, seed, arms, body]. The node keeps its id/span; only the head atom and
+    // the removed effect change. The re-spelled head is what marks this the desugared internal form —
+    // distinct from a leftover source `handle`, which downstream rejects.
     if let Struct::List(items) = ast.get(plan.handle) {
         let mut kept = items.clone();
         if kept.len() == 5 {
             kept.remove(1);
+            kept[0] = push_atom(ast, Leaf::Name(HANDLE_INTERNAL.to_string()));
             ast.structure[plan.handle.0 as usize] = Struct::List(kept);
         }
     }
@@ -1175,7 +1188,7 @@ pub fn reduce_handle(
     // position, so its CONTINUATION is the IDENTITY (there is no surrounding computation to return into).
     // A NON-tail resume then needs no captured continuation: `(resume v s)` yields `v` in place (the
     // identity applied to `v`), so the handle's value is the arm body with every `(resume v s)` rewritten
-    // to `v` — `(handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a
+    // to `v` — `(handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a
     // MULTI-shot arm (`(+ (resume 1 s) (resume 2 s))`) is sound here: each `resume v` is just `v`, no
     // continuation to duplicate. This is the sliver of E5 that needs no frame machinery; a perform NOT in
     // tail position (`(+ 100 (Amb.flip))`) has a non-identity continuation and still declines (real E5).
@@ -2800,14 +2813,18 @@ mod desugar_tests {
     use crate::testkit::parse;
 
     /// The CANONICAL handle `(handle E seed (bare-arm…) body)` desugars to the INTERNAL
-    /// `(handle seed ((. E op)-arm…) body)` the resolver consumes: `E` leaves the head and each arm's
-    /// bare op becomes its `(. E op)` projection, with params/state/body preserved.
+    /// `(handle-internal seed ((. E op)-arm…) body)` the resolver consumes: the head is RE-SPELLED, `E`
+    /// leaves the head, and each arm's bare op becomes its `(. E op)` projection, params/state/body kept.
     #[test]
     fn desugars_canonical_handle_to_internal_shape() {
         let mut ast = parse("(handle Fresh 0 ((next (u) s (resume s (+ s 1)))) (Fresh.next))");
         desugar_handles(&mut ast);
-        // The root is now the internal 4-child handle: (handle 0 (arm…) body).
-        let tail = ast.as_form(ast.root, "handle").expect("still a handle");
+        // The root is now the internal node `(handle-internal 0 (arm…) body)` — a distinct head, so a
+        // source `handle` and the desugared node never share a spelling.
+        assert_eq!(ast.head_name(ast.root), Some(HANDLE_INTERNAL));
+        let tail = ast
+            .as_form(ast.root, HANDLE_INTERNAL)
+            .expect("re-spelled to the internal head");
         assert_eq!(
             tail.len(),
             3,
@@ -2834,19 +2851,21 @@ mod desugar_tests {
         assert_eq!(ast.as_name(proj[1]), Some("next"));
     }
 
-    /// A handle ALREADY in internal shape (4 children, dotted arm op) is left untouched — so a
-    /// hand-authored internal-shape program still compiles unchanged.
+    /// The retired effect-name-less shape `(handle seed (arm…) body)` is NOT canonical, so the desugar
+    /// (which fires only on the 5-child form) leaves its head as the source `handle` — it is NOT
+    /// re-spelled to the internal head, and downstream `resolve_noncanonical_handle` rejects it. This is
+    /// what makes the old form unwritable: only the desugar produces `handle-internal`.
     #[test]
-    fn leaves_internal_shape_handle_untouched() {
+    fn leaves_noncanonical_handle_headed_handle_for_rejection() {
         let mut ast = parse("(handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) (Fresh.next))");
         let before = ast.structure.len();
         desugar_handles(&mut ast);
         assert_eq!(
             ast.structure.len(),
             before,
-            "no nodes appended for an internal-shape handle"
+            "no nodes appended for a non-canonical handle"
         );
-        let tail = ast.as_form(ast.root, "handle").unwrap();
-        assert_eq!(tail.len(), 3);
+        // Head is STILL the source `handle` (not re-spelled) — the marker the resolver rejects on.
+        assert_eq!(ast.head_name(ast.root), Some("handle"));
     }
 }

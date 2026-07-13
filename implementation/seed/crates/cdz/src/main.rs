@@ -1368,11 +1368,24 @@ fn load_program_spanned(
         // (it errors on trailing input); fall back to `read_all_spanned` for several. Using
         // `read_all_spanned` unconditionally would wrap a lone `(module …)` in `(do …)`, and the
         // compiler's top-level scan would then see the module as one opaque item and find no defs.
-        let (arenas, spans) = match cadenza_syntax::sexpr::read_spanned(&source) {
+        let (raw_arenas, raw_spans) = match cadenza_syntax::sexpr::read_spanned(&source) {
             Ok(pair) => pair,
             Err(_) => cadenza_syntax::sexpr::read_all_spanned(&source)
                 .map_err(|e| format!("{file}: {}", e.0))?,
         };
+        // CANONICALIZE + REMAP the span table to canonical ids — the SAME step the ML branch does, and
+        // for the same reason: `run_sidecar`/`compile` feed the arena through `codec::encode`, which
+        // canonicalizes (`canon.rs`), so the compiler reports diagnostics against CANONICAL node ids. The
+        // s-expr reader builds a LONE form canonically (so a single-def file needed no remap and looked
+        // fine), but the MULTI-form fallback wraps the roots in a synthetic `(do …)` whose head is built
+        // LAST — canonicalization then reorders the ids, and an un-remapped span table maps every
+        // diagnostic (and every `check --fix` byte range) to a NEIGHBOUR's span. That mis-anchored a
+        // warning's fix onto the wrong node — e.g. `(def (f x y) x) (export f)`'s unused-`y` fix landed on
+        // the whole `(f x y)` param list, so applying it produced `(def _y x)` and DESTROYED the function.
+        // Remapping here keys the table by canonical ids on BOTH surfaces (a single form's identity map is
+        // a no-op, so the previously-correct lone-form case is unchanged).
+        let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&raw_arenas);
+        let spans = raw_spans.remap(&id_map, arenas.structure.len());
         Ok((source, arenas, spans))
     }
 }
@@ -1699,6 +1712,54 @@ mod tests {
         std::fs::write(dir.join("README.md"), "no source here").unwrap();
         let err = expand_input_specs(&[dir.to_string_lossy().into_owned()]).unwrap_err();
         assert!(err.contains("no source files"), "got {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A MULTI-form s-expr program's diagnostic (and its fix) must anchor to the RIGHT source bytes. The
+    /// multi-form fallback wraps the roots in a synthetic `(do …)` whose head is built last;
+    /// `codec::encode` canonicalizes and reorders the ids, so an un-remapped span table maps a diagnostic
+    /// to a NEIGHBOUR's span. This regression pins the fix: the unused-`y` warning's fix span must cover
+    /// exactly `y` — not the `(f x y)` param list, which once made `cdz fix` rewrite the file to
+    /// `(def _y x)` and destroy the function. Exercised through `load_program_spanned` (the load boundary
+    /// that does the canonicalize + remap) so it guards both surfaces' span mapping.
+    #[test]
+    fn a_multi_form_sexpr_diagnostic_fix_anchors_to_the_right_bytes() {
+        let dir = tmp("multiform");
+        let file = dir.join("p.sexp");
+        let src = "(def (f x y) x) (export f)";
+        std::fs::write(&file, src).unwrap();
+        let (source, arenas, spans) = load_program_spanned(&file.to_string_lossy()).expect("loads");
+        let out = run_sidecar(
+            &arenas,
+            rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+        );
+        let bytes = out
+            .artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)
+            .expect("a diagnostics artifact");
+        let text = String::from_utf8_lossy(bytes);
+        // Find the CDZ0306 line; its fix-node (column 5) span must cover exactly the binder `y`.
+        let mut checked = false;
+        for line in text.lines() {
+            let cols: Vec<&str> = line.splitn(8, '\t').collect();
+            if cols.get(1) == Some(&"CDZ0306") {
+                let fix_node = cols[4];
+                assert_ne!(
+                    fix_node, "-",
+                    "the unused-binding fix carries a target node"
+                );
+                let n: u32 = fix_node.parse().expect("a node id");
+                let span = spans
+                    .get(cadenza_syntax::StructId(n))
+                    .expect("the fix node has a span");
+                assert_eq!(
+                    &source[span.start..span.end],
+                    "y",
+                    "the unused-`y` fix must anchor on `y`, not a neighbour node (the do-wrap span bug)"
+                );
+                checked = true;
+            }
+        }
+        assert!(checked, "expected a CDZ0306 unused-binding warning: {text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -162,8 +162,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
-              (handle 0 ((Bail.bail (n) s n))
-                (+ 1 (Bail.bail 7)))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main)))
   (output (: 7 Int64)))
 
 (case "an abortive perform in the tail of an if branch abandons only that branch"
@@ -179,8 +178,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
-              (handle 0 ((Bail.bail (n) s n))
-                (if true (Bail.bail 7) 99))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (if true (Bail.bail 7) 99))) (export main)))
   (output (: 7 Int64)))
 
 (case "an abortive perform in the tail of an if branch inside a let body abandons only that branch"
@@ -195,8 +193,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
-              (handle 0 ((Bail.bail (n) s n))
-                (let ((k 5)) (if true (Bail.bail 7) k)))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (let ((k 5)) (if true (Bail.bail 7) k)))) (export main)))
   (output (: 7 Int64)))
 
 (case "a handle body reads an enclosing function parameter"
@@ -210,14 +207,13 @@
   (input  (do
             (effect Get (op get (-> Int64 Int64)))
             (def (main (: x Int64))
-              (handle 0 ((Get.get (n) s (resume 5 s)))
-                (+ x (Get.get 0)))) (export main)))
+              (handle Get 0 ((get (n) s (resume 5 s))) (+ x (Get.get 0)))) (export main)))
   (call   main (: 10 Int64))
   (output (: 15 Int64)))
 
 (case "a runtime condition selects an abortive branch reading an enclosing parameter"
   (doc    "The branch-tail abort with a RUNTIME condition over an enclosing parameter — the shape a
-           validation routine takes: `(handle 0 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) x))`. The
+           validation routine takes: `(handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))`. The
            `if` is the handle's value, so an abort in a branch tail is local to that branch (yields the arm
            value); the other branch reads the parameter `x` and falls through. Called with `x = 9` (not <
            5), the false branch yields `x` = 9 — no abort. This composes the branch-tail abortive fold with
@@ -225,8 +221,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: x Int64))
-              (handle 0 ((Bail.bail (n) s n))
-                (if (< x 5) (Bail.bail 7) x))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))) (export main)))
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
 
@@ -242,8 +237,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: x Int64))
-              (handle 0 ((Bail.bail (n) s n))
-                (+ 100 (if (< x 5) (Bail.bail 7) 50)))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (+ 100 (if (< x 5) (Bail.bail 7) 50)))) (export main)))
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
 
@@ -259,8 +253,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
-              (handle 0 ((Bail.bail (n) s n))
-                (if (< (Bail.bail 7) 5) 1 2))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (if (< (Bail.bail 7) 5) 1 2))) (export main)))
   (output (: 7 Int64)))
 
 (case "an abortive perform in a short-circuit connective's right operand abandons the computation"
@@ -276,8 +269,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Bool)))
             (def (main (: x Int64))
-              (handle false ((Bail.bail (n) s (< n 100)))
-                (and (< x 5) (Bail.bail 7)))) (export main)))
+              (handle Bail false ((bail (n) s (< n 100))) (and (< x 5) (Bail.bail 7)))) (export main)))
   (call   main (: 3 Int64))
   (output (: true Bool)))
 
@@ -292,8 +284,7 @@
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: x Int64))
-              (handle 0 ((Bail.bail (n) s n))
-                (let ((k (if (< x 5) (Bail.bail 7) 0))) (+ 1 k)))) (export main)))
+              (handle Bail 0 ((bail (n) s n)) (let ((k (if (< x 5) (Bail.bail 7) 0))) (+ 1 k)))) (export main)))
   (call   main (: 9 Int64))
   (output (: 1 Int64)))
 
@@ -309,7 +300,7 @@
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))
             (def (main)
-              (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main)))
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main)))
   (output (: 11 Int64)))
 
 ; --- A handler folds state across the operations it discharges ----------------------------------
@@ -523,8 +514,7 @@
             (effect Tick (op tick (-> Unit Int64)))
             (def (walk (: n Int64)) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1)))))
             (def (main)
-              (handle 0 ((Tick.tick (u) s (resume s (+ s 1))))
-                (walk 3))) (export main)))
+              (handle Tick 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main)))
   (call   main)
   (output (: 0 Int64)))
 
