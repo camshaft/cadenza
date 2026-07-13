@@ -75,6 +75,12 @@ export default function Playground() {
         to it in the source. The <strong>AST</strong> tab shows the raw tree the compiler sees — the one
         structure both syntaxes are just views of.
       </P>
+      <P>
+        Even the colours come from the compiler. Rather than guessing a token's role from its spelling,
+        the editor asks the compiler what each name <em>means</em> — so a type, a constructor, a function,
+        a local, and an <em>unbound</em> name (a typo the compiler can't resolve) each get their own
+        colour. The highlighting is the same understanding the type checker has, not a separate guess.
+      </P>
 
       <H2>Share what you made</H2>
       <P>

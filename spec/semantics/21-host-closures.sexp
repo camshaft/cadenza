@@ -1168,3 +1168,46 @@
               (export greet) (export bye)))
   (call   bye (: 0 Int64))
   (output (98 121)))
+
+; A BYTE-ROPE-result closure ALONGSIDE a PLAIN export — the mixed shape extended to the compound `call`.
+; The closure's `Bytes`/`String` result crosses as `list<u8>` (the shared list-returning `call` with
+; memory/cabi_realloc), and the plain export rides alongside as an ordinary top-level func. Both live in one
+; component; `cdz-run` routes `(call <plain>)` to the bare func and `(call <closure>)` to make/call.
+
+(case "a Bytes-returning closure alongside a plain export — the closure runs"
+  (doc    "`mk : () -> (-> Int64 Bytes)` (returns `(bin (u8 n) (u8 n+1))`) alongside a plain `two : () -> 2`.
+           `make()` → a handle; `call(handle, 5)` copies the closure's `[5, 6]` out as `list<u8>`. Pins the
+           byte-rope closure result on the MIXED path (the compound `call` + a plain top-level export).")
+  (input  (do (def (mk) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 5 Int64))
+  (output (5 6)))
+
+(case "a Bytes-returning closure alongside a plain export — the plain runs"
+  (doc    "The SAME mixed program, calling the plain `two` → 2. Pins that the plain top-level export is
+           reachable when a compound-result closure shares the component.")
+  (input  (do (def (mk) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "a String-returning closure alongside a parameterized plain export"
+  (doc    "`greet : () -> (-> Int64 String)` returns \"hi\", alongside a plain `dbl : (Int64) -> Int64`.
+           `call(greet-handle, 0)` → the UTF-8 bytes `[104, 105]`. Confirms a String-result closure + a
+           parameterized plain export coexist.")
+  (input  (do (def (greet) (fn ((: n Int64)) "hi"))
+              (def (dbl (: x Int64)) (* x 2))
+              (export greet) (export dbl)))
+  (call   greet (: 0 Int64))
+  (output (104 105)))
+
+(case "a String-returning closure alongside a parameterized plain export — the plain runs"
+  (doc    "The SAME program, calling `dbl(21)` = 42. Pins the parameterized plain export reachable beside a
+           String-result closure.")
+  (input  (do (def (greet) (fn ((: n Int64)) "hi"))
+              (def (dbl (: x Int64)) (* x 2))
+              (export greet) (export dbl)))
+  (call   dbl (: 21 Int64))
+  (output (: 42 Int64)))

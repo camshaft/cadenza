@@ -508,10 +508,20 @@ the component type. The new work:
   `wasm_vec` miscount: the bytes alias section is `nmk+3` (N makes + call + memory + cabi_realloc), not
   `nmk+2` → "section size mismatch". +3 corpus (two same-sig Bytes closures both driven, two same-sig String
   closures). Gate 1364p/0f.
+- **✅ MIXED-PATH byte-rope-result closure COMPLETE `@87a4554d`.** A `Bytes`/`String`-returning closure
+  exported ALONGSIDE a plain non-closure export — the compound-`call` shape extended to the mixed multi-export.
+  `emit_mixed_closure_resource` now detects `ret_is_bytes` (`Ty::Bytes | Ty::String`, peeling nominals) and
+  routes to the compound serializer/envelope instead of the scalar `assemble_mixed_closure_resource`:
+  `serialize::multi_closure_bytes_resource_core_module` and `envelope::assemble_multi_closure_bytes_resource`
+  each gained a `plain: &[PlainExport]`/`&[PlainExportAbi]` param — the serializer exports each plain body in
+  its export section; the envelope aliases (plain core func after cabi_realloc), lifts (plain lift comp func
+  `k+nmk+1+j` against functype `5+2*nmk+j`) and top-level-exports each plain func alongside the closure make/
+  call. The pure multi-export bytes path passes `&[]`. `cdz-run` unchanged (mixed dispatch already routes
+  plain→bare-func, closure→make/call). +4 corpus (Bytes closure + plain `two` both driven; String closure +
+  parameterized `dbl` both driven).
 - **REMAINING (all optional, none blocking):** a tuple/list/record closure RESULT (needs the escape's
   `encode` walker + value-form framing instead of the raw byte copy — the render would then be the typed
-  `(: … T)` form, not a bare byte list); a byte-rope result on the MIXED path (closure + plain export —
-  `assemble_mixed_closure_resource` not yet extended) OR the DISTINCT-sig path; a compound closure ARG
+  `(: … T)` form, not a bare byte list); a byte-rope result on the DISTINCT-sig path; a compound closure ARG
   (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a closure TRANSFORMER
   (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle.
   Everything else DONE.

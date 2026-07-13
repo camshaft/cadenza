@@ -333,12 +333,12 @@ const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 /// takes), and the integer-domain predicate is `Ty::Int` — the ONE representation every fixed-width and
 /// deferred integer type shares. A non-integer type-value (`Float64` → `Ty::Float`, a record, …) is the
 /// numeric-domain rejection CDZ0303, distinct from the structural CDZ0602 (wrong arity) / CDZ0601
-/// (unknown key). A type argument that does NOT reduce to a concrete type-value — an integer type the
-/// numeric model admits but this compiler does not yet represent as a `Ty` (`BigInt`), an unbound name, a
-/// non-type expression — returns `None` here: NOT a domain violation (an unrepresented integer type is a
-/// legitimate default), so the whole program declines downstream on the still-unmodeled pragma rather
-/// than being falsely rejected as non-integer. The predicate is CONSERVATIVE — it fires only on a type it
-/// can prove is non-integer, never on absence of proof.
+/// (unknown key). The integer domain is `Ty::Int` (fixed-width + deferred) OR `Ty::BigInt` (the
+/// arbitrary-precision integer, now modeled). A type argument that does NOT reduce to a concrete
+/// type-value — an unbound name, a non-type expression — returns `None` here: NOT a domain violation
+/// (absence of proof is not proof of non-integer), so the whole program declines downstream rather than
+/// being falsely rejected. The predicate is CONSERVATIVE — it fires only on a type it can prove is
+/// non-integer, never on absence of proof.
 fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the SAME CDZ0101 an annotation gives (`(: x Nope)`). Resolution — not the
     // `typeval_of` reduction — is what tells an unbound name apart from a BOUND type this compiler does
@@ -354,7 +354,11 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
         return Some(reject);
     }
     let ty = crate::eval::typeval_of(db, ty_expr)?;
-    if matches!(ty, crate::ty::Ty::Int(_)) {
+    // The integer domain is `Ty::Int` (every fixed-width + deferred integer) AND `Ty::BigInt` (the
+    // arbitrary-precision integer) — both are integer types the numeric model admits as a declarable
+    // default (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable" lists
+    // `BigInt`). A non-integer type-value (`Float64`, a record, …) is the CDZ0303 domain rejection.
+    if matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::BigInt) {
         return None;
     }
     Some(

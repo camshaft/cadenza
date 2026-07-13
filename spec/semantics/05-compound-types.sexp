@@ -985,6 +985,20 @@
             (def (main) (f 1)) (export main)))
   (output (: (list 1 2 3) (List Int64))))
 
+(case "a list built at run time by a push-loop escapes to the host"
+  (doc    "A list whose LENGTH is decided at run time — built by a recursive push-loop, not a literal
+           spine — crosses the host boundary. Unlike a literal `(list …)` (which const-folds to baked
+           bytes), a push-loop-built list is a genuine RRB vector on the heap, so it escapes via the
+           runtime `value-encode` walker guided by a compiler-baked shape descriptor. The descriptor's
+           PARAMETRIC frame renders the element type, so the value form is `(: (list …) (List Int64))` —
+           the element type observable, matching the constant-list form. `build i n out` pushes `i` for
+           i in 0..n (List.push appends) → `[0 1 2]`. This declined before as `(List Int64)` having no
+           component boundary representation.")
+  (input  (do
+            (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main) (build 0 3 (list))) (export main)))
+  (output (: (list 0 1 2) (List Int64))))
+
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
            list in order followed by those of the second (collections-and-text.md §A List Is Grown By
@@ -1768,6 +1782,36 @@
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
   (output (: 12 Int64)))
+
+(case "an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it"
+  (doc    "A running-max fold threads an `Option Int64` accumulator through a recursive list walk with NO
+           annotation on `acc`: each step reads the accumulator `((Some m) …)` and rebuilds it `(Some h)` /
+           `(Some m)`, and the `(None)` base builds `(Some h)` with `h : Int64` (the list element). The
+           accumulator's generic parameter is inferred `Int64` from the values folded IN. The blocker was a
+           MEMOIZATION bug: the payload binder `m`'s type was computed by walking `acc`'s type down the
+           payload path, and if `acc` was still `(Option ?0)` at the first demand, the walk yielded `?0` — a
+           `Ty::Var` that was WRONGLY memoized (only a bare `Any` was left unmemoized), so the later-solved
+           `acc = (Option Int64)` never reached `m` and the value-heap layout declined 'projecting an
+           element of type ?0'. Leaving a free-var-bearing type unmemoized lets the solved type win. `mx` of
+           `[3, 7, 2]` is 7 — pins that a GENERIC-sum accumulator whose parameter is fixed by its folded-in
+           values (not by an annotation) type-checks, the accumulator analogue of the anchored branching
+           fold above.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (mx l acc)
+              (match l
+                ((L.Nil) acc)
+                ((L.Cons h t)
+                 (mx t (match acc
+                         ((Some m) (if (> h m) (Some h) (Some m)))
+                         ((None)   (Some h)))))))
+            (def (main)
+              (match (mx (L.Cons 3 (L.Cons 7 (L.Cons 2 (L.Nil)))) (None))
+                ((Some m) m)
+                ((None)   0)))
+            (export main)))
+  (output (: 7 Int64)))
 
 (case "a generic recursive sum with a bare self-reference nested in a list parameter"
   (doc    "The companion where the bare self-reference is nested inside another type constructor: `(type

@@ -55,3 +55,8 @@ codegen-units = 1
 
 [dev-dependencies]
 bolero = "0.13.4"
+# The differential oracle for the hand-written `bigint.rs` limb library (native tests only — NOT a
+# runtime dependency, so the shipped wasm bytes / content hash are unaffected). Analogue of the
+# CHAMP-vs-BTreeMap reference oracle.
+num-bigint = "0.4"
+num-traits = "0.2"

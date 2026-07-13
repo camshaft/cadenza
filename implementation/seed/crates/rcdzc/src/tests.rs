@@ -7826,6 +7826,126 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_idempotent_bitwise_op_by_the_same_value_twice_collapses_to_one() {
+        // IDEMPOTENT-BITWISE COLLAPSE: `(& (& v w) w)` → `(& v w)` and `(| (| v w) w)` → `(| v w)` — `&`/`|`
+        // are idempotent (`w op w == w`), so re-applying `op w` is a no-op. Covers a RUNTIME `w` the
+        // constant `nested_bitwise_collapse` cannot. Both operands are KEPT (the inner node is retained), so
+        // no trap is dropped. A DISTINCT third operand does NOT collapse. Pins one op at the Lir level +
+        // value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or)).count();
+        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And)).count();
+        // Runtime `w`, commuted inner, outer order — all collapse to ONE op.
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (| x y) Int64) y) Int64)"
+            )),
+            1,
+            "| (| x y) y → one"
+        );
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (| y x) Int64) y) Int64)"
+            )),
+            1,
+            "commuted inner"
+        );
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| y (: (| x y) Int64)) Int64)"
+            )),
+            1,
+            "outer order"
+        );
+        assert_eq!(
+            ands(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (& x y) Int64) y) Int64)"
+            )),
+            1,
+            "& (& x y) y → one"
+        );
+        // A DISTINCT third operand does NOT collapse — both ops stay.
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(: (| (: (| x y) Int64) z) Int64)"
+            )),
+            2,
+            "distinct z kept"
+        );
+
+        // VALUE PARITY.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (| x y) Int64) y) Int64)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            14
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (& x y) Int64) y) Int64)",
+                &[Val::S64(14), Val::S64(10)]
+            ),
+            10
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (| y (: (| x y) Int64)) Int64)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            14
+        );
+        // The same-operand `(| a a)` → a fold is NOT shadowed.
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(: (| a a) Int64)", &[Val::S64(7)]),
+            7
+        );
+        // TRAP SAFETY: both operands are retained, so a trapping `v = (/ 100 z)` still ÷0-traps.
+        assert!(
+            traps(
+                "(: z Int64) (: y Int64)",
+                "(| (: (| (: (/ 100 z) Int64) y) Int64) y)",
+                &[Val::S64(0), Val::S64(5)]
+            ),
+            "the idempotent collapse retains both operands — a trapping operand keeps its trap"
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
@@ -10688,13 +10808,14 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0303")
         );
-        // A type argument that does NOT reduce to a concrete `Ty` is never a false CDZ0303 — the domain
-        // predicate is conservative (fires only on a type PROVEN non-integer, not on absence of proof), so
-        // a valid unmodeled integer default is not falsely rejected. `BigInt` names such a type in the
-        // numeric model; in THIS compiler it is not yet a bound name either, so the pragma's own resolution
-        // reports it CDZ0101 (unbound) — the SAME code the downstream unbound-`m` reference gives, never a
-        // false CDZ0303. (When `BigInt` becomes a bound-but-unmodeled type, it will resolve to something,
-        // its `typeval_of` will be `None`, and the conservative accept — not CDZ0101 — will apply.)
+        // `BigInt` names an INTEGER type the numeric model admits as a declarable default
+        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), and B0 makes
+        // it a modeled `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain
+        // predicate takes `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. The program's reported error is
+        // then the downstream unbound `m` (the nested module's export is not in scope at `((. m x) unit)`)
+        // — CDZ0101, confirming the pragma itself raised nothing. (Before B0, `BigInt` was unbound and the
+        // PRAGMA's own resolution gave CDZ0101; now the pragma succeeds and the SAME code comes from the
+        // downstream reference — the assertion value is unchanged, its cause corrected.)
         assert_eq!(
             reject_code(
                 "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
@@ -10983,6 +11104,49 @@ mod match_engine {
             ),
             None,
             "Record must still work as the record-type constructor in an annotation"
+        );
+    }
+
+    #[test]
+    fn record_without_and_merge_reshape_records_with_field_set_checks() {
+        // 15-rows "dropping fields from a record leaves the remaining fields" / "...an absent field is
+        // rejected" / "merging two records with disjoint fields unions their fields" / "merging records
+        // that share a field name is rejected". `Record.without r (b)` drops the named fields (complement
+        // of `project`); `Record.merge a b` unions two records' field sets, requiring DISJOINTNESS.
+        // `without` of a PRESENT field is well-formed.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.without (record (a 1) (b 2) (c 3)) (b))) (export main))"
+            ),
+            None,
+            "dropping a present field is well-formed"
+        );
+        // `without` of an ABSENT field → CDZ0212 (a drop of a field never held is a static error).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.without (record (a 1)) (z))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0212"),
+            "dropping an absent field is CDZ0212"
+        );
+        // `merge` of DISJOINT field sets is well-formed.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.merge (record (a 1)) (record (b 2)))) (export main))"
+            ),
+            None,
+            "merging disjoint records is well-formed"
+        );
+        // `merge` of records SHARING a field → CDZ0211 (no silent clobber — the combined record cannot
+        // choose which operand's value the shared field takes).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.merge (record (a 1)) (record (a 2)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0211"),
+            "merging records that share a field is CDZ0211"
         );
     }
 
@@ -13262,6 +13426,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_built_list_escapes_via_value_encode() {
+        // A RUNTIME `(List Int64)` (a `List.push`/recursion-built vector — not a compile-time constant) now
+        // crosses the host boundary, where before it DECLINED "type `(List Int64)` has no component boundary
+        // representation". A list's length is dynamic, so it can't use a fixed value-form template; it
+        // escapes via the runtime `value-encode` op (the recursive-sum walker), guided by a compiler-baked
+        // shape descriptor whose PARAMETRIC frame (`Framed("List", ["Int64"], …)`) renders the element type
+        // — so the value form is `(: (list …) (List Int64))`, matching the constant-List form. `build i n
+        // out` pushes `i` for i in 0..n (List.push APPENDS) → `[0 1 2]`.
+        let Some(out) = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                       (def (main) (build 0 3 (list))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-List escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (list 0 1 2) (List Int64))",
+            "runtime List escape renders (list …) under (List Int64)"
+        );
+
+        // A list of Bool — the parametric type node carries the element type `Bool`. Push `(> i 0)` for i
+        // in 0..2 → [false, true].
+        let out = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (> i 0))) out)) \
+                       (def (main) (build 0 2 (list))) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(
+            out, "(: (list false true) (List Bool))",
+            "runtime List of Bool renders under (List Bool)"
+        );
+    }
+
+    #[test]
     fn a_runtime_bytes_resource_exposes_a_repeatable_len_method() {
         // VM-1: a runtime-Bytes result crosses as a resource carrying make + encode + `len : borrow<t> ->
         // u32` (= `bytes-len(rep)`). The host reaches `len` INSIDE the `cadenza:run/run` instance and calls
@@ -14905,6 +15103,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bigint_type_round_trips_through_encode_and_decode() {
+        // B0 SAFETY (the DESIGN-bigint doc §10 mandatory test, the Ty::Qty lesson): `Ty::BigInt` MUST
+        // survive the `Ty → type-value AST → Ty` round-trip (`eval::encode_typeval` /
+        // `resolve::decode_ty`, via `typeval_of`). A MISSING `encode_ty`/`decode_ty` arm would silently
+        // encode `BigInt` as `Unit` (the catch-all) — mis-typing a `(-> (Int N) BigInt)` conversion
+        // scheme to `(-> (Int N) Unit)` — exactly the hole the `Bytes`/`String`/`Char`/`Symbol` arms
+        // closed. Test bare `BigInt` AND `BigInt` NESTED in a compound (where a missing arm bites: a
+        // tuple/variant-payload boxes and would collapse the element to `Unit`).
+        use crate::db::Db;
+        use crate::eval::{encode_typeval, typeval_of};
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let cases = vec![
+            Ty::BigInt,
+            // Nested in a tuple — the case a missing arm silently mis-encodes.
+            Ty::Tuple(vec![Ty::BigInt, Ty::int64()].into()),
+            // Nested in a list element.
+            Ty::List(Box::new(Ty::BigInt)),
+        ];
+        for ty in cases {
+            let node = encode_typeval(&mut db, &ty);
+            let decoded = typeval_of(&mut db, node)
+                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            assert_eq!(
+                decoded,
+                ty,
+                "a {} type MUST survive the encode/decode round-trip (a missing arm would encode BigInt as Unit)",
+                ty.render_name()
+            );
+        }
+    }
+
+    #[test]
     fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
         // F2-0: a unit carries a compile-time SCALE (num/den) alongside its dimension (exponent map).
         // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `metre` and
@@ -16109,6 +16342,34 @@ mod diagnostics {
                 d.fix
             );
         }
+    }
+
+    #[test]
+    fn an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix() {
+        // The MIRROR of the drop-fraction fix: an INTEGER literal annotated a FLOAT type — `(: 3 Float64)`,
+        // `(: 5 Float32)` — is CDZ0203, repaired by ADDING the fractional form: REPLACE `3` with `3.0` (a
+        // valid float literal). One-shot; the annotation-position mirror of the arg-position `of-int` coercion.
+        for (src, want) in [
+            ("(module m (def (f) (: 3 Float64)) (export f))", "3.0"),
+            ("(module m (def (f) (: 5 Float32)) (export f))", "5.0"),
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("an add-the-fraction fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(fix.replacement, want, "adds the `.0`: {}", d.message);
+            assert!(
+                !fix.verified,
+                "int-vs-float intent is the author's call → heuristic"
+            );
+        }
+        // NO fix for a non-literal (a Bool value annotated Float) — only a bare int LITERAL retypes.
+        let d = first_error("(module m (def (f) (: true Float64)) (export f))");
+        assert!(
+            d.fix.is_none(),
+            "no add-fraction fix for a Bool: {:?}",
+            d.fix
+        );
     }
 
     #[test]
@@ -20723,6 +20984,37 @@ mod stage1 {
                 "main"
             ),
             10302
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_match_scrutinee_re_resolves_a_binder_arm_and_nests_in_an_operator() {
+        // ADVERSARIAL: (1) a match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder
+        // — the whole match is copied per resume by `splice_context`, so the pattern binder `k` must
+        // re-resolve against the spliced scrutinee. `C = (match □ (0 100) (k (+ k k)))`, resume 10 → binder
+        // arm k=10 → `(+ 10 10)` = 20, arm `(+ 1 (resume 10 s))` → `(+ 1 20)` = 21.
+        let binder_arm = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (k (+ k k))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(binder_arm)))
+                    .expect("a match binder arm re-resolves after the splice"),
+                "main"
+            ),
+            21
+        );
+        // (2) a conditional hole NESTED inside a strict operator — `(+ 1 (if (< (Amb.flip) 5) 10 20))`. The
+        // outer `+` and the `if` compose: `C = (+ 1 (if (< □ 5) 10 20))`, resume 10 → `(+ 1 (if (< 10 5) 10
+        // 20))` = `(+ 1 20)` = 21, arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22.
+        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (if (< (Amb.flip) 5) 10 20)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested)))
+                    .expect("a conditional hole nested in an operator folds"),
+                "main"
+            ),
+            22
         );
     }
 
@@ -26882,8 +27174,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT,
-        KIND_TYPE_INFO, KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
+        KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -27478,6 +27770,138 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    }
+
+    /// Run the `Highlight` query over `src` and collect the SET of `kind` strings assigned to the leaf
+    /// whose source spelling is `spelling` — a highlight is node-id-keyed, so re-resolve the spelling to
+    /// its node id(s) through the arena and pick their kinds. Returns every kind seen for that spelling
+    /// (usually one, but a name used in two roles — e.g. a type in two positions — could differ).
+    fn highlight_kinds_of(src: &str, spelling: &str) -> Vec<String> {
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        // node-id → kind
+        let by_id: std::collections::BTreeMap<u32, String> = text
+            .lines()
+            .filter_map(|l| {
+                let mut p = l.splitn(2, '\t');
+                let id: u32 = p.next()?.parse().ok()?;
+                Some((id, p.next()?.to_string()))
+            })
+            .collect();
+        // Find every leaf whose name spelling matches, then read its kind.
+        let arenas = parse(src);
+        let mut kinds = Vec::new();
+        for i in 0..arenas.structure.len() {
+            let id = crate::ast::StructId(i as u32);
+            if arenas.as_name(id) == Some(spelling)
+                && let Some(k) = by_id.get(&id.0)
+            {
+                kinds.push(k.clone());
+            }
+        }
+        kinds
+    }
+
+    #[test]
+    fn highlight_classifies_a_builtin_constructor() {
+        // `Some` and `None` are sum VARIANT constructors — read off the `(meta variant)` channel, not a
+        // name match. `Option` (the type) is a TYPE. The distinction a lexical `Capitalized→type` pass
+        // cannot make (it would paint all three the same).
+        let src =
+            "(module m (def (main) (match (Some 7) ((Some x) x) ((None u) 0))) (export main))";
+        assert_eq!(
+            highlight_kinds_of(src, "Some"),
+            vec!["constructor", "constructor"]
+        );
+        assert_eq!(highlight_kinds_of(src, "None"), vec!["constructor"]);
+    }
+
+    #[test]
+    fn highlight_classifies_a_type_name() {
+        // A type in annotation position AND a type-module operand both read as `type` — via `(meta t)` /
+        // the type-constructor prim, not the leading capital.
+        let src = "(module m (def (main) (: (List.len (list 1 2)) Int64)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "Int64"), vec!["type"]);
+        // `List` heads a member access `(. List len)` → the OPERAND leaf is the type-module `List`.
+        assert_eq!(highlight_kinds_of(src, "List"), vec!["type"]);
+    }
+
+    #[test]
+    fn highlight_classifies_functions_params_and_locals_distinctly() {
+        // `inc` (a def with a parameter) → function; `x` (its parameter) → param, at BOTH the binder and
+        // the reference; `main` (nullary def) referenced nowhere here; a `let` local → variable.
+        let src = "(module m \
+                   (def (inc (: x Int64)) (+ x 1)) \
+                   (def (main) (let ((y 5)) (inc y))) \
+                   (export main))";
+        // `inc` — the def's NAME occurrence (a declaration of a function) AND the call site both read as
+        // `function` (the name denotes the lambda either way). Two occurrences.
+        assert_eq!(highlight_kinds_of(src, "inc"), vec!["function", "function"]);
+        // `x`: the parameter binder + its use in the body — both `param`.
+        assert_eq!(highlight_kinds_of(src, "x"), vec!["param", "param"]);
+        // `y`: the let binder + its use — both `variable`.
+        assert_eq!(highlight_kinds_of(src, "y"), vec!["variable", "variable"]);
+    }
+
+    #[test]
+    fn highlight_flags_an_unbound_name() {
+        // An unbound reference (a typo) is `unbound` — the one classification a lexical tokenizer can
+        // never make. `+` is a prelude operation → `function`.
+        let src = "(module m (def (main) (+ 1 nope)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "nope"), vec!["unbound"]);
+        assert_eq!(highlight_kinds_of(src, "+"), vec!["function"]);
+    }
+
+    #[test]
+    fn highlight_colours_literals_by_kind() {
+        // Each literal leaf carries its own kind; a keyword head is `keyword`.
+        let src = "(module m (def (main) (if true 42 0)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "if"), vec!["keyword"]);
+        // `true`/`42`/`0` are non-NAME leaves (Bool / Int), so the by-name helper can't find them; check
+        // the raw artifact carries a `literal` (the bool) and a `number` (the ints).
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).unwrap();
+        assert!(
+            text.lines().any(|l| l.ends_with("\tliteral")),
+            "the bool literal is classified: {text}"
+        );
+        assert!(
+            text.lines().any(|l| l.ends_with("\tnumber")),
+            "a number token is classified: {text}"
+        );
+    }
+
+    #[test]
+    fn highlight_does_not_flag_binder_declarations_as_unbound() {
+        // A binding DECLARATION (a module name, a variant-pattern PAYLOAD binder) is not a reference — it
+        // must NOT read as `unbound` on a clean program. Regression guard: a whole-program leaf walk that
+        // resolved these as value lookups reported a spurious `unbound` (they bind before they resolve).
+        let src =
+            "(module m (def (main) (match (Some 7) ((Some v) v) ((None u) 0))) (export main))";
+        // The module name binds the wrapper — a `variable`, never `unbound`.
+        assert_eq!(highlight_kinds_of(src, "m"), vec!["variable"]);
+        // `v`: the payload binder in `(Some v)` + its use in the arm body — both `variable`, none unbound.
+        let v = highlight_kinds_of(src, "v");
+        assert!(
+            !v.is_empty() && v.iter().all(|k| k == "variable"),
+            "payload binder + use are variables, not unbound: {v:?}"
+        );
+        // `u`: the `(None u)` payload binder (unused) — a `variable`, not unbound.
+        assert_eq!(highlight_kinds_of(src, "u"), vec!["variable"]);
+    }
+
+    #[test]
+    fn highlight_treats_a_record_field_and_member_key_as_labels() {
+        // A record field name and a member-access key are DATA (symbols), never resolved to a value — so
+        // they are `label`, not a spurious unbound name.
+        let src = "(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))";
+        // `x` appears as a record field name AND as the member key — both `label` (never `unbound`).
+        let kinds = highlight_kinds_of(src, "x");
+        assert!(
+            !kinds.is_empty() && kinds.iter().all(|k| k == "label"),
+            "record field / member key are labels: {kinds:?}"
+        );
     }
 }
 

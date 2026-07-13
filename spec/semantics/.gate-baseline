@@ -338,6 +338,7 @@ pass	a let-bound variable passed as a function-call argument resolves at the cal
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
+pass	a list built at run time by a push-loop escapes to the host
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
@@ -925,6 +926,7 @@ pass	an unannotated closure typed Int8 from context overflows a constant like an
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
 pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
+pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
@@ -1047,6 +1049,8 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	dropping an absent field from a record is rejected
+pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
 pass	equality across incompatible dimensions is a compile-time error
@@ -1130,6 +1134,8 @@ pass	member access on a tuple is a type error
 pass	membership of a present element is true
 pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
+pass	merging records that share a field name is rejected
+pass	merging two records with disjoint fields unions their fields
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
@@ -1462,8 +1468,6 @@ todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	decoding bytes that are not a canonical AST yields the error case, not a trap
 todo	decoding canonical bytes followed by a trailing byte yields the error case
-todo	dropping an absent field from a record is rejected
-todo	dropping fields from a record leaves the remaining fields
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
 todo	eval is optional for macros and interactive use
@@ -1474,8 +1478,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	merging records that share a field name is rejected
-todo	merging two records with disjoint fields unions their fields
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms

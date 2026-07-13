@@ -1487,6 +1487,14 @@ impl Db {
         self.effect_decls.iter().find(|e| e.occ == occ)
     }
 
+    /// The [`EffectDecl`] whose SYNTHESIZED RECORD is `record` — the reverse of `effect_decl_by_name`'s
+    /// `synth`, parallel to `module_by_synth_record` for modules. A bare effect NAME resolves to a `Ref`
+    /// at this record, so a consumer holding the target occurrence (the highlight query) recognizes it as
+    /// an effect without a name match. `None` if `record` is not an effect's synth record.
+    pub fn effect_decl_by_synth(&self, record: StructId) -> Option<&EffectDecl> {
+        self.effect_decls.iter().find(|e| e.synth == Some(record))
+    }
+
     /// The top-level items whose head is a form the compiler does NOT model — `(effect …)`, `(pragma
     /// …)`, or any other unrecognized top-level declaration — as `(head-name, occurrence)` pairs. A
     /// program containing one DECLINES (decline-don't-miscompile): the compiler cannot claim to compile a
