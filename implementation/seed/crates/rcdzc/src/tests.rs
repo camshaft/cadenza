@@ -9915,6 +9915,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_delegated_effect_performed_inside_an_intra_program_handler_compiles() {
+        // E2h: a host-delegated `ask.ask` performed INSIDE an intra-program `handle` (over a DIFFERENT
+        // effect `Scale`). The fold reduces the `Scale` handler away (its arm doubles the perform value),
+        // leaving `(ask.ask)` — a host call — in the SYNTHESIZED rewritten body. That synthesized node has
+        // no `host` ANCESTOR, so `perform_host_target` falls back to the program-wide delegation set (the
+        // manifest is the union of the entrypoints' `host` clauses) to recognize it as host-bound. It
+        // compiles to a component importing `ask` (verified via the gate → 42 with `ask.ask=21`). The host
+        // import is unbound in-process, so this asserts it COMPILES; the corpus gate runs the value.
+        let src = "(do (effect ask (op ask (-> Unit Int64))) (effect Scale (op by (-> Int64 Int64))) \
+                   (def (main) (host (ask) (handle unit ((Scale.by (n) s (resume (* n 2) s))) \
+                     (Scale.by (ask.ask))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a host-delegated perform inside an intra-program handler must compile"
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
         // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
         // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)
