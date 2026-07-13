@@ -165,17 +165,19 @@ pub enum Code {
     /// panics at construction; this codes the future USER family-declaration surface's conflict.)
     UnitConflict,
     /// A module DIRECTIVE `(pragma <key> …)` names a key NOT in the fixed registry the specification
-    /// defines (`modules-and-namespaces.md` §A Module Directive Whose Key Is Not One The Fixed Set
-    /// Defines Is Rejected): a directive's meaning must be fixed across generations, so an unknown key is
-    /// rejected at compile time rather than ignored (a dropped meaning-changing directive would make one
-    /// source mean two things on two toolchains). Opens the CDZ06xx MODULE-DIRECTIVE band.
+    /// defines: a directive's meaning must be fixed across generations, so an unknown key is rejected at
+    /// compile time rather than ignored (a dropped meaning-changing directive would make one source mean
+    /// two things on two toolchains). Opens the CDZ06xx MODULE-DIRECTIVE band.
+    //= spec/capabilities/modules-and-namespaces.md#an-unrecognized-module-directive-is-rejected
+    //# A module directive whose key is not one the fixed set defines MUST be rejected at compile time with a machine-readable diagnostic, rather than ignored, so that a directive can neither silently change a program's meaning on a toolchain that understands it while being dropped by one that does not, nor silently fail to take effect.
     UnknownDirective,
-    /// A recognized module directive whose ARGUMENTS do not match the shape its key defines
-    /// (`modules-and-namespaces.md` §A Module Directive's Arguments Must Match The Shape The Directive's
-    /// Key Defines): the key is in the registry but the directive is structurally malformed (wrong
-    /// arity), e.g. `(pragma default-integer)` omitting its one required type argument. Distinct from
-    /// `UnknownDirective` (CDZ0601, an unknown KEY) and from a numeric-domain failure (CDZ0303, a
-    /// well-formed directive whose type argument fails the integer-domain predicate).
+    /// A recognized module directive whose ARGUMENTS do not match the shape its key defines: the key is
+    /// in the registry but the directive is structurally malformed (wrong arity), e.g. `(pragma
+    /// default-integer)` omitting its one required type argument. Distinct from `UnknownDirective`
+    /// (CDZ0601, an unknown KEY) and from a numeric-domain failure (CDZ0303, a well-formed directive
+    /// whose type argument fails the integer-domain predicate).
+    //= spec/capabilities/modules-and-namespaces.md#a-module-directive-is-drawn-from-a-fixed-set
+    //# A module directive's arguments MUST match the shape the directive's key defines, and a directive whose arguments do not MUST be rejected with a machine-readable diagnostic.
     MalformedDirective,
     /// A ROBUSTNESS decline: a well-formed program the compiler cannot reduce to a component because it
     /// hits a recursion/resource BOUND — an unproductive compile-time recursion (a nullary self-call
