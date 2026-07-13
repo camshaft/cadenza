@@ -973,6 +973,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
                 // runtime string declines (the byte-rope read is a later increment).
                 Some(Prim::StrAt) if args.len() == 2 => lower_str_at(db, id, args[0], args[1]),
+                // `String.scalar-at` — the FALLIBLE read of the CHAR at a scalar position. FOLD a constant
+                // string + constant index to `(Some #\c)` in range / `(None unit)` out (by Unicode SCALAR
+                // position, not byte). The char-typed companion of `String.at`. A runtime string declines.
+                Some(Prim::StrScalarAt) if args.len() == 2 => {
+                    lower_str_scalar_at(db, id, args[0], args[1])
+                }
                 // `String.slice` — the FALLIBLE sub-range read by SCALAR offsets `[start, end)`. FOLD a
                 // constant string + constant bounds to `(Some "<substr>")` in range / `None` out (reversed,
                 // over-long, or negative). A runtime string declines (the byte-rope slice is a later
@@ -4728,6 +4734,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrScalarLen
         | Prim::StrByteLen
         | Prim::StrAt
+        | Prim::StrScalarAt
         | Prim::StrConcat
         | Prim::StrSlice
         | Prim::StrToBytes
@@ -5645,6 +5652,59 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
         // A runtime string or runtime index — the byte-rope indexed read is a later increment.
         _ => Core::Poison(Reject::decline(
             "String.at on a runtime string is not yet computed (constant strings only)",
+        )),
+    }
+}
+
+/// Lower `(String.scalar-at string index)` — the fallible read of the CHAR (single Unicode scalar) at a
+/// scalar position `String → Int64 → (Option Char)`. The char-typed companion of `String.at`: identical
+/// index logic (by Unicode SCALAR position, `chars().nth`, not byte), but the `Some` payload is a
+/// `Leaf::Char` (the scalar itself), so the result is `(Option Char)` — folds to `(Some #\c)` in range /
+/// `(None unit)` out (negative or at/beyond the scalar length). A runtime string declines; a poison
+/// operand propagates.
+fn lower_str_scalar_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, string) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, index) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.scalar-at result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, string), core_of(db, index)) {
+        (Core::ConstStr(s), Core::ConstInt(i)) => {
+            let scalar = i.to_i64().and_then(|n| {
+                if n >= 0 {
+                    s.chars().nth(n as usize)
+                } else {
+                    None
+                }
+            });
+            match scalar {
+                Some(c) => {
+                    // The scalar at that position — a fresh `Leaf::Char` node (`core_of` = `Core::ConstChar`),
+                    // the `Some` payload. Distinct from `String.at`, whose payload is a one-scalar `Leaf::Str`.
+                    trace!(target: "rcdzc::fold", node = id.0, "String.scalar-at folds to Some (in-bounds constant scalar index)");
+                    let payload = db.push_atom(crate::ast::Leaf::Char(c));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "String.scalar-at folds to None (out-of-range constant index)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        _ => Core::Poison(Reject::decline(
+            "String.scalar-at on a runtime string is not yet computed (constant strings only)",
         )),
     }
 }
@@ -6843,6 +6903,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BytesSlice => "bytes-slice",
         Prim::BytesCompact => "bytes-compact",
         Prim::StrAt => "str-at",
+        Prim::StrScalarAt => "str-scalar-at",
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
         Prim::StrToBytes => "str-to-bytes",

@@ -6425,6 +6425,39 @@ mod match_engine {
     }
 
     #[test]
+    fn string_scalar_at_reads_the_char_by_scalar_position() {
+        // 13-strings CHAR increment 3 (`collections-and-text.md` §Reading A String's Scalar At A Position
+        // Is Total): `String.scalar-at : String → Int64 → (Option Char)` reads the CHAR at a Unicode
+        // SCALAR position — `Some #\c` in bounds, `None` out — the char-typed companion of `String.at`.
+        // It addresses SCALAR values, not bytes: `"café"` scalar 3 is `é` (a 2-byte scalar), not a byte.
+        // A constant string + index FOLDS to `(Option Char)`, crossing the boundary via the escape path.
+        let Some(out) = escape_render(
+            "(module m (def (main) ((. String scalar-at) \"hello\" 1)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "(: (Some #\\e) (Option Char))", "in-bounds scalar");
+        // Scalar-not-byte: `café` = c,a,f,é (4 scalars); scalar 3 is `é`.
+        let Some(out) = escape_render(
+            "(module m (def (main) ((. String scalar-at) \"café\" 3)) (export main))",
+        ) else {
+            return;
+        };
+        assert_eq!(
+            out, "(: (Some #\\é) (Option Char))",
+            "multibyte scalar by position"
+        );
+        // Out of bounds → None.
+        let Some(out) =
+            escape_render("(module m (def (main) ((. String scalar-at) \"hi\" 5)) (export main))")
+        else {
+            return;
+        };
+        assert_eq!(out, "(: (None unit) (Option Char))", "out-of-bounds → None");
+    }
+
+    #[test]
     fn a_constant_bytes_escapes_and_renders_b_string() {
         // A CONSTANT `Bytes.of` returned as the program result crosses the host boundary through the
         // resource-escape path (like a constant list): its bytes are known, so they bake into the value
