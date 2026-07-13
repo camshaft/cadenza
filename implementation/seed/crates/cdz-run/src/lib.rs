@@ -761,11 +761,16 @@ fn run_closure_resource(
         let consumer = export.ok_or_else(|| {
             anyhow!("round-trip closure: no --call given (name the CONSUMER export)")
         })?;
+        // The public export name is KEBAB (the compiler normalized it at emit); a caller names the
+        // consumer by its SOURCE identifier (`appA`, `my_func`). Resolve through the SAME rule so both
+        // sides agree — `iface_funcs` are the actual (kebab) export names, so the comparison inside
+        // `run_roundtrip_closure` (a func ≠ the consumer is a producer) must see the kebab consumer name.
+        let consumer = cadenza_syntax::extern_name::kebab_extern_name(consumer);
         return run_roundtrip_closure(
             &mut *store,
             instance,
             &iface,
-            consumer,
+            &consumer,
             &iface_funcs,
             arg_strs,
         );
@@ -778,7 +783,9 @@ fn run_closure_resource(
         let name = export.ok_or_else(|| {
             anyhow!("distinct-sig closure: no --call given (name a closure export)")
         })?;
-        let make_name = format!("make-{name}");
+        // Public export names are KEBAB; a caller names the closure by its source identifier. Normalize
+        // `make-<src>` the same way emit did so the lookup matches (`make-mkA` → `make-mk-a`).
+        let make_name = cadenza_syntax::extern_name::kebab_extern_name(&format!("make-{name}"));
         let make_idx = instance
             .get_export_index(&mut *store, Some(&iface), &make_name)
             .ok_or_else(|| anyhow!("distinct-sig closure: no `{make_name}`"))?;
@@ -862,13 +869,18 @@ fn run_closure_resource(
     // publishes `make-<name>` per closure export, and the corpus `(call <name> …)` picks which. Try
     // `make-<export>` first (multi), then the bare `make` (single) — so a single-export case with a `--call
     // main` still resolves `make`.
+    // Public export names are KEBAB; normalize `make-<src>` the same way emit did (`make-mkAdder` →
+    // `make-mk-adder`) so a multi-export lookup by source name matches.
     let make_name = match export {
         Some(name)
-            if instance
-                .get_export_index(&mut *store, Some(&iface), &format!("make-{name}"))
-                .is_some() =>
+            if {
+                let mk = cadenza_syntax::extern_name::kebab_extern_name(&format!("make-{name}"));
+                instance
+                    .get_export_index(&mut *store, Some(&iface), &mk)
+                    .is_some()
+            } =>
         {
-            format!("make-{name}")
+            cadenza_syntax::extern_name::kebab_extern_name(&format!("make-{name}"))
         }
         _ => "make".to_string(),
     };

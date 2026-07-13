@@ -5949,6 +5949,29 @@ fn arith_identity(
         // `x * 0` / `0 * x` → 0 — DISCARDS x, so only when x cannot trap.
         Prim::Mul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
         Prim::Mul if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
+        // `x * -1` / `-1 * x` → NEGATION `(- 0 x)` — a strength reduction. A full-width `* -1` keeps the
+        // expensive `div_s` round-trip overflow guard (the constant-multiplier fast path EXCLUDES `-1`,
+        // since its `MIN/-1` bound is not i64-representable), but negation `0 - x` has the SAME single
+        // overflow — `x == MIN` (`-MIN` is unrepresentable) — emitted as one `eq` check (the negation fast
+        // path in `emit_machine_overflow_guard`). Value- AND trap-identical: `x * -1 == -x`, both overflow
+        // iff `x == MIN`. Rewrite to `(- 0 x)`, synthesizing the `0` (the `Leaf::Int` node-synth pattern);
+        // `x` STAYS an operand (the subtrahend), so its OWN traps are preserved — no `is_trap_free` guard
+        // needed (unlike `* 0`, which discards `x`). (A NARROW `* -1` already sheds the div via the
+        // narrow-product-fits-slot path, so this mainly helps full width — but the rewrite is correct at
+        // every width: `0 - x` narrows/range-checks exactly as the narrow `* -1` result does.)
+        Prim::Mul if is(rc, -1) || is(lc, -1) => {
+            let x = if is(rc, -1) { lhs } else { rhs };
+            let z = db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i64(0),
+                radix: crate::ast::Radix::Dec,
+            });
+            trace!(target: "rcdzc::fold", "x * -1 → negation (- 0 x)");
+            Some(Core::Arith {
+                op: Prim::Sub,
+                lhs: z,
+                rhs: x,
+            })
+        }
         // WRAPPING arithmetic has the SAME algebraic identities as checked `+`/`*` — the wrap is total,
         // so it never traps and the fold is value-identical (`a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`).
         // The keeping folds preserve the surviving operand's traps; the annihilator `*% 0` DISCARDS the
