@@ -5045,6 +5045,22 @@ fn emit_machine_overflow_guard(
         out.push(Lir::IfUnreachableEnd);
         return;
     }
+    // NEGATION FAST PATH (full-width signed `(- 0 a)`): the constant is on the LEFT (`0 - a`), which
+    // `const_operand_split` does not cover (a left constant is not the `a ± C` sign shape). But negation
+    // has exactly ONE overflow: `-a` leaves the type iff `a == MIN` (since `-MIN` is not representable).
+    // So the guard is a single equality `a == MIN → trap` — 4 ops (`get a ; const MIN ; eq ; if`) vs the
+    // general two-`xor` sub guard's 8, and it tests the OPERAND `a` directly (no dependence on `$r`).
+    // Full-width only: a narrow `(- 0 a)` cannot overflow the SLOT (the machine guard is skipped,
+    // `addsub_can_overflow` is false), and its type-bound escape (`0 - MIN_N = -MIN_N > MAX_N`) is caught
+    // by the range-check, exactly as for any other narrow sub.
+    if addsub_can_overflow && m.signed && matches!(op, Prim::Sub) && sa.const_value() == Some(0) {
+        let min = if m.slot32 { i32::MIN as i64 } else { i64::MIN };
+        sb.push(out); // the operand `a`
+        out.push(m.konst(min));
+        out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+        out.push(Lir::IfUnreachableEnd);
+        return;
+    }
     match op {
         Prim::Add if addsub_can_overflow && m.signed => {
             // signed add: `((r^a) & (r^b)) < 0` → trap.
@@ -6391,6 +6407,29 @@ mod tests {
         assert!(
             f.code.iter().any(|i| matches!(i, Lir::Select)),
             "non-0/1 constant branches keep the select, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn signed_negation_uses_the_a_equals_min_guard_not_the_two_xor_sub() {
+        // (def (f (: a Int64)) (- 0 a)) — negation: the machine `0 - a` plus a guard that traps iff
+        // `a == MIN` (the one overflow), NOT the general two-`xor` signed-sub guard.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (- 0 a)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64Xor)),
+            "negation's guard is a == MIN, not the two-xor sub guard, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::ConstI64(i64::MIN)) && f.code.contains(&Lir::I64Eq),
+            "the guard compares the operand against MIN, got: {:?}",
             f.code
         );
     }

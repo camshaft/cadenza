@@ -2458,6 +2458,35 @@ mod runtime_ops {
     }
 
     #[test]
+    fn signed_negation_traps_only_at_min() {
+        // `(- 0 a)` is integer negation; the specialized guard is `a == MIN → trap` (the sole overflow),
+        // replacing the general two-`xor` sub guard. The Lir shape is checked in select.rs; here we
+        // confirm the VALUE is `-a` for every in-range input and that ONLY `MIN` traps.
+        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(5)]), -5);
+        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(-5)]), 5);
+        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(0)]), 0);
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MAX)]),
+            -i64::MAX
+        );
+        // MIN+1 is fine (its negation is MAX); MIN itself traps (−MIN is not representable).
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MIN + 1)]),
+            i64::MAX
+        );
+        assert!(
+            traps("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MIN)]),
+            "negating MIN must trap"
+        );
+        // A NARROW negation keeps the range-check path — same value/trap behavior at its own width.
+        assert_eq!(run::<i32>("(: a Int32)", "(- 0 a)", &[Val::S32(7)]), -7);
+        assert!(
+            traps("(: a Int32)", "(- 0 a)", &[Val::S32(i32::MIN)]),
+            "negating Int32 MIN must trap"
+        );
+    }
+
+    #[test]
     fn not_over_a_comparison_folds_to_the_complement() {
         // `(not (CMP a b))` is the single complement comparison — no `i32.eqz`. The Lir shape is checked
         // in select.rs; here we confirm the VALUE matches the branchy negation across every comparison,
@@ -12074,7 +12103,8 @@ mod stage1 {
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a degenerate self-capture must DECLINE, not miscompile");
         assert!(
-            err.message.contains("captures a value with no runtime representation"),
+            err.message
+                .contains("captures a value with no runtime representation"),
             "expected a capture decline, got: {}",
             err.message
         );
@@ -12085,8 +12115,7 @@ mod stage1 {
             (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3)) \
             (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(src2)))
-                .is_err(),
+            compile_component(&crate::codec::encode(&parse(src2))).is_err(),
             "the double-apply self-capture must also decline"
         );
     }
