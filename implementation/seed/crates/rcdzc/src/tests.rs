@@ -22717,6 +22717,22 @@ mod stage1 {
     }
 
     #[test]
+    fn a_distributed_branch_type_mismatch_declines_not_miscompiles() {
+        // ADVERSARIAL (from a distribution soundness sweep): the type-consistency guard must still fire on a
+        // DISTRIBUTED branch. `(if (< 3 5) (< (Amb.flip) 5) false)` — the true branch folds to `(< 10 5)` =
+        // Bool, but the arm `(+ 1 (resume 10 s))` (an Int64 `+`) consumes the resume result at Int64. The
+        // arm-over-Bool composition is ill-typed; the fold's re-run `type_errors` on the distributed branch
+        // catches it and DECLINES (rather than emit invalid wasm). Pins that distribution does not bypass
+        // the type guard.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (< (Amb.flip) 5) false))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an ill-typed distributed branch must decline, never miscompile"
+        );
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
