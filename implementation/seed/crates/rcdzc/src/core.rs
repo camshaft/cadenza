@@ -275,6 +275,20 @@ pub enum Core {
     /// bytes big-endian (`le` reversed). The segments are the LEAN [`BinSeg`] form (width/signedness/
     /// endianness + the value occurrence), so `Core` does not depend on the resolver's `Segment`.
     BinBuild { segs: Vec<BinSeg> },
+    /// Read a fixed-width INTEGER segment out of a runtime `Bytes` scrutinee at a STATIC byte offset — the
+    /// value a `bin`-pattern binder decodes when matching a runtime scrutinee (`(match b ((bin (u16 n)) n)
+    /// …)`). Emits `w` `bytes-get`s from `bytes` at `byte_offset..+width`, assembles them (big-endian, `le`
+    /// reversed), and sign- or zero-extends to an `Int64` per `signed`. The caller (`lower_match_bin`) has
+    /// already guarded that the scrutinee is long enough (the arm's length probe), so this read is in
+    /// bounds. `byte_offset` is static — fixed-offset segments only (a dependent-size `(bytes b n)` before
+    /// this segment would make the offset dynamic, which the runtime matcher does not build yet).
+    BinIntRead {
+        bytes: StructId,
+        byte_offset: u32,
+        width: u8,
+        signed: bool,
+        little_endian: bool,
+    },
     /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
     /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds
