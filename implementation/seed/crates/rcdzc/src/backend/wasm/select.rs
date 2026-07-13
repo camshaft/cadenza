@@ -4497,8 +4497,8 @@ fn emit_match_arms_tailable(
         return Ok(());
     }
     emit_probe_chain(
-        db, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty, layout, out,
-        tail,
+        db, scrutinee, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty,
+        layout, out, tail,
     )?;
     let end = out.here();
     out.match_scope(scope_start, end, binder_vars);
@@ -4658,6 +4658,7 @@ fn reusable_scalar_src(
 #[allow(clippy::too_many_arguments)]
 fn emit_probe_chain(
     db: &mut Db,
+    scrutinee: StructId,
     src: OperandSrc,
     arms: &[crate::core::MatchArm],
     it: IntTy,
@@ -4697,9 +4698,17 @@ fn emit_probe_chain(
     // cover, so the chain still terminates.
     let probe_redundant = matches!(arm.probe, crate::core::Probe::Wild) || rest.is_empty();
     if arm.guard.is_none() && probe_redundant {
-        return emit_arm_body(
+        // A literal-probe arm reached as the unconditional tail (the last arm of an exhaustive
+        // wildcard-less match) STILL knows `scrutinee == literal` — refine its body so a `(- n 1)` there
+        // sheds its guard. (A `Wild` tail arm binds no constant → the frame is unchanged.)
+        let frame =
+            refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
+        db.push_range_refinements(frame);
+        let r = emit_arm_body(
             db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, tail,
         );
+        db.pop_range_refinements();
+        return r;
     }
     // The matched body AND the `else` recursion are both INSIDE this `if` block — so a self-loop `br`
     // from either must jump one MORE level out to reach the loop top (depth + 1).
@@ -4740,8 +4749,8 @@ fn emit_probe_chain(
         }
         out.push(Lir::If(block_ty));
         emit_arm_guarded_body(
-            db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out, inner,
+            db, scrutinee, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty,
+            layout, out, inner,
         )?;
         // The probe's ELSE (the fall-through probe chain) starts scratch ABOVE the high-water the THEN
         // (a guarded body) reached, NOT at `base`. A guard in the THEN may stash an i32 HEAP HANDLE (a
@@ -4754,8 +4763,8 @@ fn emit_probe_chain(
         let else_base = *high;
         out.push(Lir::Else);
         emit_probe_chain(
-            db, src, rest, it, result_it, block_ty, slots, else_base, high, scratch_ty, layout,
-            out, inner,
+            db, scrutinee, src, rest, it, result_it, block_ty, slots, else_base, high, scratch_ty,
+            layout, out, inner,
         )?;
         out.push(Lir::End);
         Ok(())
@@ -4768,8 +4777,8 @@ fn emit_probe_chain(
         // too far, PAST the loop, producing invalid wasm (`expected i64 but nothing on stack`). `inner`
         // is correct ONLY for the literal-probe path above, where a real probe `if` IS pushed.
         emit_arm_guarded_body(
-            db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out, tail,
+            db, scrutinee, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty,
+            layout, out, tail,
         )
     }
 }
@@ -4995,6 +5004,7 @@ fn emit_arm_body(
 #[allow(clippy::too_many_arguments)]
 fn emit_arm_guarded_body(
     db: &mut Db,
+    scrutinee: StructId,
     arm: &crate::core::MatchArm,
     src: OperandSrc,
     rest: &[crate::core::MatchArm],
@@ -5009,10 +5019,22 @@ fn emit_arm_guarded_body(
     out: &mut Emit,
     inner: TailPos,
 ) -> Result<(), Reject> {
+    // This arm's PROBE matched to reach here — for a literal `Int` probe over a variable scrutinee, the
+    // scrutinee EQUALS that literal, so refine its range to `[c, c]` for the BODY (a `(- n 1)` in the
+    // `(5 …)` arm computes `4`, its guard dead). The GUARD is a boolean the arm gates on and is NOT
+    // refined (a guard like `(> n 5)` reading the same variable must still be evaluated); only the body,
+    // reached once the probe (and guard) held, sees the refinement. `Wild`/`Bool` probe → no refinement.
+    let body_frame =
+        refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
     match arm.guard {
-        None => emit_arm_body(
-            db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, inner,
-        ),
+        None => {
+            db.push_range_refinements(body_frame);
+            let r = emit_arm_body(
+                db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, inner,
+            );
+            db.pop_range_refinements();
+            r
+        }
         Some(g) => {
             // `if guard body else <rest>`. The guard is a plain boolean value (never a tail call), so it
             // is emitted with `emit` at `base`; its result is the `if` condition.
@@ -5027,13 +5049,18 @@ fn emit_arm_guarded_body(
             out.push(Lir::If(block_ty));
             // Both the body and the fallthrough are one `if` deeper than this arm's nesting.
             let deeper = deeper_tail(inner);
-            emit_arm_body(
+            // The BODY (probe matched AND guard held) sees the `[c,c]` refinement; the fall-through `rest`
+            // does NOT (the probe failed there — its own arms refine themselves).
+            db.push_range_refinements(body_frame);
+            let body_res = emit_arm_body(
                 db, arm.body, result_it, slots, body_base, high, scratch_ty, layout, out, deeper,
-            )?;
+            );
+            db.pop_range_refinements();
+            body_res?;
             out.push(Lir::Else);
             emit_probe_chain(
-                db, src, rest, it, result_it, block_ty, slots, body_base, high, scratch_ty, layout,
-                out, deeper,
+                db, scrutinee, src, rest, it, result_it, block_ty, slots, body_base, high,
+                scratch_ty, layout, out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -5935,6 +5962,39 @@ fn refine_from_comparison(
         });
     }
     frame.insert(var, (lo, hi));
+    frame
+}
+
+/// The refinement frame active inside a scalar `match` ARM whose literal `Int` probe matched: the
+/// scrutinee EQUALS that literal, so pin its range to the exact `[c, c]`. Only when the scrutinee is a
+/// `Param`/`LocalRef` (a binder to key on) and the probe is an `Int` — a computed scrutinee has no
+/// binder, a `Bool`/`Wild`/`Str` probe pins no useful integer interval. Merges into `base` (nested
+/// matches accumulate). `None` scrutinee-binder or non-`Int` probe → `base` unchanged. Exact-value
+/// knowledge is the tightest refinement — a `(- n 1)` in the `(5 …)` arm computes `4`, its guard dead.
+fn refined_frame_for_match_arm(
+    db: &mut Db,
+    scrutinee: StructId,
+    probe: &crate::core::Probe,
+    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
+) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => binder,
+        _ => return base,
+    };
+    // SIGNED integer scrutinee only (the range lattice reasons over signed intervals).
+    if !matches!(type_of(db, scrutinee), Ty::Int(it) if it.ground_signed()) {
+        return base;
+    }
+    let crate::core::Probe::Int(v) = probe else {
+        return base;
+    };
+    let Some(c) = v.to_i64() else {
+        return base;
+    };
+    let mut frame = base;
+    // Intersect with any parent refinement (the exact point is the tightest, so it wins whenever it lies
+    // within the parent range — and a match arm that reached here proves the scrutinee IS `c`).
+    frame.insert(binder, (c, Some(c)));
     frame
 }
 

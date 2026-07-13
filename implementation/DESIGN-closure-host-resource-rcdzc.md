@@ -332,9 +332,15 @@ the component type. The new work:
   WIDENED closure args/result to EVERY aliased-width scalar** (s8/u8/s16/u16/s32/u32/s64/u64, bool,
   f32/f64), via `closure_boundary_byte` = `comp_valtype_of` restricted to Int/Bool/Float (a `Tuple`'s u32
   threading handle is NOT a host boundary type → compound closure args still decline; +6 corpus, +1 decline
-  test); (3) distinct-signature multi-export (N resource types); (4) a consumer with MORE than one closure
-  param; (5) a compound/closure-typed closure ARG. The core vertical (Direction 1 + the round-trip +
-  leak-free + all scalar widths) is COMPLETE.
+  test); (3) distinct-signature multi-export (N resource types); (4) ✅ **DONE `@c904362f` — a consumer with
+  MULTIPLE closure params AND a closure param in ANY position** (`consumer_functype` walks a source-ordered
+  `ConsumeParamAbi` list; the guard relaxed to "≥1 closure param, all same signature"; cdz-run threads a
+  fresh handle per resource-typed param). ALSO FIXED a latent invalid-wasm miscompile — a scalar-THEN-closure
+  consumer emitted a component whose lowered params didn't match the core body (the old functype hardcoded
+  `own<t>` first); +3 corpus + a validity regression test. Consumer result byte is now the CONSUMER's own
+  result (a consumer may return a different type than the closure). (5) a compound/closure-typed closure
+  ARG. The core vertical + all scalar widths + multi/any-position closure params are COMPLETE; only
+  distinct-signature multi-export, the compound-closure-arg, and the borrow<t> repeated-call remain.
 
 ## Risks / open questions
 

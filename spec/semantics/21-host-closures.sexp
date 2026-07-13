@@ -379,3 +379,49 @@
               (export make-adder) (export apply-it)))
   (call   apply-it (: 100 UInt64) (: 7 UInt64))
   (output (: 107 UInt64)))
+
+; A CONSUMER whose closure parameter is NOT FIRST — the consumer's component functype follows SOURCE order,
+; so a scalar-then-closure `(def (app (: x Int64) (: g (-> Int64 Int64))) (g x))` crosses as `app : (s64,
+; own<t>) -> s64`, not a closure-first shape. (An earlier cut hardcoded the closure as the first param and
+; emitted an INVALID component when it wasn't; the functype now mirrors the params in order.) The driver
+; threads the produced handle into the closure position and the scalar into its position.
+
+(case "a consumer takes the handed-back closure as its SECOND parameter"
+  (doc    "`(def (mk) (fn (x) (+ x 1)))` produces the closure; `(def (app (: x Int64) (: g (-> Int64
+           Int64))) (g x))` takes a scalar `x` FIRST, then the closure `g`. `mk()` → a handle, then
+           `app(5, handle)` = `(g 5)` = 6. Pins that the consumer's boundary functype follows source
+           param order (closure not required to be first).")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: x Int64) (: g (-> Int64 Int64))) (g x))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 6 Int64)))
+
+; A consumer taking MORE THAN ONE closure parameter — both of the same signature, so both cross as
+; `own<t>` of the ONE resource type. The host produces a fresh handle per closure param (own<t> is consumed
+; per call) and threads each into its position. `(def (app2 (: f …) (: g …) (: x Int64)) (+ (f x) (g x)))`.
+
+(case "a consumer applies TWO handed-back closures"
+  (doc    "`(def (app2 (: f (-> Int64 Int64)) (: g (-> Int64 Int64)) (: x Int64)) (+ (f x) (g x)))` takes
+           TWO closures + a scalar. With `mk` producing `(+ x 1)`, the host produces two handles and calls
+           `app2(h1, h2, 5)` = (5+1) + (5+1) = 12. Pins that several closure params of the same signature
+           cross as own<t> of the one resource type, each threaded independently.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app2 (: f (-> Int64 Int64)) (: g (-> Int64 Int64)) (: x Int64)) (+ (f x) (g x)))
+              (export mk) (export app2)))
+  (call   app2 (: 5 Int64))
+  (output (: 12 Int64)))
+
+; A consumer whose RESULT type differs from the closure's — the consumer functype's result is the
+; CONSUMER's own result (`Bool` here), not the applied closure's (`Int64`). `(def (is-pos (: g …) (: x
+; Int64)) (> (g x) 0))` returns Bool.
+
+(case "a consumer returns a different type than the closure it applies"
+  (doc    "`(def (is-pos (: g (-> Int64 Int64)) (: x Int64)) (> (g x) 0))` applies an `(-> Int64 Int64)`
+           closure but RETURNS `Bool`. With `mk` producing `(+ x 1)`, `is-pos(handle, 5)` = (6 > 0) = true.
+           Pins that the consumer's boundary result byte is the CONSUMER's result type, not the closure's.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (is-pos (: g (-> Int64 Int64)) (: x Int64)) (> (g x) 0))
+              (export mk) (export is-pos)))
+  (call   is-pos (: 5 Int64))
+  (output (: true Bool)))

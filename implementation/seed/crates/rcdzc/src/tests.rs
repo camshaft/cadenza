@@ -4403,6 +4403,94 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_scalar_match_literal_arm_refines_the_scrutinee_to_the_matched_value() {
+        // FLOW-SENSITIVE REFINEMENT in a scalar `match` arm: a literal `Int` probe over a variable
+        // scrutinee means the scrutinee EQUALS that literal in the arm body — the tightest `[c, c]`
+        // refinement — so a `(- n 1)`/`(+ n 1)` there is fully determined and sheds its overflow guard.
+        // A WILDCARD arm body is NOT refined (the scrutinee is unknown there), so its guard is KEPT.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // The `(5 (- n 1))` arm knows n==5 → `(- n 1)` = 4, no underflow guard. The wildcard body is `0`
+        // (no guard anyway); so the whole function has ZERO guards.
+        let refined = select(
+            "(module m (def (f (: n Int64)) (match n (5 (- n 1)) (_ 0))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !refined.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "n==5 in the literal arm proves (- n 1) cannot underflow — guard elided, got: {refined:?}"
+        );
+        // SOUNDNESS: the WILDCARD body `(- n 1)` is NOT refined (n unknown), so its guard is KEPT.
+        let wild = select(
+            "(module m (def (f (: n Int64)) (match n (5 0) (_ (- n 1)))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            wild.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the wildcard arm's (- n 1) sees no refinement — guard MUST be kept, got: {wild:?}"
+        );
+        // VALUE + TRAP parity.
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(5)]),
+            4
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(3)]),
+            0
+        );
+        // Multiple literal arms each refine their own body.
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))",
+                &[Val::S64(5)]
+            ),
+            4
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))",
+                &[Val::S64(10)]
+            ),
+            11
+        );
+        // The un-refined wildcard body still TRAPS at the real underflow (n = MIN).
+        assert!(traps(
+            "(: n Int64)",
+            "(match n (5 0) (_ (- n 1)))",
+            &[Val::S64(i64::MIN)]
+        ));
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(match n (5 0) (_ (- n 1)))", &[Val::S64(3)]),
+            2
+        );
+    }
+
+    #[test]
     fn a_branch_refinement_folds_a_redundant_nested_comparison_and_eliminates_its_dead_branch() {
         // FLOW-SENSITIVE COMPARISON FOLD + DEAD-BRANCH ELIMINATION: when an enclosing branch has refined a
         // variable so a NESTED comparison against a constant is already decided, the inner `if` collapses
@@ -23442,6 +23530,43 @@ mod closure_host_resource {
         assert_eq!(
             rt.closure_produce_consume("make-adder", &[Val::S64(100)], "apply-it", &[Val::S64(7)]),
             Val::S64(107)
+        );
+    }
+
+    /// A round-trip consumer's boundary functype follows SOURCE PARAM ORDER — a closure param need not be
+    /// first, and a consumer may take several closures (all the same signature → the one resource type).
+    /// This pins that the emitted component is VALID for those shapes (an earlier cut hardcoded the closure
+    /// as the leading `own<t>` and emitted an INVALID component — "lowered parameter types … do not match"
+    /// — when the closure sat later or when there were several). `Component::new` = wasmtime's structural
+    /// validator, the semantic floor that catches the mismatch.
+    #[test]
+    fn a_consumer_with_a_non_leading_or_repeated_closure_param_is_valid() {
+        use crate::testkit::parse;
+        let engine = wasmtime::Engine::default();
+        let valid = |src: &str, what: &str| {
+            let program = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .expect("compile");
+            wasmtime::component::Component::new(&engine, &program)
+                .unwrap_or_else(|e| panic!("{what} must produce a VALID component: {e:?}"));
+        };
+        // Closure param SECOND (scalar first).
+        valid(
+            "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+             (def (app (: x Int64) (: g (-> Int64 Int64))) (g x)) (export mk) (export app))",
+            "a scalar-then-closure consumer",
+        );
+        // TWO closure params.
+        valid(
+            "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+             (def (app2 (: f (-> Int64 Int64)) (: g (-> Int64 Int64)) (: x Int64)) (+ (f x) (g x))) \
+             (export mk) (export app2))",
+            "a two-closure-param consumer",
+        );
+        // Consumer result differs from the closure result (Bool vs Int64).
+        valid(
+            "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+             (def (is-pos (: g (-> Int64 Int64)) (: x Int64)) (> (g x) 0)) (export mk) (export is-pos))",
+            "a consumer returning a different type than the closure",
         );
     }
 
