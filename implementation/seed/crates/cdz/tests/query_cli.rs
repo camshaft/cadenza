@@ -1465,6 +1465,43 @@ fn a_mistyped_sum_argument_carries_a_wrap_fix_that_fix_all_applies() {
 }
 
 #[test]
+fn a_string_where_bytes_expected_carries_a_to_bytes_fix_that_fix_all_applies() {
+    // A total-conversion coercion, surfaced end-to-end: `(f "hi")` for a `(: b Bytes)` parameter reports
+    // CDZ0203 AND carries a `wrap` fix → `(String.to-bytes "hi")`. `--json` emits the wrap as two inserts;
+    // `fix --all` applies it and the repaired file recompiles clean.
+    let dir = scratch_dir("to_bytes");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (f (: b Bytes)) b) (def (main) (f \"hi\")) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the String/Bytes mismatch is an error");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0203\""))
+        .expect("the mismatch is emitted as JSON");
+    assert!(
+        line.contains("\"kind\":\"wrap\"") && line.contains("String") && line.contains("to-bytes"),
+        "CDZ0203 carries a String.to-bytes wrap patch: {line}"
+    );
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("to-bytes") && patched.contains("\"hi\""),
+        "applying the patch wraps the string in the encode: {patched}"
+    );
+    let (ok2, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok2, "fix succeeds: {stderr}");
+    let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok3 && out3.trim().is_empty(),
+        "the repaired file is clean: {out3}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_json_reports_each_applied_fix() {
     // `cdz fix --json` tells an agent WHICH faults were repaired — a JSON array of `{code, kind, message}`
     // — not just the human "applied N" count. Two independent faults (a did-you-mean + an out-of-range

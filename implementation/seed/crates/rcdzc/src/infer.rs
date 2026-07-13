@@ -2181,6 +2181,25 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
     hit
 }
 
+/// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
+/// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
+/// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
+/// UTF-8 encode, `collections-and-text.md`). NOT the reverse (`Bytes → String` is `from-bytes : Bytes →
+/// (Option String)`, FALLIBLE — no one-shot wrap that type-checks, so it stays unfixed rather than suggest
+/// a spelling that just cascades to an Option mismatch). The wrap text is a member-access spelling the
+/// resolver handles generically — the same shape as the `(Float64.of-int …)` / `(Int64.of …)` coercions,
+/// NOT a hard-coded name lookup (`no-keys-outside-the-prelude`). `None` when no total conversion applies.
+fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, String)> {
+    match (expected, actual) {
+        (Ty::Bytes, Ty::String) => Some((
+            "(String.to-bytes ".to_string(),
+            ")".to_string(),
+            "encode the string to its UTF-8 bytes with `String.to-bytes`".to_string(),
+        )),
+        _ => None,
+    }
+}
+
 /// The UNDERLYING structural type of the nominal NEWTYPE declared at `decl`, or `None` if `decl` is not
 /// an erasable newtype (so it stays an ordinary boxed `Ty::Sum`). A newtype is a SINGLE-variant sum
 /// whose runtime box is erased — the realization of `type-system.md §Nominal Is An Orthogonal Modifier`
@@ -3132,6 +3151,11 @@ fn check_application(
                             ")",
                             format!("wrap the value in `{variant}`"),
                         )));
+                    } else if let Some((prefix, suffix, verb)) = total_conversion_wrap(&pt, &at) {
+                        // A total prelude conversion bridges the mismatch at the CALL SITE — `String` where
+                        // `Bytes` is expected → `(String.to-bytes …)`. The text-model twin of the numeric
+                        // coercion wraps; heuristic, `--verify-fixes` upgrades it.
+                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
                     } else {
                         out.push(reject);
                     }
@@ -3418,6 +3442,14 @@ fn check_application(
                         // `--verify-fixes` upgrades it to verified on the recompile, so an agent still gets
                         // the machine-applicable signal without the compiler claiming intent it can't know.
                         out.push(reject.with_fix(Fix::replace_heuristic(arg, int_text)));
+                    } else if let Some((prefix, suffix, verb)) =
+                        total_conversion_wrap(&sparam, &sat)
+                    {
+                        // A total prelude CONVERSION bridges the mismatch — `String` where `Bytes` is
+                        // expected → wrap in `(String.to-bytes …)`. Same coercion-wrap shape as the numeric
+                        // `of-int`/`.of` arms above; heuristic (the author might have meant a different
+                        // encoding boundary), `--verify-fixes` upgrades it.
+                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
                     } else if let Some(variant) = wrap_variant_for(db, &sparam, &sat) {
                         // A value of the sum's PAYLOAD type where the SUM itself is expected — `5 : Int64`
                         // where `(Option Int64)` is required, in an OPERATOR/ctor argument position. The
