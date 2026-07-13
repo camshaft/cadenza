@@ -5184,6 +5184,76 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_argument_is_range_checked_against_a_narrow_parameter_width() {
+        // A CONSTANT argument passed to a NARROW-typed parameter must be range-checked against the
+        // parameter's declared width, exactly as a direct `(: 200 Int8)` is — β-reduction now carries the
+        // parameter's annotation onto the substituted argument (`(: arg T)`), so an out-of-range constant
+        // is rejected CDZ0302 instead of being spliced raw and run to a value the type cannot hold. The
+        // hole was `apply_lambda_uncached` keying substitution on the param NAME occurrence, which sees
+        // THROUGH the `(: name T)` binder and discarded the annotation.
+        // Out of range (200 > Int8.max 127) — a `def` call.
+        assert_eq!(
+            reject_code("(module m (def (f (: a Int8)) a) (def (main) (f 200)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // A negative constant to an unsigned parameter — a sign UInt8 cannot hold at all.
+        assert_eq!(
+            reject_code("(module m (def (f (: a UInt8)) a) (def (main) (f -1)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // An inline `fn` lambda shares the substitution path.
+        assert_eq!(
+            reject_code("(module m (def (main) ((fn ((: a Int8)) a) 200)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven CDZ0302.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0302")
+        );
+        // The annotated LET BINDER path range-checks its bound value the same way.
+        assert_eq!(
+            reject_code("(module m (def (main) (let (((: a Int8) 200)) a)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // A COMPUTED out-of-range value under a binder annotation folds and is caught too.
+        assert_eq!(
+            reject_code("(module m (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // IN-RANGE constants are NOT over-rejected: `(f 127)` (boundary) and an in-range-fitting op
+        // `(+ a 10)` = 110 both compile. A `(: a Bool) 5` still faults CDZ0203 (a genuine type clash,
+        // not a width fault). And a bare (un-annotated) parameter is unaffected.
+        assert_eq!(
+            reject_code("(module m (def (f (: a Int8)) a) (def (main) (f 127)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))"
+            ),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (let (((: a Bool) 5)) a)) (export main))")
+                .as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            reject_code("(module m (def (f a) (+ a 1)) (def (main) (f 41)) (export main))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its

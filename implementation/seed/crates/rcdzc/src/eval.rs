@@ -620,7 +620,11 @@ fn apply_lambda_uncached(
         let mut arg_of: HashMap<StructId, StructId> = HashMap::default();
         for (p, a) in params.iter().zip(args.iter()) {
             crate::resolve::resolve_subtree(db, *a);
-            arg_of.insert(param_name_occ(db, *p), *a);
+            // Carry the parameter's annotation onto its argument (`(: arg T)`) so a narrow-width fit-check
+            // fires on the substituted value — see `substituted_arg`. (The curry/residual path shares the
+            // hole: an out-of-range constant to an annotated leading param must reject here too.)
+            let sub = substituted_arg(db, *p, *a);
+            arg_of.insert(param_name_occ(db, *p), sub);
         }
         // NOTE: the partial path does NOT pin free vars — the REMAINING (un-applied) params are bound by
         // the lambda's `fn` (outside `body`), so a `pin_free_vars` keyed on `body` would misclassify a
@@ -650,7 +654,12 @@ fn apply_lambda_uncached(
         // `binder_in` returns the name, seeing through a `(: name T)` annotated binder). So key the
         // substitution on the name occurrence too, not the raw signature child (which is the `(:…)`
         // node for an annotated param) — else the arg would never match the body's references.
-        arg_of.insert(param_name_occ(db, *p), *a);
+        // The substituted VALUE carries the parameter's annotation (`(: arg T)`) so its type — in
+        // particular a narrow integer WIDTH — is checked against the argument, exactly as a direct
+        // `(: value T)` is (`substituted_arg`); otherwise an out-of-range constant `(f 200)` to a
+        // `(: a Int8)` param was spliced raw and run to a value the declared type cannot hold.
+        let sub = substituted_arg(db, *p, *a);
+        arg_of.insert(param_name_occ(db, *p), sub);
     }
     // PIN the body's FREE VARIABLES — a reference in the body that binds OUTSIDE the lambda (an enclosing
     // `let`/param the lambda CAPTURES, e.g. `(let ((k 10)) ((fn (x) (+ x k)) 5))` — `k` binds to the
@@ -701,6 +710,35 @@ pub(crate) fn param_name_occ(db: &Db, param: StructId) -> StructId {
         return name_occ;
     }
     param
+}
+
+/// The value to β-substitute for a parameter, carrying the parameter's TYPE ANNOTATION so its argument
+/// is CHECKED against the declared type — the fix for the "constant argument launders past a narrow
+/// parameter width" hole. For a bare parameter this is just `arg`. For an ANNOTATED parameter `(: name
+/// T)` it is the argument WRAPPED in that annotation, `(: arg T)`: β-reduction then splices `(: arg T)`
+/// wherever the body referenced the parameter, so the SAME annotation fit-check a direct `(: 200 Int8)`
+/// gets fires on the substituted argument — an out-of-range constant (`(f 200)` to `(: a Int8)`) is
+/// rejected CDZ0302 instead of being spliced raw as `200` and run to an out-of-range value. Without the
+/// wrap, `param_name_occ` sees THROUGH the `(: name T)` binder, so the annotation `T` was discarded and
+/// the width was never checked. An in-range constant round-trips unchanged (the annotation grounds it);
+/// a runtime argument keeps its own (already-checked) type. The annotation type occurrence `T` is shared
+/// from the parameter (pinned by the caller's `resolve_subtree` of the signature) — a type expression
+/// resolves position-independently (its names are global), so sharing it into the wrap is sound.
+fn substituted_arg(db: &mut Db, param: StructId, arg: StructId) -> StructId {
+    // Only an annotated `(: name T)` parameter carries a type to check; a bare param substitutes its arg
+    // directly. (`param` may itself be the `(: name T)` list — read its type child `T`.)
+    let Some(ty_occ) = db
+        .ast
+        .as_form(param, ":")
+        .and_then(|tail| tail.get(1).copied())
+    else {
+        return arg;
+    };
+    // Pin the annotation type before it is shared into the synthesized `(: arg T)` — its names resolve
+    // the same wherever the wrap lands (they are global type names), exactly as a pinned argument does.
+    crate::resolve::resolve_subtree(db, ty_occ);
+    let colon = db.push_name(":");
+    db.push_list(vec![colon, arg, ty_occ])
 }
 
 /// The body occurrence of the lambda `head` reduces to, if any — the stable per-function identity the

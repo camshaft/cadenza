@@ -368,6 +368,44 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
     }
 }
 
+/// The CDZ0302 fault if the value at `value` is an integer LITERAL that does not fit the NARROW integer
+/// type the type-expression `ty_expr` denotes, else `None`. The literal analogue of "Annotations
+/// Constrain" (numeric-model.md §A Bare Integer Literal Is Grounded By Its Annotation, Subject To A Range
+/// Check): a bare literal has no intrinsic width, so an annotation FIXES its type subject only to a range
+/// check — a literal outside the width is REJECTED, never truncated. Shared by the value annotation
+/// `(: value T)` and the annotated LET BINDER `((: name T) value)` so both range-check identically. Only
+/// a literal + a fixed-width integer type can fault here; a non-literal value's agreement is a separate
+/// unify (CDZ0203), and a deferred/Var width imposes no bound.
+fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Option<Reject> {
+    let annot_ty = crate::eval::typeval_of(db, ty_expr)?;
+    let Ty::Int(it) = &annot_ty else { return None };
+    let crate::ty::Width::Fixed(w) = it.width else {
+        return None;
+    };
+    // The bound value's CONSTANT integer value, if it has one: a bare literal `200`, OR a value that
+    // FOLDS to a constant (`(+ 100 100)` → 200) — the same computed constants the value annotation
+    // `(: (+ 100 100) Int8)` range-checks. `core_of` performs the fold; a runtime value (a param, a call
+    // result) does not fold to `ConstInt` and imposes no compile-time bound (it is checked by its own
+    // type / traps at run time).
+    let v = match resolved_of(db, value) {
+        Resolved::Int(v) => v,
+        _ => match crate::lower::core_of(db, value) {
+            crate::core::Core::ConstInt(v) => v,
+            _ => return None,
+        },
+    };
+    if !v.fits_width(it.ground_signed(), w) {
+        return Some(Reject::coded(
+            Code::IntOutOfRange,
+            format!(
+                "integer literal does not fit the annotated type {}",
+                annot_ty.render_name()
+            ),
+        ));
+    }
+    None
+}
+
 /// The declared type of an annotated parameter whose NAME occurrence is `binder`, if any. A parameter
 /// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
 /// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
@@ -2389,6 +2427,20 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let value_ty = type_of(db, value);
                 if let Err(r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
                     out.push(r);
+                }
+                // An ANNOTATED binder `((: name T) value)` constrains the bound value's TYPE — and, when
+                // `T` is a NARROW integer width and the value is an integer LITERAL, RANGE-CHECKS it,
+                // exactly as a value annotation `(: value T)` does (CDZ0302 for a literal outside the
+                // width). `check_binding_pattern` above only checks type AGREEMENT (`(: a Bool) 5` →
+                // CDZ0203), and a deferred literal agrees with any int width, so an out-of-range narrow
+                // literal (`(: a Int8) 200`) slipped through and ran to a value the type cannot hold. The
+                // binder annotation must apply its width fit-check to the bound value, the let-binder
+                // analogue of the parameter-substitution fit-check.
+                if let Some(ann) = db.ast.as_form(lhs, ":")
+                    && ann.len() == 2
+                    && let Some(reject) = literal_width_fault(db, value, ann[1])
+                {
+                    out.push(reject);
                 }
                 collect(db, value, out);
             }
