@@ -124,11 +124,14 @@ fn to_js_diag(
 }
 
 /// Parse `text` in `surface` into rcdzc's binary AST bytes AND the front-end span table (node id →
-/// UTF-8 byte range) built from the SAME parse. Because a fresh parse is already in canonical normal
-/// form (`canon.rs` — the readers build structure in the codec's canonical order), encoding to bytes
-/// and decoding into rcdzc's arena preserves the user node ids, so the span table indexes rcdzc's
-/// diagnostics/type nodes directly. Only the s-expression and ML surfaces have a reader; a binary or
-/// output-only (`debug`/`flat`) `from` has no source spans, so `spans` is `None` there.
+/// UTF-8 byte range) built from the SAME parse. The span table MUST be keyed by the CANONICAL node ids,
+/// because `codec::encode` canonicalizes (`canon.rs`) and the compiler decodes+reports THOSE ids. The
+/// s-expr reader already builds canonically, so its span table matches directly. The ML reader does NOT
+/// (it builds an infix operand before its operator head), so a raw ML span table is keyed by
+/// pre-canonical ids and a lookup by a compiler node id lands on the WRONG node — every id from the
+/// first infix operator on is shifted (`ml-parser-node-order`). So the ML path CANONICALIZES the arena
+/// and REMAPS the span table to the canonical ids first. Only the s-expression and ML surfaces have a
+/// reader; a binary or output-only (`debug`/`flat`) `from` has no source spans, so `spans` is `None`.
 fn parse_spanned(
     text: &str,
     from: Format,
@@ -146,10 +149,11 @@ fn parse_spanned(
                     err.span.start, err.message
                 ));
             }
-            Ok((
-                cadenza_syntax::codec::encode(&parsed.arenas),
-                Some(parsed.spans),
-            ))
+            // Canonicalize + remap so the span table is keyed by the ids the compiler reports (see the
+            // doc above) — the same fix `cdz`'s `load_program_spanned` applies for the ML surface.
+            let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
+            let spans = parsed.spans.remap(&id_map, arenas.structure.len());
+            Ok((cadenza_syntax::codec::encode(&arenas), Some(spans)))
         }
         // No reader (or output-only) — fall back to the format-agnostic byte conversion, no spans.
         _ => convert::convert(text.as_bytes(), from, Format::Binary)
