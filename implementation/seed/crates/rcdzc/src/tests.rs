@@ -7846,10 +7846,41 @@ mod match_engine {
     }
 
     #[test]
+    fn comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error() {
+        // `(= (Age 1) 1)` for `(type Age (Age Int64))` compares a nominal newtype to its ERASED inner —
+        // the same nominal-boundary violation as Symbol-vs-String, so CDZ0202 (NOT the generic CDZ0203
+        // "type mismatch", which reads as unrelated types). Fires on either operand order; a generic
+        // newtype vs its instantiated inner (`(= (Mk 1) 1)`) is caught too.
+        assert_eq!(
+            reject_code(
+                "(module m (type Age (Age Int64)) (def (main) (= (Age 1) 1)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0202")
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (type Age (Age Int64)) (def (main) (= 1 (Age 1))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0202"),
+            "the boundary error fires regardless of operand order"
+        );
+        // A generic newtype `(Mk 1) : Box Int64` compared to a bare `Int64` also crosses the boundary.
+        assert_eq!(
+            reject_code("(module m (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
+    }
+
+    #[test]
     fn a_generic_newtype_at_two_instantiations_stays_distinct() {
         // `Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing
         // them across the boundary is a type error — the nominal-over-generic analogue of `Option Int64 ≠
-        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.)
+        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.) A
+        // nominal-vs-nominal clash stays CDZ0203 (the newtype-vs-untagged-inner CDZ0202 above fires only
+        // when the OTHER operand is not itself a nominal).
         assert_eq!(
             reject_code(
                 "(module m (type Box (Mk a)) \

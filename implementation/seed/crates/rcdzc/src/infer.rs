@@ -2505,6 +2505,39 @@ fn check_application(
             ));
             return;
         }
+        // Comparing a NEWTYPE (a nominal single-field sum, erased at runtime) to its UNDERLYING type —
+        // `(= (Age 1) 1)` for `(type Age (Age Int64))` — is the SAME nominal-boundary violation as the
+        // Symbol-vs-String case, generalized: a nominal value never silently compares equal to the
+        // untagged representation it was declared distinct from (`type-system.md` §Nominal Types Are Not
+        // Comparable Across Their Boundary). Without this it fell to the generic CDZ0203 "type mismatch",
+        // which reads as "unrelated types" and hides that the fix is to WRAP/UNWRAP the nominal. Detect
+        // it: one operand is a nominal/sum whose erased inner AGREES WITH the other operand's type. Fires
+        // on either order; a nominal-vs-nominal or nominal-vs-unrelated clash is left to the generic path
+        // (this is specifically the nominal-vs-its-own-inner boundary).
+        // Fires ONLY when the OTHER operand is NOT itself a nominal/sum: this is the nominal-vs-its-own-
+        // -UNTAGGED-representation boundary. When both sides are nominal (two instantiations of one
+        // generic newtype — `Box Int64` vs `Box Bool` — or two different nominals), the erased inner may
+        // be a `Ty::Var` (a generic template) that `agrees_with` ANYTHING, which would wrongly fire here;
+        // those distinct-nominal comparisons stay the generic CDZ0203 (a genuinely different type), left
+        // to the path below.
+        let nominal_inner_vs = |db: &Db, nom: &Ty, other: &Ty| -> bool {
+            nominal_or_sum_decl(other).is_none()
+                && matches!(nominal_or_sum_decl(nom), Some(decl)
+                    if db.newtype_inner.get(&decl).is_some_and(|inner| inner.agrees_with(other)))
+        };
+        if nominal_inner_vs(db, &a, &b) || nominal_inner_vs(db, &b, &a) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a newtype to its underlying type across the nominal boundary (CDZ0202)");
+            out.push(Reject::coded(
+                Code::NominalMismatch,
+                format!(
+                    "{} and {} are not comparable across the nominal boundary (unwrap the nominal to \
+                     compare the underlying value)",
+                    a.render_name(),
+                    b.render_name()
+                ),
+            ));
+            return;
+        }
     }
     // A built-in arithmetic/comparison/equality operator with a TEXT operand (String/Bytes) against a
     // SCALAR operand (a number, a Bool, a Char) is a CROSS-KIND clash — a malformed operation, CDZ0201,
