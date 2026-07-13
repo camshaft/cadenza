@@ -60,6 +60,21 @@
             ((adder 10) 5)))
   (output (: 15 Int64)))
 
+(case "a multi-parameter closure keeps its captured environment distinct from its arguments"
+  (doc    "A closure that BOTH captures multiple variables AND takes multiple parameters must keep the two
+           sets of slots distinct — the captured environment (`a`, `b`) and the applied arguments (`x`, `y`)
+           must not be confused by the closure calling convention. `(mk a b)` returns `(fn (x y) (+ (* a x)
+           (* b y)))`; with distinguishable powers-of-ten weights any env/arg swap changes the result:
+           `((mk 1 1000) 7 3)` = 1·7 + 1000·3 = 3007. A convention that read an argument where a capture
+           belongs (or vice versa) would give a different number (7·1 + 3·1000, or 1·1 + 1000·1). Pins that
+           a multi-param closure's environment cells and argument slots are separately addressed — captures
+           first, then the full-arity arguments.")
+  (input  (do
+            (def (mk (: a Int64) (: b Int64)) (fn (x y) (+ (* a x) (* b y))))
+            (def (main) ((mk 1 1000) 7 3))
+            (export main)))
+  (output (: 3007 Int64)))
+
 ; A function SELECTED BY A RUNTIME CONDITION and then applied — `((if b f g) x)`. `core-semantics.md`
 ; §A Function Is A First-Class Value: a function is a value an `if` may return, so applying the `if`'s
 ; result must run whichever function the runtime condition chose. The condition here is a RUNTIME
