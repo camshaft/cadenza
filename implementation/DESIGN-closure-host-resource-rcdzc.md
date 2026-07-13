@@ -587,9 +587,22 @@ the component type. The new work:
   record, Bool leaf, nested tuple, capturing→tuple, negative int leaf), each rendering the full typed form.
   🔑 SCOPE: single-export, fixed-shape compound. Multi/mixed/distinct-sig/round-trip compound results + a
   variable-length list/map/set result are later widenings.
-- **REMAINING (all optional, none blocking):** a compound closure RESULT on the multi/mixed/distinct-sig/
-  round-trip paths (single-export tuple/record is done; the shared-`call`/consumer paths would thread the
-  per-result template through their serializers); a VARIABLE-LENGTH list/map/set closure result (needs a
+- **✅ COMPOUND closure RESULT on the MULTI-EXPORT path COMPLETE `@2f8ec34e`.** N same-signature closures
+  each returning a fixed-shape compound (tuple/record/sum) now share ONE `call` that returns the value form
+  as `list<u8>`. The shared `call` recovers each closure's code slot from the resource rep, dispatches it,
+  and walks the returned compound handle into the ONE value-form template (all exports share the result type
+  → one template). Pieces: (1) `serialize::multi_closure_value_resource_core_module` — combines the
+  multi-bytes core (N makes + shared `list<u8>` `call` + memory/`cabi_realloc` + plain-export slots) with the
+  single-export value core's value-form body (a data-section template walked from the dispatched compound
+  handle via `emit_hole_fill`). (2) `emit_multi_closure_resource` — a non-byte-rope, non-scalar shared result
+  consults `runtime_value_form_template`; `Some(t)` → the value core (reusing
+  `assemble_multi_closure_bytes_resource`, same `list<u8>` envelope), `None` → the scalar decline; imports
+  `get-bool` for a Bool leaf. `cdz-run` already try-decodes. +5 corpus (two tuple closures both driven, two
+  record closures in canonical field order, three capturing closures sharing one call). Record fields render
+  in CANONICAL sorted-name order (same as single-export + the escape).
+- **REMAINING (all optional, none blocking):** a compound closure RESULT on the mixed/distinct-sig/
+  round-trip paths (single-export + multi-export tuple/record are done; the remaining shared-`call`/consumer
+  paths would thread the per-result template through their serializers); a VARIABLE-LENGTH list/map/set closure result (needs a
   runtime looping value-form walker, like the runtime-Bytes escape but recursing over elements); a compound
   closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly
   declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`)
