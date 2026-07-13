@@ -2259,6 +2259,36 @@ fn runtime_addition_traps_on_overflow() {
     ));
 }
 
+/// A doubling add `(+ a a)` uses the collapsed single-xor overflow guard (`(r^a)<0`); its VALUE and TRAP
+/// behavior must match the general two-operand add exactly.
+#[test]
+fn doubling_add_value_and_trap_parity() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (dbl (: a Int64)) (+ a a)) (export dbl))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // In range, both signs and zero.
+    assert_eq!(run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(21)]), 42);
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(-21)]),
+        -42
+    );
+    assert_eq!(run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(0)]), 0);
+    // The largest value that still doubles in range, and the smallest.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(i64::MAX / 2)]),
+        (i64::MAX / 2) * 2
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(i64::MIN / 2)]),
+        (i64::MIN / 2) * 2
+    );
+    // Overflow: doubling past the boundary TRAPS (the single-xor guard fires exactly like the general one).
+    assert!(call_traps(&bytes, "dbl", &[Val::S64((i64::MAX / 2) + 1)]));
+    assert!(call_traps(&bytes, "dbl", &[Val::S64(i64::MAX)]));
+    assert!(call_traps(&bytes, "dbl", &[Val::S64(i64::MIN)]));
+}
+
 /// Runtime `-` traps on overflow (e.g. `Int64.min - 1`), computes in range.
 #[test]
 fn runtime_subtraction_traps_on_overflow() {

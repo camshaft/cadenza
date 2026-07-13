@@ -4718,7 +4718,7 @@ fn is_branchless_bool_rhs(db: &mut Db, id: StructId) -> bool {
 ///
 /// Deciding the source ONCE (in [`operand_src`]) and pushing it at each site keeps the machine op and
 /// the guard in agreement and removes the store+slot for a reusable operand.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum OperandSrc {
     Slot(u32),
     ConstI32(i32),
@@ -5209,6 +5209,21 @@ fn emit_machine_overflow_guard(
         sb.push(out); // the operand `a`
         out.push(m.konst(min));
         out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+        out.push(Lir::IfUnreachableEnd);
+        return;
+    }
+    // IDENTICAL-OPERAND FAST PATH (full-width signed `(+ a a)` — doubling): the general add guard is
+    // `((r^a) & (r^b)) < 0`, but with `b == a` (the SAME operand source — CSE fuses `(+ a a)` to one
+    // slot) that is `((r^a) & (r^a)) < 0` = `(r^a) < 0`. So one `xor` and one `and` drop: the guard is
+    // `get $r ; push a ; xor ; const 0 ; lt_s` (`(r^a)<0`). Sound — `x & x = x` is an identity, verified
+    // value-exact vs the general guard at every boundary. Constant operands never reach here (a two-const
+    // add folds in `lower`), so equal sources are the same slot/param.
+    if addsub_can_overflow && m.signed && matches!(op, Prim::Add) && sa == sb {
+        out.push(Lir::LocalGet(sr));
+        sa.push(out);
+        out.push(m.xor());
+        out.push(m.konst(0));
+        out.push(m.lt_s());
         out.push(Lir::IfUnreachableEnd);
         return;
     }
@@ -6807,6 +6822,48 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Add).count(),
             1,
             "one add over the shared product"
+        );
+    }
+
+    #[test]
+    fn doubling_add_collapses_the_overflow_guard_to_one_xor() {
+        // (def (f (: a Int64)) (+ a a)) — both operands are the SAME source, so the signed-add guard
+        // `((r^a)&(r^b))<0` with `b==a` collapses to `(r^a)<0`: ONE xor, no `and`, no second `r^b`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64)) (+ a a)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| matches!(i, Lir::I64Xor)).count(),
+            1,
+            "(+ a a) guard is a single xor (`(r^a)<0`), got: {:?}",
+            f.code
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64And)),
+            "the `& (r^b)` half is gone — x & x = x, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn distinct_add_operands_keep_the_two_xor_guard() {
+        // (+ a b) with DISTINCT operands cannot collapse — both `r^a` and `r^b` are needed.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| matches!(i, Lir::I64Xor)).count(),
+            2,
+            "distinct operands keep both xors, got: {:?}",
+            f.code
         );
     }
 
