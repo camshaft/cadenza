@@ -8,54 +8,61 @@ export default function Symbols() {
     <article>
       <H1>Symbols</H1>
       <Lede>
-        Sometimes a value is just a <em>name</em> — a status, a tag, a choice from a fixed set. A symbol
-        is exactly that: an interned name you compare by identity.
+        Sometimes a value is just a <em>name</em> — a status, a mode, one choice from a fixed set. A
+        symbol is exactly that: an interned name you compare by identity.
       </Lede>
 
       <P>
-        A symbol is written <C>#"…"</C> — the <C>#</C> distinguishing it from a text string. Where a{" "}
-        string is <em>content</em> you might slice, join, or measure, a symbol is a bare label: the only
-        thing you do with it is ask whether two symbols are the <em>same</em>. Equality is the whole point:
+        A symbol is written <C>#"…"</C> — the <C>#</C> tells it apart from a text string. Where a string
+        is <em>content</em> you might slice, join, or measure, a symbol is a bare label whose only
+        question is "is it this one?". So the operation on symbols is equality:
       </P>
       <Runnable
         source={`(def (main)
   (if (= #"red" #"red") 1 0))`}
       />
-      <P>Two symbols are equal exactly when they're spelled the same — and two different names aren't:</P>
-      <Runnable
-        source={`(def (main)
-  (if (= #"cat" #"dog") 1 0))`}
-      />
-
-      <H2>Symbols as tags</H2>
       <P>
-        The natural use is a status or mode passed around and checked. Here a function takes a symbol and
-        reports whether it's the active one:
+        Two symbols are equal exactly when they're spelled the same — no matter how long the name, the
+        comparison is a single identity check, not a character-by-character scan.
+      </P>
+
+      <H2>One choice from a fixed set</H2>
+      <P>
+        That's what symbols are for: a value drawn from a small, known set of names. A traffic light is{" "}
+        <C>#"red"</C>, <C>#"yellow"</C>, or <C>#"green"</C>, and a function can decide on it — here, how
+        many seconds to wait:
       </P>
       <Runnable
-        source={`(def (is-active s)
-  (if (= s #"active") 1 0))
-(def (main) (is-active #"active"))`}
+        source={`(def (wait light)
+  (if (= light #"red") 30
+    (if (= light #"yellow") 5
+      0)))
+(def (main) (wait #"red"))`}
       />
-      <P>Pass <C>#"idle"</C> instead and you get <C>0</C> — the same tag, checked by identity.</P>
+      <P>
+        <C>#"red"</C> waits 30, <C>#"yellow"</C> 5, and anything else (green) 0. The light is passed
+        around as a plain value and matched by name where the decision is made — no numbers to remember,
+        no strings to keep in sync.
+      </P>
 
       <Why tenet="A name compared by identity, not by its text">
-        Why a distinct type, rather than just using a string like <C>"red"</C>? Because the intent is
-        different. A string is text you might transform; a symbol is a fixed label whose only meaning is
-        which label it is. Splitting them says so in the type — you'd never accidentally slice a status
-        tag or measure its length — and lets the compiler treat a symbol as an interned identity
-        (a fast equality check), not a sequence of characters to scan. Same spirit as keeping{" "}
-        <C>Bytes</C> apart from <C>String</C>: one type per kind of thing.
+        Why a distinct type, rather than just a string like <C>"red"</C>? Because the intent differs. A
+        string is text you might transform; a symbol is a fixed label whose only meaning is <em>which
+        label it is</em>. Making it its own type says so — you can't accidentally slice a status tag or
+        take its length — and lets the compiler treat it as an interned identity (one cheap comparison,
+        whatever the name's length) instead of a sequence to scan. Same instinct as keeping <C>Bytes</C>{" "}
+        apart from <C>String</C>: one type per kind of thing, so the compiler catches a category mistake.
       </Why>
 
       <H2>From a string, explicitly</H2>
       <P>
-        When a name arrives as text — say, parsed from input — <C>Symbol.of</C> turns it into a symbol. A
-        symbol built from <C>"on"</C> is the very same value as the literal <C>#"on"</C>:
+        When a name arrives as text — parsed from input, or assembled at run time — <C>Symbol.of</C>{" "}
+        interns it into a symbol. The result is the very same value as writing the literal: a symbol
+        built from the pieces <C>"ye"</C> and <C>"s"</C> equals <C>#"yes"</C>:
       </P>
       <Runnable
         source={`(def (main)
-  (if (= (Symbol.of "on") #"on") 1 0))`}
+  (if (= (Symbol.of (String.concat "ye" "s")) #"yes") 1 0))`}
       />
 
       <Note>
@@ -67,26 +74,30 @@ export default function Symbols() {
       <H2>Your turn</H2>
       <Exercise
         id="symbols:1"
-        prompt={<>Make <C>is-active</C> answer for the <C>#"active"</C> tag, so the result is <C>1</C>.</>}
-        starter={`(def (is-active s)
-  (if (= s ?) 1 0))
-(def (main) (is-active #"active"))`}
-        solution={`(def (is-active s)
-  (if (= s #"active") 1 0))
-(def (main) (is-active #"active"))`}
-        expected="1"
-        hint={<>Compare against the symbol literal <C>#"active"</C>.</>}
+        prompt={<>Call <C>wait</C> on a <C>#"yellow"</C> light — it should give <C>5</C>.</>}
+        starter={`(def (wait light)
+  (if (= light #"red") 30
+    (if (= light #"yellow") 5
+      0)))
+(def (main) (wait ?))`}
+        solution={`(def (wait light)
+  (if (= light #"red") 30
+    (if (= light #"yellow") 5
+      0)))
+(def (main) (wait #"yellow"))`}
+        expected="5"
+        hint={<>Pass the symbol for a yellow light: <C>#"yellow"</C>.</>}
       />
 
       <Exercise
         id="symbols:2"
-        prompt={<>Build a symbol from the text <C>"go"</C> and check it equals <C>#"go"</C> — the answer is <C>1</C>.</>}
+        prompt={<>Intern the text <C>"go"</C> and confirm it equals <C>#"go"</C> — the answer is <C>1</C>.</>}
         starter={`(def (main)
   (if (= (Symbol.of ?) #"go") 1 0))`}
         solution={`(def (main)
   (if (= (Symbol.of "go") #"go") 1 0))`}
         expected="1"
-        hint={<>Pass the string <C>"go"</C> to <C>Symbol.of</C>.</>}
+        hint={<>Pass the string <C>"go"</C> to <C>Symbol.of</C> — interning it gives the symbol <C>#"go"</C>.</>}
       />
     </article>
   );

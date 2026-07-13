@@ -69,6 +69,46 @@ pub struct DiagnosticFix {
 /// character (U+2026) that does not occur in Cadenza source, so it never collides with real spelling.
 pub const WRAP_HOLE: char = '…';
 
+/// Reshape a `Wrap` fix's `replacement` for the target SURFACE and split it into the `(prefix, suffix)` a
+/// consumer wraps the original node text with — `prefix + <node text> + suffix`. THE way a machine
+/// consumer (the `cdz check --json` fix object, the `cdz-wasm` guide quick-fix) should present a wrap:
+/// NEVER hand out the raw `replacement` bearing the [`WRAP_HOLE`] sentinel, because an agent splicing that
+/// string over the node's byte range would write a literal `…` and corrupt the source. Splitting on the
+/// sentinel here yields the two literal sides instead.
+///
+/// The compiler renders a wrap in S-EXPR form `(<ctor> …)`; on the ML surface a constructor application is
+/// `<ctor>(…)`, not juxtaposition, so `is_ml` first rewrites `(<name> <HOLE>)` → `<name>(<HOLE>)` (only the
+/// constructor-wrap shape the fix producers emit; any other shape passes through). Then the surface form
+/// splits on the hole. A `replacement` with no hole (should not happen for a real wrap) returns
+/// `(whole, "")` — the consumer still applies `whole` as a prefix, degrading safely rather than panicking.
+pub fn wrap_prefix_suffix(replacement: &str, is_ml: bool) -> (String, String) {
+    let hole = WRAP_HOLE.to_string();
+    let surface = if is_ml {
+        // Reshape ONLY a bare single-ctor wrap `(<name> …)` → `<name>(…)` (ML uses call syntax, not
+        // juxtaposition). The remainder after the name must be EXACTLY the hole — a multi-token prefix like
+        // a `(host (E) …)` delegation is NOT a ctor application (`host` is a form), so it is left as-is
+        // rather than mangled into `host((E) …)`.
+        match replacement
+            .strip_prefix('(')
+            .and_then(|s| s.strip_suffix(')'))
+            .and_then(|inner| inner.split_once(' '))
+        {
+            Some((ctor, rest))
+                if !ctor.is_empty() && !ctor.contains(['(', ')', ' ']) && rest == hole =>
+            {
+                format!("{ctor}({rest})") // `(Some …)` → `Some(…)`
+            }
+            _ => replacement.to_string(),
+        }
+    } else {
+        replacement.to_string()
+    };
+    match surface.split_once(WRAP_HOLE) {
+        Some((prefix, suffix)) => (prefix.to_string(), suffix.to_string()),
+        None => (surface, String::new()),
+    }
+}
+
 /// How a [`DiagnosticFix`] applies its `replacement` at its `node` — the ABI projection of a
 /// [`crate::diag::Edit`]'s shape, so a consumer performs the right tree op without re-deriving it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -194,5 +234,53 @@ impl CompileOutput {
             .iter()
             .find(|a| a.kind == kind)
             .map(|a| a.bytes.as_slice())
+    }
+}
+
+#[cfg(test)]
+mod wrap_prefix_suffix_tests {
+    use super::wrap_prefix_suffix;
+
+    #[test]
+    fn sexpr_splits_the_ctor_wrap_on_the_hole() {
+        // The compiler's s-expr wrap `(Some …)` splits into the two literal sides an agent wraps the node
+        // text with: `(Some ` + <text> + `)`. The `…` sentinel never survives into either side.
+        let (prefix, suffix) = wrap_prefix_suffix("(Some …)", false);
+        assert_eq!(prefix, "(Some ");
+        assert_eq!(suffix, ")");
+        assert!(!prefix.contains('…') && !suffix.contains('…'));
+    }
+
+    #[test]
+    fn ml_reshapes_to_call_syntax_before_splitting() {
+        // On ML a constructor application is `Some(…)`, not juxtaposition — so `(Some …)` reshapes to
+        // `Some(…)` first, then splits: `Some(` + <text> + `)`. An agent on ML thus produces valid syntax.
+        let (prefix, suffix) = wrap_prefix_suffix("(Some …)", true);
+        assert_eq!(prefix, "Some(");
+        assert_eq!(suffix, ")");
+    }
+
+    #[test]
+    fn a_multi_token_wrap_keeps_its_shape() {
+        // A wrap whose prefix carries more than a bare ctor (`(host (E) …)`) is not the ML reshape shape,
+        // so ML leaves it as-is and both surfaces split on the hole identically.
+        assert_eq!(
+            wrap_prefix_suffix("(host (E) …)", false),
+            ("(host (E) ".to_string(), ")".to_string())
+        );
+        assert_eq!(
+            wrap_prefix_suffix("(host (E) …)", true),
+            ("(host (E) ".to_string(), ")".to_string())
+        );
+    }
+
+    #[test]
+    fn a_replacement_with_no_hole_degrades_to_a_bare_prefix() {
+        // Defensive: a wrap replacement missing the sentinel (should not happen) returns (whole, "") so a
+        // consumer applies it as a prefix rather than the helper panicking.
+        assert_eq!(
+            wrap_prefix_suffix("(Some x)", false),
+            ("(Some x)".to_string(), String::new())
+        );
     }
 }
