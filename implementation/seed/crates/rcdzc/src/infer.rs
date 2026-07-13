@@ -3739,6 +3739,18 @@ fn check_application(
 /// so the nominal-boundary comparison (`CDZ0202`) fires for BOTH: a single-variant sum that erased to a
 /// `Ty::Nominal` (`(type A (Mk Int64))`) has the same "distinct declarations of the same shape are not
 /// comparable" property its boxed multi-variant sibling does. `None` for a non-nominal type.
+/// The nearest field NAME of `fields` to `name` under the shared did-you-mean cutoff — the closed-set
+/// suggestion the row ops (`without`/`project`/`with`/`pop`) offer for a mistyped field, the same
+/// `suggest::nearest` a member access uses. `None` when no field is a plausible typo. (`db` unused today
+/// but kept for signature symmetry with the other field helpers, in case a future record shape needs it.)
+fn nearest_record_field(
+    _db: &Db,
+    fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
+    name: &str,
+) -> Option<String> {
+    crate::diag::suggest::nearest(name, fields.keys().map(|k| k.name.as_str()))
+}
+
 fn nominal_or_sum_decl(ty: &Ty) -> Option<StructId> {
     match ty {
         Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => Some(*decl),
@@ -4728,11 +4740,20 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .at(args[1]),
                             );
                         } else if !is_extend && !present {
+                            // A did-you-mean over the record's own fields — a mistyped `with` field is
+                            // the closed-set case (like `without`/`project`, M51): `Record.with r (alpa …)`
+                            // for a field `alpha` should point at it. The complementary-op hint
+                            // (`Record.extend` to ADD) stays: the suggestion and the add-hint are distinct
+                            // advice (fix the typo vs. genuinely a new field).
+                            let near = nearest_record_field(db, &fields, &label.name);
+                            let did = near
+                                .map(|n| format!(" (did you mean `{n}`?)"))
+                                .unwrap_or_default();
                             out.push(
                                 Reject::coded(
                                     Code::AbsentField,
                                     format!(
-                                        "record has no field `{}` to update (use `Record.extend` to add)",
+                                        "record has no field `{}` to update{did} (use `Record.extend` to add)",
                                         label.name
                                     ),
                                 )
@@ -4758,10 +4779,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let label = crate::resolve::read_label(db, args[1]);
                 match (type_of(db, args[0]), label) {
                     (Ty::Record(fields), Some(label)) if !fields.contains_key(&label) => {
+                        // A did-you-mean over the record's own fields (the closed-set case, as
+                        // `without`/`project`/`with` — a mistyped popped field should point at the real one).
+                        let near = nearest_record_field(db, &fields, &label.name);
+                        let did = near
+                            .map(|n| format!(" (did you mean `{n}`?)"))
+                            .unwrap_or_default();
                         out.push(
                             Reject::coded(
                                 Code::AbsentField,
-                                format!("record has no field `{}` to pop", label.name),
+                                format!("record has no field `{}` to pop{did}", label.name),
                             )
                             .at(args[1]),
                         );

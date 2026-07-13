@@ -11382,6 +11382,27 @@ mod match_engine {
             Some("CDZ0212"),
             "pop of an absent field is CDZ0212"
         );
+        // A mistyped `pop`/`with` field near a real one carries a did-you-mean — the closed-set
+        // suggestion `without`/`project` already give, over the operand record's fields.
+        let dp = reject_full(
+            "(module m (def (main) (Record.pop (record (alpha 1) (beta 2)) alpa)) (export main))",
+        )
+        .expect("pop of an absent field is CDZ0212");
+        assert!(
+            dp.message.contains("did you mean `alpha`?"),
+            "a mistyped popped field suggests the near one; got {}",
+            dp.message
+        );
+        let dw = reject_full(
+            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) (alpa 9))) (export main))",
+        )
+        .expect("with of an absent field is CDZ0212");
+        assert!(
+            dw.message.contains("did you mean `alpha`?")
+                && dw.message.contains("use `Record.extend`"),
+            "a mistyped `with` field suggests the near one AND keeps the extend hint; got {}",
+            dw.message
+        );
     }
 
     #[test]
