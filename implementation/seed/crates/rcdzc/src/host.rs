@@ -43,6 +43,29 @@ pub fn compiler_stack_bytes() -> usize {
 /// (see the module docs). The result is returned to the caller; a panic inside `f` is propagated so
 /// the caller observes it exactly as if `f` ran inline. This is the ONE place the compile-stack
 /// precondition is established — the bin and the deep-input test both go through it.
+///
+/// On `wasm32` (the in-browser compiler `cdz-wasm`) there is NO native-stack precondition to establish:
+/// the target has no spawnable large-stack thread, and reserving one demands a huge linear-memory
+/// allocation the browser `--target web` build cannot satisfy — a 64 MB-stack thread per `compile` call
+/// exhausts/corrupts the shared, long-lived wasm instance's memory after a few dozen compiles (`memory
+/// access out of bounds` on every subsequent call). So run `f` INLINE there: the semantic
+/// [`crate::db::DESCENT_DEPTH_LIMIT`] decline still bounds deep input (the guide's compile worker
+/// already runs off the UI thread, and snippets are far below the limit), without the native 64 MB
+/// reservation the wasm target cannot make. Regression fix — the guard was added unconditionally,
+/// breaking the browser compiler that the `cdz-wasm` module doc says bypasses "the 64 MB machinery".
+#[cfg(target_arch = "wasm32")]
+pub fn run_with_compiler_stack<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    f()
+}
+
+/// The NATIVE arm (see the `wasm32` sibling for the browser rationale): run `f` on a scoped worker
+/// thread whose stack is sized from the depth guard, so the guard is reached before the native stack
+/// (main ≈8 MB, a `cargo test` worker ≈2 MB) overflows.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_with_compiler_stack<T, F>(f: F) -> T
 where
     F: FnOnce() -> T + Send,
