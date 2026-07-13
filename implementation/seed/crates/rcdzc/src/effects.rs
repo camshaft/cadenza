@@ -227,60 +227,59 @@ fn copy_subtree(ast: &mut Arenas, node: StructId) -> StructId {
 /// their arms, plus the STATE binders in scope. Threaded by value through the rewrite (not mutated),
 /// so a nested handler / re-entry does not clobber an outer one.
 struct HandlerCtx {
-    /// Each discharged operation's `(decl-occ, op-index)` → the arm that discharges it.
+    /// Each discharged operation's `(decl-occ, op-index)` → the arm that discharges it. For a MERGED
+    /// context (nested handlers whose shared recursive callee performs several effects), this holds the
+    /// union of every enclosing handler's arms.
     arms: HashMap<(u32, u32), HandleArm>,
     /// A stable identity STRING for this handler context — the discharged ops + their arm occurrences,
     /// in sorted order — used as the specialization memo key (`db.effect_specializations`). A RESOLVED
     /// identity (occurrences), NOT `format!("{:?}", body)` — the old compiler's stringly-typed-syntax
     /// footgun (`DESIGN-effects-rcdzc.md` §4.3). Empty until built by `HandlerCtx::new`.
     key: String,
-    /// The STATE-BINDER occurrence for the SINGLE-STATE fast path (E3 countdown/range-sum): the arm's
-    /// `state` binder, if every arm in this context shares one. A specialized recursive fn threads this
-    /// as its trailing state parameter. `None` when the context is not single-state (multiple distinct
-    /// state binders across arms — the two-nested case, a later increment).
-    single_state: Option<StructId>,
-    /// The state's TYPE (the type of the handle's `init` seed) — used to ANNOTATE the specialized
-    /// recursive fn's trailing state parameter so it types (a synthesized param has no source
-    /// annotation). `None` if the init type is undetermined (then a specialization declines).
+    /// One STATE SLOT per enclosing handler, OUTERMOST first — the threaded states the fold carries as a
+    /// vector (`DESIGN-effects-rcdzc.md` §4.3: "two nested handlers → two trailing params"). A
+    /// single-handler context has one slot; a MERGED nested context has one per handler. Each slot records
+    /// which effect DECL it threads and that state's TYPE (to annotate a specialized fn's trailing param).
+    /// A specialized recursive fn takes one trailing state parameter per slot, in this order.
+    slots: Vec<StateSlot>,
+}
+
+/// One handler's state in a (possibly merged) [`HandlerCtx`]: the effect declaration whose operations
+/// thread it, and the state's TYPE (from the handle's `init` seed; `None` if undetermined → a recursive
+/// specialization declines). The slot's INDEX is its position in `HandlerCtx::slots` — the trailing
+/// state-parameter position a specialized fn threads it through.
+struct StateSlot {
+    /// The effect declaration occurrence whose operations thread this slot's state.
+    decl: u32,
+    /// The state's type — annotates the specialized fn's trailing param. `None` if undetermined.
     state_ty: Option<crate::ty::Ty>,
 }
 
 impl HandlerCtx {
-    /// Build a handler context from its operation→arm map, computing the specialization key and the
-    /// single-state binder. The key is the discharged ops (`decl:idx`) plus each arm's occurrence, sorted
-    /// — a stable RESOLVED identity. Single-state holds when there is exactly one arm (so exactly one
-    /// state binder); a multi-arm context is not single-state here (its state threading is the same binder
-    /// per arm today, but a recursive specialization over multiple arms is a later increment).
-    fn new(arms: HashMap<(u32, u32), HandleArm>, state_ty: Option<crate::ty::Ty>) -> HandlerCtx {
+    /// Build a handler context from its operation→arm map and its state slots (one per enclosing handler,
+    /// outermost first). The key is the discharged ops (`decl:idx`) plus each arm's occurrence, sorted — a
+    /// stable RESOLVED identity. A single-handler context has one slot; a merged nested context (built by
+    /// `merged_nested_ctx`) has one per handler.
+    fn new(arms: HashMap<(u32, u32), HandleArm>, slots: Vec<StateSlot>) -> HandlerCtx {
         let mut parts: Vec<String> = arms
             .iter()
             .map(|((d, i), arm)| format!("{d}:{i}@{}", arm.op.0))
             .collect();
         parts.sort();
         let key = parts.join(",");
-        // Single-state: all arms discharge ONE effect (one `decl`), so the handler threads ONE logical
-        // state — regardless of arm count. Each arm binds its OWN `state` occurrence, but they name the
-        // same threaded value, and a recursive fn under such a handler specializes with ONE trailing
-        // state param (each perform substitutes its arm's own state binder). Covers countdown/range-sum
-        // (1 arm) AND a 2-arm single-effect scalar handler. A context spanning TWO effects (two distinct
-        // decls — the two-nested case) needs a state STACK, a later increment, so it stays `None` here.
-        // The representative binder (used only as a presence gate downstream) is the first arm's.
-        let one_effect = {
-            let mut decls = arms.keys().map(|&(d, _)| d);
-            let first = decls.next();
-            first.is_some() && decls.all(|d| Some(d) == first)
-        };
-        let single_state = if one_effect {
-            arms.values().next().map(|a| a.state)
-        } else {
-            None
-        };
-        HandlerCtx {
-            arms,
-            key,
-            single_state,
-            state_ty,
-        }
+        HandlerCtx { arms, key, slots }
+    }
+
+    /// The slot INDEX that effect declaration `decl` threads its state through — the trailing
+    /// state-parameter position. `None` if this context does not thread that effect.
+    fn slot_of(&self, decl: u32) -> Option<usize> {
+        self.slots.iter().position(|s| s.decl == decl)
+    }
+
+    /// Whether this context threads at least one state (the presence gate the recursive-specialization arm
+    /// checks — the successor of the old `single_state.is_some()`).
+    fn has_state(&self) -> bool {
+        !self.slots.is_empty()
     }
 }
 
@@ -525,38 +524,44 @@ pub fn reduce_handle(
         }
         map.insert((decl.0, idx), arm.clone());
     }
-    // The state's type — from the `init` seed — annotates a specialized recursive fn's state param. A
-    // deferred/undetermined init type (e.g. a bare literal not yet grounded) is grounded to a definite
-    // integer here via `type_of`; if still undetermined a recursive specialization declines.
-    let state_ty = {
-        let init_t = crate::infer::type_of(db, init);
-        let mut t = init_t.clone();
-        // JOIN the seed type with each tail-arm's NEXT-STATE type. The seed of an accumulating handler is
-        // often an empty collection whose element is undetermined (`(list)` : `List ?`), while an arm that
-        // GROWS the state (`(resume unit (List.push s code))`) has a concrete element (`code` types from
-        // the op's declared parameter — `handle_arm_param_ty`). Joining fixes the empty seed's element from
-        // the growing arm; a read-out arm whose next-state is a bare `s` passthrough types as a var and
-        // `join` yields the other (more-defined) side, so it never poisons the element. This reads only the
-        // arm's NEXT-STATE (`resume`'s 2nd arg), never its resume VALUE, so a `Unit` resume value cannot
-        // bleed into the state element.
-        for arm in arms {
-            if let Some(next) = tail_resume_next_state_of(db, arm.body) {
-                let nt = crate::infer::type_of(db, next);
-                t = t.join(&nt);
-            }
-        }
-        if matches!(t, crate::ty::Ty::Any) {
-            None
-        } else {
-            Some(t)
-        }
-    };
-    let ctx = HandlerCtx::new(map, state_ty);
+    // This handle discharges ONE effect (all its arms share a decl — a handle's arms are for one effect),
+    // so the context has ONE state slot. `state_ty_of_arms` derives the slot's state type from the init
+    // seed joined with the arms' next-states. A NESTED handler whose shared recursive callee performs both
+    // effects is MERGED into a multi-slot context by `thread_bounded`'s nested-`Handle` arm.
+    let decl = arms.first().and_then(|a| crate::eval::effect_op_of(db, a.op)).map(|(d, _)| d.0)?;
+    let state_ty = state_ty_of_arms(db, init, arms);
+    let slot = StateSlot { decl, state_ty };
+    let ctx = HandlerCtx::new(map, vec![slot]);
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
-    let (rewritten, _final_state) = thread(db, body, init, &ctx)?;
+    let (rewritten, _final_states) = thread(db, body, vec![init], &ctx)?;
     Some(rewritten)
+}
+
+/// The state type for a handler whose arms are `arms` seeded with `init` — the init seed's type JOINED
+/// with each tail-arm's NEXT-STATE type. The seed of an accumulating handler is often an empty collection
+/// whose element is undetermined (`(list)` : `List ?`), while an arm that GROWS the state
+/// (`(resume unit (List.push s code))`) has a concrete element (`code` types from the op's declared
+/// parameter — `handle_arm_param_ty`). Joining fixes the empty seed's element from the growing arm; a
+/// read-out arm whose next-state is a bare `s` passthrough types as a var and `join` yields the other
+/// (more-defined) side, so it never poisons the element. Reads only the arm's NEXT-STATE (`resume`'s 2nd
+/// arg), never its resume VALUE, so a `Unit` resume value cannot bleed into the state element. `None` if
+/// the joined type is still undetermined (then a recursive specialization declines).
+fn state_ty_of_arms(db: &mut Db, init: StructId, arms: &[HandleArm]) -> Option<crate::ty::Ty> {
+    let init_t = crate::infer::type_of(db, init);
+    let mut t = init_t.clone();
+    for arm in arms {
+        if let Some(next) = tail_resume_next_state_of(db, arm.body) {
+            let nt = crate::infer::type_of(db, next);
+            t = t.join(&nt);
+        }
+    }
+    if matches!(t, crate::ty::Ty::Any) {
+        None
+    } else {
+        Some(t)
+    }
 }
 
 /// Whether the arm's tail resume VALUE agrees with the operation's declared RESULT type, AND that result
@@ -657,18 +662,20 @@ fn tail_resume_next_state_of(db: &mut Db, node: StructId) -> Option<StructId> {
     }
 }
 
-/// Rewrite `node` under handler context `ctx`, threading `state` (the current-state expression) through
-/// it in EVALUATION ORDER. Returns `(rewritten-node, next-state)` — the node with performs resolved and
-/// the state as it stands AFTER `node` evaluates — or `None` to decline (a shape not provably
-/// tail-resumptive). `state` is an arena occurrence (an expression), substituted into an arm's `state`
-/// binder when a perform fires.
+/// Rewrite `node` under handler context `ctx`, threading `states` (the current-state expression PER SLOT,
+/// slot order) through it in EVALUATION ORDER. Returns `(rewritten-node, next-states)` — the node with
+/// performs resolved and the states as they stand AFTER `node` evaluates — or `None` to decline (a shape
+/// not provably tail-resumptive). Each state is an arena occurrence (an expression); a perform of an
+/// operation in slot `k` reads/updates slot `k` (substituting slot `k`'s state into the arm's `state`
+/// binder), leaving the other slots unchanged. A single-handler context has one slot; a merged nested
+/// context has one per handler.
 fn thread(
     db: &mut Db,
     node: StructId,
-    state: StructId,
+    states: Vec<StructId>,
     ctx: &HandlerCtx,
-) -> Option<(StructId, StructId)> {
-    thread_bounded(db, node, state, ctx, 0)
+) -> Option<(StructId, Vec<StructId>)> {
+    thread_bounded(db, node, states, ctx, 0)
 }
 
 /// Bound on cross-function INLINE depth during threading. A handled body that inlines callees deeper
@@ -683,30 +690,34 @@ const THREAD_INLINE_LIMIT: u32 = 64;
 fn thread_bounded(
     db: &mut Db,
     node: StructId,
-    state: StructId,
+    states: Vec<StructId>,
     ctx: &HandlerCtx,
     inline_depth: u32,
-) -> Option<(StructId, StructId)> {
+) -> Option<(StructId, Vec<StructId>)> {
     if inline_depth > THREAD_INLINE_LIMIT {
         return None; // an unbounded inline chain — decline (a recursive callee the spec path missed)
     }
     match resolved_of(db, node) {
         // A PERFORM `(E.op args…)` of a discharged operation: resolve to its arm, substitute the arm's
-        // params ↦ (rewritten) args and its state binder ↦ current state, and rewrite the arm body's
-        // TAIL resume to the resume VALUE, threading the resume's next-STATE forward.
+        // params ↦ (rewritten) args and its state binder ↦ the CURRENT state OF THAT OP'S SLOT, and rewrite
+        // the arm body's TAIL resume to the resume VALUE, threading the resume's next-STATE forward IN THAT
+        // SLOT (the other slots pass through unchanged). This is what lets nested handlers over one
+        // recursive callee thread each effect's state independently.
         Resolved::Apply { head, args } if is_perform(db, head, ctx).is_some() => {
             let (decl, idx) = is_perform(db, head, ctx).unwrap();
             let arm = ctx.arms.get(&(decl, idx))?.clone();
+            let slot = ctx.slot_of(decl)?;
             // Thread state through each argument left-to-right (an argument may itself perform).
-            let mut cur = state;
+            let mut cur = states;
             let mut rewritten_args = Vec::with_capacity(args.len());
             for &a in args.iter() {
                 let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
                 rewritten_args.push(ra);
                 cur = next;
             }
-            // The arm binds its params to the args and its state binder to the CURRENT state. Substitute
-            // both into the arm body (a capture-safe arena substitution), then extract the tail resume.
+            // The arm binds its params to the args and its state binder to THIS SLOT's current state.
+            // Substitute both into the arm body (a capture-safe arena substitution), then extract the tail
+            // resume.
             let mut subst: HashMap<StructId, StructId> = HashMap::default();
             if arm.params.len() == rewritten_args.len() {
                 for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
@@ -728,12 +739,14 @@ fn thread_bounded(
                 // Any other arity mismatch — decline.
                 return None;
             }
-            subst.insert(arm.state, cur);
+            subst.insert(arm.state, cur[slot]);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
             // The arm body must be a TAIL `(resume value next-state)` — the value becomes the perform's
-            // result; the next-state threads forward. Anything else (no resume / non-tail) declines.
+            // result; the next-state threads forward IN THIS SLOT. Anything else (no resume / non-tail)
+            // declines.
             let (value, next_state) = tail_resume(db, arm_body)?;
-            Some((value, next_state))
+            cur[slot] = next_state;
+            Some((value, cur))
         }
         // A `do` sequence — `(do e0 e1 … en)`. Evaluate each in EVALUATION ORDER, threading state; the
         // sequence's value is the LAST expression's value, its state the last's next-state. (A `do` is
@@ -751,7 +764,7 @@ fn thread_bounded(
             if items.is_empty() {
                 return None;
             }
-            let mut cur = state;
+            let mut cur = states;
             let mut last = None;
             for it in items {
                 let (r, next) = thread_bounded(db, it, cur, ctx, inline_depth)?;
@@ -770,26 +783,27 @@ fn thread_bounded(
         // the recursion one level per inline (bounded only by the depth backstop). Catching recursion
         // here first routes `f` to specialization, never to the unbounded inline.
         Resolved::Apply { head, args }
-            if ctx.single_state.is_some() && recursive_call_reaches_discharged(db, &head, ctx) =>
+            if ctx.has_state() && recursive_call_reaches_discharged(db, &head, ctx) =>
         {
             // Thread state through the args first (they evaluate before the call), then the call takes the
-            // current threaded state as its trailing argument.
-            let mut cur = state;
-            let mut rargs = Vec::with_capacity(args.len() + 1);
+            // current threaded state OF EVERY SLOT as its trailing arguments (in slot order — the order
+            // `specialize_recursive` lays the trailing state params out in).
+            let mut cur = states;
+            let mut rargs = Vec::with_capacity(args.len() + ctx.slots.len());
             for &a in args.iter() {
                 let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
                 rargs.push(ra);
                 cur = next;
             }
             let spec = specialize_recursive(db, head, ctx)?;
-            rargs.push(cur); // the state argument, in the state as it stands at the call
-            // Build the call `(<spec-name> args… state)`. The specialized def is named, so a name atom
+            rargs.extend(cur.iter().copied()); // one trailing state arg per slot, in slot order
+            // Build the call `(<spec-name> args… state…)`. The specialized def is named, so a name atom
             // resolves to it (via `def_by_name`), and the ordinary recursive `Core::Call` + reachability
             // path emits it.
             let name_atom = db.push_atom(Leaf::Name(spec));
             let mut call = vec![name_atom];
             call.extend(rargs);
-            // The call's VALUE is the specialized fn's result; the state after it is not observed (the
+            // The call's VALUE is the specialized fn's result; the states after it are not observed (the
             // corpus never reads post-recursion state — the single-return shape).
             Some((db.push_list(call), cur))
         }
@@ -802,7 +816,7 @@ fn thread_bounded(
         Resolved::Apply { head, args } if call_reaches_discharged_effect(db, head, ctx) => {
             // Thread state through the arguments FIRST (they evaluate before the call, in order), then
             // inline the callee and thread its (reduced) body.
-            let mut cur = state;
+            let mut cur = states;
             let mut rargs = Vec::with_capacity(args.len());
             for &a in args.iter() {
                 let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
@@ -826,9 +840,9 @@ fn thread_bounded(
         // in a branch takes the branch-local threaded state as its argument; nothing after the `if`
         // reads state). This is what threads countdown's `(if (= (tick) 0) 0 (+ 1 (loop)))`.
         Resolved::If { cond, then_, else_ } => {
-            let (rcond, cur) = thread_bounded(db, cond, state, ctx, inline_depth)?;
-            let (rthen, _) = thread_bounded(db, then_, cur, ctx, inline_depth)?;
-            let (relse, _) = thread_bounded(db, else_, cur, ctx, inline_depth)?;
+            let (rcond, cur) = thread_bounded(db, cond, states, ctx, inline_depth)?;
+            let (rthen, _) = thread_bounded(db, then_, cur.clone(), ctx, inline_depth)?;
+            let (relse, _) = thread_bounded(db, else_, cur.clone(), ctx, inline_depth)?;
             let if_head = db.push_atom(Leaf::Name("if".to_string()));
             Some((db.push_list(vec![if_head, rcond, rthen, relse]), cur))
         }
@@ -846,7 +860,7 @@ fn thread_bounded(
             let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
                 return None;
             };
-            let mut cur = state;
+            let mut cur = states;
             let mut rpairs = Vec::with_capacity(pairs.len());
             for pair in pairs {
                 let Struct::List(kv) = db.ast.get(pair).clone() else {
@@ -882,14 +896,14 @@ fn thread_bounded(
         } => {
             let reduced = reduce_handle(db, inner_init, &inner_arms, inner_body)?;
             // Thread the reduced result (which may still perform the outer effect) under the outer ctx.
-            thread_bounded(db, reduced, state, ctx, inline_depth)
+            thread_bounded(db, reduced, states, ctx, inline_depth)
         }
         // An ordinary application / arithmetic / comparison / connective / `not` over sub-expressions:
         // thread state through the operands in left-to-right order, rebuilding the same head. This
         // covers `(+ (E.op) 1)`, `(List.push s (E.op))`, etc. The head itself is not a perform (that
         // arm above caught it), so it is copied as-is.
         Resolved::Apply { head, args } => {
-            let mut cur = state;
+            let mut cur = states;
             let (rhead, next0) = thread_or_copy(db, head, cur, ctx, inline_depth)?;
             cur = next0;
             let mut children = vec![rhead];
@@ -901,11 +915,11 @@ fn thread_bounded(
             Some((db.push_list(children), cur))
         }
         // A node that performs nothing — a literal, a bare reference, a param, unit, a type value, a
-        // fully-non-effect subtree. It leaves the state unchanged. Copy it structurally so the rewritten
+        // fully-non-effect subtree. It leaves the states unchanged. Copy it structurally so the rewritten
         // body is self-contained (a fresh occurrence re-resolving against the rewritten scope).
         _ if !subtree_performs(db, node, ctx) => {
             let copied = copy_pure(db, node);
-            Some((copied, state))
+            Some((copied, states))
         }
         // Some other form that DOES contain a perform but is not one of the shapes we thread (e.g. an
         // `if`/`match`/`let` with a perform inside — E1c-2/E3 territory). Decline.
@@ -1024,15 +1038,19 @@ fn callee_def_index_of(db: &mut Db, head: StructId) -> Option<usize> {
 fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option<String> {
     let callee_def = callee_def_index_of(db, head)?;
     let orig_body = db.defs[callee_def].body?;
-    let _state_binder = ctx.single_state?;
-    let state_ty = ctx.state_ty.clone()?;
-    // The state type must be FULLY DETERMINED to annotate the trailing state param. An UNDETERMINED
-    // component (an `Any` — most commonly an empty-list seed `(list)`, whose element type is `Ty::Any`
-    // until an operation pins it) would bake a wrong/loose annotation (`(: s (List Any))`) that mistypes
-    // the threaded body. Decline cleanly rather than emit it — a non-empty seed (`(list 0)`, whose element
-    // is `Int64`) specializes; an empty-list seed needs the state's type inferred from the arms'
-    // resume-next-states (`(List.push s v)` reveals `List Int64`), a later increment.
-    if ty_has_any(&state_ty) {
+    if !ctx.has_state() {
+        return None;
+    }
+    // Each slot's state TYPE must be FULLY DETERMINED to annotate its trailing state param. An
+    // UNDETERMINED component (an `Any` — most commonly an empty-list seed `(list)`, whose element type is
+    // `Ty::Any` until an operation pins it) or a MISSING slot type would bake a wrong/loose annotation
+    // (`(: s (List Any))`) that mistypes the threaded body. Decline cleanly rather than emit it.
+    let slot_tys: Vec<crate::ty::Ty> = ctx
+        .slots
+        .iter()
+        .map(|s| s.state_ty.clone())
+        .collect::<Option<Vec<_>>>()?;
+    if slot_tys.iter().any(ty_has_any) {
         return None;
     }
 
@@ -1072,10 +1090,11 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let base = db.defs[callee_def].name.clone();
     let spec_name = format!("{base}#eff{}", db.defs.len());
 
-    // Build the specialized def as a REAL AST form `(def (spec (: n Tn)… (: s Ts)) <body>)`, so its
-    // parameters resolve (via `is_param_occurrence`, which walks to a `def` form) and each types by its
-    // annotation. Every param — original AND the trailing state — is an ANNOTATED binder `(: name T)`
-    // (the state param LAST, since the self-call appends state last).
+    // Build the specialized def as a REAL AST form `(def (spec (: n Tn)… (: s0 Ts0) (: s1 Ts1)…) <body>)`,
+    // so its parameters resolve (via `is_param_occurrence`, which walks to a `def` form) and each types by
+    // its annotation. Every param — original AND each trailing STATE (one per handler slot, in slot order)
+    // — is an ANNOTATED binder `(: name T)`. The state params come LAST, since the self-call appends the
+    // slot states last (in slot order).
     let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone()));
     let mut sig_children = vec![spec_name_atom];
     for (n, ty) in &orig_param_specs {
@@ -1084,11 +1103,16 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         let colon = db.push_atom(Leaf::Name(":".to_string()));
         sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
     }
-    let state_name = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
-    let state_type_expr = crate::eval::encode_typeval(db, &state_ty);
-    let colon = db.push_atom(Leaf::Name(":".to_string()));
-    let state_param = db.push_list(vec![colon, state_name, state_type_expr]);
-    sig_children.push(state_param);
+    // The trailing state params — one per slot, named `{spec}$s{k}`, annotated with the slot's state type.
+    let state_names: Vec<String> = (0..slot_tys.len())
+        .map(|k| format!("{spec_name}$s{k}"))
+        .collect();
+    for (k, ty) in slot_tys.iter().enumerate() {
+        let state_name = db.push_atom(Leaf::Name(state_names[k].clone()));
+        let state_type_expr = crate::eval::encode_typeval(db, ty);
+        let colon = db.push_atom(Leaf::Name(":".to_string()));
+        sig_children.push(db.push_list(vec![colon, state_name, state_type_expr]));
+    }
     let sig = db.push_list(sig_children.clone());
     let spec_params: Vec<StructId> = sig_children[1..].to_vec();
 
@@ -1103,13 +1127,16 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     });
     db.effect_specializations.insert(memo_key, spec_index);
 
-    // Thread `orig_body` under `ctx`, with the incoming state = a REFERENCE to the state param `s`. The
-    // performs' resume values reference the arm's state binder, which `thread`'s perform arm substitutes
-    // with this state expression; the recursive self-call re-enters and (via the memo) rewrites to
-    // `(spec_name <threaded-state>)`. The state name atom must re-resolve to the param, so we pass a
-    // FRESH occurrence of the name (a bare `s` reference), not the binder occurrence.
-    let state_ref = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
-    let (spec_body, _out) = thread(db, orig_body, state_ref, ctx)?;
+    // Thread `orig_body` under `ctx`, with each slot's incoming state = a REFERENCE to its state param. A
+    // perform's resume value references the arm's state binder, which `thread`'s perform arm substitutes
+    // with that slot's state expression; the recursive self-call re-enters and (via the memo) rewrites to
+    // `(spec_name args… <threaded-states>)`. Each state name atom must re-resolve to its param, so we pass
+    // FRESH occurrences of the names (bare `s{k}` references), not the binder occurrences.
+    let state_refs: Vec<StructId> = state_names
+        .iter()
+        .map(|n| db.push_atom(Leaf::Name(n.clone())))
+        .collect();
+    let (spec_body, _out) = thread(db, orig_body, state_refs, ctx)?;
 
     // Wrap in a REAL `(def (spec params… (: s T)) spec_body)` arena node so the parent index links
     // param → sig → def: `is_param_occurrence` walks that chain to classify each param, and `binder_in`
@@ -1128,14 +1155,14 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
 fn thread_or_copy(
     db: &mut Db,
     node: StructId,
-    state: StructId,
+    states: Vec<StructId>,
     ctx: &HandlerCtx,
     inline_depth: u32,
-) -> Option<(StructId, StructId)> {
+) -> Option<(StructId, Vec<StructId>)> {
     if subtree_performs(db, node, ctx) {
-        thread_bounded(db, node, state, ctx, inline_depth)
+        thread_bounded(db, node, states, ctx, inline_depth)
     } else {
-        Some((copy_pure(db, node), state))
+        Some((copy_pure(db, node), states))
     }
 }
 
