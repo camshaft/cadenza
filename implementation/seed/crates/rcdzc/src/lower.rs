@@ -558,46 +558,84 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // propagates; otherwise emit the runtime op (no constant fold — a persistent push/concat
                 // builds a new heap value, not worth folding a constant spine here).
                 Some(Prim::ListPush) if args.len() == 2 => {
-                    if let Core::Poison(r) = core_of(db, args[0]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[1]) {
-                        Core::Poison(r)
-                    } else {
-                        Core::ListPush {
+                    match (core_of(db, args[0]), core_of(db, args[1])) {
+                        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        // FOLD a compile-time-visible list literal + an element into ONE `Core::ListNew`
+                        // with the element APPENDED — a constant list (bakes at escape / folds through
+                        // `List.at`/`len`), exactly as a written `(list …)`. The pushed element's own
+                        // occurrence (`args[1]`) carries over regardless of whether IT is constant.
+                        (Core::ListNew { elems: mut a }, _) => {
+                            a.push(args[1]);
+                            trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.push folds onto a constant list");
+                            Core::ListNew { elems: a }
+                        }
+                        // A runtime list — the persistent `vec-push` on the heap.
+                        _ => Core::ListPush {
                             list: args[0],
                             elem: args[1],
-                        }
+                        },
                     }
                 }
                 Some(Prim::ListConcat) if args.len() == 2 => {
-                    if let Core::Poison(r) = core_of(db, args[0]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[1]) {
-                        Core::Poison(r)
-                    } else {
-                        Core::ListConcat {
+                    match (core_of(db, args[0]), core_of(db, args[1])) {
+                        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        // FOLD two compile-time-visible list literals into ONE merged `Core::ListNew`
+                        // (the elements of the left followed by those of the right) — a constant list
+                        // that bakes at escape / folds through `List.at`/`len`, exactly as a written
+                        // `(list …)` does. `List Int64` concat `List Int64` → `List Int64`; the element
+                        // occurrences carry over unchanged (they keep their own types).
+                        (Core::ListNew { elems: mut a }, Core::ListNew { elems: b }) => {
+                            a.extend(b);
+                            trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.concat folds two constant lists");
+                            Core::ListNew { elems: a }
+                        }
+                        // A runtime list operand — the persistent `vec-concat` on the heap.
+                        _ => Core::ListConcat {
                             lhs: args[0],
                             rhs: args[1],
-                        }
+                        },
                     }
                 }
                 // `List.update` — replace the element at an index (runtime `vec-update`). Three args:
-                // the list, the Int64 index, the replacement element. Any poison operand propagates;
-                // otherwise emit the runtime op (no constant fold — a persistent update builds a new
-                // heap value, like push/concat).
+                // the list, the Int64 index, the replacement element. Any poison operand propagates.
                 Some(Prim::ListUpdate) if args.len() == 3 => {
-                    if let Core::Poison(r) = core_of(db, args[0]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[1]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[2]) {
-                        Core::Poison(r)
-                    } else {
-                        Core::ListUpdate {
+                    match (
+                        core_of(db, args[0]),
+                        core_of(db, args[1]),
+                        core_of(db, args[2]),
+                    ) {
+                        (Core::Poison(r), _, _)
+                        | (_, Core::Poison(r), _)
+                        | (_, _, Core::Poison(r)) => Core::Poison(r),
+                        // FOLD a constant list literal + a constant index: an IN-RANGE index (`0 <= i <
+                        // len`) replaces that element (a new `Core::ListNew` with the slot swapped for the
+                        // replacement's occurrence — a constant list that escapes/folds). An OUT-OF-RANGE
+                        // index (negative or `>= len`) is a PROVABLE TRAP — the runtime `vec-update` traps
+                        // OOB, so the compiler proves it and FAILS the build (CDZ0304), never ships a
+                        // trapping component (numeric-model.md §A Constant Operation With No Value Is
+                        // Rejected At Compile Time). The replacement element's own occurrence carries over.
+                        (Core::ListNew { elems: mut a }, Core::ConstInt(i), _) => {
+                            match i.to_i64() {
+                                Some(n) if n >= 0 && (n as usize) < a.len() => {
+                                    a[n as usize] = args[2];
+                                    trace!(target: "rcdzc::fold", node = id.0, index = n, "List.update folds (in-range constant index)");
+                                    Core::ListNew { elems: a }
+                                }
+                                _ => {
+                                    trace!(target: "rcdzc::fold", node = id.0, "List.update out-of-range constant index → CDZ0304");
+                                    Core::Poison(Reject::coded(
+                                        Code::ConstTrap,
+                                        "List.update index is out of bounds (a constant out-of-range update traps)",
+                                    ))
+                                }
+                            }
+                        }
+                        // A runtime list or index — the persistent `vec-update` on the heap.
+                        _ => Core::ListUpdate {
                             list: args[0],
                             index: args[1],
                             elem: args[2],
-                        }
+                        },
                     }
                 }
                 // `List.at` — the FALLIBLE indexed read `(List a) → Int64 → (Option a)`. FOLD when the

@@ -4254,13 +4254,14 @@ mod match_engine {
 
     #[test]
     fn a_list_push_extends_and_its_runtime_length_counts() {
-        // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. The result
-        // is NOT a compile-time-visible literal (it is a `Core::ListPush`), so `List.len` of it does NOT
-        // fold — it emits the runtime `vec-len`. So `(List.len (List.push (list 1 2 3) 4))` exercises the
-        // full runtime path: the literal `(list 1 2 3)` bulk-builds (a flat `arr` + one `vec-of-arr`),
-        // then `vec-push` appends the 4, then `vec-len` → 4.
+        // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. To exercise
+        // the RUNTIME `vec-push` (not the constant fold — a constant `(list …)` + `push` now folds to a
+        // literal), the base list is BUILT at run time by a push-loop (`build 0 3 (list)` = `[0 1 2]`),
+        // so `List.push` sees a runtime list handle; then `vec-len` counts 3 + 1 = 4.
         let Some(out) = run_on_heap(
-            "(module m (def (main) ((. List len) ((. List push) (list 1 2 3) 4))) (export main))",
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List push) (build 0 3 (list)) 9))) (export main))",
         ) else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
             return;
@@ -4270,11 +4271,14 @@ mod match_engine {
 
     #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
-        // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both).
-        // `(List.len (List.concat (list 1 2) (list 3 4 5)))` builds both spines then concatenates, so the
-        // runtime `vec-len` counts 2 + 3 = 5. Pins the runtime concat + length path.
+        // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
+        // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`
+        // = `[0 1]`) is concatenated with a constant `(list 3 4 5)`; a runtime operand forces
+        // `Core::ListConcat`, so `vec-len` counts 2 + 3 = 5. Pins the runtime concat + length path.
         let Some(out) = run_on_heap(
-            "(module m (def (main) ((. List len) ((. List concat) (list 1 2) (list 3 4 5)))) (export main))",
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List concat) (build 0 2 (list)) (list 3 4 5)))) (export main))",
         ) else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
             return;
@@ -4299,11 +4303,13 @@ mod match_engine {
     #[test]
     fn a_list_update_replaces_and_its_length_is_unchanged() {
         // `List.update(l, i, x)` replaces the element at index `i`, returning a new list of the SAME
-        // length (a replacement, not a growth). The result never folds (a `Core::ListUpdate`), so
-        // `List.len` of it emits the runtime `vec-len`: `(List.len (List.update (list 10 20 30) 1 99))`
-        // = 3. Pins the runtime `vec-update` path and that update preserves the element count.
+        // length (a replacement, not a growth). To exercise the RUNTIME `vec-update` (a constant-list
+        // update now folds), the list is BUILT at run time (`build 0 3` = `[0 1 2]`); `vec-len` of the
+        // updated list is still 3. Pins the runtime `vec-update` path and that update preserves the count.
         let Some(out) = run_on_heap(
-            "(module m (def (main) ((. List len) ((. List update) (list 10 20 30) 1 99))) (export main))",
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List update) (build 0 3 (list)) 1 99))) (export main))",
         ) else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
             return;
@@ -4323,6 +4329,37 @@ mod match_engine {
             )
             .as_deref(),
             Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn constant_list_push_concat_update_fold_and_escape() {
+        // A `List.push`/`concat`/`update` over COMPILE-TIME-VISIBLE list literals FOLDS to a constant
+        // `(list …)` — no runtime heap — so the result escapes the boundary as its value form (like a
+        // written literal). `List.at`/`len` of the folded list also fold; here each is measured by
+        // `List.len` (a scalar Int64 across the boundary) to pin the folded length without the compound
+        // escape ABI: push 3+1 = 4, concat 2+2 = 4, in-range update keeps length 3.
+        for (prog, want) in [
+            ("((. List push) (list 1 2 3) 4)", 4),
+            ("((. List concat) (list 1 2) (list 3 4))", 4),
+            ("((. List update) (list 10 20 30) 1 99)", 3),
+        ] {
+            let src = format!("(module m (def (main) ((. List len) {prog})) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "constant list op folds: {prog}"
+            );
+        }
+        // An OUT-OF-RANGE constant `List.update` index is a PROVABLE trap — rejected at compile time
+        // (CDZ0304), NOT a shipped runtime trap (matches the runtime `vec-update` OOB trap).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. List len) ((. List update) (list 1 2 3) 5 99))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a constant out-of-range List.update is a provable trap (CDZ0304)"
         );
     }
 
@@ -4477,32 +4514,30 @@ mod match_engine {
             };
             cdz_run::run(&bytes, &opts).expect("run")
         };
+        // The list is BUILT at run time (`build 0 3` = `[0 1 2]`) so `List.update` stays a RUNTIME
+        // `vec-update` (a constant-list update folds — an OOB constant index is caught at COMPILE time as
+        // CDZ0304, a separate path; this test pins the RUNTIME index guard). A helper wraps the shared
+        // build-loop + update-len; each call passes a different runtime index.
+        let prog = |idx: &str| {
+            format!(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (main) (List.len (List.update (build 0 3 (list)) {idx} 99))) (export main))"
+            )
+        };
         // A wrapping OOB index (2^32 → 0) must TRAP, not silently update element 0.
         assert!(
-            matches!(
-                run(
-                    "(module m (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main))"
-                ),
-                cdz_run::Outcome::Trap(_)
-            ),
+            matches!(run(&prog("4294967296")), cdz_run::Outcome::Trap(_)),
             "an index that wraps below the length must trap, not alias into a valid slot"
         );
         // A real OOB index (no wrap) still traps.
         assert!(
-            matches!(
-                run(
-                    "(module m (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main))"
-                ),
-                cdz_run::Outcome::Trap(_)
-            ),
+            matches!(run(&prog("5")), cdz_run::Outcome::Trap(_)),
             "a genuinely out-of-bounds index must trap"
         );
         // NO OVER-TRAP: an in-bounds update still succeeds and preserves the length.
         assert!(
-            matches!(
-                run("(module m (def (main) (List.len (List.update (list 1 2 3) 2 99))) (export main))"),
-                cdz_run::Outcome::Value(ref s) if s == "3"
-            ),
+            matches!(run(&prog("2")), cdz_run::Outcome::Value(ref s) if s == "3"),
             "an in-bounds update must still succeed"
         );
     }
@@ -5046,9 +5081,14 @@ mod match_engine {
         // scratch with the arm bodies' temps at the shared floor, an invalid module). Pins that fix + the
         // built-in `Option` carrying a user sum through the runtime nested matcher (corpus §'a runtime
         // Option carrying a user sum is matched by a nested constructor pattern').
+        // The list of `N` is BUILT at run time by a push-loop over a RUNTIME parameter (`build 0 1` pushes
+        // `(N.L i)` for the runtime index `i`), so it is a genuine `vec-push` handle — a constant `(list)`
+        // + a constant `push` now folds, which would defeat the runtime-matcher coverage. `List.at … 0` is
+        // then a runtime `(Some (N.L 0))`, and `(Some (N.L v))` binds v=0.
         let Some(out) = run_on_heap(
             "(module m (type N (L Int64) (P Int64)) \
-               (def (main) (match ((. List at) ((. List push) (list) (N.L 7)) 0) \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (N.L i))) out)) \
+               (def (main) (match ((. List at) (build 0 1 (list)) 0) \
                              ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) \
                (export main))",
         ) else {
@@ -5056,7 +5096,7 @@ mod match_engine {
             return;
         };
         assert_eq!(
-            out, "7",
+            out, "0",
             "nested match over a runtime List.at Some(user-sum)"
         );
     }
