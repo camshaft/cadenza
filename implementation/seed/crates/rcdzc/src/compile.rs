@@ -241,15 +241,25 @@ fn sanitize_origin(db: &Db, reject: &mut Reject) {
 
 /// A convenience over [`compile`]: a lone canonical-AST byte string → the WebAssembly component bytes,
 /// or the first error diagnostic. What the tests and simple callers use.
+///
+/// Establishes the compile-stack precondition (`crate::host::run_with_compiler_stack`) around the
+/// `compile` call, exactly as the bin does at its top level (`cli.rs`, `cdz` main). The bin wraps
+/// `compile` directly; the tests and simple callers reach `compile` THROUGH here, so wrapping here is
+/// the one place that gives every such caller the guard-sized stack — without it, a deep-but-finite
+/// recursion (e.g. a depth-25 β-inline chain, or a module sibling call) overflows a `cargo test` worker
+/// thread's ≈2 MB stack in a debug build and ABORTS before the semantic depth guard can fire. See
+/// `crate::host` for why the stack is sized from `DESCENT_DEPTH_LIMIT`.
 pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
-    let out = compile(
-        &[Artifact::new(
-            Artifact::KIND_AST,
-            "main",
-            ast_bytes.to_vec(),
-        )],
-        &[Target::Wasm],
-    );
+    let out = crate::host::run_with_compiler_stack(|| {
+        compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "main",
+                ast_bytes.to_vec(),
+            )],
+            &[Target::Wasm],
+        )
+    });
     match out.artifact(Target::Wasm.artifact_kind()) {
         Some(bytes) => Ok(bytes.to_vec()),
         None => {
