@@ -2659,6 +2659,19 @@ fn collect_captures(
             if params.contains(&binder) {
                 return true;
             }
+            // DEGENERATE SELF-CAPTURE — the reference occurrence IS its own binder (`binder == node`).
+            // A legitimate capture reference and its binder are DISTINCT occurrences (the binder sits in a
+            // param list / `let`; the use sits in the body). They coincide only as a copy artifact: when a
+            // lambda ARGUMENT is `resolve_subtree`-pinned at a call site and that lambda is later itself
+            // copied (its enclosing def inlined), a pinned OWN-param body reference is shared into the copy
+            // while the param LIST is copied fresh — leaving a body occurrence that resolves to the
+            // ORIGINAL param binder, now orphaned (no slot at the build site). Emitting it produced an
+            // invalid module (a bare env-read / `local.get` with no backing local). A sound α-renaming fix
+            // to the copy machinery is a separate, larger change; until then DECLINE rather than miscompile
+            // (reject-don't-miscompile). This does NOT hit a genuine capture (distinct binder/use nodes).
+            if binder == node {
+                return false;
+            }
             record_capture(binder, node, captures, capture_refs);
             return true;
         }
