@@ -2676,6 +2676,70 @@ mod runtime_ops {
         );
     }
 
+    #[test]
+    fn if_not_comparison_one_zero_computes_the_negated_predicate() {
+        // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
+        // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
+        // `eqz ; eqz`). Confirm the VALUE equals the negated predicate for every comparison.
+        // (not (< a b)) == a >= b.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (not (< a b)) 1 0)",
+                &[Val::S64(5), Val::S64(5)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (not (< a b)) 1 0)",
+                &[Val::S64(4), Val::S64(5)]
+            ),
+            0
+        );
+        // (not (= n 0)) == n is nonzero — the "eqz;eqz" case that now folds to a single ne.
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(0)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(7)]),
+            1
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(-3)]),
+            1
+        );
+        // (not (= a b)) == a != b.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (not (= a b)) 1 0)",
+                &[Val::S64(5), Val::S64(5)]
+            ),
+            0
+        );
+        // Unsigned complement stays unsigned.
+        assert_eq!(
+            run::<i64>(
+                "(: a UInt64) (: b UInt64)",
+                "(if (not (< a b)) 1 0)",
+                &[Val::U64(u64::MAX), Val::U64(1)]
+            ),
+            1
+        );
+        // A bare bool param `(if (not p) 1 0)` — no comparison to fold, still correct via eqz.
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if (not p) 1 0)", &[Val::Bool(true)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if (not p) 1 0)", &[Val::Bool(false)]),
+            1
+        );
+    }
+
     // ── bitwise: total, never trap; width-agnostic on a normalized value ─────────────────────────
 
     #[test]

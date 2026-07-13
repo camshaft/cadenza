@@ -3031,28 +3031,11 @@ fn emit(
                 _ => Err(Reject::decline("not a runtime conversion")),
             }
         }
-        // A runtime boolean NEGATION `!operand` — emit the operand (a Bool i32), then `i32.eqz` (1 if 0,
-        // else 0 = logical NOT). From the `(if c false true)` fold.
+        // A runtime boolean NEGATION `!operand` — emit the logical NOT of the operand (a Bool i32). From
+        // the `(if c false true)` fold. `emit_negated_bool` folds `(not (CMP a b))` into the complement
+        // comparison and otherwise emits `operand ; i32.eqz`.
         Core::Not { operand } => {
-            // COMPARISON NEGATION: `(not (CMP a b))` folds into the single COMPLEMENT comparison — `(not
-            // (< a b))` → `a >=ₛ b`, `(not (= a b))` → `a ≠ b` — instead of emitting the comparison and an
-            // `i32.eqz`. Every comparison over a total order has an exact complement (`compare_op_negated`),
-            // dropping one instruction from the ubiquitous negated-predicate. Emit the operands exactly as
-            // the `Core::Compare` arm does (same width grounding + RHS-above-high-water discipline), but
-            // with the inverted op and no trailing `eqz`. The `= 0` operand is NOT special-cased to `eqz`
-            // here: `(not (= x 0))` is `x ≠ 0`, i.e. `i64.ne` against a zero — the general compare path,
-            // which for a zero operand is as cheap (`eqz` would need its own inversion anyway).
-            if let Core::Compare { op, lhs, rhs } = core_of(db, operand) {
-                let it = operand_int_ty(db, lhs, rhs);
-                emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
-                let rhs_base = base.max(*high);
-                emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
-                out.push(compare_op_negated(op, it));
-                return Ok(());
-            }
-            emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
-            out.push(Lir::I32Eqz);
-            Ok(())
+            emit_negated_bool(db, operand, slots, base, high, scratch_ty, layout, out)
         }
         // A SHORT-CIRCUITING boolean connective — emitted as an `if` over `lhs` (a Bool i32), so `rhs` is
         // evaluated on ONLY ONE branch (the shield core-semantics.md §Boolean Connectives Short-Circuit
@@ -4567,11 +4550,42 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
     )
 }
 
+/// Emit the LOGICAL NEGATION of a boolean expression `id` (a Bool i32 → its `0`/`1` complement). When
+/// `id` is a `Core::Compare`, the negation folds into the single COMPLEMENT comparison (`(not (< a b))`
+/// → `a >=ₛ b`, `(not (= a b))` → `a ≠ b`) — the operands emit exactly as the `Core::Compare` arm does
+/// (same width grounding + RHS-above-`*high` discipline), with the inverted op and NO trailing `i32.eqz`.
+/// Any other bool emits then `i32.eqz`. Shared by `Core::Not` and the negated arm of the boolean
+/// materialization, so a `(not CMP)` reached either directly or through the `(if c 0 1)` bool-int form
+/// gets the same one-op complement (no `eqz ; eqz` double negation when the two folds compose).
+#[allow(clippy::too_many_arguments)]
+fn emit_negated_bool(
+    db: &mut Db,
+    id: StructId,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    if let Core::Compare { op, lhs, rhs } = core_of(db, id) {
+        let it = operand_int_ty(db, lhs, rhs);
+        emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
+        let rhs_base = base.max(*high);
+        emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
+        out.push(compare_op_negated(op, it));
+        return Ok(());
+    }
+    emit(db, id, slots, base, high, scratch_ty, layout, out)?;
+    out.push(Lir::I32Eqz);
+    Ok(())
+}
+
 /// BOOLEAN MATERIALIZATION: an `(if c 1 0)` / `(if c 0 1)` whose branches are the integer literals `1`
 /// and `0` is just the condition itself, coerced to the result's integer width — no branch and no
 /// `select`. A bool `c` already evaluates to exactly `0`/`1` in an i32 slot, so:
 ///   `(if c 1 0)` → `c`            (identity, then widen to the result slot);
-///   `(if c 0 1)` → `i32.eqz c`    (logical negation, likewise `0`/`1`).
+///   `(if c 0 1)` → `!c`           (logical negation via `emit_negated_bool`, likewise `0`/`1`).
 /// This attempts the emit and returns `Some(Ok(()))` when it fired, `None` when the shape does not match
 /// (the caller falls through to the `select`/`if` lowering). Sound at every width: `c` is unconditionally
 /// evaluated exactly as it was as the condition (so any trap in `c` still fires), and the branches carry
@@ -4609,12 +4623,17 @@ fn try_bool_materialization(
         (0, 1) => true,
         _ => return None,
     };
-    // Emit the condition (a bool → i32 `0`/`1`); negate via `i32.eqz` for the `0 1` form.
-    if let Err(r) = emit(db, cond, slots, base, high, scratch_ty, layout, out) {
+    // Emit the condition (a bool → i32 `0`/`1`). The `0 1` form is the NEGATION, emitted via
+    // `emit_negated_bool` so a `(if (not (= n 0)) 1 0)` — which `lower` branch-swaps to `(if (= n 0) 0 1)`
+    // — folds the negation into the compare's complement (`n ≠ 0`) instead of stacking a second `i32.eqz`
+    // atop the compare-with-zero `eqz` (the `eqz ; eqz` double negation).
+    let emitted = if negate {
+        emit_negated_bool(db, cond, slots, base, high, scratch_ty, layout, out)
+    } else {
+        emit(db, cond, slots, base, high, scratch_ty, layout, out)
+    };
+    if let Err(r) = emitted {
         return Some(Err(r));
-    }
-    if negate {
-        out.push(Lir::I32Eqz);
     }
     // Widen the i32 `0`/`1` to a 64-bit result slot; a ≤32-bit result already holds it.
     if m_slot(*it) == ValType::I64 {
@@ -6514,7 +6533,9 @@ mod tests {
 
     #[test]
     fn if_c_zero_one_materializes_the_negated_bool() {
-        // (if (< a b) 0 1) — the reversed literals are the NEGATION: compare, `i32.eqz`, then widen.
+        // (if (< a b) 0 1) — the reversed literals are the NEGATION of the condition. Since the condition
+        // is a comparison, the negation folds into the COMPLEMENT comparison (`a >=ₛ b`) rather than
+        // `compare ; i32.eqz` — one instruction fewer, no double negation — then widen.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 0 1)) (def (main) 0) (export main))",
         );
@@ -6527,10 +6548,67 @@ mod tests {
             vec![
                 Lir::LocalGet(0),
                 Lir::LocalGet(1),
-                Lir::I64LtS,
-                Lir::I32Eqz, // negate the 0/1 bool.
+                Lir::I64GeS, // the complement of `<` — no trailing eqz.
                 Lir::I64ExtendI32U,
             ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "the negated materialization folds into the complement, no eqz"
+        );
+    }
+
+    #[test]
+    fn if_not_compare_one_zero_avoids_the_double_negation() {
+        // (if (not (< a b)) 1 0) — `lower` branch-swaps this to `(if (< a b) 0 1)`, then the negated
+        // materialization would naively stack `i32.eqz` on the compare. Because the condition is a
+        // comparison, the negation folds into the complement `a >=ₛ b` — NO `eqz` at all (the fold that
+        // prevents an `eqz ; eqz` when `(not (= n 0))` composes with the bool-int form).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (not (< a b)) 1 0)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::I64GeS,
+                Lir::I64ExtendI32U,
+            ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "no eqz — the negation folded into the complement comparison"
+        );
+    }
+
+    #[test]
+    fn if_not_eq_zero_one_zero_is_a_single_ne() {
+        // (if (not (= n 0)) 1 0) — the ubiquitous "n is nonzero as an int" idiom. Was `eqz ; eqz` (the
+        // compare-with-zero peephole then the negation). Now the negation folds the compare's complement:
+        // `n ≠ 0` = `n ; const 0 ; i64.ne` — one `ne`, no double eqz.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (not (= n 0)) 1 0)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::I64Eqz | Lir::I32Eqz)),
+            "no eqz double negation, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::I64Ne),
+            "nonzero folds to a single i64.ne, got: {:?}",
+            f.code
         );
     }
 
