@@ -1155,19 +1155,25 @@ fn collect_param_constraints(
                 env: &crate::fxhash::FxHashMap<StructId, Ty>,
                 subst: &Subst,
             ) -> Option<Ty> {
-                match resolved_of(db, body) {
-                    Resolved::Ref { value } if env.contains_key(&value) => env.get(&value).cloned(),
+                // The arm's type must be a STILL-OPEN var for it to be a constrainable pass-through: an
+                // echoed BARE param whose var is unsolved, or a fn-param application `(f n)` whose result
+                // var is unsolved. An ANNOTATED param (`z : Int64`) is a DETERMINED type — it is a type
+                // SOURCE for its siblings, not an open arm — so it must NOT be reported open (else two
+                // arms both look open and neither pins the other, and a callback result stays unsolved).
+                let t = match resolved_of(db, body) {
+                    Resolved::Ref { value } if env.contains_key(&value) => env.get(&value).cloned()?,
                     Resolved::Param { binder } if env.contains_key(&binder) => {
-                        env.get(&binder).cloned()
+                        env.get(&binder).cloned()?
                     }
                     // `(f n)` — a fn-typed param applied. Its type is `f`'s result var (peeled by
-                    // `arg_ty_in_env`); constrainable only if that is still an open var.
+                    // `arg_ty_in_env`).
                     Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some() => {
-                        let t = arg_ty_in_env(db, body, env, subst);
-                        matches!(subst.apply(&t), Ty::Var(_)).then_some(t)
+                        arg_ty_in_env(db, body, env, subst)
                     }
-                    _ => None,
-                }
+                    _ => return None,
+                };
+                // Open iff it applies to a bare var — a solved/annotated type supplies, not borrows.
+                matches!(subst.apply(&t), Ty::Var(_)).then_some(t)
             }
             let arm_list: Vec<StructId> = arms.iter().map(|(_, b)| *b).collect();
             for &body in &arm_list {

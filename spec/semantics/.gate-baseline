@@ -510,6 +510,7 @@ pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
+pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
 pass	a recursive fold of a cons-list to bytes is the whole program result
 pass	a recursive fold over a sum list infers its unannotated callback parameter
 pass	a recursive fold with an unannotated two-argument callback parameter
