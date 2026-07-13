@@ -8363,17 +8363,17 @@ mod match_engine {
             ),
             3
         );
-        // A module carrying an UNMODELED-obligation member (`(pragma …)` — a validation not yet built)
-        // does NOT register, so its name stays unbound and the program DECLINES (a codeless CDZ0101), NOT
-        // a silent run that drops the pragma (decline-don't-miscompile). `reject_code` = a coded rejection
-        // OR None for a codeless decline — a decline is `None` here (unbound `m` surfaces as CDZ0101 on
-        // the reference, but the MODULE form's obligation is what forces the decline).
+        // A module carrying a MALFORMED `(pragma default-integer)` — a recognized key with its one
+        // required type argument OMITTED — is rejected CDZ0602 (`modules-and-namespaces.md` §A Module
+        // Directive's Arguments Must Match The Shape Its Key Defines), the coded directive validation,
+        // rather than silently dropped. (Before pragma validation this declined codeless — the pragma
+        // blocked module registration → unbound `m` → CDZ0101; now the directive itself is the fault.)
         assert_eq!(
             reject_code(
                 "(module top (def (main) (do (module m (pragma default-integer) (def (answer) 42)) ((. m answer) unit))) (export main))"
             )
             .as_deref(),
-            Some("CDZ0101")
+            Some("CDZ0602")
         );
         // A nullary export is `Unit -> T`, so applying it to a NON-UNIT argument is a type error CDZ0203 —
         // the synthesized ignored param is ANNOTATED `Unit`, not a bare (free-type-variable) param that
@@ -8395,6 +8395,36 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0203"),
             "a non-unit argument is rejected, not silently dropped"
+        );
+    }
+
+    #[test]
+    fn a_module_directive_is_validated_against_the_fixed_registry() {
+        // 11-modules pragma cases + `modules-and-namespaces.md` §A Module Directive Is Drawn From A Fixed
+        // Set: a `(pragma <key> <arg>…)` is validated — an UNKNOWN key is CDZ0601, a recognized key with
+        // the wrong argument shape is CDZ0602, rather than silently ignored (a dropped directive would
+        // make one source mean two things on two toolchains). Checked whether the pragma is at top level
+        // or a module member.
+        // Unknown key → CDZ0601.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma frobnicate 3) (def (answer) 42)) ((. m answer) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0601")
+        );
+        // Recognized key `default-integer` with its required type argument OMITTED → CDZ0602 (malformed).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer) (def (answer) 42)) ((. m answer) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0602")
+        );
+        // A top-level unknown directive is validated too (not only a module member).
+        assert_eq!(
+            reject_code("(do (pragma frobnicate 3) (def (main) 1) (export main))").as_deref(),
+            Some("CDZ0601")
         );
     }
 
@@ -16041,15 +16071,16 @@ mod stage1 {
 
     #[test]
     fn an_unmodeled_top_level_form_declines() {
-        // A top-level declaration the compiler does not model — `(pragma …)` and any other unrecognized
-        // declaration-shaped head — makes the whole program DECLINE (decline-don't-miscompile), NOT
-        // silently ignore it and run `main` as if it were absent. `(pragma …)` is unmodeled, so the
-        // program declines rather than compiling `(def (main) 1)` alone. (`(effect …)` USED to be the
-        // example here; it is now a modeled top-level form — see `a_bare_effect_declaration_compiles`.)
+        // A top-level declaration the compiler does not model makes the whole program refuse to compile
+        // (decline-don't-miscompile), NOT silently ignore it and run `main` as if it were absent. Here
+        // `(pragma strict)` names a key the fixed directive registry does not define, so it is REJECTED —
+        // now with a coded CDZ0601 (unknown directive), the directive-validation this exercises. (Before
+        // that validation it was a codeless decline; `(effect …)` USED to be the example — it is now a
+        // modeled top-level form, see `a_bare_effect_declaration_compiles`.)
         let src = "(do (pragma strict) (def (main) 1) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a program with an unmodeled top-level form must decline"
+            "a program with an unrecognized directive must be rejected"
         );
     }
 
