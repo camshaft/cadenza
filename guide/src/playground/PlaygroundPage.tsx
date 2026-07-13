@@ -12,7 +12,7 @@ import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx"
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { compile, renderSyntax, emitRust, coreModule, replEval, type Diag, type Surface } from "../compiler/client.ts";
+import { compile, renderSyntax, emitRust, coreModule, replEval, definedNames, type Diag, type Surface } from "../compiler/client.ts";
 import type { ReplEntry } from "./ReplPanel.tsx";
 import { toWat } from "./wat.ts";
 import type { CompiledView } from "./OutputPanel.tsx";
@@ -231,6 +231,13 @@ export default function PlaygroundPage() {
     [text],
   );
 
+  // The names the REPL can complete: every top-level definition the current buffer declares. Fetched
+  // on demand (when the REPL input focuses) so it always reflects the latest edits without a subscription.
+  const replNames = useCallback(
+    () => definedNames(text, shownSurface.current).catch(() => [] as string[]),
+    [text],
+  );
+
   // ⌘/Ctrl-Enter runs.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -362,6 +369,7 @@ export default function PlaygroundPage() {
             compiled={compiled}
             surface={surface}
             onReplEval={replCall}
+            onReplNames={replNames}
             onJumpTo={jumpTo}
             onNeedCompiledView={needCompiledView}
           />
