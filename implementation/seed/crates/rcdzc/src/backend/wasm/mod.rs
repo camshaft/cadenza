@@ -1876,8 +1876,17 @@ fn emit_mixed_closure_resource(
         ret_ty.strip_nominal(),
         crate::ty::Ty::Bytes | crate::ty::Ty::String
     );
-    let result_byte = if ret_is_bytes {
-        0 // unused by the bytes path; `call` returns list<u8>
+    // A COMPOUND (tuple/record/sum) shared result crosses as `list<u8>` carrying the value form — the shared
+    // `call` walks each closure's returned handle into the ONE value-form template (all closure exports share
+    // the result type). `None` for a byte-rope / scalar / no-template-compound.
+    let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
+        None
+    } else {
+        crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+    };
+    let ret_is_compound = ret_template.is_some();
+    let result_byte = if ret_is_bytes || ret_is_compound {
+        0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
@@ -1980,6 +1989,11 @@ fn emit_mixed_closure_resource(
             used.insert("bytes-len");
             used.insert("bytes-get");
         }
+        // A COMPOUND-result shared `call` walks the returned handle to fill the value form — a Bool leaf
+        // reads `get-bool` (int + nested `arr-get` already covered).
+        if ret_is_compound {
+            used.insert("get-bool");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2044,6 +2058,31 @@ fn emit_mixed_closure_resource(
             result_byte: p.result_byte,
         })
         .collect();
+    // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
+    // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
+    // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
+    if let Some(template) = &ret_template {
+        let main_core = serialize::multi_closure_value_resource_core_module(
+            &funcs,
+            &imports,
+            &ser_makes,
+            &ser_plain,
+            &arg_vts,
+            lifted_type_idx,
+            template,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_multi_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+            &abi_plain,
+        ));
+    }
     // A byte-rope shared closure result → the mixed BYTES envelope (N makes + shared list-`call` + the plain
     // exports as top-level funcs). A scalar result takes the by-value mixed envelope.
     if ret_is_bytes {

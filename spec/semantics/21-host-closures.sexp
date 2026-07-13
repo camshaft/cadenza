@@ -1536,3 +1536,48 @@
               (export a) (export b) (export c)))
   (call   b (: 7 Int64) (: 2 Int64))
   (output (: (tuple 2 7) (Tuple Int64 Int64))))
+
+; A COMPOUND (tuple/record) closure RESULT on the MIXED path — a compound-returning closure exported
+; ALONGSIDE a plain non-closure export. The closure crosses via the resource envelope (`make-<name>` + a
+; shared `call` returning the value form as `list<u8>`); each plain export rides as an ordinary top-level
+; component func. Same value-form core as the multi-export compound path, with the plain-export slots the
+; mixed shape threads. The host decodes the closure result to `(: value T)`; a plain scalar renders directly.
+
+(case "a tuple-returning closure alongside a plain export — the closure"
+  (doc    "`mk : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n n+1)`, alongside a plain `two : ()
+           -> 2`. `call(mk-handle, 5)` walks the returned tuple → `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins
+           the compound value-form result on the MIXED path (closure + plain export).")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "a tuple-returning closure alongside a plain export — the plain"
+  (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, rendered directly — NOT a
+           value-form document). Confirms the plain top-level export is reachable when a compound-result
+           closure shares the component.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "a record-returning closure alongside a parameterized plain export — the closure"
+  (doc    "`mk : () -> (-> Int64 (Record (a Int64) (b Int64)))` returns `(record (a n) (b 2n))`, beside a
+           parameterized plain `inc : (Int64) -> Int64`. `call(mk-handle, 4)` → `(: (record (a 4) (b 8))
+           (Record (a Int64) (b Int64)))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (a n) (b (* n 2)))))
+              (def (inc (: x Int64)) (+ x 1))
+              (export mk) (export inc)))
+  (call   mk (: 4 Int64))
+  (output (: (record (a 4) (b 8)) (Record (a Int64) (b Int64)))))
+
+(case "a record-returning closure alongside a parameterized plain export — the plain"
+  (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
+           record-result closure.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (a n) (b (* n 2)))))
+              (def (inc (: x Int64)) (+ x 1))
+              (export mk) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))
