@@ -77,6 +77,10 @@ enum Cmd {
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
     /// exits non-zero if any error-severity fault is present.
     Check(CheckArgs),
+    /// Apply every VERIFIED fix in FILE — each proposed fix that, applied + re-checked, actually clears
+    /// its diagnostic — and write the repaired program back (or preview with `--diff`/`--dry-run`).
+    /// Turns "here is the fix" into "fixed it": the capstone of `cdz check`'s structured suggestions.
+    Fix(FixArgs),
     /// Go-to-definition: the defining occurrence of the name at a source BYTE OFFSET in FILE, as
     /// `file:line:col`.
     Def(DefArgs),
@@ -111,6 +115,7 @@ fn main() -> ExitCode {
         Cmd::TypeAt(a) => run_type_at(&a),
         Cmd::Uses(a) => run_uses(&a),
         Cmd::Check(a) => run_check(&a),
+        Cmd::Fix(a) => run_fix(&a),
         Cmd::Def(a) => run_def(&a),
         Cmd::Scope(a) => run_scope(&a),
         Cmd::Exports(a) => run_exports(&a),
@@ -385,6 +390,23 @@ struct CheckArgs {
     /// rule-verified fixes (e.g. the `_`-prefix silence) are always `verified` regardless.
     #[arg(long)]
     verify_fixes: bool,
+}
+
+#[derive(clap::Args)]
+struct FixArgs {
+    /// The program file to repair (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// Preview the repaired program on stdout WITHOUT writing the file (a unified diff of the change).
+    #[arg(long)]
+    diff: bool,
+    /// Print the repaired program on stdout WITHOUT writing the file (the full text, not a diff).
+    #[arg(long)]
+    dry_run: bool,
+    /// Also apply HEURISTIC fixes that verify (apply + re-check clears the fault) — by default `fix`
+    /// applies only fixes the COMPILER marked verified by a rule. With `--all`, any fix that recompiles
+    /// clean is applied (the `check --verify-fixes` bar). A fix that does not verify is NEVER applied.
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(clap::Args)]
@@ -754,6 +776,157 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// One repair `cdz fix` will apply: replace the source byte range `[from, to)` with `new_text`. This is
+/// the fix's edit already RESOLVED to a plain byte-range replacement — a `wrap` has its `…` filled with
+/// the original text, an `insert` has its target range narrowed to the closing paren — so applying it is
+/// a uniform splice, and a set of edits is applied by descending `from` (later edits first) so earlier
+/// byte offsets stay valid.
+struct Edit {
+    from: usize,
+    to: usize,
+    new_text: String,
+}
+
+/// `cdz fix FILE` — apply every VERIFIED fix and write the repaired program back. Runs the same
+/// `Diagnostics` query as `check`, and for each diagnostic that carries a fix, KEEPS the fix only if it
+/// verifies: applying it to the source and re-checking clears that diagnostic's code (the D11 harness,
+/// `apply_fix_to_source` + `fix_clears_code`). By default only fixes the compiler ALREADY marked
+/// verified (a rule) plus, with `--all`, any heuristic fix that so verifies — a fix that does not verify
+/// is never applied. The kept edits are applied by descending start offset (so offsets don't shift under
+/// each other) skipping any that overlap an already-applied one; the result is written back, or previewed
+/// with `--dry-run` (full text) / `--diff` (a unified diff). Exit 0 on success.
+fn run_fix(args: &FixArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let is_ml = is_ml_source(&args.file);
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let diag_text = String::from_utf8_lossy(bytes);
+
+    // Collect the edits to apply. Each Diagnostics line is `severity  code  node  fix-kind  fix-node
+    // fix-replacement  fix-verified  message` (8 TAB cols); a fix has a real `fix-node`.
+    let mut edits: Vec<Edit> = Vec::new();
+    let mut considered = 0usize;
+    let mut skipped_unverified = 0usize;
+    for line in diag_text.lines() {
+        let cols: Vec<&str> = line.splitn(8, '\t').collect();
+        if cols.len() < 8 {
+            continue;
+        }
+        let (code, fix_kind, fix_node, fix_repl, fix_verified) =
+            (cols[1], cols[3], cols[4], cols[5], cols[6]);
+        if fix_node == "-" || code == "-" {
+            continue; // no actionable fix
+        }
+        considered += 1;
+        // Resolve the fix's target byte range from the span table.
+        let Some(span) = fix_node
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| spans.get(cadenza_syntax::StructId(n)))
+        else {
+            continue;
+        };
+        let (from, to) = (span.start, span.end);
+        // Decide whether to apply: a compiler-verified fix always; a heuristic one only under `--all`
+        // AND only if it actually verifies (apply + re-check clears the code — never apply blind).
+        let rule_verified = fix_verified == "verified";
+        let apply = if rule_verified {
+            true
+        } else if args.all {
+            apply_fix_to_source(&source, fix_kind, from, to, fix_repl)
+                .map(|edited| fix_clears_code(&edited, is_ml, code))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if !apply {
+            skipped_unverified += 1;
+            continue;
+        }
+        // Resolve the fix to a plain `[from,to) → new_text` splice — the same three shapes
+        // `apply_fix_to_source` realizes, but recorded as a precise byte-range edit so a SET of them
+        // applies uniformly (descending offset) below. `replace`/`wrap` target `[from,to)`; `insert`
+        // splices before the target list's closing paren.
+        let edit = match fix_kind {
+            "insert" => {
+                let inner_end = source[..to].rfind(')').unwrap_or(to);
+                Edit {
+                    from: inner_end,
+                    to: inner_end,
+                    new_text: format!(" {fix_repl}"),
+                }
+            }
+            "wrap" => Edit {
+                from,
+                to,
+                new_text: fix_repl.replace(rcdzc::WRAP_HOLE, &source[from..to]),
+            },
+            _ => Edit {
+                from,
+                to,
+                new_text: fix_repl.to_string(),
+            },
+        };
+        edits.push(edit);
+    }
+
+    if edits.is_empty() {
+        eprintln!(
+            "{PROG}: {}: no applicable fixes ({considered} candidate fix(es), {skipped_unverified} not applied)",
+            args.file
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    // Apply by DESCENDING start offset so each splice leaves earlier offsets intact; skip an edit that
+    // overlaps one already applied (defensive — two fixes on the same span).
+    edits.sort_by_key(|e| std::cmp::Reverse(e.from));
+    let mut repaired = source.clone();
+    let mut applied = 0usize;
+    let mut last_from = repaired.len() + 1;
+    for e in &edits {
+        if e.to > last_from {
+            continue; // overlaps a later edit already applied — skip
+        }
+        if e.from > e.to || e.to > repaired.len() {
+            continue;
+        }
+        repaired.replace_range(e.from..e.to, &e.new_text);
+        last_from = e.from;
+        applied += 1;
+    }
+
+    if args.diff {
+        print!(
+            "{}",
+            cadenza_syntax::query::diff::unified(&source, &repaired, &args.file, &args.file)
+        );
+        return ExitCode::SUCCESS;
+    }
+    if args.dry_run {
+        print!("{repaired}");
+        return ExitCode::SUCCESS;
+    }
+    if let Err(e) = std::fs::write(&args.file, &repaired) {
+        eprintln!("{PROG}: writing {}: {e}", args.file);
+        return ExitCode::FAILURE;
+    }
+    eprintln!("{PROG}: {}: applied {applied} fix(es)", args.file);
+    ExitCode::SUCCESS
 }
 
 /// `cdz def FILE OFFSET` — go-to-definition. Resolves the offset to the reference node (shared

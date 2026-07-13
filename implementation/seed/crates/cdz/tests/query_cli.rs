@@ -1240,6 +1240,94 @@ fn check_verify_fixes_upgrades_a_confirmed_heuristic_fix_to_verified() {
 }
 
 #[test]
+fn fix_all_applies_a_verified_did_you_mean_and_the_result_compiles_clean() {
+    // `cdz fix --all` turns "here's the fix" into "fixed it": the `computee`→`compute` edit verifies
+    // (recompiles clean), so it is applied to the file — and re-checking the repaired file is clean.
+    let dir = scratch_dir("fix_apply");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    assert!(
+        stderr.contains("applied 1 fix"),
+        "reports the count: {stderr}"
+    );
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(compute 1)") && !repaired.contains("computee"),
+        "the file was repaired: {repaired}"
+    );
+    // The repaired file re-checks clean (the CDZ0101 is gone) — exit 0.
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_dry_run_previews_without_writing() {
+    // `--dry-run` prints the repaired program but leaves the file untouched.
+    let dir = scratch_dir("fix_dry");
+    let f = dir.join("prog.sexp");
+    let original = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n";
+    std::fs::write(&f, original).unwrap();
+    let (ok, stdout, _) = run(&["fix", "--all", "--dry-run", f.to_str().unwrap()], "");
+    assert!(ok);
+    assert!(
+        stdout.contains("(compute 1)"),
+        "previews the repair: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "the file is NOT modified by --dry-run"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_without_all_leaves_a_heuristic_only_file_untouched() {
+    // Default `fix` applies only COMPILER-verified (rule) fixes; a file whose only fix is heuristic
+    // (a did-you-mean) is left untouched and reports no applicable fixes.
+    let dir = scratch_dir("fix_noall");
+    let f = dir.join("prog.sexp");
+    let original = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n";
+    std::fs::write(&f, original).unwrap();
+    let (ok, _, stderr) = run(&["fix", f.to_str().unwrap()], "");
+    assert!(ok);
+    assert!(
+        stderr.contains("no applicable fixes"),
+        "nothing applied without --all: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "the file is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_applies_a_rule_verified_fix_without_all() {
+    // The compiler's OWN verified fix (CDZ0306 `_`-prefix silence) applies WITHOUT `--all` — it is
+    // proven by a rule, not a recompile. `q` unused → `_q`, leaving `p` untouched.
+    let dir = scratch_dir("fix_rule");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (f p q) (+ p 1)) (export f))\n").unwrap();
+    let (ok, _, stderr) = run(&["fix", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(f p _q)"),
+        "the unused param is prefixed: {repaired}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");
