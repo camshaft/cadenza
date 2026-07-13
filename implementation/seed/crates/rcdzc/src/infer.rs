@@ -1287,6 +1287,42 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             return;
         }
     }
+    // `Map.insert m k v` — the inserted KEY must agree with the map's key type AND the inserted VALUE with
+    // its value type (collections-and-text.md §A Map Associates Keys With Values — keys of ONE type with
+    // values of ONE type). A mismatch is CDZ0201 (a map homogeneity violation, exactly as the `(map …)`
+    // literal is — coded Malformed), NOT the CDZ0203 the generic scheme-unify below would give. Read the
+    // map OPERAND's solved `Ty::Map(k, v)` and compare the arg types via `agrees_with` (the same
+    // structural agreement the literal's homogeneity check uses); a still-unsolved map operand
+    // (`Ty::Any`/a var) is skipped (its own fault, if any, surfaces elsewhere).
+    if args.len() == 3
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::MapInsert)
+        && let Ty::Map(kt, vt) = type_of(db, args[0])
+    {
+        let key_ty = type_of(db, args[1]);
+        let val_ty = type_of(db, args[2]);
+        if !kt.agrees_with(&key_ty) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert key type disagrees with the map's key type (CDZ0201)");
+            out.push(Reject::coded(
+                Code::Malformed,
+                "a map associates keys of one type (the inserted key's type differs from the map's)",
+            ));
+        }
+        if !vt.agrees_with(&val_ty) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Map.insert value type disagrees with the map's value type (CDZ0201)");
+            out.push(Reject::coded(
+                Code::Malformed,
+                "a map associates values of one type (the inserted value's type differs from the map's)",
+            ));
+        }
+        if !kt.agrees_with(&key_ty) || !vt.agrees_with(&val_ty) {
+            // Descend into the operands for their own faults, then stop (do NOT run the generic
+            // scheme-unify, which would ALSO report the same mismatch as a CDZ0203 duplicate).
+            for &a in args {
+                collect(db, a, out);
+            }
+            return;
+        }
+    }
     // A LIST constructor (`list` alias) applied — its arguments are its ELEMENTS, and a list is
     // HOMOGENEOUS: every element must share one type (collections-and-text.md §A List Is A Homogeneous
     // Sequence). Unify each element's type against the first; a mismatch (`(list 1 true)`) is CDZ0203. The
