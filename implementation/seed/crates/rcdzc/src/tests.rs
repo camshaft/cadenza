@@ -22306,6 +22306,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_one_hole_continuation_body_reads_an_enclosing_parameter() {
+        // The E5 pure one-hole fold synthesizes the folded body with `push_list` (root parent `None`), and
+        // its type-consistency guard re-runs `type_errors` on that body BEFORE the lowering site re-parents
+        // it. So an outer name in the body — an enclosing function PARAMETER — must be re-anchored to the
+        // handle's site FIRST, else the guard reads it unbound and OVER-DECLINES. `(handle … (+ x
+        // (Amb.flip)))` with x=main's param: C=(+ x □), arm `(+ 1 (resume 10 s))` → `(+ 1 (+ x 10))`. x=100
+        // → `(+ 1 (+ 100 10))` = 111. Pins the reparent-before-guard so a param-referencing body folds.
+        use wasmtime::component::Val;
+        let direct = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ x (Amb.flip)))) (export main))";
+        let c = compile_component(&crate::codec::encode(&parse(direct)))
+            .expect("a pure one-hole body reading an enclosing param folds");
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(100)]), 111);
+        // The SAME re-anchoring makes a distributed if-branch reading the param fold too: `(if (< 3 5) (+ x
+        // (Amb.flip)) 0)`, x=100 → the true branch `(+ 1 (+ 100 10))` = 111.
+        let branch = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ x (Amb.flip)) 0))) (export main))";
+        let cb = compile_component(&crate::codec::encode(&parse(branch)))
+            .expect("a distributed if-branch reading an enclosing param folds");
+        assert_eq!(run_returns_with::<i64>(&cb, "main", &[Val::S64(100)]), 111);
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /

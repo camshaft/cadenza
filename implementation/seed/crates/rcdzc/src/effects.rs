@@ -1313,6 +1313,15 @@ pub fn reduce_handle(
         // names resolve against the handle scope (the structural splice copy re-parents them). The
         // next-state is dead — nothing after the perform reads state on a pure spine.
         let folded = rewrite_resume_to_context(db, substituted, body, perform);
+        // Graft the synthesized `folded` UNDER the original handle's site BEFORE the type-check below, so a
+        // FREE name inside it — an enclosing function's parameter or a match-arm binder used in the handle
+        // body, `(handle … (+ x (Amb.flip)))` — resolves up the original lexical chain instead of reading
+        // unbound. `push_list` leaves a synthesized root's parent `None`; the lowering site re-parents the
+        // final result, but the `type_errors` guard here runs FIRST, so without this an outer-param body
+        // would spuriously fault (unbound name) and OVER-DECLINE. Parent to the `handle` node itself (the
+        // same discipline the lowering-site reparent uses — see lower.rs) so the scope walk ascends
+        // folded → handle → … and a binder form above still recognizes the handle as its body child.
+        reparent_under_handle_site(db, folded, body);
         // TYPE-CONSISTENCY GUARD (the resumptive analogue of the abortive guard above). A `resume` node
         // types as `Ty::Any` (infer.rs), so an arm body `(+ 1 (resume 10 s))` type-checks LENIENTLY — the
         // `+` accepts the `Any`-typed resume. But `(resume v s)` yields `C[v]`, which has the handle BODY's
@@ -1338,6 +1347,20 @@ pub fn reduce_handle(
         return Some(abort);
     }
     Some(rewritten)
+}
+
+/// Graft the synthesized `folded` body into the lexical slot the (post-hoist) handle `body` occupies, so a
+/// free name inside `folded` — an enclosing function parameter or a match-arm binder the handle body
+/// references — resolves up the SAME scope chain the original `body` did. `body`'s parent is the handle
+/// node (or, in a distributed branch, the `if`/arm above it), which itself ascends to the enclosing
+/// `def`/`fn`/`match`; parenting `folded` at `body`'s parent + child index reproduces exactly that chain.
+/// This lets the `type_errors` guard in `reduce_handle` type the folded term with its free names bound
+/// (else an outer-param body over-declines with a spurious unbound-name fault). A no-op if `body` is the
+/// arena root (no parent) — a top-level handle body has no enclosing scope to reach anyway.
+fn reparent_under_handle_site(db: &mut Db, folded: StructId, body: StructId) {
+    if let Some(parent) = db.parent_of(body) {
+        db.reparent(folded, Some(parent), db.child_ix_of(body) as u32);
+    }
 }
 
 /// HANDLER DISTRIBUTION over a pure-conditioned tail `if` (a commuting conversion). If `body` is an `(if c
