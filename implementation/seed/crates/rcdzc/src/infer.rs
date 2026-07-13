@@ -1853,11 +1853,38 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // A ref's target-node fault is reported when that node is collected on its own. A bare
         // intrinsic value and the atomic leaves have no sub-faults. A `SumPayload` (a variant binder's
         // payload read) has no sub-fault of its own — the scrutinee's faults surface at the match.
+        // A bare integer literal whose width DEFAULTED (nothing annotated/inferred it, so it grounds to
+        // the default signed `Int64`) but whose VALUE does not fit signed-64 is a MALFORMED literal
+        // (CDZ0201) — `9223372036854775808` (Int64.max+1), `0xFFFFFFFFFFFFFFFF` (fits UNSIGNED-64 but a
+        // bare literal is signed): a number with no width to blame, not a name and not an out-of-range-
+        // for-a-chosen-width (which stays CDZ0302, checked at the annotation in the `Annot` arm). 01-
+        // literals "an out-of-range integer literal is a malformed literal, not an unbound name".
+        Resolved::Int(v) => {
+            // A literal that is the direct operand of an annotation `(: LIT T)` is checked against `T`
+            // by the `Annot` arm (CDZ0302 on an over-width annotated literal); its own deferred type
+            // here would misfire. So skip an annotated literal — only a literal with NO width in sight
+            // (defaulted to `Int64`) is judged malformed here.
+            let annotated = db
+                .parent_of(id)
+                .and_then(|p| db.ast.as_form(p, ":"))
+                .and_then(|t| t.first().copied())
+                == Some(id);
+            if !annotated
+                && let Ty::Int(it) = type_of(db, id)
+                && !it.width_is_fixed()
+                && !v.fits_width(true, crate::ty::DEFAULT_INT_WIDTH)
+            {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds the default Int64 (malformed, CDZ0201)");
+                out.push(Reject::coded(
+                    Code::Malformed,
+                    "integer literal is out of range for Int64",
+                ));
+            }
+        }
         Resolved::Prim(_)
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
         | Resolved::Param { .. }
-        | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
