@@ -1922,6 +1922,43 @@ fn is_definite_non_function(ty: &Ty) -> bool {
     }
 }
 
+/// Whether `ty` is a DEFINITE non-sum type a variant pattern could never match — a scalar (`Int`, `Bool`,
+/// `Float`, `Unit`), a `String`/`Bytes`, a `List`/`Map`/`Set`, a tuple, or a record. Excludes `Ty::Sum`
+/// and `Ty::Nominal` (a variant pattern's legitimate targets) AND the UNDETERMINED types `Any`/`Var`/
+/// `Type`/`Fn` — an unsolved scrutinee must still DECLINE, never be rejected here (a not-yet-inferred
+/// parameter grounds to `Any`; rejecting it would fault a program a later solve types fine). So a variant
+/// pattern over such a scrutinee is a genuine confusion, whereas over an undetermined one it is unknown.
+fn definite_non_sum_scalar(ty: &Ty) -> bool {
+    !matches!(
+        ty,
+        Ty::Sum { .. } | Ty::Nominal { .. } | Ty::Any | Ty::Var(_) | Ty::Type | Ty::Fn(_, _)
+    )
+}
+
+/// Whether the match PATTERN at `pat` is headed by a VARIANT CONSTRUCTOR — `(C.Red)`, `(Some x)`, a bare
+/// nullary variant name `None`, or such a pattern under a `(guard <pat> <cond>)` wrapper. Peels the guard,
+/// then reads the pattern's constructor head the way the binding-pattern classifier does (a bare atom /
+/// `(. Sum V)` member used whole, or a `(head arg…)` application's head) and asks `variant_owner_decl`
+/// whether it names a sum's variant. `false` for a literal / bare binder / wildcard / tuple pattern — none
+/// of which is variant-specific, so none conflicts with a scalar scrutinee.
+fn pattern_is_variant_ctor(db: &mut Db, pat: StructId) -> bool {
+    // Peel a `(guard <inner-pat> <cond>)` wrapper — the variant-ness is the inner pattern's.
+    let inner = match db.ast.as_form(pat, "guard") {
+        Some(g) if g.len() == 2 => g[0],
+        _ => pat,
+    };
+    let head = match db.ast.get(inner) {
+        crate::ast::Struct::Atom(_) => inner,
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            // A bare member `(. Sum V)` used as a whole pattern — the ctor is the pattern itself.
+            Some(first) if db.ast.as_name(first) == Some(".") => inner,
+            Some(first) => first,
+            None => return false,
+        },
+    };
+    crate::eval::variant_owner_decl(db, head).is_some()
+}
+
 /// Whether the lambda `head` REFERENCES its parameter whose name occurrence is `param_occ` anywhere in
 /// its body — i.e. the parameter is USED, so its argument appears (substituted) in the reduced body and
 /// need not be re-descended for faults. A body reference to a parameter resolves (via resolve's
@@ -3290,6 +3327,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // actionable fix to `check`/`--json`/`fix` without raising false alarms.
             if let Some(r) = crate::lower::match_nonexhaustive_fault(db, id) {
                 out.push(r);
+            }
+            // SCRUTINEE / PATTERN TYPE COMPATIBILITY: a VARIANT-constructor pattern (`(C.Red)`, `(Some x)`)
+            // over a scrutinee whose type is a DEFINITE NON-SUM — a scalar `(match 5 ((C.Red) …))`, a Bool,
+            // a Float, a String — is a type confusion: the scrutinee has no variants to dispatch on. Reject
+            // CDZ0203 (the same code `(: 5 Bool)` gets) rather than letting `lower_match` DECLINE it ("a
+            // match pattern that is not a scalar literal or `_`"), which grades a genuine type error as a
+            // to-do. Guarded on a DEFINITE non-sum scrutinee (`definite_non_sum_scalar`) so an undetermined
+            // scrutinee (`Any` / an unsolved var — a not-yet-inferred param) still declines cleanly, never a
+            // spurious reject; a mismatched-SUM pattern (a foreign variant over a different sum) is caught by
+            // `pattern_constraints` in lowering with its own message, so this only adds the SCALAR case.
+            let st = type_of(db, scrutinee);
+            if definite_non_sum_scalar(&st) {
+                for (pat, _) in &arms {
+                    if pattern_is_variant_ctor(db, *pat) {
+                        out.push(Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "a variant pattern cannot match a scrutinee of type {} — it is not a sum",
+                                st.render_name()
+                            ),
+                        ));
+                        break;
+                    }
+                }
             }
             collect(db, scrutinee, out);
             for (_, body) in &arms {
