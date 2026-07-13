@@ -17757,6 +17757,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_handler_arm_op_does_not_also_report_no_home() {
+        // A misspelled arm op (`emitt` for declared `emit`) is the primary CDZ0403 ("did you mean
+        // `emit`?", with its fix). It must NOT ALSO report CDZ0401 no-home on the handled body's
+        // `(E.emit …)`: the arm typo leaves `emit` undischarged, so the perform spuriously looks
+        // home-less — a cascade of the arm typo (fixing the arm spelling clears both). Only the root
+        // CDZ0403 should surface.
+        let src = "(do (effect E (op emit (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((emitt (v) s (resume unit s))) (E.emit 5))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let codes: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
+        assert!(
+            codes.iter().any(|c| c == "CDZ0403"),
+            "the misspelled arm op is a CDZ0403; got {codes:?}"
+        );
+        assert!(
+            !codes.iter().any(|c| c == "CDZ0401"),
+            "the no-home CDZ0401 is a cascade of the arm typo and must be suppressed; got {codes:?}"
+        );
+    }
+
+    #[test]
     fn an_unbound_effect_name_in_a_handle_anchors_to_a_user_node() {
         // `(handle Nope …)` names an effect that does not exist → CDZ0101. The desugar drops the head
         // effect name and projects it into each arm as `(. Nope op)`; the FIRST arm reuses the SOURCE

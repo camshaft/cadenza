@@ -941,6 +941,16 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_noncanonical_handle_reject && r.code == Some(Code::EffectNoHome) {
                 return false;
             }
+            // Likewise: a CDZ0401 (no home) that is the CONSEQUENCE of a MALFORMED HANDLER — a misspelled
+            // arm op (CDZ0403) or a missing arm (CDZ0405) — leaves the effect's operation set only
+            // partly discharged, so the handled body's perform spuriously looks home-less. `(handle E …
+            // ((emitt …)) (E.emit …))` reports the arm-typo CDZ0403 ("did you mean `emit`?", with its
+            // fix) AND a derived CDZ0401 on `(E.emit …)`; fixing the arm spelling clears BOTH. Drop the
+            // CDZ0401 in favor of the CDZ0403/CDZ0405 that names the actual, fixable defect (one primary
+            // "no" per root cause — `reference-compiler.md` §Outcomes Are Ordered By Safety).
+            if has_malformed_handler_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
             // An unanchored fault that also appears ANCHORED (same code + message) is that fault minus
             // its location — drop it, the anchored copy already carries the issue with a line:col.
             if r.at.is_none() && anchored_keys.contains(&(r.code, r.message.as_str())) {
