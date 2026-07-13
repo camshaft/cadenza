@@ -89,6 +89,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Lists.tsx")),
   },
   {
+    slug: "strings",
+    title: "Strings & text",
+    blurb: "Unicode text, joining, and character vs byte length.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Strings.tsx")),
+  },
+  {
     slug: "errors",
     title: "Errors & absence",
     blurb: "Option, Result, safe indexing, and checked arithmetic.",
