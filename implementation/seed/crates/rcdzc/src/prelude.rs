@@ -639,7 +639,16 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
 /// The `String` module record — a record with one field per string OPERATION (reached by member access
 /// `(. String scalar-len)`). Each operation is an operator record: its `(meta t)` is the operation's
 /// type (`String → Int64`), its `(meta apply)` the native prim. This increment realizes the two LENGTH
-/// queries; concat/at/slice arrive with the runtime byte-rope ops.
+/// queries; concat/at/slice arrive with the runtime byte-rope ops. The two lengths are SEPARATELY NAMED
+/// (`scalar-len` / `byte-len`) — there is NO unqualified `len` field, so a length query always names
+/// which count it means; and `byte-len` is a direct `str-byte-len` prim, not a count over a materialized
+/// UTF-8 byte value.
+//= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+//# A string MUST offer a length counted in Unicode scalar values and a length counted in the bytes of its UTF-8 encoding as two separately-named operations, so that neither meaning is the unqualified default an author could confuse for the other.
+//= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+//# A string MUST NOT offer an unqualified length operation, so that every length query names whether it counts scalar values or bytes.
+//= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+//# The byte length MUST be obtainable without materializing the UTF-8 encoding as a separate value, so that a size query an author expects to be cheap is not defined only in terms of an intermediate byte sequence.
 fn string_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta t)` = the ground type-value `String` (`(intrinsic "String")` → `Ty::String`), so bare
@@ -713,6 +722,10 @@ fn string_module(ast: &mut Arenas) -> StructId {
 /// `Ty::Char` (`(intrinsic "Char")`), so bare `Char` in type position IS the type, while the operation
 /// fields still project. `to-int : Char → Int64` (total); `from-int : Int64 → (Option Char)` (fallible —
 /// `None` for a surrogate / out-of-range integer). Both FOLD on a constant operand.
+//= spec/capabilities/collections-and-text.md#a-char-converts-to-and-from-an-integer-totally
+//# Converting a char to its integer scalar value MUST be total, because every char is a scalar value that has an integer code point.
+//= spec/capabilities/collections-and-text.md#a-char-converts-to-and-from-an-integer-totally
+//# Converting an integer to a char MUST yield an optional char that is absent when the integer is not a Unicode scalar value — outside `U+0000..=U+10FFFF` or within the surrogate range — so that an out-of-range integer is handled as data rather than producing a char that is not a valid scalar.
 fn char_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let ty_val = intrinsic_node(ast, "Char");
