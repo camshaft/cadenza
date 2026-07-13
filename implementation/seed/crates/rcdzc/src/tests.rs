@@ -19891,12 +19891,23 @@ mod r1_reference {
         make.post_return(&mut store).expect("make post");
         let mut out = [Val::Bool(false)];
         let r = encode.call(&mut store, &handle, &mut out);
-        match r {
-            Ok(()) => {
-                eprintln!("PROBE resource.rep-on-borrow → OK (rep call fine; trap is in the walk)")
-            }
-            Err(e) => eprintln!("PROBE resource.rep-on-borrow → TRAP: {e}"),
-        }
+        // FINDING (wasmtime 37): this TRAPS with "unknown handle index <rep>" — NOT a resource-type
+        // mismatch. The canonical ABI's `lift_borrow` hands the guest the REP DIRECTLY (resources.rs
+        // `resource_lift_borrow` returns `rep`), so calling `resource.rep(param)` treats the rep as a
+        // table index and fails. The correct borrow design uses the param AS the rep (no `resource.rep`)
+        // — proven by `r2_runtime_resource::a_borrow_self_encode_walks_and_crosses`. So this documents
+        // WHY `resource.rep`-on-borrow is wrong, not a limitation of borrow itself.
+        let err =
+            r.expect_err("resource.rep on a borrow must trap (the rep is the param, not an index)");
+        let chain: String = err
+            .chain()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("unknown handle index"),
+            "expected an 'unknown handle index' trap (rep used as table index), got: {chain}"
+        );
     }
 
     #[test]
@@ -20603,6 +20614,374 @@ mod r2_runtime_resource {
             assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
         } else {
             eprintln!("[R2] runtime wasm not found; skipping composed walk");
+        }
+    }
+
+    /// The PROGRAM core for the BORROW design: `encode` takes `borrow<t>` self and uses its i32 param
+    /// DIRECTLY as the heap rep — NO `resource.rep` (which traps on a borrow: the canonical ABI's
+    /// `lift_borrow` returns the rep itself, not a table index — verified in wasmtime 37's
+    /// `resource_lift_borrow`) and NO `drop` (a borrow does not own the value; the caller keeps it, so
+    /// the resource stays live for repeated calls). Identical to `walker_core` EXCEPT the encode prologue
+    /// (`local.get handle` used as the rep, no `resource.rep`) and no trailing drop. `resource.rep` is
+    /// therefore not imported; only `resource-new` (for `make`) is threaded from `heap`.
+    fn walker_core_borrow(tpl: &ValueFormTemplate, elems: &[i64]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = walker_ops();
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut import_type_idx = Vec::new();
+        for op in ops {
+            let (p, r) = op_core_functype(op);
+            types.ty().function(p, r);
+            import_type_idx.push(import_type_idx.len() as u32);
+        }
+        let rnew_ty = import_type_idx.len() as u32;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // resource-new (i32)->i32
+        let make_ty = rnew_ty + 1;
+        types.ty().function(vec![], vec![ValType::I32]);
+        let encode_ty = make_ty + 1;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]);
+        let realloc_ty = encode_ty + 1;
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        );
+        m.section(&types);
+
+        // Imports: the walker ops + resource-new ONLY (no resource-rep — the borrow rep is the param).
+        let mut imports = ImportSection::new();
+        for (i, op) in ops.iter().enumerate() {
+            imports.import("heap", op.name, EntityType::Function(import_type_idx[i]));
+        }
+        imports.import("heap", "resource-new", EntityType::Function(rnew_ty));
+        m.section(&imports);
+        let idx_of = |name: &str| ops.iter().position(|o| o.name == name).unwrap() as u32;
+        let f_arr_alloc = idx_of("arr-alloc");
+        let f_arr_set = idx_of("arr-set");
+        let f_arr_get = idx_of("arr-get");
+        let f_box_int = idx_of("box-int");
+        let f_get_int = idx_of("get-int");
+        let f_rnew = ops.len() as u32; // resource-new is the last import
+
+        let make_fn = ops.len() as u32 + 1; // k ops + resource-new = k+1 imports
+        let encode_fn = make_fn + 1;
+        let realloc_fn = encode_fn + 1;
+        let mut funcs = FunctionSection::new();
+        funcs.function(make_ty);
+        funcs.function(encode_ty);
+        funcs.function(realloc_ty);
+        m.section(&funcs);
+
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("make", ExportKind::Func, make_fn);
+        exports.export("t-encode", ExportKind::Func, encode_fn);
+        exports.export("cabi_realloc", ExportKind::Func, realloc_fn);
+        m.section(&exports);
+
+        let tpl_len = tpl.bytes.len();
+        let ret_off = (tpl_len + 3) & !3;
+        let mut data_bytes = tpl.bytes.clone();
+        data_bytes.resize(ret_off, 0);
+        data_bytes.extend_from_slice(&0u32.to_le_bytes());
+        data_bytes.extend_from_slice(&(tpl_len as u32).to_le_bytes());
+
+        // make: build the tuple, then resource.new(handle) — UNCHANGED from the own version.
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(elems.len() as i32));
+        make.instruction(&Instruction::Call(f_arr_alloc));
+        for (i, &v) in elems.iter().enumerate() {
+            make.instruction(&Instruction::I32Const(i as i32));
+            make.instruction(&Instruction::I64Const(v));
+            make.instruction(&Instruction::Call(f_box_int));
+            make.instruction(&Instruction::Call(f_arr_set));
+        }
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+
+        // encode(borrow self): the param IS the rep (no resource.rep). Walk each hole; write its bytes.
+        // Do NOT drop (a borrow does not own). Locals: 0 = rep (the borrow param), 1 = i64 scratch.
+        let mut encode = Function::new(vec![(1, ValType::I64)]);
+        let rep = 0u32;
+        let scratch = 1u32;
+        for hole in &tpl.leaves {
+            let out_off = hole.offset as u64;
+            match hole.kind {
+                LeafFill::Int => {
+                    encode.instruction(&Instruction::LocalGet(rep));
+                    for &idx in &hole.path {
+                        encode.instruction(&Instruction::I32Const(idx as i32));
+                        encode.instruction(&Instruction::Call(f_arr_get));
+                    }
+                    encode.instruction(&Instruction::Call(f_get_int));
+                    encode.instruction(&Instruction::LocalSet(scratch));
+                    encode.instruction(&Instruction::LocalGet(scratch));
+                    encode.instruction(&Instruction::I64Const(0));
+                    encode.instruction(&Instruction::I64LtS);
+                    encode.instruction(&Instruction::If(BlockType::Empty));
+                    encode.instruction(&Instruction::I32Const((out_off - 2) as i32));
+                    encode.instruction(&Instruction::I32Const(3));
+                    encode.instruction(&Instruction::I32Store8(MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    }));
+                    encode.instruction(&Instruction::I64Const(0));
+                    encode.instruction(&Instruction::LocalGet(scratch));
+                    encode.instruction(&Instruction::I64Sub);
+                    encode.instruction(&Instruction::LocalSet(scratch));
+                    encode.instruction(&Instruction::End);
+                    // Write the 8 big-endian magnitude bytes at the hole offset.
+                    for b in 0..8u64 {
+                        encode.instruction(&Instruction::I32Const((out_off + b) as i32));
+                        encode.instruction(&Instruction::LocalGet(scratch));
+                        let shift = (7 - b) * 8;
+                        if shift > 0 {
+                            encode.instruction(&Instruction::I64Const(shift as i64));
+                            encode.instruction(&Instruction::I64ShrU);
+                        }
+                        encode.instruction(&Instruction::I32WrapI64);
+                        encode.instruction(&Instruction::I32Store8(MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                    }
+                }
+                LeafFill::Bool => {
+                    encode.instruction(&Instruction::I32Const(out_off as i32));
+                    encode.instruction(&Instruction::LocalGet(rep));
+                    for &idx in &hole.path {
+                        encode.instruction(&Instruction::I32Const(idx as i32));
+                        encode.instruction(&Instruction::Call(f_arr_get));
+                    }
+                    encode.instruction(&Instruction::Call(idx_of("get-bool")));
+                    encode.instruction(&Instruction::I32Const(8));
+                    encode.instruction(&Instruction::I32Add);
+                    encode.instruction(&Instruction::I32Store8(MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    }));
+                }
+            }
+        }
+        encode.instruction(&Instruction::I32Const(ret_off as i32));
+        encode.instruction(&Instruction::End);
+
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End);
+
+        let mut code = CodeSection::new();
+        code.function(&make);
+        code.function(&encode);
+        code.function(&realloc);
+        m.section(&code);
+        let mut data = DataSection::new();
+        data.active(0, &ConstExpr::i32_const(0), data_bytes.iter().copied());
+        m.section(&data);
+        m.finish()
+    }
+
+    /// The BORROW oracle: identical envelope EXCEPT `encode` is lifted against `borrow<t>` (not `own<t>`),
+    /// and the inner re-export component re-types `encode` against a borrowed self. `resource.rep` is NOT
+    /// threaded (the borrow core never calls it). This is the target production shape.
+    fn oracle_runtime_resource_component_borrow(core: &[u8], import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = walker_ops();
+        let mut c = ComponentBuilder::default();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+        let comp_fns: Vec<u32> = ops
+            .iter()
+            .map(|op| c.alias_export(inst, op.name, ComponentExportKind::Func))
+            .collect();
+        let lowered: Vec<(&str, u32)> = ops
+            .iter()
+            .zip(comp_fns)
+            .map(|(op, f)| (op.name, c.lower_func(f, [])))
+            .collect();
+        let drop_core = lowered
+            .iter()
+            .find(|(n, _)| *n == "drop")
+            .map(|(_, f)| *f)
+            .expect("drop op");
+        let heap_dtor_inst = c.core_instantiate_exports([("drop", ExportKind::Func, drop_core)]);
+        let dtor_idx = c.core_module_raw(&dtor_module());
+        let dtor_inst = c.core_instantiate(
+            dtor_idx,
+            [("heap-dtor", ModuleArg::Instance(heap_dtor_inst))],
+        );
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        // Only resource-new is threaded (no resource-rep — the borrow rep is the param).
+        let mut heap_exports: Vec<(&str, ExportKind, u32)> = lowered
+            .iter()
+            .map(|(n, f)| (*n, ExportKind::Func, *f))
+            .collect();
+        heap_exports.push(("resource-new", ExportKind::Func, rnew_core));
+        let heap_inst = c.core_instantiate_exports(heap_exports);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (borrow_t, bdef) = c.type_defined();
+        bdef.borrow(res_ty);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (encode_ty, mut enc2) = c.type_function();
+        enc2.params([("self", ComponentValType::Type(borrow_t))])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let encode_comp = c.lift_func(
+            encode_core,
+            encode_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        let inner_idx = c.component(inner_reexport_component_borrow());
+        let inst2 = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-encode", ComponentExportKind::Func, encode_comp),
+            ],
+        );
+        c.export(
+            "cadenza:run/run",
+            ComponentExportKind::Instance,
+            inst2,
+            None,
+        );
+        c.finish()
+    }
+
+    /// The borrow inner re-export component: `encode` re-typed against `borrow<t>` (both against the
+    /// imported abstract resource and re-declared against the exported one). Mirrors the proven
+    /// `r1_reference::inner_reexport_component_borrow` shape.
+    fn inner_reexport_component_borrow() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        let (borrow_imp, bd) = c.type_defined();
+        bd.borrow(imp_t);
+        let (list1, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_ty, mut ef) = c.type_function();
+        ef.params([("self", ComponentValType::Type(borrow_imp))])
+            .result(Some(ComponentValType::Type(list1)));
+        let enc_fn = c.import("import-func-encode", ComponentTypeRef::Func(enc_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od2) = c.type_defined();
+        od2.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (borrow_exp, bd2) = c.type_defined();
+        bd2.borrow(exp_t);
+        let (list2, ld2) = c.type_defined();
+        ld2.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_exp_ty, mut ef2) = c.type_function();
+        ef2.params([("self", ComponentValType::Type(borrow_exp))])
+            .result(Some(ComponentValType::Type(list2)));
+        c.export(
+            "encode",
+            ComponentExportKind::Func,
+            enc_fn,
+            Some(ComponentTypeRef::Func(enc_exp_ty)),
+        );
+        c
+    }
+
+    #[test]
+    fn a_borrow_self_encode_walks_and_crosses() {
+        // THE DECISIVE PROBE for the resource-with-methods redesign: `encode` takes `borrow<t>` and uses
+        // its param DIRECTLY as the heap rep (NO `resource.rep` — which traps on a borrow; the canonical
+        // ABI's `lift_borrow` returns the rep itself, confirmed in wasmtime 37's `resource_lift_borrow`)
+        // and does NOT drop (a borrow does not own — the value survives, so the resource is repeatable).
+        // If this composes + runs + decodes to the exact value form, the clean borrow design works
+        // end-to-end and the own-consume-and-drop hack can be retired. Build `(tuple 3 1)`, escape it as a
+        // borrow-self resource, walk it in encode(borrow), decode.
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = walker_core_borrow(&tpl, &[3, 1]);
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let comp = oracle_runtime_resource_component_borrow(&core, &import_name);
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("borrow runtime-resource component validates");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[borrow] runtime wasm not found; skipping composed borrow walk");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None, // resource-escape path: make() then encode(borrow)
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run composed borrow") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "(: (tuple 3 1) (Tuple Int64 Int64))");
+                eprintln!("PROBE borrow-self encode → OK: {s}");
+            }
+            cdz_run::Outcome::Trap(t) => panic!("borrow-self encode trapped: {t}"),
         }
     }
 
