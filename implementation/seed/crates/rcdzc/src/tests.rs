@@ -20985,6 +20985,34 @@ mod stage1 {
     }
 
     #[test]
+    fn an_inner_lambda_captures_an_enclosing_match_arm_binder() {
+        // OVER-REJECTION regression: a match-arm binder captured by a DIRECTLY-APPLIED inner lambda in the
+        // same arm was rejected CDZ0101 "unbound name". A match-arm binder resolves to a `SumPayload`
+        // (reading the arm's scrutinee), but `pin_free_vars`'s `ref_binder` returned None for a
+        // `SumPayload` — so the capture was never pinned, and β-reducing the inner lambda copied the
+        // reference fresh into the reduced orphan where it re-resolved unbound. Fixed by `ref_binder`
+        // returning the SumPayload's scrutinee as the capture representative → the occurrence is pinned →
+        // `beta_reduce`'s SumPayload capture-share exception shares it, preserving the resolution.
+        // `(match (A 7) ((A m) ((fn (x) (+ x m)) 3)) …)` = 3 + 7 = 10.
+        let sum = "(module m (type C (A Int64) (B)) \
+            (def (main) (match (A 7) ((A m) ((fn (x) (+ x m)) 3)) ((B) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(&compile_component(&crate::codec::encode(&parse(sum))).expect("compile"), "main"),
+            10,
+            "a sum-arm binder captured by a directly-applied inner lambda must resolve (was CDZ0101)"
+        );
+        // A TUPLE-pattern binder captured the same way (the binder is an `Elem`-path SumPayload).
+        let tup = "(module m \
+            (def (main) (match (tuple 7 9) ((tuple a b) ((fn (x) (+ x a)) 3)))) (export main))";
+        assert_eq!(run_returns::<i64>(&compile_component(&crate::codec::encode(&parse(tup))).expect("compile"), "main"), 10);
+        // NO REGRESSION of the working companions: the same binder used DIRECTLY, and captured through a
+        // TUPLE, still resolve (they took different paths and always worked).
+        let direct = "(module m (type C (A Int64) (B)) \
+            (def (main) (match (A 7) ((A m) (+ m 3)) ((B) 0))) (export main))";
+        assert_eq!(run_returns::<i64>(&compile_component(&crate::codec::encode(&parse(direct))).expect("compile"), "main"), 10);
+    }
+
+    #[test]
     fn a_lambda_forwarding_to_a_substituted_fn_param_runs_through_a_recursive_hof() {
         // The outer HOF `twice` is NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by
         // `main`'s concrete lambda. The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it

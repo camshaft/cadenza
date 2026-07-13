@@ -834,6 +834,8 @@ pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an inner binding shadows an outer one only within its scope
+pass	an inner lambda captures an enclosing match-arm binder and is applied
+pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
 pass	an integer literal in a type annotation's type position is rejected

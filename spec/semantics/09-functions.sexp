@@ -54,6 +54,26 @@
   (call   main (: 10 Int64))
   (output (: 15 Int64)))
 
+(case "an inner lambda captures an enclosing match-arm binder and is applied"
+  (doc    "The same capture over a MATCH-ARM binder rather than a `let` or a parameter: the `A` arm binds
+           `m` = 7, then an inner lambda `(fn (x) (+ x m))` captures `m` and is applied to 3, giving
+           3 + 7 = 10. A match-arm binder must be visible to an inner lambda's capture exactly as a `let`
+           binding or a parameter is (both above), and as `m` is when used directly `(+ m 3)`. The binder
+           resolves to a `SumPayload` reading the arm's scrutinee; that resolution must be PINNED as a
+           capture so β-reducing the applied inner lambda preserves it, rather than copying the reference
+           into the reduced body where it re-resolves unbound (which rejected a valid program CDZ0101).")
+  (input  (do (type C (A Int64) (B))
+              (def (main) (match (A 7) ((A m) ((fn (x) (+ x m)) 3)) ((B) 0))) (export main)))
+  (output (: 10 Int64)))
+
+(case "an inner lambda captures an enclosing tuple-pattern binder and is applied"
+  (doc    "The tuple-pattern companion: matching `(tuple 7 9)` binds `a` = 7 (an `Elem`-path binder), and an
+           inner lambda `(fn (x) (+ x a))` captures `a` and is applied to 3 → 10. Pins that the capture of a
+           pattern binder is general to a tuple-slot binder, not only a variant payload — both resolve to a
+           `SumPayload` (bare `Elem` vs `Payload` path) and both must be pinned as a capture.")
+  (input  (do (def (main) (match (tuple 7 9) ((tuple a b) ((fn (x) (+ x a)) 3)))) (export main)))
+  (output (: 10 Int64)))
+
 ; A capturing lambda BOUND to a name (a `let` binding) and then applied — `(let ((g (fn (x) (+ x k))))
 ; (g 5))` where `g` closes over an enclosing `k`. Binding the closure to a name does not change that it
 ; folds when applied: `g` is copy-propagated (a lambda value is never kept as a runtime slot), so `(g 5)`
@@ -284,7 +304,6 @@
            substituted; the `n` binder must re-resolve against the substituted scrutinee. `apply-to`
            applied to `(C.A 9)` yields 9. Was 'parameter reference has no local slot' when the substituted
            scrutinee's pattern binder kept its pre-substitution occurrence.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (apply-to f (: c C)) (f c))
@@ -296,7 +315,6 @@
   (doc    "The companion selecting the OTHER variant: the same callback applied (through the inlined HOF)
            to `(C.B)` takes the nullary arm → 0. Pins that the through-a-HOF nested reduction dispatches
            correctly across variants, not just the payload one.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (apply-to f (: c C)) (f c))
