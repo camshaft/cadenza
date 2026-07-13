@@ -84,7 +84,10 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 /// bodies actually REACH (the escaping delegated row, after nearer handlers interpose), so the imports
 /// the envelope emits mirror it exactly — one import per reached host op, and none for an op no body
 /// reaches. A program that delegates/reaches no host op collects the EMPTY set (an empty manifest = a
-/// pure program). (The value-heap runtime interface is collected separately, not counted here.)
+/// pure program). (The value-heap runtime interface is collected separately, not counted here — it is
+/// the one import that is NOT a host capability and never appears in this manifest.)
+//= spec/capabilities/capabilities-and-effects.md#the-value-heap-runtime-is-the-one-import-that-is-not-a-capability
+//# An import of the value-heap runtime interface MUST NOT be a host capability and MUST NOT appear in the manifest, so that reaching the runtime is an internal linkage the compiler controls rather than an effect that escapes to the host, and capability-safety stays auditable as "every import other than the one well-known runtime interface is a capability the manifest enumerates."
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
 //# The set of host operations a component imports MUST equal the set of capabilities its manifest enumerates.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly

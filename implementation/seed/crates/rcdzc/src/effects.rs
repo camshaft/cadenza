@@ -28,8 +28,12 @@
 //!   same shape a variant constructor / operator record has, so a performance rides the ordinary
 //!   `(meta apply)` dispatch:
 //!     - `(meta t)` — the operation's TYPE, the arrow `(-> Param Result)` written after the name. Read
-//!       when the operation is applied, so a perform-argument mismatch is an ordinary type error
+//!       when the operation is applied, so a performance `(Diag.emit code)` checks `code` against the
+//!       declared parameter type and yields the declared result type — typed exactly as an ordinary
+//!       function application, a perform-argument mismatch being an ordinary type error
 //!       (`capabilities-and-effects.md` §Performing An Operation Is Typed).
+//= spec/capabilities/capabilities-and-effects.md#performing-an-operation-is-typed-and-contributes-to-the-row
+//# Performing an operation MUST check its arguments against the operation's declared parameter types and yield the operation's declared result type, so that an effect operation is typed exactly as an ordinary function application is.
 //!     - `(meta apply)` — the `(intrinsic perform)` marker. Applying an operation projects this; it is
 //!       NOT a known `Prim` yet, so a perform that reaches lowering with no enclosing handler DECLINES
 //!       (E0 recognizes the surface; E1 resolves a perform to its handler and rewrites it away).
@@ -43,6 +47,24 @@
 //! `(meta effect-op)` carry the [`EffectDecl`]'s occurrence, so two effects that declare a same-named
 //! operation never collide (`capabilities-and-effects.md` §An Operation Is Reached Through Its Declaring
 //! Effect).
+//!
+//! An `(effect NAME (op f (-> A B)) …)` names the effect and binds each of its operations to an
+//! operation type, so an effect's operation set is a CLOSED, statically-known set of fields (not an open
+//! collection of ad-hoc names). Each operation is reached only THROUGH its declaring effect record
+//! (`Diag.emit` is member access off `Diag`), keyed by the declaration occurrence, so two effects may
+//! declare a same-named operation without collision and every performance names an unambiguous op.
+//= spec/capabilities/capabilities-and-effects.md#an-effect-declaration-names-the-effect-and-types-its-operations
+//# A program MUST be able to declare an effect that names it and binds each of its operations to an operation type, so that the set of operations an effect offers is a closed, statically-known set rather than an open collection of ad-hoc names.
+//= spec/capabilities/capabilities-and-effects.md#an-effect-declaration-names-the-effect-and-types-its-operations
+//# An operation MUST be reached through its declaring effect, so that two effects may each declare an operation of the same name without collision and the effect an operation belongs to is unambiguous at every performance and every handler arm.
+//!
+//! The synthesized record is ROUTING-AGNOSTIC: it binds operation names to types and identities but
+//! carries NO host binding, so declaring (or performing) an effect grants no capability on its own — a
+//! reached operation with no enclosing handler and no entrypoint delegation declines (the no-home
+//! check), and authority enters only where an entrypoint delegates. A library that declares or performs
+//! an effect therefore cannot enlarge the authority of a program that uses it.
+//= spec/capabilities/capabilities-and-effects.md#an-entrypoint-delegates-the-capabilities-it-grants-to-the-host
+//# Declaring an effect and its operations MUST NOT by itself grant any host capability: an effect declaration is a routing-agnostic contract, and only an entrypoint's delegation routes an effect's operations to the host, so that a library that declares or performs an effect cannot enlarge the authority of a program that uses it.
 //!
 //! **Deferred to E1.** These records carry the op TYPE + identity; the `(meta apply)` perform intrinsic
 //! declines at lowering until E1 makes the compile-time evaluator handler-context-aware and rewrites a

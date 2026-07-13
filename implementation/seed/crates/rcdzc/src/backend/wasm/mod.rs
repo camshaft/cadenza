@@ -3438,7 +3438,16 @@ fn emit_recursive_sum_resource(
 /// change re-pins it. The interface identity (`RUNTIME_IFACE`) is fixed for every program the generation
 /// emits, and the content hash (`REQUIRED_RUNTIME_HASH`) records the EXACT runtime the component
 /// requires, right in the import name embedded in the emitted component — so the artifact is
-/// self-describing and its execution is deterministic in the (program, runtime content address) pair:
+/// self-describing and its execution is deterministic in the (program, runtime content address) pair.
+///
+/// This single well-known interface is the ONE import exempt from the capability manifest: importing it
+/// constructs and inspects the program's runtime values and adds nothing to the escaping effect row, and
+/// it is a closed allowlist of exactly one — every OTHER import a program carries is a host function and
+/// therefore a capability the manifest enumerates.
+//= spec/capabilities/capabilities-and-effects.md#the-value-heap-runtime-is-the-one-import-that-is-not-a-capability
+//# The single, well-known value-heap runtime interface a program imports to construct and inspect its runtime values MUST NOT be counted as a host function, so that importing it adds nothing to the escaping effect row and a program that imports only it remains pure with an empty manifest.
+//= spec/capabilities/capabilities-and-effects.md#the-value-heap-runtime-is-the-one-import-that-is-not-a-capability
+//# Exactly one such runtime interface MUST be exempt — the value-heap runtime the compiler emits programs against, fixed at the declared-default location — and every other import a program carries MUST be treated as a host function and therefore a capability, so that the exemption is a closed allowlist of one and not an open class of non-effect imports.
 ///
 //= spec/contracts/component-abi.md#the-value-heap-runtime-crosses-by-a-well-known-import
 //# The identity of that runtime interface MUST be fixed at the declared-default location and MUST be the same for every program a generation emits, so that any conforming host can satisfy the import and the interface is a stable part of the ABI rather than a per-program choice.
