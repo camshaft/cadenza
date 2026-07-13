@@ -15097,6 +15097,26 @@ mod stage1 {
         assert_eq!(run_main("(do (def x 5) (def y (+ x 1)) y)"), 6);
     }
 
+    /// A WIDE `do` block compiles cheaply AND still detects its do-local declaration — the correctness
+    /// guard for the `is_binding_candidate` per-parent memo in `build_scope_skip`. That predicate is
+    /// O(children) for a `(do …)` (it scans the block's forms for a `def`/`module`), and it was called
+    /// ONCE PER CHILD of the block (the scope-skip build asks it with the parent per child) → O(N²) for a
+    /// wide block (6400 statements ≈ 216ms). The memo collapses the repeat to O(N). Behavior must be
+    /// unchanged: a do-local `(def h …)` buried among many value statements is STILL a binding candidate,
+    /// so a later reference to `h` resolves — a broken memo would mark the block non-binding and unbind `h`.
+    #[test]
+    fn a_wide_do_block_still_binds_its_local_declaration() {
+        // 200 value statements, then a do-local def, then a reference to it. The reference must resolve
+        // through the (memoized) binding-candidate detection.
+        let stmts: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
+        let src = format!("(do {stmts}(def (h n) (+ n 1)) (h 41))");
+        assert_eq!(run_main(&src), 42);
+        // And a leading do-local def is visible to a statement far LATER in a wide block.
+        let stmts2: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
+        let src2 = format!("(do (def x 7) {stmts2}x)");
+        assert_eq!(run_main(&src2), 7);
+    }
+
     #[test]
     fn a_do_local_declaration_shadows_last_wins_and_an_outer_binding() {
         // A repeated do-local declaration shadows the earlier one for what follows (last-wins, like a
