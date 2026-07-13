@@ -20854,4 +20854,30 @@ mod closure_host_resource {
             err.message
         );
     }
+
+    /// MULTI-EXPORT closures are NOT YET SUPPORTED — a program exporting two closures (or a closure
+    /// alongside another export) declines cleanly with a message NAMING the feature, rather than falling
+    /// through to the scalar multi-export path's generic "type `(-> A B)` has no component boundary
+    /// representation" (which reads as a type error, not an honest not-yet-built Todo). The single-export
+    /// closure escape fires only on `[e]`; N closure exports need a multi-export envelope (one `make` per
+    /// closure export). Pins the honest Todo until that increment lands.
+    #[test]
+    fn multiple_closure_exports_decline_naming_the_feature() {
+        use crate::testkit::parse;
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("two closure exports must DECLINE (multi-export closures not yet built)");
+        assert!(
+            err.message.contains("MORE THAN ONE closure")
+                && err.message.contains("multi-export closure envelope"),
+            "expected the multi-export-closures not-yet-supported message, got: {}",
+            err.message
+        );
+        assert!(
+            err.code.is_none(),
+            "a not-yet-built feature must DECLINE (uncoded), not carry a rejection code: {:?}",
+            err.code
+        );
+    }
 }

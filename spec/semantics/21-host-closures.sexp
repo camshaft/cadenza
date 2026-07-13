@@ -142,3 +142,57 @@
               (host (ask)
                 (fn ((: x Int64)) (+ x (ask.ask))))) (export main)))
   (error  CDZ0406))
+
+; RICHER CAPTURING closures — the C-HOST-2 make-forwarding + captured-cell machinery is arity- and
+; body-shape-agnostic, so a closure that captures SEVERAL values, drives control flow off a captured
+; Bool, binds a `let` in its body, or calls a top-level helper all cross the boundary and are invoked
+; by the host with no additional compiler support. Each `make(captures…)` builds the cell (closing over
+; the export's params), and `call(x)` dispatches the lifted body through the guest's `call_indirect`,
+; reading the captured environment back from the cell. These witness the CAPTURE path end-to-end past
+; the single-scalar-capture cases above.
+
+(case "a closure capturing two values is made and called by the host"
+  (doc    "`(def (both (: a Int64) (: b Int64)) (fn (x) (+ (+ a b) x)))` — the closure captures BOTH `a`
+           and `b`. The host `make(10, 20)` (closing over a=10, b=20 into the cell), then `call(5)` =
+           10 + 20 + 5 = 35. Pins that a closure cell carries MORE THAN ONE captured value, each read
+           back inside the `call` dispatch. The first two `(call …)` args are make's captures, the last
+           is the closure's argument.")
+  (input  (do (def (both (: a Int64) (: b Int64)) (fn ((: x Int64)) (+ (+ a b) x))) (export both)))
+  (call   both (: 10 Int64) (: 20 Int64) (: 5 Int64))
+  (output (: 35 Int64)))
+
+(case "a capturing closure whose body uses the capture after an inner computation"
+  (doc    "`(def (scale (: k Int64)) (fn (x) (* (+ x 1) k)))` — the captured `k` multiplies an inner
+           `(+ x 1)`, so it is used AFTER a nested subexpression rather than as the first operand. The host
+           calls `make(k=4)` then `call(x=3)` = (3 + 1) * 4 = 16. Pins that the captured value flows
+           through a nested subexpression unchanged.")
+  (input  (do (def (scale (: k Int64)) (fn ((: x Int64)) (* (+ x 1) k))) (export scale)))
+  (call   scale (: 4 Int64) (: 3 Int64))
+  (output (: 16 Int64)))
+
+(case "a capturing closure with a let binding in its body"
+  (doc    "`(def (f (: k Int64)) (fn (x) (let ((y (* x 2))) (+ y k))))` — the closure body binds a local
+           `y` then adds the captured `k`. The host `make(100)` then `call(7)` = (7*2) + 100 = 114. Pins
+           that a `let` inside an escaping closure body lowers correctly alongside the captured env.")
+  (input  (do (def (f (: k Int64)) (fn ((: x Int64)) (let ((y (* x 2))) (+ y k)))) (export f)))
+  (call   f (: 100 Int64) (: 7 Int64))
+  (output (: 114 Int64)))
+
+(case "a closure driving control flow off a captured boolean"
+  (doc    "`(def (g (: flag Bool)) (fn (x) (if flag (+ x 1) (- x 1))))` — the closure captures a Bool and
+           branches on it. The host `make(true)` then `call(10)` = 11 (the then-branch); a `make(false)`
+           would yield 9. Pins that a captured Bool drives an `if` inside the `call` dispatch — the
+           capture is not restricted to a numeric accumulator.")
+  (input  (do (def (g (: flag Bool)) (fn ((: x Int64)) (if flag (+ x 1) (- x 1)))) (export g)))
+  (call   g (: true Bool) (: 10 Int64))
+  (output (: 11 Int64)))
+
+(case "a closure whose body calls a top-level helper function"
+  (doc    "`(def (dbl (: n Int64)) (* n 2))` `(def (h (: k Int64)) (fn (x) (+ (dbl x) k)))` — the escaping
+           closure body CALLS the top-level `dbl`. The host `make(5)` (capturing k=5) then `call(3)` =
+           (dbl 3) + 5 = 6 + 5 = 11. Pins that a closure crossing the boundary can call another in-program
+           function (the helper is emitted as an ordinary reachable def, called directly from the lifted
+           closure body).")
+  (input  (do (def (dbl (: n Int64)) (* n 2)) (def (h (: k Int64)) (fn ((: x Int64)) (+ (dbl x) k))) (export h)))
+  (call   h (: 5 Int64) (: 3 Int64))
+  (output (: 11 Int64)))

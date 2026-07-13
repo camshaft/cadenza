@@ -188,6 +188,27 @@ pub fn emit(
         ));
     }
 
+    // MULTI-EXPORT closures (not yet built): more than one export where at least one RESULT is a closure.
+    // The single-export closure escape above (`[e]`) does not fire, so such a program would otherwise fall
+    // through to the scalar multi-export path and decline with a confusing GENERIC message ("type `(-> A B)`
+    // has no component boundary representation"). DECLINE here instead with a message that names the
+    // feature: a multi-export closure envelope publishes N `make` functions (one per closure export) — same
+    // -signature exports sharing one resource type + `call`, distinct signatures minting distinct resource
+    // types — a distinct structural increment. Reject-don't-miscompile: a clean, honest Todo.
+    if layout.exports.len() > 1
+        && layout
+            .exports
+            .iter()
+            .any(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+    {
+        return Err(Reject::decline(
+            "a program that exports MORE THAN ONE closure (or a closure alongside another export) is not \
+             yet supported — it needs a multi-export closure envelope publishing one `make` per closure \
+             export (same-signature exports sharing a resource type, distinct signatures minting distinct \
+             resource types); DESIGN-closure-host-resource-rcdzc.md, multi-export closures",
+        ));
+    }
+
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit

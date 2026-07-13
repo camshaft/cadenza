@@ -74,6 +74,8 @@ pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored in a tuple is extracted and applied
+pass	a capturing closure whose body uses the capture after an inner computation
+pass	a capturing closure with a let binding in its body
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
@@ -88,14 +90,17 @@ pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
+pass	a closure capturing two values is made and called by the host
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
+pass	a closure driving control flow off a captured boolean
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning a boolean is called by the host
 pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
+pass	a closure whose body calls a top-level helper function
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
@@ -736,6 +741,7 @@ pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an unimported sibling definition is not in scope
+pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote of an expression with an unbound name is rejected, not quoted
 pass	an unrecognized string escape is rejected
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
@@ -1218,7 +1224,6 @@ todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
 todo	an unusual in-range width is a first-class type
