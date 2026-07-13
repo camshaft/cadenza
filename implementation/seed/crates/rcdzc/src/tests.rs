@@ -5314,6 +5314,69 @@ mod match_engine {
     }
 
     #[test]
+    fn a_comparison_operand_boolean_connective_is_branchless() {
+        // `(and (< a b) (< c d))` — the rhs is a COMPARISON, not a bare leaf, but a comparison can neither
+        // trap nor effect, so evaluating it unconditionally is identical to the short-circuit `if`. It
+        // emits a branchless `i32.and` (two `lt_s`, one `and`, no `if`), the comparison companion of the
+        // leaf-operand branchless connective. (A rhs that could TRAP — e.g. containing a `/` — keeps the
+        // short-circuit; that's `a_conjunction_short_circuits_shielding_a_trapping_right_operand`.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        use wasmtime::component::Val;
+        let lir = |body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let dd = db.def_by_name("f").expect("def f");
+            let params: Vec<_> = db.defs[dd]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[dd].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let and_code = lir("(and (< a b) (< c d))");
+        assert!(
+            and_code.contains(&Lir::I32And) && !and_code.iter().any(|i| matches!(i, Lir::If(_))),
+            "(and cmp cmp) is a branchless i32.and (no short-circuit if), got: {and_code:?}"
+        );
+        let or_code = lir("(or (< a b) (< c d))");
+        assert!(
+            or_code.contains(&Lir::I32Or) && !or_code.iter().any(|i| matches!(i, Lir::If(_))),
+            "(or cmp cmp) is a branchless i32.or, got: {or_code:?}"
+        );
+        // Truth-table value parity: (a<b) && (c<d) over the four cases.
+        let and_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) (and (< a b) (< c d))) (export f))",
+        )))
+        .expect("compile");
+        let ck = |a: i64, b: i64, c: i64, d: i64| {
+            run_returns_with::<bool>(
+                &and_b,
+                "f",
+                &[Val::S64(a), Val::S64(b), Val::S64(c), Val::S64(d)],
+            )
+        };
+        assert!(ck(1, 2, 3, 4), "T&&T");
+        assert!(!ck(1, 2, 4, 3), "T&&F");
+        assert!(!ck(2, 1, 3, 4), "F&&T");
+        assert!(!ck(2, 1, 4, 3), "F&&F");
+    }
+
+    #[test]
     fn a_nullary_variant_is_constructed_by_applying_it_to_unit() {
         // core-semantics.md §Construction MUST Be Via Application: "(None unit)". A NULLARY variant is
         // constructed by applying its ctor to the unit value — `(T.Nil ())` — not only used bare. The
@@ -9269,6 +9332,43 @@ mod stage1 {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "code {arg}"),
                 cdz_run::Outcome::Trap(t) => panic!("composed 3-variant run trapped: {t}"),
             }
+        }
+    }
+
+    #[test]
+    fn a_runtime_value_eq_in_a_loop_condition_does_not_clash_scratch() {
+        // REGRESSION: a runtime `value-eq` (or any i32 heap-handle-producing op) in the CONDITION of a
+        // tail-recursive function compiled as a wasm LOOP must not reuse a scratch slot the sibling
+        // branch's i64 arithmetic uses. `find` compares `(N.I n)` against `(N.I 3)` each iteration and
+        // `(find (+ n 1))` iterates; before the fix the compare's i32 handle slot and the `(+ n 1)` i64
+        // slot were the SAME number (both allocated from `base`), forcing one wasm local to two types →
+        // `func failed to validate: expected i64, found i32`. The fix advances the branches' scratch
+        // floor past the condition's high-water. `find(0)` = 3.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (type N (I Int64) (J Int64)) \
+                     (def (mk (: n Int64)) (N.I n)) \
+                     (def (find (: n Int64)) (if (= (mk n) (mk 3)) n (find (+ n 1)))) \
+                     (export find))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile value-eq-in-loop-condition");
+        // Must be a valid module — the whole point of the regression (a bad module fails HERE at
+        // instantiation, before any run).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed value-eq-in-loop run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("find".to_string()),
+            args: vec!["0".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run value-eq-in-loop") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "3", "find(0) searches up to n where N.I n = N.I 3")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("value-eq-in-loop run trapped: {t}"),
         }
     }
 
