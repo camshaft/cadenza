@@ -67,12 +67,15 @@ export function stripModule(rendered: string, surface: Surface): string {
     return body;
   }
   // ML: top-level forms are separated by a trailing `;` and a blank line. Drop the `export { … }`
-  // (or legacy `export(…)`) line and the top-level `;` separators — leaving blank-line-separated
-  // forms at column 0, the clean display the old `module`-body render produced.
-  const body = t
-    .split("\n")
-    .filter((l) => !/^\s*export\s*[({]/.test(l))
-    .map((l) => l.replace(/;\s*$/, "")) // a top-level form separator sits at line end
+  // (or legacy `export(…)`) line, then remove the TOP-LEVEL `;` separators. A top-level separator is a
+  // `;` either on an UNINDENTED line (between two top-level forms — e.g. `def helper() = 1;`) or on the
+  // LAST content line (the separator that preceded the now-removed `export`). A `;` at deeper
+  // indentation that isn't the last line is INSIDE a construct — the `};` closing a nested
+  // `module { … };`, or a `let … in;` — and dropping it would corrupt the display into unparseable text.
+  const lines = t.split("\n").filter((l) => !/^\s*export\s*[({]/.test(l));
+  const lastContent = lines.reduce((acc, l, i) => (l.trim() ? i : acc), -1);
+  const body = lines
+    .map((l, i) => (/^\S/.test(l) || i === lastContent ? l.replace(/;\s*$/, "") : l))
     .join("\n")
     .trim();
   // A synthesized single `def main() = <expr>` (no other defs) → unwrap to the bare expression.
