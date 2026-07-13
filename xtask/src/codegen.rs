@@ -633,6 +633,9 @@ mod wasm_abi {
             // `f64.promote_f32` widens Float32→Float64 (exact). Int↔float conversions land with `of-int`.
             op("F32_DEMOTE_F64", Instruction::F32DemoteF64),
             op("F64_PROMOTE_F32", Instruction::F64PromoteF32),
+            // INT→FLOAT conversion (`Float N.of-int`): signed i64 → f64/f32, round-to-nearest-even.
+            op("F64_CONVERT_I64_S", Instruction::F64ConvertI64S),
+            op("F32_CONVERT_I64_S", Instruction::F32ConvertI64S),
             op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
             op("ELSE", Instruction::Else),
             op("END", Instruction::End),

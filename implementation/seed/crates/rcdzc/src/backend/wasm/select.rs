@@ -3020,6 +3020,35 @@ fn emit(
         // (read off `type_of(id)`): move the operand into the target slot, keep its low N bits, and
         // reinterpret them at the target sign. Total (never traps) — the const path folds identically in
         // `lower`. This is the runtime sibling of `IntValue::wrap_to`.
+        // INT→FLOAT conversion (`Float N.of-int`): emit the integer operand (an i64 machine value —
+        // grounded to Int64 as the `of-int` source type) then `f{64,32}.convert_i64_s` at the target
+        // float width. Handled BEFORE the integer-target `Machine::of` below (its target is a float).
+        Core::Convert {
+            op: Prim::FloatOfInt,
+            operand,
+        } => {
+            let width = match type_of(db, id) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            emit_operand(
+                db,
+                operand,
+                IntTy::i64(),
+                slots,
+                base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(if width == 32 {
+                Lir::F32ConvertI64S
+            } else {
+                Lir::F64ConvertI64S
+            });
+            Ok(())
+        }
         Core::Convert { op, operand } => {
             let src = Machine::of(int_ty_of(db, operand));
             let dst = Machine::of(int_ty_of(db, id));

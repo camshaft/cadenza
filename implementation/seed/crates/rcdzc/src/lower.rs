@@ -667,6 +667,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: float arithmetic prim");
                     lower_float_arith(db, id, prim, &args)
                 }
+                // `Float64.of-int` / `Float32.of-int` — the explicit INT→FLOAT conversion. Fold a
+                // constant integer to a `Core::ConstFloat` at the target width, else emit a runtime
+                // `f{64,32}.convert_i64_s`.
+                Some(Prim::FloatOfInt) => lower_float_of_int(db, id, &args),
                 // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
                 // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
                 // declines (as the comparison prims do).
@@ -3920,6 +3924,63 @@ fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> 
     }
 }
 
+/// Lower a `Float64.of-int` / `Float32.of-int` — the TOTAL int→float conversion `Int64 → (Float N)`.
+/// FOLD a constant integer to a `Core::ConstFloat` (the value as f64/f32, rounding to the nearest
+/// representable float at the target width — total, never trapping); a runtime integer emits
+/// `Core::Convert{op: FloatOfInt}` (select → `f{64,32}.convert_i64_s`). The target width is the node's
+/// solved `Ty::Float`. No implicit promotion — the conversion is always written (numeric-model.md §A
+/// Conversion Involving A Floating-Point Type Is Explicit).
+fn lower_float_of_int(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
+    if args.len() != 1 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "of-int takes exactly 1 operand".to_string(),
+        ));
+    }
+    let width = match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Float(ft) => ft.ground_width(),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "a float conversion target is not a definite float type",
+            ));
+        }
+    };
+    match core_of(db, args[0]) {
+        Core::Poison(r) => Core::Poison(r),
+        Core::ConstInt(v) => {
+            // Fold: the integer's value as a float at the target width (round-to-nearest-even). A value
+            // beyond the finite float range would round to ±inf — but an `Int64` is always finite in f64
+            // (|Int64| < 2^63 ≪ f64 max), and f32 of an Int64 is finite too, so this never overflows.
+            let Some(i) = v.to_i64() else {
+                // A BigInt-magnitude constant (>i64) has no Int64 conversion source here — decline.
+                return Core::Poison(Reject::decline(
+                    "of-int of a value wider than Int64 is not yet supported",
+                ));
+            };
+            let f = if width == 32 {
+                i as f32 as f64
+            } else {
+                i as f64
+            };
+            match crate::ast::Decimal::from_f64(f) {
+                Some(d) => {
+                    trace!(target: "rcdzc::lower", width, "folded constant of-int to a float");
+                    Core::ConstFloat(d)
+                }
+                None => Core::Poison(Reject::decline(
+                    "a float conversion whose result is not finite has no value form",
+                )),
+            }
+        }
+        // A runtime integer operand — emit the machine int→float convert at selection (target width read
+        // off the solved type there). Total, so no guard.
+        _ => Core::Convert {
+            op: Prim::FloatOfInt,
+            operand: args[0],
+        },
+    }
+}
+
 /// Apply a SAFE algebraic identity to a runtime arithmetic op with ONE constant operand, returning the
 /// simplified core (the runtime operand's own core, or a constant) — or `None` when no identity applies
 /// and the op stays a runtime `Arith`. `lc`/`rc` are the already-lowered operand cores; `lhs`/`rhs`
@@ -4198,7 +4259,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FSub
         | Prim::FMul
         | Prim::FDiv
-        | Prim::FloatCtor => {
+        | Prim::FloatCtor
+        | Prim::FloatOfInt => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -5759,6 +5821,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FMul => "*.",
         Prim::FDiv => "/.",
         Prim::FloatCtor => "Float",
+        Prim::FloatOfInt => "of-int",
     }
 }
 

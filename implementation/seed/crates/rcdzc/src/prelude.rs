@@ -802,16 +802,46 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         );
         push_list(ast, vec![ctor, w])
     };
-    let fields = vec![
-        meta_field(ast, "t", ty_expr),
-        // `of-int` — the CHECKED-free integer→float conversion (`Int64 → Float N`). Realized in F5.
-        unrealized_field(ast, "of-int"),
-    ];
+    // `of-int` — the TOTAL integer→float conversion `Int64 → (Float width)`, an operator record whose
+    // `(meta t)` is the scheme and `(meta apply)` the `float-of-int` intrinsic. The target is THIS
+    // module's own width (concrete), so the scheme is monomorphic — but wrapped in a ZERO-PARAM `(fn ()
+    // …)` so `scheme_of` reads it as a SCHEME (not a bare type-value, which would make `typeval_of`
+    // reduce the whole op record to a `Ty::Type`), the same wrapper `String.at`/`scalar-len` use.
+    let of_int_ty = float_of_int_type(ast, width);
+    let of_int = list_op_record(ast, "float-of-int", of_int_ty);
+    let fields = vec![meta_field(ast, "t", ty_expr), {
+        let k = push_atom(ast, Leaf::Name("of-int".to_string()));
+        push_list(ast, vec![k, of_int])
+    }];
     let mut children = vec![head];
     for f in fields {
         children.push(f);
     }
     push_list(ast, children)
+}
+
+/// The type `(fn () (-> Int64 (Float width)))` for a float module's `of-int` — a ZERO-PARAMETER
+/// type-lambda wrapping the monomorphic arrow `Int64 → (Float width)`. The `fn` wrapper is REQUIRED
+/// (even with no quantified variables) so `scheme_of` reads it as a polymorphic SCHEME rather than a
+/// bare type-VALUE — see [`string_to_int64_type`]. The result `(Float width)` reduces via the `Float`
+/// constructor to this module's own concrete float type.
+fn float_of_int_type(ast: &mut Arenas, width: u32) -> StructId {
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let float_target = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let body = arrow_type(ast, int64, float_target);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {

@@ -91,6 +91,10 @@ pub enum Lir {
     /// (Float32→Float64, exact). Emitted by the width-conversion `Float32.of`/`Float64.of` (F5).
     F32DemoteF64,
     F64PromoteF32,
+    /// INT→FLOAT conversion — `f64.convert_i64_s` / `f32.convert_i64_s` (signed i64 → f64/f32,
+    /// round-to-nearest-even). Emitted by a runtime `Float N.of-int`.
+    F64ConvertI64S,
+    F32ConvertI64S,
     /// `local.get I` — read local `I`.
     LocalGet(u32),
     /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash

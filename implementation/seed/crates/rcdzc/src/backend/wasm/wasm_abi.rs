@@ -31,6 +31,8 @@ pub mod op {
     pub const F32_NE: u8 = 0x5c;
     pub const F32_DEMOTE_F64: u8 = 0xb6;
     pub const F64_PROMOTE_F32: u8 = 0xbb;
+    pub const F64_CONVERT_I64_S: u8 = 0xb9;
+    pub const F32_CONVERT_I64_S: u8 = 0xb4;
     pub const IF: u8 = 0x04;
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0b;

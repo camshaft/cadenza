@@ -1908,6 +1908,25 @@ fn an_exported_float_op_runs_over_runtime_args() {
     }
 }
 
+/// The explicit INT→FLOAT conversion `Float64.of-int` over a RUNTIME integer emits
+/// `f64.convert_i64_s` (a constant folds instead). `(def (f (: n Int64)) (Float64.of-int n))` run with
+/// 42 returns 42.0; a large Int64 rounds to the nearest f64 — total, never trapping.
+#[test]
+fn float_of_int_converts_a_runtime_integer() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: n Int64)) (Float64.of-int n)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::S64(42)]);
+    assert_eq!(got.to_bits(), 42.0f64.to_bits(), "of-int 42 = 42.0");
+    let big: f64 = run_returns_with(&bytes, "f", &[Val::S64(9223372036854775807)]);
+    assert_eq!(
+        big.to_bits(),
+        (9223372036854775807i64 as f64).to_bits(),
+        "of-int Int64.max rounds to the nearest f64"
+    );
+}
+
 /// `(= n 0)` selects to `eqz` (one instruction), and it must still compute the correct boolean under
 /// wasmtime: true at zero, false otherwise, for both operand orders — a wrong `eqz` (say, ignoring the
 /// operand) would return a constant. `is-zero`/`is-zero2` (commuted) both return 1 at 0, 0 elsewhere.
