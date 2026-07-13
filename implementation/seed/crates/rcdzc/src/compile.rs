@@ -723,6 +723,26 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // `Map.size` unconditionally evaluates the map operand — descend.
         Core::MapSize { map } => collect_reached_poisons(db, map, out),
+        // A set construction's elements are all unconditionally part of the value — descend into each.
+        Core::SetOf { elems, .. } => {
+            for e in elems {
+                collect_reached_poisons(db, e, out);
+            }
+        }
+        // `Set.contains`/`insert`/`remove` unconditionally evaluate the set and element — descend into both.
+        Core::SetContains { set, elem, .. }
+        | Core::SetInsert { set, elem, .. }
+        | Core::SetRemove { set, elem, .. } => {
+            collect_reached_poisons(db, set, out);
+            collect_reached_poisons(db, elem, out);
+        }
+        // `Set.len` unconditionally evaluates the set operand — descend.
+        Core::SetLen { set } => collect_reached_poisons(db, set, out),
+        // A set-algebra op unconditionally evaluates both operand sets — descend into each.
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            collect_reached_poisons(db, lhs, out);
+            collect_reached_poisons(db, rhs, out);
+        }
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
             for p in payloads {

@@ -84,6 +84,10 @@ pub fn emit(
                 // `constant_value_form` returns None → falls through to the decline below (the looping
                 // map-escape walker, like a list's, is a later increment).
                 | crate::ty::Ty::Map(_, _)
+                // A SET export crosses via the resource escape too — its CONSTANT bytes (the sorted
+                // canonical `(Set.of (list …))` value form) baked into the resource module; a runtime set
+                // has no constant form and falls through to the decline (the looping walker is later).
+                | crate::ty::Ty::Set(_)
                 | crate::ty::Ty::Bytes
                 // A bare `String` export has no scalar boundary valtype (a string is a heap value, not an
                 // i32/i64/f64), so it crosses via the resource escape like any other heap value — its
@@ -678,6 +682,7 @@ fn resource_escape_dwarf(
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
                 | crate::ty::Ty::Map(_, _)
+                | crate::ty::Ty::Set(_)
                 | crate::ty::Ty::Bytes
                 | crate::ty::Ty::String
                 // A nominal-over-COMPOUND export takes the resource-escape core too (its erased value is

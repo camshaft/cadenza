@@ -88,6 +88,10 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // TWO parameters) AND the module of map OPERATIONS (`empty`/`insert`/`lookup`/`remove`/`size`, reached
     // by member access `(. Map insert)`). One record carries both roles, exactly like `List`.
     names.insert("Map".to_string(), map_module(ast));
+    // `Set` — BOTH the set-TYPE constructor (`(Set Int64)` in type position → `(meta apply)=Set`, ONE
+    // parameter like `List`) AND the module of set OPERATIONS (`of`/`contains`/`len`/`insert`/`remove`/
+    // `union`/`intersection`/`difference`, reached by member access `(. Set of)`). One record, both roles.
+    names.insert("Set".to_string(), set_module(ast));
     // `Bytes` — the module of byte-sequence OPERATIONS (`of`/`len` fields, reached by member access
     // `(. Bytes of)`). Unlike `List` it is NOT also a type constructor: `Bytes` is a ground type-VALUE
     // (a non-parametric leaf), so the module ALSO carries `(meta t) = Bytes` — bare `Bytes` in type
@@ -319,6 +323,98 @@ fn map_module(ast: &mut Arenas) -> StructId {
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
+}
+
+/// The `Set` module record — carries BOTH `(meta apply)` = the `Set` type constructor (`(Set Int64)`
+/// builds `Ty::Set`, ONE parameter) AND a field per set OPERATION (reached by member access). Each op is
+/// an operator record whose `(meta t)` is a one-parameter `(fn (a) …)` type-lambda (like `List`). Realizes
+/// `of : ∀a. (List a) → (Set a)`, `contains : ∀a. (Set a) → a → Bool`, `len : ∀a. (Set a) → Int64`,
+/// `insert`/`remove : ∀a. (Set a) → a → (Set a)`, and `union`/`intersection`/`difference : ∀a. (Set a) →
+/// (Set a) → (Set a)`. Mirrors `list_module` (one type parameter, unlike `map_module`'s two).
+fn set_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta apply)` = the `Set` TYPE constructor (`(Set Int64)` reduces to `Ty::Set(Int64)`).
+    let builder = intrinsic_node(ast, "Set");
+    let apply_field = meta_field(ast, "apply", builder);
+    let of_lambda = set_of_type_lambda(ast);
+    let contains_lambda = set_contains_type_lambda(ast);
+    let len_lambda = set_len_type_lambda(ast);
+    let insert_lambda = set_elem_to_set_type_lambda(ast); // (Set a) → a → (Set a)
+    let remove_lambda = set_elem_to_set_type_lambda(ast);
+    let union_lambda = set_binary_type_lambda(ast); // (Set a) → (Set a) → (Set a)
+    let intersection_lambda = set_binary_type_lambda(ast);
+    let difference_lambda = set_binary_type_lambda(ast);
+    let mut children = vec![head, apply_field];
+    for (name, prim, lambda) in [
+        ("of", "set-of", of_lambda),
+        ("contains", "set-contains", contains_lambda),
+        ("len", "set-len", len_lambda),
+        ("insert", "set-insert", insert_lambda),
+        ("remove", "set-remove", remove_lambda),
+        ("union", "set-union", union_lambda),
+        ("intersection", "set-intersection", intersection_lambda),
+        ("difference", "set-difference", difference_lambda),
+    ] {
+        let op = list_op_record(ast, prim, lambda);
+        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![k, op]));
+    }
+    push_list(ast, children)
+}
+
+/// Build `(Set a)` — the set type applied to the element parameter `a`, the shared shape in the `Set`
+/// operation type-lambdas (a fresh occurrence per use, referencing the same param name `a`).
+fn set_a_type(ast: &mut Arenas) -> StructId {
+    let set = push_atom(ast, Leaf::Name("Set".to_string()));
+    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    push_list(ast, vec![set, a])
+}
+
+/// `(fn (a) (-> (List a) (Set a)))` for `Set.of` — `∀a. (List a) → (Set a)`: construct a set from a list.
+fn set_of_type_lambda(ast: &mut Arenas) -> StructId {
+    let set_a = set_a_type(ast);
+    let list_a = list_a_type(ast);
+    let body = arrow_type(ast, list_a, set_a); // (-> (List a) (Set a))
+    list_type_lambda(ast, body)
+}
+
+/// `(fn (a) (-> (Set a) (-> a Bool)))` for `Set.contains` — `∀a. (Set a) → a → Bool`: total membership.
+fn set_contains_type_lambda(ast: &mut Arenas) -> StructId {
+    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let bool_t = push_atom(ast, Leaf::Name("Bool".to_string()));
+    let elem_arrow = arrow_type(ast, a, bool_t); // (-> a Bool)
+    let set_a = set_a_type(ast);
+    let body = arrow_type(ast, set_a, elem_arrow); // (-> (Set a) (-> a Bool))
+    list_type_lambda(ast, body)
+}
+
+/// `(fn (a) (-> (Set a) Int64))` for `Set.len` — `∀a. (Set a) → Int64`: the distinct-element count.
+fn set_len_type_lambda(ast: &mut Arenas) -> StructId {
+    let set_a = set_a_type(ast);
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, set_a, int64); // (-> (Set a) Int64)
+    list_type_lambda(ast, body)
+}
+
+/// `(fn (a) (-> (Set a) (-> a (Set a))))` for `Set.insert`/`Set.remove` — `∀a. (Set a) → a → (Set a)`.
+fn set_elem_to_set_type_lambda(ast: &mut Arenas) -> StructId {
+    let set_r = set_a_type(ast);
+    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let elem_arrow = arrow_type(ast, a, set_r); // (-> a (Set a))
+    let set_l = set_a_type(ast);
+    let body = arrow_type(ast, set_l, elem_arrow); // (-> (Set a) (-> a (Set a)))
+    list_type_lambda(ast, body)
+}
+
+/// `(fn (a) (-> (Set a) (-> (Set a) (Set a))))` for `Set.union`/`intersection`/`difference` — `∀a. (Set
+/// a) → (Set a) → (Set a)`: the binary set-algebra ops.
+fn set_binary_type_lambda(ast: &mut Arenas) -> StructId {
+    let set_r = set_a_type(ast);
+    let set_2 = set_a_type(ast);
+    let inner = arrow_type(ast, set_2, set_r); // (-> (Set a) (Set a))
+    let set_1 = set_a_type(ast);
+    let body = arrow_type(ast, set_1, inner); // (-> (Set a) (-> (Set a) (Set a)))
+    list_type_lambda(ast, body)
 }
 
 /// Build `(Map k v)` — the map type applied to the key parameter `k` and value parameter `v`, the shared

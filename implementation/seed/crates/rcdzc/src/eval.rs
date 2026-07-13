@@ -184,6 +184,12 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let value = type_in_env(db, args[1], env)?;
                     Some(Ty::Map(Box::new(key), Box::new(value)))
                 }
+                // `(Set a)` inside a type-lambda — the element reduced under the env, then `Ty::Set(elem)`.
+                // Makes a `Set` op's `(meta t)` = `(fn (a) (-> (Set a) …))` read as `∀a. (Set a) → …`.
+                Prim::SetCtor if args.len() == 1 => {
+                    let elem = type_in_env(db, args[0], env)?;
+                    Some(Ty::Set(Box::new(elem)))
+                }
                 // A GENERIC SUM application `(Option a)` inside a type-lambda — each arg reduced under
                 // the env (so `a` becomes its type variable), then `Ty::Sum{decl, args}`. This is what
                 // makes a generic variant ctor's `(meta t)` = `(fn (a) (-> a (Option a)))` read as the
@@ -1625,6 +1631,18 @@ pub fn reduce_ctor(
             trace!(target: "rcdzc::eval", ty = %map_ty.render_name(), "ctor (Map): built map type-value");
             Ok(encode_typeval(db, &map_ty))
         }
+        // `Set` — ONE element type: `(Set Int64)` builds `Ty::Set(Int64)`, the type an annotation
+        // `(: s (Set T))` checks against. One argument, like `List`.
+        Prim::SetCtor => {
+            if args.len() != 1 {
+                return Err("Set takes one element-type argument".to_string());
+            }
+            let elem =
+                typeval_of(db, args[0]).ok_or_else(|| "Set element is not a type".to_string())?;
+            let set_ty = crate::ty::Ty::Set(Box::new(elem));
+            trace!(target: "rcdzc::eval", ty = %set_ty.render_name(), "ctor (Set): built set type-value");
+            Ok(encode_typeval(db, &set_ty))
+        }
         // `Record` — VARIADIC over `(name type)` field pairs: each arg is a raw `(name T)` list; read the
         // field name (first child) and reduce the type (second child) to a `Ty`. The field-name SET +
         // per-field types ARE the record type, so `(: e (Record (a T)…))` checks the value's field set and
@@ -2094,6 +2112,13 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             let ke = encode_ty(db, k);
             let ve = encode_ty(db, v);
             db.push_list(vec![head, ke, ve])
+        }
+        // A set type-value: `(Set <elem>)` — the head then the element type. Round-trips with `decode_ty`'s
+        // `"Set"` arm.
+        Ty::Set(elem) => {
+            let head = db.push_name("Set");
+            let e = encode_ty(db, elem);
+            db.push_list(vec![head, e])
         }
         // A bytes type-value: the bare name `Bytes` (a leaf). Round-trips with `decode_ty`'s `"Bytes"`
         // arm. Without this the catch-all below encoded it as `Unit`, so a `(-> … Bytes)` scheme
