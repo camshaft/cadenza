@@ -175,6 +175,7 @@ pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
+pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
@@ -1162,6 +1163,7 @@ pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	multiplying quantities multiplies their dimensions
+pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime narrow integer just above its min is exact
 pass	negation inverts a boolean
@@ -1327,6 +1329,7 @@ pass	the union contains the elements of either set
 pass	the unit value
 pass	the value-yielding insert reports the value it replaced
 pass	the value-yielding remove reports the value it dropped
+pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly

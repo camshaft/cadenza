@@ -1727,6 +1727,30 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
+    // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded
+    // integer back to a fixed width (`options/numeric-model/explicit-checked.md`: `Int64.of` converts a
+    // `BigInt` back, trapping when out of range). `CheckedOf`'s prelude scheme source is `(Int a)`, which
+    // does NOT accept a `BigInt` — so a dedicated arm handles a `BigInt` source: the result is the
+    // conversion op's TARGET type (this application's own solved type, an `Ty::Int`), exactly as the
+    // fixed-width→fixed-width `of` result is. The lower fold already range-checks the constant (`fits_width`
+    // on the unbounded `IntValue`) and rejects an out-of-range one CDZ0302, source-type-agnostically.
+    // Only when the source really is a `BigInt`; a fixed-width source stays on the scheme path below.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::CheckedOf)
+        && args.len() == 1
+        && matches!(type_of(db, args[0]), Ty::BigInt)
+    {
+        // The result is the conversion op's TARGET width — the RESULT of its `∀a. (Int a) → TARGET`
+        // scheme (TARGET is baked into this module's `of` field). Instantiate the head's scheme and peel
+        // the arrow's result; the source `(Int a)` is ignored (a `BigInt` source, not unified here). A
+        // head without a scheme (malformed) falls through to `Any`.
+        let mut fresh = Fresh::new();
+        if let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh)
+            && let Ty::Fn(_, result) = crate::unify::instantiate(&scheme, &mut fresh)
+        {
+            return *result;
+        }
+        return Ty::Any;
+    }
     // `Qty.of x u` — attach a compile-time unit to a numeric value. Its result type is `(Qty T u)` where
     // `T` is the VALUE argument's type and `u` is the VALUE of the second argument (a compile-time unit,
     // read by `eval::unit_of` — NOT an HM-unified variable, exactly as `Prim::Wrap` reads its target
@@ -2809,6 +2833,19 @@ fn check_application(
     args: &[StructId],
     out: &mut Vec<Reject>,
 ) {
+    // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded
+    // integer. `CheckedOf`'s HM scheme source is `(Int a)`, which does NOT unify with a `BigInt` — so
+    // the generic scheme-unify below would wrongly fault CDZ0203. Skip it for a `BigInt` source: the
+    // conversion is well-typed (its result is the target width, filled in `apply_type`), and the fold in
+    // `lower` does the range check (an out-of-range constant → CDZ0302). Descend into the source for its
+    // own faults, then return. A fixed-width source stays on the scheme path (its `(Int a)` unifies).
+    if args.len() == 1
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::CheckedOf)
+        && matches!(type_of(db, args[0]), Ty::BigInt)
+    {
+        collect(db, args[0], out);
+        return;
+    }
     // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
     // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own

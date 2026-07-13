@@ -204,6 +204,15 @@ pub enum Prim {
     /// in type position reduces to `Ty::BigInt` (a NULLARY type, like `String`/`Symbol`; the `BigInt`
     /// module also carries the `of` conversion field, but this is its type role). `ground_type` maps it.
     BigIntTy,
+    /// `BigInt.of` — the WIDENING conversion from a fixed-width integer to `BigInt`: `∀a. (Int a) →
+    /// BigInt` (`options/numeric-model/explicit-checked.md` §Arbitrary-precision integer, "Construction").
+    /// EXACT and never traps — every fixed-width value fits the unbounded type. A CONSTANT source FOLDS to
+    /// the same `Core::ConstInt` (whose `IntValue` is already `num-bigint`-backed and unbounded), retyped
+    /// `Ty::BigInt`: only the STATIC type changes, the value is unchanged — exactly as `Symbol.of` keeps
+    /// its `Core::ConstStr`. A runtime source declines until the runtime limb ops (B3). The reverse
+    /// (`Int64.of`/`(UInt N).of` from a `BigInt`, checked/trapping) is the existing `CheckedOf` extended to
+    /// a `BigInt` source, not a new prim.
+    BigIntOf,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -630,6 +639,7 @@ impl Prim {
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
             "Symbol" => Some(Prim::SymbolTy),
+            "bigint-of" => Some(Prim::BigIntOf),
             "symbol-of" => Some(Prim::SymbolOf),
             "symbol-to-string" => Some(Prim::SymbolToString),
             "sum-new" => Some(Prim::SumNew),

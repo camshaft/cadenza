@@ -1221,6 +1221,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         "Symbol.of on a runtime string is not yet interned (constant strings only)",
                     ),
                 },
+                // `BigInt.of x` — the EXACT widening from a fixed-width integer to `BigInt`. A CONSTANT
+                // source folds to the SAME `Core::ConstInt` node retyped `Ty::BigInt` (its `IntValue` is
+                // already `num-bigint`-backed and unbounded — the value is unchanged, only the static type
+                // widens), exactly as `Symbol.of` keeps its `Core::ConstStr`. A runtime source declines
+                // until the runtime limb ops (B3) — never a wrong answer.
+                Some(Prim::BigIntOf) if args.len() == 1 => match core_of(db, args[0]) {
+                    c @ Core::ConstInt(_) => c,
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "BigInt.of on a runtime integer is not yet emitted (constant integers only)",
+                    )),
+                },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
                 // retyped `String` (the node's solved type); the rep is unchanged.
@@ -7388,8 +7400,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SymbolOf
         | Prim::SymbolToString
         // `BigIntTy` is a ground type-value builder (bare `BigInt` in type position → `Ty::BigInt`),
-        // never an integer binary operation — like `StringTy`/`SymbolTy`.
+        // and `BigIntOf` is the unary widening conversion (folds in its own arm above) — neither is an
+        // integer BINARY operation, like `StringTy`/`SymbolTy`/`SymbolOf`.
         | Prim::BigIntTy
+        | Prim::BigIntOf
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -11088,6 +11102,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitTy => "Unit",
         Prim::StringTy => "String",
         Prim::BigIntTy => "BigInt",
+        Prim::BigIntOf => "bigint-of",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

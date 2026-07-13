@@ -242,6 +242,40 @@
   (input  (+ (BigInt.of 1) 1))
   (error  CDZ0301))
 
+; --- BigInt constant folding: the widening + checked narrowing over COMPILE-TIME constants (B1) -----
+; The seed realizes BigInt's CONSTRUCTION + CHECKED CONVERSION over compile-time constants first: a
+; constant `(BigInt.of x)` widens (exact, never traps — every fixed-width value fits the unbounded type),
+; and `(Int64.of b)` / `((UInt N).of b)` narrow it back CHECKED (range-checked at compile time on the
+; constant). Because `IntValue` is already arbitrary-precision, the widening carries any magnitude and the
+; narrowing's range check is exact. (Runtime-valued BigInt arithmetic — the unbounded product above —
+; awaits the runtime limb ops; a bare BigInt crossing the boundary awaits the two's-complement encoding.)
+
+(case "a constant integer widens to BigInt and narrows back through Int64 unchanged"
+  (doc    "`(Int64.of (BigInt.of 42))` widens the Int64 42 to a BigInt then narrows it back — the exact
+           round-trip, yielding 42 : Int64. Pins that `BigInt.of` is the exact widening (no loss) and
+           `Int64.of` its checked inverse; a value in range converts back unchanged, exactly as
+           fixed-width `Int64.of` does.")
+  (input  (Int64.of (BigInt.of 42)))
+  (output (: 42 Int64)))
+
+(case "the widening carries a full-width magnitude through BigInt"
+  (doc    "`(Int64.of (BigInt.of 9223372036854775807))` round-trips Int64.max through BigInt — the
+           BigInt carries the full 64-bit magnitude and narrows back in range. Pins that the widening
+           does not truncate at any fixed width on the way up (the value is a `num-bigint` magnitude,
+           unbounded), so a value up to the target's range survives the round-trip.")
+  (input  (Int64.of (BigInt.of 9223372036854775807)))
+  (output (: 9223372036854775807 Int64)))
+
+(case "narrowing a constant BigInt out of the target range is rejected at compile time"
+  (doc    "`((UInt 8).of (BigInt.of 300))` narrows a BigInt to `(UInt 8)` (range 0..=255) where 300 does
+           not fit — a statically-known out-of-range conversion the compiler rejects up front (CDZ0302,
+           `integer does not fit the target`), exactly as `((UInt 8).of 300)` on a constant Int64 does.
+           The checked narrowing OUT of BigInt is not a silent truncation. (A RUNTIME-valued BigInt
+           out-of-range narrowing traps at run time — the contract case above; this pins the constant
+           case the compiler decides statically.)")
+  (input  (do (def (main) ((. UInt8 of) (BigInt.of 300))) (export main)))
+  (error  CDZ0302))
+
 ; --- Module pragma `default-integer`: fixes a literal's TYPE, never a conversion ----------
 ; A module MAY declare `(pragma default-integer <T>)` so a bare integer literal with no other constraint
 ; takes `<T>` instead of Int64 within that module (numeric-model.md #A Module May Declare Its Default
