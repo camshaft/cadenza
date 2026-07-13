@@ -20791,6 +20791,327 @@ mod closure_host_resource {
         // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
     }
 
+    /// MULTI-EXPORT oracle core (the byte anchor for the next real increment): TWO closures of the SAME
+    /// signature `(-> Int64 Int64)` in one funcref table (slot 0 = `(fn (x) (+ x 1))`, slot 1 = `(fn (x)
+    /// (* x 3))`), TWO `make` functions (`make-inc` → `resource.new(0)`, `make-triple` → `resource.new(1)`),
+    /// and ONE SHARED `call`. The shared `call` is the load-bearing realization: because the closure's code
+    /// slot is recovered from the resource rep at call time (`resource.rep` → `call_indirect`), a single
+    /// `call` dispatches ANY closure of the signature regardless of which `make` built it. So N same-
+    /// signature exports need N `make`s + 1 `call` + 1 resource type — the compiler-side envelope this
+    /// oracle licenses. Exports: `make-inc : () -> i32`, `make-triple : () -> i32`, `call : (i32, i64) -> i64`.
+    fn multi_closure_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64)->i64 (the shared call_indirect functype);
+        // 2 = make ()->i32; 3 = call (i32,i64)->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I64]); // 3 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        // Defined funcs: lifted-inc = 2, lifted-triple = 3, make-inc = 4, make-triple = 5, call = 6.
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted-inc
+        funcs.function(1); // lifted-triple
+        funcs.function(2); // make-inc
+        funcs.function(2); // make-triple
+        funcs.function(3); // call
+        m.section(&funcs);
+        let f_lifted_inc = 2u32;
+        let f_lifted_triple = 3u32;
+        let f_make_inc = 4u32;
+        let f_make_triple = 5u32;
+        let f_call = 6u32;
+
+        // A funcref table of size 2: slot 0 = inc, slot 1 = triple.
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 2,
+            maximum: Some(2),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make-inc", ExportKind::Func, f_make_inc);
+        exports.export("make-triple", ExportKind::Func, f_make_triple);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted_inc, f_lifted_triple])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted-inc(x) = x + 1
+        let mut li = Function::new(vec![]);
+        li.instruction(&Instruction::LocalGet(0));
+        li.instruction(&Instruction::I64Const(1));
+        li.instruction(&Instruction::I64Add);
+        li.instruction(&Instruction::End);
+        code.function(&li);
+        // lifted-triple(x) = x * 3
+        let mut lt = Function::new(vec![]);
+        lt.instruction(&Instruction::LocalGet(0));
+        lt.instruction(&Instruction::I64Const(3));
+        lt.instruction(&Instruction::I64Mul);
+        lt.instruction(&Instruction::End);
+        code.function(&lt);
+        // make-inc() = resource.new(0)  — slot 0's code is `inc`
+        let mut mi = Function::new(vec![]);
+        mi.instruction(&Instruction::I32Const(0));
+        mi.instruction(&Instruction::Call(f_rnew));
+        mi.instruction(&Instruction::End);
+        code.function(&mi);
+        // make-triple() = resource.new(1)  — slot 1's code is `triple`
+        let mut mt = Function::new(vec![]);
+        mt.instruction(&Instruction::I32Const(1));
+        mt.instruction(&Instruction::Call(f_rnew));
+        mt.instruction(&Instruction::End);
+        code.function(&mt);
+        // call(self, x) = call_indirect[type 1](x, slot = resource.rep(self)) — SHARED across both makes.
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // x
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → the slot (0 or 1)
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the MULTI-EXPORT oracle: imports the abstract resource + `make-inc`,
+    /// `make-triple` (both `() -> own<t>`), and the shared `call : (self: own<t>, s64) -> s64`, then
+    /// re-exports the resource type DIRECTLY + all three funcs ascribed against the exported identity. The
+    /// closure analog of `inner_reexport_component` but with two `make`s sharing one `call` — the multi-
+    /// export shape a compiler envelope emits for two same-signature closure exports.
+    fn multi_inner_reexport_component() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        ); // type 0
+        // make-inc / make-triple : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_inc_fn = c.import("import-func-make-inc", ComponentTypeRef::Func(make_ty)); // func 0
+        let (own_imp_b, odb) = c.type_defined();
+        odb.own(imp_t);
+        let (make_ty_b, mut mfb) = c.type_function();
+        mfb.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp_b)));
+        let make_triple_fn = c.import("import-func-make-triple", ComponentTypeRef::Func(make_ty_b)); // func 1
+        // call : (self: own<0>, x: s64) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty)); // func 2
+        // RE-EXPORT the resource type directly.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        // make-inc ascribed.
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_inc_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make-inc",
+            ComponentExportKind::Func,
+            make_inc_fn,
+            Some(ComponentTypeRef::Func(make_inc_exp_ty)),
+        );
+        // make-triple ascribed.
+        let (own_exp_b, od3b) = c.type_defined();
+        od3b.own(exp_t);
+        let (make_triple_exp_ty, mut mf2b) = c.type_function();
+        mf2b.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp_b)));
+        c.export(
+            "make-triple",
+            ComponentExportKind::Func,
+            make_triple_fn,
+            Some(ComponentTypeRef::Func(make_triple_exp_ty)),
+        );
+        // call ascribed (shared).
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer MULTI-EXPORT oracle: wraps `multi_closure_core` in a resource with `make-inc`,
+    /// `make-triple`, and a shared `call`, published as `cadenza:closure/exports`. Standalone (no heap
+    /// runtime — the cell IS the table slot). Proves the multi-export shape composes and runs.
+    fn oracle_multi_closure_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_inc_core = c.core_alias_export(prog_inst, "make-inc", ExportKind::Func);
+        let make_triple_core = c.core_alias_export(prog_inst, "make-triple", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        // lift make-inc : () -> own<t>
+        let (own_a, oda) = c.type_defined();
+        oda.own(res_ty);
+        let (make_inc_ty, mut mfa) = c.type_function();
+        mfa.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_a)));
+        let make_inc_comp = c.lift_func(make_inc_core, make_inc_ty, []);
+        // lift make-triple : () -> own<t>
+        let (own_b, odb) = c.type_defined();
+        odb.own(res_ty);
+        let (make_triple_ty, mut mfb) = c.type_function();
+        mfb.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_b)));
+        let make_triple_comp = c.lift_func(make_triple_core, make_triple_ty, []);
+        // lift call : (self: own<t>, x: s64) -> s64
+        let (own_c, odc) = c.type_defined();
+        odc.own(res_ty);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_c)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(multi_inner_reexport_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make-inc", ComponentExportKind::Func, make_inc_comp),
+                (
+                    "import-func-make-triple",
+                    ComponentExportKind::Func,
+                    make_triple_comp,
+                ),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// MULTI-EXPORT end-to-end ORACLE: two closure exports (`make-inc`, `make-triple`) of the same
+    /// signature share ONE `call`, and the host drives each — `make-inc()` + `call(_, 5)` = 6, `make-triple()`
+    /// + `call(_, 5)` = 15. Proves that a single shared `call` correctly dispatches whichever closure a given
+    /// handle names (the code slot travels in the resource rep). This is the byte anchor licensing the
+    /// compiler's multi-export envelope (the hand-emitted production path is the next increment).
+    #[test]
+    fn multi_export_closures_share_one_call_and_the_host_drives_each() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_multi_closure_component(&multi_closure_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("multi-export closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let get = |store: &mut Store<()>, name: &str| {
+            let idx = instance
+                .get_export_index(&mut *store, Some(&iface), name)
+                .unwrap_or_else(|| panic!("export {name}"));
+            instance
+                .get_func(&mut *store, idx)
+                .unwrap_or_else(|| panic!("func {name}"))
+        };
+        let make_inc = get(&mut store, "make-inc");
+        let make_triple = get(&mut store, "make-triple");
+        let call = get(&mut store, "call");
+
+        // make-inc() → a handle; call(_, 5) = 6 through the SHARED call.
+        let mut h = [Val::Bool(false)];
+        make_inc.call(&mut store, &[], &mut h).expect("make-inc");
+        make_inc.post_return(&mut store).expect("post_return");
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[h[0].clone(), Val::S64(5)], &mut out)
+            .expect("call inc");
+        call.post_return(&mut store).expect("post_return");
+        assert_eq!(out[0], Val::S64(6), "make-inc → (+ x 1) applied to 5 = 6");
+
+        // make-triple() → a handle; the SAME shared call dispatches (* x 3), so call(_, 5) = 15.
+        let mut h2 = [Val::Bool(false)];
+        make_triple.call(&mut store, &[], &mut h2).expect("make-triple");
+        make_triple.post_return(&mut store).expect("post_return");
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[h2[0].clone(), Val::S64(5)], &mut out2)
+            .expect("call triple");
+        call.post_return(&mut store).expect("post_return");
+        assert_eq!(
+            out2[0],
+            Val::S64(15),
+            "make-triple → (* x 3) applied to 5 = 15, via the SAME shared call"
+        );
+    }
+
     /// C-HOST-1 (compiler serializer): `serialize::closure_resource_core_module` — the PRODUCTION core
     /// module a closure-resource export emits — produces a structurally VALID core module. Unlike the
     /// standalone oracle above (whose "cell" is the bare table slot), this is the real shape: the export
