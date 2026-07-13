@@ -1599,7 +1599,11 @@ impl ComposedRuntime {
     /// and invokes the guest's `call` method (which dispatches the closure via the guest's own
     /// `call_indirect`). `own<t>` consumes the handle per call, so each `closure_make_call` mints a fresh
     /// handle (C-HOST-1 own/no-drop; the `borrow<t>` repeated-call form is C-HOST-5).
-    fn closure_make_call(&mut self, args: &[wasmtime::component::Val]) -> wasmtime::component::Val {
+    fn closure_make_call(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
         use wasmtime::component::Val;
         let iface = self
             .program
@@ -1613,23 +1617,17 @@ impl ComposedRuntime {
             .program
             .get_export_index(&mut self.store, Some(&iface), "call")
             .expect("closure `call` exported");
-        let make = self
-            .program
-            .get_func(&mut self.store, make_idx)
-            .expect("make func");
-        let call = self
-            .program
-            .get_func(&mut self.store, call_idx)
-            .expect("call func");
+        let make = self.program.get_func(&mut self.store, make_idx).expect("make func");
+        let call = self.program.get_func(&mut self.store, call_idx).expect("call func");
+        // make(make_args…) → the closure handle. A PARAMETERIZED export (C-HOST-2) passes its params here
+        // (e.g. `adder(10)`); a nullary export passes none.
         let mut handle = [Val::Bool(false)];
-        make.call(&mut self.store, &[], &mut handle)
-            .expect("make call");
+        make.call(&mut self.store, make_args, &mut handle).expect("make call");
         make.post_return(&mut self.store).expect("make post_return");
-        let mut call_args = vec![handle[0].clone()];
-        call_args.extend_from_slice(args);
+        let mut full_call_args = vec![handle[0].clone()];
+        full_call_args.extend_from_slice(call_args);
         let mut out = [Val::Bool(false)];
-        call.call(&mut self.store, &call_args, &mut out)
-            .expect("call");
+        call.call(&mut self.store, &full_call_args, &mut out).expect("call");
         call.post_return(&mut self.store).expect("call post_return");
         out[0].clone()
     }
@@ -19871,6 +19869,7 @@ mod closure_host_resource {
             export_abs,
             &[ValType::I64],
             ValType::I64,
+            &[], // nullary export → make() has no params
             lifted_type_idx,
             &layout,
         )
@@ -19914,13 +19913,47 @@ mod closure_host_resource {
             "a closure-resource export imports the value-heap runtime (the cell is a heap value)"
         );
         let mut rt = super::ComposedRuntime::new(&program, &runtime);
-        // make() → closure handle; call(handle, 5) → 6.
+        // make() → closure handle (the export is nullary); call(handle, 5) → 6.
         assert_eq!(
-            rt.closure_make_call(&[Val::S64(5)]),
+            rt.closure_make_call(&[], &[Val::S64(5)]),
             Val::S64(6),
             "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
         );
         // A fresh handle called with 41 → 42 (own<t> consumed the first; each call mints a new handle).
-        assert_eq!(rt.closure_make_call(&[Val::S64(41)]), Val::S64(42));
+        assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
+    }
+
+    /// C-HOST-2: a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x)
+    /// (+ x k)))` crosses as `adder : (s64) -> own<closure>`; the host calls `make(10)` (which runs the
+    /// export body, closing over k=10 into the cell), then `call(handle, 5)` → 15. This proves (a) the
+    /// closure handle is COMPUTED from the host's input (make forwards the export param), and (b) the
+    /// captured environment (k) rides along in the cell and is read back inside `call`'s dispatch.
+    #[test]
+    fn a_compiled_capturing_closure_export_is_called_by_the_host() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&program).expect("valid").is_some(),
+            "a capturing closure export imports the value-heap runtime"
+        );
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make(10) → a closure capturing k=10; call(handle, 5) → 5 + 10 = 15.
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(10)], &[Val::S64(5)]),
+            Val::S64(15),
+            "adder(10) then call(5) = 15 — the captured k rides in the cell"
+        );
+        // A different capture (k=100) + a different call arg (7) → 107 — the handle tracks make's input.
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(100)], &[Val::S64(7)]),
+            Val::S64(107)
+        );
     }
 }

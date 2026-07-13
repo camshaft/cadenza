@@ -1057,12 +1057,53 @@ fn emit_closure_resource(
     let ret_vt =
         valtype_of(&ret_ty).ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
 
-    // Ops: the reachable bodies' ops (cell build: arr-alloc/arr-set/box-int), PLUS the `call` method's
-    // ops (arr-get + get-int to read the code slot) + `drop` for the dtor.
+    // The EXPORT's parameters (C-HOST-2): `make` forwards them so the host computes a distinct closure per
+    // input (`(def (adder k) …)` → `make(k)`). Each must have a scalar boundary ABI type this increment.
+    let export_params: Vec<(crate::ast::StructId, crate::ty::Ty)> = layout
+        .exports
+        .iter()
+        .find(|e| e.def == export_def)
+        .map(|e| e.params.clone())
+        .unwrap_or_default();
+    let make_param_vts: Vec<crate::backend::wasm::lir::ValType> = export_params
+        .iter()
+        .map(|(_, t)| {
+            valtype_of(t).ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
+        })
+        .collect::<Result<_, _>>()?;
+    let make_param_bytes: Vec<u8> = export_params
+        .iter()
+        .map(|(_, t)| {
+            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                Reject::decline(format!(
+                    "a closure-export parameter of type {} has no scalar host-boundary representation",
+                    t.render_name()
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    // Ops: the reachable bodies' ops (cell build: arr-alloc/arr-set/box-int) — plus the LIFTED closure
+    // bodies' ops (a CAPTURING closure reads its env via `get-int`/`get-bool` etc., which appear ONLY in
+    // the lifted body, not any top-level def), PLUS the `call` method's ops (arr-get + get-int to read the
+    // code slot) + `drop` for the dtor. `resource_escape_build` walks only `layout.order`, so the lifted
+    // bodies are walked explicitly here (mirrors `collect_module_used_ops`).
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
     let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
         .abs(export_def)
@@ -1094,6 +1135,7 @@ fn emit_closure_resource(
         export_abs,
         &arg_vts,
         ret_vt,
+        &make_param_vts,
         lifted_type_idx,
         &layout,
     )
@@ -1105,6 +1147,7 @@ fn emit_closure_resource(
         &dtor_core,
         &imports,
         &import_name,
+        &make_param_bytes,
         &arg_bytes,
         result_byte,
     ))

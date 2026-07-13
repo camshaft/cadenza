@@ -70,6 +70,7 @@ pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
@@ -383,6 +384,7 @@ pass	a param-shadowing let with a param-referencing initializer folds at a const
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
+pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
@@ -430,6 +432,7 @@ pass	a recursive parameter used only as a call argument infers from the callee's
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
+pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -1142,7 +1145,6 @@ todo	a rational-magnitude quantity erases to its exact rational value
 todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
-todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
