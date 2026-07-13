@@ -131,6 +131,15 @@ impl Kind {
 pub fn infix_glyph(op: &str) -> &str {
     match op {
         "=" => "==",
+        // Unit COMPOSITION heads render as their mathematical infix glyph — `(Unit.* a b)` → `a * b`,
+        // `(Unit./ a b)` → `a / b`, `(Unit.^ u n)` → `u ^ n` — so a unit reads like the math it denotes
+        // (`metre / second`, `metre ^ 2`) instead of the backtick-escaped `` `Unit.*` `` call. Re-reading
+        // `a * b` yields the ordinary `*`/`/`/`^` arena head, which the units layer treats as unit
+        // composition (`eval::unit_of`) — an idempotent ML round-trip (`ml(ml(x)) == ml(x)`), the surface
+        // canonicalizing the legacy `Unit.*` spelling to `*` exactly as it canonicalizes name-alias ctors.
+        "Unit.*" => "*",
+        "Unit./" => "/",
+        "Unit.^" => "^",
         other => other,
     }
 }
@@ -240,11 +249,15 @@ pub fn infix_prec(op: &str) -> Option<u8> {
         "or" => 4,
         "and" => 5,
         "=" | "<" | ">" | "<=" | ">=" => 6, // `=` = equality (surface `==`)
-        "|" | "^" => 7,
+        // `Unit.^` renders as the glyph `^` (arena `BitXor`, tier 7), so it MUST share that tier — the
+        // printer's parenthesization and the parser's binding power agree on the round-trip.
+        "|" | "^" | "Unit.^" => 7,
         "&" => 8,
         "<<" | ">>" => 9,
         "+" | "-" | "+%" | "-%" | "+." | "-." => 10,
-        "*" | "/" | "%" | "*%" | "*." | "/." => 11,
+        // `Unit.*`/`Unit./` render as `*`/`/` (tier 11), sharing the multiplicative tier for the same
+        // round-trip agreement.
+        "*" | "/" | "%" | "*%" | "*." | "/." | "Unit.*" | "Unit./" => 11,
         _ => return None,
     })
 }
@@ -328,5 +341,20 @@ mod tests {
         assert_eq!(infix_glyph("+"), "+");
         assert_eq!(infix_glyph(":"), ":");
         assert_eq!(infix_glyph("->"), "->");
+    }
+
+    #[test]
+    fn unit_composition_heads_render_infix() {
+        // Unit composition renders as its math glyph so a unit reads like `metre / second` / `metre ^ 2`
+        // instead of the backtick-escaped `` `Unit.*` `` call. The glyph re-reads to the ordinary numeric
+        // head (the units layer treats it as composition), an idempotent ML round-trip.
+        assert_eq!(infix_glyph("Unit.*"), "*");
+        assert_eq!(infix_glyph("Unit./"), "/");
+        assert_eq!(infix_glyph("Unit.^"), "^");
+        // Each shares the tier of the glyph it renders as, so parser binding power and printer
+        // parenthesization agree on the round-trip.
+        assert_eq!(infix_prec("Unit.*"), infix_prec("*"));
+        assert_eq!(infix_prec("Unit./"), infix_prec("/"));
+        assert_eq!(infix_prec("Unit.^"), infix_prec("^"));
     }
 }

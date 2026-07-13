@@ -178,6 +178,7 @@ pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
+pass	a duplicate match arm is dead code but the program still runs
 pass	a failing guard falls through to a later arm
 pass	a false variant guard shields its arm's trapping body
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional
@@ -508,6 +509,11 @@ pass	a returned runtime string with a non-printable scalar renders it verbatim, 
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a round-trip at a widened scalar width (UInt32)
+pass	a round-trip consumer applies the closure in a match wildcard arm
+pass	a round-trip consumer applies the closure only in the taken if-branch
+pass	a round-trip consumer binds the applied closure through a let
+pass	a round-trip consumer takes the non-applying match arm
+pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
@@ -765,6 +771,10 @@ pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
+pass	an escaping closure captures two values and takes three arguments
+pass	an escaping closure whose body binds a multi-variable let
+pass	an escaping closure whose body is a match hits the literal arm
+pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
@@ -901,6 +911,7 @@ pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
+pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
 pass	distinct-signature capturing producers
 pass	dividing quantities divides their dimensions
 pass	division by zero traps
@@ -1145,6 +1156,7 @@ pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the slice overflow guard holds on a chained slice-of-a-slice

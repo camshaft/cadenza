@@ -557,3 +557,121 @@
               (export mk) (export app)))
   (call   app (: 1 Int64))
   (output (: 100 Int64)))
+
+; CLOSURE BODY RICHNESS — the boundary machinery is agnostic to what the closure's body DOES; these witness
+; body constructs (a `match`, a multi-binding `let`, several captures + args at once) crossing and
+; dispatching correctly, a dimension distinct from the arity/capture/multi-export shapes above.
+
+(case "an escaping closure captures two values and takes three arguments"
+  (doc    "`(def (main (: k Int64)) (fn (a b c) (+ (+ (+ a b) c) k)))` — the export param `k` is captured
+           while the closure takes THREE args. `make(100)` (capturing k=100) then `call(1, 2, 3)` = 1 + 2 +
+           3 + 100 = 106. Pins capture composing with a 3-arg call.")
+  (input  (do (def (main (: k Int64)) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ (+ a b) c) k))) (export main)))
+  (call   main (: 100 Int64) (: 1 Int64) (: 2 Int64) (: 3 Int64))
+  (output (: 106 Int64)))
+
+(case "an escaping closure whose body is a match hits the literal arm"
+  (doc    "`(fn (x) (match x (0 100) (_ x)))` — the closure body is a `match`. `call(0)` takes the literal
+           arm → 100. Pins that a control-flow body (`match`) lowers and dispatches through the closure
+           boundary.")
+  (input  (do (def (main) (fn ((: x Int64)) (match x (0 100) (_ x)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case "an escaping closure whose body is a match hits the wildcard arm"
+  (doc    "The same match-bodied closure, `call(5)` → the wildcard arm → 5. Pins both arms of the closure's
+           `match` dispatch across the boundary.")
+  (input  (do (def (main) (fn ((: x Int64)) (match x (0 100) (_ x)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "an escaping closure whose body binds a multi-variable let"
+  (doc    "`(def (main (: k Int64)) (fn (x) (let ((a (* x 2)) (b (+ x k))) (+ a b))))` — the body binds two
+           locals (one using the captured `k`) then sums. `make(10)` then `call(5)` = (5*2) + (5+10) = 10 +
+           15 = 25. Pins a multi-binding `let` body composing with capture.")
+  (input  (do (def (main (: k Int64)) (fn ((: x Int64)) (let ((a (* x 2)) (b (+ x k))) (+ a b)))) (export main)))
+  (call   main (: 10 Int64) (: 5 Int64))
+  (output (: 25 Int64)))
+
+; SOUNDNESS: distinct component signatures that COLLAPSE to the same CORE valtype shape. `a : (-> Int64
+; Int64)` and `b : (-> Int64 UInt64)` are DISTINCT at the component boundary (s64 vs u64 result) — two
+; resource types — yet both lower to the SAME core functype `(i32 env, i64) -> i64`. Each must still
+; dispatch its OWN lifted body: the code slot rides in the resource rep (make-a → a t0 handle whose cell
+; points at a's slot; make-b → a t1 handle at b's slot), recovered per call, so the shared core functype
+; index is immaterial to WHICH body runs. If the two ever collided, `b` would run `a`'s body.
+
+(case "distinct signatures sharing a core valtype shape dispatch distinct bodies"
+  (doc    "`a : (-> Int64 Int64)` returns `x + 1000`; `b : (-> Int64 UInt64)` returns `x * 7` — distinct
+           component signatures (s64 vs u64 result) but the SAME core shape `(i64) -> i64`. Calling `a(3)`
+           = 1003 runs a's body. Pins that a's resource + slot dispatch its own code despite the shared
+           core functype.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x 1000)))
+              (def (b) (fn ((: x Int64)) (UInt64.wrap (* x 7))))
+              (export a) (export b)))
+  (call   a (: 3 Int64))
+  (output (: 1003 Int64)))
+
+(case "the same-core-shape sibling dispatches ITS body, not the first"
+  (doc    "The same program, calling `b(3)` = 21 = `x * 7` (b's OWN body), NOT 1003 (a's). Pins the
+           soundness property: two closures whose core functypes are identical still run distinct code,
+           because the code slot is recovered from the resource rep at call time — a mispick would surface
+           here as b returning a's result.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x 1000)))
+              (def (b) (fn ((: x Int64)) (UInt64.wrap (* x 7))))
+              (export a) (export b)))
+  (call   b (: 3 Int64))
+  (output (: 21 UInt64)))
+
+; ROUND-TRIP CONSUMER BODY RICHNESS — a consumer's body is ordinary Cadenza code, and the handed-back
+; closure is a first-class value in it that may be applied CONDITIONALLY (an `if`/`match` branch that does
+; NOT apply it on every path) or bound through a `let`. This exercises a correctness property: the consumer
+; wrapper `resource.rep`s the handle → cell and DROPs the cell (own<t> release) around the body call —
+; sound even when the body never dispatches the closure on the taken path (the cell is still reclaimed).
+
+(case "a round-trip consumer applies the closure only in the taken if-branch"
+  (doc    "`(def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))` — applies `g` only when x
+           ≥ 0. `mk()` + `app(handle, 5)` = (g 5) = 6. Pins that a consumer applies the handed-back closure
+           inside control flow.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a round-trip consumer that does NOT apply the closure on the taken branch"
+  (doc    "The same consumer, `app(handle, -3)` = 0 — the guarded branch is taken and `g` is NEVER applied.
+           Pins the release soundness: the wrapper still `resource.rep`s + DROPs the handed-back cell even
+           though the body did not dispatch it (own<t> is consumed at the boundary regardless).")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))
+              (export mk) (export app)))
+  (call   app (: -3 Int64))
+  (output (: 0 Int64)))
+
+(case "a round-trip consumer binds the applied closure through a let"
+  (doc    "`(def (app (: g (-> Int64 Int64)) (: x Int64)) (let ((y (g x))) (+ y 1)))` — `mk` multiplies by
+           10, so `app(handle, 4)` = (g 4) + 1 = 40 + 1 = 41. Pins a `let`-bound application in a consumer.")
+  (input  (do (def (mk) (fn ((: x Int64)) (* x 10)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (let ((y (g x))) (+ y 1)))
+              (export mk) (export app)))
+  (call   app (: 4 Int64))
+  (output (: 41 Int64)))
+
+(case "a round-trip consumer applies the closure in a match wildcard arm"
+  (doc    "`(def (app (: g (-> Int64 Int64)) (: x Int64)) (match x (0 999) (_ (g x))))` — `mk` adds 100.
+           `app(handle, 5)` takes the wildcard → (g 5) = 105; `app(handle, 0)` takes the literal arm → 999,
+           NOT applying `g`. Pins a `match`-dispatched consumer, applying the closure only in one arm.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 100)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (match x (0 999) (_ (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 105 Int64)))
+
+(case "a round-trip consumer takes the non-applying match arm"
+  (doc    "The same match-bodied consumer, `app(handle, 0)` = 999 — the literal arm, `g` NOT applied.
+           Confirms the handed-back cell is still released when the body's taken path skips the closure.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 100)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (match x (0 999) (_ (g x))))
+              (export mk) (export app)))
+  (call   app (: 0 Int64))
+  (output (: 999 Int64)))

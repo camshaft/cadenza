@@ -2833,6 +2833,31 @@
               ((None) 0)))
   (error    CDZ0210))
 
+; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
+; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a
+; value no arm covers (CDZ0210, a rejection), a REDUNDANT arm is one no value reaches — an EARLIER arm
+; already covers everything it would. Because matching is first-match-wins, such an arm is simply DEAD:
+; the program is well-formed and runs correctly, so it is not rejected but earns a non-error diagnostic
+; (CDZ0213 — asserted by a compiler unit test), like the dead-trap (CDZ0305) and unused-binding (CDZ0306)
+; warnings. The case below builds a value matching the LIVE arm; the duplicate arm never fires. (A
+; payload-REFINING arm like `(Some 0)` before `(Some n)` covers only part of the variant and is NOT
+; redundant; a GUARDED arm is conditional and never shadows — neither warns.)
+
+(case "a duplicate match arm is dead code but the program still runs"
+  (doc    "`(C.Red)` appears as an arm TWICE; first-match-wins means the second `(C.Red)` arm can never be
+           reached — dead code. The match is well-formed and the program runs (the scrutinee `(C.Red)`
+           takes the FIRST `Red` arm → 1), so this is not a rejection but a non-error CDZ0213 warning
+           (unit-tested; the gate observes the run and the build succeeds). The dual of the CDZ0210
+           non-exhaustiveness rejection above: that flags a value no arm covers, this an arm no value
+           reaches.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C Red Green)
+            (def (kind (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0)))
+            (def (main) (kind (C.Red))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 (case "a nullary constructor is a single-arity function taking unit"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (2nd sentence): a 'nullary' variant is a constructor whose argument type

@@ -207,11 +207,13 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     for &a in args.iter() {
                         arg_tys.push(type_in_env(db, a, env)?);
                     }
-                    Some(Ty::Sum {
-                        decl,
-                        name,
-                        args: arg_tys,
-                    })
+                    // Normalize through the shared chokepoint so a generic NEWTYPE's SCHEME result is
+                    // `Ty::Nominal { inner }` (its template with these param VARS substituted), not a boxed
+                    // `Ty::Sum`. `arg_tys` here are the scheme's fresh param vars (`(Box a)` → `[Var(a)]`),
+                    // so the substituted `inner` shares them — when `apply_type` later solves `a := Int64`,
+                    // the substitution flows into `inner` too, giving `Ty::Nominal { inner: Int64 }` at the
+                    // use site. This is the scheme-position analogue of `reduce_sum_ctor`/`decode_ty`.
+                    Some(db.normalize_sum(decl, name, arg_tys))
                 }
                 // A `(Tuple T…)` inside a type-lambda — each element reduced UNDER THE ENV, so a type
                 // parameter `a` in a tuple element becomes its type variable. This is what lets a generic
@@ -1881,11 +1883,11 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
     for &a in args {
         arg_tys.push(typeval_of(db, a)?);
     }
-    let sum = crate::ty::Ty::Sum {
-        decl,
-        name,
-        args: arg_tys,
-    };
+    // Normalize through the SHARED chokepoint: an erasable GENERIC newtype (`(type Box (Mk a))`) at this
+    // instantiation becomes `Ty::Nominal { inner }` (its template with `arg_tys` substituted), NOT a boxed
+    // `Ty::Sum` — the same decision `decode_ty` makes for the wire form. Without this the generic ctor's
+    // result typed as `Ty::Sum`, so the erased value's binder read the wrong (boxed) representation.
+    let sum = db.normalize_sum(decl, name, arg_tys);
     trace!(target: "rcdzc::eval", ty = %sum.render_name(), "ctor (Sum): built generic sum type-value");
     Some(sum)
 }
@@ -1984,6 +1986,31 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                 Prim::UnitPow => {
                     let a = unit_of(db, *args.first()?)?;
                     // The exponent is a compile-time integer literal (may be negative).
+                    let n = match resolved_of(db, *args.get(1)?) {
+                        Resolved::Int(v) => v.to_i64()?,
+                        _ => return None,
+                    };
+                    Some(a.pow(n))
+                }
+                // The ORDINARY arithmetic operators used on UNITS compose them, so unit composition reads
+                // as ordinary math on both surfaces (`metre * second`, `metre / second`, `metre ^ 2`) —
+                // no backtick-escaped `Unit.*` name. `*`/`/` fire only when BOTH operands reduce to units
+                // (a `(* 2 3)` numeric multiply has non-unit operands → falls through to `None` here and
+                // is handled as arithmetic elsewhere); `^` (arena `BitXor`) is unit-power when the base is
+                // a unit and the exponent a compile-time int. This is the same "dispatch by operand kind,
+                // not by name" the quantity operators use.
+                Prim::Mul if args.len() == 2 => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let b = unit_of(db, *args.get(1)?)?;
+                    Some(a.mul(&b))
+                }
+                Prim::Div if args.len() == 2 => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let b = unit_of(db, *args.get(1)?)?;
+                    Some(a.div(&b))
+                }
+                Prim::BitXor if args.len() == 2 => {
+                    let a = unit_of(db, *args.first()?)?;
                     let n = match resolved_of(db, *args.get(1)?) {
                         Resolved::Int(v) => v.to_i64()?,
                         _ => return None,

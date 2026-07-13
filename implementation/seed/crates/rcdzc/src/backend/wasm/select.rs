@@ -6511,7 +6511,10 @@ fn emit_checked_arith_to(
     // machine overflow guard AND the narrow range-check are dead — the machine op already computed the
     // exact result. Skip them. `arith_provably_in_range` is conservative (a value with no finite range
     // bound → keep the guards), and verified sound by exhaustive endpoint checks.
-    if crate::lower::arith_provably_in_range(db, op, lhs, rhs) {
+    // The op's AUTHORITATIVE result type — `m`'s width/sign (from the arith node's solved type), NOT an
+    // operand node's possibly-deferred type — so the fit-check bounds the result at the RIGHT width.
+    let result_ty = IntTy::fixed(m.signed, m.width);
+    if crate::lower::arith_provably_in_range(db, op, lhs, rhs, result_ty) {
         if matches!(dest, ResultDest::Stack) {
             out.push(Lir::LocalGet(sr));
         }

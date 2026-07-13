@@ -4438,6 +4438,135 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_conditional_operands_range_is_the_union_of_its_branches() {
+        // `value_range` of a `Core::If`/`Core::Match` is the UNION of its branch ranges, so a
+        // bool-materialized `(if c 1 0)` is [0,1] and `(if c 10 20)` is [10,20]. That lets a downstream
+        // checked op shed a dead overflow guard: `(* bool C)` ∈ [0,C] and `(+ (if c 10 20) 5)` ∈ [15,25]
+        // cannot overflow their (wide) type. ⚠ Soundness rests on using the OP's authoritative width for
+        // the fit-check, NOT a deferred operand's default: a genuinely-narrow op whose branches overflow
+        // (`(: (+ (if (< n 5) 100 0) 100) Int8)` → up to 200) MUST keep its guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let guards = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::IfUnreachableEnd))
+                .count()
+        };
+        // A bool-materialized `(if c 1 0)` is [0,1] → `* 5` ∈ [0,5], `+ 5` ∈ [5,6] — NO guard (Int64).
+        assert_eq!(
+            guards(&lir("(: a Int64) (: b Int64)", "(* (if (< a b) 1 0) 5)")),
+            0,
+            "bool*5 in [0,5] sheds its guard"
+        );
+        assert_eq!(
+            guards(&lir("(: a Int64) (: b Int64)", "(+ (if (< a b) 1 0) 5)")),
+            0,
+            "bool+5 sheds its guard"
+        );
+        // A small-constant conditional `(if c 10 20)` is [10,20] → `+ 5` ∈ [15,25] — NO guard.
+        assert_eq!(
+            guards(&lir("(: c Bool) (: x Int64)", "(+ (if c 10 20) 5)")),
+            0,
+            "[10,20]+5 sheds its guard"
+        );
+        // A NARROW conditional whose product fits: `(: (* (if c 3 4) 5) Int8)` ∈ [15,20] ⊆ Int8 — NO guard.
+        assert_eq!(
+            guards(&lir("(: c Bool)", "(: (* (if c 3 4) 5) Int8)")),
+            0,
+            "[15,20] fits Int8 — no guard"
+        );
+        // SOUNDNESS — a conditional branch is UNBOUNDED (`x`): the guard is KEPT.
+        assert!(
+            guards(&lir("(: c Bool) (: x Int64)", "(* (if c x 4) 5)")) > 0,
+            "an unbounded branch keeps the guard"
+        );
+        // SOUNDNESS — a genuinely-NARROW op whose branch-union overflows the narrow type KEEPS its guard.
+        assert!(
+            guards(&lir("(: n Int8)", "(: (+ (if (< n 5) 100 0) 100) Int8)")) > 0,
+            "Int8 (+ [0,100] 100) can reach 200 > 127 — guard kept"
+        );
+
+        // VALUE + TRAP parity.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(* (if (< a b) 1 0) 5)",
+                &[Val::S64(1), Val::S64(2)]
+            ),
+            5
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(* (if (< a b) 1 0) 5)",
+                &[Val::S64(5), Val::S64(2)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (* (if c 3 4) 5) Int8)",
+                &[Val::Bool(true)]
+            ),
+            15
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (* (if c 3 4) 5) Int8)",
+                &[Val::Bool(false)]
+            ),
+            20
+        );
+        // The narrow overflow still traps (n=3 → 100+100=200 > 127), in-range computes (n=9 → 0+100=100).
+        assert!(traps(
+            "(: n Int8)",
+            "(: (+ (if (< n 5) 100 0) 100) Int8)",
+            &[Val::S8(3)]
+        ));
+        assert_eq!(
+            run::<i8>(
+                "(: n Int8)",
+                "(: (+ (if (< n 5) 100 0) 100) Int8)",
+                &[Val::S8(9)]
+            ),
+            100
+        );
+        // The unbounded conditional still traps on real overflow.
+        assert!(traps(
+            "(: c Bool) (: x Int64)",
+            "(* (if c x 4) 5)",
+            &[Val::Bool(true), Val::S64(i64::MAX)]
+        ));
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound
@@ -5994,6 +6123,123 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_right_shifts_collapse_to_a_single_shift() {
+        // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
+        // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
+        // A+B < width (a combined count ≥ width would be masked mod width by the machine shift). Pins the
+        // collapse at the Lir level (one shift) and the width guard (two shifts when A+B ≥ width).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let shifts = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64ShrS | Lir::I64ShrU | Lir::I32ShrS | Lir::I32ShrU))
+                .count()
+        };
+        // Int64 A+B=5 < 64 → one signed shift; UInt64 → one unsigned; triple nest → one.
+        assert_eq!(
+            shifts(&lir("(: x Int64)", "(: (>> (>> x 2) 3) Int64)")),
+            1,
+            "signed shr-shr → one"
+        );
+        assert_eq!(
+            shifts(&lir("(: x UInt64)", "(: (>> (>> x 2) 3) UInt64)")),
+            1,
+            "unsigned shr-shr → one"
+        );
+        assert_eq!(
+            shifts(&lir("(: x Int64)", "(: (>> (>> (>> x 1) 2) 3) Int64)")),
+            1,
+            "triple → one"
+        );
+        // A+B ≥ width does NOT combine (would be masked mod width): Int64 40+30=70, Int8 3+5=8.
+        assert_eq!(
+            shifts(&lir("(: x Int64)", "(: (>> (>> x 40) 30) Int64)")),
+            2,
+            "70 >= 64 → keep two"
+        );
+        assert_eq!(
+            shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 5) Int8)")),
+            2,
+            "8 >= 8 → keep two"
+        );
+        // Int8 3+4=7 < 8 combines.
+        assert_eq!(
+            shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 4) Int8)")),
+            1,
+            "7 < 8 → one"
+        );
+
+        // VALUE PARITY — signed sign-fill, unsigned zero-fill, negatives, and the un-combined saturating
+        // double shift.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (>> (>> x 2) 3) Int64)",
+                &[Val::S64(1024)]
+            ),
+            32
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (>> (>> x 2) 3) Int64)",
+                &[Val::S64(-1024)]
+            ),
+            -32
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1)]),
+            -1
+        );
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(: (>> (>> x 2) 3) UInt64)",
+                &[Val::U64(1024)]
+            ),
+            32
+        );
+        // The un-combined case still computes the saturating double-shift value.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (>> (>> x 40) 30) Int64)",
+                &[Val::S64(-1)]
+            ),
+            -1
+        );
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (>> (>> x 3) 5) Int8)", &[Val::S8(-1)]),
+            -1
+        );
+    }
+
+    #[test]
     fn a_mask_covering_a_shifted_values_range_is_elided() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
@@ -6889,6 +7135,73 @@ mod match_engine {
     }
 
     #[test]
+    fn a_generic_newtype_erases_and_matches() {
+        // A GENERIC single-variant sum `(type Box (Mk a))` is an erasable newtype: its inner type is
+        // computed PER-INSTANTIATION (the template `Var(0)` with the instantiation's arg substituted at
+        // `decode_ty`). `(Mk 42)` erases to the raw i64 (no `sum-new`), and `(Mk n)` binds it.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Mk a)) \
+                       (def (main) (match (Mk 42) ((Mk n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_generic_same_name_newtype_constructs_and_matches() {
+        // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
+        // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;
+        // the synthesized `(Box a)` ctor-result stays the type.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Box a)) \
+                       (def (main) (match (Box 42) ((Box n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_generic_newtype_at_two_instantiations_stays_distinct() {
+        // `Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing
+        // them across the boundary is a type error — the nominal-over-generic analogue of `Option Int64 ≠
+        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.)
+        assert_eq!(
+            reject_code(
+                "(module m (type Box (Mk a)) \
+                   (def (main) (= (Mk 1) (Mk true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn a_generic_newtype_nested_at_another_instantiation_erases() {
+        // A generic newtype whose payload is ITSELF at another instantiation — `(Mk (Mk 5)) : Box (Box
+        // Int64)` — erases both layers (each `Ty::Nominal` erases to its inner), so the doubly-wrapped 5
+        // reads back through two `(Mk …)` matches. Exercises a nominal inner (the template is sum-free —
+        // `Var(0)` — but the instantiation substitutes a `Ty::Nominal`, which still erases).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Mk a)) \
+                       (def (main) (match (Mk (Mk 5)) ((Mk inner) (match inner ((Mk n) (+ n 1)))))) (export main))"
+                ),
+                "main"
+            ),
+            6
+        );
+    }
+
+    #[test]
     fn a_newtype_over_a_record_reads_a_field_at_runtime() {
         // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
         // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
@@ -7178,6 +7491,60 @@ mod match_engine {
             w.message.contains("0..=18446744073709551615"),
             "UInt64.max renders exactly: {}",
             w.message
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_literal_carries_a_widen_the_annotation_fix() {
+        // CDZ0302 now carries the rustc-style "value doesn't fit; use a wider type" repair: replace the
+        // annotation with the SMALLEST aliased width of the same signedness the literal fits
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). `999` overflows
+        // `Int8` but fits `Int16`.
+        let d = reject_full("(module m (def (main) (: 999 Int8)) (export main))")
+            .expect("999 overflows Int8");
+        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        let fix = d.fix.expect("a widen fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "Int16",
+            "widens to the smallest fitting width"
+        );
+        assert!(
+            !fix.verified,
+            "widening is a heuristic — the author confirms intent"
+        );
+        // A value that needs the widest width jumps straight there (not an intermediate that still fails).
+        let big = reject_full("(module m (def (main) (: 5000000000 Int8)) (export main))")
+            .expect("5e9 overflows Int8");
+        assert_eq!(
+            big.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Int64"),
+            "5e9 needs Int64: {}",
+            big.message
+        );
+        // Unsigned widens to the unsigned family.
+        let u = reject_full("(module m (def (main) (: 300 UInt8)) (export main))")
+            .expect("300 overflows UInt8");
+        assert_eq!(
+            u.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("UInt16"),
+            "unsigned widens to UInt16: {}",
+            u.message
+        );
+    }
+
+    #[test]
+    fn a_negative_into_unsigned_gets_no_widen_fix() {
+        // Widening never rescues a NEGATIVE literal in an UNSIGNED type (no unsigned width holds a
+        // negative), so CDZ0302 stays the honest bare reject — no misleading widen fix. (Switching to a
+        // signed type is a larger intent guess the compiler must not make.)
+        let d = reject_full("(module m (def (main) (: -5 UInt8)) (export main))")
+            .expect("-5 does not fit UInt8");
+        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        assert!(
+            d.fix.is_none(),
+            "no widen fix for a negative into unsigned: {:?}",
+            d.fix
         );
     }
 
@@ -10255,6 +10622,41 @@ mod match_engine {
     }
 
     #[test]
+    fn option_expect_on_a_constant_absent_variant_folds_to_a_trap() {
+        // The ABSENT companion of the present-fold above: `expect` on a compile-time-visible ABSENT variant
+        // is requiring the value of a statically-known-empty optional — a PROVABLE TRAP (core-semantics.md
+        // §Requiring The Value Of An Optional Traps On Absence), folded to `Core::Trap` (an `unreachable`),
+        // NOT a decline. Exercised where the payload TYPE is determined (an overflowing `checked-add`, whose
+        // `(Option Int64)` fixes the return type), so `main` has a machine return type and the trap is the
+        // observed outcome. `(add-ck Int64.max 1)` overflows → `checked-add` folds to `None` → `expect`
+        // traps. Contrast `(add-ck 20 22)` = 42, which unwraps the `Some` (the present fold).
+        let ck = "(def (add-ck a b) (Option.expect (Int64.checked-add a b) \"overflow\"))";
+        // In range: expect unwraps the folded `Some` — 42.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(&format!(
+                    "(module m {ck} (def (main) (add-ck 20 22)) (export main))"
+                )),
+                "main"
+            ),
+            42,
+            "an in-range checked add's Some is unwrapped by expect"
+        );
+        // Overflow: the folded `None` makes expect a provable trap — the program compiles and traps at run
+        // time (rather than declining, as it did before the absent-fold).
+        assert!(
+            call_traps(
+                &component(&format!(
+                    "(module m {ck} (def (main) (add-ck Int64.max 1)) (export main))"
+                )),
+                "main",
+                &[]
+            ),
+            "an overflowing checked add's None makes expect trap"
+        );
+    }
+
+    #[test]
     fn checked_arithmetic_folds_to_some_in_range_and_none_on_overflow() {
         // `Int64.checked-add`/`checked-mul` — the FALLIBLE arithmetic (numeric-model.md §Overflow Is
         // Defined). A constant operand pair FOLDS: in range → `(Some result)`, overflow → `(None unit)`.
@@ -10304,6 +10706,52 @@ mod match_engine {
             run_returns::<i64>(&component(src), "main"),
             min,
             "runtime wrapping-add wraps at run time"
+        );
+    }
+
+    #[test]
+    fn checked_integer_conversion_folds_in_range_and_traps_out_of_range() {
+        // `T.of` — the CHECKED (range-checked, TRAPPING) integer conversion (numeric-model.md §A
+        // Conversion Between Integer Types Is Explicit): a constant IN RANGE folds to the value at the
+        // target type, a constant OUT OF RANGE compiles to a `Core::Trap` that fires at run time.
+        // Distinct from `T.wrap` (which truncates totally, never traps).
+        // In range: `(UInt8.of 200)` = 200 : UInt8 (unchanged, not truncated).
+        assert_eq!(
+            run_returns::<u8>(
+                &component("(module m (def (main) ((. UInt8 of) (: 200 Int32))) (export main))"),
+                "main"
+            ),
+            200,
+            "an in-range checked conversion yields the value unchanged"
+        );
+        // Signed boundary: `(Int8.of 127)` = 127 (Int8.max, the largest that fits).
+        assert_eq!(
+            run_returns::<i8>(
+                &component("(module m (def (main) ((. Int8 of) (: 127 Int32))) (export main))"),
+                "main"
+            ),
+            127,
+            "the boundary value fits and converts unchanged"
+        );
+        // Out of range (magnitude): `(UInt8.of 256)` is one past UInt8.max → the compiled program TRAPS
+        // (it must not silently truncate to 0 the way `wrap` would).
+        assert!(
+            call_traps(
+                &component("(module m (def (main) ((. UInt8 of) (: 256 Int32))) (export main))"),
+                "main",
+                &[]
+            ),
+            "a checked conversion out of the target range traps at run time"
+        );
+        // Out of range (sign): `(UInt8.of -1)` — UInt8 has no negatives → trap (where `(UInt8.wrap -1)`
+        // would give 255). Pins that `of` checks the sign boundary, not only the magnitude boundary.
+        assert!(
+            call_traps(
+                &component("(module m (def (main) ((. UInt8 of) (: -1 Int32))) (export main))"),
+                "main",
+                &[]
+            ),
+            "a checked conversion of a negative into an unsigned type traps"
         );
     }
 
@@ -12519,6 +12967,75 @@ mod diagnostics {
             "an exported def must not warn"
         );
     }
+
+    // ── Redundant-arm warning (CDZ0213) — a match arm an earlier arm already covers. A WARNING that
+    // rides alongside a produced component (the program is well-formed; first-match-wins makes the
+    // shadowed arm dead), the pattern dual of the non-exhaustiveness rejection.
+
+    /// The CDZ0213 redundant-arm warnings from `src` (asserting a component WAS produced — a warning
+    /// must accompany a success, never a denial).
+    fn redundant_arms_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+        warnings_of(src)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0213"))
+            .collect()
+    }
+
+    #[test]
+    fn a_duplicate_or_shadowed_match_arm_warns_but_still_compiles() {
+        // Each shape has an arm an earlier arm already fully covers: a repeated variant, a repeated
+        // literal, an arm after a catch-all, a repeated Option variant. All COMPILE (first-match wins)
+        // and emit exactly one CDZ0213.
+        for src in [
+            "(module m (type C Red Green) (def (f (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0))) (def (main) (f (C.Red))) (export main))",
+            "(module m (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main))",
+            "(module m (def (f (: n Int64)) (match n (_ 1) (0 2))) (def (main) (f 5)) (export main))",
+            "(module m (def (f (: o (Option Int64))) (match o ((Some n) n) ((Some m) m) ((None) 0))) (def (main) (f (Some 5))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "expected exactly one redundant-arm (CDZ0213) warning for `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_match_with_distinct_or_refining_or_guarded_arms_does_not_warn() {
+        // Negatives: distinct variants, distinct literals, a payload-REFINING arm (`(Some 0)` before
+        // `(Some n)` — covers only the value 0, not the whole variant), and GUARDED same-variant arms
+        // (the guard is conditional, so neither arm subsumes the other) must NOT warn.
+        for src in [
+            "(module m (type C Red Green Blue) (def (f (: c C)) (match c ((C.Red) 1) ((C.Green) 2) ((C.Blue) 3))) (def (main) (f (C.Red))) (export main))",
+            "(module m (def (f (: n Int64)) (match n (0 1) (1 2) (_ 3))) (def (main) (f 0)) (export main))",
+            "(module m (def (f (: o (Option Int64))) (match o ((Some 0) 100) ((Some n) n) ((None) 0))) (def (main) (f (Some 5))) (export main))",
+            "(module m (type B (V Int64)) (def (f (: x B)) (match x ((guard (B.V n) (> n 0)) 1) ((B.V n) 0))) (def (main) (f (B.V 5))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a well-formed match must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
+    fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
+        // The warning carries the DEAD arm's PATTERN node — a real user node the front-end maps to the
+        // redundant arm's span (not a prelude/synthesized id).
+        let src = "(module m (type C Red Green) (def (f (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0))) (def (main) (f (C.Red))) (export main))";
+        let ws = redundant_arms_of(src);
+        assert_eq!(ws.len(), 1);
+        let node = ws[0]
+            .node
+            .expect("a redundant-arm warning must carry a node");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node"
+        );
+    }
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
@@ -12882,6 +13399,87 @@ mod stage1 {
             Some("ac"),
             "lexicographically-smaller candidate wins the tie: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn a_member_operand_typo_prefers_a_member_accessible_name_over_a_nearer_variant() {
+        // CONTEXT-AWARE suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+        // Fix — the fix must be one an agent applies and it WORKS, the one-shot rule): a `handle`'s effect
+        // name is rewritten to `(. Name op)` arm ops, so a typo'd effect name is a MEMBER OPERAND. Here
+        // `Logg` sits 1 edit from BOTH the variant `Log` and the effect `Logr`. A variant has no members,
+        // so suggesting `Log` would fail the one-shot rule (`(. Log op)` → "record has no field `op`"). The
+        // member-operand pool drops variant constructors, so the EFFECT `Logr` — a name the fix actually
+        // resolves — is suggested instead.
+        let src = "(do (effect Logr (op op (-> Unit Unit))) (type T (Log Int64)) \
+                   (def (main) (handle Logg 0 ((op (u) s (resume s s))) 42)) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Logr"),
+            "a member operand prefers the member-accessible effect over the nearer variant: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_member_operand_does_not_suggest_a_prelude_variant_constructor() {
+        // The prelude's variant constructors (`None`/`Some`/`Ok`/`Err`) are dropped from a MEMBER OPERAND's
+        // candidate pool too — `(. Nope op)` (a handle effect typo) must not suggest `None` (a variant has
+        // no `op` member, so the fix wouldn't resolve). With no member-accessible name close to `Nope`, the
+        // diagnostic stays the plain "unbound" — no misleading fix (honest: no fix beats a wrong one).
+        let src = "(do (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle Nope 0 ((get (u) s (resume s s))) 42)) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("None"),
+            "a variant ctor is not suggested for a member operand: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_type_position_typo_does_not_suggest_a_nearer_value() {
+        // CONTEXT-AWARE suggestion in TYPE position: the type slot of an annotation `(: 5 flg)` is a type
+        // expression, so only a TYPE name could be meant. A value def `flag` sits 1 edit from `flg`, but
+        // suggesting it would fail the one-shot rule — `(: 5 flag)` gives "annotation requires a type,
+        // found a non-type". The type-expr pool drops value defs (and lexical binders + variant ctors), so
+        // with no type close to `flg` the diagnostic stays the honest plain "unbound", not a value
+        // suggestion. (A value-annotation body isolates the type typo — a param annotation on an exported
+        // def surfaces the export's ambiguous-type error first.)
+        let src = "(module m (def (flag) true) (def (main) (: 5 flg)) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("flag"),
+            "a value def is not suggested in type position: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_type_position_typo_still_suggests_a_real_type() {
+        // The type-position filter keeps TYPE names: a user type `Widget` misspelled `Widgett` in an
+        // annotation is still suggested (the fix `(: 5 Widget)` resolves), and a prelude type `Bool`
+        // misspelled `Booll` too — only the non-type kinds are dropped.
+        let user = "(module m (type Widget (W Int64)) (def (main) (: 5 Widgett)) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(user))).expect_err("must reject");
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Widget"),
+            "a user type is suggested in type position: {}",
+            d.message
+        );
+        let prelude = "(module m (def (main) (: 5 Booll)) (export main))";
+        let d2 =
+            compile_component(&crate::codec::encode(&parse(prelude))).expect_err("must reject");
+        assert_eq!(
+            d2.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Bool"),
+            "a prelude type is suggested in type position: {}",
+            d2.message
         );
     }
 
@@ -13359,9 +13957,12 @@ mod stage1 {
 
     #[test]
     fn an_unrealized_builtin_field_declines() {
-        // `(. Int64 of)` — the field EXISTS (present as a poison), so projecting it declines "not yet
-        // realized" rather than rejecting as absent. No open-module rule: it is filled with a poison.
-        let msg = expect_decline("(. Int64 of)");
+        // `(. (Int 100) max)` — the field EXISTS (present as a poison: a >64-bit width's bounds are not
+        // yet realized, `int_bounds` returns `None`), so projecting it declines "not yet realized" rather
+        // than rejecting as absent. No open-module rule: it is filled with a poison. (The former exemplar
+        // `(. Int64 of)` is now REALIZED — `of` is the checked conversion — so a still-unrealized field is
+        // used here; see `checked_integer_conversion_folds_in_range_and_traps_out_of_range`.)
+        let msg = expect_decline("(. (Int 100) max)");
         assert!(msg.contains("not yet realized"), "got: {msg}");
     }
 
@@ -16350,14 +16951,27 @@ mod stage1 {
             "a recursive single-variant sum stays boxed"
         );
 
-        // A GENERIC single-variant sum stays boxed for now (erasure is monomorphic-only this increment).
+        // A GENERIC single-variant sum IS erasable — its underlying template carries the param as
+        // `Ty::Var(0)` (the positional slot `decode_ty` substitutes the instantiation's arg into). So
+        // `(type Box (Mk a))` erases with template `Var(0)`; at `Box Int64` the inner is `Int64`.
         let ast = parse("(module m (type Box (Mk a)) (def (main) 0) (export main))");
         let mut db = Db::load(ast);
         let occ = decl_of(&db, "Box");
         assert_eq!(
             newtype_underlying(&mut db, occ),
-            None,
-            "a generic single-variant sum stays boxed (monomorphic-only erasure)"
+            Some(Ty::Var(0)),
+            "a generic single-variant sum erases with a param-var template"
+        );
+
+        // A generic newtype over a COMPOUND param position keeps the param var at its slot: `(type Wrap
+        // (Mk (List a)))` → template `(List Var(0))`.
+        let ast = parse("(module m (type Wrap (Mk (List a))) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Wrap");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::List(Box::new(Ty::Var(0)))),
+            "a generic newtype's template keeps the param var at its nested position"
         );
     }
 
@@ -19796,12 +20410,23 @@ mod r1_reference {
         make.post_return(&mut store).expect("make post");
         let mut out = [Val::Bool(false)];
         let r = encode.call(&mut store, &handle, &mut out);
-        match r {
-            Ok(()) => {
-                eprintln!("PROBE resource.rep-on-borrow → OK (rep call fine; trap is in the walk)")
-            }
-            Err(e) => eprintln!("PROBE resource.rep-on-borrow → TRAP: {e}"),
-        }
+        // FINDING (wasmtime 37): this TRAPS with "unknown handle index <rep>" — NOT a resource-type
+        // mismatch. The canonical ABI's `lift_borrow` hands the guest the REP DIRECTLY (resources.rs
+        // `resource_lift_borrow` returns `rep`), so calling `resource.rep(param)` treats the rep as a
+        // table index and fails. The correct borrow design uses the param AS the rep (no `resource.rep`)
+        // — proven by `r2_runtime_resource::a_borrow_self_encode_walks_and_crosses`. So this documents
+        // WHY `resource.rep`-on-borrow is wrong, not a limitation of borrow itself.
+        let err =
+            r.expect_err("resource.rep on a borrow must trap (the rep is the param, not an index)");
+        let chain: String = err
+            .chain()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("unknown handle index"),
+            "expected an 'unknown handle index' trap (rep used as table index), got: {chain}"
+        );
     }
 
     #[test]
@@ -20508,6 +21133,374 @@ mod r2_runtime_resource {
             assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
         } else {
             eprintln!("[R2] runtime wasm not found; skipping composed walk");
+        }
+    }
+
+    /// The PROGRAM core for the BORROW design: `encode` takes `borrow<t>` self and uses its i32 param
+    /// DIRECTLY as the heap rep — NO `resource.rep` (which traps on a borrow: the canonical ABI's
+    /// `lift_borrow` returns the rep itself, not a table index — verified in wasmtime 37's
+    /// `resource_lift_borrow`) and NO `drop` (a borrow does not own the value; the caller keeps it, so
+    /// the resource stays live for repeated calls). Identical to `walker_core` EXCEPT the encode prologue
+    /// (`local.get handle` used as the rep, no `resource.rep`) and no trailing drop. `resource.rep` is
+    /// therefore not imported; only `resource-new` (for `make`) is threaded from `heap`.
+    fn walker_core_borrow(tpl: &ValueFormTemplate, elems: &[i64]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = walker_ops();
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut import_type_idx = Vec::new();
+        for op in ops {
+            let (p, r) = op_core_functype(op);
+            types.ty().function(p, r);
+            import_type_idx.push(import_type_idx.len() as u32);
+        }
+        let rnew_ty = import_type_idx.len() as u32;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // resource-new (i32)->i32
+        let make_ty = rnew_ty + 1;
+        types.ty().function(vec![], vec![ValType::I32]);
+        let encode_ty = make_ty + 1;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]);
+        let realloc_ty = encode_ty + 1;
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        );
+        m.section(&types);
+
+        // Imports: the walker ops + resource-new ONLY (no resource-rep — the borrow rep is the param).
+        let mut imports = ImportSection::new();
+        for (i, op) in ops.iter().enumerate() {
+            imports.import("heap", op.name, EntityType::Function(import_type_idx[i]));
+        }
+        imports.import("heap", "resource-new", EntityType::Function(rnew_ty));
+        m.section(&imports);
+        let idx_of = |name: &str| ops.iter().position(|o| o.name == name).unwrap() as u32;
+        let f_arr_alloc = idx_of("arr-alloc");
+        let f_arr_set = idx_of("arr-set");
+        let f_arr_get = idx_of("arr-get");
+        let f_box_int = idx_of("box-int");
+        let f_get_int = idx_of("get-int");
+        let f_rnew = ops.len() as u32; // resource-new is the last import
+
+        let make_fn = ops.len() as u32 + 1; // k ops + resource-new = k+1 imports
+        let encode_fn = make_fn + 1;
+        let realloc_fn = encode_fn + 1;
+        let mut funcs = FunctionSection::new();
+        funcs.function(make_ty);
+        funcs.function(encode_ty);
+        funcs.function(realloc_ty);
+        m.section(&funcs);
+
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("make", ExportKind::Func, make_fn);
+        exports.export("t-encode", ExportKind::Func, encode_fn);
+        exports.export("cabi_realloc", ExportKind::Func, realloc_fn);
+        m.section(&exports);
+
+        let tpl_len = tpl.bytes.len();
+        let ret_off = (tpl_len + 3) & !3;
+        let mut data_bytes = tpl.bytes.clone();
+        data_bytes.resize(ret_off, 0);
+        data_bytes.extend_from_slice(&0u32.to_le_bytes());
+        data_bytes.extend_from_slice(&(tpl_len as u32).to_le_bytes());
+
+        // make: build the tuple, then resource.new(handle) — UNCHANGED from the own version.
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(elems.len() as i32));
+        make.instruction(&Instruction::Call(f_arr_alloc));
+        for (i, &v) in elems.iter().enumerate() {
+            make.instruction(&Instruction::I32Const(i as i32));
+            make.instruction(&Instruction::I64Const(v));
+            make.instruction(&Instruction::Call(f_box_int));
+            make.instruction(&Instruction::Call(f_arr_set));
+        }
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+
+        // encode(borrow self): the param IS the rep (no resource.rep). Walk each hole; write its bytes.
+        // Do NOT drop (a borrow does not own). Locals: 0 = rep (the borrow param), 1 = i64 scratch.
+        let mut encode = Function::new(vec![(1, ValType::I64)]);
+        let rep = 0u32;
+        let scratch = 1u32;
+        for hole in &tpl.leaves {
+            let out_off = hole.offset as u64;
+            match hole.kind {
+                LeafFill::Int => {
+                    encode.instruction(&Instruction::LocalGet(rep));
+                    for &idx in &hole.path {
+                        encode.instruction(&Instruction::I32Const(idx as i32));
+                        encode.instruction(&Instruction::Call(f_arr_get));
+                    }
+                    encode.instruction(&Instruction::Call(f_get_int));
+                    encode.instruction(&Instruction::LocalSet(scratch));
+                    encode.instruction(&Instruction::LocalGet(scratch));
+                    encode.instruction(&Instruction::I64Const(0));
+                    encode.instruction(&Instruction::I64LtS);
+                    encode.instruction(&Instruction::If(BlockType::Empty));
+                    encode.instruction(&Instruction::I32Const((out_off - 2) as i32));
+                    encode.instruction(&Instruction::I32Const(3));
+                    encode.instruction(&Instruction::I32Store8(MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    }));
+                    encode.instruction(&Instruction::I64Const(0));
+                    encode.instruction(&Instruction::LocalGet(scratch));
+                    encode.instruction(&Instruction::I64Sub);
+                    encode.instruction(&Instruction::LocalSet(scratch));
+                    encode.instruction(&Instruction::End);
+                    // Write the 8 big-endian magnitude bytes at the hole offset.
+                    for b in 0..8u64 {
+                        encode.instruction(&Instruction::I32Const((out_off + b) as i32));
+                        encode.instruction(&Instruction::LocalGet(scratch));
+                        let shift = (7 - b) * 8;
+                        if shift > 0 {
+                            encode.instruction(&Instruction::I64Const(shift as i64));
+                            encode.instruction(&Instruction::I64ShrU);
+                        }
+                        encode.instruction(&Instruction::I32WrapI64);
+                        encode.instruction(&Instruction::I32Store8(MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                    }
+                }
+                LeafFill::Bool => {
+                    encode.instruction(&Instruction::I32Const(out_off as i32));
+                    encode.instruction(&Instruction::LocalGet(rep));
+                    for &idx in &hole.path {
+                        encode.instruction(&Instruction::I32Const(idx as i32));
+                        encode.instruction(&Instruction::Call(f_arr_get));
+                    }
+                    encode.instruction(&Instruction::Call(idx_of("get-bool")));
+                    encode.instruction(&Instruction::I32Const(8));
+                    encode.instruction(&Instruction::I32Add);
+                    encode.instruction(&Instruction::I32Store8(MemArg {
+                        offset: 0,
+                        align: 0,
+                        memory_index: 0,
+                    }));
+                }
+            }
+        }
+        encode.instruction(&Instruction::I32Const(ret_off as i32));
+        encode.instruction(&Instruction::End);
+
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End);
+
+        let mut code = CodeSection::new();
+        code.function(&make);
+        code.function(&encode);
+        code.function(&realloc);
+        m.section(&code);
+        let mut data = DataSection::new();
+        data.active(0, &ConstExpr::i32_const(0), data_bytes.iter().copied());
+        m.section(&data);
+        m.finish()
+    }
+
+    /// The BORROW oracle: identical envelope EXCEPT `encode` is lifted against `borrow<t>` (not `own<t>`),
+    /// and the inner re-export component re-types `encode` against a borrowed self. `resource.rep` is NOT
+    /// threaded (the borrow core never calls it). This is the target production shape.
+    fn oracle_runtime_resource_component_borrow(core: &[u8], import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = walker_ops();
+        let mut c = ComponentBuilder::default();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+        let comp_fns: Vec<u32> = ops
+            .iter()
+            .map(|op| c.alias_export(inst, op.name, ComponentExportKind::Func))
+            .collect();
+        let lowered: Vec<(&str, u32)> = ops
+            .iter()
+            .zip(comp_fns)
+            .map(|(op, f)| (op.name, c.lower_func(f, [])))
+            .collect();
+        let drop_core = lowered
+            .iter()
+            .find(|(n, _)| *n == "drop")
+            .map(|(_, f)| *f)
+            .expect("drop op");
+        let heap_dtor_inst = c.core_instantiate_exports([("drop", ExportKind::Func, drop_core)]);
+        let dtor_idx = c.core_module_raw(&dtor_module());
+        let dtor_inst = c.core_instantiate(
+            dtor_idx,
+            [("heap-dtor", ModuleArg::Instance(heap_dtor_inst))],
+        );
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        // Only resource-new is threaded (no resource-rep — the borrow rep is the param).
+        let mut heap_exports: Vec<(&str, ExportKind, u32)> = lowered
+            .iter()
+            .map(|(n, f)| (*n, ExportKind::Func, *f))
+            .collect();
+        heap_exports.push(("resource-new", ExportKind::Func, rnew_core));
+        let heap_inst = c.core_instantiate_exports(heap_exports);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (borrow_t, bdef) = c.type_defined();
+        bdef.borrow(res_ty);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (encode_ty, mut enc2) = c.type_function();
+        enc2.params([("self", ComponentValType::Type(borrow_t))])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let encode_comp = c.lift_func(
+            encode_core,
+            encode_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        let inner_idx = c.component(inner_reexport_component_borrow());
+        let inst2 = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-encode", ComponentExportKind::Func, encode_comp),
+            ],
+        );
+        c.export(
+            "cadenza:run/run",
+            ComponentExportKind::Instance,
+            inst2,
+            None,
+        );
+        c.finish()
+    }
+
+    /// The borrow inner re-export component: `encode` re-typed against `borrow<t>` (both against the
+    /// imported abstract resource and re-declared against the exported one). Mirrors the proven
+    /// `r1_reference::inner_reexport_component_borrow` shape.
+    fn inner_reexport_component_borrow() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        let (borrow_imp, bd) = c.type_defined();
+        bd.borrow(imp_t);
+        let (list1, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_ty, mut ef) = c.type_function();
+        ef.params([("self", ComponentValType::Type(borrow_imp))])
+            .result(Some(ComponentValType::Type(list1)));
+        let enc_fn = c.import("import-func-encode", ComponentTypeRef::Func(enc_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od2) = c.type_defined();
+        od2.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (borrow_exp, bd2) = c.type_defined();
+        bd2.borrow(exp_t);
+        let (list2, ld2) = c.type_defined();
+        ld2.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_exp_ty, mut ef2) = c.type_function();
+        ef2.params([("self", ComponentValType::Type(borrow_exp))])
+            .result(Some(ComponentValType::Type(list2)));
+        c.export(
+            "encode",
+            ComponentExportKind::Func,
+            enc_fn,
+            Some(ComponentTypeRef::Func(enc_exp_ty)),
+        );
+        c
+    }
+
+    #[test]
+    fn a_borrow_self_encode_walks_and_crosses() {
+        // THE DECISIVE PROBE for the resource-with-methods redesign: `encode` takes `borrow<t>` and uses
+        // its param DIRECTLY as the heap rep (NO `resource.rep` — which traps on a borrow; the canonical
+        // ABI's `lift_borrow` returns the rep itself, confirmed in wasmtime 37's `resource_lift_borrow`)
+        // and does NOT drop (a borrow does not own — the value survives, so the resource is repeatable).
+        // If this composes + runs + decodes to the exact value form, the clean borrow design works
+        // end-to-end and the own-consume-and-drop hack can be retired. Build `(tuple 3 1)`, escape it as a
+        // borrow-self resource, walk it in encode(borrow), decode.
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = walker_core_borrow(&tpl, &[3, 1]);
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let comp = oracle_runtime_resource_component_borrow(&core, &import_name);
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("borrow runtime-resource component validates");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[borrow] runtime wasm not found; skipping composed borrow walk");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None, // resource-escape path: make() then encode(borrow)
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run composed borrow") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "(: (tuple 3 1) (Tuple Int64 Int64))");
+                eprintln!("PROBE borrow-self encode → OK: {s}");
+            }
+            cdz_run::Outcome::Trap(t) => panic!("borrow-self encode trapped: {t}"),
         }
     }
 
@@ -24589,6 +25582,170 @@ mod closure_host_resource {
             .expect("distinct-signature closure-resource core module validates");
     }
 
+    /// DISTINCT-SIGNATURE ROUND-TRIP serializer: `serialize::distinct_sig_roundtrip_core_module` — a core
+    /// with TWO signature groups, EACH a producer (`make-<name>`) AND a consumer (a named export taking a
+    /// closure of that sig back). Group 0 = `(-> Int64 Int64)` (mk0 + app0), group 1 = `(-> Int64 Bool)`
+    /// (mk1 + app1). Each group gets its own `resource-new-<g>`/`resource-rep-<g>`; the consumer wrapper
+    /// reps its closure param via THAT group's rrep. Pins the index layout the distinct-sig-round-trip needs.
+    #[test]
+    fn distinct_sig_roundtrip_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{
+            ClosureConsume, ClosureMake, ConsumeParam, RtSigGroup,
+        };
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let boolt = Ty::Bool;
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let fn_ii = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let fn_ib = Ty::Fn(Box::new(s64.clone()), Box::new(boolt.clone()));
+        // Producer bodies (build a 1-slot cell → its lifted slot) for each group.
+        let producer = |slot: i64, ret: Ty| SelectedFunc {
+            params: vec![],
+            ret,
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(slot),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Consumer bodies `(g_cell: i32, x: <arg>) -> <ret>` = `(g x)` (CallClosure over the group's lifted).
+        let consumer = |lifted_ty: u32, ret: Ty| SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret,
+            code: vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::LocalGet(0),
+                Lir::ConstI32(0),
+                Lir::CallImport("arr-get"),
+                Lir::CallImport("get-int"),
+                Lir::I32WrapI64,
+                Lir::CallIndirect(lifted_ty),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Lifted bodies: inc (i64->i64), isz (i64->i32/Bool).
+        let lifted_inc = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_isz = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: boolt.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(0), Lir::I64Eq],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // order = [mk0, app0, mk1, app1] (4 defs); lifteds appended after.
+        let import_base = imports.len() as u32 + 2 * 2; // k + 2 intrinsics × 2 groups
+        // Lifted functype indices: defined_type_base + order.len() + slot. defined_type_base = k+1.
+        let lty = |slot: usize| (imports.len() + 1 + 4 + slot) as u32;
+        let funcs = vec![
+            producer(0, fn_ii.clone()),      // mk0 → def 0
+            consumer(lty(0), s64.clone()),   // app0 → def 1
+            producer(1, fn_ib.clone()),      // mk1 → def 2
+            consumer(lty(1), boolt.clone()), // app1 → def 3
+            lifted_inc,                      // slot 0
+            lifted_isz,                      // slot 1
+        ];
+        let ep = |name: &str, def: usize, result: Ty| ExportPlan {
+            name: name.into(),
+            def,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result,
+        };
+        let mk_lifted = |ret: Ty| LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: ret,
+            captures: vec![],
+        };
+        let layout = Layout::with_lifted(
+            vec![
+                ep("mk0", 0, fn_ii.clone()),
+                ep("app0", 1, s64.clone()),
+                ep("mk1", 2, fn_ib.clone()),
+                ep("app1", 3, boolt.clone()),
+            ],
+            vec![0, 1, 2, 3],
+            import_base,
+            vec![mk_lifted(s64.clone()), mk_lifted(boolt.clone())],
+            vec![true, true],
+        );
+        let groups = vec![
+            RtSigGroup {
+                makes: vec![ClosureMake {
+                    export_name: "mk0".into(),
+                    export_abs: import_base,
+                    param_vts: vec![],
+                }],
+                consumers: vec![ClosureConsume {
+                    export_name: "app0".into(),
+                    consume_abs: import_base + 1,
+                    params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
+                    ret_vt: ValType::I64,
+                }],
+            },
+            RtSigGroup {
+                makes: vec![ClosureMake {
+                    export_name: "mk1".into(),
+                    export_abs: import_base + 2,
+                    param_vts: vec![],
+                }],
+                consumers: vec![ClosureConsume {
+                    export_name: "app1".into(),
+                    consume_abs: import_base + 3,
+                    params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
+                    ret_vt: ValType::I32,
+                }],
+            },
+        ];
+        let core = crate::backend::wasm::serialize::distinct_sig_roundtrip_core_module(
+            &funcs, &imports, &groups, &layout,
+        )
+        .expect("distinct-sig round-trip core serializes");
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("distinct-sig round-trip core module validates");
+    }
+
     /// DISTINCT-SIGNATURE END-TO-END (the whole COMPILER pipeline): a program exporting closures of TWO
     /// different signatures (`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`) compiles to a VALID
     /// component with two resource types (`t0`/`t1`), each with its own `make-<name>`/`call-g<n>`. Pins
@@ -24880,6 +26037,43 @@ mod closure_host_resource {
             0,
             "round-trip leak: the handed-back closure cell is still live after the consumer (expected 0 — \
              the consumer owns the own<t> handle and must drop the cell after the body returns)"
+        );
+    }
+
+    /// C-HOST-5 release soundness when the consumer NEVER APPLIES the handed-back closure on the taken
+    /// path. A consumer whose body is `(if (< x 0) 0 (g x))` called with x < 0 takes the guarded branch and
+    /// does NOT dispatch `g` — yet the wrapper still `resource.rep`s the boundary handle and DROPs the cell
+    /// (the `own<t>` was consumed at the boundary regardless of whether the body used it). So no leak: the
+    /// handed-back cell is reclaimed even on a path that ignores the closure. `#[ignore]` — needs the
+    /// debug-counters runtime.
+    #[test]
+    #[ignore]
+    fn a_round_trip_that_ignores_the_closure_still_releases_it() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_debug_runtime_wasm() else {
+            eprintln!(
+                "[C-HOST-5] debug-counters runtime not in the store; skipping ignore-path leak probe"
+            );
+            return;
+        };
+        let src = "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+                   (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x))) \
+                   (export mk) (export app))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // app(handle, -3) takes the guarded branch → 0, WITHOUT applying g.
+        assert_eq!(
+            rt.closure_produce_consume("mk", &[], "app", &[Val::S64(-3)]),
+            Val::S64(0),
+            "the guarded branch returns 0 without applying the closure"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "release soundness: the handed-back cell must be dropped even though the consumer body never \
+             dispatched the closure on this path (own<t> is consumed at the boundary)"
         );
     }
 

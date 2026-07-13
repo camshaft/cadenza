@@ -320,12 +320,20 @@ pub struct Db {
     pub modules: Vec<ModuleDecl>,
 
     /// For each ERASABLE nominal NEWTYPE declaration (a single-variant sum whose box is erased), its
-    /// UNDERLYING structural type — the `inner` of the `Ty::Nominal` its `decl` denotes. Precomputed
-    /// ONCE at load (by `infer::newtype_underlying`) so `resolve::decode_ty` can normalize a `Ty::Sum`
-    /// naming an erasable decl into a `Ty::Nominal` with only `&Db` (the predicate needs `&mut`). A decl
-    /// NOT in this map stays an ordinary boxed `Ty::Sum` (multi-variant / generic / recursive /
-    /// sum-carrying). This is the ONE place the "which sums erase" decision is materialized; every type
-    /// reader consults it via `decode_ty`, so the `Sum`↔`Nominal` choice is uniform across the compiler.
+    /// UNDERLYING structural-type TEMPLATE — the `inner` of the `Ty::Nominal` its `decl` denotes, with
+    /// each of the declaration's TYPE PARAMETERS represented as `Ty::Var(i)` (`i` = the param's position
+    /// in `TypeDecl::params`). Precomputed ONCE at load (by `infer::newtype_underlying`) so
+    /// `resolve::decode_ty` can normalize a `Ty::Sum` naming an erasable decl into a `Ty::Nominal` with
+    /// only `&Db` (the predicate needs `&mut`).
+    ///
+    /// A MONOMORPHIC newtype has no params, so its template IS the concrete inner (`(type UserId (Mk
+    /// Int64))` → `Int64`). A GENERIC newtype's template carries the param vars (`(type Box (Mk a))` →
+    /// `Ty::Var(0)`), and `decode_ty` SUBSTITUTES the sum's decoded `args` positionally to get the inner
+    /// at THIS instantiation (`Box Int64` → `Int64`, `Box Bool` → `Bool`). So one template serves every
+    /// instantiation — the generic analogue of the monomorphic inner. A decl NOT in this map stays an
+    /// ordinary boxed `Ty::Sum` (multi-variant / recursive / sum-carrying). This is the ONE place the
+    /// "which sums erase" decision is materialized; every type reader consults it via `decode_ty`, so the
+    /// `Sum`↔`Nominal` choice is uniform across the compiler.
     pub newtype_inner: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
 
     /// For each `StructId`, the `List` occurrence that holds it as a child, or `None` for the root.
@@ -1250,6 +1258,30 @@ impl Db {
         self.def_by_body.get(&body).copied()
     }
 
+    /// Normalize a decoded sum `(decl, name, args)` into its `Ty` — the ONE place the `Sum`↔`Nominal`
+    /// decision + generic template substitution lives, so BOTH decode paths agree: `resolve::decode_ty`
+    /// (a `(Sum …)` wire node) and `eval::reduce_sum_ctor` (a generic ctor `(Box Int64)` type
+    /// application, which builds the `Ty` directly without a wire round-trip). An ERASABLE newtype decl
+    /// has a stored inner TEMPLATE (params as `Ty::Var(i)`); substitute `args` positionally to get the
+    /// inner at this instantiation and return `Ty::Nominal`. A non-erasable decl returns the boxed
+    /// `Ty::Sum`. Pure over `&self` (a map lookup + a structural substitution) — no reduction.
+    pub(crate) fn normalize_sum(
+        &self,
+        decl: StructId,
+        name: String,
+        args: Vec<crate::ty::Ty>,
+    ) -> crate::ty::Ty {
+        if let Some(template) = self.newtype_inner.get(&decl) {
+            let inner = subst_template_vars(template, &args);
+            return crate::ty::Ty::Nominal {
+                decl,
+                name,
+                inner: Box::new(inner),
+            };
+        }
+        crate::ty::Ty::Sum { decl, name, args }
+    }
+
     /// The synthesized SUM RECORD of the type named `name`, if one is declared — how a `(type NAME …)`
     /// name resolves, exactly parallel to `def_by_name`. Returns the record occurrence a bare `NAME`
     /// denotes (a `Ref` to it), so `Option`, `Option.Some`, and `(: x Option)` take the ordinary
@@ -1979,6 +2011,38 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
 const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect"];
+
+/// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`
+/// (a declaration parameter's positional slot, planted by `infer::decode_payload_template`) with `args[i]`
+/// — the type the sum was instantiated at. A `Var(i)` with `i` past `args` (a malformed/under-applied
+/// instantiation) is left as-is (a free var the boundary rejects, not a panic). A template with no vars
+/// (a monomorphic newtype) is cloned unchanged. Descends every structural `Ty` that carries inner types.
+fn subst_template_vars(template: &crate::ty::Ty, args: &[crate::ty::Ty]) -> crate::ty::Ty {
+    use crate::ty::Ty;
+    match template {
+        Ty::Var(i) => args.get(*i as usize).cloned().unwrap_or(Ty::Var(*i)),
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| subst_template_vars(t, args)).collect()),
+        Ty::List(elem) => Ty::List(Box::new(subst_template_vars(elem, args))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(subst_template_vars(k, args)),
+            Box::new(subst_template_vars(v, args)),
+        ),
+        Ty::Set(e) => Ty::Set(Box::new(subst_template_vars(e, args))),
+        Ty::Fn(p, r) => Ty::Fn(
+            Box::new(subst_template_vars(p, args)),
+            Box::new(subst_template_vars(r, args)),
+        ),
+        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+            fields
+                .iter()
+                .map(|(k, t)| (k.clone(), subst_template_vars(t, args)))
+                .collect(),
+        )),
+        // A scalar / sum / nominal / qty template leaf carries no param slot to fill (a template that
+        // reached a `Ty::Sum` was rejected by the sum-free guard, so it never lands here) — clone as-is.
+        other => other.clone(),
+    }
+}
 
 #[cfg(test)]
 mod tests {

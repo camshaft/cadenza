@@ -66,6 +66,14 @@ pub enum Code {
     /// non-exhaustiveness rejection, distinct from a shape defect). For a scalar scrutinee this is a
     /// match with no wildcard tail; for a sum it is a missing variant (a later increment).
     NonExhaustive,
+    /// A `match` ARM that can never be reached because an EARLIER arm already covers every value it would
+    /// — a duplicate variant/literal arm, or any arm after a catch-all binder/wildcard. The DUAL of
+    /// non-exhaustiveness: where CDZ0210 flags a value NO arm covers, this flags an arm NO value reaches.
+    /// A WARNING (not a rejection): the program is well-formed and runs correctly (first-match wins, so
+    /// the shadowed arm is simply dead), but a redundant arm is almost always a defect (a typo in a
+    /// variant name, a copy-paste, a misordered wildcard). The pattern analogue of the `DeadTrap` /
+    /// `UnusedBinding` warnings — dead code the build surfaces rather than silently keeping.
+    RedundantArm,
     /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
     /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
     /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
@@ -170,6 +178,7 @@ impl Code {
             Code::DeadTrap => "CDZ0305",
             Code::UnusedBinding => "CDZ0306",
             Code::NonExhaustive => "CDZ0210",
+            Code::RedundantArm => "CDZ0213",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::HandlerNotExhaustive => "CDZ0405",
@@ -504,9 +513,11 @@ pub mod suggest {
         let mut best: Option<(usize, String)> = None;
         for cand in candidates {
             let cand = cand.as_ref();
-            // Never suggest the name itself (a shadowed / out-of-scope exact match is not a typo), nor
-            // the wildcard.
-            if cand == name || cand == "_" {
+            // Never suggest the name itself (a shadowed / out-of-scope exact match is not a typo), the
+            // wildcard, nor the EMPTY name. An empty candidate arises from a nameless malformed binder
+            // (e.g. `(def)` registers a def with an empty name); "did you mean ``?" is never useful, and
+            // its edit distance to any 1-char name is 1 (≤ max_dist), so it would otherwise win.
+            if cand == name || cand == "_" || cand.is_empty() {
                 continue;
             }
             let d = edit_distance(name, cand);

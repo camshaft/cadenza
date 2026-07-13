@@ -113,9 +113,18 @@ pub enum Prim {
     /// source is a fully-polymorphic integer (any width/sign, via the operator record's type-lambda); the
     /// target is the MODULE's own width, read off the application's solved type at lowering. So there is
     /// ONE `Wrap` prim, not one per source type — no pair-explosion. It never traps and never returns an
-    /// `Option`: truncation is total (`(UInt8.wrap 256) = 0`, `(UInt8.wrap -1) = 255`). The CHECKED
-    /// companion `T.of` (returns `Option<T>`, `None` when out of range) arrives with sum types.
+    /// `Option`: truncation is total (`(UInt8.wrap 256) = 0`, `(UInt8.wrap -1) = 255`). Its CHECKED
+    /// companion is `CheckedOf`.
     Wrap,
+    /// The CHECKED integer conversion `T.of : ∀(w,s). Int^s_w → T` — the range-checked counterpart of
+    /// `Wrap`. Same fully-polymorphic source + target-is-the-module's-own-width shape, but where `Wrap`
+    /// truncates totally, `Of` TRAPS when the source value is outside the target type's range and
+    /// otherwise returns the value UNCHANGED at the target type (`(UInt8.of 200) = 200`, `(UInt8.of 256)`
+    /// traps, `(UInt8.of -1)` traps). It returns the bare `T`, NOT an `Option` — the overflow-FALLIBLE
+    /// forms are the separate `checked-add`/`checked-mul` ops (numeric-model.md §A Conversion Between
+    /// Integer Types Is Explicit: "a range-checked conversion that traps on a value outside the target
+    /// type's range"). A CONSTANT operand FOLDS — in range → `Core::ConstInt`, out of range → `Core::Trap`.
+    CheckedOf,
     /// `Int : Nat → Module` — applied to a width, builds the signed integer module of that width.
     IntCtor,
     /// `UInt : Nat → Module` — the unsigned integer module builder.
@@ -525,6 +534,7 @@ impl Prim {
             "*." => Some(Prim::FMul),
             "/." => Some(Prim::FDiv),
             "wrap" => Some(Prim::Wrap),
+            "checked-of" => Some(Prim::CheckedOf),
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "Float" => Some(Prim::FloatCtor),
@@ -641,7 +651,7 @@ impl Prim {
     /// a fixed target width. `Wrap` (truncating, returns `T`) is the only one now; the checked `Of`
     /// (returning `Option<T>`) joins it with sum types. Routed as a unary application in `lower`/`select`.
     pub fn is_conversion(self) -> bool {
-        matches!(self, Prim::Wrap)
+        matches!(self, Prim::Wrap | Prim::CheckedOf)
     }
 
     /// Whether this primitive is a relational comparison (`< > <= >=` or equality `=`) — shape `∀a. a →

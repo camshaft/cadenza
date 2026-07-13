@@ -5907,6 +5907,15 @@ fn arith_identity(
         }
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
+        // NESTED RIGHT-SHIFT COLLAPSE: `(>> (>> v A) B)` → `(>> v (A+B))` when A, B are constants and
+        // A+B < width. A right shift is TOTAL (never traps), and shifting right by A then B drops the same
+        // low A+B bits as one shift by A+B — for BOTH kinds (`>>ₛ` sign-fills, `>>ᵤ` zero-fills; the inner
+        // and outer `>>` on the same-typed value are the same kind, so composing is exact). Bounded by
+        // A+B < width: a combined count ≥ width would be masked mod width by the machine shift (wrong),
+        // whereas the double shift saturates to the sign / to zero — so only the in-range sum is
+        // value-identical. `v` keeps its traps (it stays the operand). Left shift is NOT combinable (it is
+        // CHECKED — `(v<<A)<<B` traps differently from `v<<(A+B)`). Guarded via `nested_shr_combine`.
+        Prim::Shr if let Some(folded) = nested_shr_combine(db, lhs, rc) => Some(folded),
         // `(>>ᵤ x k)` → 0 when the LOGICAL right shift drops ALL of `x`'s significant bits — its provable
         // bit-bound `B <= k`. E.g. `(x & 15) >>ᵤ 4`: `x & 15` fits 4 bits, `>>ᵤ 4` shifts them all out → 0.
         // DISCARDS `x`, so gated on `is_trap_free` (a trapping operand's trap must survive). `k` must be a
@@ -6004,6 +6013,48 @@ fn nested_mask_collapse(
         return Some(folded);
     }
     None
+}
+
+/// The NESTED RIGHT-SHIFT COLLAPSE for `(>> lhs rhs)`: when `lhs` is itself `(>> v A)` (A a constant
+/// count) and the outer count `rc` is a constant B with `A + B < width`, returns `(>> v (A+B))` — one
+/// shift instead of two. `None` otherwise (so later folds fire). A right shift is total; the inner and
+/// outer `>>` are the SAME kind on the same-typed value, so composing them drops the same low `A+B` bits
+/// as one shift by `A+B`. The `A+B < width` bound is essential: a combined count `≥ width` would be
+/// masked mod width by the machine shift, disagreeing with the saturating double shift. `v` keeps its
+/// traps (it stays the operand). The combined count `A+B` is a fresh `Leaf::Int` atom.
+fn nested_shr_combine(db: &mut Db, lhs: StructId, rc: &Core) -> Option<Core> {
+    // Outer count B must be a constant ≥ 1 (0 is handled by the `>> 0` identity).
+    let Core::ConstInt(b) = rc else { return None };
+    let b = b.to_i64().filter(|&b| b >= 1)?;
+    // `lhs` must be an inner right shift by a constant count A ≥ 1.
+    let Core::Arith {
+        op: Prim::Shr,
+        lhs: v,
+        rhs: inner_count,
+    } = core_of(db, lhs)
+    else {
+        return None;
+    };
+    let Core::ConstInt(a) = core_of(db, inner_count) else {
+        return None;
+    };
+    let a = a.to_i64().filter(|&a| a >= 1)?;
+    // Sound ONLY when the combined count stays in range for the SHIFTED VALUE's width (both shifts share
+    // it — binary-op unification). A `width` of 0 (deferred) fails the guard, so no fold.
+    let width = shift_width(db, v) as i64;
+    if width == 0 || a + b >= width {
+        return None;
+    }
+    let fc = db.push_atom(crate::ast::Leaf::Int {
+        value: IntValue::from_i64(a + b),
+        radix: crate::ast::Radix::Dec,
+    });
+    trace!(target: "rcdzc::fold", a, b, sum = a + b, "nested right-shift collapse (>> (>> v A) B) → (>> v (A+B))");
+    Some(Core::Arith {
+        op: Prim::Shr,
+        lhs: v,
+        rhs: fc,
+    })
 }
 
 /// Whether masking the value at `val` with the constant `mask_core` is a NO-OP — i.e. `val & M == val`.
@@ -6224,6 +6275,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::Eq
         | Prim::Compare
         | Prim::Wrap
+        | Prim::CheckedOf
         | Prim::IntCtor
         | Prim::UIntCtor
         | Prim::FnCtor
@@ -6898,6 +6950,41 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
     {
         return Some(r);
     }
+    // A CONDITIONAL's range is the UNION of its branches' ranges — the value IS one branch's value, so it
+    // lies within `[min(lo), max(hi)]`. This bounds a bool-materialized `(if c 1 0)` to `[0,1]`, so a
+    // downstream `(* bool C)` / `(+ bool C)` sheds its overflow guard (`bool*C ∈ [0,C]` can't overflow),
+    // and any small-constant conditional (`(if c 10 20)` → [10,20]) bounds its consumer. Both branches
+    // must have a known range (an unbounded branch makes the union unbounded → `None`). A `None` upper on
+    // EITHER branch makes the union's upper `None` (unbounded above). Match arms union the same way.
+    let branch_union = |db: &mut Db, branches: &[StructId]| -> Option<(i64, Option<i64>)> {
+        let mut lo = i64::MAX;
+        let mut hi: Option<i64> = Some(i64::MIN);
+        for &b in branches {
+            let (blo, bhi) = value_range(db, b)?;
+            lo = lo.min(blo);
+            hi = match (hi, bhi) {
+                (Some(h), Some(bh)) => Some(h.max(bh)),
+                _ => None, // an unbounded-above branch makes the union unbounded above
+            };
+        }
+        Some((lo, hi))
+    };
+    match core_of(db, id) {
+        Core::If { then_, else_, .. } => {
+            if let Some(r) = branch_union(db, &[then_, else_]) {
+                return Some(r);
+            }
+        }
+        Core::Match { arms, .. } => {
+            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            if !bodies.is_empty()
+                && let Some(r) = branch_union(db, &bodies)
+            {
+                return Some(r);
+            }
+        }
+        _ => {}
+    }
     // Else the declared integer type's bounds. `min` must be i64-representable (it always is: signed MIN
     // and unsigned 0 both fit); `max` may be absent (unsigned-64).
     match crate::infer::type_of(db, id) {
@@ -7014,14 +7101,21 @@ fn closed_range(db: &mut Db, id: StructId) -> Option<(i64, i64)> {
 /// the min/max of the four corner products. A `None` operand range → `false` (unknown, keep the guard).
 /// Verified sound by exhaustive endpoint check. Lets a masked/narrowed operand (`(+ (& x 15) (& y 15))`,
 /// sum ≤ 30) shed its guard.
-pub(crate) fn arith_provably_in_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> bool {
-    let id_ty = crate::infer::type_of(db, lhs); // both operands share the op's width (binary-op unify)
-    let crate::ty::Ty::Int(it) = id_ty else {
-        return false;
-    };
-    // The result type's inclusive bounds (both must be i64-representable — an unsigned-64 result has no
-    // i64 max, so we cannot prove a fit against it here).
-    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+pub(crate) fn arith_provably_in_range(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+    result: crate::ty::IntTy,
+) -> bool {
+    // The RESULT type's inclusive bounds come from `result` — the op's AUTHORITATIVE machine width/sign
+    // (the caller's `Machine`, derived from the ARITH NODE's solved type), NOT from an operand's node
+    // type. ⚠ An operand's node type can be misleading: a bare-literal-branch `if` (`(if c 1 0)`) or a
+    // bare literal is still DEFERRED, and its default (Int64) is WIDER than the op when the true width
+    // comes from CONTEXT — `(: (+ (if (< n 5) 100 0) 100) Int8)` is an Int8 op even though both operands'
+    // nodes are deferred, and `(- 0 n)` at Int8 is Int8 though the `0` is deferred. Using the op's real
+    // width is the only sound choice. (An unsigned-64 result has no i64 max → cannot prove a fit here.)
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(result) {
         Some(b) => b,
         None => return false,
     }) else {
@@ -8250,10 +8344,15 @@ fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
             return core_of(db, payloads[0]);
         }
         if disc != DISC_PRESENT {
-            // A provably-absent constant expect — a compile-time trap. Not folded this increment.
-            return Core::Poison(Reject::decline(
-                "expect on a constant absent variant (a provable trap) is not yet folded",
-            ));
+            // A provably-ABSENT constant expect (`Option.expect None`, `Result.expect (Err …)`) — requiring
+            // the value of a statically-known absent optional is a PROVABLE TRAP (core-semantics.md
+            // §Requiring The Value Of An Optional Traps On Absence). Fold to `Core::Trap` (an `unreachable`)
+            // — exactly what the runtime `Core::SumExpect` emits on its absent-disc branch, and the same
+            // provable-trap lowering `T.of` out-of-range and a proven-overflow `*` fold to. The trap carries
+            // no text (an `unreachable` has none), so a `(trap "m")` message-match still grades Todo — but
+            // the OUTCOME is now the correct divergence rather than a decline.
+            trace!(target: "rcdzc::fold", node = id.0, disc, "expect on a constant absent variant folds to a provable trap");
+            return Core::Trap;
         }
     }
     // A runtime sum — probe the discriminant at run time, unwrap the payload or trap.
@@ -9298,16 +9397,41 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
     };
     let (signed, width) = (target.ground_signed(), target.ground_width());
     match core_of(db, args[0]) {
-        Core::ConstInt(v) => {
-            // Fold: truncate to the target width at arbitrary precision (total — never traps).
-            let wrapped = v.wrap_to(signed, width);
-            trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded constant wrap");
-            Core::ConstInt(wrapped)
-        }
+        Core::ConstInt(v) => match op {
+            // `T.wrap` — truncate to the target width at arbitrary precision (total, never traps).
+            Prim::Wrap => {
+                let wrapped = v.wrap_to(signed, width);
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded constant wrap");
+                Core::ConstInt(wrapped)
+            }
+            // `T.of` — the CHECKED conversion: in range → the value UNCHANGED at the target type; out of
+            // range → TRAP (numeric-model.md §A Conversion Between Integer Types Is Explicit). The value is
+            // not altered when it fits (`(UInt8.of 200) = 200`), distinguishing it from the truncating
+            // `wrap` (which would keep the low bits of an out-of-range value instead of trapping).
+            _ => {
+                if v.fits_width(signed, width) {
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded checked conversion (in range)");
+                    Core::ConstInt(v)
+                } else {
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "checked conversion out of range → trap");
+                    Core::Trap
+                }
+            }
+        },
         Core::Poison(r) => Core::Poison(r),
         // A runtime operand: emit the mask-and-reinterpret at selection (the target is read off this
         // node's solved type there, the same `type_of(id)` used here).
         _ => {
+            // `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not yet built,
+            // so decline rather than emit a truncating `Convert` (that would be `wrap`'s semantics — a
+            // MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). No corpus case
+            // exercises a runtime `T.of` (they all convert constants); a runtime one waits on the checked
+            // emit (the `Core::CheckedArith` companion, task follow-up).
+            if matches!(op, Prim::CheckedOf) {
+                return Core::Poison(Reject::decline(
+                    "a runtime checked integer conversion (T.of) is not yet emitted (convert a constant, or use T.wrap)",
+                ));
+            }
             if is_scalar(db, args[0]) {
                 // WRAP COMPOSITION: `T.wrap(U.wrap(x))` where this outer target width `N` is ≤ the inner
                 // wrap's target width `M` — the inner wrap keeps the low `M` bits, and the outer keeps the
@@ -9385,6 +9509,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::Eq => "=",
         Prim::Compare => "compare",
         Prim::Wrap => "wrap",
+        Prim::CheckedOf => "of",
         Prim::IntCtor => "Int",
         Prim::UIntCtor => "UInt",
         Prim::FnCtor => "->",
