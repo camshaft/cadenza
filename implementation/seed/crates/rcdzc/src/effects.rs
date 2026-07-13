@@ -1129,6 +1129,61 @@ pub fn reduce_handle(
     Some(rewritten)
 }
 
+/// Whether applying `head` (a non-perform application head) reaches an abortive operation through the
+/// callee's body FROM INSIDE A CONDITIONAL — the unsound cross-function case. Follows a NON-RECURSIVE
+/// callee (the inline arm's target) and checks whether an abortive perform sits under an `if`/`match`/
+/// short-circuit within it. Such an abort surfaces, after the inline arm β-reduces the callee, as a
+/// non-tail conditional the hoist never saw (it was opaque behind the call) — and `thread`'s `if` arm
+/// would then capture it PER-BRANCH as if the `if` were the handle's tail, dropping the enclosing op
+/// (`(+ 10 (check -1))` → 109, a MISCOMPILE). An UNCONDITIONAL cross-fn abort (the callee's body is a bare
+/// abort, `(+ 10 (boom 99))`) is NOT flagged — inlining yields a plain strict abort the E4-a machinery
+/// collapses soundly. A recursive callee is not followed (not inlined). Depth-bounded.
+fn call_reaches_conditional_abortive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> bool {
+    let Some(body) = crate::eval::lambda_body(db, head)
+        .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+    else {
+        return false;
+    };
+    if crate::eval::is_recursive(db, body) {
+        return false; // a recursive callee is not inlined — not this arm's concern
+    }
+    subtree_has_conditional_abortive(db, body, ctx, false)
+}
+
+/// Whether `node` contains an abortive perform reached from UNDER a conditional (`if`/`match`/short-circuit
+/// connective) — `under_cond` tracks whether we have descended into a conditional position. A bare abort
+/// not under any conditional is NOT reported (it is the sound unconditional-collapse case).
+fn subtree_has_conditional_abortive(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    under_cond: bool,
+) -> bool {
+    if under_cond
+        && let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && ctx.abortive.contains(&id)
+    {
+        return true;
+    }
+    // A conditional marks its branches / shielded operand `under_cond`.
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
+        return subtree_has_conditional_abortive(db, cond, ctx, under_cond)
+            || subtree_has_conditional_abortive(db, then_, ctx, true)
+            || subtree_has_conditional_abortive(db, else_, ctx, true);
+    }
+    if let Resolved::And { lhs, rhs, .. } = resolved_of(db, node) {
+        return subtree_has_conditional_abortive(db, lhs, ctx, under_cond)
+            || subtree_has_conditional_abortive(db, rhs, ctx, true);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| subtree_has_conditional_abortive(db, c, ctx, under_cond)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Whether the subtree at `node` contains a perform of an ABORTIVE operation (one in `ctx.abortive`) —
 /// the trigger for the non-tail hoist. A structural walk mirroring `subtree_performs`, narrowed to
 /// abortive ops only (a tail-resumptive perform is threaded, not hoisted).
@@ -1340,6 +1395,21 @@ fn body_has_unsound_abortive_perform(
     {
         return true;
     }
+    // A CROSS-FUNCTION call reaching a CONDITIONAL abort in a NON-TAIL position is unsound. The abort lives
+    // inside the callee's body under an `if`/`match`/connective (opaque here — the hoist lifts only
+    // SYNTACTIC conditionals, so it cannot see it), so after the inline arm β-reduces the callee the abort
+    // surfaces as a non-tail conditional the hoist never lifted — and `thread`'s `if` arm would capture it
+    // PER-BRANCH as if the `if` were the handle's tail, dropping the enclosing op (`(+ 10 (check -1))` →
+    // 109 instead of 99, a MISCOMPILE). Flag it so `reduce_handle` DECLINES: this needs the non-local-exit
+    // calling convention (a later vertical). An UNCONDITIONAL cross-fn abort (`(+ 10 (boom 99))`, the
+    // callee is a bare abort) is NOT flagged — inlining yields a plain strict abort E4-a collapses soundly.
+    if !tail
+        && let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && call_reaches_conditional_abortive(db, head, ctx)
+    {
+        return true;
+    }
     // An `if`: the CONDITION is a NON-tail, NON-branch strict operand (an abort in a condition can't be
     // captured per-branch — treat it as `tail=false`). Each BRANCH is a conditional position:
     // `under_cond=true`, and `tail` carries the `if`'s own tail-ness (a tail `if` → tail branches, whose
@@ -1408,7 +1478,13 @@ fn body_has_unsound_abortive_perform(
                 }
                 let sc_right = is_short_circuit && i >= 2;
                 // Capturable-tail: on a tail path, not a short-circuit right operand, siblings all pure.
-                let capturable = tail && !sc_right && siblings_pure(db, i);
+                // BUT a CROSS-FUNCTION CONDITIONAL-abortive operand is NOT capturable even so — its abort is
+                // opaque to the hoist (hidden under an `if` in the callee), so after the inline arm surfaces
+                // it the per-branch capture would wrongly drop THIS enclosing op (`(+ 10 (check -1))` →
+                // 109). Deny it capturable-tail so the cross-fn-reach check above flags it (`!tail`).
+                let cross_fn_abort = matches!(resolved_of(db, c), Resolved::Apply { head, .. }
+                    if is_perform(db, head, ctx).is_none() && call_reaches_conditional_abortive(db, head, ctx));
+                let capturable = tail && !sc_right && !cross_fn_abort && siblings_pure(db, i);
                 let child_tail = capturable;
                 let child_cond = under_cond || sc_right;
                 body_has_unsound_abortive_perform(db, c, ctx, child_tail, child_cond)

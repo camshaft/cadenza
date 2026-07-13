@@ -13652,6 +13652,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_tail_cross_function_conditional_abort_declines() {
+        // E4 cross-fn soundness guard (a MISCOMPILE regression): a helper that CONDITIONALLY aborts, called
+        // in a non-tail position — `(+ 10 (check -1))` where `check n = (if (< n 0) (Bail.bail 99) n)`. The
+        // abort is opaque behind the call, so the syntactic hoist can't lift it; the inline arm then
+        // surfaces it as `(+ 10 (if … (Bail 99) …))`, and the per-branch capture would treat the `if` as
+        // the handle's tail — yielding `10 + 99` = 109 instead of abandoning the `+ 10` to 99. The guard
+        // (`call_reaches_conditional_abortive`) declines it: a non-tail cross-fn conditional abort needs the
+        // non-local-exit convention (a later vertical). Contrast an UNCONDITIONAL cross-fn abort, which folds.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (check (: n Int64)) (if (< n 0) (Bail.bail 99) n)) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 10 (check -1)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail cross-function conditional abort must decline, not miscompile to 109"
+        );
+    }
+
+    #[test]
+    fn an_unconditional_cross_function_abort_folds() {
+        // The sound cross-fn counterpart: a helper whose body is a BARE abort — `boom n = (Bail.bail n)` —
+        // called in a non-tail position `(+ 10 (boom 99))`. Inlining yields `(+ 10 (Bail.bail 99))`, a plain
+        // UNCONDITIONAL strict abort the E4-a machinery collapses: the abort abandons the `+ 10`, the handle
+        // yields the arm value 99. Distinguishes the sound unconditional case from the declined conditional
+        // one above (the guard follows the callee and flags only an abort reached under a conditional).
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (boom (: n Int64)) (Bail.bail n)) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 10 (boom 99)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an unconditional cross-fn abort folds"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
