@@ -71,6 +71,12 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
                 Some(format!("{ident}<{}>", params.join(", ")))
             }
         }
+        // A NOMINAL newtype erases at run time to its underlying structural value (the tag "adds nothing
+        // to the value's runtime representation", `type-system.md §156`), so it maps to the SAME Rust type
+        // as its underlying type — a transparent alias. `(type UserId (Mk Int64))` → `i64`, `(type Point
+        // (Mk Int64 Int64))` → `(i64, i64)`. (A named Rust newtype struct is a possible future
+        // refinement; the erased mapping is correct and matches the wasm backend's read-through.)
+        Ty::Nominal { inner, .. } => rust_type(inner),
         // Functions and type/erased values have no native mapping.
         _ => None,
     }

@@ -4871,17 +4871,102 @@ mod match_engine {
 
     #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
-        // A multi-payload variant VALUE crossing to the host renders its fields inline under the variant's
-        // BARE name: `(Rec.Mk 1 2 3)` → `(: (Mk 1 2 3) Rec)` (the same variant-name form built-in sums
-        // use). Pins that construction + escape of a 3-field variant (a tuple-payload handle) round-trips
-        // through the resource `encode()`.
+        // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
+        // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and
+        // it crosses the host boundary as that underlying tuple TAGGED with the nominal name — `(Rec.Mk 1
+        // 2 3)` → `(: (tuple 1 2 3) Rec)`. (A nominal value adds nothing to the runtime representation,
+        // `type-system.md §Nominal Is An Orthogonal Modifier`; this is the erased escape, NOT the boxed
+        // `(: (Mk 1 2 3) Rec)` a multi-VARIANT sum's variant would render.) Pins construction + escape of
+        // an erased 3-field struct round-tripping through the resource `encode()`.
         let Some(v) = run_heap_value_escape(
             "(module m (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main))",
         ) else {
             eprintln!("runtime wasm not found; skipping multi-payload escape run");
             return;
         };
-        assert_eq!(v, "(: (Mk 1 2 3) Rec)");
+        assert_eq!(v, "(: (tuple 1 2 3) Rec)");
+    }
+
+    #[test]
+    fn a_newtype_over_a_scalar_constructs_matches_and_erases() {
+        // A single-variant sum over a scalar is a NOMINAL NEWTYPE: `(Mk 42)` constructs (erased to the raw
+        // Int64 — no `sum-new` box), and `(match … ((Mk n) …))` binds `n` directly to the underlying value
+        // (the `Payload` step is a runtime no-op). CONSTANT scrutinee.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (Mk Int64)) \
+                       (def (main) (match (Mk 42) ((Mk n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_scalar_matches_a_runtime_payload() {
+        // The RUNTIME (non-constant) payload path: the payload is behind an `if`, so the match can't fold —
+        // it reads the erased value directly (no `sum-payload`, since the box is gone). Exercises the
+        // `erase_nominal_steps` path (a `[Payload]` walk that drops to an empty path).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Wrap (Mk Int64)) \
+                       (def (main) (match (Mk (if true 42 0)) ((Mk n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_struct_newtype_over_multiple_fields_destructures() {
+        // A multi-payload single variant is a STRUCT: `(Mk 3 4)` erases to the payload TUPLE, and `(Mk x
+        // y)` destructures its elements (`[Payload, Elem(i)]` → the `Payload` erases, the `Elem` reads the
+        // tuple handle).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Point (Mk Int64 Int64)) \
+                       (def (main) (match (Mk 3 4) ((Mk x y) (+ x y)))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn a_nullary_newtype_is_a_unit_tag() {
+        // A nullary single variant `(type Marker (The))` is a nominal Unit — `The` erases to unit (no box),
+        // and `(match The ((The) …))` matches unconditionally.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Marker (The)) \
+                       (def (main) (match The ((The) 99))) (export main))"
+                ),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
+    fn a_newtype_wrong_constructor_pattern_is_a_type_error() {
+        // A `(Some x)` pattern over a `UserId` scrutinee names a constructor of ANOTHER type — a type
+        // confusion the matcher must REJECT (CDZ0203), the nominal analogue of the boxed-sum
+        // wrong-variant-pattern check (identity is by declaration occurrence).
+        assert_eq!(
+            reject_code(
+                "(module m (type UserId (Mk Int64)) \
+                   (def (main) (match (Mk 1) ((Some n) n))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
     }
 
     #[test]
@@ -8711,6 +8796,39 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_width_mismatch_offers_an_of_conversion_fix() {
+        // The integer-width coercion (sibling of the D7 float case): `(+ a b)` with `a:Int32`, `b:Int64`
+        // is CDZ0301 (no silent promotion), repaired by the corpus-blessed CHECKED conversion
+        // `(<TargetInt>.of …)` (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). The target is the
+        // EXPECTED operand's type; applying the fix type-checks.
+        let d = first_error("(module m (def (f (: a Int32) (: b Int64)) (+ a b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        let fix = d.fix.expect("a coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Int32.of {})", crate::abi::WRAP_HOLE),
+            "wraps the operand in the expected int type's `.of`"
+        );
+        assert!(!fix.verified, "`.of` is checked (can trap) → heuristic");
+    }
+
+    #[test]
+    fn a_non_aliased_int_width_target_carries_no_conversion_fix() {
+        // The conversion is GATED to an ALIASED width ({8,16,32,64}) — those are the only BOUND names. The
+        // TARGET is the FIRST operand's type (the one the operator pins); with a non-aliased `(Int 48)`
+        // first, the target renders to `Int48`, which nothing binds, so no fix is offered (suggesting an
+        // unbound `(Int48.of …)` would be worse than none).
+        let d = first_error("(module m (def (f (: a (Int 48)) (: b Int64)) (+ a b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        assert!(
+            d.fix.is_none(),
+            "no fix for a non-aliased target width (would be unbound): {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
@@ -11876,6 +11994,85 @@ mod stage1 {
             }
             other => panic!("expected Ty::Sum, got {}", other.render_name()),
         }
+    }
+
+    #[test]
+    fn newtype_underlying_reads_the_erased_structural_type() {
+        // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
+        // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
+        // predicate the erasure (N3/N4) keys off — the realization of `§Nominal Is An Orthogonal
+        // Modifier` (the tag adds nothing to the runtime representation).
+        use crate::db::Db;
+        use crate::infer::newtype_underlying;
+        use crate::testkit::parse;
+        use crate::ty::{IntTy, Ty};
+
+        let decl_of = |db: &Db, n: &str| db.type_decls.iter().find(|t| t.name == n).unwrap().occ;
+
+        // A newtype over a scalar → the scalar's type.
+        let ast = parse("(module m (type UserId (Mk Int64)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "UserId");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::Int(IntTy::i64())),
+            "a newtype over Int64 erases to Int64"
+        );
+
+        // A multi-payload single variant (a struct) → a tuple of the payload types.
+        let ast = parse("(module m (type Point (Mk Int64 Int64)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Point");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::Tuple(
+                vec![Ty::Int(IntTy::i64()), Ty::Int(IntTy::i64())].into()
+            )),
+            "a two-payload single variant erases to a 2-tuple"
+        );
+
+        // A nullary single variant (a unit tag) → Unit.
+        let ast = parse("(module m (type Marker (The)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Marker");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::Unit),
+            "a nullary single variant erases to Unit"
+        );
+
+        // A MULTI-variant sum is NOT a newtype (it needs the discriminant).
+        let ast = parse("(module m (type E (A Int64) (B Int64)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "E");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            None,
+            "a two-variant sum stays boxed"
+        );
+
+        // A RECURSIVE single-variant sum is NOT erased (its inner would be infinite / inconsistently
+        // boxed) — the recursion guard declines.
+        let ast = parse(
+            "(module m (type Stream (More (Tuple Int64 Stream))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Stream");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            None,
+            "a recursive single-variant sum stays boxed"
+        );
+
+        // A GENERIC single-variant sum stays boxed for now (erasure is monomorphic-only this increment).
+        let ast = parse("(module m (type Box (Mk a)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Box");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            None,
+            "a generic single-variant sum stays boxed (monomorphic-only erasure)"
+        );
     }
 
     #[test]
@@ -17716,6 +17913,61 @@ mod debug_info {
             stdout.contains("DW_OP_WASM_location 0x0 0x0")
                 && stdout.contains("DW_OP_WASM_location 0x0 0x1"),
             "the float params must sit at local slots 0 and 1:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_nominal_newtype_scalar_param_gets_a_formal_parameter_die() {
+        // D3 for a NOMINAL NEWTYPE over a scalar: `(type UserId (Mk Int64))` is erased to a runtime i64,
+        // so a `UserId` parameter is a scalar the runtime holds in a wasm local — it must earn a
+        // `DW_TAG_formal_parameter` with the UNDERLYING scalar's base type (`i64`, the value the runtime
+        // actually holds), exactly like a bare `Int64`. (Before this, `base_type_of`/`select`'s scalar
+        // guards didn't peel the nominal tag, so a nominal-scalar param got NO DIE.)
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (type UserId (Mk Int64)) \
+                     (def (idof (: u UserId)) (match u ((Mk n) n))) \
+                     (export idof))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3nom-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump reported an error:\n{stdout}"
+        );
+        // The nominal param `u` is described via its erased i64 base type + a wasm-local location.
+        assert!(
+            stdout.contains("DW_TAG_formal_parameter") && stdout.contains("\"u\""),
+            "the nominal-scalar param u must have a formal_parameter DIE:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"i64\"") && stdout.contains("DW_ATE_signed"),
+            "the nominal param must reference its underlying i64 base type:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x0"),
+            "the nominal param must sit at local slot 0:\n{stdout}"
         );
     }
 

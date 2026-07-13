@@ -1,0 +1,224 @@
+# DESIGN — Closures across the host boundary as component resources
+
+**Status:** proposed (design + increment plan; no code yet)
+**Author direction:** "make it so we can pass closures to the host and they can pass
+them back. we'd generate a resource that represents the signature of the closure. this
+would be _incredibly_ powerful."
+
+## The idea in one sentence
+
+A Cadenza closure that crosses the component boundary becomes a **component-model
+resource whose rep is the closure's heap-cell handle**, monomorphized per closure
+signature `(-> A B)`, exposing a **`call` method** that internally does the exact
+`call_indirect` the compiler already emits for an intra-program `Core::CallClosure`. The
+host can hold the resource opaquely, invoke it, and hand it back into another Cadenza
+export — a first-class callback.
+
+This turns Cadenza functions into callbacks the host can store and drive: event
+handlers, comparators, `map`/`filter`/`fold` bodies supplied to a host-side collection,
+visitors, streaming/iterator callbacks, continuations. It is the missing half of
+first-class functions — intra-program closures are done (`09-functions.sexp`, ~30 cases);
+this extends them across the boundary.
+
+## Why it fits the existing machinery (the key realizations)
+
+1. **A closure is already an i32; a resource rep is always i32.** A runtime closure is a
+   value-heap cell `(box-int(code), captures…)`, and its VALUE is the u32 cell handle
+   (`lir.rs`: `Ty::Fn → Some(I32)`). A component resource's rep is hard-coded i32
+   (`resource_type_item` emits `0x3f 0x7f 0x01 …`). So a closure cell drops into a
+   resource rep slot with **no ABI change** — exactly as the value-heap escape wraps a
+   compound's u32 handle.
+
+2. **The `call_indirect` is ours, not the host's.** The closure's code lives in our
+   funcref table; `Core::CallClosure` emits `resource.rep(self)` is unnecessary
+   intra-program, but at the boundary the method body does: recover the cell handle from
+   the resource (`resource.rep`), read the table slot (`arr-get(cell,0)` + `get-int`),
+   and `call_indirect` over our table with the args. The closure logic never leaves
+   Cadenza; **the host just holds a handle and either invokes the `call` method or hands
+   the resource back.** This sidesteps the hard problem (a host implementing a Cadenza
+   function type) — the host is a *custodian*, not an *implementor*.
+
+3. **The resource-escape path is the template.** `assemble_runtime_resource` +
+   `resource_inner_component` already export a resource-with-methods (`make`/`encode`)
+   inside `cadenza:run/run`. A closure resource is the same shape with `call` in place of
+   `encode` (and possibly additional methods). The byte-emitting item helpers in
+   `envelope.rs` (`resource_type_item`, `own_item`, `borrow_item`, `canon_lift_item`, the
+   nested re-export component) are directly reusable.
+
+4. **"A resource per signature" = the monomorphization the escape already does.** The
+   value-heap escape mints one resource type per concrete compound type
+   (`tuple-int64-bool`, etc.). A closure resource is minted per closure SIGNATURE:
+   `(-> Int64 Int64)` → resource `closure-s64-s64` with `call: (self, s64) -> s64`;
+   `(-> Int64 (-> Int64 Int64))` → `call` takes two args (curried arrows flattened to the
+   method's parameter list, exactly as `runtime_fn_spine`/`closure_type_index` flatten a
+   full-arity application).
+
+## The two directions
+
+### Direction 1 — Cadenza → host (export a closure; host holds + invokes it)
+The primary, tractable direction. A closure value at a boundary export position crosses
+as `own<closure-sig>` (or `borrow`). The resource carries a `call` method. The host:
+- holds the handle opaquely;
+- invokes `call(self, args…) -> result` (dispatches through our `call_indirect`);
+- can hand the resource back into another Cadenza export.
+
+### Direction 2 — host → Cadenza (host hands a Cadenza closure back)
+A Cadenza export takes a parameter of type `own<closure-sig>`/`borrow<closure-sig>`. The
+host passes back a resource **we previously handed it**. Inside, the parameter's rep is
+recovered (`resource.rep`) to our cell handle and applied via `Core::CallClosure`'s
+`call_indirect` — the type index resolves against the same in-program `LiftedLambda` that
+built it (the closure is ours; `closure_type_index` already matches by valtype shape).
+
+**Out of scope (a genuinely-host-IMPLEMENTED function):** the host defining a brand-new
+function of a Cadenza signature and Cadenza calling it. That would require a host-side
+resource whose `call` is a host closure, dispatched via a component IMPORT rather than our
+`call_indirect`. Valuable but strictly larger (import-side resource + a second dispatch
+path); explicitly deferred. The round-trip (host as custodian of OUR closure) delivers
+most of the power and is tractable now.
+
+## The ABI shape (concrete)
+
+**Key correction (author): the handle ALWAYS originates inside Cadenza.** The host never
+fabricates a closure — `resource.new` runs IN THE GUEST, on a cell the guest built, at the
+moment a closure value crosses the boundary. So there is **no host-called `make`
+constructor** (that was over-copied from the value-heap escape, where `make` builds a
+constant compound). A closure crosses as the **RESULT of an ordinary export** — which may
+be parameterized, so the handle is genuinely computed from Cadenza running on the host's
+inputs. For a def returning `(-> Int64 Int64)`:
+
+```wit
+resource closure-s64-s64 {
+  call: func(x: s64) -> s64;   // a resource METHOD (self is the borrow/own receiver)
+}
+adder: func(k: s64) -> own<closure-s64-s64>   // an ORDINARY export; result is the closure
+```
+
+- **The export itself is the "constructor."** Its body runs Cadenza (closing over `k`),
+  builds the closure cell (`Core::Closure` emit: `arr-alloc`, `box-int(code)`, the
+  captures), and — because its RESULT crosses as `own<closure-sig>` — the boundary-return
+  emits `resource.new(cell)` to hand the host an owned handle. The `resource.new` is the
+  return-value crossing, not a magic method. A nullary export `(def (main) (fn (x) (+ x
+  1)))` is just the degenerate (constant-closure) case of the same shape.
+- **`call`** — the resource method. Core body: `resource.rep(self)` → cell handle; then
+  the `Core::CallClosure` sequence (materialize cell, push env + args, `arr-get(cell,0)` +
+  `get-int` + `i32.wrap_i64` + `call_indirect <type>`). The `<type>` is the in-program
+  lifted lambda's functype — already computed by `closure_type_index`.
+- No `encode` method (that was the value-escape's contract). A closure resource exposes
+  `call` (+ a dtor); it is invoked, not serialized.
+
+This differs structurally from the value-heap escape: the escape is a single NULLARY
+export routed specially in `emit` (before selection) into a `make`/`encode` resource; a
+closure export is an ORDINARY (possibly parameterized) export whose RESULT TYPE is
+`Ty::Fn`. So the trigger is not "nullary compound export" but "an export whose result (or,
+later, a param) is a closure type" — and the export body lowers normally, with the
+`resource.new` spliced at the boundary-return.
+
+### own vs borrow (the load-bearing fork)
+The value-heap escape uses `own<t>` for `encode` and documents a KNOWN LEAK + an
+un-root-caused wasmtime-37 trap when switched to `borrow<t>` (`envelope.rs:1052-1058`,
+`resource_inner_component_borrow` scaffolded but unwired). For a **callable** closure the
+host invokes repeatedly, `own` (consume-on-call) is wrong — the host must keep the handle
+across calls. So this feature FORCES resolving the `borrow<t>` path that the escape
+deferred. Options:
+- **(a) `borrow<t>` for `call`, `own<t>` returned by `make`** — host owns the resource,
+  lends it per call, drops it when done (correct lifetimes; requires root-causing the
+  wasmtime-37 borrow trap first — the escape's open follow-up).
+- **(b) `own<t>` per call, host re-obtains** — wrong for a stored callback; rejected.
+- **(c) leak deliberately at first** (like the escape's `own` `encode`) — `call` takes
+  `borrow` semantics but we model with `own`+no-drop to dodge the trap, accept the bounded
+  leak, and fix with the general dtor work. Fastest to green; matches the escape's current
+  posture.
+
+Recommendation: **start with (c)** to prove the vertical end-to-end on a green gate
+(mirrors how the value-heap escape shipped), then land the `borrow<t>` fix as a shared
+increment that also fixes the escape's `encode` leak — one fix, two beneficiaries.
+
+## Type-system surface
+
+- `comp_valtype_of(Ty::Fn)` stays `None` (a closure has no scalar boundary valtype); the
+  RESOURCE escape is the boundary form, exactly as compounds decline `comp_valtype_of` but
+  escape via a resource. The dispatch guard in `emit` (currently matching Tuple/Record/Sum/
+  List/Map/Bytes/String on a single nullary export) gains a `Ty::Fn` arm.
+- A closure at a boundary PARAMETER position (Direction 2) is a new param ABI:
+  `own<closure-sig>`/`borrow<closure-sig>` recovered via `resource.rep`. Parallels the
+  host-call scalar-param path but with a resource handle.
+- Monomorphization key = the closure's solved `Ty::Fn` (flattened arg list + result). Two
+  exports of the same signature share one resource type; distinct signatures mint distinct
+  resources (dedup like the leaf/type sections).
+
+## Host side (cdz-run)
+
+wasmtime 37 (component-model) supports resource methods, `ResourceAny`, and host-defined
+resources — all present. `cdz-run` already (a) calls an exported resource's methods
+(`run_resource_escape`: `make` then `encode`), and (b) binds host imports dynamically off
+the component type. The new work:
+- **Direction 1:** detect a closure-resource export, call `make`, call `call` with a
+  test/driver argument, render the result. For the gate, a case supplies the arg(s) via
+  the existing `(call …)` mechanism, driving the resource's `call` rather than a bare
+  export.
+- **Direction 2 / round-trip:** hold the `ResourceAny` from `make`, pass it as an argument
+  into a second export call. This is pure wasmtime resource plumbing on the host side.
+
+## Decisions (author, confirmed)
+
+- **Direction 1 (Cadenza→host) first; round-trip (Direction 2) as a later increment;
+  host-implemented functions out of scope entirely (a separate, larger design).**
+- **own + no-drop first** (bounded leak, green gate — mirrors how the value-heap escape
+  shipped), then the shared `borrow<t>` + dtor fix.
+- **The handle always originates in Cadenza** — a closure crosses as an ordinary export's
+  RESULT; no host-called `make`.
+- **Interface:** a dedicated `cadenza:closure/*` (the host contract — a callable method —
+  differs from the value-escape's `encode`, so a separate namespace keeps `cdz-run`'s two
+  paths distinct).
+
+## Increment plan (each = commit + triple gate, reject-don't-miscompile)
+
+- **C-HOST-0 — codegen probe (byte-neutral).** Add the closure-resource item helpers (the
+  per-signature resource-type emit; a functype builder for a `call` method of arity N; the
+  nested re-export component variant for a `{call}` resource) as pub fns, unreferenced.
+  Confirm the component bytes assemble against a `wasm-encoder` oracle. No behavior change.
+- **C-HOST-1 — export a NO-CAPTURE closure, host calls it (own/no-drop).** An export whose
+  RESULT is `(-> Int64 Int64)` → resource `closure-s64-s64` with a `call` method, published
+  in `cadenza:closure/*`. The export body builds the cell and `resource.new`s it at the
+  boundary-return; `cdz-run` calls the export, then `call(arg)` on the returned handle.
+  First e2e: `(def (main) (fn (x) (+ x 1)))` exported; host calls the result with 5 → 6.
+  Corpus: a new `17-host-closures.sexp` (or an extension) whose driver invokes the
+  resource method.
+- **C-HOST-2 — a PARAMETERIZED export returning a CAPTURING closure.** `(def (adder (: k
+  Int64)) (fn (x) (+ x k)))` → `adder : (s64) -> own<closure-s64-s64>`; host calls
+  `adder(10)` then `call(5)` → 15. Proves the handle is computed from the host's input AND
+  the environment rides along in the cell — the real shape, not the degenerate constant.
+- **C-HOST-3 — multi-arg + multiple signatures.** A closure of `(-> Int64 (-> Int64
+  Int64))` → `call` with two args; two distinct signatures in one program mint two resource
+  types (dedup by the solved `Ty::Fn`).
+- **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
+  `cdz-run` threads a handle returned by one export back into another; inside, the param is
+  `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.
+- **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
+  wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
+  dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak
+  (`envelope.rs:1052`). One fix, two beneficiaries.
+
+## Risks / open questions
+
+1. **borrow<t> trap (C-HOST-5)** — the single biggest known hazard, inherited from the
+   escape's deferred follow-up. Start with own/no-drop (C-HOST-1..4) to keep the gate
+   green, then resolve.
+2. **Interface naming** — DECIDED: a dedicated `cadenza:closure/*` interface (host
+   contract is a callable method, distinct from the value-escape's `encode`).
+3. **Arg/result boundary types** — first cut restricts `call` args + result to the aliased
+   scalar widths (same restriction as host-call `abi_val_type`); a closure whose arg is
+   itself a compound/closure is a later increment (recursion into the resource machinery).
+4. **Lifetime / RC** — who drops the closure cell and its captures? Tied to own vs borrow;
+   the general Perceus drop work (`a_runtime_closure_leaks_exactly_one_cell_known_gap`)
+   and the resource dtor converge here.
+5. **Gate expressibility** — the gate's `(call main …)` drives a bare export; driving a
+   resource METHOD needs a small `cdz-run` + corpus extension (a `(call-closure …)` shape,
+   or reuse `(call …)` against the resource). Non-trivial but bounded.
+
+## What this is NOT (scope fences)
+
+- Not a host-IMPLEMENTED Cadenza function (host defines the body). Deferred — needs an
+  import-side resource + a second dispatch path.
+- Not closures with compound/closure args crossing (first cut = scalar args/result).
+- Not a change to intra-program closures (complete and unaffected).

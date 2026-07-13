@@ -1384,6 +1384,35 @@ fn self_borrow_to_list_functype(borrow_type_idx: u32, list_type_idx: u32) -> Vec
     item
 }
 
+/// A component functype for a CLOSURE-RESOURCE `call` method: `(self: <handle<t>>, p0: <vt>, …) -> <vt>`
+/// — form `0x40`, then the param vec `[self : own/borrow<self_type_idx>, p0.., …]`, then the result form.
+/// `self` is the receiver (an `own`/`borrow` handle to the closure resource — a DEFINED type by index);
+/// the remaining params are the closure's argument valtypes and the result is its return valtype, both
+/// scalar `AbiValType::comp_byte`s (the aliased boundary widths). This is the closure analog of
+/// `self_borrow_to_list_functype` — a method whose body does `resource.rep(self)` then a `call_indirect`
+/// on the recovered cell (C-HOST-1). `arg_bytes`/`result_byte` are `AbiValType::comp_byte()` values.
+/// (C-HOST-0: emitted + oracle-checked; not yet wired into an assembled component.)
+#[allow(dead_code)]
+fn closure_call_functype(self_handle_type_idx: u32, arg_bytes: &[u8], result_byte: u8) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    // `self` — the receiver handle (own/borrow<t>), a defined type referenced by index.
+    param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
+    param_items.extend_from_slice(b"self");
+    param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
+    // The closure's arguments, named `p0`, `p1`, … (positional at a boundary call; the names are cosmetic).
+    for (i, &vt) in arg_bytes.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&uleb_bytes(pname.len() as u64));
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(vt);
+    }
+    item.extend_from_slice(&wasm_vec(1 + arg_bytes.len(), &param_items));
+    // One result — the closure's return valtype (a scalar boundary byte).
+    item.extend_from_slice(&[0x00, result_byte]);
+    item
+}
+
 /// A sec-10 component-import item for an abstract RESOURCE: `<extern-name> 03 01` — `0x03` =
 /// ComponentTypeRef::Type, `0x01` = TypeBounds::SubResource (mint a fresh abstract resource the importer
 /// binds).
@@ -1643,4 +1672,64 @@ fn comp_export_item(name: &str, func_idx: u32) -> Vec<u8> {
     uleb128(func_idx as u64, &mut item);
     item.push(0x00); // no declared type ascription
     item
+}
+
+#[cfg(test)]
+mod closure_resource_tests {
+    use super::*;
+
+    /// C-HOST-0 (byte-neutral probe): the `call`-method functype encodes to the exact component-model
+    /// bytes — form `0x40`, a param vec `[self : own<t>, p0 : s64]`, result `00 <s64>`. `self` references
+    /// the resource handle (a DEFINED type by index) as a bare type-index uleb; the arg + result are the
+    /// scalar boundary bytes (`AbiValType::comp_byte`: `s64` = `0x78`). Deep byte-identity against a full
+    /// `ComponentBuilder` component arrives in C-HOST-1 (when the `own<t>` index is real); this pins the
+    /// item shape now so the wiring increment builds on a checked primitive.
+    #[test]
+    fn closure_call_functype_encodes_the_call_method_shape() {
+        use crate::backend::wasm::runtime_abi::AbiValType;
+        let s64 = AbiValType::S64.comp_byte(); // 0x78
+        // A `(-> Int64 Int64)` closure whose resource handle is defined type index 5: one arg + result.
+        let got = closure_call_functype(5, &[s64], s64);
+        let want: Vec<u8> = vec![
+            wasm_abi::COMP_FUNCTYPE_FORM, // 0x40 functype form
+            0x02,                         // param count = 2 (self + p0)
+            0x04,
+            b's',
+            b'e',
+            b'l',
+            b'f', // "self"
+            0x05, // own<t> defined type, index 5 (bare uleb)
+            0x02,
+            b'p',
+            b'0', // "p0"
+            s64,  // arg valtype s64
+            0x00, // result form: one result
+            s64,  // result valtype s64
+        ];
+        assert_eq!(got, want, "call-method functype byte shape");
+
+        // A two-arg closure `(-> Int64 (-> Int64 Int64))` flattens to two `call` params after `self`.
+        let got2 = closure_call_functype(7, &[s64, s64], s64);
+        let want2: Vec<u8> = vec![
+            wasm_abi::COMP_FUNCTYPE_FORM,
+            0x03, // self + p0 + p1
+            0x04,
+            b's',
+            b'e',
+            b'l',
+            b'f',
+            0x07, // own<t> index 7
+            0x02,
+            b'p',
+            b'0',
+            s64,
+            0x02,
+            b'p',
+            b'1',
+            s64,
+            0x00,
+            s64,
+        ];
+        assert_eq!(got2, want2, "two-arg call-method functype byte shape");
+    }
 }

@@ -253,6 +253,12 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         // A name is written verbatim. (The s-expr surface has no reserved words — `let`, `+`, `|`
         // are all ordinary atoms — so no escaping is needed here, unlike the ML surface.)
         Leaf::Name(n) => out.push_str(n),
+        // A symbol renders `#"…"` (reusing the string escape set) — re-reads to the same `Leaf::Sym`.
+        Leaf::Sym(s) => {
+            out.push_str("#\"");
+            out.push_str(&crate::literal::escape_string(s));
+            out.push('"');
+        }
         // A bad-escape MARKER round-trips back to the offending literal `"\<c>"` — so re-reading the
         // printed form yields the SAME marker (the reader re-detects the unknown escape). A marker is not
         // valid source; printing it faithfully keeps the round-trip law (`read(print(x)) == x`) rather
@@ -410,6 +416,11 @@ impl<'a, 'b> Reader<'a, 'b> {
             // (named), `#\u+HHHH` (code point). A literal naming a NON-scalar (`#\u+D800`) becomes a
             // `BadChar` marker → CDZ0002 at the compiler.
             Some(b'#') if self.src.get(self.pos + 1) == Some(&b'\\') => self.read_char(),
+            // A symbol literal `#"metre"` — an interned name value (`symbol-interning-direction`). Only
+            // the exact `#"` prefix opens one; a bare `#` reads as an ordinary token. Reuses string
+            // lexing/escapes, producing a `Leaf::Sym` (distinct from `Leaf::Str`). A base dimension in the
+            // units layer is named this way (`(Unit.base #"metre")`).
+            Some(b'#') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_symbol(),
             // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
             // built BEFORE the synthetic head (preserving structure-id order — the reader is the
             // round-trip oracle, so the arena stays byte-identical to the untracked path). The head
@@ -542,6 +553,43 @@ impl<'a, 'b> Reader<'a, 'b> {
         let s: String = s.chars().nfc().collect();
         // The string atom spans the opening quote through the closing quote (now consumed).
         Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
+    }
+
+    /// Read a symbol literal `#"metre"` into a `Leaf::Sym` — the interned-name value form. The `#` is
+    /// consumed here; the body reuses the SAME string lexing (escapes `\n \t \r \\ \"`, NFC-normalized
+    /// contents) as `read_string`, differing only in the leaf produced (`Sym` not `Str`) and the span
+    /// (which includes the leading `#`). Its identity is its content (`symbol-interning-direction`); a
+    /// base dimension is named this way (`(Unit.base #"metre")`).
+    fn read_symbol(&mut self) -> Result<StructId, ReadError> {
+        let start = self.pos;
+        self.bump(); // '#'
+        self.bump(); // opening quote
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            match self.bump() {
+                None => return Err(ReadError("unterminated symbol".into())),
+                Some(b'"') => break,
+                Some(b'\\') => match self.bump() {
+                    Some(b'n') => bytes.push(b'\n'),
+                    Some(b't') => bytes.push(b'\t'),
+                    Some(b'r') => bytes.push(b'\r'),
+                    Some(b'\\') => bytes.push(b'\\'),
+                    Some(b'"') => bytes.push(b'"'),
+                    // A symbol reuses the string escape set. An unrecognized escape keeps the raw byte
+                    // (a symbol names arbitrary content); the closed-escape-set diagnostic is a string
+                    // concern, and a symbol literal is a name, not a text value with a lexical contract.
+                    Some(other) => bytes.push(other),
+                    None => return Err(ReadError("unterminated escape".into())),
+                },
+                Some(b) => bytes.push(b),
+            }
+        }
+        let s = String::from_utf8(bytes).map_err(|_| ReadError("non-utf8 symbol".into()))?;
+        // NFC-normalize symbol contents (identity is by normalized content — `symbol-interning-direction`
+        // §String-backed: a symbol inherits String's normalized-contents equality).
+        let s: String = s.chars().nfc().collect();
+        // The symbol atom spans the leading `#` through the closing quote (now consumed).
+        Ok(self.mk_atom_leaf(Leaf::Sym(s), Span::new(start, self.pos)))
     }
 
     /// Read a char literal `#\…` into a `Leaf::Char` (a single Unicode scalar). Three spellings:
@@ -1173,6 +1221,47 @@ mod tests {
                 a.structurally_eq(&b),
                 "{src} printed as {printed:?} did not round-trip"
             );
+        }
+    }
+
+    #[test]
+    fn reads_symbol_literals() {
+        // `#"metre"` is a symbol literal → `Leaf::Sym` (distinct from `Leaf::Str` and `Leaf::Name`);
+        // its content is NFC-normalized and the string escape set applies.
+        let leaf_of = |src: &str| {
+            let a = read(src).unwrap();
+            let Struct::Atom(l) = a.get(a.root) else {
+                panic!("expected an atom for {src}")
+            };
+            a.leaf(*l).clone()
+        };
+        assert_eq!(leaf_of("#\"metre\""), Leaf::Sym("metre".to_string()));
+        assert_eq!(leaf_of("#\"\""), Leaf::Sym(String::new())); // the empty symbol
+        assert_eq!(
+            leaf_of("#\"a b\""),
+            Leaf::Sym("a b".to_string()) // a symbol may carry spaces (it is not an identifier)
+        );
+        // A symbol is NOT a string and NOT a name.
+        assert_ne!(leaf_of("#\"metre\""), Leaf::Str("metre".to_string()));
+        assert_ne!(leaf_of("#\"metre\""), Leaf::Name("metre".to_string()));
+    }
+
+    #[test]
+    fn symbol_leaves_round_trip_through_codec_and_printer() {
+        // A `Sym` must survive BOTH the binary AST codec (the compiler reads the binary AST) and the
+        // printer (`read(print(x)) == x`) — the two gates the `#"…"` literal must hold for the units
+        // corpus surface (`(Unit.base #"metre")`).
+        for src in ["#\"metre\"", "#\"second\"", "#\"\""] {
+            let a = read(src).unwrap();
+            // Codec round-trip.
+            let bytes = crate::codec::encode(&a);
+            let b = crate::codec::decode(&bytes).expect("decode");
+            assert!(a.structurally_eq(&b), "codec round-trip changed {src}");
+            // Printer round-trip.
+            let printed = print(&a);
+            assert_eq!(printed, src, "{src} did not print back verbatim");
+            let c = read(&printed).unwrap();
+            assert!(a.structurally_eq(&c), "printer round-trip changed {src}");
         }
     }
 }

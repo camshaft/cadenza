@@ -220,6 +220,9 @@ impl<'a> Printer<'a> {
             Leaf::Bool(b) => self.doc.word(if *b { "true" } else { "false" }),
             Leaf::Str(s) => self.doc.word(format!("\"{}\"", literal::escape_string(s))),
             Leaf::Bytes(b) => self.doc.word(format!("b\"{}\"", literal::escape_bytes(b))),
+            // A symbol renders `#"…"` (reusing the string escape set) — re-reads via the ML lexer's `#"`
+            // path to the same `Leaf::Sym`.
+            Leaf::Sym(s) => self.doc.word(format!("#\"{}\"", literal::escape_string(s))),
             Leaf::Name(n) => self.doc.word(emit_name(n)),
             // A bad-escape MARKER round-trips back to `"\<c>"` so the printed form re-reads to the same
             // marker (the defect survives the round-trip rather than being silently lost).

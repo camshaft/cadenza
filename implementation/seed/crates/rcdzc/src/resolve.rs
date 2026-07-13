@@ -178,6 +178,15 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A string literal — its text is already unescaped to canonical form by the reader. A
             // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
             Leaf::Str(s) => Resolved::Str(s.clone()),
+            // A SYMBOL literal (`#"metre"`). Layer-1 SIMPLIFICATION: a symbol's only Layer-1 use is
+            // naming a base dimension in `(Unit.base #"metre")`, where the `Unit.base` builder reads the
+            // symbol's TEXT directly off this leaf (like `(Int N)` reads its width literal) — so a symbol
+            // needs no first-class value form yet. Resolving it to its text as a `Str` gives a bare symbol
+            // a sane inert value (its content) without a new `Resolved` variant + its ~13 downstream arms.
+            // The real `Ty::Symbol` (content identity, `=`-nominal-boundary CDZ0202, `Symbol.to-string`)
+            // arrives with the symbols vertical (`symbol-interning-direction`); the `#"…"` LEAF already
+            // round-trips faithfully, so promoting the resolved form later is additive.
+            Leaf::Sym(s) => Resolved::Str(s.clone()),
             // A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes`
             // constant (lowers to a `Core::BytesOf` of its bytes, so it bakes/compares/slices exactly
             // like `(Bytes.of (list …))`, and renders back `b"…"`). The companion of the `Str` literal.
@@ -2176,10 +2185,43 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             for &a in tail.iter().skip(2) {
                 args.push(decode_ty(db, a)?);
             }
-            Some(Ty::Sum {
+            let decl = StructId(decl);
+            // NEWTYPE NORMALIZATION: an erasable single-variant sum is a NOMINAL type — its runtime box
+            // is erased, so it decodes to `Ty::Nominal { inner }` (the underlying structural type
+            // precomputed at load), NOT a boxed `Ty::Sum`. This is the ONE chokepoint every monomorphic
+            // sum type flows through (a sum record's `(meta t)`, a ctor's result, a `(: x T)`
+            // annotation), so the `Sum`↔`Nominal` choice is uniform. A non-erasable decl (multi-variant /
+            // recursive / sum-carrying) is absent from the map and stays a boxed `Ty::Sum`.
+            if let Some(inner) = db.newtype_inner.get(&decl) {
+                return Some(Ty::Nominal {
+                    decl,
+                    name,
+                    inner: Box::new(inner.clone()),
+                });
+            }
+            Some(Ty::Sum { decl, name, args })
+        }
+        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the dual of `eval::encode_ty`'s
+        // `Nominal` arm. Carries its own encoded `inner`, so it round-trips independently of
+        // `newtype_inner` (an already-built `Ty::Nominal` re-encoded, e.g. through `reduce_ctor`). Name +
+        // decl are the identity/render; `inner` is the underlying structural type.
+        "Nominal" => {
+            let tail = db.ast.as_form(node, "Nominal")?;
+            let name = db.ast.as_name(*tail.first()?)?.to_string();
+            let decl = match db.ast.get(*tail.get(1)?) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => {
+                        value.to_i64().and_then(|n| u32::try_from(n).ok())?
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            let inner = decode_ty(db, *tail.get(2)?)?;
+            Some(Ty::Nominal {
                 decl: StructId(decl),
                 name,
-                args,
+                inner: Box::new(inner),
             })
         }
         // A map type-value: `(Map K V)` — two type arguments (key first, then value), the dual of
