@@ -4083,6 +4083,12 @@ fn resolve_leaf_offsets(
             crate::ast::Leaf::Str(s) => {
                 off += 1 + leb_len(s.len() as u64) + s.len();
             }
+            // A symbol leaf encodes like a Str/Name (kind byte + len LEB + utf8 bytes) and is compile-
+            // time-only (a unit erases before the boundary — a symbol never reaches a runtime value
+            // form), so advance past it with no runtime hole.
+            crate::ast::Leaf::Sym(s) => {
+                off += 1 + leb_len(s.len() as u64) + s.len();
+            }
             // A bytes leaf is a fully-baked constant (no runtime hole) — advance past it like a Str
             // (kind byte + len LEB + the raw bytes).
             crate::ast::Leaf::Bytes(bs) => {

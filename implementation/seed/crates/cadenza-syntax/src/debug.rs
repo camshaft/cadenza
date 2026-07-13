@@ -99,6 +99,7 @@ fn leaf(l: &Leaf) -> String {
         Leaf::Str(s) => format!("Str {s:?}"),
         Leaf::Bytes(b) => format!("Bytes {b:?}"),
         Leaf::Bool(b) => format!("Bool {b}"),
+        Leaf::Sym(s) => format!("Sym {s:?}"),
         Leaf::Name(n) => format!("Name {n}"),
         Leaf::BadEscape(c) => format!("BadEscape {c:?}"),
         Leaf::Char(c) => format!("Char {c:?}"),

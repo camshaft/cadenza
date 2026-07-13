@@ -70,8 +70,21 @@ impl<'a> Lexer<'a> {
             '}' => Kind::RBrace,
             '[' => Kind::LBracket,
             ']' => Kind::RBracket,
-            // `#\…` is a char literal (one Unicode scalar); a bare `#` is the map/raw-list sigil.
+            // `#\…` is a char literal (one Unicode scalar); `#"…"` is a symbol literal (an interned name
+            // value, reusing string lexing); a bare `#` is the map/raw-list sigil.
             '#' if self.peek() == Some('\\') => return Some(self.char_lit(a)),
+            '#' if self.peek() == Some('"') => {
+                let quote = self.bump().unwrap(); // the opening `"`
+                let str_tok = self.read_string(quote);
+                return Some(Token {
+                    kind: if str_tok.kind == Kind::Str {
+                        Kind::SymLit
+                    } else {
+                        Kind::Error // unterminated
+                    },
+                    span: a.span.merge(str_tok.span),
+                });
+            }
             '#' => Kind::Hash,
             // `..` is the rest/spread marker (one token); a lone `.` is member access. A float's
             // fractional `.` is consumed inside `number` (it needs a digit after the `.`), so it never

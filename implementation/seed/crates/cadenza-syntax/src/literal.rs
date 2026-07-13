@@ -277,6 +277,26 @@ pub fn unescape_string_token(token: &str) -> Leaf {
     }
 }
 
+/// Unescape a symbol-literal TOKEN (`#"…"`, the `#` + quotes included, as the lexer spans it) into a
+/// [`Leaf::Sym`] — the interned-name value form. Reuses the STRING escape set and NFC normalization
+/// ([`unescape_string`]), so a symbol's content is lexed exactly as a string body; only the leaf kind
+/// and the `#"` prefix differ. An unrecognized escape keeps the raw char (a symbol names arbitrary
+/// content — the closed-escape-set contract is a string concern), so this never yields a `BadEscape`.
+/// Returns an empty `Sym` if the token is not `#"…"`-shaped.
+pub fn unescape_sym_token(token: &str) -> Leaf {
+    let inner = token
+        .strip_prefix("#\"")
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or("");
+    // Reuse the string unescape; on an unrecognized escape keep the raw text (a symbol is content-typed,
+    // not subject to the closed-escape diagnostic) by falling back to the inner NFC-normalized text.
+    let content = match unescape_string(inner) {
+        Ok(s) => s,
+        Err(_) => inner.nfc().collect(),
+    };
+    Leaf::Sym(content)
+}
+
 /// Unescape a byte-string TOKEN (`b"…"`, the `b` + quotes included, as the ml lexer spans it) into
 /// the raw bytes it denotes. The INVERSE of [`escape_bytes`] (the render side) and identical to the
 /// sexpr `read_byte_string` reader, so `b"…"` produces byte-identical `Leaf::Bytes` on both surfaces:

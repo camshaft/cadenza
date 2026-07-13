@@ -526,6 +526,12 @@ impl<'a> Parser<'a> {
                     span,
                 )
             }
+            Kind::SymLit => {
+                let t = self.bump().unwrap();
+                // The token text is `#"<body>"`; `unescape_sym_token` strips the `#"`/`"` and yields a
+                // `Leaf::Sym` (reusing the string escape set + NFC). The s-expr reader agrees.
+                self.atom(literal::unescape_sym_token(self.text(t)), span)
+            }
             Kind::CharLit => {
                 let t = self.bump().unwrap();
                 // The token text is `#\<word>`; `char_leaf` classifies `<word>` into a `Char` scalar or a
@@ -1166,6 +1172,10 @@ impl<'a> Parser<'a> {
                     Leaf::Bytes(literal::unescape_byte_string_token(self.text(t))),
                     span,
                 )
+            }
+            Kind::SymLit => {
+                let t = self.bump().unwrap();
+                self.atom(literal::unescape_sym_token(self.text(t)), span)
             }
             Kind::CharLit => {
                 let t = self.bump().unwrap();

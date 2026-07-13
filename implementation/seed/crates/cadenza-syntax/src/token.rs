@@ -24,6 +24,7 @@ pub enum Kind {
     Str,
     ByteStr, // `b"…"` — a byte-string literal (arbitrary bytes), the surface form of a `Bytes` value
     CharLit, // `#\a` / `#\newline` / `#\u+00E9` — a char literal (one Unicode scalar)
+    SymLit,  // `#"metre"` — a symbol literal (an interned name value); reuses string lexing
 
     // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
     Ident, // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident
