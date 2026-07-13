@@ -4407,6 +4407,31 @@ mod runtime_ops {
         ));
     }
 
+    #[test]
+    fn a_non_aliased_width_result_crosses_widened_to_the_next_aliased_width() {
+        // A NON-ALIASED integer width (`(UInt 48)`, `(Int 24)`) has no component primitive of its own, so
+        // it cannot cross as itself — but a RESULT we PRODUCE is in range by construction, so it crosses
+        // WIDENED to the smallest aliased width ≥ N of the SAME signedness, value-preserving (the core slot
+        // is unchanged; the canonical ABI lifts it faithfully). RETURN-ONLY: a non-aliased PARAMETER still
+        // declines (see `a_non_aliased_width_parameter_still_declines`).
+        // `(UInt 48).max` = 2^48-1 crosses as `u64` → the exact value (06-numeric "an unusual in-range
+        // width is a first-class type").
+        assert_eq!(
+            run::<u64>("", "(: 281474976710655 (UInt 48))", &[]),
+            281474976710655
+        );
+        // `(UInt 48).wrap -1` keeps the low 48 bits (48 ones) = 2^48-1, crossing as `u64` (06-numeric "a
+        // truncating conversion to an unusual width keeps that width's low bits").
+        assert_eq!(
+            run::<u64>("", "((. (UInt 48) wrap) (: -1 Int64))", &[]),
+            281474976710655
+        );
+        // SIGNED non-aliased width: `(Int 24).wrap -5` crosses as `s32` SIGN-EXTENDED → -5 (not a
+        // reinterpreted large unsigned). Pins the widening picks the same signedness. (The RETURN-ONLY
+        // half — a non-aliased PARAMETER still declines — is `stage1::a_non_aliased_width_result_crosses_…`.)
+        assert_eq!(run::<i32>("", "((. (Int 24) wrap) (: -5 Int64))", &[]), -5);
+    }
+
     /// A NARROW signed `+`/`-` by a compile-time CONSTANT drops the provably-unreachable range-check
     /// bound: the exact result moves in ONE direction from an in-range operand, so only that bound can
     /// be exceeded. `(+ a 1)` Int8 can only exceed `max` (127) — the `r < min` check is dead; `(- a 1)`
@@ -14556,15 +14581,21 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_aliased_width_cannot_cross_the_boundary() {
-        // A `(UInt 48)` is a first-class INTERNAL type — its bounds fold and its arithmetic is correct —
-        // but only the aliased widths (8/16/32/64) have a component boundary representation. Exporting a
-        // value of a non-aliased width DECLINES (naming the width), rather than crossing as a misreported
-        // wider primitive. This is the safety property: to expose 48-bit data you take a `u64` at the
-        // boundary and convert explicitly, so the host never sees an ambiguous "48 bits in a u64".
-        let src = "(module m (def (main) (. (UInt 48) max)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a non-aliased width cannot be exported")
+    fn a_non_aliased_width_result_crosses_widened_but_a_parameter_declines() {
+        // A `(UInt 48)` is a first-class INTERNAL type — its bounds fold and its arithmetic is correct.
+        // A RESULT of a non-aliased width CROSSES the boundary WIDENED to the next-larger aliased width of
+        // the same signedness (a produced value is in range by construction, so the widening is
+        // value-preserving): `(. (UInt 48) max)` = 2^48-1 exports as `u64` → the exact value. But a
+        // non-aliased PARAMETER still DECLINES (naming the width) — accepting one would trust an incoming
+        // wider value fits the narrower width, which the guest cannot verify. (Return-only; the full
+        // value-and-signedness matrix is in `runtime_ops::a_non_aliased_width_result_crosses_…`.)
+        let ret = "(module m (def (main) (. (UInt 48) max)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(ret))).expect("a UInt48 result crosses");
+        assert_eq!(run_returns::<u64>(&bytes, "main"), 281474976710655);
+
+        let param = "(module m (def (f (: x (UInt 48))) x) (export f))";
+        let msg = compile_component(&crate::codec::encode(&parse(param)))
+            .expect_err("a non-aliased width parameter cannot be accepted")
             .message;
         assert!(
             msg.contains("boundary") || msg.contains("aliased"),
@@ -14630,16 +14661,15 @@ mod stage1 {
     }
 
     #[test]
-    fn wrap_to_a_nonaliased_width_folds_but_cannot_cross() {
-        // `((UInt 48).wrap -1)` = 2^48-1 at the FOLD (the low 48 bits of -1) — a non-aliased target has
-        // no boundary form, so it can't be exported, but the truncation itself is correct. Asserted at
-        // the fold; exporting it declines (the non-aliased-boundary rule from R2). `(UInt 48).wrap` is
-        // the postfix-member sugar (reads to `(. (UInt 48) wrap)`).
+    fn wrap_to_a_nonaliased_width_folds_and_crosses_widened() {
+        // `((UInt 48).wrap -1)` = 2^48-1 at the FOLD (the low 48 bits of -1) — the truncation is correct.
+        // A non-aliased target has no boundary primitive of its own, but a RESULT crosses WIDENED to the
+        // next aliased width (`u64`), value-preserving — so exporting it now RUNS to the exact value
+        // (was a decline under the old aliased-only boundary rule). `(UInt 48).wrap` is the postfix-member
+        // sugar (reads to `(. (UInt 48) wrap)`). (The full matrix + the parameter-still-declines half are
+        // in `runtime_ops::a_non_aliased_width_result_crosses_…` / `a_non_aliased_width_result_crosses_…`.)
         assert_eq!(fold_const_u128("((UInt 48).wrap -1)"), (1u128 << 48) - 1);
-        assert!(
-            expect_decline("((UInt 48).wrap -1)").contains("boundary"),
-            "a non-aliased wrap result must decline at the boundary"
-        );
+        assert_eq!(run_main_as::<u64>("((UInt 48).wrap -1)"), (1u64 << 48) - 1);
     }
 
     #[test]

@@ -2839,10 +2839,13 @@ fn encode_sum_walk_body(
     e
 }
 
-/// The component-boundary valtype of an export's result (`None` = unit / no result) — read by the
-/// envelope assembler for the component functype. A type with no boundary representation is an error
-/// here: a NON-ALIASED integer width (`(UInt 48)`, …) is internal-only, so an export whose result or
-/// parameter is one DECLINES (naming the width) rather than crossing as a misreported wider primitive.
+/// The STRICT component-boundary valtype of a type (`None` = unit / no result) — read directly for a
+/// PARAMETER (where only an exactly-representable width is admitted) and as the base mapping `export_result`
+/// widens over. A type with no boundary representation is an error here: a NON-ALIASED integer width
+/// (`(UInt 48)`, …) is internal-only, so a PARAMETER of one DECLINES (naming the width) rather than
+/// accepting an incoming wider value the guest cannot verify fits the narrower width. A non-aliased
+/// RESULT, by contrast, crosses WIDENED to the next aliased width — that value-preserving relaxation lives
+/// in [`export_result`], not here (it is unsound for a parameter).
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     // A NOMINAL newtype's boundary form is its ERASED underlying type (the tag adds nothing to the
     // representation): peel it so a nominal-over-scalar crosses as its scalar, and a nominal-over-compound
@@ -2889,11 +2892,43 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
 /// exercised by the R0 envelope oracle + wasmtime tests, which hand-build a `list<u8>`-returning core.
 pub fn export_result(ret: &Ty) -> Result<crate::backend::wasm::envelope::BoundaryResult, String> {
     use crate::backend::wasm::envelope::BoundaryResult;
+    // A non-aliased integer width has no component primitive of its own, so `export_result_valtype`
+    // declines it — but a RESULT we PRODUCE is guaranteed in range (its own arithmetic/`wrap` fold
+    // computed it at width N), so it can cross faithfully WIDENED to the smallest aliased width ≥ N of the
+    // SAME signedness (`(UInt 48)`→`u64`, `(Int 24)`→`s32`). This is value-preserving: N and its widened
+    // width sit on the same side of the 32-bit core-slot boundary (8/16/32 → i32, 33..=64 → i64), so the
+    // core function already returns the exact slot the canonical ABI lifts to that aliased primitive (a
+    // non-negative unsigned value, or a sign-extended signed one). This is RESULT-ONLY: a non-aliased
+    // ARGUMENT still declines (`export_result_valtype`, the param path) — accepting one would mean trusting
+    // an incoming wider value fits the narrower declared width, which the guest cannot verify.
+    if let Ty::Int(it) = ret.strip_nominal()
+        && comp_valtype_of(ret).is_none()
+        && let Some(b) = widened_result_int_comp_byte(it.ground_signed(), it.ground_width())
+    {
+        return Ok(BoundaryResult::Primitive(b));
+    }
     match export_result_valtype(ret) {
         Ok(None) => Ok(BoundaryResult::None),
         Ok(Some(b)) => Ok(BoundaryResult::Primitive(b)),
         Err(e) => Err(e),
     }
+}
+
+/// The component primitive byte a NON-ALIASED integer RESULT of `(signed, width)` crosses as: the
+/// smallest aliased width ≥ `width` of the SAME signedness (7→8, 24→32, 48→64…). `None` for an aliased
+/// width (handled by `comp_valtype_of`) or an out-of-range width (`0`/`>64`, already CDZ0302 at
+/// type-build). Value-preserving for a produced result — see `export_result`.
+fn widened_result_int_comp_byte(signed: bool, width: u32) -> Option<u8> {
+    if width == 0 || width > 64 {
+        return None;
+    }
+    let aliased = match width {
+        1..=8 => 8,
+        9..=16 => 16,
+        17..=32 => 32,
+        _ => 64,
+    };
+    comp_valtype_of(&Ty::Int(crate::ty::IntTy::fixed(signed, aliased)))
 }
 
 /// Run-length encode a slot-valtype vector into `(count, valtype)` groups (wasm local-decl form).
