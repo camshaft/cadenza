@@ -15,6 +15,10 @@ pub enum Format {
     Sexpr,
     /// The keyword-based ML text surface.
     Ml,
+    /// The markdown surface: a literate `(document …)`. Reads any CommonMark to a document arena and
+    /// prints a document arena back to CommonMark; a fenced `cdz`/`ml`/`sexp` block embeds its program
+    /// as a real arena subtree. A document is data, not a program (the compiler never sees one).
+    Markdown,
     /// A readable debug view of the arena structure as an indented TREE — OUTPUT ONLY (not a
     /// re-readable surface). Shows the raw shape the compiler sees, for inspecting a binary AST.
     Debug,
@@ -24,12 +28,14 @@ pub enum Format {
 }
 
 impl Format {
-    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `debug`, `flat`). Case-insensitive.
+    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `markdown`/`md`, `debug`, `flat`).
+    /// Case-insensitive.
     pub fn parse(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "binary" | "bin" => Some(Format::Binary),
             "sexpr" | "sexp" | "s" => Some(Format::Sexpr),
             "ml" => Some(Format::Ml),
+            "markdown" | "md" => Some(Format::Markdown),
             "debug" => Some(Format::Debug),
             "flat" => Some(Format::Flat),
             _ => None,
@@ -41,14 +47,16 @@ impl Format {
             Format::Binary => "binary",
             Format::Sexpr => "sexpr",
             Format::Ml => "ml",
+            Format::Markdown => "markdown",
             Format::Debug => "debug",
             Format::Flat => "flat",
         }
     }
 
     /// Infer the surface format from a file path's extension: `.cdz`/`.ml` → ML, `.sexp`/`.sexpr` →
-    /// s-expr, `.bin`/`.cdzb` → binary. The output-only `debug`/`flat` views have no extension.
-    /// `None` if the path has no recognized extension (the caller then requires an explicit format).
+    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown. The output-only `debug`/`flat`
+    /// views have no extension. `None` if the path has no recognized extension (the caller then
+    /// requires an explicit format).
     pub fn from_extension(path: &str) -> Option<Format> {
         let ext = std::path::Path::new(path)
             .extension()?
@@ -58,6 +66,7 @@ impl Format {
             "cdz" | "ml" => Some(Format::Ml),
             "sexp" | "sexpr" => Some(Format::Sexpr),
             "bin" | "cdzb" => Some(Format::Binary),
+            "md" | "markdown" => Some(Format::Markdown),
             _ => None,
         }
     }
@@ -99,6 +108,12 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             }
             Ok(parsed.arenas)
         }
+        Format::Markdown => {
+            // CommonMark parsing is total (it never fails), so unlike the code surfaces there is no
+            // error to surface — a document always reads to a `(document …)` arena.
+            let text = utf8(input)?;
+            Ok(crate::markdown::read(text))
+        }
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
         Format::Debug => Err(ConvertError(
@@ -139,6 +154,10 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // anything but the smallest forms.
         Format::Sexpr => Ok(sexpr::print_pretty_width(arenas, opts.width).into_bytes()),
         Format::Ml => Ok(crate::printer::print(arenas, opts.width).into_bytes()),
+        // A `(document …)` arena prints back to CommonMark; a NON-document root (a bare program handed
+        // to `--to markdown`) is wrapped in a single ```cdz fence over its ML rendering (see
+        // `markdown::print`), so `--to markdown` stays total.
+        Format::Markdown => Ok(crate::markdown::print(arenas, opts.width).into_bytes()),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
         Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),
     }

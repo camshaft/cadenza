@@ -1068,6 +1068,21 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
+            Format::Markdown => {
+                // A markdown document is a queryable/rewritable tree like any surface (its `(document
+                // …)` nodes and the embedded `cdz` program subtrees are all matchable). CommonMark
+                // parsing is total, so there are no errors to report.
+                let text =
+                    std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
+                let (arena, spans) = crate::markdown::read_spanned(text);
+                Ok((
+                    Target {
+                        tree: Tree::of(&arena),
+                        spans: Some(spans),
+                    },
+                    Vec::new(),
+                ))
+            }
             Format::Debug | Format::Flat => Err(format!(
                 "`{}` is an output-only format, not an input",
                 from.name()
@@ -1242,6 +1257,7 @@ pub mod driver {
         match to {
             Format::Ml => Ok(printer::print(arena, width)),
             Format::Sexpr => Ok(sexpr::print(arena)),
+            Format::Markdown => Ok(crate::markdown::print(arena, width)),
             Format::Debug => Ok(crate::debug::print(arena)),
             Format::Flat => Ok(crate::debug::print_flat(arena)),
             Format::Binary => Err("binary output is not supported for query results".to_string()),
