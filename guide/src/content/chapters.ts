@@ -55,7 +55,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Control flow",
     blurb: "if / then / else, sequencing, and short-circuit logic.",
     section: "Fundamentals",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/ControlFlow.tsx")),
   },
   {
