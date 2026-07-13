@@ -5498,6 +5498,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_same_name_newtype_constructs_and_matches_by_the_type_name() {
+        // `(type UserId (UserId Int64))` — the idiomatic `newtype` spelling where the constructor name IS
+        // the type name. The ONE name means the CONSTRUCTOR in application/pattern-HEAD position and the
+        // TYPE everywhere else; resolve picks by POSITION (head → ctor), so `(UserId 42)` constructs and
+        // `(UserId n)` binds — no `.Mk` ceremony. Erases to the raw payload like any newtype.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (UserId Int64)) \
+                       (def (main) (match (UserId 42) ((UserId n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_same_name_newtype_name_is_still_a_type_in_annotation_position() {
+        // The same name in a NON-head position stays the TYPE: `(: (UserId 5) UserId)` uses `UserId` as
+        // the constructor (head of `(UserId 5)`) AND as the type annotation (non-head) — both resolve
+        // correctly, and the value escapes tagged with the nominal name.
+        let v = run_heap_value_escape(
+            "(module m (type UserId (UserId Int64)) (def (main) (: (UserId 5) UserId)) (export main))",
+        );
+        // Skips (returns None) when the runtime wasm is absent — same guard the other escape tests use.
+        if let Some(v) = v {
+            assert_eq!(v, "(: 5 UserId)");
+        }
+    }
+
+    #[test]
+    fn a_same_name_newtype_over_a_record_reads_a_field() {
+        // The same-name spelling composes with record payloads: `(Point (record …))` constructs by the
+        // type name and `.y` reads the inner field through the erased tag.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Point (Point (Record (x Int64) (y Int64)))) \
+                       (def (main) (. (Point (record (x 3) (y 4))) y)) (export main))"
+                ),
+                "main"
+            ),
+            4
+        );
+    }
+
+    #[test]
     fn a_newtype_over_a_record_reads_a_field_at_runtime() {
         // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
         // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`

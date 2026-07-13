@@ -417,6 +417,19 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // and `(: x Option)` all take the ordinary member-access/`(meta t)` paths — no separate name map,
     // no sum special-case in resolve.
     if let Some(value) = db.type_decl_by_name(name) {
+        // SAME-NAME NEWTYPE, in application/pattern-HEAD position: `(type UserId (UserId Int64))` binds
+        // ONE name that must mean the CONSTRUCTOR when it heads an application `(UserId 42)` or a pattern
+        // `(UserId n)`, and the TYPE everywhere else (`(: x UserId)`, a bare value). The type decl (above)
+        // would always win by name — so when this atom HEADS its enclosing list (`child_ix == 0`, the same
+        // position `head_ctor` dispatches `list`/`tuple` structurally) AND the name is a same-name newtype,
+        // resolve to the variant CTOR instead. A non-head occurrence keeps the type. Position-based, not a
+        // name special-case (`prelude-and-resolution.md` §Nothing Is Privileged By Name).
+        if db.child_ix_of(id) == 0
+            && let Some(ctor) = db.same_name_newtype_ctor(name)
+        {
+            trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = ctor.0, "name → same-name newtype ctor (head position)");
+            return Resolved::Ref { value: ctor };
+        }
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → sum type decl");
         return Resolved::Ref { value };
     }
