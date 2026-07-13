@@ -370,6 +370,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         declared: vec![],
         src_body: None,
         locals: vec![],
+        stmt_lines: vec![],
     };
     let layout = Layout::new(
         vec![ExportPlan {
@@ -11035,7 +11036,9 @@ mod stage1 {
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
-                cdz_run::Outcome::Trap(t) => panic!("closure-in-sum-payload trapped ({label}): {t}"),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("closure-in-sum-payload trapped ({label}): {t}")
+                }
             }
         }
     }
@@ -13816,6 +13819,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(11)),
                 locals: vec![],
+                stmt_lines: vec![],
             },
             SelectedFunc {
                 params: vec![],
@@ -13824,6 +13828,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(22)),
                 locals: vec![],
+                stmt_lines: vec![],
             },
         ];
         // One import so the layout mirrors the oracle shape; ranges are import-independent.
@@ -14338,6 +14343,63 @@ mod debug_info {
                 .windows(b".debug_info".len())
                 .any(|w| w == b".debug_info"),
             "a plain compound-returning component must carry no DWARF"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_body_gets_a_line_row_per_line() {
+        // Per-statement/expression granularity: an `if` whose condition, then-branch, and else-branch
+        // sit on DISTINCT source lines produces a `.debug_line` row per line (not one function-entry
+        // row) — so a debugger steps line-by-line. Rows are at ascending code offsets. Skips if
+        // llvm-dwarfdump is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m\n  (def (f (: a Int64))\n    (if (< a 0)\n      (- a 1)\n      (+ a 1)))\n  (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-lines-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-line")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        // Parse the line-table rows: lines beginning with `0x…` have columns [Address, Line, …]. Collect
+        // the distinct source lines (col 2) across the rows.
+        let mut lines: Vec<u32> = stdout
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                if !l.starts_with("0x") {
+                    return None;
+                }
+                l.split_whitespace().nth(1)?.parse().ok()
+            })
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        // The `if` condition (line 3), then-branch (line 4), and else-branch (line 5) each get a row —
+        // at least 3 distinct source lines (function granularity would give only 1).
+        assert!(
+            lines.len() >= 3,
+            "expected a row per source line (≥3 distinct), got {lines:?}\n{stdout}"
+        );
+        assert!(
+            lines.contains(&3) && lines.contains(&4) && lines.contains(&5),
+            "expected rows for lines 3/4/5, got {lines:?}\n{stdout}"
         );
     }
 }
