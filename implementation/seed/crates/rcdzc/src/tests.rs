@@ -13757,6 +13757,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_effectful_def_with_an_annotated_parameter_specializes() {
+        // E3/E4 annotated-param specialization: `specialize_recursive` previously handled only a BARE-name
+        // recursive parameter — an ANNOTATED `(: n T)` param declined. Now it extracts the name from either
+        // form (re-annotating the synthesized copy with the solved type regardless). `walk` counts down
+        // through a tail self-call and bails at zero; under the abortive `Bail` handler `(walk 3)` folds to
+        // the arm value 99 (the base abort propagates up the tail calls). Exercises the annotated-param path
+        // for the abortive case; the same relaxation enables an annotated-param tail-resumptive recursion.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (walk (- n 1)))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (walk 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a recursive effectful def with an annotated parameter specializes"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
