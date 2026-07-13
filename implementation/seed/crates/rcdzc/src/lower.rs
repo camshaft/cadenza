@@ -2229,7 +2229,8 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // the env.
     let mut captures: Vec<StructId> = Vec::new();
     let mut capture_refs: Vec<(StructId, usize)> = Vec::new();
-    if !collect_captures(db, body, &param_occs, id, &mut captures, &mut capture_refs) {
+    let ok = collect_captures(db, body, &param_occs, id, &mut captures, &mut capture_refs);
+    if !ok {
         return Core::Poison(Reject::decline(
             "a closure captures a value with no runtime representation (not yet built)",
         ));
@@ -2270,6 +2271,13 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // reference OCCURRENCE (unique per use), so it never collides with an ordinary ref elsewhere.
     for (ref_occ, index) in capture_refs {
         let ty = crate::infer::type_of(db, captures[index]);
+        if std::env::var("DBG_CAP").is_ok() {
+            let already = matches!(db.core.get(ref_occ), Slot::Filled(_));
+            eprintln!(
+                "DBG record capture ref_occ={} index={} ty={:?} ALREADY-LOWERED={}",
+                ref_occ.0, index, ty, already
+            );
+        }
         db.captured_ref.insert(ref_occ, (index, ty));
     }
     // Register the lift (dedup by body occurrence); its position in `db.lifted` is its table slot.
@@ -2309,8 +2317,27 @@ fn collect_captures(
             return true;
         }
         Resolved::Ref { value } => {
-            if db.def_index_by_body(value).is_some() || !db.is_user_node(value) {
-                return true; // a top-level def / prelude / synthesized ref — global, not captured.
+            // A top-level def is global — never captured.
+            if db.def_index_by_body(value).is_some() {
+                return true;
+            }
+            // The ref's target may be a PARAMETER — including a SYNTHESIZED one, produced when a recursive
+            // callee is specialized (its fn-typed argument `g` threads through as a fresh param binder).
+            // Such a target is NOT a user node, so the `is_user_node` bailout below would wrongly treat it
+            // as a global and skip the capture — leaving the reference to lower as a bare `Core::Param`
+            // with no slot in the lifted body (an invalid module). Classify by the RESOLVED target: a
+            // param that is not one of the lambda's OWN params is an enclosing binding to capture, keyed by
+            // that param binder (so two references to the same threaded `g` share one capture slot).
+            if let Resolved::Param { binder } = resolved_of(db, value) {
+                if params.contains(&binder) {
+                    return true; // the lambda's own parameter, reached through a ref — not a capture.
+                }
+                record_capture(binder, node, captures, capture_refs);
+                return true;
+            }
+            // A non-param synthesized ref (a prelude name, a reduced constant) is global — not captured.
+            if !db.is_user_node(value) {
+                return true;
             }
             if !db.is_within(value, lam_id) {
                 // A USER binding outside the lambda — a capture. Its identity is `value` (the binding

@@ -368,6 +368,34 @@
   (call   main (: 10 Int64))
   (output (: 336 Int64)))
 
+; HIGHER-ORDER CAPTURE — a closure whose captured free variable is ITSELF A FUNCTION. `(fn (b) (g b))`
+; closes over `g`, a fn-typed parameter of the enclosing recursive `rec`; the closure cell must store
+; `g`'s closure HANDLE as a captured slot and, in the lifted body, read it back and apply it via
+; `call_indirect`. `core-semantics.md` §A Function Is A First-Class Value composed with capture: a
+; captured value may be any first-class value, a function included. Two subtleties this pins: because
+; `rec` recurses, `g` threads through the recursive specialization as a synthesized parameter, so a
+; capture whose target is that synthesized param must still be recognized (not mistaken for a global);
+; and a `Ty::Fn` capture is a u32 cell handle stored/read AS-IS, like any compound handle, not boxed as
+; a scalar. `rec` builds `(fn (b) (g b))`, hands it to the recursive `sumapply` (applied at 2 and 1),
+; and sums over its own recursion — each level contributes g(2)+g(1).
+
+(case "a closure captures a function value and applies it through a recursive HOF"
+  (doc    "The captured free variable is a FUNCTION: `(fn (b) (g b))` closes over `g`, itself a runtime
+           fn parameter, so the closure cell stores `g`'s handle and the lifted body applies it via an
+           indirect call. `rec` passes that closure to the recursive `sumapply` (which applies it at 2
+           and 1) and repeats over its own recursion. With `g = (fn (x) (+ x 1))`: each level is
+           g(2)+g(1) = (2+1)+(1+1) = 5, and over n=3 levels the total is 15. Pins that a closure can
+           capture and apply another closure — higher-order capture through a call_indirect.")
+  (input  (do
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1)))))
+            (def (rec (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1)))))
+            (def (main (: n Int64)) (rec (fn ((: x Int64)) (+ x 1)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 15 Int64)))
+
 ; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
 ; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
 ; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls

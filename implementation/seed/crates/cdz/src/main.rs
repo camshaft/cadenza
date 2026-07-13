@@ -283,8 +283,8 @@ fn program_name(spec: &str) -> String {
 /// Project the front-end `SpanTable` (+ the source text) into rcdzc's `spans::SpanData` wire form — the
 /// `(start, len)` byte range per `StructId`, the tree-relative module path, and the source text (for
 /// line derivation). This MIRRORS rcdzc's format (copy-don't-depend: the two crates share no code, so
-/// the mapping lives here at the driver that holds both). The module path is the source file path as
-/// given — a tree-relative path when the caller invokes with one (`DESIGN-debug-info-rcdzc.md` §4).
+/// the mapping lives here at the driver that holds both). The module path is NORMALIZED
+/// (`debug_module_path`) so DWARF carries no absolute build directory (`DESIGN-debug-info-rcdzc.md` §4).
 fn span_data_of(
     spec: &str,
     source: &str,
@@ -299,10 +299,33 @@ fn span_data_of(
         )
         .collect();
     rcdzc::spans::SpanData {
-        module_path: spec.to_string(),
+        module_path: debug_module_path(spec),
         spans,
         source: source.to_string(),
     }
+}
+
+/// Normalize a source spec into the module path DWARF records (`DW_AT_name` on the compile unit + the
+/// file-table entry). Debug info MUST be a deterministic function of source + toolchain and carry no
+/// provenance (`DESIGN-debug-info-rcdzc.md` §4 — the `DW_AT_name` counterpart of `-ffile-prefix-map`):
+/// an ABSOLUTE path leaks the build directory (`/home/alice/proj/add.sexp`), so two machines building
+/// the same source would emit different DWARF. So an absolute path is reduced to its file name (a
+/// deterministic, build-directory-free stand-in); a relative path is already tree-relative — kept
+/// verbatim — with `./` stripped for tidiness. Empty (only when a spec is itself empty) falls back to
+/// the file name too. Backslashes are not special here (POSIX host); a Windows path degrades to
+/// file-name only, which is still deterministic.
+fn debug_module_path(spec: &str) -> String {
+    let path = std::path::Path::new(spec);
+    if path.is_absolute() {
+        // Strip the build directory — keep only the file name (deterministic across machines).
+        return path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(spec)
+            .to_string();
+    }
+    // A relative path is already tree-relative; drop a leading `./` for tidiness.
+    spec.strip_prefix("./").unwrap_or(spec).to_string()
 }
 
 /// Read a raw artifact from a `kind:name=path` (or `name=path`, or `path`) spec — the same spec grammar
@@ -1040,6 +1063,28 @@ mod tests {
         ] {
             assert!(parse_where(bad).is_err(), "should reject `{bad}`");
         }
+    }
+
+    #[test]
+    fn debug_module_path_strips_the_build_directory() {
+        // An ABSOLUTE path leaks the build directory into DWARF (breaking cross-machine determinism,
+        // DESIGN-debug-info-rcdzc.md §4) — reduced to its file name.
+        assert_eq!(debug_module_path("/home/alice/proj/add.sexp"), "add.sexp");
+        assert_eq!(debug_module_path("/tmp/dw_f.sexp"), "dw_f.sexp");
+        // A relative path is already tree-relative — kept verbatim (a leading `./` is dropped).
+        assert_eq!(debug_module_path("src/app.cdz"), "src/app.cdz");
+        assert_eq!(debug_module_path("./app.cdz"), "app.cdz");
+        assert_eq!(debug_module_path("app.cdz"), "app.cdz");
+    }
+
+    #[test]
+    fn debug_module_path_is_deterministic_across_build_dirs() {
+        // The same source file compiled from two different absolute locations yields the SAME module
+        // path — the property that makes the DWARF byte-reproducible regardless of where it was built.
+        assert_eq!(
+            debug_module_path("/build/a/prog.sexp"),
+            debug_module_path("/elsewhere/b/prog.sexp"),
+        );
     }
 
     /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.

@@ -2602,9 +2602,19 @@ mod runtime_ops {
             remc.contains(&Lir::I64And) && !remc.contains(&Lir::I64RemU),
             "unsigned %2^k must be an and-mask, not rem_u; got: {remc:?}"
         );
-        // A non-power-of-two divisor keeps div_u; a SIGNED divide keeps div_s.
+        // A non-power-of-two divisor keeps div_u; a SIGNED power-of-two divide is ALSO reduced (the
+        // round-toward-zero bias sequence), so no div_s either.
         assert!(lir("(: a UInt64)", "(/ a 3)").contains(&Lir::I64DivU));
-        assert!(lir("(: a Int64)", "(/ a 4)").contains(&Lir::I64DivS));
+        assert!(
+            !lir("(: a Int64)", "(/ a 4)").contains(&Lir::I64DivS),
+            "a signed /2^k is strength-reduced (bias + shift), no div_s"
+        );
+        assert!(
+            !lir("(: a Int64)", "(% a 4)").contains(&Lir::I64RemS),
+            "a signed %2^k is strength-reduced (n − (q<<k)), no rem_s"
+        );
+        // A non-power-of-two signed divide keeps div_s.
+        assert!(lir("(: a Int64)", "(/ a 3)").contains(&Lir::I64DivS));
 
         // Value parity: the shift/mask computes the same unsigned quotient/remainder as the divide.
         assert_eq!(run::<u64>("(: a UInt64)", "(/ a 4)", &[Val::U64(17)]), 4);
@@ -2616,6 +2626,23 @@ mod runtime_ops {
         );
         assert_eq!(run::<u32>("(: a UInt32)", "(/ a 8)", &[Val::U32(100)]), 12);
         assert_eq!(run::<u32>("(: a UInt32)", "(% a 8)", &[Val::U32(100)]), 4);
+
+        // SIGNED value parity — the bias sequence must truncate toward ZERO like `div_s`/`rem_s`, and
+        // agree for negatives (where a bare arithmetic shift would round toward −∞). `-17/4 = -4` (not
+        // -5), `-17%4 = -1`; positives and exact multiples too.
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 4)", &[Val::S64(17)]), 4);
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 4)", &[Val::S64(-17)]), -4);
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 4)", &[Val::S64(17)]), 1);
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 4)", &[Val::S64(-17)]), -1);
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 8)", &[Val::S64(-8)]), -1);
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 8)", &[Val::S64(-8)]), 0);
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(/ a 2)", &[Val::S64(i64::MIN)]),
+            i64::MIN / 2,
+            "the bias sequence is exact at the signed MIN boundary"
+        );
+        assert_eq!(run::<i32>("(: a Int32)", "(/ a 8)", &[Val::S32(-100)]), -12);
+        assert_eq!(run::<i32>("(: a Int32)", "(% a 8)", &[Val::S32(-100)]), -4);
     }
 
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
@@ -11359,6 +11386,42 @@ mod stage1 {
         assert_eq!(r0, "6");
         assert_eq!(run_closure(src, 10).unwrap(), "36");
         assert_eq!(run_closure(src, 100).unwrap(), "306");
+    }
+
+    #[test]
+    fn a_closure_captures_a_function_value_and_applies_it_through_a_recursive_hof() {
+        // HIGHER-ORDER CAPTURE: a closure whose captured free variable is ITSELF A FUNCTION. The inner
+        // `(fn (b) (g b))` closes over `g` — a fn-typed parameter of the recursive `rec` — so the closure
+        // cell must store `g`'s closure HANDLE (a u32 cell) as a capture and, in the lifted body, read it
+        // back and apply it via `call_indirect`. Because `rec` is recursive, `g` stays a genuine runtime
+        // value (not inlined), and it threads through the recursive specialization as a fresh param
+        // binder — so `collect_captures` must classify a ref whose target is a SYNTHESIZED param as a
+        // capture (not a global), and `box_op`/`get_op` must store/read a `Ty::Fn` handle as-is (like any
+        // compound handle), NOT box it as a scalar. Both were bugs: the capture was skipped (a bare
+        // `Core::Param` with no local slot → invalid module) and the fn handle was boxed as an i64 (an
+        // i32/i64 type mismatch → invalid module). `rec` builds `(fn (b) (g b))`, hands it to the
+        // recursive `sumapply` (applied at 2 and 1), and sums over its own recursion: each `rec` level
+        // contributes `g(2)+g(1)`, repeated n times. With `g = (+1)`: (2+1)+(1+1) = 5 per level, ×3 = 15.
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
+            (def (main (: n Int64)) (rec (fn ((: x Int64)) (+ x 1)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "15"); // 3 levels × (g(2)+g(1)) = 3 × ((2+1)+(1+1)) = 3×5
+        // A DIFFERENT captured function proves the handle dispatches the right code: `g = (*3)` →
+        // (2·3)+(1·3) = 9 per level, ×3 = 27.
+        let src2 = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
+            (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
+        assert_eq!(run_closure(src2, 3).unwrap(), "27");
     }
 
     #[test]

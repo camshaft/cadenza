@@ -98,6 +98,17 @@ fn dwarf_sidecar_from_source_auto_supplies_spans() {
         contains(&bytes, b".debug_info") && contains(&bytes, b"add"),
         "the sidecar must carry DWARF naming the source function"
     );
+    // Reproducibility (DESIGN §4): the ABSOLUTE build directory must NOT leak into the DWARF. `src` is
+    // an absolute temp path; the CU records only the file name (`add.sexp`), so the dir bytes are absent.
+    let build_dir = dir.to_str().unwrap();
+    assert!(
+        !contains(&bytes, build_dir.as_bytes()),
+        "the DWARF must not embed the absolute build directory {build_dir:?}"
+    );
+    assert!(
+        contains(&bytes, b"add.sexp"),
+        "the DWARF should name the source file by its (build-dir-free) file name"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

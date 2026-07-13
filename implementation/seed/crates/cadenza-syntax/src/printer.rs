@@ -802,7 +802,15 @@ impl<'a> Printer<'a> {
         self.doc.cbox(0);
         for (i, &form) in forms.iter().enumerate() {
             if i > 0 {
-                self.doc.hardbreak();
+                // A BLANK line between top-level forms — definitions read as a crammed wall packed
+                // one-per-line. A `///` doc line hugs the def it documents (no blank between a doc
+                // and its form), so only break blank BEFORE a non-doc form, and never right after a
+                // doc line for the form it annotates.
+                if self.leads_doc_block(forms, i) {
+                    self.doc.hardbreak();
+                } else {
+                    self.blank_line();
+                }
             }
             if let Some(a) = self.a.as_form(form, "doc")
                 && a.len() == 1
@@ -819,14 +827,39 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `module name { form… }` — one form per line (consistent box) when broken.
+    /// A blank line: two hard breaks, so a consistent box emits an empty line between the two
+    /// items. Layout-only (idempotent whitespace) — a re-parse yields the same arena.
+    fn blank_line(&mut self) {
+        self.doc.hardbreak();
+        self.doc.hardbreak();
+    }
+
+    /// True if `forms[i]` continues a doc block that began at `forms[i-1]` — i.e. the previous form
+    /// is a `(doc …)` line, so this form (its documented target, or the next doc line) must hug it
+    /// with a single break rather than a blank line. Keeps a `/// …` comment glued to what it
+    /// documents while still blank-separating distinct top-level definitions.
+    fn leads_doc_block(&self, forms: &[StructId], i: usize) -> bool {
+        i > 0 && self.is_doc(forms[i - 1])
+    }
+
+    /// `module name { form… }` — one member per line (consistent box) when broken, blank-separated
+    /// so definitions don't cram together. The first member breaks straight off the `{` (no leading
+    /// blank inside the braces); a `///` doc line hugs the member it documents.
     fn print_module(&mut self, args: &[StructId]) {
+        let members = &args[1..];
         self.doc.cbox(INDENT);
         self.doc.word("module ");
         self.expr(args[0], 0); // name
         self.doc.word(" {");
-        for &form in &args[1..] {
-            self.doc.hardbreak(); // one member per line
+        for (i, &form) in members.iter().enumerate() {
+            // First member hugs the `{` with a single break; later members are blank-separated,
+            // except a member that continues a doc block (its documented form or a further doc
+            // line), which hugs the doc with a single break.
+            if i == 0 || self.leads_doc_block(members, i) {
+                self.doc.hardbreak();
+            } else {
+                self.blank_line();
+            }
             // a `(doc …)` module member renders as a `///` line (body position); anything else as
             // its ordinary form.
             if let Some(a) = self.a.as_form(form, "doc")
@@ -1500,13 +1533,35 @@ mod tests {
 
     #[test]
     fn module_block() {
+        // Members are blank-line separated so a wall of defs reads with breathing room; the first
+        // member still hugs the `{`.
         let out = assert_roundtrip(
             "module math { def add(a, b) = a + b def main() = add(2, 3) }",
             80,
         );
         assert_eq!(
             out,
-            "module math {\n  def add(a, b) = a + b\n  def main() = add(2, 3)\n}"
+            "module math {\n  def add(a, b) = a + b\n\n  def main() = add(2, 3)\n}"
+        );
+    }
+
+    #[test]
+    fn top_level_defs_are_blank_separated() {
+        // Consecutive top-level definitions get a blank line between them (readability), and the
+        // layout round-trips (blank lines are whitespace).
+        assert_eq!(
+            assert_roundtrip("def a = 1 def b = 2 def c = 3", 80),
+            "def a = 1;\n\ndef b = 2;\n\ndef c = 3"
+        );
+    }
+
+    #[test]
+    fn doc_line_hugs_its_def_no_blank() {
+        // A `///` doc line stays glued to the def it documents (single break), while distinct
+        // definitions are still blank-separated.
+        assert_eq!(
+            assert_roundtrip("/// first\ndef a = 1\n/// second\ndef b = 2", 80),
+            "/// first\ndef a = 1;\n\n/// second\ndef b = 2"
         );
     }
 
