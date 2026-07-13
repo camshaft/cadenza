@@ -3072,6 +3072,95 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_comparison_against_a_derived_range_bound_is_simplified() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let folded = |c: &[Lir], want: i32| {
+            c.contains(&Lir::ConstI32(want))
+                && !c
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+        };
+        // `(& x 15)` derives the range [0,15] EVEN on a signed Int64 (the mask clears the sign bits), so:
+        assert!(
+            folded(&lir("(: x Int64)", "(< (& x 15) 20)"), 1),
+            "[0,15] < 20 → true"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(< (& x 15) 16)"), 1),
+            "[0,15] < 16 → true"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(>= (& x 15) 0)"), 1),
+            "[0,15] >= 0 → true (nonneg mask)"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(> (& x 15) 15)"), 0),
+            "[0,15] > 15 → false"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(<= (& x 15) 15)"), 1),
+            "[0,15] <= 15 → true"
+        );
+        // A constant STRICTLY INSIDE the range is NOT decidable — the compare stays.
+        let inside = lir("(: x Int64)", "(< (& x 15) 10)");
+        assert!(
+            inside.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "a constant inside the range keeps the compare; got {inside:?}"
+        );
+
+        // VALUE PARITY — the folded results agree with the real comparison, and the not-folded one too.
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(< (& x 15) 20)",
+            &[Val::S64(-1)]
+        )); // -1&15=15, 15<20
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(>= (& x 15) 0)",
+            &[Val::S64(-99)]
+        )); // masked → nonneg
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(> (& x 15) 15)",
+            &[Val::S64(255)]
+        )); // 255&15=15, not >15
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(< (& x 15) 10)",
+            &[Val::S64(8)]
+        )); // 8<10
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(< (& x 15) 10)",
+            &[Val::S64(12)]
+        )); // 12<10 false
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
@@ -4637,13 +4726,23 @@ mod runtime_ops {
             kept.iter().any(|i| matches!(i, Lir::I32ShrU)),
             "a shift leaving a bit keeps the shr_u; got {kept:?}"
         );
-        // A SIGNED value is NOT provably nonnegative (its slot high bits may be sign extension), so
-        // `unsigned_value_bits` declines it and the fold does not fire — the `shr_s` stays. (Use an
-        // in-range count on an Int16 so this is a genuine runtime shift, not a count-guard trap.)
-        let signed = lir("(: x Int16)", "(>> (& x 15) 7)");
+        // A directly-shifted SIGNED value (no mask) is NOT provably nonnegative — its slot high bits may
+        // be sign extension — so `unsigned_value_bits` declines it and the fold does not fire; the `shr_s`
+        // stays. (In-range count on an Int16, so a genuine runtime shift not a count-guard trap.)
+        let signed = lir("(: x Int16)", "(>> x 7)");
         assert!(
             signed.iter().any(|i| matches!(i, Lir::I32ShrS)),
-            "a signed >> is not folded to 0; got {signed:?}"
+            "a bare signed >> is not folded to 0; got {signed:?}"
+        );
+        // BUT a signed value MASKED by a nonneg constant IS provably nonnegative (`(& x 15)` ∈ [0,15]),
+        // so `>> 7` shifts out all its bits → 0 (arithmetic and logical shift agree for a nonneg value).
+        let masked_signed = lir("(: x Int16)", "(>> (& x 15) 7)");
+        assert!(
+            masked_signed.contains(&Lir::ConstI32(0))
+                && !masked_signed
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32ShrS | Lir::I32ShrU)),
+            "a masked (nonneg) value fully shifted out folds to 0 even at a signed type; got {masked_signed:?}"
         );
 
         // VALUE PARITY.
