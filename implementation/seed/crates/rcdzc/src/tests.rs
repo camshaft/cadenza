@@ -4489,6 +4489,48 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_oversize_constant_in_a_narrowed_control_flow_operand_is_rejected() {
+        // A compile-time-constant branch value that overflows the NARROW type must be CDZ0302, NOT a
+        // silent `i32.wrap_i64` truncation. When an `if`/`match`/`let` is an OPERAND of a narrow op, its
+        // branches emit at the node's own deferred→i64 width, so an out-of-range literal (`2^40`) slipped
+        // through the c78/c80 wrap to a wrong value (`(+ (if c 2^40 2) 5) : Int8` ran to `5`). The wrap
+        // site now range-checks a constant branch value at the op width — matching how the DIRECT `(: (if
+        // c 2^40 2) Int8)` form rejects. `2^40 = 1099511627776` overflows every ≤32-bit width.
+        let rejects = |params: &str, body: &str| {
+            let src = format!("(module m (def (f {params}) {body}) (export f))");
+            let d = compile_component(&crate::codec::encode(&parse(&src)))
+                .expect_err("an oversize constant branch value must be rejected");
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {body}, got: {}",
+                d.message
+            );
+        };
+        // Consumed by `+` (the wrap-then-add path), by `&` (the emit_operand path), by a nested `+`
+        // (the emit_operand_into path), through a `let`, and via a `match` arm — every operand route.
+        rejects("(: c Bool)", "(: (+ (if c 1099511627776 2) 5) Int8)");
+        rejects("(: c Bool)", "(: (& (if c 1099511627776 2) 7) Int8)");
+        rejects(
+            "(: c Bool) (: d Bool)",
+            "(: (+ (+ (if c 1099511627776 2) (if d 3 4)) 5) Int8)",
+        );
+        rejects(
+            "(: c Bool)",
+            "(: (+ (let ((y (if c 1099511627776 2))) y) 5) Int8)",
+        );
+        rejects(
+            "(: x Int8)",
+            "(: (+ (match x (0 1099511627776) (_ 2)) 5) Int8)",
+        );
+        // A value that fits i32 but NOT the sub-i32 target is caught too (Int16 max 32767; the branch
+        // literal still defaults to i64, so the wrap fires): `40000` overflows Int16.
+        rejects("(: c Bool)", "(: (+ (if c 40000 2) 5) Int16)");
+        // IN-RANGE constants and RUNTIME branch values are UNAFFECTED — they compile (checked by the
+        // sibling run tests); only a compile-time-constant OVERFLOW is the error.
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
@@ -14614,6 +14656,39 @@ mod stage1 {
                 "main"
             ),
             7
+        );
+    }
+
+    #[test]
+    fn a_perform_in_a_match_scrutinee_threads_state() {
+        // E-fold `match` arm (the analogue of the `if` arm). A tail-resumptive perform in a match SCRUTINEE
+        // — `(match (Get.next) (0 100) (_ 200))` — threads state: the scrutinee reads the current counter,
+        // then the match dispatches on the resume value. Seed 0 → `Get.next` reads 0 → arm `0` → 100; seed 5
+        // → 200 (wildcard). Before the `Match` thread arm this DECLINED (no arm → the whole handle refused).
+        let zero = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (match (Get.next) (0 100) (_ 200)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(zero)))
+                    .expect("a perform in a match scrutinee threads state"),
+                "main"
+            ),
+            100
+        );
+        // A perform in an ARM BODY threads the post-scrutinee state; an abort in an arm is branch-local.
+        let arm_abort = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) (match x (0 (Bail.bail 7)) (_ 42)))) (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(arm_abort)))
+            .expect("an abortive match arm folds per-arm");
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(0)]),
+            7,
+            "x=0 → the arm aborts to 7"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
+            42,
+            "x=1 → the wildcard arm yields 42"
         );
     }
 

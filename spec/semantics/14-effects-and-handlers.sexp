@@ -324,6 +324,21 @@
                     (Fresh.next)))) (export main)))
   (output (: 2 Int64)))
 
+(case "a performed operation is the scrutinee of a match that dispatches on its result"
+  (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
+           `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is
+           evaluated FIRST — `Fresh.next` reads the current counter (seeded 0), hands it back as the
+           operation's value, and threads `s + 1` forward — then the match dispatches on that value. Seeded
+           0, the first read is 0, so the `0` arm is selected and the handle yields 100. The state threads
+           through the scrutinee before the arm bodies run, the same evaluation order any strict operand
+           sees; the pattern engine then lowers the (rewritten) match by its ordinary path.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (match (Fresh.next) (0 100) (_ 200)))) (export main)))
+  (output (: 100 Int64)))
+
 (case "a handler accumulates into a list and a read-out operation reads it back"
   (doc    "Witnesses capabilities-and-effects.md #A Handler Threads State Across The Operations It
            Discharges and #A Handler Evaluates To The Value Of Its Body: `Diag` declares two operations —
