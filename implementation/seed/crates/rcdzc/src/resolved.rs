@@ -1011,7 +1011,13 @@ pub enum Resolved {
     /// `resume`; it does not yet run).
     Handle {
         init: StructId,
-        arms: Vec<HandleArm>,
+        /// The handler arms, behind an `Arc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
+        /// every memo read) is a refcount bump, not a deep `Vec<HandleArm>` copy — each `HandleArm` itself
+        /// holds a `params: Vec`, so an N-arm handler's clone was O(N). A perform's `perform_host_target`
+        /// walks PARENTS (`resolved_of` each) to find its enclosing `(host …)`, passing THROUGH the N-arm
+        /// handle node every time — so re-cloning its arms per walk made a wide handler O(N²). Mirrors the
+        /// `Arc` on `Tuple`/`List`/`Apply` and `Core::Record` for the identical clone-on-read reason.
+        arms: std::sync::Arc<[HandleArm]>,
         body: StructId,
     },
     /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that

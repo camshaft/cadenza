@@ -2376,7 +2376,11 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
             ),
         ));
     }
-    Resolved::Handle { init, arms, body }
+    Resolved::Handle {
+        init,
+        arms: arms.into(),
+        body,
+    }
 }
 
 /// Resolve `(resume VALUE NEXT-STATE)` into its resolved form. The two children are AST occurrences

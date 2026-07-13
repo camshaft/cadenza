@@ -1091,7 +1091,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         // param/state binders are not executed code — they contribute no callee.)
         Resolved::Handle { init, arms, body } => {
             collect_callees(db, init, out);
-            for arm in &arms {
+            for arm in arms.iter() {
                 collect_callees(db, arm.body, out);
             }
             collect_callees(db, body, out);
@@ -1344,9 +1344,16 @@ pub fn variant_owner_decl(db: &mut Db, id: StructId) -> Option<crate::ast::Struc
 pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
     let rec = reduce_to_record_id(db, id)?;
     match resolved_of(db, rec) {
-        Resolved::Record { fields } => fields.iter().find_map(|(sym, &value)| {
-            (sym.namespace.as_deref() == Some("meta") && sym.name == key).then_some(value)
-        }),
+        // O(log N) `BTreeMap::get` on the `(meta, key)` Symbol — NOT an O(N) `.iter().find` over the
+        // record's fields. A wide record (e.g. an N-op effect record, whose `(meta t)` this reads) made a
+        // per-field-scan O(N) per lookup, and a per-arm handler check calls this per arm → O(N²). The
+        // fields are a `BTreeMap` keyed by `Symbol`, so the meta field is a direct keyed lookup.
+        Resolved::Record { fields } => fields
+            .get(&crate::resolved::Symbol {
+                namespace: Some("meta".to_string()),
+                name: key.to_string(),
+            })
+            .copied(),
         _ => None,
     }
 }

@@ -4901,7 +4901,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // itself declines to run (E1a).
         Resolved::Handle { init, arms, body } => {
             collect(db, init, out);
-            for arm in &arms {
+            for arm in arms.iter() {
                 // A HANDLER ARM NAMES AN UNDECLARED OPERATION (CDZ0403). If the arm's op is `(. E k)`
                 // where `E` is an effect but `k` is not one of its declared operations, that is a
                 // closed-set violation (`capabilities-and-effects.md` §A Handler Arm Names An Operation

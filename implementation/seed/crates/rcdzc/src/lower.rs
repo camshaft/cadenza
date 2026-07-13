@@ -5735,7 +5735,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             body,
         } => {
             let mut n = uses_in(db, seed, init);
-            for arm in &arms {
+            for arm in arms.iter() {
                 n += uses_in(db, arm.body, init);
             }
             n + uses_in(db, body, init)
