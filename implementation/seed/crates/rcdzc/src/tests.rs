@@ -7211,6 +7211,23 @@ mod stage1 {
         )))
         .expect("a top-level value def may bind a record");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
+        // A value def may bind a SUM value, matched by a sibling function — the self-hosting compiler's
+        // top-level constant AST/config-node shape. `chosen = (C.G unit)` dispatches to arm 2.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (R unit) (G unit) (B unit)) (def chosen (C.G unit)) \
+               (def (main) (match chosen ((C.R _) 1) ((C.G _) 2) ((C.B _) 3))) (export main))",
+        )))
+        .expect("a top-level value def may bind a sum value");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
+        // A sum-valued def may FORWARD-reference a later sum def and transform it (order-independent
+        // module scope): `derived = (match base …)` reads `base` defined after it. `derived` = (Some 20).
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def derived (match base ((Some x) (Some (* x 2))) (None None))) \
+               (def base (Some 10)) \
+               (def (main) (match derived ((Some v) v) (None 0))) (export main))",
+        )))
+        .expect("a sum value def may forward-reference a later sum def");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 20);
     }
 
     #[test]
