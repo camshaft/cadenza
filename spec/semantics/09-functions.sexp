@@ -455,6 +455,47 @@
   (call   main (: true Bool))
   (output (: 12 Int64)))
 
+; A closure that captures a COMPOUND value — a tuple — and projects it inside the body. The captured
+; value is a u32 heap HANDLE (not a boxed scalar), stored into the env cell as-is and read back as-is;
+; the projections `(. p 0)`/`(. p 1)` then index the captured tuple. This pins that a capture slot holds
+; a compound handle (the tuple), distinct from a scalar capture (an int/bool boxed into the slot), and
+; that reading it back and projecting it works through the recursive indirect-call boundary.
+
+(case "a closure captures a tuple and projects it inside its lifted body through a recursive HOF"
+  (doc    "`(fn (x) (+ (+ x (. p 0)) (. p 1)))` captures the tuple `p = (tuple 10 20)` — a compound heap
+           handle stored in the closure's env cell as-is — and projects both elements inside the body.
+           Passed to the recursive `apply-sum`: each application adds 10+20=30, so over 3,2,1 the total
+           is (3+30)+(2+30)+(1+30) = 96. Pins that a captured compound (a tuple handle) round-trips
+           through the env cell and its projections work at run time.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main)
+              (let ((p (tuple 10 20)))
+                (apply-sum (fn ((: x Int64)) (+ (+ x (. p 0)) (. p 1))) 3)))
+            (export main)))
+  (output (: 96 Int64)))
+
+; A closure that captures a SUM value and MATCHES it inside the body. The captured `(Some 100)` is a sum
+; handle stored in the env cell; the body's `match` reads it back and switches on its discriminant. This
+; pins that a captured sum survives the env round-trip AND that a match whose scrutinee is a CAPTURED
+; free variable (not a param or a local) lowers correctly inside a lifted closure body.
+
+(case "a closure captures a sum value and matches it inside its lifted body through a recursive HOF"
+  (doc    "`(fn (x) (match o ((Some v) (+ x v)) (None x)))` captures the sum `o = (Some 100)` and matches
+           it in the body — the scrutinee is a CAPTURED free variable read from the env cell. Passed to
+           the recursive `apply-sum`: each application takes the `Some` arm and adds 100, so over 3,2,1
+           the total is (3+100)+(2+100)+(1+100) = 306. Pins that a captured sum round-trips through the
+           env cell and a match over a captured scrutinee works inside a lifted closure body.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main)
+              (let ((o (Some 100)))
+                (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3)))
+            (export main)))
+  (output (: 306 Int64)))
+
 ; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
 ; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
 ; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls

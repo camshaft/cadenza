@@ -12226,6 +12226,24 @@ mod stage1 {
         }
     }
 
+    /// `run_closure`'s sibling for a program whose `main` is NULLARY (a closure captures a compound built
+    /// in `main`, so no runtime entry argument is needed). Same composed-runtime path.
+    fn run_closure_nullary(src: &str) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
     #[test]
     fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
         // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
@@ -12332,6 +12350,33 @@ mod stage1 {
         };
         assert_eq!(r, "12"); // flag=true → 2·(3+2+1) = 12
         assert_eq!(run_closure_bool(src, false).unwrap(), "6"); // flag=false → 3+2+1 = 6
+    }
+
+    #[test]
+    fn a_closure_captures_a_compound_and_reads_it_back_inside_its_lifted_body() {
+        // A capture slot holds a COMPOUND heap HANDLE (a tuple / a sum), not a boxed scalar — stored into
+        // the env cell as-is and read back as-is (`box_op`/`get_op` return None for a compound). Two
+        // shapes: (a) a captured TUPLE projected in the body; (b) a captured SUM matched in the body (the
+        // scrutinee of a `match` is a CAPTURED free variable, read from the env cell). Both survive the
+        // recursive `apply-sum` indirect-call boundary.
+        // (a) tuple capture: each application adds (. p 0)+(. p 1) = 30, so over 3,2,1 = 96.
+        let tup = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main) (let ((p (tuple 10 20))) \
+              (apply-sum (fn ((: x Int64)) (+ (+ x (. p 0)) (. p 1))) 3))) (export main))";
+        let Some(r) = run_closure_nullary(tup) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "96");
+        // (b) sum capture matched: each application takes the Some arm and adds 100, so over 3,2,1 = 306.
+        let sum = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main) (let ((o (Some 100))) \
+              (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3))) (export main))";
+        assert_eq!(run_closure_nullary(sum).unwrap(), "306");
     }
 
     #[test]
