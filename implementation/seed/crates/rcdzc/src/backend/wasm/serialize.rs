@@ -1644,6 +1644,7 @@ pub fn multi_closure_bytes_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     makes: &[ClosureMake],
+    plain: &[PlainExport],
     arg_vts: &[ValType],
     lifted_type_idx: u32,
     layout: &Layout,
@@ -1768,7 +1769,14 @@ pub fn multi_closure_bytes_resource_core_module(
             wasm_abi::EXPORT_KIND_FUNC,
             realloc_abs,
         ));
-        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(nmk + 3, &items))
+        // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, exported by index.
+        for p in plain {
+            items.extend_from_slice(&export(&p.export_name, wasm_abi::EXPORT_KIND_FUNC, p.body_abs));
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(nmk + 3 + plain.len(), &items),
+        )
     };
 
     // ── Element ──
