@@ -6651,6 +6651,28 @@ fn arith_identity(
             })
         }
 
+        // COMPLEMENT LAWS: `x & ~x` → 0 and `x | ~x` → -1 (all-ones), where `~x` is `(^ x -1)` (there is no
+        // dedicated bit-NOT prim). A value AND its bitwise complement share NO set bit, so `&` is 0 and `|`
+        // is every bit set. Both DISCARD `x` (the result does not depend on it), so gated on
+        // `is_trap_free(x)` — a trapping `x` must still trap. `complement_pair` matches `v` against
+        // `(^ v -1)` on either operand order.
+        //
+        // The `&` result 0 is valid at EVERY width/sign. But the `|` all-ones result is `-1` only for a
+        // SIGNED type; an UNSIGNED width-N all-ones is `2^N − 1`, and a literal `-1` is OUT OF RANGE there
+        // (`(: -1 UInt8)` is a CDZ0302 reject) — `arith_identity` has no width to synthesize `2^N−1`. So the
+        // `|` fold is restricted to a SIGNED operand type, where `-1` IS the all-ones and representable;
+        // an unsigned `x | ~x` keeps the runtime `or` (correct, just not folded).
+        Prim::BitAnd if complement_pair(db, lhs, rhs).is_some_and(|v| is_trap_free(db, v)) => {
+            trace!(target: "rcdzc::fold", "complement law x & ~x → 0");
+            Some(zero())
+        }
+        Prim::BitOr
+            if matches!(crate::infer::type_of(db, lhs), crate::ty::Ty::Int(it) if it.ground_signed())
+                && complement_pair(db, lhs, rhs).is_some_and(|v| is_trap_free(db, v)) =>
+        {
+            trace!(target: "rcdzc::fold", "complement law x | ~x → -1 (all ones, signed)");
+            Some(Core::ConstInt(IntValue::from_i64(-1)))
+        }
         // SAME-OPERAND identities: the two operands are the SAME value (`core_equiv`), so the result is
         // determined regardless of that value. `core_equiv` matches only pure scalar cores, but the
         // operand may still be a checked op that TRAPS (`(- (/ a b) (/ a b))` — the `/` traps on b==0),
@@ -6664,6 +6686,35 @@ fn arith_identity(
         }
         Prim::BitAnd | Prim::BitOr if core_equiv(db, lhs, rhs) => Some(lc.clone()),
         _ => None,
+    }
+}
+
+/// For an outer bitwise op with operands `(lhs, rhs)`, whether one operand is the bitwise COMPLEMENT of
+/// the other — i.e. one is `v` and the other is `(^ v -1)` (`~v`). Returns the un-complemented value `v`
+/// (so the caller can trap-check it, since the complement laws `x & ~x = 0` / `x | ~x = -1` DISCARD `x`).
+/// Both operand orders are tried, and the `-1` may be on either side of the inner XOR. `None` otherwise.
+fn complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId> {
+    // Whether `maybe_not` is `(^ v -1)` for a `v` that is `core_equiv` to `other`.
+    let is_not_of = |db: &mut Db, maybe_not: StructId, other: StructId| -> bool {
+        let Core::Arith {
+            op: Prim::BitXor,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, maybe_not)
+        else {
+            return false;
+        };
+        let is_neg1 = |c: &Core| matches!(c, Core::ConstInt(v) if v.eq_value(&IntValue::from_i64(-1)));
+        // `(^ v -1)` — the `-1` on the right (`v` = il) or left (`v` = ir), and `v` matches `other`.
+        (is_neg1(&core_of(db, ir)) && core_equiv(db, il, other))
+            || (is_neg1(&core_of(db, il)) && core_equiv(db, ir, other))
+    };
+    if is_not_of(db, rhs, lhs) {
+        Some(lhs) // `(op v (^ v -1))`
+    } else if is_not_of(db, lhs, rhs) {
+        Some(rhs) // `(op (^ v -1) v)`
+    } else {
+        None
     }
 }
 

@@ -7999,6 +7999,66 @@ mod runtime_ops {
     }
 
     #[test]
+    fn the_bitwise_complement_laws_fold_to_a_constant() {
+        // COMPLEMENT LAWS: `x & ~x` → 0 and `x | ~x` → -1 (all-ones), where `~x` is `(^ x -1)`. A value and
+        // its complement share no bit (`&` = 0) / cover every bit (`|` = -1). Both DISCARD `x`, so gated on
+        // `is_trap_free`. The `|` all-ones `-1` is SIGNED-only (an unsigned `~x` via `^ -1` is a CDZ0201
+        // reject upstream — it never reaches the fold — so this is exercised on signed types). Pins the fold
+        // at the Lir level (a const, no and/or) + value/trap parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let bitops = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64And | Lir::I64Or | Lir::I64Xor))
+                .count()
+        };
+        // `x & ~x` → 0, `x | ~x` → -1 — no and/or/xor remains (the `~x`'s xor also folds away).
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (& x (: (^ x -1) Int64)) Int64)")), 0, "x & ~x → 0");
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (| x (: (^ x -1) Int64)) Int64)")), 0, "x | ~x → -1");
+        // Both operand orders and the inner `-1` on the left.
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (^ x -1) Int64) x) Int64)")), 0, "~x & x → 0");
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (| x (: (^ -1 x) Int64)) Int64)")), 0, "inner -1 on left");
+        // A DISTINCT operand (`~y`) does NOT fold — the ops stay.
+        assert!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& x (: (^ y -1) Int64)) Int64)")) >= 1, "x & ~y not folded");
+
+        // VALUE PARITY (signed, incl. narrow Int8 where all-ones = -1).
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& x (: (^ x -1) Int64)) Int64)", &[Val::S64(12345)]), 0);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (| x (: (^ x -1) Int64)) Int64)", &[Val::S64(12345)]), -1);
+        assert_eq!(run::<i8>("(: x Int8)", "(: (& x (: (^ x -1) Int8)) Int8)", &[Val::S8(50)]), 0);
+        assert_eq!(run::<i8>("(: x Int8)", "(: (| x (: (^ x -1) Int8)) Int8)", &[Val::S8(50)]), -1);
+        // TRAP SAFETY: `x` is discarded, so a trapping `(/ 100 z)` must still ÷0-trap.
+        assert!(
+            traps("(: z Int64)", "(& (: (/ 100 z) Int64) (: (^ (: (/ 100 z) Int64) -1) Int64))", &[Val::S64(0)]),
+            "a trapping operand in a complement-law fold must keep its trap"
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
