@@ -578,9 +578,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Prim(Prim::FloatNan) => Core::ConstFloatNan,
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
-        Resolved::Prim(_) => Core::Poison(Reject::decline(
-            crate::diag::PRIM_AS_VALUE_DECLINE,
-        )),
+        Resolved::Prim(_) => Core::Poison(Reject::decline(crate::diag::PRIM_AS_VALUE_DECLINE)),
         // Application — the ONE path, dispatched by the head value's `(meta apply)` primitive. An
         // arithmetic prim folds (below); a type-constructor prim reduces via the evaluator to a built
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
@@ -1361,7 +1359,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Param { binder } => Core::Param { binder },
         // A TYPE VALUE is compile-time-only — no runtime core form (the erasure fence forbids one
         // reaching runtime), so lowering it as a runtime value declines.
-        Resolved::TypeVal(_) => Core::Poison(Reject::decline(crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE)),
+        Resolved::TypeVal(_) => {
+            Core::Poison(Reject::decline(crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE))
+        }
         // A LAMBDA that survives to lowering as a RUNTIME value (it could not be β-reduced away — it is
         // passed to a recursive callee, or stored in a runtime cell). LIFT it to a standalone function
         // and produce a `Core::Closure` naming its table slot. Only a NO-CAPTURE (combinator) lambda
@@ -3760,9 +3760,7 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
             pt = ep.clone();
         }
         if crate::backend::wasm::lir::valtype_of(&pt).is_none() {
-            return Core::Poison(Reject::decline(
-                crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE,
-            ));
+            return Core::Poison(Reject::decline(crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE));
         }
         // RECORD the solved param type so the LIFTED BODY's own `type_of(p)` reads it — otherwise the
         // body computes `p`'s type bottom-up as `Any` (it has no annotation and no def entry), and a use
@@ -3782,9 +3780,7 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         t => t,
     };
     if crate::backend::wasm::lir::valtype_of(&ret_ty).is_none() {
-        return Core::Poison(Reject::decline(
-            crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE,
-        ));
+        return Core::Poison(Reject::decline(crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE));
     }
     // Every captured value must have a machine representation too (it is boxed into the cell).
     for &cap in &captures {
@@ -4319,24 +4315,50 @@ pub struct RuntimeBytesForm {
 /// with `<LEB n><n bytes>`. `None` if the encoded form does not have the expected `0b 00` shape (a
 /// codec change) — the escape then declines rather than emit a wrong walker.
 pub fn runtime_bytes_form(db: &mut Db) -> Option<RuntimeBytesForm> {
-    // Build `(: b"" Bytes)` — an empty Bytes leaf — and encode it. Its leaf pool holds `":"`, the empty
-    // bytes leaf (`0b 00`), and `"Bytes"`; the struct table + root follow.
+    runtime_leaf_form(db, false)
+}
+
+/// The runtime STRING escape form — `(: "" String)` with an empty `Leaf::Str`, split at the `KIND_STR`
+/// tag. A runtime String is a UTF-8 byte-rope leaf (the same heap rep as Bytes — `String.concat` is
+/// `bytes-concat`), so it escapes through the SAME looping walker (`emit_runtime_bytes_resource`); only
+/// the value-form framing differs (`(: "…" String)` vs `(: b"…" Bytes)`). The walker's `bytes-len`/
+/// `bytes-get` read the same leaf either way; the payload bytes ARE the UTF-8 the codec decodes back to a
+/// `Leaf::Str`, so `cdz-run` renders `(: "…" String)`.
+pub fn runtime_string_form(db: &mut Db) -> Option<RuntimeBytesForm> {
+    runtime_leaf_form(db, true)
+}
+
+/// Shared builder for the runtime Bytes/String escape form: encode `(: <empty-leaf> <TypeName>)` and split
+/// at the leaf's tag so the walker can splice the runtime `LEB(len) · payload` between the static prefix
+/// (header … tag) and suffix (the `<TypeName>` + struct framing). `is_string` selects a `Leaf::Str`/
+/// `"String"`/`KIND_STR` split vs a `Leaf::Bytes`/`"Bytes"`/`KIND_BYTES` one — the ONLY difference between
+/// a runtime String and a runtime Bytes escape (both are UTF-8/byte leaves on the rope heap).
+fn runtime_leaf_form(db: &mut Db, is_string: bool) -> Option<RuntimeBytesForm> {
     let _ = db; // (kept for signature symmetry with the other form builders; not needed here)
+    const KIND_BYTES: u8 = 11;
+    const KIND_STR: u8 = 7;
     let mut b = crate::ast::Builder::new();
     let colon = b.name(":");
-    let empty = b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new()));
-    let bytes_ty = b.name("Bytes");
-    let root = b.list(vec![colon, empty, bytes_ty]);
+    let (empty, ty_name, kind) = if is_string {
+        (
+            b.atom_leaf(crate::ast::Leaf::Str(String::new())),
+            b.name("String"),
+            KIND_STR,
+        )
+    } else {
+        (
+            b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new())),
+            b.name("Bytes"),
+            KIND_BYTES,
+        )
+    };
+    let root = b.list(vec![colon, empty, ty_name]);
     let arenas = b.finish(root);
     let encoded = crate::codec::encode(&arenas);
-    // Find the `KIND_BYTES`(0x0b) tag IMMEDIATELY followed by its `0x00` length byte (the empty leaf).
-    // `":"` is a NAME leaf (`0x0a 01 3a`) and `"Bytes"` a NAME leaf too, so the only `0b 00` pair is the
-    // empty bytes leaf's tag+length. Split there.
-    const KIND_BYTES: u8 = 11;
-    let pos = encoded.windows(2).position(|w| w == [KIND_BYTES, 0x00])?;
-    // prefix = header … the KIND_BYTES tag (inclusive); the byte at `pos+1` is the `00` length we replace.
+    // Find the leaf's KIND tag IMMEDIATELY followed by its `0x00` length byte (the empty leaf). `":"` and
+    // the type name are NAME leaves (`0x0a …`), so the only `<kind> 00` pair is the empty payload leaf.
+    let pos = encoded.windows(2).position(|w| w == [kind, 0x00])?;
     let prefix = encoded[..=pos].to_vec();
-    // suffix = everything AFTER the `00` length byte (an empty payload contributes no bytes).
     let suffix = encoded[pos + 2..].to_vec();
     Some(RuntimeBytesForm { prefix, suffix })
 }
@@ -6422,7 +6444,11 @@ fn nested_shift_combine(db: &mut Db, op: Prim, lhs: StructId, rc: &Core) -> Opti
         radix: crate::ast::Radix::Dec,
     });
     trace!(target: "rcdzc::fold", ?op, a, b, sum = a + b, "nested shift collapse (SH (SH v A) B) → (SH v (A+B))");
-    Some(Core::Arith { op, lhs: v, rhs: fc })
+    Some(Core::Arith {
+        op,
+        lhs: v,
+        rhs: fc,
+    })
 }
 
 /// Whether masking the value at `val` with the constant `mask_core` is a NO-OP — i.e. `val & M == val`.

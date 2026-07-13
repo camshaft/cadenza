@@ -5590,14 +5590,52 @@ mod runtime_ops {
 
         // VALUE PARITY. Disjoint: b<a always true when the guards pass; guards failing → 0.
         let dj = "(if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)";
-        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(200), Val::S64(10)]), 1);
-        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(200), Val::S64(49)]), 1);
-        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(200), Val::S64(60)]), 0); // b<50 fails
-        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(50), Val::S64(10)]), 0); // a>100 fails
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                dj,
+                &[Val::S64(200), Val::S64(10)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                dj,
+                &[Val::S64(200), Val::S64(49)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                dj,
+                &[Val::S64(200), Val::S64(60)]
+            ),
+            0
+        ); // b<50 fails
+        assert_eq!(
+            run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(50), Val::S64(10)]),
+            0
+        ); // a>100 fails
         // Overlap: the real `b < a` decides — both outcomes must be correct.
         let ov = "(if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0)";
-        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", ov, &[Val::S64(400), Val::S64(300)]), 1); // b<a
-        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", ov, &[Val::S64(200), Val::S64(300)]), 0); // b>a
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                ov,
+                &[Val::S64(400), Val::S64(300)]
+            ),
+            1
+        ); // b<a
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                ov,
+                &[Val::S64(200), Val::S64(300)]
+            ),
+            0
+        ); // b>a
     }
 
     #[test]
@@ -11700,6 +11738,33 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_built_string_escapes_via_the_looping_walker() {
+        // A RUNTIME `String` (a `String.concat`/recursion-built UTF-8 rope — not a compile-time constant)
+        // now crosses the host boundary, where before it DECLINED ("String has no component boundary
+        // representation"). A runtime String is the SAME byte-leaf heap rep as Bytes (`String.concat` is
+        // `bytes-concat`), so it escapes through the SAME looping walker — only the value form differs
+        // (`(: "…" String)` vs `(: b"…" Bytes)`). `(rep "hi" 3)` appends "x" three times → "hixxx".
+        let Some(out) = escape_render(
+            "(module m (def (rep s n) (if (< n 1) s (rep ((. String concat) s \"x\") (- n 1)))) \
+                       (def (main) (rep \"hi\" 3)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-String escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: \"hixxx\" String)",
+            "runtime String escape renders as a String"
+        );
+
+        // A single runtime concat (no recursion): concat "a"+"b" built via the byte-rope → "ab".
+        let out = escape_render(
+            "(module m (def (mk s) ((. String concat) s \"b\")) (def (main) (mk \"a\")) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(out, "(: \"ab\" String)", "runtime String concat escape");
+    }
+
+    #[test]
     fn a_runtime_bytes_resource_exposes_a_repeatable_len_method() {
         // VM-1: a runtime-Bytes result crosses as a resource carrying make + encode + `len : borrow<t> ->
         // u32` (= `bytes-len(rep)`). The host reaches `len` INSIDE the `cadenza:run/run` instance and calls
@@ -15385,7 +15450,8 @@ mod stage1 {
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == crate::abi::Severity::Error && d.message.contains("record has no field")
+                d.severity == crate::abi::Severity::Error
+                    && d.message.contains("record has no field")
             })
             .collect();
         assert_eq!(
@@ -15395,7 +15461,8 @@ mod stage1 {
             out.diagnostics
         );
         assert!(
-            field_errs[0].fix.is_some() && field_errs[0].message.contains("did you mean `compute`?"),
+            field_errs[0].fix.is_some()
+                && field_errs[0].message.contains("did you mean `compute`?"),
             "the surviving copy is the RICH one (with the did-you-mean fix): {}",
             field_errs[0].message
         );
