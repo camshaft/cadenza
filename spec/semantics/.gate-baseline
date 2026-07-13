@@ -510,6 +510,7 @@ pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
+pass	a prelude Option value crosses a module boundary as an export result
 pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
@@ -570,6 +571,7 @@ pass	a recursive resolver transforms one runtime sum tree into another, then con
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum type works with pattern matching
+pass	a recursive user sum built in a lib is folded by the entry's structural copy
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
