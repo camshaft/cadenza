@@ -404,15 +404,18 @@ pub struct Db {
     /// shadows a built-in by the ordinary lookup precedence.
     pub prelude: BTreeMap<String, StructId>,
 
-    /// The FAMILY-OF-MEASURE registry — maps each named family unit (`"foot"`, `"kilometre"`, `"byte"`)
-    /// to its `(reference-dimension name, scale numerator, scale denominator)`: `"foot"` →
-    /// `("metre", 381, 1250)`, `"minute"` → `("second", 60, 1)` (`units-of-measure.md` §A Dimension
-    /// Groups Interconvertible Units). `(Unit.of #"foot")` consults this to build `Unit.base("metre")
-    /// .scaled(381, 1250)`. The vocabulary is prelude DATA (authored once in `prelude::unit_families`),
-    /// so the layer fixes the MECHANISM, not a privileged in-compiler list. Scales are machine-int
-    /// metadata (all small — the largest is a mile's 201168/125), so a family unit auto-converts over
-    /// Float/Int with no arbitrary-precision arithmetic.
-    pub unit_families: BTreeMap<String, (String, i128, i128)>,
+    /// The FAMILY-OF-MEASURE registry — maps each named family unit to its `(dimension, scale
+    /// numerator, scale denominator)`, where the DIMENSION is a list of `(base-name, exponent)` pairs (an
+    /// exponent map). An ATOMIC-dimension unit has a one-entry dimension: `"foot"` →
+    /// `([("metre", 1)], 381, 1250)`, `"minute"` → `([("second", 1)], 60, 1)`. A DERIVED-dimension unit
+    /// has a multi-entry one: `"mbps"` (megabit/second) → `([("byte", 1), ("second", -1)], 1_000_000, 8)`
+    /// — a unit of the `information/time` dimension whose scale to the reference `byte/second` is a
+    /// megabit over 8 bits-per-byte (`units-of-measure.md` §A Dimension Groups Interconvertible Units).
+    /// `(Unit.of #"mbps")` consults this to build that dimension (via `Unit::base`/`mul`/`pow`) scaled by
+    /// `num/den`. The vocabulary is prelude DATA (`prelude::unit_families`), so the layer fixes the
+    /// MECHANISM, not a privileged list; scales are machine-int metadata, so a family unit auto-converts
+    /// over Float/Int with no arbitrary-precision arithmetic.
+    pub unit_families: BTreeMap<String, crate::prelude::UnitConversion>,
 
     /// PACKAGE LINKAGE — `Some` only for a multi-file package (`DESIGN-package-linking.md`), `None` for
     /// the single-file compile (whose namespace is flat, byte-identical to the pre-linking compiler).

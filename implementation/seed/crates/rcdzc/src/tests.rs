@@ -9923,6 +9923,47 @@ mod match_engine {
     }
 
     #[test]
+    fn a_named_rate_unit_of_a_derived_dimension_converts_and_mixes() {
+        // F2-5: `mbps` is a named unit of the DERIVED dimension `byte/second` (a rate = information/time),
+        // not an atomic base. A rate DERIVED by division (`bytes / seconds`) is the SAME free-abelian-
+        // group dimension `mbps` names, so a computed rate and an `mbps` quantity MIX and convert:
+        // (250000 byte / 1 s) + 1 mbps = 250000 + 125000 = 375000 byte/s (1 mbps = 10^6 bit / 8 = 125000
+        // byte/s). The "name what bytes-over-time means as its own convertible family" case, over Float,
+        // NO bignum. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Unit in) ((. Unit of) #\"byte-per-second\") \
+                     (+ (/ ((. Qty of) 250000.0 ((. Unit of) #\"byte\")) \
+                           ((. Qty of) 1.0 ((. Unit of) #\"second\"))) \
+                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\")))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a computed-rate + mbps sum compiles and runs"),
+                "main"
+            ),
+            375000.0
+        );
+    }
+
+    #[test]
+    fn a_named_rate_unit_combined_with_a_length_is_cdz0501() {
+        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 metre))` — a rate (`information/time`) plus a length —
+        // different dimensions → CDZ0501. A named DERIVED-dimension unit obeys the same dimensional
+        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{metre:1}`).
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit of) #\"mbps\")) \
+                   ((. Qty of) 1.0 ((. Unit of) #\"metre\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "a rate + a length must reject CDZ0501"
+        );
+    }
+
+    #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
         // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
         // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
@@ -9983,11 +10024,11 @@ mod match_engine {
         // family-declaration surface), while a duplicate that AGREES is idempotent. `register_families`
         // is the gate the built-in table and any user family flow through.
         use crate::prelude::register_families;
-        // A conflict: `foot` twice with different scales.
+        // A conflict: `foot` twice with different scales (dimension is the `(base, exponent)` list).
         let conflict = register_families(
             [
-                ("foot", "metre", 381i128, 1250i128),
-                ("foot", "metre", 1, 3), // a bogus, disagreeing scale
+                ("foot", &[("metre", 1i64)][..], 381i128, 1250i128),
+                ("foot", &[("metre", 1)][..], 1, 3), // a bogus, disagreeing scale
             ]
             .into_iter(),
         );
@@ -9996,27 +10037,54 @@ mod match_engine {
             Some("foot"),
             "a name registered with two different conversions is a conflict"
         );
-        // A conflict on the DIMENSION too (same name, different reference dimension).
+        // A conflict on the DIMENSION too (same name, different dimension).
         assert!(
-            register_families([("x", "metre", 1i128, 1i128), ("x", "second", 1, 1)].into_iter())
-                .is_err(),
+            register_families(
+                [
+                    ("x", &[("metre", 1i64)][..], 1i128, 1i128),
+                    ("x", &[("second", 1)][..], 1, 1)
+                ]
+                .into_iter()
+            )
+            .is_err(),
             "same name under two dimensions conflicts"
         );
         // An AGREEING duplicate is idempotent (harmless), not an error.
         let ok = register_families(
             [
-                ("inch", "metre", 127i128, 5000i128),
-                ("inch", "metre", 127, 5000),
+                ("inch", &[("metre", 1i64)][..], 127i128, 5000i128),
+                ("inch", &[("metre", 1)][..], 127, 5000),
             ]
             .into_iter(),
         );
         assert_eq!(
             ok.ok().and_then(|m| m.get("inch").cloned()),
-            Some(("metre".to_string(), 127, 5000)),
+            Some((vec![("metre".to_string(), 1)], 127, 5000)),
             "an agreeing re-registration is idempotent"
+        );
+        // A DERIVED-dimension unit (a rate) registers with a multi-entry dimension.
+        let rate = register_families(
+            [(
+                "mbps",
+                &[("byte", 1i64), ("second", -1)][..],
+                1_000_000i128,
+                8i128,
+            )]
+            .into_iter(),
+        );
+        assert_eq!(
+            rate.ok().and_then(|m| m.get("mbps").cloned()),
+            // Canonicalized (sorted by base): byte before second.
+            Some((
+                vec![("byte".to_string(), 1), ("second".to_string(), -1)],
+                1_000_000,
+                8
+            )),
+            "a derived-dimension rate unit registers with its full exponent map"
         );
         // The built-in table itself registers without conflict (it is validated through the same gate).
         assert!(crate::prelude::unit_families().contains_key("foot"));
+        assert!(crate::prelude::unit_families().contains_key("mbps"));
     }
 
     #[test]
@@ -22183,7 +22251,9 @@ mod closure_host_resource {
         let program =
             crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         assert!(
-            cdz_run::required_runtime(&program).expect("valid").is_some(),
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
             "a multi-export closure program imports the value-heap runtime (the cells are heap values)"
         );
         let mut rt = super::ComposedRuntime::new(&program, &runtime);

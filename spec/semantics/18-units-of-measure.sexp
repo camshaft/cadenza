@@ -510,3 +510,39 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 3000 Int64)))
+
+; ============================================================================================
+; DERIVED-dimension families — a named unit can name a DERIVED dimension (a rate = information/time, a
+; frequency = 1/time), not only an atomic one. `mbps` is a unit of `byte/second`; `hertz` of `1/second`.
+; This is the "name what it means to have bytes over time, its own family you convert between" case: the
+; dimension a unit NAMES and the dimension arithmetic DERIVES (`bytes / seconds`) are the SAME free-
+; abelian-group element, so a named rate and a computed rate mix and convert (units-of-measure.md #A
+; Dimension Groups Interconvertible Units). Bignum-free: `mbps` = 10^6 bit / 8-bits-per-byte / second.
+
+(case "a named rate unit converts to the reference rate (Float)"
+  (doc    "`(Unit.in byte-per-second (Qty.of 1.0 mbps))` converts 1 megabit-per-second to bytes-per-
+           second: a megabit is 10^6 bits = 10^6/8 bytes, so 1 mbps = 125000 byte/s. `mbps` is a named
+           unit of the DERIVED dimension `information/time`, converting to its reference `byte/second`.")
+  (needs  units-of-measure)
+  (input  (Qty.value (Unit.in (Unit.of #"byte-per-second") (Qty.of 1.0 (Unit.of #"mbps")))))
+  (output (: 125000.0 Float64)))
+
+(case "a rate derived by division mixes with a named rate unit of the same dimension"
+  (doc    "`(bytes / seconds)` derives the dimension `byte/second` — the SAME dimension `mbps` names — so
+           a computed rate and an `mbps` quantity combine and convert: (250000 byte / 1 s) + 1 mbps =
+           250000 + 125000 = 375000 byte/s. Pins that a NAMED derived-dimension unit and a DERIVED-by-
+           arithmetic dimension are one free-abelian-group element, mixing and converting freely.")
+  (needs  units-of-measure)
+  (input  (Qty.value (Unit.in (Unit.of #"byte-per-second")
+                       (+ (/ (Qty.of 250000.0 (Unit.of #"byte")) (Qty.of 1.0 (Unit.of #"second")))
+                          (Qty.of 1.0 (Unit.of #"mbps"))))))
+  (output (: 375000.0 Float64)))
+
+(case "combining a named rate with a length is a dimensional error"
+  (doc    "`(+ (Qty.of 1.0 mbps) (Qty.of 1.0 metre))` combines a rate (`information/time`) with a length
+           — different dimensions — so it is CDZ0501. A named DERIVED-dimension unit obeys the same
+           dimensional safety as an atomic one: its dimension is the exponent map `{byte:1, second:-1}`,
+           incompatible with `{metre:1}`.")
+  (needs  units-of-measure)
+  (input  (+ (Qty.of 1.0 (Unit.of #"mbps")) (Qty.of 1.0 (Unit.of #"metre"))))
+  (error  CDZ0501))
