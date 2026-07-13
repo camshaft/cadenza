@@ -882,6 +882,41 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     }
 }
 
+/// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
+/// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
+/// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
+/// (collections-and-text.md §Strings Concatenate / §A String Offers … A Byte Length). Exercised through a
+/// tail-recursive accumulator that threads a runtime string (the 13-strings corpus shape) — three
+/// one-byte appends of "x" onto "" → byte-len 3. A recursive call keeps the string opaque to the fold, so
+/// this genuinely emits the runtime ops + composes the value-heap runtime.
+#[test]
+fn a_runtime_string_concat_and_byte_len_run_on_the_byte_leaf() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (rep s n) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (String.byte-len (rep \"\" 3))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.concat/byte-len must build on the byte-rope heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "three one-byte appends → byte-len 3"),
+        cdz_run::Outcome::Trap(t) => panic!("runtime string concat/byte-len trapped (miscompile?): {t}"),
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted

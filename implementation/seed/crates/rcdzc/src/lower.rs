@@ -1057,8 +1057,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             Core::ConstInt(IntValue::from_i64(n as i64))
                         }
                         Core::Poison(r) => Core::Poison(r),
+                        // A RUNTIME string: its `byte-len` is the byte count of its underlying leaf. A
+                        // runtime String value IS a flat UTF-8 byte leaf (an i32 heap handle — the same rep
+                        // `str-new` would give, built via `bytes-alloc`/`bytes-set`), so its byte length is
+                        // exactly `bytes-len` over that handle — `Core::BytesLen`, the runtime op already
+                        // working for `Bytes.len`. (`scalar-len` is the UTF-8 SCALAR count, which needs a
+                        // decoding walk over the bytes, not a leaf-length read, so it still declines here.)
+                        _ if matches!(prim, Prim::StrByteLen)
+                            && matches!(
+                                crate::infer::type_of(db, args[0]),
+                                crate::ty::Ty::String
+                            ) =>
+                        {
+                            trace!(target: "rcdzc::lower", node = id.0, "String.byte-len on a runtime string → bytes-len over its byte leaf");
+                            Core::BytesLen { operand: args[0] }
+                        }
                         _ => Core::Poison(Reject::decline(
-                            "a runtime string's length is not yet computed (constant strings only)",
+                            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
                         )),
                     }
                 }
@@ -1198,6 +1213,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             Core::ConstStr(format!("{a}{b}"))
                         }
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        // A RUNTIME string concatenation: a String value IS a flat UTF-8 byte leaf (an i32
+                        // heap handle), and a UTF-8 join is byte concatenation (no re-normalization for
+                        // this increment — the operands are already well-formed UTF-8), so it is exactly
+                        // `bytes-concat` over the two byte handles — `Core::BytesConcat`, the runtime op
+                        // already working for `Bytes.concat`, producing a fresh joined byte leaf (a String
+                        // handle). Guarded on BOTH operands being definite Strings (defensive; the
+                        // `StrConcat` scheme already constrains them).
+                        _ if matches!(
+                            crate::infer::type_of(db, args[0]),
+                            crate::ty::Ty::String
+                        ) && matches!(
+                            crate::infer::type_of(db, args[1]),
+                            crate::ty::Ty::String
+                        ) =>
+                        {
+                            trace!(target: "rcdzc::lower", node = id.0, "String.concat on runtime strings → bytes-concat over their byte leaves");
+                            Core::BytesConcat {
+                                lhs: args[0],
+                                rhs: args[1],
+                            }
+                        }
                         _ => Core::Poison(Reject::decline(
                             "a string concatenation is only folded for constant ASCII operands (the \
                              normalizing byte-rope join arrives with the runtime string heap)",
