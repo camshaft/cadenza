@@ -3430,6 +3430,30 @@ fn emit(
             });
             Ok(())
         }
+        // FLOAT-WIDTH conversion (`Float N.of`): emit the float operand, then demote/promote by the
+        // SOURCE (operand) and TARGET (this node) widths — `f32.demote_f64` (64→32), `f64.promote_f32`
+        // (32→64), or NOTHING (same width = identity). Handled before the integer-target arm below.
+        Core::Convert {
+            op: Prim::FloatOf,
+            operand,
+        } => {
+            let src_w = match type_of(db, operand) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            let dst_w = match type_of(db, id) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
+            match (src_w, dst_w) {
+                (64, 32) => out.push(Lir::F32DemoteF64),
+                (32, 64) => out.push(Lir::F64PromoteF32),
+                // same width — the conversion is the identity, no opcode.
+                _ => {}
+            }
+            Ok(())
+        }
         Core::Convert { op, operand } => {
             let src = Machine::of(int_ty_of(db, operand));
             let dst = Machine::of(int_ty_of(db, id));

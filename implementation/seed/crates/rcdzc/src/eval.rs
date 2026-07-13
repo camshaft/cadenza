@@ -1942,7 +1942,8 @@ pub fn build_float_module(db: &mut Db, width: u32) -> StructId {
     let ty = crate::ty::Ty::Float(crate::ty::FloatTy::fixed(width));
     let ty_node = encode_typeval(db, &ty);
     let of_int = float_of_int_field(db, width);
-    let fields = vec![meta_field(db, "t", ty_node), of_int];
+    let of = float_of_field(db, width);
+    let fields = vec![meta_field(db, "t", ty_node), of_int, of];
     let head = db.push_str("record");
     let mut children = vec![head];
     for f in fields {
@@ -1982,6 +1983,43 @@ fn float_of_int_field(db: &mut Db, width: u32) -> StructId {
     let rec_head = db.push_str("record");
     let rec = db.push_list(vec![rec_head, t_field, apply_field]);
     let k = db.push_name("of-int");
+    db.push_list(vec![k, rec])
+}
+
+/// The module's `of` field, appended on `&mut Db` — the constructor-side twin of `prelude::float_of_type`
+/// plus its op record (the two MUST build the same shape so `(Float N).of` and `Float64.of` are one op).
+/// Builds `(of (record ((meta t) (fn (a) (-> (Float a) (Float width)))) ((meta apply) (intrinsic
+/// float-of))))` — GENERIC over the source float width `a`, this module's `width` as the target.
+fn float_of_field(db: &mut Db, width: u32) -> StructId {
+    let float_a = {
+        let ctor = db.push_name("Float");
+        let a = db.push_name("a");
+        db.push_list(vec![ctor, a])
+    };
+    let target = {
+        let ctor = db.push_name("Float");
+        let w = db.push_atom(Leaf::Int {
+            value: IntValue::from_i64(width as i64),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![ctor, w])
+    };
+    let arr = db.push_name("->");
+    let body = db.push_list(vec![arr, float_a, target]);
+    let fn_head = db.push_name("fn");
+    let a_param = db.push_name("a");
+    let params = db.push_list(vec![a_param]);
+    let scheme = db.push_list(vec![fn_head, params, body]);
+    let t_field = meta_field(db, "t", scheme);
+    let apply = {
+        let head = db.push_name("intrinsic");
+        let who = db.push_name("float-of");
+        db.push_list(vec![head, who])
+    };
+    let apply_field = meta_field(db, "apply", apply);
+    let rec_head = db.push_str("record");
+    let rec = db.push_list(vec![rec_head, t_field, apply_field]);
+    let k = db.push_name("of");
     db.push_list(vec![k, rec])
 }
 

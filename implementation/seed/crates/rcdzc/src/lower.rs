@@ -757,6 +757,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // constant integer to a `Core::ConstFloat` at the target width, else emit a runtime
                 // `f{64,32}.convert_i64_s`.
                 Some(Prim::FloatOfInt) => lower_float_of_int(db, id, &args),
+                // `Float64.of` / `Float32.of` — the explicit FLOAT-WIDTH conversion. Fold a constant
+                // float (round at the target width), else emit a runtime demote/promote.
+                Some(Prim::FloatOf) => lower_float_of(db, id, &args),
                 // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
                 // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
                 // declines (as the comparison prims do).
@@ -4169,6 +4172,53 @@ fn lower_float_of_int(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     }
 }
 
+/// Lower a `Float64.of` / `Float32.of` — the TOTAL float-WIDTH conversion `Float M → (Float N)` (promote
+/// / demote / identity). FOLD a constant float by rounding the exact `Decimal` at the TARGET width
+/// (this node's solved `Ty::Float`): a same-width or widening conversion is exact, a narrowing rounds to
+/// nearest under the fixed mode. A runtime float emits `Core::Convert{op:FloatOf}` (select →
+/// demote/promote/nothing). Total — a float always has an image at another float width.
+fn lower_float_of(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
+    if args.len() != 1 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "of takes exactly 1 operand".to_string(),
+        ));
+    }
+    let width = match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Float(ft) => ft.ground_width(),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "a float conversion target is not a definite float type",
+            ));
+        }
+    };
+    match core_of(db, args[0]) {
+        Core::Poison(r) => Core::Poison(r),
+        Core::ConstFloat(d) => {
+            // Round the exact source value to the target width: `as f32 as f64` for a Float32 target
+            // (narrowing rounds to nearest binary32), the f64 value unchanged for a Float64 target
+            // (a promote/identity is exact). Rounding once at the target width matches the runtime op.
+            let src = f64::from_bits(d.to_f64_bits());
+            let rounded = if width == 32 { src as f32 as f64 } else { src };
+            match crate::ast::Decimal::from_f64(rounded) {
+                Some(nd) => {
+                    trace!(target: "rcdzc::lower", width, "folded constant float-width conversion");
+                    Core::ConstFloat(nd)
+                }
+                None => Core::Poison(Reject::decline(
+                    "a float conversion whose result is not finite has no value form",
+                )),
+            }
+        }
+        // A runtime float operand — emit the machine demote/promote at selection (source + target widths
+        // read off the solved types there). Total, no guard.
+        _ => Core::Convert {
+            op: Prim::FloatOf,
+            operand: args[0],
+        },
+    }
+}
+
 /// Apply a SAFE algebraic identity to a runtime arithmetic op with ONE constant operand, returning the
 /// simplified core (the runtime operand's own core, or a constant) — or `None` when no identity applies
 /// and the op stays a runtime `Arith`. `lc`/`rc` are the already-lowered operand cores; `lhs`/`rhs`
@@ -4449,6 +4499,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FDiv
         | Prim::FloatCtor
         | Prim::FloatOfInt
+        | Prim::FloatOf
         | Prim::MapCtor
         | Prim::MapNew
         | Prim::MapEmpty
@@ -6170,6 +6221,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FDiv => "/.",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
+        Prim::FloatOf => "of",
         Prim::MapCtor => "Map",
         Prim::MapNew => "map-new",
         Prim::MapEmpty => "map-empty",

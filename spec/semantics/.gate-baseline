@@ -66,9 +66,12 @@ pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
+pass	a char literal naming a surrogate is a reader error
+pass	a char order agrees with its scalar value
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
+pass	a closure captures a capturing closure and calls it through a recursive HOF
 pass	a closure captures a function value and applies it through a recursive HOF
 pass	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
 pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
@@ -80,6 +83,7 @@ pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
+pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
@@ -243,6 +247,14 @@ pass	a literal inside an Ok pattern refines a Result match
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a magic header and a length-prefixed chunk parse together
+pass	a map entry with no value expression is rejected, not a crash
+pass	a map literal with keys of two different types is a type error
+pass	a map mixing integer and float values is a type error
+pass	a map operation applies to a map passed as a function parameter
+pass	a map with a duplicate key is a type error
+pass	a map with record values of different field sets is a type error
+pass	a map with tuple values of different arities is a type error
+pass	a map with values of two different types is a type error
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
@@ -341,12 +353,14 @@ pass	a param-shadowing let with a param-referencing initializer folds at a const
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
+pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a program that delegates no effect is pure and never suspends
+pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
@@ -381,6 +395,7 @@ pass	a recursive parameter used only as a call argument infers from the callee's
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
+pass	a recursive sum type works with pattern matching
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a reference to an unbound name is rejected before running
@@ -405,6 +420,7 @@ pass	a runtime division truncates toward zero
 pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float multiplication emits the machine mul
+pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime greater-than compares by signed order
 pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by the bit width or more traps
@@ -485,6 +501,9 @@ pass	a string passed to a function as a runtime argument is measured by its byte
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+pass	a sum type can mix nullary and payload-carrying variants
+pass	a sum type is declared with named variants
+pass	a sum type variant can carry data
 pass	a sum value annotated as a scalar type is rejected
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-type value is constructed through a variant
@@ -493,6 +512,7 @@ pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a three-element runtime tuple is returned as a result
+pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level value definition binds a name usable by the program's functions
 pass	a top-level value definition binds a record projected by the program's functions
@@ -533,6 +553,7 @@ pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
+pass	a unary variant applied to a wrong-type payload is a type error
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a value declaration in a do block is in scope for the following forms
@@ -541,6 +562,7 @@ pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
+pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple binding pattern is a shape error
@@ -556,7 +578,10 @@ pass	an Option built by an if with the payload branch first type-checks (the con
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
+pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
+pass	an annotated let binder constrains the value's type
+pass	an annotated let binder that contradicts the value is rejected
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
@@ -578,12 +603,15 @@ pass	an empty byte-string literal is the empty byte sequence
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an entrypoint delegation lets a program reach its host function
+pass	an entrypoint delegation reaches an effect performed in a recursive callee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
+pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an imported helper reaches its own file's private definition when inlined
@@ -681,12 +709,15 @@ pass	constructing a sized bytes segment whose value length differs from the size
 pass	constructing a u8 segment from a value above its range is rejected
 pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
+pass	converting a float to its own width is the identity
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an overlong UTF-8 encoding yields none
 pass	decoding ill-formed UTF-8 bytes yields none, not a trap
 pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
+pass	deeply nested pattern matching
+pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
@@ -712,6 +743,7 @@ pass	greater-than of an integer and a float is rejected
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	host calls are observed in the order they were made
 pass	identical negative zeros nested in a tuple compare equal
 pass	importing a name a module does not export is rejected
 pass	indexing a byte sequence out of bounds yields None
@@ -724,6 +756,8 @@ pass	indexing a list with a negative index yields None
 pass	indexing a runtime string past its last scalar yields None
 pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
+pass	inserting a key already present replaces its value, not the size
+pass	inserting into the empty map then looking a key up yields the value
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
@@ -733,9 +767,11 @@ pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
 pass	lists are equal by elements in order
+pass	looking up an absent key yields None
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant
+pass	matching a lookup from a computed-key map literal selects the present-value arm
 pass	matching a runtime Bytes.at Option binds the byte in the Some arm
 pass	matching a runtime Bytes.at Option takes the None arm past the end
 pass	matching against zero probes the normalized narrow value, not the raw wide slot
@@ -751,6 +787,7 @@ pass	member access of a missing field is a type error
 pass	member access of an absent field on a function-returned record is a type error
 pass	member access on a boolean is a type error
 pass	member access on a conditionally-chosen record, other branch
+pass	member access on a map is a type error
 pass	member access on a non-record is a type error
 pass	member access on a record chosen by a conditional projects the field
 pass	member access on a string is a type error
@@ -795,6 +832,7 @@ pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
+pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
 pass	reaching an effect neither handled nor delegated is rejected at compile time
@@ -804,6 +842,8 @@ pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
+pass	removing a key drops its association and the size
+pass	removing an absent key leaves the map unchanged
 pass	resolving a head against a prelude symbol rejects a length-mismatched prefix
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
@@ -839,6 +879,7 @@ pass	subset record comparison is explicit projection, not an overloaded equality
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	subtraction of an integer and a float does not silently promote
+pass	sum type constructors are in scope after declaration
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the byte length of a runtime string equals the length of its encoded bytes
@@ -874,6 +915,7 @@ pass	the other parity of a mutually-recursive pair
 pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
 pass	the prelude binds Constructor values not pre-applied Sums
+pass	the program manifest is the union of its entrypoints' delegations
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the runtime-if list takes its else branch and measures that length
@@ -901,9 +943,11 @@ pass	two dependent-size segments each bind the count a preceding segment named
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 pass	two differing runtime sum values compare unequal by a heap walk
+pass	two distinct names bound to the same value key the same map entry
 pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal
+pass	two equal chars compare equal
 pass	two functions defined by mutual recursion compute a result
 pass	two host calls consume their responses in order
 pass	two lists are concatenated into one flat list
@@ -948,8 +992,6 @@ todo	a bottom-up fold matches a tuple of its recursive results with constructor 
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
-todo	a char literal naming a surrogate is a reader error
-todo	a char order agrees with its scalar value
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
@@ -975,18 +1017,10 @@ todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
 todo	a literal subterm in a quote pattern matches by equality
-todo	a map entry with no value expression is rejected, not a crash
-todo	a map literal with keys of two different types is a type error
-todo	a map mixing integer and float values is a type error
-todo	a map operation applies to a map passed as a function parameter
 todo	a map pattern binds the rest of the map after the named key
 todo	a map pattern falls through when the key is absent
 todo	a map pattern matches a present key and binds its value
 todo	a map with a computed key equals the same map with a constant key
-todo	a map with a duplicate key is a type error
-todo	a map with record values of different field sets is a type error
-todo	a map with tuple values of different arities is a type error
-todo	a map with values of two different types is a type error
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
@@ -1005,7 +1039,6 @@ todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
-pass	a program that makes a host call has that call in its observable behavior
 todo	a projected tuple element IS observed, so its trap occurs (the anchor)
 todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
@@ -1030,7 +1063,6 @@ todo	a recursive function that installs a fresh handler on each call grows its c
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a recursive sum consumer whose arguments are recursive sum producers compiles
-todo	a recursive sum type works with pattern matching
 todo	a recursively-built binary tree renders its full runtime structure
 todo	a recursively-built linked list renders its full runtime spine
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
@@ -1041,9 +1073,6 @@ todo	a set collapses a duplicate element
 todo	a set is constructed from a list of its elements
 todo	a set with elements of two different types is a type error
 todo	a string compared to a symbol is a type error
-todo	a sum type can mix nullary and payload-carrying variants
-todo	a sum type is declared with named variants
-todo	a sum type variant can carry data
 todo	a symbol compared to a string is a type error
 todo	a symbol converts back to its content string
 todo	a symbol is constructed from a string
@@ -1051,13 +1080,11 @@ todo	a symbol's identity is its content, not how the content was derived
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a unary variant applied to a wrong-type payload is a type error
 todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 todo	a utf8-decoding bin match with no catch-all is non-exhaustive
 todo	a value definition may carry a leading doc, like a function definition
-todo	a variant with a wrong-type payload as a direct match scrutinee is a type error
 todo	a whole rational carries a denominator of one
 todo	a wide fixed-size integer width is reserved, not yet a valid type
 todo	adding quantities of incompatible dimension is a compile-time error
@@ -1073,8 +1100,6 @@ todo	an argument bound to a used parameter IS observed, so its trap occurs (the 
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
-pass	an entrypoint delegation lets a program reach its host function
-pass	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an explicit annotation overrides the default-integer pragma
 todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
@@ -1108,7 +1133,6 @@ todo	converting a unit to another unit of the same dimension is an exact rationa
 todo	converting an out-of-range integer to a char yields None
 todo	decoding bytes that are not a canonical AST yields the error case, not a trap
 todo	decoding canonical bytes followed by a trailing byte yields the error case
-todo	deeply nested pattern matching
 todo	dimensional equality is decided by canonical exponent map, not written form
 todo	distinct names bound to the same string key the same map entry
 todo	dividing quantities divides their dimensions
@@ -1127,20 +1151,14 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-pass	host calls are observed in the order they were made
-todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
 todo	inserting a present element is a no-op value
 todo	inserting a value of a different type into a map is a type error
 todo	inserting an element yields a set containing it
-todo	inserting into the empty map then looking a key up yields the value
 todo	integer to byte (truncate to 0-255)
 todo	integer to byte wraps on overflow
 todo	interning the same string twice yields equal symbols
-todo	looking up an absent key yields None
 todo	map equality is independent of insertion order
-todo	matching a lookup from a computed-key map literal selects the present-value arm
-todo	member access on a map is a type error
 todo	membership of a present element is true
 todo	membership of an absent element in the empty set is false
 todo	membership of an absent element is false, not a trap
@@ -1172,8 +1190,6 @@ todo	reading a string's scalar in bounds yields Some of the char
 todo	reading a string's scalar out of bounds yields None
 todo	reading the text a printer produced round-trips to an equal value
 todo	record reshaping is subset comparison as explicit projection
-todo	removing a key drops its association and the size
-todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
@@ -1184,7 +1200,6 @@ todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	subtracting quantities of incompatible dimension is a compile-time error
-todo	sum type constructors are in scope after declaration
 todo	symbol identity follows String normalization
 todo	symbols interned from different strings are unequal
 todo	the AST is a sum type deconstructible by pattern matching
@@ -1199,14 +1214,11 @@ todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
 todo	the intersection contains the elements in both sets
 todo	the number of elements counts distinct elements
-pass	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
 todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
-todo	two distinct names bound to the same value key the same map entry
-todo	two equal chars compare equal
 todo	two maps of different sizes are unequal, not a type error
 todo	two maps with different keys are unequal, not a type error
 todo	two rationals denoting the same number are equal regardless of how they were written

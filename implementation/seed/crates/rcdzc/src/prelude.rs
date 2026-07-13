@@ -931,15 +931,56 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     // reduce the whole op record to a `Ty::Type`), the same wrapper `String.at`/`scalar-len` use.
     let of_int_ty = float_of_int_type(ast, width);
     let of_int = list_op_record(ast, "float-of-int", of_int_ty);
-    let fields = vec![meta_field(ast, "t", ty_expr), {
-        let k = push_atom(ast, Leaf::Name("of-int".to_string()));
-        push_list(ast, vec![k, of_int])
-    }];
+    // `of` — the TOTAL float-WIDTH conversion `∀a. (Float a) → (Float width)` (promote/demote/identity),
+    // width-generic in its SOURCE, this module's width as TARGET. The `(meta apply)` is `float-of`.
+    let of_ty = float_of_type(ast, width);
+    let of_op = list_op_record(ast, "float-of", of_ty);
+    let fields = vec![
+        meta_field(ast, "t", ty_expr),
+        {
+            let k = push_atom(ast, Leaf::Name("of-int".to_string()));
+            push_list(ast, vec![k, of_int])
+        },
+        {
+            let k = push_atom(ast, Leaf::Name("of".to_string()));
+            push_list(ast, vec![k, of_op])
+        },
+    ];
     let mut children = vec![head];
     for f in fields {
         children.push(f);
     }
     push_list(ast, children)
+}
+
+/// The type-lambda `(fn (a) (-> (Float a) (Float width)))` for a float module's `of` — the float-WIDTH
+/// conversion, GENERIC over the source float width `a`, this module's `width` as the target. A real
+/// type-lambda (`(fn (a) …)`, one quantified variable), unlike `of-int`'s zero-param wrapper: the source
+/// `(Float a)` reduces via the `Float` constructor to a fresh float-width variable, so `infer` reads the
+/// scheme `∀a. (Float a) → (Float width)` — a Float32 OR a Float64 (or a deferred literal) unifies as the
+/// source, the result is always this module's concrete width.
+fn float_of_type(ast: &mut Arenas, width: u32) -> StructId {
+    let float_a = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![ctor, a])
+    };
+    let float_target = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let body = arrow_type(ast, float_a, float_target);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type `(fn () (-> Int64 (Float width)))` for a float module's `of-int` — a ZERO-PARAMETER

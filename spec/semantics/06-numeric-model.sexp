@@ -432,6 +432,14 @@
   (call   main (: 42 Int64))
   (output (: 42.0 Float64)))
 
+(case "a runtime float promotes to a wider width with the machine promote"
+  (doc    "`(Float64.of x)` over a runtime Float32 `x` emits `f64.promote_f32` — exact widening; `1.5`
+           promotes to 1.5 : Float64. Pins the emitted promote path, the runtime dual of the folded
+           promote case above.")
+  (input  (do (def (main (: x Float32)) (Float64.of x)) (export main)))
+  (call   main (: 1.5 Float32))
+  (output (: 1.5 Float64)))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias
@@ -470,6 +478,45 @@
            case; to add them a program converts one side (`(Float64.of …)`).")
   (input  (+. (: 1.5 Float32) (: 2.0 Float64)))
   (error  CDZ0301))
+
+; --- Explicit conversion between float widths: Float64.of promotes, Float32.of demotes ------------
+; numeric-model.md #A Conversion Involving A Floating-Point Type Is Explicit — "between two floating-
+; point types of different width" — is written `Float N.of`, the float-width analogue of the integer
+; `T.of`/`Float N.of-int`. `Float64.of` from a Float32 PROMOTES (widening, exact — every binary32 is a
+; binary64); `Float32.of` from a Float64 DEMOTES (narrowing, rounds to the nearest binary32 under the
+; fixed mode). This is what resolves the no-promotion rejection above: to add a Float32 and a Float64 a
+; program converts one side explicitly.
+
+(case "promoting a Float32 to Float64 is exact"
+  (doc    "`(Float64.of (: 1.5 Float32))` widens the binary32 1.5 to Float64 — exact (every binary32
+           value is representable in binary64), so the result is 1.5 : Float64. The explicit widening
+           the no-promotion rule requires; `Float64.of` from a narrower float is the promote.")
+  (input  (Float64.of (: 1.5 Float32)))
+  (output (: 1.5 Float64)))
+
+(case "demoting a Float64 to Float32 rounds to the nearest binary32"
+  (doc    "`(Float32.of 0.1)` narrows the binary64 0.1 to Float32, which rounds to the nearest
+           representable binary32 — 0.10000000149011612 when read back as the canonical value form (the
+           binary32 nearest to 0.1 is not 0.1). Pins that `Float32.of` DEMOTES with rounding under the
+           fixed mode (numeric-model.md #A Conversion Involving A Floating-Point Type Is Explicit), the
+           narrowing companion of the exact promote.")
+  (input  (Float32.of 0.1))
+  (output (: 0.10000000149011612 Float32)))
+
+(case "an explicit float-width conversion makes a mixed-width operation well-typed"
+  (doc    "The no-promotion rejection `(+. (: 1.5 Float32) (: 2.0 Float64))` is resolved by converting
+           the Float32 up explicitly: `(+. (Float64.of (: 1.5 Float32)) 2.0)` = 3.5 : Float64 — both
+           operands are now Float64, so `+.` type-checks and adds. Pins that the explicit conversion is
+           the sanctioned way to combine two float widths.")
+  (input  (+. (Float64.of (: 1.5 Float32)) 2.0))
+  (output (: 3.5 Float64)))
+
+(case "converting a float to its own width is the identity"
+  (doc    "`(Float64.of 2.5)` where the operand is already a Float64 is 2.5 : Float64 — a same-width
+           conversion is the identity (no rounding). Pins that `Float N.of` accepts a Float of the same
+           width, not only a different one.")
+  (input  (Float64.of 2.5))
+  (output (: 2.5 Float64)))
 
 (case "a float width outside the admitted set is rejected"
   (doc    "`(: 1.5 (Float 16))` names a 16-bit float, which is not in the admitted set {32, 64} — the

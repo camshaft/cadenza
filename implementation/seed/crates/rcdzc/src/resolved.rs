@@ -133,6 +133,16 @@ pub enum Prim {
     /// promotion — the conversion is always written (numeric-model.md §A Conversion Involving A
     /// Floating-Point Type Is Explicit).
     FloatOfInt,
+    /// `Float64.of` / `Float32.of` — the explicit FLOAT-WIDTH conversion `Float M → Float N` (the `(meta
+    /// apply)` of a float module's `of` field). `Float64.of` from a narrower float PROMOTES (widening,
+    /// exact, `f64.promote_f32`); `Float32.of` from a wider float DEMOTES (narrowing, rounds to nearest
+    /// under the fixed mode, `f32.demote_f64`); a same-width conversion is the identity. TARGET width =
+    /// the module's own (read off the solved `Ty::Float`); SOURCE = the operand's own float width. A
+    /// CONSTANT float FOLDS (round the exact `Decimal` at the target width); a runtime float emits the
+    /// demote/promote op. The float-width companion of the integer `T.of`, but TOTAL (a float always has
+    /// an image at another float width — no trap). No implicit promotion (numeric-model.md §A Conversion
+    /// Involving A Floating-Point Type Is Explicit).
+    FloatOf,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
     /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
@@ -381,6 +391,7 @@ impl Prim {
             "UInt" => Some(Prim::UIntCtor),
             "Float" => Some(Prim::FloatCtor),
             "float-of-int" => Some(Prim::FloatOfInt),
+            "float-of" => Some(Prim::FloatOf),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),
             "Record" => Some(Prim::RecordCtor),

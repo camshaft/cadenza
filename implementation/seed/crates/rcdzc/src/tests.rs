@@ -641,6 +641,16 @@ impl FromVal for f64 {
     }
 }
 
+// A Float32 crosses as the component `f32` primitive — read back as an `f32` (bits-compared in tests).
+impl FromVal for f32 {
+    fn from_val(v: &wasmtime::component::Val) -> f32 {
+        match v {
+            wasmtime::component::Val::Float32(n) => *n,
+            other => panic!("expected Float32 result, got {other:?}"),
+        }
+    }
+}
+
 /// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
 /// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
 fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
@@ -1924,6 +1934,34 @@ fn float_of_int_converts_a_runtime_integer() {
         big.to_bits(),
         (9223372036854775807i64 as f64).to_bits(),
         "of-int Int64.max rounds to the nearest f64"
+    );
+}
+
+/// The explicit FLOAT-WIDTH conversion `Float N.of` over a RUNTIME float: `Float32.of` DEMOTES
+/// (`f32.demote_f64`, rounds), `Float64.of` PROMOTES (`f64.promote_f32`, exact). A constant folds; a
+/// runtime float emits the machine op. Run under wasmtime and compared BY BITS.
+#[test]
+fn float_of_converts_a_runtime_float_width() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Demote: 0.1 : Float64 → Float32 rounds to the nearest binary32 (the f32 bits, lifted back to f64
+    // at the boundary read as an f32 result).
+    let demote = "(module m (def (f (: x Float64)) (Float32.of x)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(demote))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Float64(0.1)]);
+    assert_eq!(
+        got.to_bits(),
+        (0.1f64 as f32).to_bits(),
+        "Float32.of 0.1 demotes to the nearest binary32"
+    );
+    // Promote: a Float32 → Float64 is exact.
+    let promote = "(module m (def (f (: x Float32)) (Float64.of x)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(promote))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::Float32(1.5f32)]);
+    assert_eq!(
+        got.to_bits(),
+        (1.5f32 as f64).to_bits(),
+        "Float64.of 1.5f32 promotes exactly"
     );
 }
 
