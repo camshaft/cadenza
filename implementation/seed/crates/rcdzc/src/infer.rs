@@ -2314,7 +2314,13 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
-fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+fn check_application(
+    db: &mut Db,
+    app: StructId,
+    head: StructId,
+    args: &[StructId],
+    out: &mut Vec<Reject>,
+) {
     // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
     // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
@@ -2819,7 +2825,25 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
         if let Some(mut guard) = db.enter_reduction() {
             let g = guard.db();
             if let Ok(Some(reduced)) = crate::eval::apply_lambda(g, head, args) {
-                collect(g, reduced, out);
+                // Collect the reduced body's faults into a LOCAL vec first so a fault anchored to a
+                // SYNTHESIZED node (β-reduction mints fresh nodes for the substituted body — a use of a
+                // bare parameter becomes a use of the argument VALUE, on a node with no source span) can
+                // be re-anchored to the CALL SITE. Without this, `(helper true)` where `helper`'s body is
+                // `(+ x 1)` reduces to `(+ true 1)` on spanless nodes, so its CDZ0203 reported with NO
+                // location (a bare `cdz:`/`file:` prefix). The call `(helper true)` IS the source the
+                // author must fix — anchoring the reduced-body fault to `app` (when it landed on a
+                // non-user, hence spanless, node) restores its `file:line:col`. A fault already anchored
+                // to a real user node (e.g. inside an argument sub-expression) keeps its own, more precise
+                // anchor.
+                let mut body_faults = Vec::new();
+                collect(g, reduced, &mut body_faults);
+                for mut f in body_faults {
+                    let on_user_node = f.at.is_some_and(|o| g.is_user_node(o));
+                    if !on_user_node {
+                        f.at = Some(app);
+                    }
+                    out.push(f);
+                }
                 reduced_ok = true;
             }
         } else {
@@ -3730,7 +3754,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         //= spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote
         //# The type of an arithmetic result MUST be determined by the operand types and the operation, not by an implicit widening the author did not write.
         Resolved::Apply { head, args } => {
-            check_application(db, head, &args, out);
+            check_application(db, id, head, &args, out);
             // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
             // and each operand for their own faults.
             collect(db, head, out);

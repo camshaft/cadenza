@@ -13362,6 +13362,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_wrong_type_arg_to_a_user_function_anchors_to_the_call_site() {
+        // Calling a user function with a wrong-type argument — `(helper true)` where `helper`'s body is
+        // `(+ x 1)` — β-reduces to `(+ true 1)` on SYNTHESIZED nodes, whose CDZ0203 once reported with
+        // NO node (an unanchored `cdz:`/`file:` prefix, no line:col). The reduced-body fault is now
+        // re-anchored to the CALL SITE when it landed on a non-user node, so the error carries a real
+        // user node the front-end maps to `file:line:col`.
+        let src = "(module m (def (helper x) (+ x 1)) (def (main) (helper true)) (export main))";
+        let d = first_error(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+        let node = d
+            .node
+            .expect("the mismatch must carry a node, not be unanchored");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node so it maps to a source location"
+        );
+    }
+
+    #[test]
+    fn a_fault_inside_an_argument_keeps_its_own_precise_anchor() {
+        // The call-site re-anchor fires ONLY when the reduced-body fault landed on a synthesized node. A
+        // fault genuinely inside an ARGUMENT sub-expression — `(id (+ 1 true))` — is on a real user node,
+        // so it keeps its OWN anchor and never regresses to unanchored.
+        let src = "(module m (def (id x) x) (def (main) (id (+ 1 true))) (export main))";
+        let d = first_error(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+        let node = d.node.expect("the mismatch carries a node");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a real user node the front-end can map"
+        );
+    }
+
+    #[test]
     fn a_provable_overflow_does_not_leak_a_synthesized_node() {
         // `(+ Int64.max 1)` proves an overflow (CDZ0304). The fold runs over evaluator-SYNTHESIZED
         // nodes (the built `Int64` module / reduced operands), but the reported origin must be either a
