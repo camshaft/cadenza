@@ -25151,6 +25151,112 @@ mod closure_host_resource {
             .expect("distinct-signature closure-resource core module validates");
     }
 
+    /// DISTINCT-SIGNATURE ROUND-TRIP serializer: `serialize::distinct_sig_roundtrip_core_module` — a core
+    /// with TWO signature groups, EACH a producer (`make-<name>`) AND a consumer (a named export taking a
+    /// closure of that sig back). Group 0 = `(-> Int64 Int64)` (mk0 + app0), group 1 = `(-> Int64 Bool)`
+    /// (mk1 + app1). Each group gets its own `resource-new-<g>`/`resource-rep-<g>`; the consumer wrapper
+    /// reps its closure param via THAT group's rrep. Pins the index layout the distinct-sig-round-trip needs.
+    #[test]
+    fn distinct_sig_roundtrip_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{ClosureConsume, ClosureMake, ConsumeParam, RtSigGroup};
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let boolt = Ty::Bool;
+        let imports = vec![OPS.arr_alloc, OPS.arr_get, OPS.arr_set, OPS.box_int, OPS.drop, OPS.get_int];
+        let fn_ii = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let fn_ib = Ty::Fn(Box::new(s64.clone()), Box::new(boolt.clone()));
+        // Producer bodies (build a 1-slot cell → its lifted slot) for each group.
+        let producer = |slot: i64, ret: Ty| SelectedFunc {
+            params: vec![],
+            ret,
+            code: vec![
+                Lir::ConstI32(1), Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0), Lir::ConstI64(slot), Lir::CallImport("box-int"), Lir::CallImport("arr-set"),
+            ],
+            declared: vec![], src_body: None, locals: vec![], scopes: vec![], stmt_lines: vec![],
+        };
+        // Consumer bodies `(g_cell: i32, x: <arg>) -> <ret>` = `(g x)` (CallClosure over the group's lifted).
+        let consumer = |lifted_ty: u32, ret: Ty| SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret,
+            code: vec![
+                Lir::LocalGet(0), Lir::LocalGet(1), Lir::LocalGet(0), Lir::ConstI32(0),
+                Lir::CallImport("arr-get"), Lir::CallImport("get-int"), Lir::I32WrapI64,
+                Lir::CallIndirect(lifted_ty),
+            ],
+            declared: vec![], src_body: None, locals: vec![], scopes: vec![], stmt_lines: vec![],
+        };
+        // Lifted bodies: inc (i64->i64), isz (i64->i32/Bool).
+        let lifted_inc = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64], ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![], src_body: None, locals: vec![], scopes: vec![], stmt_lines: vec![],
+        };
+        let lifted_isz = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64], ret: boolt.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(0), Lir::I64Eq],
+            declared: vec![], src_body: None, locals: vec![], scopes: vec![], stmt_lines: vec![],
+        };
+        // order = [mk0, app0, mk1, app1] (4 defs); lifteds appended after.
+        let import_base = imports.len() as u32 + 2 * 2; // k + 2 intrinsics × 2 groups
+        // Lifted functype indices: defined_type_base + order.len() + slot. defined_type_base = k+1.
+        let lty = |slot: usize| (imports.len() + 1 + 4 + slot) as u32;
+        let funcs = vec![
+            producer(0, fn_ii.clone()),  // mk0 → def 0
+            consumer(lty(0), s64.clone()), // app0 → def 1
+            producer(1, fn_ib.clone()),  // mk1 → def 2
+            consumer(lty(1), boolt.clone()), // app1 → def 3
+            lifted_inc,  // slot 0
+            lifted_isz,  // slot 1
+        ];
+        let ep = |name: &str, def: usize, result: Ty| ExportPlan {
+            name: name.into(), def, body: crate::ast::StructId(0), params: vec![], result,
+        };
+        let mk_lifted = |ret: Ty| LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: ret, captures: vec![],
+        };
+        let layout = Layout::with_lifted(
+            vec![ep("mk0", 0, fn_ii.clone()), ep("app0", 1, s64.clone()),
+                 ep("mk1", 2, fn_ib.clone()), ep("app1", 3, boolt.clone())],
+            vec![0, 1, 2, 3],
+            import_base,
+            vec![mk_lifted(s64.clone()), mk_lifted(boolt.clone())],
+            vec![true, true],
+        );
+        let groups = vec![
+            RtSigGroup {
+                makes: vec![ClosureMake { export_name: "mk0".into(), export_abs: import_base, param_vts: vec![] }],
+                consumers: vec![ClosureConsume {
+                    export_name: "app0".into(), consume_abs: import_base + 1,
+                    params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)], ret_vt: ValType::I64,
+                }],
+            },
+            RtSigGroup {
+                makes: vec![ClosureMake { export_name: "mk1".into(), export_abs: import_base + 2, param_vts: vec![] }],
+                consumers: vec![ClosureConsume {
+                    export_name: "app1".into(), consume_abs: import_base + 3,
+                    params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)], ret_vt: ValType::I32,
+                }],
+            },
+        ];
+        let core = crate::backend::wasm::serialize::distinct_sig_roundtrip_core_module(
+            &funcs, &imports, &groups, &layout,
+        )
+        .expect("distinct-sig round-trip core serializes");
+        let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("distinct-sig round-trip core module validates");
+    }
+
     /// DISTINCT-SIGNATURE END-TO-END (the whole COMPILER pipeline): a program exporting closures of TWO
     /// different signatures (`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`) compiles to a VALID
     /// component with two resource types (`t0`/`t1`), each with its own `make-<name>`/`call-g<n>`. Pins

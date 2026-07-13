@@ -1990,6 +1990,279 @@ pub fn roundtrip_resource_core_module(
     Ok(core)
 }
 
+/// One SIGNATURE GROUP for the DISTINCT-SIGNATURE ROUND-TRIP ([`distinct_sig_roundtrip_core_module`]): all
+/// producers + consumers of ONE closure signature `(-> A… R)` → one resource type with its own
+/// `resource-new-<g>`/`resource-rep-<g>` intrinsics. `makes` mint the closure (each `resource.new-<g>`);
+/// `consumers` take one back (each closure param `resource.rep-<g>`'d to the guest cell). Unlike a pure
+/// producer group ([`SigGroup`]), a round-trip group has NO shared `call-<g>` method — the closure is
+/// applied via the consumers' OWN bodies.
+pub struct RtSigGroup {
+    pub makes: Vec<ClosureMake>,
+    pub consumers: Vec<ClosureConsume>,
+}
+
+/// The DISTINCT-SIGNATURE ROUND-TRIP core module: closures of G different signatures each cross as their
+/// own resource type, and each group has PRODUCERS (`make-<name>`) AND CONSUMERS (named exports that take a
+/// closure of that signature back and apply it). The union of `distinct_sig_resource_core_module` (per-group
+/// resource intrinsics + makes) and `roundtrip_resource_core_module` (consumer wrappers): per group `g`, a
+/// `resource-new-<g>`/`resource-rep-<g>` pair, its makes (using `new-<g>`), and its consumer wrappers (each
+/// `resource.rep-<g>`'ing its closure param(s) → the guest cell, calling the body, then dropping the cell).
+/// All groups share the ONE guest funcref table; a consumer's `call_indirect` resolves in its selected body.
+/// Layout: imports 0..k + 2*G intrinsics; n defined bodies; then per group its makes then its consumers.
+pub fn distinct_sig_roundtrip_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    groups: &[RtSigGroup],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let g = groups.len();
+    let total_makes: usize = groups.iter().map(|gr| gr.makes.len()).sum();
+    let total_cons: usize = groups.iter().map(|gr| gr.consumers.len()).sum();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+    let consume_param_vt = |p: &ConsumeParam| match p {
+        ConsumeParam::Closure => ValType::I32,
+        ConsumeParam::Scalar(v) => *v,
+    };
+
+    // ── Type section ── import functypes 0..k; one shared `(i32)->i32` rintr functype (index k); one per
+    // defined body; then per group its make functype(s) + consumer functype(s), flat in group order.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    type_items.extend_from_slice(&i32_to_i32);
+    let rintr_type_idx = k as u32;
+    let defined_type_base = k + 1;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    // Per group: make functype(s), then consumer functype(s). Record each function's type index, flat.
+    let mut make_type_idx: Vec<u32> = Vec::new();
+    let mut cons_type_idx: Vec<u32> = Vec::new();
+    let mut next_type = defined_type_base + n;
+    for gr in groups {
+        for mk in &gr.makes {
+            let params: Vec<u8> = mk.param_vts.iter().map(|v| vt_byte(*v)).collect();
+            let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+            t.extend_from_slice(&wasm_vec(params.len(), &params));
+            t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+            type_items.extend_from_slice(&t);
+            make_type_idx.push(next_type as u32);
+            next_type += 1;
+        }
+        for c in &gr.consumers {
+            let params: Vec<u8> = c.params.iter().map(|p| vt_byte(consume_param_vt(p))).collect();
+            let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+            t.extend_from_slice(&wasm_vec(params.len(), &params));
+            t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));
+            type_items.extend_from_slice(&t);
+            cons_type_idx.push(next_type as u32);
+            next_type += 1;
+        }
+    }
+    let total_types = defined_type_base + n + total_makes + total_cons;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ── k ops + per group `resource-new-<g>`/`resource-rep-<g>`.
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    let mut rnew_fn: Vec<u32> = Vec::new();
+    let mut rrep_fn: Vec<u32> = Vec::new();
+    let mut next_import_fn = k as u32;
+    for gi in 0..g {
+        import_items.extend_from_slice(&import_item(&format!("resource-new-{gi}"), rintr_type_idx));
+        rnew_fn.push(next_import_fn);
+        next_import_fn += 1;
+        import_items.extend_from_slice(&import_item(&format!("resource-rep-{gi}"), rintr_type_idx));
+        rrep_fn.push(next_import_fn);
+        next_import_fn += 1;
+    }
+    let import_sec = section(2, &wasm_vec(k + 2 * g, &import_items));
+
+    // ── Function section ── defined bodies, then makes, then consumers (flat, group order).
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    for &ti in &make_type_idx {
+        uleb128(ti as u64, &mut func_items);
+    }
+    for &ti in &cons_type_idx {
+        uleb128(ti as u64, &mut func_items);
+    }
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + total_makes + total_cons, &func_items),
+    );
+    let import_count = k + 2 * g;
+    let make_abs_base = (import_count + n) as u32;
+    let cons_abs_base = make_abs_base + total_makes as u32;
+
+    // ── Table + Element ── the ONE funcref table (all groups' lifteds share it).
+    let n_lifted = layout.lifted.len();
+    let (table_sec, elem_sec) = if n_lifted == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let mut table_entry = vec![0x70u8, 0x01];
+        uleb128(n_lifted as u64, &mut table_entry);
+        uleb128(n_lifted as u64, &mut table_entry);
+        let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        let elem_sec = section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg));
+        (table_sec, elem_sec)
+    };
+
+    // ── Export section ── per group: each make (`make-<name>`) then each consumer (its export name).
+    let export_sec = {
+        let export = |name: &str, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(wasm_abi::EXPORT_KIND_FUNC);
+            let mut b = item;
+            uleb128(idx as u64, &mut b);
+            b
+        };
+        let mut items = Vec::new();
+        let mut mi = 0u32;
+        let mut ci = 0u32;
+        for gr in groups {
+            for mk in &gr.makes {
+                items.extend_from_slice(&export(&mk.export_name, make_abs_base + mi));
+                mi += 1;
+            }
+            for c in &gr.consumers {
+                items.extend_from_slice(&export(&c.export_name, cons_abs_base + ci));
+                ci += 1;
+            }
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(total_makes + total_cons, &items),
+        )
+    };
+
+    // ── Code section ── defined bodies, then makes (using group's rnew), then consumers (group's rrep).
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    // makes, flat in group order.
+    for (gi, gr) in groups.iter().enumerate() {
+        for mk in &gr.makes {
+            let mut inner = uleb_bytes(0);
+            for p in 0..mk.param_vts.len() {
+                inner.push(op::LOCAL_GET);
+                uleb128(p as u64, &mut inner);
+            }
+            inner.push(op::CALL);
+            uleb128(mk.export_abs as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(rnew_fn[gi] as u64, &mut inner);
+            inner.push(op::END);
+            let mut e = uleb_bytes(inner.len() as u64);
+            e.extend_from_slice(&inner);
+            code_items.extend_from_slice(&e);
+        }
+    }
+    // consumers, flat in group order — each closure param rep'd via THIS group's rrep, then dropped.
+    for (gi, gr) in groups.iter().enumerate() {
+        for c in &gr.consumers {
+            let nparams = c.params.len() as u32;
+            let n_closures = c
+                .params
+                .iter()
+                .filter(|p| matches!(p, ConsumeParam::Closure))
+                .count();
+            let mut inner = Vec::new();
+            inner.extend_from_slice(&wasm_vec(
+                if n_closures == 0 { 0 } else { 1 },
+                &if n_closures == 0 {
+                    Vec::new()
+                } else {
+                    let mut gl = uleb_bytes(n_closures as u64);
+                    gl.push(wasm_abi::CORE_I32);
+                    gl
+                },
+            ));
+            let mut cell_slot = nparams;
+            let mut cell_of: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            for (i, p) in c.params.iter().enumerate() {
+                if matches!(p, ConsumeParam::Closure) {
+                    inner.push(op::LOCAL_GET);
+                    uleb128(i as u64, &mut inner);
+                    inner.push(op::CALL);
+                    uleb128(rrep_fn[gi] as u64, &mut inner);
+                    inner.push(op::LOCAL_SET);
+                    uleb128(cell_slot as u64, &mut inner);
+                    cell_of.insert(i as u32, cell_slot);
+                    cell_slot += 1;
+                }
+            }
+            for (i, p) in c.params.iter().enumerate() {
+                inner.push(op::LOCAL_GET);
+                match p {
+                    ConsumeParam::Closure => uleb128(cell_of[&(i as u32)] as u64, &mut inner),
+                    ConsumeParam::Scalar(_) => uleb128(i as u64, &mut inner),
+                }
+            }
+            inner.push(op::CALL);
+            uleb128(c.consume_abs as u64, &mut inner);
+            for (_, cell) in cell_of.iter() {
+                inner.push(op::LOCAL_GET);
+                uleb128(*cell as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(import_index["drop"] as u64, &mut inner);
+            }
+            inner.push(op::END);
+            let mut e = uleb_bytes(inner.len() as u64);
+            e.extend_from_slice(&inner);
+            code_items.extend_from_slice(&e);
+        }
+    }
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(n + total_makes + total_cons, &code_items),
+    );
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    core.extend_from_slice(&code_sec);
+    Ok(core)
+}
+
 /// The `t-encode(handle) -> i32` code-section entry (the R2 walker). Locals: 0 = the resource-table
 /// handle param, 1 = the recovered i32 heap rep, 2 = i64 scratch. Recovers the rep via
 /// `resource.rep(handle)` (core func `f_rrep`), then for each template hole walks its `arr-get` path
