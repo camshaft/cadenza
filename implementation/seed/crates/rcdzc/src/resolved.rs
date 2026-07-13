@@ -679,6 +679,14 @@ pub enum Resolved {
     /// A string literal — its text already normalized to canonical form by the reader (escapes expanded,
     /// NFC). A `Ty::String` constant; folds to a `Core::ConstStr` and escapes as its baked UTF-8 bytes.
     Str(String),
+    /// A SYMBOL literal (`#"metre"`, 17-symbols) — the reader-sugar equivalent of `(Symbol.of "metre")`.
+    /// Types as `Ty::Symbol` (DISTINCT from `Ty::String` — the nominal boundary, so `(= #"x" "x")` is a
+    /// type error CDZ0202, and `(= #"x" (Symbol.of "x"))` is well-typed and true). Its IDENTITY is its
+    /// text (content-derived), so a CONSTANT symbol shares the `Core::ConstStr` REP — it lowers to
+    /// `Core::ConstStr` exactly like `Symbol.of` on a constant string, and equality folds via the shared
+    /// constant-string equality. The `Unit.base #"metre"` builder reads its text directly (a base-dimension
+    /// name), so `unit_of` accepts this form as it did the `Str` it used to resolve to.
+    SymbolConst(String),
     /// A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes` constant; lowers
     /// to a `Core::BytesOf` of its bytes (same shape `(Bytes.of (list …))` builds), so it bakes at escape,
     /// compares/slices/concats as a constant, and renders back `b"…"`. The companion of `Str` for bytes.

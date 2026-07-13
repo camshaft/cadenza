@@ -2137,7 +2137,11 @@ fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
     let left = "(module m (def (f (: x Float32)) (+. 1.0 x)) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(left))).expect("compile");
     let got: f32 = run_returns_with(&bytes, "f", &[Val::Float32(2.5f32)]);
-    assert_eq!(got.to_bits(), 3.5f32.to_bits(), "left literal grounds to f32");
+    assert_eq!(
+        got.to_bits(),
+        3.5f32.to_bits(),
+        "left literal grounds to f32"
+    );
     // A CONTROL-FLOW operand (an `if` of two bare literals) also grounds to the op width.
     let cf = "(module m (def (f (: c Bool) (: x Float32)) (+. x (if c 1.0 2.0))) (export f))";
     let bytes = compile_component(&crate::codec::encode(&parse(cf))).expect("compile");
@@ -4307,19 +4311,35 @@ mod runtime_ops {
         // and the op's own range-check still traps a true overflow. Values + trap parity across +/&/* and
         // Int8/UInt8/Int16/Int32, both branch orders, plus a `let`- and a `match`-shaped operand:
         assert_eq!(
-            run::<i8>("(: c Bool)", "(: (+ (if c 10 20) 3) Int8)", &[Val::Bool(true)]),
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int8)",
+                &[Val::Bool(true)]
+            ),
             13
         );
         assert_eq!(
-            run::<i8>("(: c Bool)", "(: (+ (if c 10 20) 3) Int8)", &[Val::Bool(false)]),
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int8)",
+                &[Val::Bool(false)]
+            ),
             23
         );
         assert_eq!(
-            run::<i8>("(: c Bool)", "(: (& (if c 10 20) 7) Int8)", &[Val::Bool(true)]),
+            run::<i8>(
+                "(: c Bool)",
+                "(: (& (if c 10 20) 7) Int8)",
+                &[Val::Bool(true)]
+            ),
             2 // 10 & 7
         );
         assert_eq!(
-            run::<i8>("(: c Bool)", "(: (* (if c 3 4) 5) Int8)", &[Val::Bool(false)]),
+            run::<i8>(
+                "(: c Bool)",
+                "(: (* (if c 3 4) 5) Int8)",
+                &[Val::Bool(false)]
+            ),
             20
         );
         // The narrow width can come purely from a PARAM (no annotation) — an ordinary well-typed program.
@@ -4333,15 +4353,27 @@ mod runtime_ops {
         );
         // UInt8 / Int16 / Int32 (all ≤32-bit i32 slots) normalize the same way.
         assert_eq!(
-            run::<u8>("(: c Bool)", "(: (+ (if c 10 20) 3) UInt8)", &[Val::Bool(true)]),
+            run::<u8>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) UInt8)",
+                &[Val::Bool(true)]
+            ),
             13
         );
         assert_eq!(
-            run::<i16>("(: c Bool)", "(: (+ (if c 10 20) 3) Int16)", &[Val::Bool(false)]),
+            run::<i16>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int16)",
+                &[Val::Bool(false)]
+            ),
             23
         );
         assert_eq!(
-            run::<i32>("(: c Bool)", "(: (+ (if c 10 20) 3) Int32)", &[Val::Bool(true)]),
+            run::<i32>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int32)",
+                &[Val::Bool(true)]
+            ),
             13
         );
         // A `let`- and a `match`-shaped operand reach the same consuming path.
@@ -4378,7 +4410,11 @@ mod runtime_ops {
         );
         // A same-width (Int64) control-flow operand is UNCHANGED — no wrap, i64 throughout.
         assert_eq!(
-            run::<i64>("(: c Bool)", "(: (+ (if c 10 20) 3) Int64)", &[Val::Bool(true)]),
+            run::<i64>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int64)",
+                &[Val::Bool(true)]
+            ),
             13
         );
     }
@@ -6442,6 +6478,35 @@ mod match_engine {
         assert!(run(
             "(= (list (map (\"a\" 1)) (map (\"b\" 2))) (list (map (\"a\" 1)) (map (\"b\" 2))))"
         ));
+    }
+
+    #[test]
+    fn symbol_reader_sugar_and_nominal_boundary() {
+        // 17-symbols inc 2: `#"text"` reader sugar reads to the SAME value as `(Symbol.of "text")`, and a
+        // Symbol is NOMINAL over String — comparing the two ACROSS the boundary is CDZ0202.
+        assert!(run_returns::<bool>(
+            &component(
+                "(module m (def (main) (= #\"map-insert\" (Symbol.of \"map-insert\"))) (export main))"
+            ),
+            "main"
+        ));
+        // The empty reader literal is the empty symbol.
+        assert!(run_returns::<bool>(
+            &component("(module m (def (main) (= #\"\" (Symbol.of \"\"))) (export main))"),
+            "main"
+        ));
+        // A Symbol compared to the plain String it wraps is a nominal-boundary type error (CDZ0202), on
+        // either operand order — NOT the generic CDZ0203, and NOT silently `false`.
+        assert_eq!(
+            reject_code("(module m (def (main) (= \"x\" (Symbol.of \"x\"))) (export main))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (= (Symbol.of \"x\") \"x\")) (export main))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
     }
 
     #[test]
@@ -22177,7 +22242,9 @@ mod closure_host_resource {
             .get_export_index(&mut store, Some(&iface), "apply")
             .expect("apply");
         let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let apply = instance.get_func(&mut store, apply_idx).expect("apply func");
+        let apply = instance
+            .get_func(&mut store, apply_idx)
+            .expect("apply func");
 
         // make() → a closure handle the HOST holds…
         let mut handle = [Val::Bool(false)];

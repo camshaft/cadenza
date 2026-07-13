@@ -141,6 +141,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A symbol literal (`#"metre"`) shares the constant-string REP — its identity is its text — so it
+        // lowers to `Core::ConstStr` exactly like a `Symbol.of` on a constant string. Only the static type
+        // (`Ty::Symbol`) differs, so `=` folds via the shared constant-string equality.
+        Resolved::SymbolConst(s) => Core::ConstStr(s),
         // A char literal (`#\a`) folds to its `Core::ConstChar` — a `Ty::Char` value. Constant
         // equality/ordering compare by scalar value; crossing the boundary as a char value is a later
         // increment (a char at the boundary declines).
@@ -3928,6 +3932,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
@@ -5207,6 +5212,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)

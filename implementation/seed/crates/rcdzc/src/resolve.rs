@@ -184,15 +184,13 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A string literal — its text is already unescaped to canonical form by the reader. A
             // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
             Leaf::Str(s) => Resolved::Str(s.clone()),
-            // A SYMBOL literal (`#"metre"`). Layer-1 SIMPLIFICATION: a symbol's only Layer-1 use is
-            // naming a base dimension in `(Unit.base #"metre")`, where the `Unit.base` builder reads the
-            // symbol's TEXT directly off this leaf (like `(Int N)` reads its width literal) — so a symbol
-            // needs no first-class value form yet. Resolving it to its text as a `Str` gives a bare symbol
-            // a sane inert value (its content) without a new `Resolved` variant + its ~13 downstream arms.
-            // The real `Ty::Symbol` (content identity, `=`-nominal-boundary CDZ0202, `Symbol.to-string`)
-            // arrives with the symbols vertical (`symbol-interning-direction`); the `#"…"` LEAF already
-            // round-trips faithfully, so promoting the resolved form later is additive.
-            Leaf::Sym(s) => Resolved::Str(s.clone()),
+            // A SYMBOL literal (`#"metre"`) — the reader-sugar equivalent of `(Symbol.of "metre")`
+            // (17-symbols). Resolves to a `SymbolConst` typed `Ty::Symbol` (DISTINCT from `Ty::String`, so
+            // `(= #"x" "x")` is the nominal-boundary type error CDZ0202 and `(= #"x" (Symbol.of "x"))` is
+            // true). Its identity is its text, so it shares the `Core::ConstStr` rep + constant-string
+            // equality. `Unit.base #"metre"` still reads its text (a base-dimension name — `unit_of`
+            // accepts this form). (Was a `Str` in the Layer-1 units simplification, before `Ty::Symbol`.)
+            Leaf::Sym(s) => Resolved::SymbolConst(s.clone()),
             // A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes`
             // constant (lowers to a `Core::BytesOf` of its bytes, so it bakes/compares/slices exactly
             // like `(Bytes.of (list …))`, and renders back `b"…"`). The companion of the `Str` literal.
