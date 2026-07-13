@@ -2758,6 +2758,94 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_comparison_against_a_narrow_types_own_bound_is_simplified() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let no_cmp = |c: &[Lir]| {
+            !c.iter().any(|i| {
+                matches!(
+                    i,
+                    Lir::I32LtS
+                        | Lir::I32GtS
+                        | Lir::I32LeS
+                        | Lir::I32GeS
+                        | Lir::I64LtS
+                        | Lir::I64GtS
+                        | Lir::I64LeS
+                        | Lir::I64GeS
+                )
+            })
+        };
+        // Int8 [-128, 127]: `<= 127` / `>= -128` are tautologies; `> 127` / `< -128` are unsatisfiable.
+        let le_max = lir("(: x Int8)", "(<= x 127)");
+        assert!(
+            le_max.contains(&Lir::ConstI32(1)) && no_cmp(&le_max),
+            "Int8 (<= x 127) → true; got {le_max:?}"
+        );
+        let gt_max = lir("(: x Int8)", "(> x 127)");
+        assert!(
+            gt_max.contains(&Lir::ConstI32(0)) && no_cmp(&gt_max),
+            "Int8 (> x 127) → false; got {gt_max:?}"
+        );
+        let ge_min = lir("(: x Int8)", "(>= x -128)");
+        assert!(
+            ge_min.contains(&Lir::ConstI32(1)) && no_cmp(&ge_min),
+            "Int8 (>= x -128) → true; got {ge_min:?}"
+        );
+        let lt_min = lir("(: x Int8)", "(< x -128)");
+        assert!(
+            lt_min.contains(&Lir::ConstI32(0)) && no_cmp(&lt_min),
+            "Int8 (< x -128) → false; got {lt_min:?}"
+        );
+        // `>= max` rewrites to `== max`; a constant INSIDE the range does NOT fold.
+        let inside = lir("(: x Int8)", "(< x 127)");
+        assert!(
+            inside.iter().any(|i| matches!(i, Lir::I32LtS)),
+            "Int8 (< x 127) is not a bound → keeps lt_s; got {inside:?}"
+        );
+        // Full-width Int64 bound folds too.
+        let f64max = lir("(: x Int64)", "(<= x 9223372036854775807)");
+        assert!(
+            f64max.contains(&Lir::ConstI32(1)) && no_cmp(&f64max),
+            "Int64 (<= x MAX) → true; got {f64max:?}"
+        );
+
+        // VALUE PARITY over runtime narrow inputs — the fold agrees with the true comparison. An `Int8`
+        // param takes `Val::S8`, a `UInt8` param `Val::U8`.
+        assert!(run::<bool>("(: x Int8)", "(<= x 127)", &[Val::S8(127)]));
+        assert!(run::<bool>("(: x Int8)", "(<= x 127)", &[Val::S8(-128)]));
+        assert!(!run::<bool>("(: x Int8)", "(> x 127)", &[Val::S8(100)]));
+        assert!(run::<bool>("(: x Int8)", "(>= x -128)", &[Val::S8(-128)]));
+        assert!(!run::<bool>("(: x Int8)", "(< x -128)", &[Val::S8(-128)]));
+        // UInt8 max (255) — the new unsigned-narrow-max coverage.
+        assert!(run::<bool>("(: x UInt8)", "(<= x 255)", &[Val::U8(255)]));
+        assert!(!run::<bool>("(: x UInt8)", "(> x 255)", &[Val::U8(255)]));
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir

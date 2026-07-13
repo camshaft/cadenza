@@ -5088,14 +5088,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 return Core::ConstBool(eq);
             }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
-                // UNSIGNED-vs-ZERO simplification: an UNSIGNED value `u` lives in `[0, MAX]`, so a `< 0`
-                // test is UNSATISFIABLE and a `>= 0` test is a TAUTOLOGY — both fold to a constant with no
-                // runtime compare. And `u <= 0` holds iff `u == 0`, so it rewrites to the `= 0` the
-                // backend already selects to `eqz` (one instruction). Symmetric with the constant on the
-                // LEFT (`0 > u`, `0 <= u`, `0 >= u`). `> 0` (= `u != 0`) is left as the native `gt_u` — no
-                // `Ne` prim exists and `gt_u` is already one instruction, so nothing is gained. Only fires
-                // when the RUNTIME operand's solved type is a definite UNSIGNED integer.
-                if let Some(folded) = fold_unsigned_vs_zero(db, op, args[0], args[1]) {
+                // TYPE-BOUND simplification: a comparison of a runtime integer against a constant AT its
+                // own type's min/max is (partly) decidable — `v < min`/`v > max` are unsatisfiable, `v >=
+                // min`/`v <= max` are tautologies, and `v <= min`/`v >= max` rewrite to `v == bound` (the
+                // backend selects `eqz` when the bound is 0). This subsumes the unsigned-vs-0 case (an
+                // unsigned type's `min` is 0) and adds signed narrow (`Int8`'s `[-128,127]`) and full-width
+                // bounds. Only fires when the runtime operand's type is fully resolved (Fixed sign+width).
+                if let Some(folded) = fold_comparison_at_type_bound(db, op, args[0], args[1]) {
                     return folded;
                 }
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "comparison stays runtime (scalar operands)");
@@ -5130,62 +5129,103 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
 }
 
-/// Simplify an ordering comparison of a DEFINITELY-UNSIGNED runtime scalar against the constant `0`,
-/// exploiting the unsigned domain `[0, MAX]`:
-///  - `u < 0` / `0 > u` → `false` (nothing is below 0);
-///  - `u >= 0` / `0 <= u` → `true` (everything is at least 0);
-///  - `u <= 0` / `0 >= u` → `u == 0` (a `Core::Compare Eq`, which the backend selects to `eqz`).
+/// The inclusive bounds a resolved integer type occupies, as `(min, max)` where each is `Some` only if it
+/// fits an `i64`. Returns `None` (skip the whole type) if the sign or width is not yet `Fixed` (a
+/// deferred/variable operand must NOT be folded — its bounds are a guess, and a deferred sign grounds to
+/// SIGNED where the range differs). Signed `N` holds `[-2^(N-1), 2^(N-1)-1]` (both fit i64 for `N <= 64`);
+/// unsigned `N` holds `[0, 2^N - 1]` — the min `0` always fits, but the max `2^64 - 1` at `N == 64` does
+/// NOT, so that bound is `None` (a comparison against it stays a runtime compare, out of i64 reach here).
+fn resolved_int_bounds(it: crate::ty::IntTy) -> Option<(Option<i64>, Option<i64>)> {
+    let crate::ty::Sign::Fixed(signed) = it.sign else {
+        return None;
+    };
+    let crate::ty::Width::Fixed(w) = it.width else {
+        return None;
+    };
+    if signed {
+        let half = 1i64 << (w - 1); // w <= 64, so 2^(w-1) <= 2^63 fits i64 (as `1<<63` = i64::MIN's magnitude)
+        Some((Some(half.wrapping_neg()), Some(half.wrapping_sub(1)))) // w=64: (i64::MIN, i64::MAX)
+    } else if w >= 64 {
+        Some((Some(0), None)) // unsigned 64: min 0 folds; max 2^64-1 is not i64-representable → None
+    } else {
+        Some((Some(0), Some((1i64 << w) - 1))) // w < 64: 2^w - 1 fits i64
+    }
+}
+
+/// Simplify an ordering comparison of a runtime scalar against a constant that sits at (or beyond) the
+/// operand's OWN type bound, exploiting the type's domain `[min, max]`:
+///  - `v < min` → `false`, `v >= min` → `true`, `v <= min` → `v == min`;
+///  - `v > max` → `false`, `v <= max` → `true`, `v >= max` → `v == max`.
 ///
-/// `u > 0` / `0 < u` (= `u != 0`) is deliberately NOT folded: there is no `Ne` prim and the native
-/// `gt_u`/`lt_u` is already one instruction, so a rewrite gains nothing. Returns `None` unless exactly one
-/// operand is the constant `0` and the OTHER's solved type is `Sign::Fixed(false)` (a resolved unsigned
-/// integer — a deferred/variable sign grounds to SIGNED, where `< 0` is genuinely reachable, so it must
-/// NOT fold). `Prim::Eq` is excluded (its `= 0` is already the `eqz` peephole and needs no help here).
-fn fold_unsigned_vs_zero(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<Core> {
+/// This subsumes the unsigned-vs-0 case (`min = 0` for an unsigned type) and adds signed narrow bounds
+/// (`Int8`'s `[-128,127]`) and full-width (`Int64`'s `[i64::MIN, i64::MAX]`). `v < max` / `v > min` are
+/// NOT decidable (the value can be anywhere in range) and are left as the native compare. The `v == bound`
+/// rewrite emits a `Core::Compare Eq`, which the backend selects to `eqz` when the bound is 0.
+///
+/// Returns `None` unless exactly one operand is a constant EQUAL to the other operand's resolved-type min
+/// or max (a `Sign::Fixed` + `Width::Fixed` integer — a deferred/variable type is not folded). `Prim::Eq`
+/// is excluded (equality against a bound is not a tautology and its `= 0` is already the `eqz` peephole).
+fn fold_comparison_at_type_bound(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<Core> {
     if matches!(op, Prim::Eq) {
         return None;
     }
-    // Identify (runtime unsigned operand, whether it is the LEFT operand). The constant-0 side must be a
-    // literal `0`; the other side must have a resolved UNSIGNED type.
-    let is_zero = |db: &mut Db, id: StructId| matches!(core_of(db, id), Core::ConstInt(v) if v.to_i64() == Some(0));
-    let unsigned = |db: &mut Db, id: StructId| matches!(crate::infer::type_of(db, id), crate::ty::Ty::Int(it) if it.sign == crate::ty::Sign::Fixed(false));
-    // `u_on_left` records the operand order so `<`/`>` map to the right constant/rewrite.
-    let (u, u_on_left) = if is_zero(db, rhs) && unsigned(db, lhs) {
-        (lhs, true) // `(op u 0)`
-    } else if is_zero(db, lhs) && unsigned(db, rhs) {
-        (rhs, false) // `(op 0 u)`
-    } else {
-        return None;
+    let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
     };
-    // Normalize to the `(cmp u 0)` sense: the LEFT-const forms are the mirror (`0 < u` ≡ `u > 0`).
-    let cmp = match (op, u_on_left) {
-        (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt, // u < 0
-        (Prim::Ge, true) | (Prim::Le, false) => Prim::Ge, // u >= 0
-        (Prim::Le, true) | (Prim::Ge, false) => Prim::Le, // u <= 0
-        (Prim::Gt, true) | (Prim::Lt, false) => Prim::Gt, // u > 0 — not folded
+    let int_bounds = |db: &mut Db, id: StructId| match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Int(it) => resolved_int_bounds(it),
+        _ => None,
+    };
+    // Identify (runtime operand `v`, its bounds, the constant `c`, whether `v` is on the LEFT). Exactly
+    // one side must be a constant and the OTHER a resolved integer. `min`/`max` are each `Option` — a
+    // bound that does not fit i64 (unsigned-64's max) is absent and never matches a constant.
+    let (v, (min, max), c, v_on_left) =
+        if let (Some(c), Some(b)) = (const_val(db, rhs), int_bounds(db, lhs)) {
+            (lhs, b, c, true) // `(op v c)`
+        } else if let (Some(c), Some(b)) = (const_val(db, lhs), int_bounds(db, rhs)) {
+            (rhs, b, c, false) // `(op c v)`
+        } else {
+            return None;
+        };
+    // Normalize to the `(cmp v c)` sense — the LEFT-const forms are the mirror (`c < v` ≡ `v > c`).
+    let cmp = match (op, v_on_left) {
+        (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt,
+        (Prim::Gt, true) | (Prim::Lt, false) => Prim::Gt,
+        (Prim::Le, true) | (Prim::Ge, false) => Prim::Le,
+        (Prim::Ge, true) | (Prim::Le, false) => Prim::Ge,
         _ => return None,
     };
+    // The constant occurrence to reuse as the rhs of a rewritten `v == c` (keeps its width grounding).
+    let c_occ = if v_on_left { rhs } else { lhs };
+    let const_bool = |r: bool, why: &str| {
+        trace!(target: "rcdzc::fold", node = v.0, why, "comparison at a type bound folds to a constant");
+        Some(Core::ConstBool(r))
+    };
+    let eq_bound = |why: &str| {
+        trace!(target: "rcdzc::fold", node = v.0, why, "comparison at a type bound folds to `== bound`");
+        Some(Core::Compare {
+            op: Prim::Eq,
+            lhs: v,
+            rhs: c_occ,
+        })
+    };
+    let at_min = min == Some(c);
+    let at_max = max == Some(c);
     match cmp {
-        Prim::Lt => {
-            trace!(target: "rcdzc::fold", node = u.0, "unsigned `< 0` is always false");
-            Some(Core::ConstBool(false))
-        }
-        Prim::Ge => {
-            trace!(target: "rcdzc::fold", node = u.0, "unsigned `>= 0` is always true");
-            Some(Core::ConstBool(true))
-        }
-        Prim::Le => {
-            // `u <= 0` ⇔ `u == 0`. Emit `= u 0`; the backend's eq-zero peephole makes it `eqz`. Reuse the
-            // ORIGINAL zero-constant occurrence as the rhs so its width grounds to `u`'s type at selection.
-            let zero = if u_on_left { rhs } else { lhs };
-            trace!(target: "rcdzc::fold", node = u.0, "unsigned `<= 0` folds to `== 0`");
-            Some(Core::Compare {
-                op: Prim::Eq,
-                lhs: u,
-                rhs: zero,
-            })
-        }
-        _ => None, // `> 0` — left as the native compare.
+        Prim::Lt if at_min => const_bool(false, "v < min"),
+        Prim::Ge if at_min => const_bool(true, "v >= min"),
+        Prim::Le if at_min => eq_bound("v <= min ⇔ v == min"),
+        Prim::Gt if at_max => const_bool(false, "v > max"),
+        Prim::Le if at_max => const_bool(true, "v <= max"),
+        Prim::Ge if at_max => eq_bound("v >= max ⇔ v == max"),
+        // `v < max` / `v > min` (and any constant strictly inside the range) — not decidable.
+        _ => None,
     }
 }
 
