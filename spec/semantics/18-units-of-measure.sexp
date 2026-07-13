@@ -447,3 +447,34 @@
   (needs  units-of-measure)
   (input  (+ (Qty.of 1.0 (Unit.of #"inch")) (Qty.of 1.0 (Unit.of #"second"))))
   (error  CDZ0501))
+
+; ============================================================================================
+; Unit.in — EXPLICIT conversion to a chosen unit over concrete numerics. `(Unit.in TARGET q)` converts
+; q's magnitude from its unit to TARGET (result `(Qty T TARGET)`), the way a program pins a specific
+; result unit rather than the auto-chosen reference (units-of-measure.md #A Unit Conversion Is The
+; Arithmetic The Source Denotes). The `(Rational.of …)` Unit.in cases above pin the exact-magnitude form
+; (realized when Rational lands); these pin the same conversions over Float/Int.
+
+(case "Unit.in converts a quantity to a chosen larger unit (Float)"
+  (doc    "`(Unit.in metre (Qty.of 3.0 kilometre))` converts 3 km to metres: 3 * 1000 = 3000 m. The
+           magnitude is multiplied by the source-to-target scale ratio (km's 1000 over metre's 1) in the
+           inner Float64 type; the result is `(Qty Float64 metre)`.")
+  (needs  units-of-measure)
+  (input  (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 3.0 (Unit.of #"kilometre")))))
+  (output (: 3000.0 Float64)))
+
+(case "Unit.in converts a quantity to a chosen smaller unit exactly (Int)"
+  (doc    "`(Unit.in kilometre (Qty.of 2000 metre))` converts 2000 m to kilometres: 2000 / 1000 = 2 km,
+           exact integer arithmetic (the ratio divides). Pins that Unit.in over Int64 is exact when the
+           conversion is whole; a non-dividing ratio truncates (opting into integer math).")
+  (needs  units-of-measure)
+  (input  (Qty.value (Unit.in (Unit.of #"kilometre") (Qty.of 2000 (Unit.of #"metre")))))
+  (output (: 2 Int64)))
+
+(case "Unit.in to a unit of a different dimension is a compile-time error"
+  (doc    "`(Unit.in metre (Qty.of 3.0 second))` asks to convert a time to a length — different
+           dimensions — so it is CDZ0501. Unit.in converts WITHIN a dimension (metre↔km), never ACROSS
+           one; there is no scale relating a length to a time.")
+  (needs  units-of-measure)
+  (input  (Unit.in (Unit.of #"metre") (Qty.of 3.0 (Unit.of #"second"))))
+  (error  CDZ0501))

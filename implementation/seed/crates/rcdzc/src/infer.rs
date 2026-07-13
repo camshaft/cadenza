@@ -1198,6 +1198,21 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             _ => Ty::Any,
         };
     }
+    // `Unit.in target q` — explicit conversion. The result is a quantity at the TARGET unit (read from
+    // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in metre (Qty.of 3.0 km))` :
+    // `(Qty Float64 metre)`. A dimensional mismatch (target dimension ≠ q's) is reported by
+    // `check_application` (CDZ0501); here we fill the value-column type. If the target unit doesn't
+    // reduce, or q isn't a quantity, fall through (→ Any, faulted elsewhere).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
+        && args.len() == 2
+        && let (Some(target), Ty::Qty { inner, .. }) =
+            (crate::eval::unit_of(db, args[0]), type_of(db, args[1]))
+    {
+        return Ty::Qty {
+            inner,
+            unit: target,
+        };
+    }
     // A binary OPERATOR applied to QUANTITIES — the dimensional result type (units-of-measure.md §How
     // Arithmetic Composes Dimensions). Only engages when an operand is a `Ty::Qty` (two bare numbers take
     // the ordinary scheme path). `+`/`-` keep the shared unit (result `(Qty T u)`); `*`/`/` COMPOSE units
@@ -1838,6 +1853,26 @@ fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
 }
 
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+    // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
+    // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
+    // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
+    // faults, then return (skip the generic scheme-unify — `Unit.in` has no HM scheme).
+    if args.len() == 2
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
+    {
+        if let (Some(target), Ty::Qty { unit: qu, .. }) =
+            (crate::eval::unit_of(db, args[0]), type_of(db, args[1]))
+            && !target.same_dimension(&qu)
+        {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Unit.in target dimension differs from the quantity's (CDZ0501)");
+            out.push(Reject::coded(
+                Code::DimensionMismatch,
+                "converting a quantity to a unit of a different dimension",
+            ));
+        }
+        collect(db, args[1], out);
+        return;
+    }
     // A COMPARISON between a MAP and a RECORD is a type error — they are DISTINCT KINDS (a record's field
     // set is fixed by its form; a map's key set is a runtime collection), so `(= (map …) (record …))` is
     // CDZ0201, NOT the CDZ0203 that a same-kind SHAPE mismatch (two records with different fields) gets

@@ -740,6 +740,11 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     let of_field = push_atom(ast, Leaf::Name("of".to_string()));
     let of_op = unit_op_ctor(ast, "unit-of");
     children.push(push_list(ast, vec![of_field, of_op]));
+    // `in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in metre (Qty.of 3.0 km))`.
+    // Member access (`(. Unit in)`), a field. Takes a target unit + a quantity.
+    let in_field = push_atom(ast, Leaf::Name("in".to_string()));
+    let in_op = unit_op_ctor(ast, "unit-in");
+    children.push(push_list(ast, vec![in_field, in_op]));
     push_list(ast, children)
 }
 

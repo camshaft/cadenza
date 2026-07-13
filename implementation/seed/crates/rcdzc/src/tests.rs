@@ -9663,6 +9663,40 @@ mod match_engine {
     }
 
     #[test]
+    fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
+        // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
+        // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
+        // unit; the magnitude is `value * (source.scale / target.scale)` in the inner T. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Unit in) ((. Unit of) #\"kilometre\") ((. Qty of) 2000 ((. Unit of) #\"metre\"))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a Unit.in conversion compiles and runs"),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn unit_in_across_dimensions_is_cdz0501() {
+        // F2-3: `(Unit.in metre (Qty.of 3.0 second))` asks to convert a time to a length — different
+        // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
+        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"metre\") \
+                   ((. Qty of) 3.0 ((. Unit of) #\"second\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "converting across dimensions with Unit.in must reject CDZ0501"
+        );
+    }
+
+    #[test]
     fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
         // Operator ask: a name→conversion must be a FUNCTION — registering the same unit name with a
         // DIFFERENT dimension or scale is an error (returns the offending name → CDZ0502 at a future user

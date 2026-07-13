@@ -897,6 +897,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.value erases to its argument");
                     core_of(db, args[0])
                 }
+                // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
+                // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
+                // units are already equal). Folds the constant case; a runtime operand declines.
+                Some(Prim::UnitIn) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Unit.in explicit conversion");
+                    lower_unit_in(db, args[0], args[1])
+                }
                 // A sum VARIANT CONSTRUCTOR applied — `(Option.Some 5)`. The discriminant is read off
                 // the head's `(meta variant)` channel (the value the shared `sum-new` prim needs); the
                 // args are the payloads. Build `Core::SumNew{disc, payloads}` the backend lowers to
@@ -5292,6 +5299,78 @@ fn int_of_core(c: &Core) -> Option<i128> {
     }
 }
 
+/// Lower `(Unit.in target q)` — convert q's erased magnitude from its unit to `target` by
+/// `value * (q.scale / target.scale)` in the inner type T (Float rounds, Int exact/truncates). A no-op
+/// when the scales are equal. Folds the constant case; a runtime magnitude declines (the emitted runtime
+/// scale-multiply is a later increment). The dimensional check (target vs q dimension) is
+/// `check_application`'s (CDZ0501); here q is assumed same-dimension.
+fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
+    // q's scale to the reference (read off its solved unit); the target's from `unit_of`.
+    let (qn, qd) = match crate::infer::type_of(db, q) {
+        crate::ty::Ty::Qty { unit, .. } => unit.scale(),
+        _ => return Core::Poison(Reject::decline("Unit.in of a non-quantity")),
+    };
+    let (tn, td) = match crate::eval::unit_of(db, target) {
+        Some(u) => u.scale(),
+        None => return Core::Poison(Reject::decline("Unit.in target is not a unit")),
+    };
+    // The conversion factor is `q.scale / target.scale` = `(qn/qd) / (tn/td)` = `(qn*td) / (qd*tn)`.
+    let inner_is_float = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Float(_))
+    );
+    let qc = core_of(db, q);
+    if inner_is_float {
+        let v = match float_of_core(&qc) {
+            Some(v) => v,
+            None => {
+                return Core::Poison(Reject::decline(
+                    "Unit.in over a runtime float magnitude (not yet emitted)",
+                ));
+            }
+        };
+        let converted = v * (qn as f64) * (td as f64) / ((qd as f64) * (tn as f64));
+        return match crate::ast::Decimal::from_f64(converted) {
+            Some(d) => Core::ConstFloat(d),
+            None => Core::Poison(Reject::decline("Unit.in float result has no finite form")),
+        };
+    }
+    let v = match int_of_core(&qc) {
+        Some(v) => v,
+        None => {
+            return Core::Poison(Reject::decline(
+                "Unit.in over a runtime integer magnitude (not yet emitted)",
+            ));
+        }
+    };
+    // Integer: `v * (qn*td) / (qd*tn)` (exact when the ratio divides, truncates otherwise).
+    let num = match qn.checked_mul(td) {
+        Some(n) => n,
+        None => {
+            return Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "Unit.in conversion overflows",
+            ));
+        }
+    };
+    let den = match qd.checked_mul(tn) {
+        Some(d) if d != 0 => d,
+        _ => {
+            return Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "Unit.in conversion overflows",
+            ));
+        }
+    };
+    match v.checked_mul(num) {
+        Some(scaled) => Core::ConstInt(IntValue::from_i128(scaled / den)),
+        None => Core::Poison(Reject::coded(
+            Code::ConstTrap,
+            "Unit.in conversion overflows",
+        )),
+    }
+}
+
 /// Apply `op` to two converted FLOAT reference values, producing the result core: `+`/`-` a
 /// `ConstFloat`, a comparison a `ConstBool`.
 fn fold_float_combine(op: Prim, l: f64, r: f64) -> Core {
@@ -5936,6 +6015,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitPow
         | Prim::UnitPrefix
         | Prim::UnitOf
+        | Prim::UnitIn
         | Prim::QtyOf
         | Prim::QtyValue
         | Prim::QtyCtor
@@ -8876,6 +8956,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitPow => "unit-pow",
         Prim::UnitPrefix => "unit-prefix",
         Prim::UnitOf => "unit-of",
+        Prim::UnitIn => "unit-in",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
         Prim::QtyCtor => "Qty",

@@ -426,6 +426,13 @@ pub enum Prim {
     /// Units). Builds `Unit.base(dim).scaled(num, den)`. Scales are machine-int metadata (foot 381/1250,
     /// mile 201168/125 - all small), so a family unit auto-converts over Float/Int with NO bignum.
     UnitOf,
+    /// `Unit.in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in metre (Qty.of 3.0 km))`
+    /// = `(Qty Float64 metre)` with value 3000 (`units-of-measure.md` #A Unit Conversion Is The
+    /// Arithmetic The Source Denotes; the way a program pins a specific result unit rather than the
+    /// auto-chosen reference). Takes a TARGET unit and a quantity of the SAME dimension (else CDZ0501);
+    /// the magnitude is multiplied by `source.scale / target.scale` in the inner type T (Float rounds,
+    /// Int exact/truncates). The result unit is the TARGET.
+    UnitIn,
     /// `Qty.of` - attach a unit to a numeric value: `∀(T,u). T → u → (Qty T u)`. The result's inner type
     /// is the value argument's type; the result's UNIT is the VALUE of the second argument (a
     /// compile-time unit read by `unit_of`). Erases to the value argument's lowering (the unit is
@@ -562,6 +569,7 @@ impl Prim {
             "unit-pow" => Some(Prim::UnitPow),
             "unit-prefix" => Some(Prim::UnitPrefix),
             "unit-of" => Some(Prim::UnitOf),
+            "unit-in" => Some(Prim::UnitIn),
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
             "Qty" => Some(Prim::QtyCtor),
