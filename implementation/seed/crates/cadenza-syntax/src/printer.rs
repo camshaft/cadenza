@@ -1046,17 +1046,21 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// `effect Name { op : Type … }` — an effect declaration. `args` is `name (op <op> <ty>)…`; each
-    /// operation renders as `op : ty` on its own line (mirroring a `module`'s members). Inline when it
-    /// fits (`effect E { op : A -> B }`); else one op per line, block-indented.
+    /// `effect Name = | op : Type | …` — an effect declaration. `args` is `name (op <op> <ty>)…`; each
+    /// operation renders as `op : ty` on its own line, led by `| ` (mirroring a `type Name = | A | B`
+    /// sum-type declaration — the operations are the effect's "variants"). Never parenthesized.
     fn print_effect(&mut self, args: &[StructId]) {
         let ops = &args[1..];
         self.doc.cbox(INDENT);
         self.doc.word("effect ");
         self.expr(args[0], 0); // effect name
-        self.doc.word(" {");
+        self.doc.word(" =");
+        // Each operation on its own line, led by `| ` (always, including the first) — symmetric with a
+        // sum type's `|`-led variants. The `|` is the surface separator between the operation
+        // signatures, never a node in the tree.
         for &op in ops {
             self.doc.hardbreak();
+            self.doc.word("| ");
             // op = (op <name> <ty>)
             if let Some(o) = self.a.as_form(op, "op") {
                 self.expr(o[0], 0); // operation name
@@ -1064,8 +1068,6 @@ impl<'a> Printer<'a> {
                 self.print_op_type(o[1]);
             }
         }
-        self.doc.break_with(1, -INDENT);
-        self.doc.word("}");
         self.doc.end();
     }
 
@@ -1185,11 +1187,12 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// An `(effect Name (op <op> <ty>)…)` the `effect Name { … }` surface handles: a name head, then
-    /// zero or more `(op <name> <ty>)` operation forms (each a 3-element list headed `op` with a name
-    /// operation). Anything else falls back to the generic call form so it still round-trips.
+    /// An `(effect Name (op <op> <ty>)…)` the `effect Name = | … ` surface handles: a name head, then
+    /// AT LEAST ONE `(op <name> <ty>)` operation form (each a 3-element list headed `op` with a name
+    /// operation). The `|`-led surface can't spell an op-less effect, so a bare `(effect Name)` falls
+    /// back to the generic call form to still round-trip; anything else does too.
     fn is_effect_shape(&self, args: &[StructId]) -> bool {
-        if args.is_empty() || self.head_name(args[0]).is_none() {
+        if args.len() < 2 || self.head_name(args[0]).is_none() {
             return false;
         }
         args[1..].iter().all(|&op| match self.a.as_form(op, "op") {
