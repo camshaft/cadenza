@@ -298,6 +298,12 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // `sum-disc`/`sum-payload` handle), the nominal tag adding nothing to the representation
         // (`type-system.md §156`). So a runtime sum value lives in an i32 local, like a tuple/record.
         Ty::Sum { .. } => Some(ValType::I32),
+        // A nominal's machine representation IS its underlying type's — the tag is erased at run time
+        // (`§156` — it "adds nothing to the value's runtime representation"), so a `(type UserId (Mk
+        // Int64))` value occupies an i64 slot exactly as a bare `Int64` does, a `(type Point (Mk Int64
+        // Int64))` an i32 handle like the tuple it wraps. This read-THROUGH is what keeps the erased
+        // construction/binding's slot matching the value's declared type.
+        Ty::Nominal { inner, .. } => valtype_of(inner),
         // A list is a value-heap compound too — at run time an OPAQUE u32 HANDLE into the persistent
         // `vec-*` store, so it lives in an i32 local like a tuple/record/sum.
         Ty::List(_) => Some(ValType::I32),
@@ -398,6 +404,11 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
         Ty::Sum { .. } => None,
+        // A nominal crosses the boundary as its UNDERLYING type does — the tag is erased, so a `(type
+        // UserId (Mk Int64))` crosses as its `Int64` primitive (`s64`), a nominal-over-tuple as the
+        // tuple's `u32` handle. The host reads the value as its underlying representation; the nominal
+        // NAME is carried in the type surface (`type_ast`), not the wire valtype.
+        Ty::Nominal { inner, .. } => comp_valtype_of(inner),
         // A list escapes as the canonical binary value form via the resource `encode()` path, not a
         // primitive handle valtype (like a record/sum).
         Ty::List(_) => None,

@@ -49,6 +49,13 @@ pub enum Leaf {
     /// \"` named, else `\xNN`). The canonical value-form leaf a byte sequence crosses the boundary as.
     Bytes(Vec<u8>),
     Bool(bool),
+    /// A SYMBOL literal (`#"metre"`) — an interned name value whose identity is its CONTENT, distinct
+    /// from a `Str` (a text value) and a `Name` (an identifier reference). Written `#"…"` (reusing string
+    /// lexing/escapes), it names a symbol whose only observations are equality and `to-string`
+    /// (`symbol-interning-direction`; `options/symbol-interning/`). Holds the symbol's text. Printed back
+    /// `#"…"` so it round-trips. In the units-of-measure layer a base dimension is named by such a symbol
+    /// (`(Unit.base #"metre")`).
+    Sym(String),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
     Name(String),
     /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a lexical well-formedness defect the

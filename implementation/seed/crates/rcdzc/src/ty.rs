@@ -140,6 +140,13 @@ pub const DEFAULT_FLOAT_WIDTH: u32 = 64;
 /// constructor (`prelude::build_float_ty`), exactly as the integer `1..=64` check lives at `Int`.
 pub const ADMITTED_FLOAT_WIDTHS: [u32; 2] = [32, 64];
 
+/// The integer widths that have a pre-installed ALIAS name in the prelude (`Int8`/`Int16`/`Int32`/
+/// `Int64` and their `UInt` twins — `prelude::install`). Every width in `1..=64` is a valid integer
+/// TYPE, but only these have a BOUND module name; `(Int N)` for any other width is built on demand and
+/// has no name to write. A diagnostic that suggests a conversion `(IntN.of …)` must restrict to THIS set
+/// so the suggested name actually resolves — a non-aliased `Int48` would be an unbound name.
+pub const ALIASED_INT_WIDTHS: [u32; 4] = [8, 16, 32, 64];
+
 /// A floating-point type: a [`Width`] (there is no signedness axis — a float is inherently signed, so
 /// this is [`IntTy`] minus its `Sign`). `FloatTy { width: Fixed(64) }` is `Float64` (binary64), the
 /// type a bare float literal grounds to; `Fixed(32)` is `Float32`. The width is polymorphic exactly as
@@ -430,6 +437,32 @@ pub enum Ty {
         name: String,
         args: Vec<Ty>,
     },
+    /// A NOMINAL type — an underlying structural type `inner` tagged with a compile-time NAME
+    /// (`type-system.md §Nominal Is An Orthogonal Modifier Over Any Structural Type`). Realized as the
+    /// erased form of a SINGLE-VARIANT sum: `(type UserId (Mk Int64))` is a nominal Int64, `(type Point
+    /// (Mk Int64 Int64))` a nominal `(Tuple Int64 Int64)`, `(type Marker (The))` a nominal `Unit`. The
+    /// tag "adds nothing to the value's runtime representation" (§156) — at run time a `Ty::Nominal`
+    /// value IS its `inner` value (no `sum-new` box, no discriminant), so its machine representation
+    /// (`valtype_of`, boundary encode/decode) reads THROUGH `inner`.
+    ///
+    /// **Identity is opaque; representation is transparent.** `decl` is the nominal FQN identity (the
+    /// declaration occurrence, exactly like `Ty::Sum::decl`): two `Nominal` types are the SAME iff their
+    /// `decl` matches AND their `inner`s unify — so `UserId` never unifies with the bare `Int64` it wraps
+    /// (a different `Ty` variant ⇒ mismatch; no forging, §Nominal Types Are Not Comparable Across Their
+    /// Boundary), and two same-shape declarations `(type A (Mk Int64))` / `(type B (Mk Int64))` are
+    /// DISTINCT (distinct `decl`s). Unlike `Ty::Sum`, a nominal carries NO separate `args` vec: `inner`
+    /// already encodes the instantiation, so a generic `(type Box (Mk a))` at `Box Int64` is `Nominal {
+    /// inner: Int64 }` and at `Box Bool` is `Nominal { inner: Bool }` — distinct via the recursive
+    /// `inner` unify. `name` is the declared LOCAL name, carried for rendering only.
+    ///
+    /// A RECURSIVE single-variant sum (`(type Stream (More (Tuple Int64 Stream)))`) is NOT erased — its
+    /// `inner` would be an infinite `Ty` — so it stays an ordinary boxed `Ty::Sum`. `Ty::Nominal` is
+    /// produced only for the erasable case (`Db::newtype_underlying`).
+    Nominal {
+        decl: crate::ast::StructId,
+        name: String,
+        inner: Box<Ty>,
+    },
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument
     /// against `param` and takes `result`.
@@ -473,6 +506,20 @@ impl Ty {
         Ty::Float(FloatTy::f64())
     }
 
+    /// Peel every NOMINAL tag, returning the innermost underlying structural type. A nominal newtype is
+    /// erased at run time (`type-system.md §156` — the tag adds nothing to the representation), so the
+    /// BOUNDARY treats a nominal value exactly as its underlying value: a `(type UserId (Mk Int64))`
+    /// crosses as `Int64`, a `(type Rec (Mk Int64 Int64 Int64))` as its `(Tuple …)`. A non-nominal type
+    /// is returned unchanged. (Nesting is not produced this increment — the guard is sum-free — but peel
+    /// through it anyway so the helper is robust.)
+    pub fn strip_nominal(&self) -> &Ty {
+        let mut t = self;
+        while let Ty::Nominal { inner, .. } = t {
+            t = inner;
+        }
+        t
+    }
+
     /// Whether the type contains an UNRESOLVED type variable ([`Ty::Var`]) — a payload/element/parameter
     /// the inference solve never determined (a bare `(None)` is `Option ?0`; an empty `(list)` is `List
     /// ?0`). Such a type has no defined serialization, so a value of it reaching the HOST BOUNDARY is a
@@ -491,6 +538,9 @@ impl Ty {
             // A quantity's free variables are its INNER numeric type's — the unit is a concrete
             // compile-time value (a canonical exponent map), never a variable.
             Ty::Qty { inner, .. } => inner.has_free_var(),
+            // A nominal's free variables are its underlying type's — a generic `Box a` at an
+            // unsolved instantiation carries the free var in `inner`.
+            Ty::Nominal { inner, .. } => inner.has_free_var(),
             // Bytes, String, and Char are leaves — no inner type, so no free variable.
             Ty::Int(_)
             | Ty::Bool
@@ -574,6 +624,19 @@ impl Ty {
                     decl: b, args: ab, ..
                 },
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
+            // Two nominals agree iff their DECLARATIONS match AND their underlying types agree — the
+            // nominal analogue of the sum rule (decl is the opaque identity; `inner` carries the
+            // instantiation). A nominal never agrees with its bare underlying type — the `(_, _)`
+            // fallthrough handles `(Nominal, Int)` — so `UserId` cannot be passed where `Int64` is
+            // required, nor vice versa (§Nominal Types Are Not Comparable Across Their Boundary).
+            (
+                Ty::Nominal {
+                    decl: a, inner: ia, ..
+                },
+                Ty::Nominal {
+                    decl: b, inner: ib, ..
+                },
+            ) => a == b && ia.agrees_with(ib),
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
             // `Char` is monomorphic — the one char type agrees only with itself.
@@ -684,6 +747,18 @@ impl Ty {
                 inner: Box::new(ia.join(ib)),
                 unit: ua.clone(),
             },
+            // Two agreeing nominals join their underlying types — a deferred inner (a nullary/empty
+            // instantiation) is fixed by the other branch, the nominal analogue of the sum-arg join.
+            // `agrees_with` guarantees the same `decl`.
+            (Ty::Nominal { decl, name, inner }, Ty::Nominal { inner: ib, .. })
+                if self.agrees_with(other) =>
+            {
+                Ty::Nominal {
+                    decl: *decl,
+                    name: name.clone(),
+                    inner: Box::new(inner.join(ib)),
+                }
+            }
             _ => self.clone(),
         }
     }
@@ -755,6 +830,11 @@ impl Ty {
                     s
                 }
             }
+            // A nominal renders as its declared NAME (`(: (Mk 42) UserId)`) — its identity is the name,
+            // not its underlying shape (`type-system.md §A Nominal Type's Identity Is Its
+            // Fully-Qualified Name`). The underlying type is not part of the rendered annotation, just
+            // as a sum's variant set is not.
+            Ty::Nominal { name, .. } => name.clone(),
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
             // A quantity renders as `(Qty <inner> <unit>)` — the corpus form `(: (Qty.of 5.0 metre) (Qty
             // Float64 (Unit.base #"metre")))`. The inner type renders as its ordinary name; the unit

@@ -213,7 +213,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // `sum-payload(scrutinee)` then unbox by the payload's solved type. The disc is not needed
         // (control is already in the matched arm).
         Resolved::SumPayload {
-            scrutinee, steps, ..
+            scrutinee,
+            steps,
+            heads,
         } => {
             // FOLD when the whole path lands in constant `Core::SumNew` payloads — a constant `(match
             // (Some 5) ((Some x) x))` yields `5`, no heap read (extends to nesting: `(Some (Some 5))`
@@ -222,10 +224,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             if let Some(folded) = fold_sum_path(db, scrutinee, &steps) {
                 folded
             } else {
-                Core::SumPayload {
-                    scrutinee,
-                    path: steps.to_vec(),
-                }
+                // A `Payload` step over a NOMINAL NEWTYPE is a runtime no-op (the box is erased), so it
+                // emits no `sum-payload` — DROP it from the path the backend walks. `erase_nominal_steps`
+                // walks the scrutinee type + heads and keeps only the real (boxed-sum / tuple) steps, so
+                // the existing backend (wasm + rust) needs no nominal awareness: an empty path reads the
+                // scrutinee value directly (`(Mk n)` binds `n` to the whole erased value).
+                let path = erase_nominal_steps(db, scrutinee, &steps, &heads);
+                Core::SumPayload { scrutinee, path }
             }
         }
         // A `let` — A-NORMALIZE its bindings: a binding whose value is a runtime computation used more
@@ -250,6 +255,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         payloads: Vec::new(),
                     }
                 }
+                // A nullary NEWTYPE value (a bare single-variant nullary ctor, `(type Marker (The))` used
+                // as `The`) — erased to its underlying Unit (no box, no disc). The node's type is
+                // `Ty::Nominal { inner: Unit }`, which occupies no runtime slot, exactly as `Core::Unit`.
+                crate::ty::Ty::Nominal { .. } => Core::Unit,
                 // A payload variant used bare is a partial application (a function value).
                 _ => Core::Poison(Reject::decline(
                     "a variant constructor with payloads must be applied to its arguments",
@@ -701,16 +710,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // is already handled; only a non-lambda head reaches here.) Without this, `(g)` fell through
             // to `meta_apply_of` — which, finding no `(meta apply)` on the scalar 7, rejected it as
             // "value is not applyable", breaking every nullary-function call.
-            // An EMPTY compound-VALUE constructor — `(list)` / `(tuple)` / `(record)` written with the
-            // alias name at zero args — BUILDS the empty compound, it is NOT the ctor value. Route it
-            // through `reduce_ctor` (which rewrites `(list)` → `("list")` → the symbol form) before the
-            // zero-arg identity short-circuit below (which would return the ctor record and then decline
-            // it as a bare built-in value). A NON-empty alias application reaches `reduce_ctor` via the
-            // `Some(prim)` arm; this is only the nullary case the short-circuit would otherwise capture.
+            // An EMPTY compound-VALUE constructor — `(list)` / `(tuple)` / `(record)` / `(map)` written
+            // with the alias name at zero args — BUILDS the empty compound, it is NOT the ctor value.
+            // Route it through `reduce_ctor` (which rewrites `(map)` → `("map")` → the symbol form) before
+            // the zero-arg identity short-circuit below (which would return the ctor record and then
+            // decline it as a bare built-in value). A NON-empty alias application reaches `reduce_ctor` via
+            // the `Some(prim)` arm; this is only the nullary case the short-circuit would otherwise capture.
             if args.is_empty()
                 && matches!(
                     crate::eval::meta_apply_of(db, head),
-                    Some(Prim::TupleNew | Prim::RecordNew | Prim::ListNew)
+                    Some(Prim::TupleNew | Prim::RecordNew | Prim::ListNew | Prim::MapNew)
                 )
             {
                 let prim = crate::eval::meta_apply_of(db, head).unwrap();
@@ -1204,8 +1213,10 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // WILDCARD — a degenerate match the tree folds to the first covering arm. All go through
     // `lower_match_sum` (the shared decision-tree builder); a scalar scrutinee falls through to the
     // scalar-probe path below.
-    if let crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) =
-        crate::infer::type_of(db, scrutinee)
+    if let crate::ty::Ty::Sum { .. }
+    | crate::ty::Ty::Nominal { .. }
+    | crate::ty::Ty::Tuple(_)
+    | crate::ty::Ty::Record(_) = crate::infer::type_of(db, scrutinee)
     {
         return lower_match_sum(db, scrutinee, arms);
     }
@@ -1615,10 +1626,69 @@ enum GuardFoldScrut {
 /// nested payload binder over a constant scrutinee — `(match (Some (Some 5)) ((Some (Some y)) y))`
 /// through `[Payload, Payload]` yields the constant `5`, no heap read. `None` if any step hits a runtime
 /// value (then the binder emits a runtime `Core::SumPayload` walk).
+/// Drop the `Payload` steps that fall over a NOMINAL NEWTYPE sub-value — each is a runtime no-op (the box
+/// is erased, so the value already IS its underlying value; `core-semantics.md §156`). The remaining
+/// steps are the REAL heap accesses (a boxed sum's `sum-payload`, a tuple's `arr-get`) the backend walks,
+/// so the emit path needs no nominal awareness. Walks the scrutinee's type in lockstep with the steps —
+/// exactly as `type_of(SumPayload)` does — using `heads` to instantiate a boxed-sum `Payload`. A
+/// nominal `Payload` unwraps to `inner` and is DROPPED; every other step is KEPT and advances the type.
+fn erase_nominal_steps(
+    db: &mut Db,
+    scrutinee: StructId,
+    steps: &[crate::core::PathStep],
+    heads: &[StructId],
+) -> Vec<crate::core::PathStep> {
+    use crate::core::PathStep;
+    let mut cur = crate::infer::type_of(db, scrutinee);
+    let mut heads_it = heads.iter();
+    let mut out = Vec::with_capacity(steps.len());
+    for step in steps {
+        match step {
+            PathStep::Payload => {
+                if let crate::ty::Ty::Nominal { inner, .. } = &cur {
+                    // Nominal unwrap — a no-op step. Advance the type to `inner`, DROP the step.
+                    cur = (**inner).clone();
+                } else {
+                    // A real boxed-sum payload read — KEEP it, advance the type via the variant head.
+                    let head = heads_it.next().copied();
+                    out.push(*step);
+                    cur = head
+                        .and_then(|h| crate::infer::payload_ty_at_instantiation(db, h, &cur))
+                        .unwrap_or(crate::ty::Ty::Any);
+                    continue;
+                }
+            }
+            PathStep::Elem(i) => {
+                out.push(*step);
+                cur = match &cur {
+                    crate::ty::Ty::Tuple(elems) => {
+                        elems.get(*i).cloned().unwrap_or(crate::ty::Ty::Any)
+                    }
+                    crate::ty::Ty::List(elem) => (**elem).clone(),
+                    _ => crate::ty::Ty::Any,
+                };
+            }
+        }
+    }
+    out
+}
+
 fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -> Option<Core> {
     use crate::core::PathStep;
     let mut cur = root;
     for step in steps {
+        // A `Payload` step over a NOMINAL NEWTYPE sub-value is a no-op: the box is erased, so the newtype
+        // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). The
+        // underlying value IS `cur` — leave it unchanged and continue (a following `Elem` reads a
+        // multi-payload newtype's tuple). Detected by the sub-value's TYPE being `Ty::Nominal`.
+        if matches!(step, PathStep::Payload)
+            && matches!(
+                crate::infer::type_of(db, cur),
+                crate::ty::Ty::Nominal { .. }
+            )
+        {
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
                 payloads[0]
@@ -1814,7 +1884,10 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     let scrut_ty = crate::infer::type_of(db, scrutinee);
     if !matches!(
         scrut_ty,
-        crate::ty::Ty::Sum { .. } | crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_)
+        crate::ty::Ty::Sum { .. }
+            | crate::ty::Ty::Nominal { .. }
+            | crate::ty::Ty::Tuple(_)
+            | crate::ty::Ty::Record(_)
     ) {
         if let Core::Poison(r) = core_of(db, scrutinee) {
             return Core::Poison(r);
@@ -2270,6 +2343,76 @@ fn pattern_constraints(
             return Err(Reject::decline("a malformed sum match pattern"));
         }
     };
+    // A NOMINAL NEWTYPE scrutinee — the sole constructor `(Mk arg…)` imposes NO discriminant constraint
+    // (a newtype has no runtime disc; its one variant always matches), but its payload binders DO
+    // destructure. The ctor must belong to THIS newtype's declaration (a `(Other x)` pattern over a
+    // `UserId` scrutinee is a type error, CDZ0203 — same as the boxed-sum check below). The payload
+    // descends at `path + [Payload]`, which `erase_nominal_steps` later drops as a no-op; the payload
+    // type is the nominal's `inner` (single payload) or its tuple elements (multi-payload struct).
+    if let crate::ty::Ty::Nominal {
+        decl: scrut_decl,
+        inner,
+        ..
+    } = ty
+    {
+        if crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl) {
+            return Err(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "this constructor pattern is not the constructor of the matched type {}",
+                    ty.render_name()
+                ),
+            ));
+        }
+        let inner = (**inner).clone();
+        return match args.len() {
+            // A bare `(Mk)` / member `(. T Mk)` with no payload arg — nothing to bind (a unit newtype).
+            0 => Ok(Vec::new()),
+            // `(Mk n)` — bind the single payload at `[Payload]` (erased later), typed as `inner`.
+            1 => {
+                let mut deeper = path;
+                deeper.push(crate::core::PathStep::Payload);
+                pattern_constraints(db, args[0], &inner, deeper, lit_tests)
+            }
+            // `(Mk a b …)` over a multi-payload struct — the payload is `inner` = `Ty::Tuple`; each arg
+            // destructures an element at `[Payload, Elem(i)]` (the `Payload` erases, the `Elem` reads the
+            // tuple handle). Arity is checked against the tuple below via the shared descent.
+            _ => {
+                let elem_tys: Vec<crate::ty::Ty> = match &inner {
+                    crate::ty::Ty::Tuple(ts) if ts.len() == args.len() => ts.to_vec(),
+                    crate::ty::Ty::Tuple(ts) => {
+                        return Err(Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "this constructor pattern binds {} payload(s), but the newtype carries {}",
+                                args.len(),
+                                ts.len()
+                            ),
+                        ));
+                    }
+                    _ => {
+                        return Err(Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "this constructor pattern binds {} payloads, but the newtype's payload is {}",
+                                args.len(),
+                                inner.render_name()
+                            ),
+                        ));
+                    }
+                };
+                let mut payload_path = path;
+                payload_path.push(crate::core::PathStep::Payload);
+                let mut out = Vec::new();
+                for (i, (&arg, elem_ty)) in args.iter().zip(elem_tys.iter()).enumerate() {
+                    let mut deeper = payload_path.clone();
+                    deeper.push(crate::core::PathStep::Elem(i));
+                    out.extend(pattern_constraints(db, arg, elem_ty, deeper, lit_tests)?);
+                }
+                Ok(out)
+            }
+        };
+    }
     let Some(disc) = crate::eval::variant_disc_of(db, head) else {
         return Err(Reject::decline(
             "a sum match pattern head is not a variant constructor",
@@ -2919,6 +3062,16 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
     use crate::core::PathStep;
     let mut cur = scrutinee;
     for step in path {
+        // A `Payload` step over a NOMINAL NEWTYPE is a no-op (the box is erased; the underlying value IS
+        // `cur`) — see `fold_sum_path`. Leave `cur` unchanged and continue.
+        if matches!(step, PathStep::Payload)
+            && matches!(
+                crate::infer::type_of(db, cur),
+                crate::ty::Ty::Nominal { .. }
+            )
+        {
+            continue;
+        }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
                 payloads[0]
@@ -3930,6 +4083,12 @@ fn resolve_leaf_offsets(
             crate::ast::Leaf::Str(s) => {
                 off += 1 + leb_len(s.len() as u64) + s.len();
             }
+            // A symbol leaf encodes like a Str/Name (kind byte + len LEB + utf8 bytes) and is compile-
+            // time-only (a unit erases before the boundary — a symbol never reaches a runtime value
+            // form), so advance past it with no runtime hole.
+            crate::ast::Leaf::Sym(s) => {
+                off += 1 + leb_len(s.len() as u64) + s.len();
+            }
             // A bytes leaf is a fully-baked constant (no runtime hole) — advance past it like a Str
             // (kind byte + len LEB + the raw bytes).
             crate::ast::Leaf::Bytes(bs) => {
@@ -4205,6 +4364,10 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             let uty = b.name(unit.render());
             Some(b.list(vec![head, ity, uty]))
         }
+        // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
+        // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
+        // underlying value form (built by the value walker, which sees through the tag).
+        Ty::Nominal { name, .. } => Some(b.name(name.clone())),
         // A function/type-value has no boundary value form, so no type surface. A program that would
         // escape one declines before reaching the escape.
         Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
@@ -5455,8 +5618,33 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // NOT a rejection. A key/value whose canonical form needs machinery not yet emitted (Bytes rope,
         // String, a nested collection) makes the map decline, deferring to that increment.
         Ty::Map(k, v) => {
+            // An `Any` key/value is a DEFERRED type of an EMPTY map (`(map)` — no entries, so its key/
+            // value never determined), a PHANTOM exactly like a `Var`: an empty map carries no key or
+            // value to compare, so the walk never reaches a concrete non-canonical leaf through it. Treat
+            // it as walkable (else `(= (map) (map (1 10)))` — comparing an empty map to a one-entry one,
+            // which MUST yield `false` — would decline). A CONCRETE key/value (Int/String/…) is checked
+            // normally; a genuinely non-canonical one (a nested collection, a Bytes rope) still declines.
             let (k, v) = ((**k).clone(), (**v).clone());
-            ty_heap_walkable(db, &k, seen) && ty_heap_walkable(db, &v, seen)
+            let key_ok = matches!(k, Ty::Any) || ty_heap_walkable(db, &k, seen);
+            let val_ok = matches!(v, Ty::Any) || ty_heap_walkable(db, &v, seen);
+            key_ok && val_ok
+        }
+        // A STRING is a flat UTF-8 byte LEAF, CANONICAL by construction — every runtime String rep is a
+        // flat leaf (`str-new`, or the compiler's `bytes-alloc`+`bytes-set` build, both `alloc(Vec::new(),
+        // bytes)`), NEVER a rope: `String.concat` declines for a runtime/non-ASCII operand (only a constant
+        // ASCII pair folds), so no non-canonical string reaches here. So two runtime strings (and two
+        // String-keyed maps) compare correctly by `value-eq`'s raw-byte walk (`champ_eq`). The type checker
+        // unifies both `=` operands to `String` before lowering, so a String is only ever compared against
+        // a String (never a Bytes of the same bytes). CONTRAST `Ty::Bytes` below (NON-walkable): a
+        // `Bytes.concat` DOES emit a non-canonical rope (`bytes-concat`), whose byte form is canonical only
+        // after a `bytes-compact` the compiler would first have to emit — so a runtime Bytes still declines.
+        Ty::String => true,
+        // A nominal — walkable iff its underlying value is (the tag is erased at run time, so the walk
+        // compares the underlying values directly). A recursive nominal is impossible here (a recursive
+        // single-variant sum is never erased — it stays a `Ty::Sum`, handled above).
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_heap_walkable(db, &inner, seen)
         }
         // A quantity ERASES to its inner numeric type, so it is walkable iff that inner type is — a `(Qty
         // Int64 u)` compares by its erased `Int64`. (A quantity `=` folds at compile time in Layer 1, but
@@ -5465,18 +5653,14 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             let inner = (**inner).clone();
             ty_heap_walkable(db, &inner, seen)
         }
-        // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
-        // here (its canonical form needs machinery this increment does not emit, or it is not a runtime
-        // value that reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at
-        // run time). A `Char` has no runtime machine rep yet (its equality folds at compile time).
-        Ty::List(_)
-        | Ty::Bytes
-        | Ty::String
-        | Ty::Char
-        | Ty::Float(_)
-        | Ty::Fn(_, _)
-        | Ty::Type
-        | Ty::Any => false,
+        // A collection / bytes-rope / char / float / function / type-value / unresolved leaf is NOT
+        // walkable here (its canonical form needs machinery this increment does not emit, or it is not a
+        // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
+        // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
+        // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
+        Ty::List(_) | Ty::Bytes | Ty::Char | Ty::Float(_) | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
+            false
+        }
     }
 }
 
@@ -5495,6 +5679,23 @@ fn lower_sum_new(db: &mut Db, head: StructId, args: &[StructId]) -> Core {
             "a sum constructor has no discriminant metadata",
         ));
     };
+    // NEWTYPE ERASURE: if the constructor's owning sum is an erasable NEWTYPE (a single-variant sum), the
+    // value IS its payload — NO `sum-new` box, no discriminant (`type-system.md §156`, the tag adds
+    // nothing to the runtime representation). Emit the payload directly: 0 payloads → unit, 1 → the
+    // payload's core, n → the payload TUPLE (the same shape a multi-payload variant already boxes, now
+    // the value itself). The result node's TYPE is `Ty::Nominal`, so `valtype_of` reads its underlying
+    // slot — the erased core and the declared type agree.
+    if let Some(decl) = crate::eval::variant_owner_decl(db, head)
+        && db.newtype_inner.contains_key(&decl)
+    {
+        return match args.len() {
+            0 => Core::Unit,
+            1 => core_of(db, args[0]),
+            _ => Core::Tuple {
+                elems: args.to_vec(),
+            },
+        };
+    }
     // A NULLARY variant is CONSTRUCTED by applying it to the unit value — `(None unit)` / `(Nil ())` —
     // the canonical form (core-semantics.md §Construction MUST Be Via Application: "(None unit)"; a
     // nullary variant carries unit). Its ctor `(meta t)` is the bare sum (no arrow → `variant_payload_type`

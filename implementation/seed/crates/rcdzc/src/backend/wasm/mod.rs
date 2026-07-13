@@ -47,10 +47,12 @@ use crate::layout::Layout;
 /// `spans` (Mode E of `DESIGN-debug-info-rcdzc.md`) — when `Some`, appends the wasm `name` (D0) + the
 /// `.debug_*` DWARF (D2) custom sections to the embedded core module, drawing source positions from the
 /// side-table. Inert and strippable, so a debug component stripped of custom sections is byte-identical
-/// to the `None` component (§5). `None` is byte-for-byte today's output. D0/D2 cover the ordinary
-/// multi-export path; the resource-escape shapes (a nullary compound export) are still emitted
-/// undecorated (their synthesized `make`/`t-encode` funcs get debug info in a later increment) —
-/// passing `spans` through them changes nothing yet.
+/// to the `None` component (§5). `None` is byte-for-byte today's output. BOTH the ordinary multi-export
+/// path AND the resource-escape shapes (a nullary compound export) carry DWARF: each resource emitter
+/// (`emit_runtime_resource`/`_sum_`/`_bytes_`) threads `spans` into `append_debug_sections` over its
+/// user bodies — which lead the escape core's code section — so a compound-returning program is
+/// debuggable too (the synthesized `make`/`t-encode` walker funcs have no `src_body`, so they get no
+/// row). A fully-CONSTANT compound bakes its bytes with no user body, so it carries no `.debug_*`.
 pub fn emit(
     db: &mut Db,
     layout: &Layout,
@@ -90,6 +92,12 @@ pub fn emit(
                 // time) has no constant form; `constant_value_form` returns None and it falls through to
                 // the decline below (the looping string-escape walker is a later increment, like a list).
                 | crate::ty::Ty::String
+                // A NOMINAL newtype export crosses as its ERASED underlying value (the tag adds nothing to
+                // the runtime representation): a nominal-over-COMPOUND takes this resource escape (its
+                // constant/runtime value form is the underlying value, with `type_ast` tagging it under the
+                // nominal NAME); a nominal-over-scalar has a scalar boundary valtype and is handled by the
+                // scalar path below (where `export_result_valtype` strips the tag), so both cross faithfully.
+                | crate::ty::Ty::Nominal { .. }
         )
     {
         let body = def_body(db, e.def)?;
@@ -604,8 +612,10 @@ fn dwarf_funcs_for(
 /// a bare module header instead of appending them to the runnable core.
 ///
 /// Requires `spans` (guaranteed present by `compile`'s §9.4 check for a `needs_spans()` target). The
-/// resource-escape shapes decline here for now (same scope as Mode E) — their code offsets come from a
-/// different core layout, a later increment.
+/// resource-escape shapes (a nullary compound export) are handled by `resource_escape_dwarf` FIRST — it
+/// rebuilds the matching resource core (whose different layout Mode E attributes over identically) and
+/// derives the sidecar from that, so a compound-returning export gets a sidecar whose offsets match the
+/// embedded form. Only a runtime shape with no value-form walker yet (a runtime list) still declines.
 /// DWARF descriptors for a nullary-compound RESOURCE-ESCAPE export, for the detached sidecar (Mode S).
 ///
 /// A single nullary export returning a compound crosses through the resource-escape core, NOT the
@@ -642,6 +652,10 @@ fn resource_escape_dwarf(
                 | crate::ty::Ty::Map(_, _)
                 | crate::ty::Ty::Bytes
                 | crate::ty::Ty::String
+                // A nominal-over-COMPOUND export takes the resource-escape core too (its erased value is
+                // the underlying compound), so the sidecar-DWARF path declines it here alongside the other
+                // compounds — parallel to Mode E's scope.
+                | crate::ty::Ty::Nominal { .. }
         )
     {
         return Ok(None);

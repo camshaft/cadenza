@@ -61,6 +61,7 @@ const KIND_BYTES: u8 = 11;
 const KIND_BAD_ESCAPE: u8 = 12;
 const KIND_CHAR: u8 = 13;
 const KIND_BAD_CHAR: u8 = 14;
+const KIND_SYM: u8 = 15;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -155,6 +156,11 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         Leaf::Name(n) => {
             out.push(KIND_NAME);
             write_bytes(out, n.as_bytes());
+        }
+        // A symbol leaf — the interned name text (mirrors cadenza-syntax's codec `KIND_SYM`).
+        Leaf::Sym(s) => {
+            out.push(KIND_SYM);
+            write_bytes(out, s.as_bytes());
         }
         // A bad-escape MARKER — the offending escape char, UTF-8 encoded (mirrors cadenza-syntax's codec).
         Leaf::BadEscape(c) => {
@@ -283,6 +289,7 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BOOL_FALSE => Leaf::Bool(false),
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
+        KIND_SYM => Leaf::Sym(read_string(r)?),
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
         KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
         KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),

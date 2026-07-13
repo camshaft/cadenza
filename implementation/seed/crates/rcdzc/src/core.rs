@@ -57,6 +57,13 @@ pub struct BinSeg {
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
     /// multi-payload variant's payload is a tuple, reached with a following `Elem`.)
+    ///
+    /// Over a NOMINAL NEWTYPE scrutinee (an erased single-variant sum), a `Payload` step is a RUNTIME
+    /// NO-OP: the box is erased (`type-system.md §156`), so the value ALREADY IS its underlying value —
+    /// the step only reinterprets the static type (`Ty::Nominal` → its `inner`). The path walkers detect
+    /// this by the CURRENT type at the step (a `Ty::Nominal` sub-value ⇒ unwrap-no-op; a `Ty::Sum` ⇒ the
+    /// real `sum-payload`), so resolve emits the SAME `Payload` step for a newtype and a boxed sum and
+    /// the representation choice stays a read-off of the solved type.
     Payload,
     /// Descend into a tuple/record ARRAY cell at `index` — `arr-get(handle, index)`.
     Elem(usize),

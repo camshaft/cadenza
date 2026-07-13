@@ -1565,6 +1565,10 @@ fn encode_sum_walk_body(
 /// here: a NON-ALIASED integer width (`(UInt 48)`, …) is internal-only, so an export whose result or
 /// parameter is one DECLINES (naming the width) rather than crossing as a misreported wider primitive.
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
+    // A NOMINAL newtype's boundary form is its ERASED underlying type (the tag adds nothing to the
+    // representation): peel it so a nominal-over-scalar crosses as its scalar, and a nominal-over-compound
+    // reaching HERE (a multi-export/parameterized position) declines as the underlying compound would.
+    let ret = ret.strip_nominal();
     match ret {
         Ty::Unit => Ok(None),
         // A COMPOUND returned across the HOST boundary crosses as the canonical binary value form via

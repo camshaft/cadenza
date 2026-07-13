@@ -49,6 +49,14 @@ pub enum Leaf {
     /// back — the canonical value-form leaf for a byte sequence, the companion of `Str` for text.
     Bytes(Vec<u8>),
     Bool(bool),
+    /// A SYMBOL literal (`#"metre"`) — an interned name value whose identity is its CONTENT, distinct
+    /// from `Str` (a text value) and `Name` (an identifier reference). Written `#"…"` (reusing string
+    /// lexing/escapes); its only observations are equality and `to-string`
+    /// (`symbol-interning-direction`). Holds the symbol's text; rendered back `#"…"`. In the
+    /// units-of-measure layer a base dimension is named by such a symbol (`(Unit.base #"metre")`) — this
+    /// is the minimal symbol-literal slice that unblocks the units corpus surface; the full `Symbol`
+    /// TYPE + intern table arrive with the symbols vertical.
+    Sym(String),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
     Name(String),
     /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a reader-detected lexical defect that

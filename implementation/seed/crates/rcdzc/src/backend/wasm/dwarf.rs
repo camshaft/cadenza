@@ -229,6 +229,12 @@ pub fn base_type_of(ty: &crate::ty::Ty) -> Option<BaseType> {
                 name,
             })
         }
+        // A nominal newtype is ERASED to its underlying value (`(type UserId (Mk Int64))` is a runtime
+        // i64), so it is describable exactly when its underlying scalar is — recurse through the tag to
+        // the inner type's base type. A nominal over a compound recurses to `None` (the tagless heap is
+        // not describable, §3). The DIE uses the UNDERLYING scalar's spelling (`i64`, not `UserId`); a
+        // debugger prints the erased value, which is what the runtime actually holds.
+        Ty::Nominal { inner, .. } => base_type_of(inner),
         _ => None,
     }
 }
