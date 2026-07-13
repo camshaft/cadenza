@@ -2003,6 +2003,25 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
     }
 }
 
+/// The VALUE-argument occurrence of a quantity operand — the `v` in `(Qty.of v u)` — for synthesizing a
+/// runtime unit conversion over it (the erased magnitude). `None` if `id` is not a `Qty.of` application
+/// (a quantity that isn't a literal construction — e.g. a param-bound one — has no value occurrence to
+/// reuse; the runtime-conversion caller declines it). The unit-layer analogue of reaching a `Qty.of`'s
+/// first argument.
+pub fn qty_value_occ(db: &mut Db, id: StructId) -> Option<StructId> {
+    match resolved_of(db, id) {
+        Resolved::Ref { value } => qty_value_occ(db, value),
+        Resolved::Apply { head, args } => {
+            if meta_apply_of(db, head) == Some(Prim::QtyOf) && args.len() == 2 {
+                Some(args[0])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The exact scale factor `(num, den)` a PREFIX record carries on its `(meta scale)` channel
 /// (`prelude::prefix_record`) — `kilo` → `(1000, 1)`, `milli` → `(1, 1000)`, `mebi` → `(1048576, 1)`.
 /// Read the same way `variant_disc_of` reads `(meta variant)`. `None` if `id` is not a prefix record
