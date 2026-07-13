@@ -26,6 +26,14 @@ export default function Symbols() {
         comparison is a single identity check, not a character-by-character scan.
       </P>
 
+      <Note>
+        In the conventional surface the quotes are just noise when the name is a plain identifier, so{" "}
+        <C>#"red"</C> may be written <C>#red</C> — the two are the same symbol. The quotes are only needed
+        when the content isn't an identifier: a name with a space, a leading digit, or a dot (
+        <C>#"List.at"</C>) keeps them. Toggle the syntax and a snippet's <C>#red</C> reappears as{" "}
+        <C>#"red"</C> in the s-expression surface, where the quoted form is canonical.
+      </Note>
+
       <H2>One choice from a fixed set</H2>
       <P>
         That's what symbols are for: a value drawn from a small, known set of names. A traffic light is{" "}
