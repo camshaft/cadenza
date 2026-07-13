@@ -6288,6 +6288,22 @@ mod tests {
                 let tname_s = b.atom(tname);
                 b.list(&[colon_s, value, tname_s])
             }
+            S::Framed(head, args, inner) => {
+                // The `(: value (head arg…))` parametric-type frame — mirrors the iterative walk's
+                // `Framed` arm: colon eagerly, value, then the `(head arg…)` type node, then the outer list.
+                let (head, args, inner) = (head.clone(), args.clone(), *inner);
+                let colon = b.name_leaf(":");
+                let colon_s = b.atom(colon);
+                let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
+                let head_leaf = b.name_leaf(&head);
+                let mut type_children = vec![b.atom(head_leaf)];
+                for arg in &args {
+                    let a = b.name_leaf(arg);
+                    type_children.push(b.atom(a));
+                }
+                let type_s = b.list(&type_children);
+                b.list(&[colon_s, value, type_s])
+            }
             S::Set(elem) => {
                 let elem = *elem;
                 let sorted = set_elements_canonical(desc, h, elem)?;
