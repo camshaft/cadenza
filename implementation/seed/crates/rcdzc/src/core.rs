@@ -494,6 +494,13 @@ pub enum Core {
         scrutinee: StructId,
         disc_present: u32,
     },
+    /// `trap` — an UNCONDITIONAL divergence (`Prim::Trap`, the diverging primitive `∀a. String → a`). The
+    /// backend emits `unreachable` (wasm) / `unreachable!()` (rust): the program HALTS here, producing no
+    /// value (core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed). `unreachable`
+    /// leaves the stack polymorphic, so a `Core::Trap` validates in ANY result position (the runtime
+    /// counterpart of its `Never` type — the else-branch of `SumExpect` emits the same instruction). The
+    /// `String` message argument is DROPPED (the wasm trap carries no text); the node carries nothing.
+    Trap,
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
     If {
         cond: StructId,

@@ -439,7 +439,8 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             binding_escapes(db, closure, binder, false)
                 || args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
-        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding).
+        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding). `trap`
+        // diverges with no operand, so it holds no binding to escape.
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
@@ -447,6 +448,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
         | Core::Unit
+        | Core::Trap
         | Core::Param { .. }
         | Core::Captured { .. }
         | Core::Poison(_) => false,
@@ -1139,13 +1141,15 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
         }
-        // Leaves and references emit no runtime op.
+        // Leaves and references emit no runtime op. `trap` emits `unreachable` (a core instruction, not a
+        // runtime import), so it adds nothing.
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
         | Core::Unit
+        | Core::Trap
         | Core::Param { .. }
         | Core::LocalRef { .. }
         | Core::Poison(_) => {}
@@ -3393,6 +3397,14 @@ fn emit(
         // `sum-payload` (+ `get-*` unbox, narrowing an i32 int) and whose ELSE is `unreachable` (the
         // absent-variant trap — textless; core-semantics.md §Requiring The Value Of An Optional Traps On
         // Absence). Both `sum-disc`/`sum-payload` BORROW the handle (no rc change), like a match probe.
+        Core::Trap => {
+            // `trap` — an unconditional divergence. `unreachable` HALTS and leaves the stack polymorphic,
+            // so it validates in ANY result position (the runtime counterpart of `trap`'s `Never` type,
+            // exactly as `SumExpect`'s absent branch emits below). The `String` message is already dropped
+            // at lowering (the wasm trap carries no text).
+            out.push(Lir::Unreachable);
+            Ok(())
+        }
         Core::SumExpect {
             scrutinee,
             disc_present,

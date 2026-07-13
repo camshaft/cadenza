@@ -5983,6 +5983,41 @@ mod match_engine {
     }
 
     #[test]
+    fn trap_diverges_and_unifies_with_any_position() {
+        // 07-type-system §Never Is The Empty Sum: `trap : ∀a. String → a` — a diverging expression whose
+        // type unifies with any expected type. (1) A `(trap …)` in one `if` branch and an Int64 in the
+        // other type-checks (Never unifies with the Int64 branch) and the taken branch returns its value.
+        // (2) A whole-body-trap function `(bomb)` type-checks at an Int64 use site and DIVERGES at run time
+        // (the wasm `unreachable`) — the honest type for a function that never returns normally.
+        use wasmtime::component::Val;
+        // (1) the diverging branch does not spoil the conditional; b=true selects the Int64 branch.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: b Bool)) (if b 1 (trap \"unreachable\"))) (def (main) (f true)) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+        // (2) a Never-returning function is callable in an Int64 position and traps when reached.
+        assert!(
+            call_traps(
+                &component(
+                    "(module m (def (bomb) (trap \"unreachable\")) (def (main) (+ 1 (bomb))) (export main))"
+                ),
+                "main",
+                &[] as &[Val],
+            ),
+            "a whole-body-trap function reached at run time must trap"
+        );
+        // NOTE a bare-trap EXPORT `(def (main) (trap …))` gives `main` an UNDETERMINED (`Ty::Var`) return
+        // type — no machine representation at the boundary — so it declines, exactly as any unannotated
+        // undetermined-type export does. `trap` fits any INTERNAL position (the two cases above); an
+        // export still needs a concrete result type, which a bare trap does not supply.
+    }
+
+    #[test]
     fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
         // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
         // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text

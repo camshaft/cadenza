@@ -1073,6 +1073,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
                 // trap).
                 Some(Prim::SumExpect) if args.len() == 2 => lower_sum_expect(db, id, args[0]),
+                // `(trap "message")` — the diverging primitive. Its message argument is DROPPED (the wasm
+                // trap carries no text) and it lowers to the unconditional `Core::Trap` (an `unreachable`).
+                // A malformed argument in the message still surfaces its own fault: descend for it, and if
+                // the message poisoned, propagate THAT (an unbound name in the message is the reported
+                // fault, not the trap). Arity is exactly one (the scheme is `String → a`).
+                Some(Prim::Trap) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Trap,
+                },
                 // `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic. FOLD a constant operand
                 // pair to `(Some result)` in range / `(None unit)` on overflow; a runtime operand is a
                 // later increment (declines cleanly).
@@ -5650,7 +5659,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitPow
         | Prim::QtyOf
         | Prim::QtyValue
-        | Prim::QtyCtor => {
+        | Prim::QtyCtor
+        // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
+        | Prim::Trap => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -8518,6 +8529,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrToBytes => "str-to-bytes",
         Prim::StrFromBytes => "str-from-bytes",
         Prim::SumExpect => "sum-expect",
+        Prim::Trap => "trap",
         Prim::CheckedAdd => "checked-add",
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",
