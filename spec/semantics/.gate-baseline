@@ -396,6 +396,7 @@ pass	a negative unsigned integer width is rejected
 pass	a negative width is not honored as a narrow type
 pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
+pass	a negative-power SI prefix converts over Float
 pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
@@ -671,6 +672,7 @@ pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
+pass	a truncating conversion to an unusual width keeps that width's low bits
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
@@ -708,6 +710,7 @@ pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a value declaration in a do block is in scope for the following forms
+pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
@@ -729,6 +732,7 @@ pass	adding two named family units of one dimension converts to the reference (F
 pass	adding two quantities of the same dimension keeps that dimension
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
+pass	an IEC binary prefix converts exactly over Int64
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
@@ -840,6 +844,7 @@ pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
+pass	an unusual in-range width is a first-class type
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
 pass	applying a float is a type error
@@ -1303,11 +1308,9 @@ todo	a tail-recursive string accumulator builds a runtime string and its length 
 todo	a tautology comparison against a masked value's derived range still traps on the operand
 todo	a tautology comparison against the type minimum still traps on a div-by-zero operand
 todo	a transformation over the built-in Ast composes across a function call
-todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 todo	a utf8-decoding bin match with no catch-all is non-exhaustive
-todo	a value definition may carry a leading doc, like a function definition
 todo	a whole rational carries a denominator of one
 todo	a wide fixed-size integer width is reserved, not yet a valid type
 todo	adding two units of one dimension converts to the reference unit exactly
@@ -1325,7 +1328,6 @@ todo	an open sum payload that does not match its schema yields a typed failure, 
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
-todo	an unusual in-range width is a first-class type
 todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
 todo	comparing two units of one dimension converts before comparing

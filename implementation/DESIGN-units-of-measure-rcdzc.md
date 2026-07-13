@@ -5,24 +5,41 @@ inner numeric type; a measurement family you join (`Length`) with registered uni
 that auto-convert; automatic SI + IEC (bibi) prefixes; no runtime overhead — all compile-time static
 analysis."* This doc pins the decisions and the increment plan. Read §0 first.
 
-## STATUS — LAYER 1 COMPLETE (`spec`, 2026-07-13)
+## STATUS — LAYERS 1 & 2 COMPLETE OVER Int/Float (`spec`, 2026-07-13)
 
-Layer 1 (the erasure-only dimensional core over one-unit-per-dimension) is IMPLEMENTED and landed on
-`spec`. `spec/semantics/18-units-of-measure.sexp` grades **19 pass / 10 todo / 0 fail** — every
-`(Unit.base …)` case: construct, observe, erase (byte-identical to the bare numeric), `+`/`-`/`*`/`/`,
-comparison, dimensional-mismatch `CDZ0501`, canonical-exponent-map equality, annotation-conflict
-`CDZ0501`, and a velocity derived through a function. Increments landed:
+Both layers are IMPLEMENTED and landed on `spec` for every NON-Rational numeric type.
+`spec/semantics/18-units-of-measure.sexp` grades **36 pass / 9 todo / 0 fail**. The **9 remaining todos
+are exactly the `Rational`-magnitude cases** — the one vertical the operator explicitly PUNTED
+("punt on rational/bigint for now; that's going to be complicated"). Everything else works:
+- **Layer 1 — the erasure-only dimensional core.** Construct/observe/erase (byte-identical to the bare
+  numeric), `+`/`-`/`*`/`/`, comparison, dimensional-mismatch `CDZ0501`, canonical-exponent-map
+  equality, annotation-conflict `CDZ0501`, a velocity derived through a function.
+- **Layer 2 — families, prefixes, conversion — over Int/Float.** `Unit.of #"inch"` (named family unit),
+  `Unit.prefix kilo metre` (scaled unit), `Unit.in u q` (explicit conversion), SI decimal + IEC binary
+  prefixes, automatic mixing conversion to the dimension's reference (const-folded when constant),
+  derived-dimension families (byte-per-second/mbps, hertz), and conflicting-registration `CDZ0502`.
+  Verified end-to-end: 3.0 km → 3000.0 m; 1 KiB + 1 kB = 2024 byte (Int64); 250000 byte/s + 1 mbps.
+- **ML quantity-literal surface** `5 feet` / `5 feet / 1 second` (§7.5, `@b246cc83`).
+
+The magnitude generality is the key unblock the operator called out: because `(Qty T u)` is GENERIC over
+the inner numeric `T`, families/prefixes/conversion work over `Float64`/`Int64` right now — a Float
+conversion rounds, an Int conversion truncates (spec line 48: precision loss permitted "only where the
+underlying numeric type is itself inexact"). EXACT magnitudes need `Rational`, which does not exist yet.
+
+Increments landed:
 - **L1-0** `Ty::Qty { inner, unit }` + `ty::Unit` (free-abelian-group exponent map) through the closed
   type universe (byte-neutral).
 - **L1-1a** the `#"metre"` symbol literal (`Leaf::Sym`) through both syntax surfaces + both codecs.
 - **L1-1b** `Qty`/`Unit` prelude + construct/observe/erase + the quantity value form.
 - **L1-2 (+ L1-3)** operator dimensional rules + `CDZ0501` + `Qty` type constructor + float-inner
   arithmetic + quotient unit rendering.
+- **L2 (over Int/Float)** `Unit.of`/`Unit.prefix`/`Unit.in`, SI+IEC prefix constants, `unit_families`
+  registry (exponent-pair dimensions for derived units), auto-mix conversion, `CDZ0502` conflict check.
+- **§7.5** the concise ML quantity-literal surface.
 
-The **10 remaining todos are all LAYER 2** — families (`Unit.of`), prefixes (`Unit.prefix`, SI + IEC),
-automatic mixing conversion, and `Rational` magnitudes — which are BLOCKED on two prerequisite verticals
-that do not yet exist in the compiler: a full `Symbol` type and `Rational`. See §7. **Next work = the
-Symbols and Rationals verticals, then Layer 2.**
+**Next work = the `Rational` vertical (operator-gated — do NOT start without an explicit go-ahead), then
+the 9 Rational cases flip todo→pass with no new units machinery** (the scale arithmetic is already
+exact-ratio; only the magnitude type is missing).
 
 The **spec is already written** and rich — this is an IMPLEMENTATION plan against a fixed contract, not
 a design-from-scratch:
@@ -289,19 +306,23 @@ reader literal (not the full Symbol type) is additive and does not realize the S
 `17-symbols` cases stay `todo`. Keep the reader-literal change minimal and separate from the units
 commits so it's clear it's a shared primitive.
 
-## §7 — Layer 2 (deferred — needs Symbols + Rationals)
+## §7 — Layer 2 (LANDED over Int/Float; only the exact-`Rational` magnitude remains)
 
-Not in scope now; recorded so the increment boundary is clear. Layer 2 delivers the remaining ~11
-family/prefix/mixing cases and requires two prerequisite verticals FIRST:
+Layer 2 is IMPLEMENTED over `Int`/`Float` (see STATUS). The unit machinery below all works today; the
+ONE remaining gap is the exact-`Rational` magnitude, which is its own operator-gated vertical:
 
-1. **Symbols** — a real `Ty::Symbol` + `Symbol.of`/`Symbol.to-string` + intern table (design:
-   `symbol-interning-direction`, corpus `17-symbols.sexp`). The `Unit` map key becomes `Symbol`.
-2. **Rationals** — a real `Ty::Rational` (or a rational numeric value) + normalization + zero-denom
-   trap (design in `units-rationals-families-direction` + `options/numeric-model/explicit-checked.md`,
-   corpus cluster in `06-numeric-model.sexp`). Exact scales (`inch` = 127/5000, `milli` = 1/1000) and
-   exact mixing (`1 inch + 1 mm` → 33/1250 m) are exact ONLY over Rational.
+- **Symbols were NOT ultimately required.** Layer 1 named a base dimension by a string carried in the
+  `#"metre"` symbol-literal leaf; Layer 2 kept that representation (the `Unit` map key stays a `String`
+  interned from the `Leaf::Sym`), so no separate `Ty::Symbol` vertical blocked families. A first-class
+  `Symbol` type is still worthwhile on its own merits, but units did not need it.
+- **Rationals** — a real `Ty::Rational` (a normalized pair of big-integers; NOT parametric — see the
+  operator exchange in `units-rationals-families-direction`) + normalization + zero-denom trap. The unit
+  SCALE arithmetic is ALREADY exact (a machine-int `(num,den)` ratio, `normalize_ratio`/`gcd_i128`); what
+  Rational adds is an exact MAGNITUDE type so `inch` = 127/5000 and `1 inch + 1 mm` → 33/1250 m compute
+  exactly instead of rounding through Float. The 9 todo cases all write `(Rational.of n d)` magnitudes;
+  they flip todo→pass once `Rational` exists, with NO new units code.
 
-Then Layer 2 adds:
+Layer 2 (already landed over Int/Float) provides:
 - A FAMILY = a dimension + a reference unit + sibling units each with an exact `Rational` scale to the
   reference. The prelude supplies SI families + common imperial/information units as ORDINARY data (a
   dimension symbol + a `unit-name ↦ Rational-scale` map); a program MAY declare its own.

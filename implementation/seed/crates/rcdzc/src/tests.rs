@@ -23102,8 +23102,9 @@ mod sidecar_driven {
 
     #[test]
     fn a_resolve_of_query_finds_the_defining_occurrence() {
-        // Go-to-definition: a reference to `helper` resolves to `helper`'s def body. The consumer maps
-        // an offset to the reference node; ResolveOf answers the DEFINING occurrence's node id.
+        // Go-to-definition: a reference to `helper` resolves to helper's def NAME occurrence — the token
+        // an editor highlights when you jump — NOT its body/value. The consumer maps an offset to the
+        // reference node; ResolveOf answers the defining NAME's node id.
         let src = "(module m (def (helper) 1) (def (main) helper) (export main))";
         let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse with spans");
         // The reference is the `helper` in `(def (main) helper)` — the LAST occurrence of "helper".
@@ -23129,13 +23130,18 @@ mod sidecar_driven {
             .trim()
             .parse()
             .expect("a node id");
-        // The target is helper's def body — spot-check via a fresh resolve (the same occurrence).
+        // The target is helper's def NAME occurrence (the sig's first child) — the go-to-definition
+        // anchor. Spot-check via a fresh resolve: the sig's first child, NOT the body.
         let db = crate::db::Db::load(parse(src));
-        let helper_body = db.defs[db.def_by_name("helper").unwrap()].body.unwrap();
+        let sig = db.defs[db.def_by_name("helper").unwrap()].sig_occ;
+        let helper_name = match db.ast.get(sig) {
+            crate::ast::Struct::List(kids) => kids[0],
+            _ => panic!("a def sig is a list"),
+        };
         assert_eq!(
             crate::ast::StructId(target),
-            helper_body,
-            "ResolveOf points at helper's def body"
+            helper_name,
+            "ResolveOf points at helper's def NAME occurrence, not its body"
         );
     }
 
