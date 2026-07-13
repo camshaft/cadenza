@@ -420,7 +420,10 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // it is NOT how a compound leaves the program to the host. A compound host-escape crosses as the
         // canonical binary value form through the resource `encode()` path (`wasm::emit`), not this
         // primitive-valtype mapping. Records and sums escape the same way, but they have no primitive
-        // handle valtype defined here (they are not threaded as bare u32 params), so `None`.
+        // handle valtype defined here (they are not threaded as bare u32 params), so `None`. The handle is
+        // OPAQUE — its byte meaning belongs to the runtime; the program threads it without dereferencing.
+        //= spec/contracts/component-abi.md#a-runtime-value-crosses-as-an-opaque-handle
+        //# A runtime value that crosses between a program and the value-heap runtime MUST cross as an opaque handle whose interpretation belongs solely to the runtime, so that the value's byte representation is the runtime's internal concern and never a layout the program or the host depends on.
         Ty::Tuple(_) => Some(0x79), // u32
         Ty::Record(_) => None,
         Ty::Sum { .. } => None,
