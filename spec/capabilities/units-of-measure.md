@@ -47,6 +47,12 @@ Each unit of a dimension MUST carry an exact scale relating it to that dimension
 
 A conversion between two units of the same dimension MUST preserve the exact value when the underlying numeric type is exact, losing precision only where the underlying numeric type is itself inexact.
 
+### A Named Unit's Conversion Is Unique
+
+A named unit MUST resolve to a single dimension and a single scale, so that its conversion to and from its dimension's reference is a well-defined function rather than dependent on which of several declarations is consulted.
+
+Declaring a named unit more than once with conflicting conversions — a differing dimension or a differing scale — MUST be a compile-time error, while a redeclaration that agrees is admissible.
+
 ### Combining Units Of One Dimension Is Well-Formed
 
 Combining two quantities whose units share a dimension MUST be well-formed even when the units differ, the combination being taken at a common unit of that dimension reached by each operand's exact scale.
