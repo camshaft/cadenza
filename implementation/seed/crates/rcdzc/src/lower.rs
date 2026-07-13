@@ -591,6 +591,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 };
             }
             if args.is_empty() {
+                // A BINARY OPERATOR applied to ZERO operands — `(=)` / `(+)` — is a malformed application,
+                // NOT the operator used as a value: the operator DEMANDS its operands (`(+ 1)` already
+                // rejects "+ takes exactly 2 operands"; `(+)` is the same arity error at zero). Reject
+                // CDZ0201 rather than fall through to `core_of(head)`, which would decline the bare
+                // operator value as "needs runtime closures" (a to-do, not the well-formedness error it
+                // is — 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash").
+                if let Some(prim) = crate::eval::meta_apply_of(db, head)
+                    && (prim.is_binop() || matches!(prim, Prim::Compare))
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: binary operator with no operands (CDZ0201)");
+                    return Core::Poison(Reject::coded(
+                        Code::Malformed,
+                        format!("{} takes exactly 2 operands", intrinsic_name(prim)),
+                    ));
+                }
                 // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
                 // the head would re-enter the same body without end. Decline it exactly as a recursive
                 // parameterized call declines (a nullary def has no runtime-function form yet, so there
