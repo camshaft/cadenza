@@ -163,6 +163,17 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // silent promotion). Its VALUE does not run yet (`core_of` declines): a pure-float program
             // declines, an int↔float mix rejects at the type check.
             Leaf::Float(d) => Resolved::Float(d.clone()),
+            // A bad-escape MARKER the reader emitted for a string literal with an UNRECOGNIZED escape
+            // (`"\q"`). The reader cannot report through the artifact channel (its stderr is not the
+            // diagnostic surface), so the COMPILER is where the lexical defect becomes a coded rejection:
+            // CDZ0001 (`collections-and-text.md` §A String Literal's Escapes Are A Closed Set). Naming the
+            // offending char makes the message actionable.
+            Leaf::BadEscape(c) => Resolved::Poison(Reject::coded(
+                Code::BadEscape,
+                format!(
+                    "unrecognized string escape `\\{c}` (the escape set is `\\n \\t \\r \\\\ \\\"`)"
+                ),
+            )),
         },
         Struct::List(children) => {
             // `()` — the empty list — is unit.

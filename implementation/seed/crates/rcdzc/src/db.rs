@@ -651,6 +651,13 @@ impl Db {
         // (which must index the synthesized nodes so a name inside a synthesized op type resolves).
         let mut effect_decls = effect_decls;
         crate::effects::synthesize(&mut ast, &mut effect_decls);
+        // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
+        // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
+        // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
+        // to `defs` and the arena HERE, before the parent index / `def_by_name` are built, so the new def
+        // and its self-reference resolve like any hand-written def. A def that does not match is untouched.
+        let mut defs = defs;
+        crate::accum::introduce(&mut ast, &mut defs);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary

@@ -369,10 +369,13 @@ Corpus: `spec/semantics/14-effects-and-handlers.sexp` (30) + `04-capabilities.se
 - **E2 — host delegation.** `Host` node → boundary import (effect=interface, op=func) in `serialize`;
   manifest=union; the deterministic `(host-responses …)` model; the host-composition invariant.
   *Green:* the 8 Group-6 cases (incl. interpose-and-forward → 7).
-- **E3 — recursive-effectful specialization (builds the monomorphization tier).** Specialize a recursive
-  effectful fn once per handler context; state as trailing params + multi-value return; computed
-  unbounded-context decline. *Green:* Group 4 (countdown→3, range-sum→6, recursive `Diag` walk→3,
-  two-nested-states→30); the Group-5 unbounded case declines cleanly (→100 stays a decline).
+- **E3 — recursive-effectful specialization (builds the monomorphization tier). ✅ DONE.** Specialize a
+  recursive effectful fn once per handler context; state as trailing params (single-return — the
+  multi-value return is unneeded per the verified §4.3 finding); computed unbounded-context decline.
+  *Green:* Group 4 (countdown→3, range-sum→6, recursive `Diag` list walk→3 [E3g: empty-list seed typed
+  from arm op params], two-nested-states→30 [E3h: state threaded as a VECTOR of slots, nested contexts
+  MERGED when a recursive callee spans both]); the Group-5 unbounded case declines cleanly (→100 stays a
+  decline, as designed). NO multi-value return was needed (downward-threaded single-return, verified).
 - **E4 — abortive (you asked for it).** `Mir::Block`/`Break` + within-function `block`/`br`; then the
   cross-function **non-local-exit** convention (propagate-up, no capture) on E3's specialization keying.
   *Green:* any exception-shaped effect; unblocks "bail and catch at the top." (No corpus case exercises it

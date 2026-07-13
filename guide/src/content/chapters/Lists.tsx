@@ -40,13 +40,10 @@ export default function Lists() {
         <C>(None unit)</C> when it doesn't — which you take apart with <C>match</C>. Here index 1 exists:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (main)
-    (match (List.at (list 10 20 30) 1)
-      ((Some x) x)
-      ((None _) (- 0 1))))
-  (export main))`}
+        source={`(def (main)
+  (match (List.at (list 10 20 30) 1)
+    ((Some x) x)
+    ((None _) (- 0 1))))`}
       />
       <P>
         Change the index <C>1</C> to <C>9</C> and Run: the lookup misses, the <C>None</C> arm fires,
@@ -64,11 +61,8 @@ export default function Lists() {
       <H2>Lists through functions</H2>
       <P>A function can take a list and compute over it. Here <C>count</C> just reports its length:</P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (count xs) (List.len xs))
-  (def (main) (count (list 10 20 30 40)))
-  (export main))`}
+        source={`(def (count xs) (List.len xs))
+(def (main) (count (list 10 20 30 40)))`}
       />
 
       <H2>Your turn</H2>

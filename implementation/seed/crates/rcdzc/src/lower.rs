@@ -512,7 +512,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // pushed to one `call_indirect`); a PARTIAL application (fewer args than the closure's arity)
             // is runtime currying — it must build an intermediate closure, which is not yet supported, so
             // it declines at select (the `call_indirect` type won't match). Checked before the lambda path.
-            if head_is_param(db, head)
+            if head_is_runtime_fn_value(db, head)
                 && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
             {
                 if args.is_empty() {
@@ -1726,7 +1726,22 @@ fn build_tree(
             // Without this fold, a false-guarded arm's trapping body raised a SPURIOUS CDZ0304 for an arm
             // that never runs. A guard reading a RUNTIME value does not fold → the runtime `Guarded` cont.
             match core_of(db, cond) {
-                Core::ConstBool(true) => return Ok(crate::core::SumCont::Leaf(body)),
+                Core::ConstBool(true) => {
+                    // The guard folds TRUE, so this arm fires and its body is the value. But a guarded arm
+                    // does NOT count toward exhaustiveness (core-semantics.md §Matching Is Exhaustive Or
+                    // Rejected: "a guarded arm may be false, so it covers no variant"), and the match must
+                    // be well-formed AS WRITTEN — a non-exhaustive match is CDZ0210 regardless of whether a
+                    // constant scrutinee happens to satisfy a guard. So verify the fall-through `rows[1..]`
+                    // still forms an exhaustive cover BEFORE folding to the body: `build_tree` on it
+                    // surfaces CDZ0210 if the variant is otherwise uncovered (a bare `((guard (Some x) …)
+                    // (None -1))` — `Some` covered ONLY by the guarded arm — must reject, matching the
+                    // standalone-emitted body). The check's RESULT is discarded (we still fold to `body`
+                    // when the scrutinee satisfies the guard); only its error propagates. This keeps the
+                    // fold consistent with the runtime `Guarded` path below, which builds `els` (and thus
+                    // checks the fall-through) unconditionally.
+                    let _ = build_tree(db, scrutinee, &rows[1..], path_types)?;
+                    return Ok(crate::core::SumCont::Leaf(body));
+                }
                 Core::ConstBool(false) => return build_tree(db, scrutinee, &rows[1..], path_types),
                 _ => {}
             }
@@ -2093,15 +2108,23 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
     }
 }
 
-/// Whether the application head at `id` resolves (through refs) to a FUNCTION PARAMETER — the one
-/// runtime function-value source this increment applies via `call_indirect`. A body reference to a
-/// parameter `g` resolves to `Ref { value: <param occ> }`, and the param occurrence itself to
-/// `Resolved::Param`, so follow the ref chain to its end. A named def / constructor / prim / lambda
-/// resolves to something else and is NOT diverted to the closure-application path.
-fn head_is_param(db: &mut Db, id: StructId) -> bool {
+/// Whether an application HEAD is a RUNTIME function-value source that must apply via `call_indirect`
+/// (a `Core::CallClosure`), rather than β-reduce at compile time — a `Param`, or a PATTERN BINDER reading
+/// a runtime value out of a compound (a sum-variant payload `(match t ((T.Mk f) (f x)))`, or a
+/// tuple/record element `(match t ((tuple f _) (f x)))`, which resolve to `SumPayload`/`Proj`). A
+/// `Param` is always runtime. A `SumPayload`/`Proj` is runtime ONLY when the fold cannot reach the stored
+/// lambda: over a CONSTANT compound the projection β-reduces to the lambda (`lambda_body` sees it) and
+/// must fold — the runtime path is taken solely when `lambda_body` is `None` (a genuinely heap-held
+/// closure). So this is checked AFTER the lambda-reduction attempt would have fired for a foldable head.
+fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
     match resolved_of(db, id) {
         Resolved::Param { .. } => true,
-        Resolved::Ref { value } => head_is_param(db, value),
+        Resolved::Ref { value } => head_is_runtime_fn_value(db, value),
+        // A payload/element binder — runtime iff the fold can't reduce it to a lambda (a constant compound
+        // folds through the projection; a runtime one does not, so its stored closure applies indirect).
+        Resolved::SumPayload { .. } | Resolved::Proj { .. } => {
+            crate::eval::lambda_body(db, id).is_none()
+        }
         _ => false,
     }
 }
@@ -2916,6 +2939,9 @@ fn resolve_leaf_offsets(
                 off += 1 + leb_len(bs.len() as u64) + bs.len();
             }
             crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
+            // A bad-escape marker is a POISON — it never reaches a constant value form (resolving it
+            // rejects CDZ0001 before any escape emission), so a runtime template over it is meaningless.
+            crate::ast::Leaf::BadEscape(_) => return None,
         }
     }
     let _ = bytes;

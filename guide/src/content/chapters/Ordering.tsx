@@ -28,20 +28,14 @@ export default function Ordering() {
         <C>min</C>, and a <C>clamp</C> that keeps a value within a range:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (min a b) (if (< a b) a b))
-  (def (main) (min 8 3))
-  (export main))`}
+        source={`(def (min a b) (if (< a b) a b))
+(def (main) (min 8 3))`}
       />
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (clamp lo hi x)
-    (if (< x lo) lo
-        (if (> x hi) hi x)))
-  (def (main) (clamp 0 10 42))
-  (export main))`}
+        source={`(def (clamp lo hi x)
+  (if (< x lo) lo
+      (if (> x hi) hi x)))
+(def (main) (clamp 0 10 42))`}
       />
 
       <H2>Three answers, not two</H2>
@@ -51,13 +45,10 @@ export default function Ordering() {
         once — here as <C>-1</C>, <C>0</C>, <C>1</C> — lets a caller decide once and handle every case:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (cmp a b)
-    (if (< a b) (- 0 1)
-        (if (= a b) 0 1)))
-  (def (main) (cmp 3 9))
-  (export main))`}
+        source={`(def (cmp a b)
+  (if (< a b) (- 0 1)
+      (if (= a b) 0 1)))
+(def (main) (cmp 3 9))`}
       />
 
       <Why tenet="A total order is a three-way answer">
@@ -73,16 +64,11 @@ export default function Ordering() {
       <Exercise
         id="ordering:1"
         prompt={<>Finish <C>max</C> so <C>(max 8 3)</C> gives <C>8</C> — the mirror of <C>min</C>.</>}
-        starter={`(module m
-  (def (max a b) (if ? a b))
-  (def (main) (max 8 3))
-  (export main))`}
-        solution={`(module m
-  (def (max a b) (if (> a b) a b))
-  (def (main) (max 8 3))
-  (export main))`}
+        starter={`(def (max a b) (if ? a b))
+(def (main) (max 8 3))`}
+        solution={`(def (max a b) (if (> a b) a b))
+(def (main) (max 8 3))`}
         expected="8"
-        wrap={false}
         hint={<>Keep <C>a</C> when it's the larger one: <C>(&gt; a b)</C>.</>}
       />
 

@@ -132,14 +132,89 @@ fn is_source_file(spec: &str) -> bool {
         .any(|ext| spec.ends_with(ext))
 }
 
+/// Expand each input spec, replacing a DIRECTORY with the source files under it (recursively). A spec
+/// that is not a bare path (a `kind:name=path` artifact spec) or is `-` (stdin) passes through
+/// verbatim — only a bare path that `is_dir()` is walked. The walk collects every file whose extension
+/// is a recognized SOURCE surface (`.cdz`/`.ml`/`.sexp`/`.sexpr`), path-sorted for a deterministic
+/// package (the same convention `cdz query`/`lint` use over a directory). A directory containing no
+/// source files is an error (the user pointed at an empty tree). Mirrors `cadenza_syntax::cli`'s
+/// `collect_dir`, kept here because `cdz compile` reads sources into `ast` artifacts itself.
+fn expand_input_specs(specs: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for spec in specs {
+        // Only a BARE path can be a directory. A `kind:name=path` / `name=path` spec or `-` is not.
+        let is_bare_path = spec != "-" && !spec.contains(':') && !spec.contains('=');
+        let path = std::path::Path::new(spec);
+        if is_bare_path && path.is_dir() {
+            let before = out.len();
+            collect_source_dir(path, &mut out)?;
+            if out.len() == before {
+                return Err(format!(
+                    "{spec}: no source files (.cdz/.ml/.sexp) found in directory"
+                ));
+            }
+        } else {
+            out.push(spec.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Recurse `dir`, appending every file with a recognized SOURCE extension to `out`. Sub-directories are
+/// walked depth-first; each directory's own entries are path-sorted so the collected package is a
+/// deterministic function of the tree (not filesystem enumeration order). Non-source files (README,
+/// `.gitignore`, a pre-built `.ast`) and unreadable entries are skipped with a warning — pointing at a
+/// dir never tries to parse a non-source file. Recognized extensions match [`is_source_file`].
+fn collect_source_dir(dir: &std::path::Path, out: &mut Vec<String>) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("reading dir {}: {e}", dir.display()))?;
+    // Collect + sort this level's entries so the walk is deterministic (read_dir order is unspecified).
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(e) => paths.push(e.path()),
+            Err(e) => eprintln!(
+                "{PROG}: skipping unreadable entry in {}: {e}",
+                dir.display()
+            ),
+        }
+    }
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_source_dir(&path, out)?;
+        } else if let Some(s) = path.to_str() {
+            // The extension gates inclusion (a `.ast`/`.spans`/README in the tree is skipped) — only a
+            // parseable source surface is compiled. `is_source_file` also rejects a `:`/`=` in the
+            // name, so a path is only included when it is a plain source file.
+            if is_source_file(s) {
+                out.push(s.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run `cdz compile`. Because `cdz` holds the front-end, a SOURCE file input is parsed in-process to
 /// the `ast` artifact — and, when a debug target (`wasm-debug`/`dwarf`) is requested, also to the
 /// `spans` artifact (projected into rcdzc's wire form), so a user gets DWARF without hand-building a
 /// spans artifact. With no source input (the pure artifacts-in path), it delegates to the compiler CLI
 /// unchanged — the `rcdzc` bin's behavior is untouched.
 fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
-    let specs = args.input_specs().to_vec();
+    // Expand any DIRECTORY input into the source files under it (recursively), so
+    // `cdz compile src/ --entry app` compiles a whole package tree without naming each file. A plain
+    // file, a `kind:name=path` artifact spec, and `-` (stdin) pass through untouched. Done here at the
+    // host boundary — the pure `compile` never sees a path (`compile.rs` §NO I/O).
+    let specs = match expand_input_specs(args.input_specs()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // Fast path: no source-file input → the ordinary artifacts-in compile, byte-for-byte as before.
+    // (A directory only ever expands to SOURCE files, so if one was given this branch is not taken;
+    // `specs` here equals the original args, so `run(args)` sees the same inputs.)
     if !specs.iter().any(|s| is_source_file(s)) {
         return compiler_cli::run(args, PROG);
     }
@@ -965,5 +1040,54 @@ mod tests {
         ] {
             assert!(parse_where(bad).is_err(), "should reject `{bad}`");
         }
+    }
+
+    /// A throwaway directory unique to `tag`, created empty. The caller populates + removes it.
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cdz-expand-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn expand_recurses_a_directory_collecting_only_source_files() {
+        let dir = tmp("recurse");
+        std::fs::create_dir_all(dir.join("lib/math")).unwrap();
+        std::fs::write(dir.join("app.sexp"), "(do (def (main) 1) (export main))").unwrap();
+        std::fs::write(dir.join("lib/helper.sexp"), "(do (def (h) 2) (export h))").unwrap();
+        std::fs::write(dir.join("lib/math/base.cdz"), "def base() = 3").unwrap();
+        std::fs::write(dir.join("README.md"), "not source").unwrap();
+        std::fs::write(dir.join("lib/notes.txt"), "skip me").unwrap();
+
+        let out = expand_input_specs(&[dir.to_string_lossy().into_owned()]).unwrap();
+        // Only the three source files, path-sorted; the README + .txt are skipped.
+        let names: Vec<String> = out
+            .iter()
+            .map(|p| program_name(p)) // file stem, order-preserving
+            .collect();
+        assert_eq!(names, vec!["app", "helper", "base"], "got {out:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn expand_passes_through_files_and_artifact_specs() {
+        // A plain file, a `kind:name=path` artifact spec, and `-` are NOT directories → verbatim.
+        let specs = vec![
+            "app.sexp".to_string(),
+            "spans:m=x.spans".to_string(),
+            "-".to_string(),
+        ];
+        let out = expand_input_specs(&specs).unwrap();
+        assert_eq!(out, specs);
+    }
+
+    #[test]
+    fn expand_errors_on_a_directory_with_no_source_files() {
+        let dir = tmp("nosrc");
+        std::fs::write(dir.join("README.md"), "no source here").unwrap();
+        let err = expand_input_specs(&[dir.to_string_lossy().into_owned()]).unwrap_err();
+        assert!(err.contains("no source files"), "got {err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

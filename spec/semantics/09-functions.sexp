@@ -98,12 +98,81 @@
             ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5)))
   (output (: 12 Int64)))
 
+(case "a closure carried in a sum payload is extracted by a match and applied"
+  (doc    "core-semantics.md §A Function Is A First-Class Value: a function stored in a SUM variant's
+           payload — the callback-in-a-variant shape — is extracted by a match binder and applied.
+           `(Some (fn (n) (* n 2)))` carries a closure; `(match … ((Some f) (f 5)) …)` binds `f` to the
+           payload and applies it, yielding 10. The closure is reached through the variant PAYLOAD (a
+           `sum-payload` heap read), not a `let`/tuple projection the fold reduces through, so its
+           application is a runtime `call_indirect` on the extracted closure cell — the payload-binder
+           analogue of applying a function-typed PARAMETER. Pins that a closure survives being stored in
+           and read back out of a sum variant, and that a match binder over a function-typed payload is a
+           callable runtime function-value source (not merely a foldable projection).")
+  (input  (match (Some (fn ((: n Int64)) (* n 2)))
+            ((Some f) (f 5))
+            ((None _) 0)))
+  (output (: 10 Int64)))
+
+(case "a CAPTURING closure carried in a sum payload keeps its capture through the match binder"
+  (doc    "The capturing companion: the closure stored in the sum payload closes over a RUNTIME value, and
+           that capture must survive being boxed into the variant and read back out. `(mk k)` returns
+           `(Some (fn (x) (+ x k)))` capturing the parameter `k`; `(match (mk k) ((Some f) (f 5)) …)`
+           extracts `f` and applies it, so with `k` = 100 the result is 5 + 100 = 105. The closure cell
+           carried in the `Some` payload must retain its captured environment (not just the code pointer):
+           a lowering that stored the function but dropped the capture would compute 5 (or read garbage).
+           Pins that a closure's captured environment round-trips through a sum-variant payload, the
+           capturing extension of the non-capturing payload-closure case above.")
+  (input  (do
+            (def (mk (: k Int64)) (Some (fn ((: x Int64)) (+ x k))))
+            (def (main (: k Int64)) (match (mk k) ((Some f) (f 5)) ((None _) -1)))
+            (export main)))
+  (call   main (: 100 Int64))
+  (output (: 105 Int64)))
+
+(case "a closure carried in a USER-declared sum's payload is extracted and applied"
+  (doc    "The USER-SUM companion of the built-in-payload closure case: `(type T (Mk (-> Int64 Int64)))`
+           declares a variant carrying a FUNCTION, and `(T.Mk (fn (n) (* n 2)))` stores a closure in it.
+           `(match … ((T.Mk f) (f 5)))` extracts and applies it → 10. Unlike a built-in `Some`/`Ok`
+           (whose ctor scheme threads the payload type so the extracted closure's application types
+           directly), a USER variant's payload is a declared arrow `(-> Int64 Int64)` reached through the
+           payload binder; applying it must peel that arrow to type the result. Pins that a closure
+           carried in a user-declared sum applies exactly as one in a built-in sum — the callback-in-a-
+           variant idiom a user's own event/AST types rely on. `needs sum-type-declaration`.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Mk (-> Int64 Int64)))
+            (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5))))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
            `let`s are each preserved and folded through a nested arithmetic body.")
   (input  (let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5)))
   (output (: 13 Int64)))
+
+; A closure that CAPTURES ANOTHER CLOSURE and applies it — a higher-order capture. `twice` closes over
+; `inc` (itself a closure) and applies it twice; `(twice 5)` = inc(inc(5)) = 7. core-semantics.md §A
+; Function Is A First-Class Value: a function value can be captured like any other. Both closures fold —
+; the captured `inc` inlines at each application inside `twice`'s body.
+
+(case "a closure captures another closure and applies it"
+  (doc    "`inc = (fn (x) (+ x 1))`; `twice = (fn (y) (inc (inc y)))` captures `inc` and applies it twice;
+           `(twice 5)` = inc(inc(5)) = 7. A closure captured by another closure is applied correctly —
+           the captured function value folds at each use.")
+  (input  (let ((inc (fn ((: x Int64)) (+ x 1))))
+            (let ((twice (fn ((: y Int64)) (inc (inc y)))))
+              (twice 5))))
+  (output (: 7 Int64)))
+
+(case "a closure argument is another closure's result"
+  (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
+           (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
+           `(* 3 2) = 6` feeds the outer `(+ 6 10) = 16` — both fold.")
+  (input  (let ((k 10))
+            ((fn ((: x Int64)) (+ x k)) ((fn ((: y Int64)) (* y 2)) 3))))
+  (output (: 16 Int64)))
 
 (case "a function is passed as an argument (higher-order)"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: apply-twice takes a function
@@ -434,6 +503,29 @@
            MUST reject it (CDZ0203). Pins that the arity check is on the constructor's single-argument
            application, not forgiving of any number of trailing arguments.")
   (input  (Some 1 2 3))
+  (error  CDZ0203))
+
+; Over-applying a USER FUNCTION is arity-checked the SAME way — the case the comment above references
+; ("an over-applied constructor is arity-checked the same way an over-applied user function is"). A
+; lambda / named def of arity N applied to more than N arguments applies the fully-consumed result
+; (which is NOT a function) to the surplus — a type error (CDZ0203), never a silent argument drop.
+; `((fn (x) (+ x 1)) 5 9)` desugars to `(((fn (x) (+ x 1)) 5) 9)`: `(fn (x)…) 5` = 6 (an Int64, not a
+; function), applied to `9` — the apply-a-non-function error. This pins the over-applied-function half
+; that the constructor cases above pin for constructors.
+
+(case "over-applying a lambda by an extra argument is a type error"
+  (doc    "`((fn (x) (+ x 1)) 5 9)` — a unary lambda applied to two arguments. Desugars to `(((fn (x)
+           (+ x 1)) 5) 9)`: the inner application yields the Int64 6, and applying 6 to 9 applies a
+           non-function → CDZ0203. The compiler MUST reject it, not drop the 9 and yield 6.")
+  (input  (do (def (main) ((fn ((: x Int64)) (+ x 1)) 5 9)) (export main)))
+  (error  CDZ0203))
+
+(case "over-applying a named function by an extra argument is a type error"
+  (doc    "The named-def companion: `(def (f x) (+ x 1))`, `(f 5 9)` applies the unary `f` to two args.
+           By §Functions Are Single-Arity this desugars to `((f 5) 9)` — `(f 5)` = 6, applied to 9 is a
+           non-function application → CDZ0203. Arity is checked for a named function exactly as for a
+           lambda or a constructor.")
+  (input  (do (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main)))
   (error  CDZ0203))
 
 ; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A

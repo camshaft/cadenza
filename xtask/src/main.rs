@@ -105,9 +105,9 @@ enum Cmd {
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
     /// the whole log + its path.
     Check,
-    /// Round-trip every corpus program through the syntax surfaces (sexpr→binary→sexpr and
-    /// sexpr→ml→sexpr) and confirm each reproduces a structurally-equal AST — guards `cadenza-syntax`
-    /// independently of whether the compiler can compile anything.
+    /// Round-trip every corpus program through the syntax surfaces: `sexpr` must reproduce the exact
+    /// binary AST; `ml` (the long-term syntax, allowed to canonicalize once) must round-trip to a
+    /// FIXED POINT (`ml(ml(x)) == ml(x)`). Guards `cadenza-syntax` independently of the compiler.
     Roundtrip {
         /// The corpus `.sexp` files to check. [default: all of spec/semantics/*.sexp]
         files: Vec<PathBuf>,
@@ -2120,9 +2120,11 @@ impl Log {
 // roundtrip — the syntax surfaces round-trip on every corpus program.
 // ============================================================================================
 
-/// For every corpus program, confirm sexpr→binary→sexpr and sexpr→ml→sexpr reproduce a
-/// structurally-equal AST — i.e. re-encoding the round-tripped text to binary yields the SAME bytes
-/// as the original. Guards `cadenza-syntax` (reader/printer/codec) independently of the compiler.
+/// For every corpus program, confirm the syntax surfaces round-trip. `sexpr` is STRICT: re-encoding
+/// the round-tripped text to binary yields the SAME bytes as the original. `ml` is IDEMPOTENT: it may
+/// canonicalize on the first round-trip (e.g. name-alias compound ctors → their literal/string-
+/// primitive form), so it must reach a FIXED POINT (`ml(ml(x)) == ml(x)`) rather than reproduce the
+/// original byte-for-byte. Guards `cadenza-syntax` (reader/printer/codec) independently of the compiler.
 fn roundtrip(paths: &Paths, profile: &str, files: Vec<PathBuf>) {
     let tools = build_tools(paths, profile);
     let files = if files.is_empty() {
@@ -2211,18 +2213,43 @@ fn roundtrip_all_parallel(tools: &Tools, records: Vec<CorpusRecord>) -> Vec<Roun
                         }
                         Some(bin0) => {
                             // Round-trip through each intermediate surface, back to binary, compare bytes.
-                            for surface in ["sexpr", "ml"] {
-                                match roundtrip_via(tools, &bin0, surface) {
-                                    Some(bin1) if bin1 == bin0 => {}
+                            //
+                            // `sexpr` is STRICT: it must reproduce the exact binary (byte-identical).
+                            //
+                            // `ml` is IDEMPOTENT rather than strict: the ML surface is the long-term
+                            // syntax and is allowed to CANONICALIZE on the first round-trip (e.g. the
+                            // name-alias compound ctors `(tuple a b)`/`(list …)` render to the literal
+                            // `(a, b)`/`[…]`, which parses back to the string-primitive `("tuple" …)` —
+                            // a deliberate, semantics-preserving normalization, not information loss).
+                            // So we require the ML round-trip to reach a FIXED POINT: a second ML
+                            // round-trip must reproduce the first (`ml(ml(x)) == ml(x)`). That still
+                            // catches any real ML round-trip bug (non-idempotence = instability or lost
+                            // information) while tolerating the one-time ctor canonicalization.
+                            match roundtrip_via(tools, &bin0, "sexpr") {
+                                Some(bin1) if bin1 == bin0 => {}
+                                Some(_) => failures
+                                    .push(format!("{}: binary≠binary via sexpr", rec.description)),
+                                None => failures.push(format!(
+                                    "{}: round-trip via sexpr errored",
+                                    rec.description
+                                )),
+                            }
+                            match roundtrip_via(tools, &bin0, "ml") {
+                                Some(bin1) => match roundtrip_via(tools, &bin1, "ml") {
+                                    Some(bin2) if bin2 == bin1 => {}
                                     Some(_) => failures.push(format!(
-                                        "{}: binary≠binary via {surface}",
+                                        "{}: ml round-trip not idempotent (ml(ml(x)) != ml(x))",
                                         rec.description
                                     )),
                                     None => failures.push(format!(
-                                        "{}: round-trip via {surface} errored",
+                                        "{}: second ml round-trip errored",
                                         rec.description
                                     )),
-                                }
+                                },
+                                None => failures.push(format!(
+                                    "{}: round-trip via ml errored",
+                                    rec.description
+                                )),
                             }
                             true
                         }

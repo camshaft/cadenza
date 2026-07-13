@@ -370,6 +370,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         declared: vec![],
         src_body: None,
         locals: vec![],
+        stmt_lines: vec![],
     };
     let layout = Layout::new(
         vec![ExportPlan {
@@ -3735,6 +3736,74 @@ mod recursion {
     }
 
     #[test]
+    fn a_linear_nontail_recursion_is_accumulator_transformed_into_a_loop() {
+        use wasmtime::component::Val;
+        // ACCUMULATOR INTRODUCTION (the guide's `sm`, written NON-tail): `(def (sm n) (if (= n 0) 0
+        // (+ n (sm (- n 1)))))`. The recursive call is an OPERAND of `+`, so it is NOT a tail call and
+        // would compile to a stack-growing `call` — `sm 100000` stack-overflowed. `accum::introduce`
+        // rewrites it to a tail-recursive accumulator (`+` is associative, base 0 is its identity), which
+        // the loop transform then compiles to a `loop`. So a MILLION-deep sum now runs in O(1) stack, and
+        // the value is unchanged.
+        let sm = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&sm, "sm", &[Val::S64(5)]), 15);
+        assert_eq!(run_returns_with::<i64>(&sm, "sm", &[Val::S64(100)]), 5050);
+        // The payoff: 1,000,000 terms — a stack overflow before the transform, constant stack after.
+        assert_eq!(
+            run_returns_with::<i64>(&sm, "sm", &[Val::S64(1_000_000)]),
+            500_000_500_000
+        );
+        // PRODUCT shape (factorial): `*` is associative with identity 1. `(def (fac n) (if (= n 0) 1
+        // (* n (fac (- n 1)))))` — transformed the same way. fac(10) = 3628800.
+        let fac = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (- n 1))))) (export fac))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&fac, "fac", &[Val::S64(5)]), 120);
+        assert_eq!(
+            run_returns_with::<i64>(&fac, "fac", &[Val::S64(10)]),
+            3_628_800
+        );
+        // The self-call may sit in EITHER operand: `(+ (sm2 (- n 1)) n)` (self-call first) also transforms.
+        let commuted = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (sm2 (: n Int64)) (if (= n 0) 0 (+ (sm2 (- n 1)) n))) (export sm2))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&commuted, "sm2", &[Val::S64(1_000_000)]),
+            500_000_500_000
+        );
+    }
+
+    #[test]
+    fn the_accumulator_transform_declines_shapes_it_cannot_reassociate() {
+        use wasmtime::component::Val;
+        // The transform must NOT fire (and must leave the def correct) when the shape is not a linear
+        // associative-combine recursion. Each of these stays a plain recursion and still computes right.
+        // (1) TWO self-calls (fibonacci) — not linear; must not transform.
+        let fib = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (export fib))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&fib, "fib", &[Val::S64(10)]), 55);
+        // (2) base value is NOT the op's identity (`+` with base 100) — reassociating would change the
+        // result, so it must NOT transform. sm(3) = 3+2+1+100 = 106.
+        let based = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (sm (: n Int64)) (if (= n 0) 100 (+ n (sm (- n 1))))) (export sm))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&based, "sm", &[Val::S64(3)]), 106);
+        // (3) a non-associative combine (`-`) — must not transform. f(3) = -(f2)-1 chain = -3.
+        let sub = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: n Int64)) (if (= n 0) 0 (- (f (- n 1)) 1))) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&sub, "f", &[Val::S64(3)]), -3);
+    }
+
+    #[test]
     fn a_narrow_two_parameter_recursion_emits_valid_wasm() {
         use wasmtime::component::Val;
         // A recursive function with TWO narrow (UInt8) parameters, threading the accumulator through the
@@ -4119,6 +4188,54 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0201")
         );
+    }
+
+    #[test]
+    fn an_unrecognized_string_escape_is_rejected_cdz0001() {
+        // 01-literals "an unrecognized string escape is rejected": `"\q"` uses a backslash before `q`,
+        // which begins none of the closed escape set (`\n \t \r \\ \"`), so the reader emits a
+        // `Leaf::BadEscape` MARKER (it cannot report through its own stderr) that survives the
+        // cadenza-syntax→rcdzc codec, and the COMPILER rejects it CDZ0001 — not silently reading `q`.
+        assert_eq!(
+            reject_code("(module m (def (main) \"\\q\") (export main))").as_deref(),
+            Some("CDZ0001")
+        );
+        // A VALID escape is unaffected — `"\n"` reads to a newline `Str`, no marker, no rejection (it
+        // compiles; the const-string escape renders it). Pin that only the CLOSED set is rejected.
+        assert_eq!(
+            reject_code("(module m (def (main) \"\\n\") (export main))"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_bare_constant_string_escapes_across_the_boundary() {
+        // Once the reader's strict-escape marker is in place, a bare/matched CONSTANT string may cross
+        // the host boundary via the resource escape (its bytes baked, the value form `(: "…" String)`) —
+        // the same path a `(Some "hi")` payload uses, just for a top-level String export. Verified via a
+        // composed run: the rendered value is the quoted text.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping const-string escape run"
+            );
+            return;
+        };
+        let bytes = component("(module m (def (main) \"hello\") (export main))");
+        let opts = cdz_run::RunOpts {
+            export: None, // a String escape is a RESOURCE component, auto-detected by cdz-run
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "(: \"hello\" String)",
+                    "a bare constant string escapes + renders"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("const-string escape run trapped: {t}"),
+        }
     }
 
     #[test]
@@ -6197,6 +6314,36 @@ mod match_engine {
             )))
             .is_ok(),
             "an unguarded same-variant fall-through restores exhaustiveness"
+        );
+        // REGRESSION: the SAME non-exhaustive match must reject EVEN WHEN it fully const-folds — a
+        // CONSTANT scrutinee `(Some 5)` whose guard `(> 5 0)` folds to TRUE previously returned the
+        // guarded body directly (→ 5), SKIPPING the exhaustiveness check, so a non-exhaustive match was
+        // silently accepted whenever a constant input happened to satisfy the guard. A match is
+        // ill-formed AS WRITTEN (CDZ0210) regardless of whether a specific fold hits the guarded arm; the
+        // guard-folds-true path now verifies the fall-through covers the variant before folding.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (Some 5) ((guard (Some x) (> x 0)) x) ((None) 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a non-exhaustive guarded match rejects even when a constant scrutinee folds its guard true"
+        );
+        // CONTROL: the fold-true case with an unguarded same-variant fall-through still COMPILES and
+        // folds to the guarded body (5) — the exhaustiveness check passes, the fold is unchanged.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) \
+                       (match (Some 5) ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0))) \
+                     (export main))"
+                )))
+                .expect("an exhaustive guarded match folds"),
+                "main"
+            ),
+            5,
+            "an exhaustive guarded match still folds to the guarded body when the guard folds true"
         );
     }
 
@@ -8863,6 +9010,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
+        // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
+        // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)
+        // folds across the steps. The ticks read 3,2,1,0 (three non-zero), the bumps read 0,10,20, so the
+        // sum is 0+10+20+0 = 30. Both states are live simultaneously — neither handler alone can specialize
+        // `loop` (it performs BOTH effects), so the fold MERGES the two contexts into one 2-slot context
+        // and specializes `loop#ctx(s_B, s_A)` once, threading each effect's state as its own trailing
+        // param (`DESIGN-effects-rcdzc.md` §4.3: "two nested handlers → two trailing params").
+        let src = "(do (effect A (op tick (-> Unit Int64))) (effect B (op bump (-> Unit Int64))) \
+                   (def (loop) (if (= (A.tick) 0) 0 (+ (B.bump) (loop)))) \
+                   (def (main) (handle 0 ((B.bump (u) s (resume s (+ s 10)))) \
+                     (handle 3 ((A.tick (u) s (resume s (- s 1)))) (loop)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("two nested handler states specialize"),
+                "main"
+            ),
+            30
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_walk_accumulates_into_a_list_state_handler() {
         // E3 list-state: a recursive effectful walk over a 2-arm handler whose state is an empty-list
         // seed `(list)`. `walk` performs `(Diag.emit n)` at each descent step and reads the accumulator
@@ -10542,6 +10712,34 @@ mod stage1 {
     }
 
     #[test]
+    fn over_applying_a_function_is_a_coded_type_error() {
+        // OVER-application (more args than arity) is a TYPE ERROR (CDZ0203), not a silent argument drop
+        // nor a to-do decline — the SAME code an over-applied CONSTRUCTOR uses. `((fn (x) (+ x 1)) 5 9)`
+        // desugars to `(((fn (x)…) 5) 9)`: `(fn x) 5` = 6 (not a function), applied to 9 → CDZ0203.
+        // `core-semantics.md` §Functions Are Single-Arity (closes SPEC-BACKLOG-21 for user functions).
+        for src in [
+            "(module m (def (main) ((fn ((: x Int64)) (+ x 1)) 5 9)) (export main))",
+            "(module m (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main))",
+            // Three args to a 2-param lambda.
+            "(module m (def (main) ((fn ((: a Int64) (: b Int64)) (+ a b)) 1 2 3)) (export main))",
+        ] {
+            let d = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("over-application must be rejected");
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0203"),
+                "over-application should be CDZ0203, got {:?} for `{src}`",
+                d.code
+            );
+        }
+        // A correctly-applied curried chain is NOT over-application (it fully consumes each level).
+        assert_eq!(
+            run_main("((((fn ((: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c))) 1) 2) 3)"),
+            6
+        );
+    }
+
+    #[test]
     fn partial_application_captures_a_runtime_variable_in_the_residual() {
         use wasmtime::component::Val;
         // Partially applying to a VARIABLE reference (a runtime param / let-bound) must CAPTURE it in the
@@ -10705,6 +10903,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_captures_another_closure_and_composes() {
+        // A HIGHER-ORDER capture: `twice = (fn (y) (inc (inc y)))` closes over `inc` (itself a closure)
+        // and applies it twice; `(twice 5)` = inc(inc(5)) = 7. A function value captured by another
+        // closure folds at each application.
+        assert_eq!(
+            run_main(
+                "(let ((inc (fn ((: x Int64)) (+ x 1)))) \
+                       (let ((twice (fn ((: y Int64)) (inc (inc y))))) (twice 5)))"
+            ),
+            7
+        );
+        // A closure's argument is another closure's RESULT: `((fn (x) (+ x k)) ((fn (y) (* y 2)) 3))`
+        // with k=10 → (+ 6 10) = 16. Composing two closure applications.
+        assert_eq!(
+            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) ((fn ((: y Int64)) (* y 2)) 3)))"),
+            16
+        );
+        // A closure that itself references an enclosing closure through a further nesting.
+        assert_eq!(
+            run_main(
+                "(let ((a 1)) (let ((f (fn ((: x Int64)) (+ x a)))) \
+                       (let ((g (fn ((: y Int64)) (f (+ y 1))))) (g 5))))"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
@@ -10826,6 +11052,76 @@ mod stage1 {
         };
         assert_eq!(r, "12");
         assert_eq!(run_closure(src, 5).unwrap(), "30");
+    }
+
+    #[test]
+    fn a_closure_carried_in_a_sum_payload_applies_through_call_indirect() {
+        // A closure stored in a SUM variant's payload, extracted by a match binder, and applied — the
+        // callback-in-a-variant shape. `(Some (fn (n) (* n 2)))` carries a closure; `(match … ((Some f)
+        // (f 5)) …)` binds `f` to the payload (a `sum-payload` heap read) and applies it. The closure is
+        // reached through the PAYLOAD, not a `let`/tuple projection the fold reduces through, so `f`'s
+        // application is a runtime `call_indirect` — a payload/element binder is a runtime function-value
+        // source like a `Param`. Before the fix `(f 5)` declined "value is not applyable" (the closure
+        // path was gated on a `Param` head only). Run through the composed runtime (result 10).
+        use crate::testkit::parse;
+        let cases = [
+            (
+                "Some payload, single arg",
+                "(module m (def (main) \
+                   (match (Some (fn ((: n Int64)) (* n 2))) ((Some f) (f 5)) ((None _) 0))) (export main))",
+                "10",
+            ),
+            (
+                "Ok payload, single arg",
+                "(module m (def (main) \
+                   (match (Ok (fn ((: n Int64)) (+ n 100))) ((Ok f) (f 5)) ((Err e) 0))) (export main))",
+                "105",
+            ),
+            (
+                "Some payload, TWO args (multi-param closure)",
+                "(module m (def (main) \
+                   (match (Some (fn ((: a Int64) (: b Int64)) (+ a b))) ((Some f) (f 3 4)) ((None _) 0))) \
+                 (export main))",
+                "7",
+            ),
+            (
+                "USER-SUM payload, single arg",
+                "(module m (type T (Mk (-> Int64 Int64))) \
+                   (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5)))) (export main))",
+                "10",
+            ),
+            (
+                "USER-SUM payload, curried TWO args",
+                "(module m (type T (Mk (-> Int64 (-> Int64 Int64)))) \
+                   (def (main) (match (T.Mk (fn ((: a Int64) (: b Int64)) (+ a b))) ((T.Mk f) (f 3 4)))) \
+                 (export main))",
+                "7",
+            ),
+        ];
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        for (label, src, want) in cases {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile closure-in-sum-payload ({label}): {e:?}"));
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+                "a payload-bound closure application imports the runtime ({label})"
+            );
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("closure-in-sum-payload trapped ({label}): {t}")
+                }
+            }
+        }
     }
 
     #[test]
@@ -13604,6 +13900,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(11)),
                 locals: vec![],
+                stmt_lines: vec![],
             },
             SelectedFunc {
                 params: vec![],
@@ -13612,6 +13909,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(22)),
                 locals: vec![],
+                stmt_lines: vec![],
             },
         ];
         // One import so the layout mirrors the oracle shape; ranges are import-independent.
@@ -14126,6 +14424,63 @@ mod debug_info {
                 .windows(b".debug_info".len())
                 .any(|w| w == b".debug_info"),
             "a plain compound-returning component must carry no DWARF"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_body_gets_a_line_row_per_line() {
+        // Per-statement/expression granularity: an `if` whose condition, then-branch, and else-branch
+        // sit on DISTINCT source lines produces a `.debug_line` row per line (not one function-entry
+        // row) — so a debugger steps line-by-line. Rows are at ascending code offsets. Skips if
+        // llvm-dwarfdump is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m\n  (def (f (: a Int64))\n    (if (< a 0)\n      (- a 1)\n      (+ a 1)))\n  (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-lines-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-line")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        // Parse the line-table rows: lines beginning with `0x…` have columns [Address, Line, …]. Collect
+        // the distinct source lines (col 2) across the rows.
+        let mut lines: Vec<u32> = stdout
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                if !l.starts_with("0x") {
+                    return None;
+                }
+                l.split_whitespace().nth(1)?.parse().ok()
+            })
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        // The `if` condition (line 3), then-branch (line 4), and else-branch (line 5) each get a row —
+        // at least 3 distinct source lines (function granularity would give only 1).
+        assert!(
+            lines.len() >= 3,
+            "expected a row per source line (≥3 distinct), got {lines:?}\n{stdout}"
+        );
+        assert!(
+            lines.contains(&3) && lines.contains(&4) && lines.contains(&5),
+            "expected rows for lines 3/4/5, got {lines:?}\n{stdout}"
         );
     }
 }

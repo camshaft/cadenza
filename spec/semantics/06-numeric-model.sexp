@@ -786,6 +786,23 @@
   (input  (Int64.wrapping-mul Int64.max 2))
   (output (: -2 Int64)))
 
+(case "wrapping arithmetic algebraic identities hold at the range boundaries"
+  (doc    "The wrapping ops fold their algebraic identities — `a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0` — and
+           those folds must be exact at the range boundaries, not just for small values. `(Int64.wrapping-mul
+           Int64.max 0)` is 0: multiplying by zero annihilates even Int64.max (and `*%` never traps, so there
+           is no overflow to consider). Pins the annihilator identity at the boundary — a fold that wrongly
+           kept `a` would yield max instead of 0.")
+  (input  (Int64.wrapping-mul Int64.max 0))
+  (output (: 0 Int64)))
+
+(case "the wrapping additive and multiplicative identities preserve a boundary operand exactly"
+  (doc    "The preserving companions: `(Int64.wrapping-add Int64.min 0)` = Int64.min and `(Int64.wrapping-mul
+           Int64.min 1)` = Int64.min — adding zero and multiplying by one are the identity, preserving even
+           the extreme Int64.min exactly (a fold that dropped the sign or re-derived the boundary would
+           corrupt it). Confirms `a +% 0` and `a *% 1` are true identities across the whole range.")
+  (input  (= (Int64.wrapping-add Int64.min 0) (Int64.wrapping-mul Int64.min 1)))
+  (output (: true Bool)))
+
 (case "wrapping arithmetic over runtime operands wraps at run time"
   (doc    "The runtime companion: `(w a b)` = `(Int64.wrapping-add a b)` over parameters wraps on the
            i64.add path (wasm's add wraps; no overflow guard), so `(w Int64.max 1)` = Int64.min — the

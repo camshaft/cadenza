@@ -75,6 +75,13 @@ pub fn emit(
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
                 | crate::ty::Ty::Bytes
+                // A bare `String` export has no scalar boundary valtype (a string is a heap value, not an
+                // i32/i64/f64), so it crosses via the resource escape like any other heap value — its
+                // CONSTANT bytes baked into the resource module (the value form `(: "…" String)`, the same
+                // bytes a `(Some "hi")` payload already bakes). A RUNTIME string (a byte-rope built at run
+                // time) has no constant form; `constant_value_form` returns None and it falls through to
+                // the decline below (the looping string-escape walker is a later increment, like a list).
+                | crate::ty::Ty::String
         )
     {
         let body = def_body(db, e.def)?;
@@ -372,12 +379,39 @@ fn dwarf_funcs_for(
                 })
             })
             .collect();
+        // Per-construct line rows: each `stmt_lines` marker `(Lir index, source occurrence)` → an
+        // absolute code offset (`code_base + this fn's code_start + the instruction's byte offset in the
+        // entry`) paired with the occurrence's source line. So a debugger steps line-by-line, not just
+        // at the function entry. Empty `stmt_lines` (a single-construct body) leaves `rows` empty → the
+        // line program falls back to one function-entry row (the function-granularity behavior).
+        let instr_offs = serialize::instr_offsets(f, imports);
+        let mut rows: Vec<(u32, u32)> = f
+            .stmt_lines
+            .iter()
+            .filter_map(|&(lir_ix, node)| {
+                let byte_off = *instr_offs.get(lir_ix as usize)?;
+                let row_line = span_data.range(node).map(|(s, _)| span_data.line_at(s))?;
+                Some((code_base + r.code_start + byte_off, row_line))
+            })
+            .collect();
+        // Ascending by offset (the line program emits rows in address order); dedup an offset two
+        // constructs share (keep the first), then collapse consecutive same-LINE rows to keep only line
+        // TRANSITIONS — so the table has one row per source line the code visits, not per sub-expression.
+        rows.sort_by_key(|&(off, _)| off);
+        rows.dedup_by_key(|&mut (off, _)| off);
+        let mut prev_line = 0u32;
+        rows.retain(|&(_, line)| {
+            let keep = line != prev_line;
+            prev_line = line;
+            keep
+        });
         out.push(dwarf::DwarfFunc {
             name: db.defs[def].name.clone(),
             low_pc: code_base + r.code_start,
             high_pc: code_base + r.code_end,
             line,
             vars,
+            rows,
         });
     }
     out
@@ -412,6 +446,9 @@ pub fn emit_dwarf(
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
                 | crate::ty::Ty::Bytes
+                // A bare `String` export also takes the resource-escape core (its constant bytes baked),
+                // so the sidecar-DWARF path declines it here alongside the other compounds.
+                | crate::ty::Ty::String
         )
     {
         return Err(Reject::decline(

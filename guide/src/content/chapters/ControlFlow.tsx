@@ -36,30 +36,22 @@ export default function ControlFlow() {
         and each step reduces toward it. Here <C>sm</C> sums the integers from <C>n</C> down to 0.
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (sm n)
-    (if (= n 0) 0 (+ n (sm (- n 1)))))
-  (def (main) (sm 5))
-  (export main))`}
+        source={`(def (sm n)
+  (if (= n 0) 0 (+ n (sm (- n 1)))))
+(def (main) (sm 5))`}
       />
 
       <H2>Your turn</H2>
       <Exercise
         id="control-flow:1"
         prompt={<>Fix the base case so <C>sm</C> correctly sums 1..5 to <C>15</C>.</>}
-        starter={`(module m
-  (def (sm n)
-    (if (= n 0) ? (+ n (sm (- n 1)))))
-  (def (main) (sm 5))
-  (export main))`}
-        solution={`(module m
-  (def (sm n)
-    (if (= n 0) 0 (+ n (sm (- n 1)))))
-  (def (main) (sm 5))
-  (export main))`}
+        starter={`(def (sm n)
+  (if (= n 0) ? (+ n (sm (- n 1)))))
+(def (main) (sm 5))`}
+        solution={`(def (sm n)
+  (if (= n 0) 0 (+ n (sm (- n 1)))))
+(def (main) (sm 5))`}
         expected="15"
-        wrap={false}
         hint={<>When <C>n</C> reaches 0, there is nothing left to add — the sum of no numbers is <C>0</C>.</>}
       />
     </article>

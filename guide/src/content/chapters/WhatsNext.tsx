@@ -42,13 +42,10 @@ export default function WhatsNext() {
         coordinate of a point, doubled.
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (max a b) (if (> a b) a b))
-  (def (main)
-    (let ((p (record (x 3) (y 8))))
-      (* 2 (max (. p x) (. p y)))))
-  (export main))`}
+        source={`(def (max a b) (if (> a b) a b))
+(def (main)
+  (let ((p (record (x 3) (y 8))))
+    (* 2 (max (. p x) (. p y)))))`}
       />
       <P>
         Edit it — change the point, the factor, swap <C>max</C> for <C>min</C> — and Run. Then flip the

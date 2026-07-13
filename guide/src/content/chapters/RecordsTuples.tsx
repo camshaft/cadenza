@@ -20,11 +20,8 @@ export default function RecordsTuples() {
         the <C>.</C> accessor. Here <C>area</C> multiplies a rectangle's width and height:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (area r) (* (. r w) (. r h)))
-  (def (main) (area (record (w 4) (h 5))))
-  (export main))`}
+        source={`(def (area r) (* (. r w) (. r h)))
+(def (main) (area (record (w 4) (h 5))))`}
       />
 
       <H2>Nesting</H2>
@@ -41,11 +38,8 @@ export default function RecordsTuples() {
         pair, and we read back its new first element:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (swap p) (tuple (. p 1) (. p 0)))
-  (def (main) (. (swap (tuple 3 7)) 0))
-  (export main))`}
+        source={`(def (swap p) (tuple (. p 1) (. p 0)))
+(def (main) (. (swap (tuple 3 7)) 0))`}
       />
 
       <Why tenet="Records are named, tuples are positional">
@@ -63,46 +57,33 @@ export default function RecordsTuples() {
         each coordinate and summing. It composes a helper (<C>sq</C>) with record access:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (sq x) (* x x))
-  (def (dist2 p) (+ (sq (. p x)) (sq (. p y))))
-  (def (main) (dist2 (record (x 3) (y 4))))
-  (export main))`}
+        source={`(def (sq x) (* x x))
+(def (dist2 p) (+ (sq (. p x)) (sq (. p y))))
+(def (main) (dist2 (record (x 3) (y 4))))`}
       />
 
       <H2>Your turn</H2>
       <Exercise
         id="records-tuples:1"
         prompt={<>Finish <C>perimeter</C> so a 4×5 rectangle gives <C>18</C> (two widths plus two heights).</>}
-        starter={`(module m
-  (def (perimeter r)
-    (+ (* 2 (. r w)) ?))
-  (def (main) (perimeter (record (w 4) (h 5))))
-  (export main))`}
-        solution={`(module m
-  (def (perimeter r)
-    (+ (* 2 (. r w)) (* 2 (. r h))))
-  (def (main) (perimeter (record (w 4) (h 5))))
-  (export main))`}
+        starter={`(def (perimeter r)
+  (+ (* 2 (. r w)) ?))
+(def (main) (perimeter (record (w 4) (h 5))))`}
+        solution={`(def (perimeter r)
+  (+ (* 2 (. r w)) (* 2 (. r h))))
+(def (main) (perimeter (record (w 4) (h 5))))`}
         expected="18"
-        wrap={false}
         hint={<>Mirror the width term for the height: <C>(* 2 (. r h))</C>.</>}
       />
 
       <Exercise
         id="records-tuples:2"
         prompt={<>Write <C>third</C> to pull element 2 out of a 3-tuple, so <C>(third (tuple 5 6 7))</C> gives <C>7</C>.</>}
-        starter={`(module m
-  (def (third t) (. t ?))
-  (def (main) (third (tuple 5 6 7)))
-  (export main))`}
-        solution={`(module m
-  (def (third t) (. t 2))
-  (def (main) (third (tuple 5 6 7)))
-  (export main))`}
+        starter={`(def (third t) (. t ?))
+(def (main) (third (tuple 5 6 7)))`}
+        solution={`(def (third t) (. t 2))
+(def (main) (third (tuple 5 6 7)))`}
         expected="7"
-        wrap={false}
         hint={<>Tuple indices start at 0, so the third element is index <C>2</C>.</>}
       />
     </article>

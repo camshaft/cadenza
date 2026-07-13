@@ -27,14 +27,11 @@ export default function PatternMatching() {
         since it declares a type alongside <C>main</C>.)
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (type Opt (Some Int64) (None unit))
-  (def (main)
-    (match (Some 7)
-      ((Some x) x)
-      ((None _) 0)))
-  (export main))`}
+        source={`(type Opt (Some Int64) (None unit))
+(def (main)
+  (match (Some 7)
+    ((Some x) x)
+    ((None _) 0)))`}
       />
       <Note>
         A match arm's head is a <strong>pattern</strong> — a constructor that destructures, a literal,

@@ -238,7 +238,7 @@ fn a_recursive_export_emits_a_self_calling_fn() {
     // A recursive def becomes a `Core::Call` (non-recursive calls inline), so it emits a `pub fn` that
     // calls itself by its SANITIZED name (`sum-to` → `sum_to`, matching the call site).
     let rs = compile_rust(
-        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (export sum-to))",
     );
     assert!(
         rs.contains("pub fn sum_to(n: i64) -> i64"),
@@ -564,7 +564,7 @@ fn rustc_roundtrip_recursion() {
     // A recursive `fn` calls itself on the native stack — no tail-call transform needed for
     // correctness. sum-to(5) = 15, fac(5) = 120 (match base case), fib(10) = 55 (double recursion).
     let sumto = compile_rust(
-        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (export sum-to))",
     );
     if let Some(out) = rustc_run(&sumto, "sum_to(5)") {
         assert_eq!(out, "15");
@@ -726,7 +726,7 @@ fn compile_rust_async(src: &str) -> String {
 #[test]
 fn async_mode_emits_env_threaded_gas_metered_fns() {
     let rs = compile_rust_async(
-        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (export sum-to))",
     );
     // The gas/yield trait is declared once in the module.
     assert!(rs.contains("pub trait CdzEnv"), "trait:\n{rs}");
@@ -784,7 +784,7 @@ fn rustc_roundtrip_async_gas_metered() {
     // The async form compiles and runs under a hand-rolled executor with a real gas Env — same answer as
     // the sync form (sum_to(5)=15), gas is metered, and an exhausted budget traps.
     let module = compile_rust_async(
-        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export sum-to))",
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (export sum-to))",
     );
     // A driver: a Meter env (counts gas, panics past budget) + a minimal block_on executor.
     let driver = r#"

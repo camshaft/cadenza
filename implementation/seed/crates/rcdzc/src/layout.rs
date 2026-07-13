@@ -676,7 +676,7 @@ mod tests {
         // `Core::Call`. Reachability must ADD `sum-to` to the emission order after the export, and its
         // absolute index (1) is what a `call` from `main` targets.
         let ast = crate::testkit::parse(
-            "(module m (def (main) (sum-to 3)) (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (export main))",
+            "(module m (def (main) (sum-to 3)) (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (export main))",
         );
         let mut db = Db::load(ast);
         let layout = compute(&mut db).expect("layout");

@@ -100,6 +100,7 @@ fn leaf(l: &Leaf) -> String {
         Leaf::Bytes(b) => format!("Bytes {b:?}"),
         Leaf::Bool(b) => format!("Bool {b}"),
         Leaf::Name(n) => format!("Name {n}"),
+        Leaf::BadEscape(c) => format!("BadEscape {c:?}"),
     }
 }
 
