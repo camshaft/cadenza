@@ -1530,23 +1530,18 @@ fn emit_multi_closure_resource(
         .iter()
         .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    // A byte-rope (`Bytes`/`String`) closure result crosses as `list<u8>` on the SINGLE-export path
-    // (`emit_closure_resource`), but the multi-export shared-`call` does not yet emit the memory/realloc
-    // list-`call` for N makes — decline SPECIFICALLY (not the generic scalar-only message) so the gap is
-    // clear. A single closure export returning `Bytes`/`String` works today; several sharing one `call` is
-    // a later slice (a `multi_closure_bytes_resource_core_module` + list-lifting envelope).
-    if matches!(
+    // A byte-rope (`Bytes`/`String`) shared closure result crosses as `list<u8>` — the N-makes-one-`call`
+    // memory/realloc list-`call` (`multi_closure_bytes_resource_core_module` + the bytes envelope). A scalar
+    // result takes the by-value shared call. All exports share the signature, so one `ret_is_bytes` decides.
+    let ret_is_bytes = matches!(
         ret_ty.strip_nominal(),
         crate::ty::Ty::Bytes | crate::ty::Ty::String
-    ) {
-        return Err(Reject::decline(
-            "a byte-rope (Bytes/String) closure result crosses on the single-export path, but a \
-             MULTI-EXPORT set sharing one `call` does not yet emit the list-returning `call` — export the \
-             closure alone, or await the multi-export compound-result slice",
-        ));
-    }
-    let result_byte =
-        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    );
+    let result_byte = if ret_is_bytes {
+        0 // unused by the bytes path; `call` returns list<u8>
+    } else {
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+    };
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
@@ -1609,6 +1604,10 @@ fn emit_multi_closure_resource(
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        if ret_is_bytes {
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -1645,6 +1644,35 @@ fn emit_multi_closure_resource(
             })
         })
         .collect::<Result<_, Reject>>()?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    let abi_makes: Vec<envelope::ClosureMakeAbi> = make_specs
+        .iter()
+        .map(|m| envelope::ClosureMakeAbi {
+            name: m.name.clone(),
+            make_param_bytes: m.param_bytes.clone(),
+        })
+        .collect();
+    // A byte-rope shared result → the N-makes-one-list-`call` bytes core + memory/realloc envelope.
+    if ret_is_bytes {
+        let main_core = serialize::multi_closure_bytes_resource_core_module(
+            &funcs,
+            &imports,
+            &ser_makes,
+            &arg_vts,
+            lifted_type_idx,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_multi_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+        ));
+    }
     let main_core = serialize::multi_closure_resource_core_module(
         &funcs,
         &imports,
@@ -1656,15 +1684,6 @@ fn emit_multi_closure_resource(
         &layout,
     )
     .map_err(Reject::decline)?;
-    let dtor_core = serialize::resource_dtor_module_with_drop();
-    let import_name = runtime_import_name();
-    let abi_makes: Vec<envelope::ClosureMakeAbi> = make_specs
-        .iter()
-        .map(|m| envelope::ClosureMakeAbi {
-            name: m.name.clone(),
-            make_param_bytes: m.param_bytes.clone(),
-        })
-        .collect();
     Ok(envelope::assemble_multi_closure_resource(
         &main_core,
         &dtor_core,

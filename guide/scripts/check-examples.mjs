@@ -36,15 +36,18 @@ const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // to ML, so we check that surface too (see `renderSnippet` + the ML pass below) — the surface where the
 // wrap/strip round-trip is most likely to bite.
 const DECL = "def|type|effect";
+// A top-level STATEMENT that isn't def/type/effect but still needs an export appended (never wrapped as
+// a bare expr). `Unit.define` (custom unit) only resolves at top level. Keep in sync with useCadenzaEditor.
+const STMT = "Unit\\.define";
 function wrapModule(src, surface) {
   const t = src.trim();
   if (surface === "sexpr") {
     if (/^\(module\b/.test(t) || /^\(do\b/.test(t)) return t;
-    if (new RegExp(`^\\((${DECL})\\b`).test(t)) return `(do ${t} (export main))`;
+    if (new RegExp(`^\\((${DECL}|${STMT})\\b`).test(t)) return `(do ${t} (export main))`;
     return `(do (def (main) ${t}) (export main))`;
   }
   if (/^module\b/.test(t) || /(^|\n)\s*export\b/.test(t)) return t;
-  if (new RegExp(`^(${DECL})\\b`).test(t)) return `${t}\nexport { main }`;
+  if (new RegExp(`^(${DECL}|${STMT})\\b`).test(t)) return `${t}\nexport { main }`;
   return `def main() = ${t}\nexport { main }`;
 }
 function dedent(s) {

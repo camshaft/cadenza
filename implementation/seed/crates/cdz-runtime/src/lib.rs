@@ -1142,6 +1142,12 @@ fn decode_descriptor(d: &[u8]) -> Option<Descriptor> {
 struct DocBuilder {
     leaves: Vec<DocLeaf>,
     structs: Vec<DocStruct>,
+    /// Flat arena for every `List` struct's children: a `List` records a `(start, len)` RANGE into this
+    /// one pool instead of owning a per-node `Vec<u32>`. Turns N per-compound-node small-Vec allocations
+    /// into amortized growth of a single shared Vec (value-encode of a deep value was ~1.3 allocs/node,
+    /// dominated by these per-node child Vecs). Children of DIFFERENT lists never interleave: each `list`
+    /// call appends its children contiguously and the walk completes one struct before the next.
+    child_pool: Vec<u32>,
 }
 enum DocLeaf {
     Name(String),
@@ -1153,7 +1159,9 @@ enum DocLeaf {
 }
 enum DocStruct {
     Atom(u32),
-    List(Vec<u32>),
+    /// A list struct: its children are `child_pool[start .. start + len]` (a RANGE into the builder's
+    /// shared arena, not an owned Vec).
+    List { start: u32, len: u32 },
 }
 
 impl DocBuilder {
@@ -1265,8 +1273,23 @@ impl DocBuilder {
         self.structs.push(DocStruct::Atom(leaf));
         (self.structs.len() - 1) as u32
     }
-    fn list(&mut self, children: Vec<u32>) -> u32 {
-        self.structs.push(DocStruct::List(children));
+    /// Record a `List` struct whose children are `children` — appended CONTIGUOUSLY to the shared
+    /// `child_pool` (no per-node Vec). Takes a slice so callers pass a stack array (`&[a, b]`) or an
+    /// existing slice (`&out[base..]`) without allocating a temporary Vec.
+    fn list(&mut self, children: &[u32]) -> u32 {
+        let start = self.child_pool.len() as u32;
+        self.child_pool.extend_from_slice(children);
+        self.structs.push(DocStruct::List { start, len: children.len() as u32 });
+        (self.structs.len() - 1) as u32
+    }
+    /// Record a `List` whose first child is `head` and remaining children are `tail` — the assembler
+    /// shape (`head` + the completed sub-results in `out[base..]`), building the range directly in the
+    /// pool with NO temporary Vec.
+    fn list_head_tail(&mut self, head: u32, tail: &[u32]) -> u32 {
+        let start = self.child_pool.len() as u32;
+        self.child_pool.push(head);
+        self.child_pool.extend_from_slice(tail);
+        self.structs.push(DocStruct::List { start, len: 1 + tail.len() as u32 });
         (self.structs.len() - 1) as u32
     }
     fn finish(&self, root: u32) -> Vec<u8> {
@@ -1327,10 +1350,11 @@ impl DocBuilder {
                     out.push(doc::TAG_ATOM);
                     doc_leb(&mut out, *id as u64);
                 }
-                DocStruct::List(children) => {
+                DocStruct::List { start, len } => {
                     out.push(doc::TAG_LIST);
-                    doc_leb(&mut out, children.len() as u64);
-                    for &c in children {
+                    doc_leb(&mut out, *len as u64);
+                    let (s, l) = (*start as usize, *len as usize);
+                    for &c in &self.child_pool[s..s + l] {
                         doc_leb(&mut out, c as u64);
                     }
                 }
@@ -1666,55 +1690,50 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
             }
             EncodeWork::List { head_s, nkids } => {
                 let base = out.len().checked_sub(nkids)?;
-                let mut children = Vec::with_capacity(nkids + 1);
-                children.push(head_s);
-                children.extend_from_slice(&out[base..]); // already in child order (see the reverse push)
+                // Build the list's range directly in the pool: head + the completed children in `out[base..]`
+                // (already in child order — see the reverse push), no temporary Vec.
+                let s = b.list_head_tail(head_s, &out[base..]);
                 out.truncate(base);
-                out.push(b.list(children));
+                out.push(s);
             }
             EncodeWork::Named { colon_s, name } => {
                 let value = out.pop()?;
                 let tname = b.name_leaf(name);
                 let tname_s = b.atom(tname);
-                out.push(b.list(vec![colon_s, value, tname_s]));
+                out.push(b.list(&[colon_s, value, tname_s]));
             }
             EncodeWork::Pair { katom } => {
                 let fval = out.pop()?;
-                out.push(b.list(vec![katom, fval]));
+                out.push(b.list(&[katom, fval]));
             }
             EncodeWork::SetOf { list_head_s, nelems } => {
                 // The top `nelems` results are the elements in canonical order, under the pre-emitted
                 // `list_head_s`. Build the inner `(list …)`, then the `(. Set of)` head (atoms emitted now,
                 // AFTER the elements — matching the oracle), then apply it: `((. Set of) (list …))`.
                 let base = out.len().checked_sub(nelems)?;
-                let mut list_children = Vec::with_capacity(nelems + 1);
-                list_children.push(list_head_s);
-                list_children.extend_from_slice(&out[base..]);
+                let inner_list = b.list_head_tail(list_head_s, &out[base..]);
                 out.truncate(base);
-                let inner_list = b.list(list_children);
                 let dot_l = b.name_leaf(".");
                 let dot = b.atom(dot_l);
                 let set_l = b.name_leaf("Set");
                 let set_mod = b.atom(set_l);
                 let of_l = b.name_leaf("of");
                 let of_key = b.atom(of_l);
-                let set_of = b.list(vec![dot, set_mod, of_key]);
-                out.push(b.list(vec![set_of, inner_list]));
+                let set_of = b.list(&[dot, set_mod, of_key]);
+                out.push(b.list(&[set_of, inner_list]));
             }
             EncodeWork::MapPair => {
                 // Key was Visited before value, so on `out` the value is on top, key directly below.
                 let val = out.pop()?;
                 let key = out.pop()?;
-                out.push(b.list(vec![key, val]));
+                out.push(b.list(&[key, val]));
             }
             EncodeWork::MapOf { head_s, nentries } => {
                 // The top `nentries` results are the `(key value)` pairs in canonical KEY order.
                 let base = out.len().checked_sub(nentries)?;
-                let mut children = Vec::with_capacity(nentries + 1);
-                children.push(head_s);
-                children.extend_from_slice(&out[base..]);
+                let s = b.list_head_tail(head_s, &out[base..]);
                 out.truncate(base);
-                out.push(b.list(children));
+                out.push(s);
             }
         }
     }
@@ -5960,7 +5979,7 @@ mod tests {
                 for (i, &es) in elems.iter().enumerate() {
                     children.push(encode_value_recursive(desc, b, op_arr_get(h, i as u32), es, depth + 1)?);
                 }
-                b.list(children)
+                b.list(&children)
             }
             S::List(elem) => {
                 let (elem, n) = (*elem, op_arr_len(h));
@@ -5970,7 +5989,7 @@ mod tests {
                 for i in 0..n {
                     children.push(encode_value_recursive(desc, b, op_arr_get(h, i), elem, depth + 1)?);
                 }
-                b.list(children)
+                b.list(&children)
             }
             S::Record(fields) => {
                 let head = b.name_leaf("record");
@@ -5980,9 +5999,9 @@ mod tests {
                     let kname = b.name_leaf(k);
                     let katom = b.atom(kname);
                     let fval = encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
-                    children.push(b.list(vec![katom, fval]));
+                    children.push(b.list(&[katom, fval]));
                 }
-                b.list(children)
+                b.list(&children)
             }
             S::Sum(variants) => {
                 let disc = op_sum_disc(h) as usize;
@@ -5991,7 +6010,7 @@ mod tests {
                 let head_leaf = b.name_leaf(&head);
                 let head_s = b.atom(head_leaf);
                 let payload = encode_value_recursive(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
-                b.list(vec![head_s, payload])
+                b.list(&[head_s, payload])
             }
             S::Named(name, inner) => {
                 let (name, inner) = (name.clone(), *inner);
@@ -6000,7 +6019,7 @@ mod tests {
                 let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
                 let tname = b.name_leaf(&name);
                 let tname_s = b.atom(tname);
-                b.list(vec![colon_s, value, tname_s])
+                b.list(&[colon_s, value, tname_s])
             }
             S::Set(elem) => {
                 let elem = *elem;
@@ -6011,15 +6030,15 @@ mod tests {
                 for e in sorted {
                     list_children.push(encode_value_recursive(desc, b, e, elem, depth + 1)?);
                 }
-                let inner_list = b.list(list_children);
+                let inner_list = b.list(&list_children);
                 let dot = b.name_leaf(".");
                 let dot_s = b.atom(dot);
                 let set_l = b.name_leaf("Set");
                 let set_s = b.atom(set_l);
                 let of_l = b.name_leaf("of");
                 let of_s = b.atom(of_l);
-                let set_of = b.list(vec![dot_s, set_s, of_s]);
-                b.list(vec![set_of, inner_list])
+                let set_of = b.list(&[dot_s, set_s, of_s]);
+                b.list(&[set_of, inner_list])
             }
             S::Map(key, val) => {
                 let (key, val) = (*key, *val);
@@ -6030,9 +6049,9 @@ mod tests {
                 for (k, v) in entries {
                     let ks = encode_value_recursive(desc, b, k, key, depth + 1)?;
                     let vs = encode_value_recursive(desc, b, v, val, depth + 1)?;
-                    children.push(b.list(vec![ks, vs]));
+                    children.push(b.list(&[ks, vs]));
                 }
-                b.list(children)
+                b.list(&children)
             }
         })
     }
@@ -7278,13 +7297,12 @@ mod tests {
             }
         });
         println!("ALLOC value_encode x{VE_REPS}: {venc}");
-        // MEASURED ~195 allocs/encode of a 50-element IntList (~150 value nodes) = ~1.3 allocs/node: the
-        // DocBuilder's `leaves`/`structs` Vec growth + a per-`list()` children Vec per compound struct +
-        // the output byte Vec + the returned Bytes leaf. LINEAR in the value's node count. The ceiling
-        // catches an O(N²) re-walk or a big per-node transient-Vec regression while tolerating measurement
-        // noise; it does NOT claim the current figure is optimal (the per-`list()` children Vec is the
-        // reducible part, a future tick — value-encode is a host-escape path, not a hot inner loop).
-        assert!(venc <= 24000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 24000 (~195/encode of a 50-node list, linear in node count: leaf/struct Vecs grow-once + a children Vec per compound struct + output + Bytes; an O(N²) re-walk or per-node transient churn would blow past this)");
+        // MEASURED ~100 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.67 allocs/node after
+        // the flat `child_pool` arena replaced the per-compound-node children Vec (was ~195/encode = ~1.3/
+        // node). The remaining allocs are the grow-once `leaves`/`structs`/`child_pool` Vecs + the output
+        // byte Vec + the returned Bytes leaf — all LINEAR in node count and amortized. The ceiling catches
+        // an O(N²) re-walk or a regression that reintroduces per-node Vec churn.
+        assert!(venc <= 13000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 13000 (~100/encode of a 50-node list after the child_pool arena; grow-once leaf/struct/child-pool Vecs + output + Bytes, linear in node count; a per-node Vec regression would push back toward ~195/encode)");
         op_drop(ve_list);
     }
 

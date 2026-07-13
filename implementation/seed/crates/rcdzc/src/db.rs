@@ -597,6 +597,15 @@ pub struct Db {
     /// depth/reduction limit is cached (a limit-clipped partial walk is not a node's true fault set).
     pub(crate) collect_cache: crate::fxhash::FxHashMap<StructId, Vec<crate::diag::Reject>>,
 
+    /// For an effect DECLARATION occurrence, whether ANY entrypoint (`export`) body delegates it to the
+    /// host — the program-wide delegation set (`effects::program_delegates_effect`). This is a pure
+    /// function of `decl` (a walk of every export body for a matching `(host (E…) …)`), consulted once
+    /// per RESIDUAL host-perform as a routing fallback. A program with N host performs (or N ops whose
+    /// lowering probes it) recomputed the O(export-body) walk N times → O(N²); a wide effect (N ops) hit
+    /// exactly this (`body_has_host_delegating` ~86% self on a 800-op handler compile). Memoized per
+    /// decl, the walk runs once.
+    pub(crate) delegates_effect_cache: crate::fxhash::FxHashMap<StructId, bool>,
+
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
     /// no ephemeral collections: `is_recursive` takes them out (`mem::take`), CLEARS them, uses them,
@@ -892,6 +901,7 @@ impl Db {
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             reduce_cache: crate::fxhash::FxHashMap::default(),
             collect_cache: crate::fxhash::FxHashMap::default(),
+            delegates_effect_cache: crate::fxhash::FxHashMap::default(),
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),

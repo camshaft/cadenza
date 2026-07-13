@@ -349,7 +349,6 @@
            `(f h)` (h : Int64) and the `+` that consumes its result — no annotation on `f`. Applied with
            `(fn (x) (+ x 1))` over `[1, 2]` → (1+1) + (2+1) = 5. Was 'a recursive function with an
            unannotated parameter is not yet inferred' before fn-typed recursive params were solved.")
-  (needs  sum-type-declaration)
   (input  (do
             (type L Nil (Cons Int64 L))
             (def (sum-f f (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ (f h) (sum-f f t)))))
@@ -362,7 +361,6 @@
            `(L.Cons (f h) (map-f f t))`. `f` infers `(-> Int64 Int64)` from `(f h)` in a `Cons`-payload
            position. `(fn (x) (* x 2))` over `[3, 4]` yields `[6, 8]`; the caller reads the head → 6. Pins
            the inference works when the callback's result feeds a CONSTRUCTOR payload, not only an operator.")
-  (needs  sum-type-declaration)
   (input  (do
             (type L Nil (Cons Int64 L))
             (def (map-f f (: l L)) (match l ((L.Nil) L.Nil) ((L.Cons h t) (L.Cons (f h) (map-f f t)))))
@@ -375,7 +373,6 @@
            `(fold f (f acc h) t)`. `f` infers `(-> Int64 (-> Int64 Int64))` from the two-argument
            application `(f acc h)`, so a multi-argument callback param is inferred at its full arity, not
            just unary. `1 + 2 + 3` = 6. Pins the arrow-shaping is over the application's argument COUNT.")
-  (needs  sum-type-declaration)
   (input  (do
             (type L Nil (Cons Int64 L))
             (def (fold f (: acc Int64) (: l L)) (match l ((L.Nil) acc) ((L.Cons h t) (fold f (f acc h) t))))
@@ -390,7 +387,6 @@
            returns the first element for which `f` yields `C.A`: over `[0, 5]` with `f x = (if (> x 1) (C.A
            x) (C.B))`, element 5 gives `(C.A 5)` → 5. Pins that a fn-param's result is solved from a match
            on its application, the result-side companion of inferring the parameter from `(f h)`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type L Nil (Cons Int64 L))
             (type C (A Int64) B)
@@ -411,7 +407,6 @@
            arms-agree constraint reaches a fn-param's result var when an arm body is a bare callback
            application, the branching-recursion companion of the single-recursion fold. `(1 + 2) · 10`
            applied per leaf → 10 + 20 = 30.")
-  (needs  sum-type-declaration)
   (input  (do
             (type T (Leaf Int64) (Node (Tuple T T)))
             (def (fold-t f (: t T))
@@ -431,7 +426,6 @@
            companion of applying the callback to a payload element. `f = (+ x 1)` applied twice to z = 0
            → 2. (The accumulator `z` is annotated: a pure pass-through parameter has no INTERNAL constraint
            to infer from, so it is annotated, exactly as a non-callback accumulator is.)")
-  (needs  sum-type-declaration)
   (input  (do
             (type N Z (S N))
             (def (foldn f (: z Int64) (: n N))
@@ -567,7 +561,6 @@
            `n`. The application pushes into each arm (case-of-match), and the `C.A` arm's lambda folds
            against `5` with `n` = 10 → 15. Was 'value is not applyable' (a match result was not recognized
            as an applyable head — only an `if` head commuted); now the match head commutes like an `if`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (mk (: c C)) (match c ((C.A n) (fn ((: x Int64)) (+ x n))) ((C.B) (fn ((: x Int64)) x))))
@@ -580,7 +573,6 @@
            WHICH closure `mk` returns is decided at run time; applying `((mk …) 5)` dispatches to the taken
            arm's closure. b=true → the `C.A 10` arm → `(+ 5 10)` = 15; b=false → the `C.B` identity arm → 5.
            Pins the case-of-match commuting conversion over a runtime scrutinee, not only a constant one.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (mk (: c C)) (match c ((C.A n) (fn ((: x Int64)) (+ x n))) ((C.B) (fn ((: x Int64)) x))))
@@ -596,7 +588,6 @@
            to both args at once: `((mk (C.A 100)) 3 4)`. Case-of-match pushes the full multi-argument
            application into each arm, so the taken arm's lambda folds against `[3, 4]` with `n` = 100 →
            107. Pins the commuting conversion carries ALL arguments, not just one.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (mk (: c C)) (match c ((C.A n) (fn ((: x Int64) (: y Int64)) (+ (+ x y) n))) ((C.B) (fn ((: x Int64) (: y Int64)) (+ x y)))))
@@ -615,7 +606,6 @@
 ; both also member projections — keep their own paths.
 
 (case "a function stored in a record field of a sum payload is called after a match"
-  (needs  sum-type-declaration)
   (doc    "`(type H (M (Record (f (-> Int64 Int64)) (n Int64))))` carries a record with a FUNCTION field
            `f` and a data field `n`. Matching binds the whole record to `rec`; `((. rec f) rec.n)` projects
            the fn field off the runtime payload record and applies it to the data field — `(fn (x) (+ x 1))`

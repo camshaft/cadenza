@@ -310,13 +310,50 @@
            Here the body is `(+ 100 (Amb.flip))`, so `C = (+ 100 [])` — effect-free — and `(resume 10 s)`
            returns into it, yielding `C[10] = (+ 100 10)`. The arm `(+ 1 (resume 10 s))` then evaluates to
            `(+ 1 (+ 100 10))` = 111. No reified continuation object is needed while `C` is pure (it may even
-           be duplicated by a multi-shot resume with no effect change); a perform under a CONDITIONAL — a
+           be duplicated by a multi-shot resume with no effect change); a perform in a conditional BRANCH — a
            non-uniform continuation — still awaits the frame machinery.")
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))
             (def (main)
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main)))
   (output (: 111 Int64)))
+
+(case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
+  (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
+           position, so the continuation `C = (if (< [] 5) 1 2)` is uniform (the branches run only AFTER the
+           condition and are pure). `(resume 10 s)` returns into it: `C[10] = (if (< 10 5) 1 2)` = 2, and the
+           arm `(+ 1 (resume 10 s))` evaluates to `(+ 1 2)` = 3. Both branches are effect-free, so a
+           multi-shot resume could duplicate the whole `if` with no effect change. A perform in a conditional
+           BRANCH (a non-uniform continuation) still declines — that needs the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main)))
+  (output (: 3 Int64)))
+
+(case "a handler arm that resumes NON-tail folds when the perform is in a match scrutinee"
+  (doc    "The pure one-hole continuation extends into a `match` SCRUTINEE — a strict, always-evaluated-first
+           position (like an `if` condition), so `C = (match [] (0 100) (_ 2))` is uniform (the arms run only
+           after the scrutinee and are pure). `(resume 10 s)` → `C[10]` selects the `_` arm → 2, and the arm
+           `(+ 1 (resume 10 s))` evaluates to `(+ 1 2)` = 3. Every arm BODY is effect-free; a perform in an
+           arm body (a non-uniform continuation) still declines — that needs the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main)))
+  (output (: 3 Int64)))
+
+(case "a handler arm that resumes NON-tail folds when the perform is in an and lhs"
+  (doc    "The pure one-hole continuation extends into a short-circuit connective's LHS — a strict,
+           always-evaluated-first position. `C = (and (< [] 5) true)`; the arm `(not (resume 10 s))` produces
+           a Bool: `(resume 10 s)` → `C[10] = (and (< 10 5) true)` = false, and `(not false)` = true. The rhs
+           `true` runs only on the taken path and is pure (copied into `C`); a perform in the RHS — a
+           conditionally-run position — still declines.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main)))
+  (output (: true Bool)))
 
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle

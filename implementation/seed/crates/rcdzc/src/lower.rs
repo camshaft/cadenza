@@ -999,6 +999,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 // `List.len` applied to a list — FOLD when the operand is a compile-time-visible list
                 // literal (its length is statically known), else emit `Core::ListLen` (the runtime
+                // `Record.project r (a c)` — narrow a record to the named fields. FOLD over a
+                // compile-time-visible `Core::Record`: build a NEW `Core::Record` holding only the named
+                // fields, each carrying the operand's own value occurrence (the value heap is immutable,
+                // so the result shares the operand's field values — `type-system.md` §A Record Row
+                // Operation Yields A New Value). The second operand is a LITERAL field-name list `(a c)`
+                // (labels via `record_op_labels`, NOT an evaluated value). A named field absent from the
+                // record is the CDZ0212 `infer` reports; here the fold simply omits it (the reject denies
+                // the build, so this core is never emitted). A poison operand / non-record / non-constant
+                // record declines (the runtime row op is a later increment).
+                Some(Prim::RecordProject) if args.len() == 2 => {
+                    lower_record_project(db, id, args[0], args[1])
+                }
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
                     let operand = args[0];
@@ -6414,6 +6426,17 @@ fn arith_identity(
         // the `&` fold, so it too fires on an emit-refined range via the emit-time sibling.
         Prim::BitOr if is_full_mask_for(db, lhs, rc) && is_trap_free(db, lhs) => Some(rc.clone()),
         Prim::BitOr if is_full_mask_for(db, rhs, lc) && is_trap_free(db, rhs) => Some(lc.clone()),
+        // XOR CANCELLATION: `(^ (^ v w) w)` → `v` — the two XORs by the SAME `w` (constant OR runtime)
+        // cancel (`w ^ w == 0`, and `v ^ 0 == v`). Handled BEFORE the nested-bitwise collapse so the
+        // constant case produces `v` DIRECTLY rather than a residual `(^ v 0)` the collapse would leave
+        // (which does not re-simplify). DISCARDS `w`, so gated on `is_trap_free(w)`. `v` stays, traps kept.
+        Prim::BitXor
+            if let Some((v, w)) = xor_cancels(db, lhs, rhs)
+                && is_trap_free(db, w) =>
+        {
+            trace!(target: "rcdzc::fold", node = v.0, "XOR cancellation (^ (^ v w) w) → v");
+            Some(core_of(db, v))
+        }
         // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
         // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
         // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
@@ -6611,6 +6634,37 @@ fn nested_bitwise_collapse(
         return Some(folded);
     }
     None
+}
+
+/// XOR CANCELLATION for an outer `(^ lhs rhs)`: when one operand is `(^ v w)` and the OTHER is
+/// `core_equiv` to `w`, the two XORs by `w` cancel — `(v ^ w) ^ w == v ^ (w ^ w) == v ^ 0 == v` (XOR is
+/// associative/commutative and self-inverse). Returns `v`. Covers a CONSTANT `w` (`(^ (^ x 5) 5)` → x —
+/// which `nested_bitwise_collapse` would leave as a residual `(^ x 0)`) AND a RUNTIME `w` (`(^ (^ x y) y)`
+/// → x, the involution `nested_bitwise_collapse` cannot see). Both operand orders of the outer `^`, and
+/// `w` on either side of the inner `^`, are tried. The result is `v` (its own traps preserved); `w` is
+/// DISCARDED, so the caller gates on `is_trap_free(w)` — a trapping `w` (`(^ (^ v (/ a b)) (/ a b))` at
+/// b==0) must still trap. Returns `(v, w)` so the caller can trap-check `w`.
+fn xor_cancels(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId)> {
+    // Try: `lhs` is the inner `(^ v w)`, `rhs` is the matching `w`.
+    let check = |db: &mut Db, inner: StructId, outer_w: StructId| -> Option<(StructId, StructId)> {
+        let Core::Arith {
+            op: Prim::BitXor,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        // The outer operand `outer_w` must equal ONE side of the inner XOR; the OTHER side is `v`.
+        if core_equiv(db, ir, outer_w) {
+            Some((il, ir)) // (v, w)
+        } else if core_equiv(db, il, outer_w) {
+            Some((ir, il)) // (v, w) — inner XOR is commutative
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
 }
 
 /// The NESTED SHIFT COLLAPSE for `(SH lhs rhs)` where `SH` is `Shr` OR `Shl`: when `lhs` is itself
@@ -7026,6 +7080,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SumCtor
         | Prim::TupleNew
         | Prim::RecordNew
+        | Prim::RecordProject
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
@@ -9412,6 +9467,41 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
 /// yet (declines cleanly — no corpus case exercises a constant absent expect, and a codeless decline
 /// grades Todo, never a miscompile). A runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
 /// A poison sum propagates. `message` is not lowered — the wasm trap carries no text.
+/// Lower `(Record.project r (a c))` — narrow `r` to the named fields. FOLD over a compile-time-visible
+/// `Core::Record`: build a NEW `Core::Record` holding only the named fields, each carrying `r`'s own value
+/// occurrence (the value heap is immutable, so the result SHARES `r`'s field values — `type-system.md` §A
+/// Record Row Operation Yields A New Value). The second operand is a LITERAL field-name list `(a c)` (labels
+/// via `record_op_labels`, NOT an evaluated value). A named field absent from `r` is the CDZ0212 `infer`
+/// reports; here the fold simply omits it (the reject denies the build, so this core is never emitted). A
+/// poison operand propagates; a non-record / non-constant record declines (the runtime row op is a later
+/// increment). A malformed label list is CDZ0201.
+fn lower_record_project(db: &mut Db, id: StructId, record: StructId, labels: StructId) -> Core {
+    let Core::Record { fields } = core_of(db, record) else {
+        return match core_of(db, record) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "Record.project over a runtime record is not yet built",
+            )),
+        };
+    };
+    let Some(labels) = crate::resolve::record_op_labels(db, labels) else {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "Record.project's second operand is a list of field names, e.g. `(a c)`",
+        ));
+    };
+    let mut kept = std::collections::BTreeMap::new();
+    for label in &labels {
+        if let Some(&v) = fields.get(label) {
+            kept.insert(label.clone(), v);
+        }
+    }
+    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), "Record.project folds a constant record to its named fields");
+    Core::Record {
+        fields: std::sync::Arc::new(kept),
+    }
+}
+
 fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, sum) {
         return Core::Poison(r);
@@ -10639,6 +10729,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
         Prim::RecordNew => "record-new",
+        Prim::RecordProject => "record-project",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",

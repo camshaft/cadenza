@@ -138,6 +138,46 @@ export default function Units() {
         different exact factors, and the arithmetic can't blur them.
       </P>
 
+      <H2>Declaring your own units</H2>
+      <P>
+        The built-in table doesn't have to be the end of it. <C>Unit.define</C> introduces a new named
+        unit as an exact multiple of one you already have — a name, the unit to build on, and a ratio
+        (numerator then denominator). A furlong is 660 feet, so once you've defined it, it converts like
+        any other unit — one furlong is <C>201.168</C> metres:
+      </P>
+      <Runnable
+        source={`(Unit.define #"furlong" (Unit.of #"foot") 660 1)
+(def (main)
+  (Qty.value
+    (Unit.in (Unit.of #"metre") (Qty.of 1.0 (Unit.of #"furlong")))))`}
+      />
+      <P>
+        The new name joins the same family, so it carries a dimension and obeys every rule you've seen —
+        conversion, mixing, mismatch detection. Define a nautical mile as 1852 metres and two of them come
+        to <C>3704</C> metres:
+      </P>
+      <Runnable
+        source={`(Unit.define #"nautical-mile" (Unit.of #"metre") 1852 1)
+(def (main)
+  (Qty.value
+    (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"nautical-mile")))))`}
+      />
+      <P>
+        A unit's name has to mean exactly one conversion. Redefining <C>foot</C> as 2 metres — a value it
+        already isn't — is a contradiction, and the compiler rejects it rather than let two definitions
+        fight:
+      </P>
+      <Note>
+        This one is <strong>meant to be rejected</strong>. A redefinition that <em>agrees</em> with the
+        existing conversion is fine; only a <em>conflicting</em> one is the error (CDZ0502) you'll see
+        here.
+      </Note>
+      <Runnable
+        source={`(Unit.define #"foot" (Unit.of #"metre") 2 1)
+(def (main) 0)`}
+        expect="error"
+      />
+
       <Why tenet="Dimensions are checked, then erased">
         Units live entirely at compile time. <C>(Qty.of 5.0 metre)</C> and the bare <C>5.0</C> emit{" "}
         <em>byte-identical</em> code — the unit is a static claim the checker verifies and then throws
@@ -209,6 +249,31 @@ export default function Units() {
           <>
             The second argument to <C>Qty.pow</C> is the exponent. A cube is the third power, so it's{" "}
             <C>3</C> — and <C>2.0</C> cubed is <C>8</C>.
+          </>
+        }
+      />
+
+      <Exercise
+        id="units:4"
+        prompt={
+          <>
+            Define a <C>span</C> as <C>3</C> metres with <C>Unit.define</C>, then convert <C>4.0</C> spans
+            to metres. Four spans is <C>12</C> metres.
+          </>
+        }
+        starter={`(Unit.define #"span" (Unit.of #"metre") ? 1)
+(def (main)
+  (Qty.value
+    (Unit.in (Unit.of #"metre") (Qty.of 4.0 (Unit.of #"span")))))`}
+        solution={`(Unit.define #"span" (Unit.of #"metre") 3 1)
+(def (main)
+  (Qty.value
+    (Unit.in (Unit.of #"metre") (Qty.of 4.0 (Unit.of #"span")))))`}
+        expected="12"
+        hint={
+          <>
+            The ratio is numerator then denominator — a span is <C>3 / 1</C> metres. Then <C>4.0</C> spans
+            convert to <C>4 × 3 = 12</C> metres.
           </>
         }
       />

@@ -92,6 +92,24 @@ pub enum Code {
     /// non-exhaustiveness rejection, distinct from a shape defect). For a scalar scrutinee this is a
     /// match with no wildcard tail; for a sum it is a missing variant (a later increment).
     NonExhaustive,
+    /// A record ROW operation names a field the operand record ALREADY CONTAINS — `Record.merge` /
+    /// `Record.extend` combining or adding a field whose name is already present (`type-system.md` §Two
+    /// Records Are Combined Only When Their Field Sets Are Disjoint / §A Field Is Added To Or Replaced In
+    /// A Record By A Derived Operation). Rejected so a combined record never has to choose which operand's
+    /// value a shared field takes and `extend` never silently overwrites (the author means `Record.with`
+    /// to replace). The row-operation companion of the duplicate-field literal `(record (a 1) (a 2))`
+    /// (CDZ0201); in the CDZ021x types-and-patterns band with its dual, `AbsentField`.
+    PresentField,
+    /// A record ROW operation names a field the operand record DOES NOT CONTAIN — `Record.project` /
+    /// `Record.without` / `Record.with` / `Record.pop` restricting to, dropping, updating, or popping a
+    /// field absent from the operand (`type-system.md` §A Record Is Restricted To A Named Set Of Its
+    /// Fields, §A Record Is Reduced By Dropping A Named Set Of Its Fields, §A Field Is Added To Or Replaced
+    /// In A Record By A Derived Operation). Rejected at compile time so a projection cannot produce a field
+    /// the operand never held, a drop/pop of an absent field is a static error not a no-op, and a `with`
+    /// of an absent field stays distinct from `extend`. A record field name is a STATIC label (not a
+    /// runtime index), so an absent one is this compile-time rejection, never a runtime `None`. The dual of
+    /// `PresentField`.
+    AbsentField,
     /// A `match` ARM that can never be reached because an EARLIER arm already covers every value it would
     /// — a duplicate variant/literal arm, or any arm after a catch-all binder/wildcard. The DUAL of
     /// non-exhaustiveness: where CDZ0210 flags a value NO arm covers, this flags an arm NO value reaches.
@@ -248,6 +266,8 @@ impl Code {
             Code::DeadTrap => "CDZ0305",
             Code::UnusedBinding => "CDZ0306",
             Code::NonExhaustive => "CDZ0210",
+            Code::PresentField => "CDZ0211",
+            Code::AbsentField => "CDZ0212",
             Code::RedundantArm => "CDZ0213",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
