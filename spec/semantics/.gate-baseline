@@ -215,6 +215,7 @@ pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
+pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
@@ -738,6 +739,7 @@ pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
+pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
@@ -1192,6 +1194,7 @@ todo	a delegated capability is not itself an export field
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never
+todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
