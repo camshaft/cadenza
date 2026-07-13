@@ -1733,7 +1733,9 @@ fn qty_pow_type(db: &mut Db, args: &[StructId]) -> Option<Ty> {
 /// The type of a tuple built from `elems`, EXCEPT the empty tuple IS the unit value (`Ty::Unit`) — the
 /// empty-tuple-is-unit convention (`core-semantics.md` §The Empty Tuple Is The Unit Value). Used by the
 /// tuple row ops' result-type arms (a `split-at 0` prefix / an all-consumed suffix is `Unit`, not a
-/// zero-arity tuple).
+/// zero-arity tuple). There is no zero-arity `Ty::Tuple`: `()` and `unit` are the same value.
+//= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
+//# The empty tuple MUST be the unit value, so that unit and `()` are the same value.
 fn tuple_or_unit(elems: &[Ty]) -> Ty {
     if elems.is_empty() {
         Ty::Unit

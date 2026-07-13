@@ -2592,6 +2592,12 @@ pub(crate) fn check_binding_pattern(
     }
     // A compound pattern `(head arg…)`. A `tuple` head is the one accepted destructuring shape in
     // Increment A; a constructor head is classified by variant count; a record/list head declines.
+    //
+    // This is where a tuple is DECONSTRUCTED by pattern matching: `(tuple a b)` in pattern position binds
+    // its positional elements to `a`/`b` (each element sub-pattern recursed below), so a tuple's elements
+    // are reachable by destructuring, not only by positional projection.
+    //= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
+    //# A tuple MUST be deconstructible by pattern matching, so that `(tuple a b)` in pattern position binds the elements.
     if is_tuple_pattern(db, pat) {
         // Linearity across the WHOLE pattern (CDZ0102).
         check_pattern_linear(db, pat)?;
@@ -2800,6 +2806,14 @@ fn collect_pattern_binders(
 /// A variant name is distinguished from a binder by RESOLVING it against `ty`'s variant set: `None`
 /// against `Option` is the nullary variant (a constraint), `x` is a binder (none). Errs (declines) on a
 /// pattern this increment does not compile — a tuple/record destructure, a literal, a wrong-arity ctor.
+///
+/// A nullary variant pattern (`None`) and a unary+ one (`(Some x)`) are handled by the SAME arm — each
+/// adds its discriminant test and descends into one payload position — so the matcher never branches on
+/// a constructor's arity: every constructor pattern is treated uniformly as a single-arity application.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
 fn pattern_constraints(
     db: &mut Db,
     pat: StructId,
