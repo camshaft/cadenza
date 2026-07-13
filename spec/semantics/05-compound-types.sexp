@@ -36,6 +36,41 @@
             (def (main) (f (Some 7))) (export main)))
   (output (: 7 Int64)))
 
+; A record field name (and a member-access field name) is a LABEL, not a value reference — so it is
+; immune to argument substitution when a function is called. A function whose body builds a record with a
+; field KEYED the same as a parameter, or projects a field whose name matches a parameter, must compute
+; the same value it would with any other parameter name: β-reduction substitutes the argument for VALUE
+; references to the parameter, never for a label. (The `let`-bound analogue always worked — a `let`-local
+; is not β-substituted — which is what proves the param case was a bug, not an intentional restriction.)
+
+(case "a record field key that coincides with a parameter name survives the call"
+  (doc    "`(def (f (: x Int64)) (. (record (x 5)) x))` builds a record with a field KEYED `x`, projects
+           it, and returns 5 — independent of the parameter also named `x` (the key is a label, the
+           parameter is a value). Calling `(f 7)` gives 5. β-reduction must NOT substitute the argument
+           into the field-key or projection-key positions (which would corrupt `(record (x 5))` into
+           `(record (7 5))` and reject the valid program CDZ0201) — a key names a field, it does not read
+           a variable.")
+  (input  (do (def (f (: x Int64)) (. (record (x 5)) x)) (def (main) (f 7)) (export main)))
+  (output (: 5 Int64)))
+
+(case "a multi-field record with one param-named key survives the call"
+  (doc    "`(def (f (: x Int64)) (. (record (x 1) (y 2)) y))` projects the `y` field (2); the other field's
+           key `x` coincides with the parameter but is a label, so the WHOLE record literal stays well
+           formed under the call. Pins that key immunity is per-key across the whole record, not just the
+           projected field. `(f 7)` gives 2.")
+  (input  (do (def (f (: x Int64)) (. (record (x 1) (y 2)) y)) (def (main) (f 7)) (export main)))
+  (output (: 2 Int64)))
+
+(case "a record field VALUE still reads the parameter it names after the call"
+  (doc    "The precise complement: only the KEY is a label — a field VALUE that references the parameter
+           still substitutes. `(def (f (: x Int64)) (. (record (y x)) y))` stores the parameter `x` in field
+           `y` and projects it, so `(f 7)` = 7. Pins that the immunity is confined to the key position: the
+           value `x` (an ordinary expression) is β-substituted as usual, so a fix that over-immunized the
+           whole field pair (dropping the value substitution too) would wrongly yield the un-substituted
+           parameter here.")
+  (input  (do (def (f (: x Int64)) (. (record (y x)) y)) (def (main) (f 7)) (export main)))
+  (output (: 7 Int64)))
+
 ; --- A record's field names are a SET: each name appears at most once --------------------
 ; core-semantics.md #A Record Has A Fixed Set Of Named Fields: "A record MUST associate a fixed SET
 ; of statically-known field names each with a value." A set has each name once, so a record literal

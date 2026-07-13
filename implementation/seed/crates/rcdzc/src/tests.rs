@@ -1196,6 +1196,48 @@ fn a_let_bound_value_under_a_fn_param_compiles() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 22);
 }
 
+/// A record field KEY (and a member-access field name) that coincides with a PARAMETER name survives the
+/// call — the β-reduction key-immunity fix. `beta_reduce` substitutes the argument for VALUE references to
+/// the parameter, but a field key `(record (x 5))` and a projection key `(. r x)` are LABELS, not value
+/// reads; substituting the argument for them (turning `(record (x 5))` into `(record (7 5))`) corrupted a
+/// valid record and rejected the program CDZ0201. `is_binder_occurrence` (record key) +
+/// `is_member_key_occurrence` (projection key) now copy such a name structurally. The `let`-bound analogue
+/// always worked (a `let`-local is not β-substituted), which proved the param case was a bug.
+#[test]
+fn a_record_field_key_coinciding_with_a_parameter_survives_the_call() {
+    use crate::testkit::parse;
+    // Field keyed `x`, projected `x`, under param `x` → 5 (the key is a label, immune to substitution).
+    let proj =
+        "(module m (def (f (: x Int64)) (. (record (x 5)) x)) (def (main) (f 7)) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(proj))).expect("compile"),
+            "main"
+        ),
+        5
+    );
+    // Multi-field: the colliding key `x` does not corrupt the record; project the non-colliding `y` → 2.
+    let multi = "(module m (def (f (: x Int64)) (. (record (x 1) (y 2)) y)) (def (main) (f 7)) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(multi))).expect("compile"),
+            "main"
+        ),
+        2
+    );
+    // The COMPLEMENT — a field VALUE that references the param STILL substitutes (immunity is key-only):
+    // `(record (y x))` with x=7, projected → 7. Guards against over-immunizing the whole field pair.
+    let value =
+        "(module m (def (f (: x Int64)) (. (record (y x)) y)) (def (main) (f 7)) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(value))).expect("compile"),
+            "main"
+        ),
+        7
+    );
+}
+
 /// A reference to EACH of a wide signature's parameters resolves to the right one — the correctness
 /// guard for the O(1) per-scope binder index (`Db::scope_binders`) that replaced `binder_in`'s
 /// O(params)-per-reference signature scan. `f` takes six params and its body references three of them
