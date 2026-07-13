@@ -4842,6 +4842,61 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_narrow_multiply_whose_product_fits_the_slot_drops_the_div_overflow_guard() {
+        // The general signed/unsigned mul overflow guard is a `div_s`/`div_u` round-trip (`a≠0 && r/a≠b`)
+        // — a hardware DIVISION. But when `2*width <= slot bits` the machine multiply in the slot CANNOT
+        // overflow the slot (`|a*b| < 2^(2N) <= 2^slot`), so the div guard is DEAD and the narrow
+        // range-check alone bounds the result. Int8/UInt8 (16≤32) and Int16/UInt16 (32≤32) qualify;
+        // Int32×Int32 (64>32) does NOT — it keeps the div check. Pins the elision at the Lir level.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let has_div = |code: &[Lir]| code.iter().any(|i| matches!(i, Lir::I32DivS | Lir::I32DivU));
+        // Narrow widths that fit the slot: NO div in the multiply guard.
+        assert!(!has_div(&lir("(: a Int8) (: b Int8)", "(* a b)")), "Int8*Int8 fits i32 — no div guard");
+        assert!(!has_div(&lir("(: a UInt8) (: b UInt8)", "(* a b)")), "UInt8 — no div guard");
+        assert!(!has_div(&lir("(: a Int16) (: b Int16)", "(* a b)")), "Int16*Int16 fits i32 — no div guard");
+        assert!(!has_div(&lir("(: a UInt16) (: b UInt16)", "(* a b)")), "UInt16 — no div guard");
+        // Int32×Int32 CAN overflow i32 — the div guard is REQUIRED and must remain.
+        assert!(
+            lir("(: a Int32) (: b Int32)", "(* a b)").iter().any(|i| matches!(i, Lir::I32DivS)),
+            "Int32*Int32 can overflow i32 — the div guard must be kept"
+        );
+        // VALUE/TRAP PARITY — the range-check still catches the overflow the div guard used to.
+        assert_eq!(run::<i8>("(: a Int8) (: b Int8)", "(* a b)", &[Val::S8(10), Val::S8(12)]), 120);
+        assert!(traps("(: a Int8) (: b Int8)", "(* a b)", &[Val::S8(12), Val::S8(12)])); // 144 > 127
+        assert!(traps("(: a Int8) (: b Int8)", "(* a b)", &[Val::S8(-128), Val::S8(-1)])); // 128 > 127
+        assert_eq!(run::<i16>("(: a Int16) (: b Int16)", "(* a b)", &[Val::S16(181), Val::S16(181)]), 32761);
+        assert!(traps("(: a Int16) (: b Int16)", "(* a b)", &[Val::S16(182), Val::S16(182)])); // 33124 > 32767
+        assert_eq!(run::<u16>("(: a UInt16) (: b UInt16)", "(* a b)", &[Val::U16(255), Val::U16(257)]), 65535);
+        assert!(traps("(: a UInt16) (: b UInt16)", "(* a b)", &[Val::U16(256), Val::U16(256)])); // 65536
+    }
+
+    #[test]
     fn runtime_narrow_param_with_a_bare_literal_grounds_the_literal_to_the_param_width() {
         // A NARROW parameter combined with a BARE LITERAL: the literal (width-polymorphic, Int64 on its
         // own = an i64 slot) must take the parameter's narrow width, so the emitted op is a homogeneous
