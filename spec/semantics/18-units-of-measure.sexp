@@ -201,6 +201,46 @@
   (call   main (: 3.0 Float64))
   (output (: 9.0 Float64)))
 
+(case "a negative power is the reciprocal, deriving an inverse unit"
+  (doc    "`(Qty.pow (Qty.of 2.0 second) -1)` raises a time to the -1 power: the unit is second⁻¹ = a
+           frequency (the exponent map's entry is negated, which `Unit.^ -1` and `Unit./ Unit.one` denote
+           identically), and the erased magnitude is the reciprocal 1/2 = 0.5. A negative power composes
+           the inverse dimension exactly as `(/ (Qty.of 1.0 Unit.one) q)` would — the free-abelian-group
+           inverse.")
+  (input  (Qty.pow (Qty.of 2.0 (Unit.base #"second")) -1))
+  (output (: (Qty.of 0.5 (Unit./ Unit.one (Unit.base #"second")))
+             (Qty Float64 (Unit./ Unit.one (Unit.base #"second"))))))
+
+(case "the negative power agrees with dividing into the dimensionless one"
+  (doc    "`(= (Qty.pow (Qty.of 2.0 second) -1) (/ (Qty.of 1.0 Unit.one) (Qty.of 2.0 second)))` is true:
+           raising to the -1 power and dividing one by the quantity derive the SAME inverse dimension
+           (second⁻¹) AND the same value (0.5), so the equality is well-dimensioned and holds. Pins that
+           `Qty.pow q -1` is definitionally the reciprocal — the group inverse — not a special case.")
+  (input  (= (Qty.pow (Qty.of 2.0 (Unit.base #"second")) -1)
+             (/ (Qty.of 1.0 Unit.one) (Qty.of 2.0 (Unit.base #"second")))))
+  (output (: true Bool)))
+
+(case "a negative power over an integer magnitude truncates the reciprocal"
+  (doc    "`(Qty.pow (Qty.of 2 second) -1)` over Int64: the unit is second⁻¹ and the reciprocal 1/2 is
+           computed by INTEGER division, which truncates toward zero to 0 — the documented precision loss
+           `only where the underlying numeric type is itself inexact` (here Int64 division truncates,
+           units-of-measure.md #A Unit Carries An Exact Scale). The dimension is exact regardless; only
+           the integer magnitude truncates, exactly as `(/ 1 2)` does outside the units layer.")
+  (input  (Qty.value (Qty.pow (Qty.of 2 (Unit.base #"second")) -1)))
+  (output (: 0 Int64)))
+
+(case "a runtime-magnitude quantity raised to a negative power emits the reciprocal"
+  (doc    "`(Qty.pow (Qty.of x second) -1)` with `x` a runtime Float64: the reciprocal can't be folded, so
+           it emits 1/x at run time, so x=4.0 → 0.25 s⁻¹. The runtime companion of the constant reciprocal
+           — the inverse unit is a compile-time concern (second⁻¹), only the magnitude's division is
+           emitted.")
+  (input  (do
+            (def (main (: x Float64))
+              (Qty.value (Qty.pow (Qty.of x (Unit.base #"second")) -1)))
+            (export main)))
+  (call   main (: 4.0 Float64))
+  (output (: 0.25 Float64)))
+
 ; ============================================================================================
 ; Comparison — same dimension required (the ordering/equality obligation)
 ; ============================================================================================

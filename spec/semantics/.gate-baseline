@@ -394,6 +394,8 @@ pass	a negative constant argument to an unsigned parameter is rejected, not laun
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
+pass	a negative power is the reciprocal, deriving an inverse unit
+pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
 pass	a negative shift count traps rather than masking
 pass	a negative string index yields None rather than wrapping to a large offset
@@ -605,6 +607,7 @@ pass	a runtime value is constructed into a fixed-width segment and its length re
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
+pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
@@ -665,6 +668,7 @@ pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
+pass	a tail-recursive string accumulator builds a runtime string and its length is measured
 pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-element runtime tuple is returned as a result
@@ -1178,6 +1182,7 @@ pass	the maximum unsigned 8-bit value is its per-width bound
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
+pass	the negative power agrees with dividing into the dimensionless one
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
@@ -1321,7 +1326,6 @@ todo	a recursive function that installs a fresh handler on each call grows its c
 todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
-todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a tautology comparison against a masked value's derived range still traps on the operand
 todo	a tautology comparison against the type minimum still traps on a div-by-zero operand
 todo	a transformation over the built-in Ast composes across a function call

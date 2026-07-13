@@ -5705,10 +5705,12 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
 
 /// Lower `(Qty.pow q n)` — raise q's erased magnitude to the `n`th power over the inner numeric type.
 /// The unit is a compile-time concern (the solved `Ty::Qty` already carries `unit^n`); at runtime this
-/// is just `value * value * … ` (`n` factors), synthesized as ordinary arithmetic over q's value
+/// is just `value * value * … ` (`|n|` factors), synthesized as ordinary arithmetic over q's value
 /// occurrence and re-lowered (so the constant case FOLDS through the normal arith path and a runtime
 /// magnitude emits the multiplies). `n = 0` is the dimensionless `1` (the multiplicative identity in the
-/// inner type). A negative exponent declines — a reciprocal `1 / xⁿ` is a later increment.
+/// inner type). A NEGATIVE `n` is the reciprocal `1 / value^|n|` (an inverse unit like a frequency
+/// `second⁻¹`) — the division runs in the inner type, so Float divides and Int TRUNCATES (`1 / 8 = 0`),
+/// the documented "precision loss only where the numeric type is itself inexact / integer truncates".
 fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
     let inner_is_float = matches!(
         crate::infer::type_of(db, q),
@@ -5725,11 +5727,6 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
             ));
         }
     };
-    if n < 0 {
-        return Core::Poison(Reject::decline(
-            "Qty.pow with a negative exponent (reciprocal not yet emitted)",
-        ));
-    }
     // `n = 0` — the dimensionless identity `1` (`1.0` for a float inner).
     if n == 0 {
         let one = num_literal(db, 1, inner_is_float);
@@ -5743,13 +5740,24 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
             ));
         }
     };
-    // Build `(* (* … value value) value)` — `n` copies of the value, left-nested — with the inner
-    // type's multiply (`*.` float / `*` int), then lower it through the ordinary arith path.
+    // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the inner
+    // type's multiply (`*.` float / `*` int).
     let mul = if inner_is_float { "*." } else { "*" };
     let mut node = value;
-    for _ in 1..n {
+    for _ in 1..n.unsigned_abs() {
         let mul_head = db.push_name(mul);
         node = db.push_list(vec![mul_head, node, value]);
+    }
+    // A negative exponent is the reciprocal `1 / value^|n|`, dividing in the inner type (`/.` float / `/`
+    // int); a positive one is the power itself. Lower the synthesized node through the ordinary arith
+    // path (so the constant case folds and a runtime magnitude emits the multiplies/division).
+    if n < 0 {
+        let (one, div) = (
+            num_literal(db, 1, inner_is_float),
+            if inner_is_float { "/." } else { "/" },
+        );
+        let div_head = db.push_name(div);
+        node = db.push_list(vec![div_head, one, node]);
     }
     core_of(db, node)
 }
@@ -6984,12 +6992,7 @@ fn fold_bool_int_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
         return None;
     };
     // The `if` must be `(if c <then> <else>)` with the branches the integer constants 1 and 0.
-    let Core::If {
-        cond,
-        then_,
-        else_,
-    } = core_of(db, if_node)
-    else {
+    let Core::If { cond, then_, else_ } = core_of(db, if_node) else {
         return None;
     };
     let branch_val = |db: &mut Db, b: StructId| -> Option<i64> {
