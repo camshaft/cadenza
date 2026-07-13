@@ -6987,6 +6987,16 @@ pub(crate) fn divisor_can_be_neg_one(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the value at `id` is provably NON-NEGATIVE (its `value_range` lower bound is `≥ 0`). Consults
+/// the same lattice as the guard-elision checks — so it sees a mask (`(& x 255)` ∈ [0,255]), an unsigned
+/// type, AND a FLOW-SENSITIVE refinement (`x` under `(> x 0)`). Used by the signed `/`/`%` by a power of
+/// two: a non-negative dividend truncates toward zero identically to a plain shift/mask, so the
+/// round-toward-zero BIAS sequence (needed only to correct negatives) is DEAD. Conservative: an unknown
+/// or possibly-negative range → `false` (keep the bias).
+pub(crate) fn value_provably_nonneg(db: &mut Db, id: StructId) -> bool {
+    matches!(value_range(db, id), Some((lo, _)) if lo >= 0)
+}
+
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
 /// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
 /// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL

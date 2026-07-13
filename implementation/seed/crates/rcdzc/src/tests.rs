@@ -3723,6 +3723,76 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_signed_pow2_div_of_a_nonneg_dividend_drops_the_round_toward_zero_bias() {
+        // A signed `/`/`%` by a power of two normally emits the round-toward-zero BIAS sequence (needed
+        // only to correct NEGATIVE dividends). When the dividend is provably NON-NEGATIVE — a mask
+        // (`(& x 255)` ∈ [0,255]), or a flow-refined `x` under `(> x 0)` — the bias is DEAD: `x / 2^k`
+        // = `x >>ₛ k` and `x % 2^k` = `x & (2^k−1)`, exactly the unsigned case. Pins the elision at the
+        // Lir level (the bias's second shift + the `add` are gone) AND the value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The bias sequence's tell is a `ShrU` (`>>ᵤ (W−k)` to build `2^k−1`) plus an `Add`. A
+        // non-negative masked dividend divide drops BOTH — just `and 255 ; const 1 ; shr_s`.
+        let masked_div = lir("(: x Int64)", "(: (/ (& x 255) 2) Int64)");
+        assert!(
+            !masked_div.contains(&Lir::I64ShrU) && !masked_div.contains(&Lir::I64Add),
+            "a nonneg dividend needs no toward-zero bias — no ShrU/Add; got: {masked_div:?}"
+        );
+        assert!(
+            masked_div.contains(&Lir::I64ShrS),
+            "the quotient is a single arithmetic shift; got: {masked_div:?}"
+        );
+        // The masked REM is a pure mask, no bias.
+        let masked_rem = lir("(: x Int64)", "(: (% (& x 255) 4) Int64)");
+        assert!(
+            !masked_rem.contains(&Lir::I64ShrU) && !masked_rem.contains(&Lir::I64ShrS),
+            "a nonneg dividend rem is a pure and-mask, no shifts; got: {masked_rem:?}"
+        );
+        // CONTRAST: a bare signed dividend (unknown sign) KEEPS the bias — a `ShrU` is present.
+        let bare_div = lir("(: x Int64)", "(/ x 2)");
+        assert!(
+            bare_div.contains(&Lir::I64ShrU),
+            "an unknown-sign dividend keeps the round-toward-zero bias; got: {bare_div:?}"
+        );
+        // VALUE parity — the fast path agrees with the divide for nonneg, and the bias path still
+        // truncates toward zero for negatives. Masked (always nonneg, even for a negative source):
+        assert_eq!(run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(255)]), 127);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(-1)]), 127);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (& x 255) 4) Int64)", &[Val::S64(255)]), 3);
+        // Flow-refined nonneg dividend inside `(> x 0)`:
+        assert_eq!(run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(7)]), 3);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(8)]), 4);
+        // Bare signed divide (bias kept) still rounds toward zero for negatives — soundness.
+        assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-7)]), -3);
+        assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-1)]), 0);
+    }
+
+    #[test]
     fn a_narrow_signed_division_by_a_non_neg_one_divisor_elides_its_range_check() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
