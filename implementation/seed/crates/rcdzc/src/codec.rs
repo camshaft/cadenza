@@ -10,9 +10,9 @@
 //!       0  IntPosDec / … the sign AND radix are folded into the kind tag (see the kind constants):
 //!          IntPos{Dec,Hex,Bin} / IntNeg{Dec,Hex,Bin}  [ mag_len:var ][ mag_be:bytes ]
 //!       Float                         [ sign:1 ][ exp:i64-be ][ sig_len:var ][ sig_be:bytes ]
-//!       Str                           [ len:var ][ utf8:bytes ]
+//!       Str | Name | Sym | Bytes      [ len:var ][ bytes ]   (Str/Name/Sym are UTF-8; Bytes is raw)
+//!       Char | BadChar | BadEscape    [ len:var ][ utf8:bytes ]  (one scalar; BadChar/BadEscape are markers)
 //!       BoolFalse | BoolTrue          (no payload)
-//!       Name                          [ len:var ][ utf8:bytes ]
 //! [ struct_count:var ]
 //!   for each structure entry, in canonical (post-order) order:
 //!     [ tag:1 ]
@@ -21,18 +21,50 @@
 //! [ root:var ]                        a StructId
 //! ```
 //!
+//! This is the compiler's trusted-path decoder: `rcdzc` derives a component from the CANONICAL BINARY
+//! AST that `decode` produces, with no textual parser between the stored bytes and the pipeline —
+//! parsing/printing live in `cadenza-syntax`, outside the derive path:
+//!
+//= spec/contracts/ast-encoding.md#parsing-and-printing-are-not-in-the-compiler-s-trusted-path
+//# The compiler MUST accept the canonical binary AST directly, without requiring a textual parser in the path that derives a component.
+//!
+//! The structure is a tree of NODES — each an `Atom` (a leaf) or a `List` (an ordered sequence of
+//! child node ids) — so the container form does not enumerate the language's node kinds; a new kind is
+//! a new leaf/head, not a new wire shape:
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-general-and-stable
+//# The binary encoding MUST represent an abstract syntax tree as a tree of nodes, each a symbol applied to an ordered sequence of child nodes, so that the container form is independent of which node kinds the language currently defines.
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-general-and-stable
+//# The addition of a new node kind MUST be expressible as a new symbol without changing the binary encoding of a tree that does not reference it.
+//!
 //! Sign is expressed by TWO int kind tags (positive/negative) rather than a sign byte — a `-0` never
 //! arises for `Int` so there is no signed-zero ambiguity, and small ints stay one byte tighter.
 //! Radix (dec/hex/bin) is folded into the tag too, so the printed text re-reads to the same leaf.
 //!
-//! `encode` is a straight walk of the two vectors. `decode` is TOTAL: it verifies the header and
-//! refuses (returns `None`) on a wrong header, malformed length/tag, out-of-range id, or trailing
-//! bytes — it never panics and never returns a wrong tree. Determinism ("equal programs -> identical
-//! bytes") is a property of CANONICAL arenas (see `canon.rs`), not of the codec: the codec faithfully
-//! serializes whatever it is handed.
+//! `encode` is a straight walk of the two vectors and `decode` reconstructs exactly the tree encoded, so
+//! the encoding is a bijection; a CANONICAL arena has exactly one such encoding, so equal trees produce
+//! identical bytes:
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+//# Each abstract syntax tree MUST have exactly one canonical binary encoding.
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+//# Two abstract syntax trees that are equal MUST have identical binary encodings.
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+//# Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
+//!
+//! `decode` is TOTAL: it verifies the header and refuses (returns `None`) on a wrong header, malformed
+//! length/tag, out-of-range id, or trailing bytes — it never panics and never returns a wrong tree.
+//! Determinism ("equal programs -> identical bytes") is a property of CANONICAL arenas (see `canon.rs`),
+//! not of the codec: the codec faithfully serializes whatever it is handed.
 //!
 //! VERSIONING: the 8-byte `header` carries the container encoding version, and `decode` refuses any
 //! bytes whose header it does not recognize (wrong header -> `None`) rather than misreading them:
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-versioned
+//# The binary encoding MUST carry the version of the container encoding it conforms to.
 //!
 //= spec/contracts/ast-encoding.md#the-encoding-is-versioned
 //# A reader MUST refuse a binary AST whose container encoding version it does not implement rather than misinterpret it.
