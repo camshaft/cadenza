@@ -1549,11 +1549,15 @@ fn fix_all_renames_a_duplicate_parameter_and_clears_the_hard_error() {
     let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
     assert!(ok, "fix succeeds: {stderr}");
     let repaired = std::fs::read_to_string(&f).unwrap();
+    // The duplicate `x` is renamed to a fresh `x2`; then, running to a FIXPOINT, the now-unused `x2` gets
+    // the compiler-verified CDZ0306 `_`-prefix silence — so the end state is `_x2` (intentionally unused,
+    // which is exactly right for a renamed duplicate the author has not yet wired up).
     assert!(
-        repaired.contains("(: x Int64) (: x2 Int64)"),
-        "the duplicate parameter is renamed: {repaired}"
+        repaired.contains("(: x Int64) (: _x2 Int64)"),
+        "the duplicate parameter is renamed (and the unused rename `_`-silenced): {repaired}"
     );
-    // The CDZ0102 hard error is gone (a CDZ0306 unused-param warning may remain, but check exits 0).
+    // The CDZ0102 hard error is gone AND the program re-checks fully clean (the `_`-prefix cleared the
+    // unused-param warning too).
     let (ok2, stdout, _) = run(&["check", f.to_str().unwrap()], "");
     assert!(ok2, "no error remains: {stdout}");
     assert!(
@@ -1609,11 +1613,11 @@ fn fix_all_widens_an_out_of_range_annotation_and_recompiles_clean() {
 
 #[test]
 fn fix_all_applies_one_wrap_when_a_second_independent_fault_survives() {
-    // The message-keyed no-regression baseline: with TWO ungranted effects, applying `(host (A) …)` clears
-    // A's CDZ0401 and leaves B's — a PRE-EXISTING fault, not a regression. A node-id-keyed baseline would
-    // see B's surviving error at a shifted id (the wrap renumbers nodes) and wrongly call it "new",
-    // declining the valid fix. Keyed by (code, message), B's is recognized as the same fault, so one wrap
-    // applies (the second overlaps the same body and is left for a follow-up pass).
+    // TWO ungranted effects. The structural apply runs to a FIXPOINT (re-parse + re-diagnose between
+    // fixes), so it delegates BOTH — `(host (A) …)` then, on the next pass over the edited program,
+    // `(host (B) …)` — and the file re-checks clean. (The message-keyed no-regression baseline still
+    // matters per pass: applying A's wrap leaves B's CDZ0401, a PRE-EXISTING fault keyed by (code,
+    // message), so the wrap is not wrongly declined as introducing a "new" error under node renumbering.)
     let dir = scratch_dir("fix_two_nohome");
     let f = dir.join("prog.sexp");
     std::fs::write(
@@ -1624,14 +1628,15 @@ fn fix_all_applies_one_wrap_when_a_second_independent_fault_survives() {
     .unwrap();
     let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
     assert!(ok, "fix succeeds: {stderr}");
-    assert!(
-        stderr.contains("applied 1 fix"),
-        "one wrap applied despite the second surviving fault: {stderr}"
-    );
     let repaired = std::fs::read_to_string(&f).unwrap();
     assert!(
-        repaired.contains("(host (A)") || repaired.contains("(host (B)"),
-        "a host delegation was inserted: {repaired}"
+        repaired.contains("(host (A)") && repaired.contains("(host (B)"),
+        "both effects delegated to a fixpoint: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok2,
+        "the fully-delegated program re-checks clean: {repaired}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
