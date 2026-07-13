@@ -44,11 +44,19 @@
 ; derived from well-dimensioned source with the capability included is byte-identical to one derived
 ; with it excluded — dimensional discharge does not change emitted bytes.
 ;
-; Tagged `(needs units-of-measure)`: dimensional analysis is an OPTIONAL verification layer a later
-; generation realizes (units-of-measure.md #This Capability Is Optional; it is not on the ignition
-; path — the seed clears ignition with the numeric core alone; options/realized-capability-set/). The
-; seed does not realize it, so its behavior gate SKIPS these cases — they pin the contract the
-; realization must meet, they are not seed declines.
+; Tagged `(needs units-of-measure)`: dimensional analysis is an OPTIONAL verification layer
+; (units-of-measure.md #This Capability Is Optional; not on the ignition path — the seed clears ignition
+; with the numeric core alone; options/realized-capability-set/). `(needs …)` is DOCUMENTATION of what a
+; case exercises; the behavior gate grades EVERY case by what the compiler DOES (it never skips a tagged
+; case). The dimensional CORE is now REALIZED over the numeric types the compiler has: construction/
+; observation/erasure, `+`/`-`/`*`/`/`/comparison with dimensions composing, CDZ0501 on incompatible
+; dimensions, named families + SI/IEC prefixes (`Unit.of`/`Unit.prefix`), automatic and explicit
+; (`Unit.in`) conversion — all over `Int`/`Float` magnitudes (a conversion "los[es] precision only where
+; the underlying numeric type is itself inexact", #A Unit Carries An Exact Scale To Its Dimension's
+; Reference: exact over `Int`, rounding over `Float`), constant AND runtime. The cases still tagged that
+; DECLINE are exactly the ones whose magnitude is a `Rational` (`(Rational.of …)`) — EXACT-magnitude
+; mixing needs the exact-rational numeric type, which a later increment realizes; they pin the contract
+; that realization must meet, they are not miscompiles.
 
 ; ============================================================================================
 ; Construction and observation — Qty.of attaches a unit; Qty.value recovers the numeric value
@@ -473,3 +481,34 @@
            one; there is no scale relating a length to a time.")
   (input  (Unit.in (Unit.of #"metre") (Qty.of 3.0 (Unit.of #"second"))))
   (error  CDZ0501))
+
+; ============================================================================================
+; RUNTIME mixed-unit conversion — the scale multiply reaches the emitted component only when a magnitude
+; is a RUNTIME value (units-of-measure.md #A Unit Conversion Is The Arithmetic The Source Denotes). A
+; quantity built from a runtime parameter does not fold; the compiler emits `value * num / den` as real
+; arithmetic in the inner type. These pass a runtime argument via `(call main …)`.
+
+(case "a runtime mixed-unit sum emits the scale conversion (Int)"
+  (doc    "`(+ (Qty.of v kilometre) (Qty.of 500 metre))` with `v` a runtime Int64 parameter: km converts
+           to the reference metre by *1000 emitted at run time, so v=1 → 1000 + 500 = 1500 m. Pins that
+           the conversion works on a NON-constant magnitude, not only a compile-time literal.")
+  (needs  units-of-measure)
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (+ (Qty.of v (Unit.prefix kilo (Unit.base #"metre")))
+                            (Qty.of 500 (Unit.base #"metre")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1500 Int64)))
+
+(case "a runtime Unit.in conversion emits the scale multiply (Int)"
+  (doc    "`(Unit.in metre (Qty.of v kilometre))` with `v` a runtime Int64: converts v km to metres by
+           *1000 at run time, so v=3 → 3000 m. The explicit-conversion companion of the runtime mixed
+           sum.")
+  (needs  units-of-measure)
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (Unit.in (Unit.of #"metre") (Qty.of v (Unit.of #"kilometre")))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 3000 Int64)))

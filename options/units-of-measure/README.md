@@ -54,9 +54,13 @@ dimensional checking is an ordinary compile-time predicate over those type-value
 #Generics Are Type-Valued Parameters, #A Generic Constraint Is A Compile-Time Predicate Over
 Type-Values). It needs exactly one new diagnostic code (`CDZ0501`, the dimensional mismatch) and no
 new trap — a dimensional error is always a compile-time rejection, never a runtime halt, because units
-are erased before the program runs. It is a verification layer a later generation realizes, not the
-seed (`options/realized-capability-set/`); until then its corpus cases carry `(needs units-of-measure)`
-and the seed's behavior gate skips them.
+are erased before the program runs. The dimensional core is realized over the numeric types the
+compiler has — construction, erasure, arithmetic with dimensions composing, `CDZ0501` on incompatible
+dimensions, named families and SI/IEC prefixes, and automatic and explicit conversion, all over `Int`
+and `Float` magnitudes; a conversion loses precision only where the underlying numeric type is itself
+inexact. The corpus cases whose magnitude is an exact `Rational` await the exact-rational numeric type a
+later increment adds; they carry `(needs units-of-measure)` (documentation of what a case exercises —
+the behavior gate grades every case by what the compiler does, it does not skip a tagged one).
 
 ## Choices
 
