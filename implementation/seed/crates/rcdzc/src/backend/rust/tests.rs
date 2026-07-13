@@ -785,7 +785,10 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
     // The gas/yield trait now lives in the SHARED `cdz-rt` crate (NOT re-declared per module); the
     // module brings it into scope with a `use`, so an application implements `CdzEnv` once for all.
     assert!(rs.contains("use cdz_rt::CdzEnv;"), "cdz_rt import:\n{rs}");
-    assert!(!rs.contains("pub trait CdzEnv"), "must NOT re-declare the trait:\n{rs}");
+    assert!(
+        !rs.contains("pub trait CdzEnv"),
+        "must NOT re-declare the trait:\n{rs}"
+    );
     // The fn is async, takes `env: &mut __CdzE`, and charges gas at entry. The env type param is the
     // reserved `__CdzE` (not a bare `E`) so it cannot collide with a user sum's Rust type name.
     assert!(

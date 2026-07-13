@@ -187,6 +187,14 @@ pub enum Edit {
         at: crate::ast::StructId,
         replacement: String,
     },
+    /// Append `arms` (each a rendered `(pattern body)` s-expression) as new children at the END of the
+    /// list node `at` — the "add the missing match arms" edit for a non-exhaustive match. `at` is the
+    /// `(match …)` form; the consumer splices each arm in before the form's closing paren. An INSERT,
+    /// not a replace: the existing arms are untouched, so the edit is additive.
+    InsertArms {
+        at: crate::ast::StructId,
+        arms: Vec<String>,
+    },
 }
 
 impl Fix {
@@ -219,6 +227,21 @@ impl Fix {
                 replacement: replacement.into(),
             },
             applicability: Applicability::Verified,
+        }
+    }
+
+    /// A heuristic "add the missing match arms" fix — append `arms` to the `(match …)` form `at`. The
+    /// arms COVER the missing variants (so applying it makes the match exhaustive, clearing CDZ0210),
+    /// but their BODIES are placeholders the author must fill — hence Heuristic, not Verified: the shape
+    /// is right, the intent is not the compiler's to guess.
+    pub fn insert_arms_heuristic(at: crate::ast::StructId, arms: Vec<String>) -> Fix {
+        Fix {
+            label: format!(
+                "add the missing match arm{}",
+                if arms.len() == 1 { "" } else { "s" }
+            ),
+            edit: Edit::InsertArms { at, arms },
+            applicability: Applicability::Heuristic,
         }
     }
 }

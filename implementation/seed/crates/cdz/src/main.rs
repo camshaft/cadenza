@@ -540,12 +540,13 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
-    // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-node<TAB>fix-replacement<TAB>fix-verified
-    // <TAB>message` — the last six columns split on the first six tabs, message is the free-text
-    // remainder. `code`/`node-id`/the three fix columns may be `-` (absent).
+    // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-kind<TAB>fix-node<TAB>fix-replacement<TAB>
+    // fix-verified<TAB>message` — the first seven columns split on the first seven tabs, message is the
+    // free-text remainder. `code`/`node-id`/the four fix columns may be `-` (absent).
     for line in text.lines() {
-        let mut cols = line.splitn(7, '\t');
-        let (severity, code, node, fix_node, fix_repl, fix_verified, message) = match (
+        let mut cols = line.splitn(8, '\t');
+        let (severity, code, node, fix_kind, fix_node, fix_repl, fix_verified, message) = match (
+            cols.next(),
             cols.next(),
             cols.next(),
             cols.next(),
@@ -554,8 +555,8 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             cols.next(),
             cols.next(),
         ) {
-            (Some(s), Some(c), Some(n), Some(fn_), Some(fr), Some(fv), Some(m)) => {
-                (s, c, n, fn_, fr, fv, m)
+            (Some(s), Some(c), Some(n), Some(fk), Some(fn_), Some(fr), Some(fv), Some(m)) => {
+                (s, c, n, fk, fn_, fr, fv, m)
             }
             _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
         };
@@ -578,19 +579,21 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             format!(" [{code}]")
         };
         println!("{}: {severity}{code_part}: {message}", loc_of(node));
-        // A structural fix, if the diagnostic carries one — the rustc-style `help:` line an agent (or
-        // an editor's quick-fix) applies directly: replace the named node with the suggested spelling.
-        // The applicability marker rides along so a consumer branches (`verified` = apply blind).
+        // A structural fix, if the diagnostic carries one — the rustc-style `help:` line an agent (or an
+        // editor's quick-fix) applies directly. `replace` swaps the node's spelling; `insert` appends the
+        // rendered form(s) into the node (e.g. the missing match arms). The applicability marker rides
+        // along so a consumer branches (`verified` = apply blind, else confirm intent).
         if fix_node != "-" {
             let marker = if fix_verified == "verified" {
                 "" // machine-applicable — no caveat
             } else {
                 " (heuristic)"
             };
-            println!(
-                "{}: help{marker}: replace with `{fix_repl}`",
-                loc_of(fix_node)
-            );
+            let action = match fix_kind {
+                "insert" => format!("add `{fix_repl}`"),
+                _ => format!("replace with `{fix_repl}`"),
+            };
+            println!("{}: help{marker}: {action}", loc_of(fix_node));
         }
     }
     if any_error {

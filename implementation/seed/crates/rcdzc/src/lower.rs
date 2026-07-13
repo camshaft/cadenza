@@ -21,7 +21,7 @@ use crate::arena::Slot;
 use crate::ast::{IntValue, StructId};
 use crate::core::Core;
 use crate::db::Db;
-use crate::diag::{Code, Reject};
+use crate::diag::{Code, Fix, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved};
 use tracing::trace;
@@ -2207,6 +2207,75 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// The CDZ0210 non-exhaustive-sum-match rejection, enriched with the MISSING variants and a structural
+/// "add the missing arms" fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+/// Fix — the match analogue of rustc's `error[E0004]: … patterns not covered` + its "add arms"
+/// suggestion). `decl` is the scrutinee sum's declaration occurrence; `tested` the discriminants the
+/// arms already cover; `scrutinee` the match's scrutinee node (its parent IS the `(match …)` form the
+/// insert targets). The fix is Heuristic — the arm SHAPES cover the gap (applying makes the match
+/// exhaustive), but their BODIES are `unit` placeholders the author fills.
+fn non_exhaustive_sum_reject(
+    db: &Db,
+    decl: StructId,
+    tested: &[u32],
+    scrutinee: StructId,
+) -> Reject {
+    let generic = "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)";
+    let Some(t) = db.type_decl_by_occ(decl) else {
+        return Reject::coded(Code::NonExhaustive, generic);
+    };
+    // The variants whose discriminant no arm tested, in declaration order (a deterministic list).
+    let missing: Vec<&crate::db::Variant> = t
+        .variants
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !tested.contains(&(*i as u32)))
+        .map(|(_, v)| v)
+        .collect();
+    if missing.is_empty() {
+        return Reject::coded(Code::NonExhaustive, generic);
+    }
+    // Name the missing variants in the message (rustc "patterns `X` and `Y` not covered").
+    let names: Vec<String> = missing.iter().map(|v| format!("`{}`", v.name)).collect();
+    let message = format!(
+        "non-exhaustive match: pattern{} {} not covered",
+        if missing.len() == 1 { "" } else { "s" },
+        join_and(&names),
+    );
+    // One arm per missing variant. A nullary variant → `(Name unit)`; a payload variant → bind each
+    // payload with a fresh `_`-prefixed name so the arm is well-formed AND does not itself warn unused:
+    // `((Some _p0) unit)`. The body is `unit` (a placeholder the author replaces).
+    let arms: Vec<String> = missing
+        .iter()
+        .map(|v| {
+            if v.payloads.is_empty() {
+                format!("({} unit)", v.name)
+            } else {
+                let binders: Vec<String> =
+                    (0..v.payloads.len()).map(|i| format!("_p{i}")).collect();
+                format!("(({} {}) unit)", v.name, binders.join(" "))
+            }
+        })
+        .collect();
+    // The `(match …)` form is the scrutinee's parent — the list the arms append into.
+    match db.parent_of(scrutinee) {
+        Some(match_form) => Reject::coded(Code::NonExhaustive, message)
+            .with_fix(Fix::insert_arms_heuristic(match_form, arms)),
+        None => Reject::coded(Code::NonExhaustive, message),
+    }
+}
+
+/// Join names as `a`, `a and b`, or `a, b, and c` — the English list a "not covered" message reads
+/// naturally with (matching rustc's phrasing).
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 /// The discriminant of the variant named `name` in the sum `ty`, or `None` if `ty` is not a sum or has
 /// no such variant. This is what distinguishes a bare NULLARY-VARIANT pattern (`None` against `Option`)
 /// from a binder (`x`) — the name is looked up in the scrutinee sum's own declaration (occurrence-keyed,
@@ -2441,6 +2510,14 @@ fn build_tree(
     // the TYPE's variant set, independent of `known_disc` (see above).
     let has_default = !default_rows.is_empty();
     if !has_default && tested.len() < variant_count {
+        // Name the missing variants + carry an "add the missing arms" fix — but ONLY at the ROOT switch
+        // (`switch_path` empty): there the missing-variant arms append directly to the `(match …)` form
+        // and are well-formed top-level patterns. A NESTED non-exhaustive (a gap inside a payload
+        // pattern) would need arms shaped to the nesting, which the flat append cannot express, so it
+        // keeps the enriched message but no fix (the `db.parent_of(scrutinee)` there is not the match).
+        if switch_path.is_empty() {
+            return Err(non_exhaustive_sum_reject(db, decl, &tested, scrutinee));
+        }
         return Err(Reject::coded(
             Code::NonExhaustive,
             "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",

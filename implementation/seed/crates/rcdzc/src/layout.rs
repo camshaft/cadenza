@@ -579,7 +579,8 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, key, out);
             collect_call_callees(db, val, out);
         }
-        crate::core::Core::MapLookup { map, key, .. } | crate::core::Core::MapRemove { map, key, .. } => {
+        crate::core::Core::MapLookup { map, key, .. }
+        | crate::core::Core::MapRemove { map, key, .. } => {
             collect_call_callees(db, map, out);
             collect_call_callees(db, key, out);
         }

@@ -12170,6 +12170,50 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_exhaustive_sum_match_names_the_missing_variants_and_offers_an_add_arms_fix() {
+        // The rustc-gold structural suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries
+        // A Route To A Fix): a non-exhaustive sum match NAMES the uncovered variant AND carries an
+        // INSERT fix that appends a covering arm to the `(match …)` form.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (f (: s Int64)) (match (Option.Some s) ((Option.Some x) x))) (export f))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("non-exhaustive must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0210"), "got: {}", err.message);
+        assert!(
+            err.message.contains("`None`") && err.message.contains("not covered"),
+            "names the missing variant: {}",
+            err.message
+        );
+        let fix = err.fix.expect("an add-arms fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto, "it INSERTS arms");
+        // `None` is nullary → the synthesized arm is `(None unit)`.
+        assert_eq!(fix.replacement, "(None unit)", "the covering arm");
+        assert!(!fix.verified, "the arm body is a placeholder → heuristic");
+    }
+
+    #[test]
+    fn a_non_exhaustive_match_synthesizes_payload_binders_and_lists_multiple_missing() {
+        // Two missing variants, one with a PAYLOAD: the fix synthesizes a `_`-prefixed binder per payload
+        // (`(Some _p0) unit`) so the arm is well-formed and does not itself warn unused, and the message
+        // lists both missing variants.
+        use crate::testkit::parse;
+        let src = "(module m (type T (A Int64) B C) \
+                     (def (f (: t T)) (match t ((A x) x))) (export f))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("non-exhaustive must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0210"), "got: {}", err.message);
+        assert!(
+            err.message.contains("`B`") && err.message.contains("`C`"),
+            "lists both missing: {}",
+            err.message
+        );
+        let fix = err.fix.expect("an add-arms fix is carried");
+        // B and C are nullary; the fix appends both arms, space-joined.
+        assert_eq!(fix.replacement, "(B unit) (C unit)", "both covering arms");
+    }
+
+    #[test]
     fn a_runtime_sum_match_dispatches_on_the_discriminant() {
         // The RUNTIME sum match, composed + run: a function builds a sum from a runtime param, matches
         // it, and returns a scalar. `(pick n)` builds `(Some n)` when n>0 else `None`, then matches:

@@ -1501,8 +1501,7 @@ pub fn reduce_ctor(
             if args.len() != 2 {
                 return Err("Map takes a key type and a value type".to_string());
             }
-            let key =
-                typeval_of(db, args[0]).ok_or_else(|| "Map key is not a type".to_string())?;
+            let key = typeval_of(db, args[0]).ok_or_else(|| "Map key is not a type".to_string())?;
             let value =
                 typeval_of(db, args[1]).ok_or_else(|| "Map value is not a type".to_string())?;
             let map_ty = crate::ty::Ty::Map(Box::new(key), Box::new(value));
