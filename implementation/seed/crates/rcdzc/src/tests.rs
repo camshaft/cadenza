@@ -10887,6 +10887,61 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_carried_in_a_sum_payload_applies_through_call_indirect() {
+        // A closure stored in a SUM variant's payload, extracted by a match binder, and applied — the
+        // callback-in-a-variant shape. `(Some (fn (n) (* n 2)))` carries a closure; `(match … ((Some f)
+        // (f 5)) …)` binds `f` to the payload (a `sum-payload` heap read) and applies it. The closure is
+        // reached through the PAYLOAD, not a `let`/tuple projection the fold reduces through, so `f`'s
+        // application is a runtime `call_indirect` — a payload/element binder is a runtime function-value
+        // source like a `Param`. Before the fix `(f 5)` declined "value is not applyable" (the closure
+        // path was gated on a `Param` head only). Run through the composed runtime (result 10).
+        use crate::testkit::parse;
+        let cases = [
+            (
+                "Some payload, single arg",
+                "(module m (def (main) \
+                   (match (Some (fn ((: n Int64)) (* n 2))) ((Some f) (f 5)) ((None _) 0))) (export main))",
+                "10",
+            ),
+            (
+                "Ok payload, single arg",
+                "(module m (def (main) \
+                   (match (Ok (fn ((: n Int64)) (+ n 100))) ((Ok f) (f 5)) ((Err e) 0))) (export main))",
+                "105",
+            ),
+            (
+                "Some payload, TWO args (multi-param closure)",
+                "(module m (def (main) \
+                   (match (Some (fn ((: a Int64) (: b Int64)) (+ a b))) ((Some f) (f 3 4)) ((None _) 0))) \
+                 (export main))",
+                "7",
+            ),
+        ];
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        for (label, src, want) in cases {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile closure-in-sum-payload ({label}): {e:?}"));
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+                "a payload-bound closure application imports the runtime ({label})"
+            );
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => panic!("closure-in-sum-payload trapped ({label}): {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_multi_param_closure_applies_at_full_arity() {
         // A TWO-parameter lambda VALUE `(fn (a b) (+ a b))` passed to a recursive HOF and applied at
         // full arity `(g i i)`. It lifts to a `(env, a, b) -> result` function and applies via ONE

@@ -98,6 +98,21 @@
             ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5)))
   (output (: 12 Int64)))
 
+(case "a closure carried in a sum payload is extracted by a match and applied"
+  (doc    "core-semantics.md §A Function Is A First-Class Value: a function stored in a SUM variant's
+           payload — the callback-in-a-variant shape — is extracted by a match binder and applied.
+           `(Some (fn (n) (* n 2)))` carries a closure; `(match … ((Some f) (f 5)) …)` binds `f` to the
+           payload and applies it, yielding 10. The closure is reached through the variant PAYLOAD (a
+           `sum-payload` heap read), not a `let`/tuple projection the fold reduces through, so its
+           application is a runtime `call_indirect` on the extracted closure cell — the payload-binder
+           analogue of applying a function-typed PARAMETER. Pins that a closure survives being stored in
+           and read back out of a sum variant, and that a match binder over a function-typed payload is a
+           callable runtime function-value source (not merely a foldable projection).")
+  (input  (match (Some (fn ((: n Int64)) (* n 2)))
+            ((Some f) (f 5))
+            ((None _) 0)))
+  (output (: 10 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing

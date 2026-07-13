@@ -512,7 +512,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // pushed to one `call_indirect`); a PARTIAL application (fewer args than the closure's arity)
             // is runtime currying — it must build an intermediate closure, which is not yet supported, so
             // it declines at select (the `call_indirect` type won't match). Checked before the lambda path.
-            if head_is_param(db, head)
+            if head_is_runtime_fn_value(db, head)
                 && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
             {
                 if args.is_empty() {
@@ -2108,15 +2108,23 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
     }
 }
 
-/// Whether the application head at `id` resolves (through refs) to a FUNCTION PARAMETER — the one
-/// runtime function-value source this increment applies via `call_indirect`. A body reference to a
-/// parameter `g` resolves to `Ref { value: <param occ> }`, and the param occurrence itself to
-/// `Resolved::Param`, so follow the ref chain to its end. A named def / constructor / prim / lambda
-/// resolves to something else and is NOT diverted to the closure-application path.
-fn head_is_param(db: &mut Db, id: StructId) -> bool {
+/// Whether an application HEAD is a RUNTIME function-value source that must apply via `call_indirect`
+/// (a `Core::CallClosure`), rather than β-reduce at compile time — a `Param`, or a PATTERN BINDER reading
+/// a runtime value out of a compound (a sum-variant payload `(match t ((T.Mk f) (f x)))`, or a
+/// tuple/record element `(match t ((tuple f _) (f x)))`, which resolve to `SumPayload`/`Proj`). A
+/// `Param` is always runtime. A `SumPayload`/`Proj` is runtime ONLY when the fold cannot reach the stored
+/// lambda: over a CONSTANT compound the projection β-reduces to the lambda (`lambda_body` sees it) and
+/// must fold — the runtime path is taken solely when `lambda_body` is `None` (a genuinely heap-held
+/// closure). So this is checked AFTER the lambda-reduction attempt would have fired for a foldable head.
+fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
     match resolved_of(db, id) {
         Resolved::Param { .. } => true,
-        Resolved::Ref { value } => head_is_param(db, value),
+        Resolved::Ref { value } => head_is_runtime_fn_value(db, value),
+        // A payload/element binder — runtime iff the fold can't reduce it to a lambda (a constant compound
+        // folds through the projection; a runtime one does not, so its stored closure applies indirect).
+        Resolved::SumPayload { .. } | Resolved::Proj { .. } => {
+            crate::eval::lambda_body(db, id).is_none()
+        }
         _ => false,
     }
 }

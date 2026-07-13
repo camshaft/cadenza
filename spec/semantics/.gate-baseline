@@ -59,6 +59,7 @@ pass	a closure argument is another closure's result
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
+pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
@@ -211,6 +212,7 @@ pass	a match on a value of one sum type rejects a pattern from a different sum t
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match takes another match's result as its scrutinee
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
+pass	a match whose only arm is guarded by a literally-true condition is still non-exhaustive
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
