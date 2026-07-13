@@ -1967,6 +1967,29 @@ fn thread_bounded(
             let if_head = db.push_atom(Leaf::Name("if".to_string()));
             Some((db.push_list(vec![if_head, rcond, rthen, relse]), cur))
         }
+        // A `(match scrutinee (pattern body)…)` — the analogue of `if` for the pattern engine. Thread the
+        // SCRUTINEE (a perform there reads/threads state, `(match (Get.next) …)`), then rewrite each arm:
+        // the PATTERN is a binder position (copied structurally, never threaded — like a `let` binder), the
+        // BODY is threaded under the post-scrutinee state (only one arm runs, so each sees the same incoming
+        // state, mirroring the `if` branches). An abortive perform in an arm BODY tail is branch-local — the
+        // `match` IS the handle body's value, so per-arm the abort yields the arm value — captured by
+        // `thread_branch_local_abort` (which restores the cell so a sibling arm / the handle is not
+        // collapsed). The out-state is the post-scrutinee state (the single-return shape does not observe a
+        // per-arm out-state). Rebuild the same `(match rscrut (pat rbody)…)` form so the pattern engine
+        // lowers it by the ordinary path.
+        Resolved::Match { scrutinee, arms } => {
+            let (rscrut, cur) = thread_bounded(db, scrutinee, states, ctx, inline_depth)?;
+            let match_head = db.push_atom(Leaf::Name("match".to_string()));
+            let mut children = vec![match_head, rscrut];
+            for (pat, body) in arms {
+                // The pattern binds names for the arm body (a binder position) — copy it structurally so it
+                // is self-contained, exactly as a `let` binder name is copied (never substituted/threaded).
+                let rpat = copy_pure(db, pat);
+                let rbody = thread_branch_local_abort(db, body, cur.clone(), ctx, inline_depth)?;
+                children.push(db.push_list(vec![rpat, rbody]));
+            }
+            Some((db.push_list(children), cur))
+        }
         // A `(let ((n init)…) body)` — thread state through each initializer in order, then the body.
         // This is what threads range-sum's `(let ((i (Idx.next))) (if (= i 0) …))`: the init `(Idx.next)`
         // performs (reads state, threads next), and `i` binds that resume value. Rebuild the `let` with
