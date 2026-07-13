@@ -63,6 +63,12 @@ const GRAMMAR: &[&str] = &[
     "and",
     "or",
     "not",
+    // `|>` is the PIPELINE operator — a SYNTACTIC form the resolver rewrites into an ordinary
+    // application (`(|> L R)` threads `L` as `R`'s first argument), NOT a prelude value: threading
+    // `L` into `R`'s argument list is a structural rewrite a strict `(meta apply)` record could not
+    // express. Kept here with its control-flow siblings (like `.` member access) so a top-level
+    // `(|> …)` is an expression, not an unknown declaration (`db::unknown_top_forms`).
+    "|>",
     ".",
     "module",
     "def",
@@ -211,6 +217,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
                 Some("bin") => resolve_bin(db, id),
+                Some("|>") => resolve_pipeline(db, id),
                 Some("handle") => resolve_handle(db, id),
                 Some("resume") => resolve_resume(db, id),
                 Some("host") => resolve_host(db, id),
@@ -1368,6 +1375,56 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
     Resolved::Bin { segs }
 }
 
+/// Resolve the PIPELINE operator `(|> L R)` into an ordinary application that threads `L` as `R`'s
+/// FIRST argument. Exactly two operands; a wrong arity is malformed (CDZ0201).
+///
+/// The rewrite is purely structural and reuses the EXISTING `L`/`R` occurrences (no AST synthesis, no
+/// re-parenting): downstream sees a plain `Resolved::Apply`, so inference, lowering, and every backend
+/// need no `|>` awareness. Because scope is derived by walking AST parents (`prelude-and-resolution.md`
+/// §Scope Is Found By Walking Parents) and this rewrite moves no node, `L` still resolves in the scope
+/// where it is written and `R`'s arguments in theirs.
+///
+/// Two shapes:
+///   - `R` is an APPLICATION form `(f a…)` — a name/expr-headed list, NOT a compound-value literal
+///     (`("list" …)`/`("record" …)`/…) or a grammar form (`(. o k)`/`(if …)`/…). Splice: `L |> f(a)`
+///     → `(f L a)`.
+///   - Anything else (a bare name `f`, a member access `o.m`, a `(f)` — handled by the first arm — or a
+///     non-callable value): apply `R` to `L`. `L |> f` → `(f L)`; `L |> o.m` → `(o.m L)`. A `R` that is
+///     not applyable (`L |> [1, 2]`) becomes a poison downstream through the ordinary meta-apply channel,
+///     the same diagnostic a bare `([1, 2] L)` would give.
+fn resolve_pipeline(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "|>").unwrap_or(&[]);
+    if tail.len() != 2 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "`|>` takes exactly 2 operands: a value and the function to pipe it into",
+        ));
+    }
+    let (lhs, rhs) = (tail[0], tail[1]);
+    // Splice into `rhs` when it is an application form: a non-empty list whose head is neither a
+    // compound-value constructor (a string head) nor a grammar form — i.e. exactly the shape `compute`
+    // classifies as `Resolved::Apply`.
+    if let Struct::List(children) = db.ast.get(rhs)
+        && !children.is_empty()
+        && db.ast.head_ctor(rhs).is_none()
+        && db.ast.head_name(rhs).is_none_or(|h| !is_grammar_head(h))
+    {
+        let head = children[0];
+        let mut args = Vec::with_capacity(children.len());
+        args.push(lhs);
+        args.extend_from_slice(&children[1..]);
+        return Resolved::Apply {
+            head,
+            args: args.into(),
+        };
+    }
+    // Otherwise apply `rhs` itself to `lhs` (a bare function name, a projected method, …).
+    Resolved::Apply {
+        head: rhs,
+        args: std::sync::Arc::from([lhs]),
+    }
+}
+
 /// Resolve `(handle INIT (ARM…) BODY)` into its resolved form. Each arm is `(op-proj (params…) state
 /// body)` — the operation projection, a parenthesized parameter list, the state binder, and the arm
 /// body. Scope for the params/state binders is handled by the ordinary parent-walk (a reference in the
@@ -1856,7 +1913,62 @@ fn resolve_annot(db: &Db, id: StructId) -> Resolved {
 mod tests {
     use super::*;
     use crate::ast::IntValue;
-    use crate::testkit::{if_program, scalar_program};
+    use crate::testkit::{if_program, parse, scalar_program};
+
+    /// The `StructId` of the first `(|> …)` occurrence in `db`, for driving `resolve_pipeline`.
+    fn pipe_node(db: &Db) -> StructId {
+        (0..db.ast.structure.len() as u32)
+            .map(StructId)
+            .find(|&id| db.ast.head_name(id) == Some("|>"))
+            .expect("a |> node")
+    }
+
+    #[test]
+    fn pipeline_into_a_bare_name_wraps_it_in_a_call() {
+        // `(|> x f)` resolves to an application `(f x)` — the piped value becomes the sole argument.
+        let ast = parse("(module m (def (main) (|> x f)) (def (f n) n) (export main))");
+        let mut db = Db::load(ast);
+        let pipe = pipe_node(&db);
+        match resolved_of(&mut db, pipe) {
+            Resolved::Apply { head, args } => {
+                assert_eq!(db.ast.as_name(head), Some("f"));
+                assert_eq!(args.len(), 1);
+                assert_eq!(db.ast.as_name(args[0]), Some("x"));
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_into_a_call_splices_the_value_as_the_first_argument() {
+        // `(|> x (f a))` resolves to `(f x a)` — the value is threaded as `f`'s FIRST argument, the
+        // existing arguments follow. Reuses the source occurrences (no synthesis).
+        let ast = parse("(module m (def (main) (|> x (f a))) (def (f p q) p) (export main))");
+        let mut db = Db::load(ast);
+        let pipe = pipe_node(&db);
+        match resolved_of(&mut db, pipe) {
+            Resolved::Apply { head, args } => {
+                assert_eq!(db.ast.as_name(head), Some("f"));
+                assert_eq!(args.len(), 2);
+                assert_eq!(db.ast.as_name(args[0]), Some("x")); // spliced first
+                assert_eq!(db.ast.as_name(args[1]), Some("a")); // original arg
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_with_wrong_arity_is_malformed() {
+        // A `|>` with one operand cannot thread anything — a coded rejection (CDZ0201), not a silent
+        // decline, is what gives the operator its own diagnostic.
+        let ast = parse("(module m (def (main) (|> 5)) (export main))");
+        let mut db = Db::load(ast);
+        let pipe = pipe_node(&db);
+        match resolved_of(&mut db, pipe) {
+            Resolved::Poison(reject) => assert_eq!(reject.code, Some(Code::Malformed)),
+            other => panic!("expected Poison, got {other:?}"),
+        }
+    }
 
     #[test]
     fn resolves_a_literal() {

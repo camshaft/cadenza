@@ -1843,3 +1843,35 @@
   (input  (do (def (f x y) y) (def (main (: d Int64)) (f 7 (/ 1 d))) (export main)))
   (call   main (: 0 Int64))
   (trap   "division by zero"))
+
+; ── The pipeline operator `|>` threads a value into a function ───────────────────────────────────────
+; `|>` is a REAL operator (arena head `|>`), not surface sugar: it round-trips through both syntaxes and
+; the resolver rewrites `(|> L R)` into an ordinary application, threading `L` as `R`'s FIRST argument —
+; `(|> x f)` = `(f x)`, and `(|> x (f a))` = `(f x a)`. Because the rewrite yields a plain application,
+; the value flows through the same typing, folding, and emission as a written-out call; the two forms are
+; INDISTINGUISHABLE downstream. Threading first (not last) matches the collection-first argument order of
+; the built-in operations (`(List.map xs f)`), so `(|> xs (List.map f))` reads as "xs, mapped by f".
+; `|>` binds looser than every operator but ascription and is left-associative, so a chain reads left to
+; right: `(|> (|> x f) g)` = `g(f(x))`.
+
+(case "the pipeline operator threads a value into a named function"
+  (doc    "`(|> 5 double)` resolves to the application `(double 5)`: the piped value becomes the sole
+           argument. `|>` is the pipeline operator — a real form the resolver rewrites into an ordinary
+           application, so the value is typed and folded exactly as a written-out `(double 5)` is.")
+  (input  (do (def (double n) (* n 2)) (def (main) (|> 5 double)) (export main)))
+  (output (: 10 Int64)))
+
+(case "the pipeline operator splices the value as a call's first argument"
+  (doc    "`(|> 3 (add 10))` resolves to `(add 3 10)`: when the right operand is already an application,
+           the piped value is spliced in as its FIRST argument and the written arguments follow. This is
+           the argument order that lets `(|> xs (op …))` read as an operation on `xs`.")
+  (input  (do (def (add a b) (+ a b)) (def (main) (|> 3 (add 10))) (export main)))
+  (output (: 13 Int64)))
+
+(case "a pipeline chain applies its stages left to right"
+  (doc    "`(|> (|> 5 double) (add 1))` = `(add (double 5) 1)` = 11. `|>` is left-associative and looser
+           than the other operators, so a chain of pipes reads as a left-to-right sequence of stages —
+           the value out of one stage is the value into the next.")
+  (input  (do (def (double n) (* n 2)) (def (add a b) (+ a b))
+              (def (main) (|> (|> 5 double) (add 1))) (export main)))
+  (output (: 11 Int64)))
