@@ -12726,6 +12726,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_partially_applied_function_escapes_as_a_value_and_runs_through_a_recursive_hof() {
+        // A PARTIAL APPLICATION escaping short of full arity, run as a runtime closure. `(g n)` where `g`
+        // is `main`'s statically-known two-parameter lambda applied to ONE arg PARTIALLY APPLIES at compile
+        // time into the residual `(fn (b) (+ 5 b))`; that residual escapes as a VALUE into the recursive
+        // `sumapply`, which cannot inline it, so it runs as a runtime closure via `call_indirect`. The
+        // partial-application fold + the runtime-closure lift compose: `sumapply (g 5) 2 = (5+2)+(5+1) =
+        // 13`. Regression guard for the fix that made the residual's parameter annotation survive the
+        // β-copy that carries it into the recursive callee (before it, the awaited param lost its declared
+        // type — `is_binder_occurrence` now recognizes a `fn`/`def` param so a `(: p T)` binder copies with
+        // its annotation intact).
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (g n) 2)) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 5) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "13"); // (5+2)+(5+1)
+        // A `(*)` variant proves the residual dispatches the right code: sumapply (g 5) 2 = (5*2)+(5*1) = 15.
+        let src2 = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (g n) 2)) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
+        assert_eq!(run_closure(src2, 5).unwrap(), "15"); // (5*2)+(5*1)
+    }
+
+    #[test]
+    fn a_lambda_with_an_annotated_param_keeps_its_type_across_beta_copy() {
+        // Focused regression for the `is_binder_occurrence` fix. β-COPYING a lambda whose parameter is
+        // ANNOTATED `(: p T)` must preserve the annotation: the param name is a BINDER, not a value
+        // reference, so it copies structurally as part of the `(: …)` binder — before the fix it was
+        // treated as a reference and copied detached, so the copy's param lost its declared type. Exercised
+        // by a lambda that is copied (a partial application curries `(add 5)` into a residual carrying the
+        // annotated remaining param) then applied through a recursive HOF (which forces the copy). If the
+        // annotation were lost the residual's param would type `Any` and the closure would decline; that it
+        // RUNS pins the annotation survived. `apply-sum (add 5) 3 = (5+3)+(5+2)+(5+1) = 21`.
+        let src = "(module m \
+            (def (add (: a Int64) (: b Int64)) (+ a b)) \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (add 5) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "21"); // (5+3)+(5+2)+(5+1)
+    }
+
+    #[test]
     fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
         // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
         // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The
