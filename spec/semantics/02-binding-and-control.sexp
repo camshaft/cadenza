@@ -654,6 +654,22 @@
             (def (main) (f 3)) (export main)))
   (output (: 3 Int64)))
 
+(case "a conditional on a negated runtime condition selects the correct branch and shields the other"
+  (doc    "A conditional whose condition is `(not c)` may be lowered by SWAPPING the then/else branches and
+           dropping the negation (rather than computing `not` then branching): `(if (not c) T E)` becomes
+           `(if c E T)`. That rewrite must preserve BOTH the selection and the shielding. `(if (not b) 7 (/
+           1 z))` with `b` = false: `(not false)` is true, so the THEN branch (7) is selected and the else
+           `(/ 1 z)` (a division by zero at z = 0) is NOT evaluated — the result is 7, not a trap. A swap
+           that mis-mapped the branches would select `(/ 1 z)` and trap; one that evaluated both would trap
+           too. The anchor: with `b` = true, `(not true)` is false, so the else `(/ 1 z)` IS selected and
+           traps. Pins the negated-if branch swap keeps the untaken branch shielded and the condition
+           correctly inverted.")
+  (input  (do
+            (def (main (: b Bool) (: z Int64)) (if (not b) 7 (/ 1 z)))
+            (export main)))
+  (call   main (: false Bool) (: 0 Int64))
+  (output (: 7 Int64)))
+
 (case "a conjunction guards a let over a runtime value inside a conditional"
   (doc    "An INTEGRATION case: several control constructs composed in one function over a runtime
            parameter, the way a real program (not an isolated feature test) uses the language.
