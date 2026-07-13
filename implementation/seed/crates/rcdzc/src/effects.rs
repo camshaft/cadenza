@@ -2085,10 +2085,77 @@ fn callee_def_index_of(db: &mut Db, head: StructId) -> Option<usize> {
 /// `f`'s body threaded under `ctx` (each perform → its arm's resume value against the state param; the
 /// recursive self-call → a call to `f#ctx` with the threaded next-state). `None` if `head` is not a
 /// specializable recursive def or its body cannot be threaded (declines cleanly).
+/// Whether every RECURSIVE self-call in `body` (a call to `callee_def`) sits in TAIL position — the
+/// precondition for specializing a recursive callee under an ABORTIVE handler. When an abort fires inside
+/// the recursive body it becomes the specialized function's plain RETURN value; that is only correct when
+/// no self-call has PENDING computation wrapped around it (a non-tail `(+ 1 (walk …))` would let the abort
+/// value flow back through the `+ 1`, a miscompile). Tail carriers: an `if`/`match` branch, a `let` body.
+/// A self-call anywhere else (an operator operand, an `if` condition, a `let` init) is NON-tail.
+fn recursive_self_calls_all_tail(db: &mut Db, body: StructId, callee_def: usize) -> bool {
+    self_calls_tail(db, body, callee_def, true)
+}
+
+/// Recursive worker for [`recursive_self_calls_all_tail`]: verify every self-call (a call resolving to
+/// `callee_def`) occurs only at a `tail` position. Returns `false` at the first off-tail self-call.
+fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -> bool {
+    if let Resolved::Apply { head, args } = resolved_of(db, node) {
+        let is_self = callee_def_index_of(db, head) == Some(callee_def);
+        if is_self {
+            if !tail {
+                return false; // a self-call off the tail path — the non-local-exit case
+            }
+            // A tail self-call's ARGUMENTS are non-tail (they evaluate before the call) — check them.
+            return args
+                .iter()
+                .all(|&a| self_calls_tail(db, a, callee_def, false));
+        }
+    }
+    // An `if`: the condition is non-tail; each branch inherits THIS position's tail-ness.
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
+        return self_calls_tail(db, cond, callee_def, false)
+            && self_calls_tail(db, then_, callee_def, tail)
+            && self_calls_tail(db, else_, callee_def, tail);
+    }
+    // A `let`: inits non-tail, body inherits tail-ness.
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+    {
+        if let Struct::List(pairs) = db.ast.get(form[0]).clone() {
+            for pair in pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                    && !self_calls_tail(db, kv[1], callee_def, false)
+                {
+                    return false;
+                }
+            }
+        }
+        return self_calls_tail(db, form[1], callee_def, tail);
+    }
+    // Generic descent: children are non-tail operands (a self-call there is off the tail path). Treating
+    // every generic child as non-tail only ever DECLINES (never wrongly accepts), the safe direction.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .all(|&c| self_calls_tail(db, c, callee_def, false)),
+        Struct::Atom(_) => true,
+    }
+}
+
 fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option<String> {
     let callee_def = callee_def_index_of(db, head)?;
     let orig_body = db.defs[callee_def].body?;
     if !ctx.has_state() {
+        return None;
+    }
+    // ABORTIVE + NON-TAIL RECURSION SOUNDNESS GUARD. When an ABORTIVE op is discharged and the recursive
+    // callee has a self-call OFF the tail path — `(def (walk n) (if (= n 0) (Bail 99) (+ 1 (walk (- n
+    // 1)))))` — an abort at the base must ABANDON the pending `+ 1` frames on the recursion stack. But the
+    // specialized `walk#ctx` returns the abort value 99 as an ORDINARY return, which then flows back up
+    // through each caller's `+ 1` → 99+1+1+1 = 102, a MISCOMPILE. This needs the non-local-exit calling
+    // convention (a stack of `+ 1` frames the abort unwinds — a later vertical). A TAIL self-call is fine:
+    // the abort is the tail value, propagating up with no pending frame. Decline the non-tail abortive case.
+    if !ctx.abortive.is_empty() && !recursive_self_calls_all_tail(db, orig_body, callee_def) {
         return None;
     }
     // Each slot's state TYPE must be FULLY DETERMINED to annotate its trailing state param. An

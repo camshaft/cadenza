@@ -13799,6 +13799,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_tail_recursive_abort_declines_rather_than_miscompiles() {
+        // E4 abortive + non-tail recursion soundness guard (a MISCOMPILE regression). `walk` recurses in a
+        // NON-tail position — `(+ 1 (walk (- n 1)))` — and bails at the base. An abort ABANDONS the pending
+        // `+ 1` frames on the recursion stack, so the result should be the arm value 99. But a specialized
+        // `walk#ctx` returns 99 as an ORDINARY value, which flows back up through each caller's `+ 1` →
+        // 99+1+1+1 = 102, a MISCOMPILE. `specialize_recursive` declines when an abortive handler meets a
+        // callee with a non-tail self-call (`recursive_self_calls_all_tail` false) — it needs the
+        // non-local-exit convention (a later vertical). Contrast the TAIL case, which folds to 99.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (walk (- n 1))))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (walk 3))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail recursive abort must decline, not miscompile to 102"
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
