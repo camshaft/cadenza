@@ -7857,6 +7857,19 @@ pub(crate) fn value_range_within(db: &mut Db, id: StructId, lo: i64, hi: i64) ->
     matches!(value_range(db, id), Some((vlo, Some(vhi))) if vlo >= lo && vhi <= hi)
 }
 
+/// Whether the value at `id` provably CANNOT equal the constant `c` — its `value_range` is known and `c`
+/// lies strictly OUTSIDE it (`c < min` or `c > max`). Consults the same lattice as the guard/comparison
+/// folds (a mask, an unsigned type, a flow-refinement). Used by the match probe chain to drop a DEAD arm
+/// whose literal probe the scrutinee's range excludes (`(match (& x 7) (100 …) …)`: `x & 7 ∈ [0,7]`, so
+/// the `100` arm can never match). Conservative: an unknown range, or one that contains `c`, → `false`
+/// (keep the arm). A `None` upper bound (unsigned-64) only excludes on the low side.
+pub(crate) fn value_excludes(db: &mut Db, id: StructId, c: i64) -> bool {
+    match value_range(db, id) {
+        Some((lo, hi)) => c < lo || hi.is_some_and(|h| c > h),
+        None => false,
+    }
+}
+
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
 /// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
 /// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL

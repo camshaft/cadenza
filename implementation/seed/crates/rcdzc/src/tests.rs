@@ -14044,6 +14044,68 @@ mod match_engine {
     }
 
     #[test]
+    fn a_match_arm_the_scrutinees_range_excludes_is_dropped() {
+        // RANGE-BASED DEAD-ARM ELIMINATION: an `Int` probe the scrutinee's provable range excludes can
+        // never match, so the arm (probe + body) is dropped. `(match (& x 7) (100 …) (0 …) (_ …))`: the
+        // masked scrutinee ∈ [0,7], so the `100` arm is dead. Pins the elimination at the Lir level (no
+        // `const 100` probe, no dead body) AND value parity; a LIVE in-range arm and a wide-unsigned probe
+        // that only LOOKS out of range must be kept.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(& x 7) ∈ [0,7]` → the `100` arm is dead: no `const 100` probe, no dead body `const 111`.
+        let dead = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(!dead.contains(&Lir::ConstI64(100)), "the dead `100` probe is dropped, got: {dead:?}");
+        assert!(!dead.contains(&Lir::ConstI64(111)), "the dead arm body is dropped, got: {dead:?}");
+        // A LIVE in-range arm (`7`, since [0,7] includes 7) is KEPT even beside a dead one (`100`).
+        let live = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(live.contains(&Lir::ConstI64(7)), "the live `7` probe stays, got: {live:?}");
+        assert!(!live.contains(&Lir::ConstI64(100)), "the dead `100` probe is dropped, got: {live:?}");
+
+        // VALUE PARITY: dispatch unchanged after dropping the dead arm.
+        use wasmtime::component::Val;
+        let b1 = component("(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (export f))");
+        assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(8)]), 222); // 8&7=0 → arm 0
+        assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(5)]), 333); // 5&7=5 → wildcard
+        let b2 = component("(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (export f))");
+        assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(15)]), 111); // 15&7=7 → live arm 7
+        assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(8)]), 333); // 8&7=0 → wildcard
+
+        // WIDE-UNSIGNED SOUNDNESS: a `UInt64` probe of `2^63` has a negative i64 BIT pattern but a value
+        // OUTSIDE i64 — it must NOT be treated as out of range and dropped. The arm is kept and fires. (The
+        // scrutinee is UInt64 but the bodies are Int64 literals, so the RESULT reads back as i64.)
+        let b3 = component("(module m (def (f (: x UInt64)) (match x (9223372036854775808 111) (0 222) (_ 333))) (export f))");
+        assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(9223372036854775808)]), 111);
+        assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(0)]), 222);
+    }
+
+    #[test]
     fn a_computed_match_scrutinee_is_evaluated_once() {
         use wasmtime::component::Val;
         // `(match (+ a b) (0 10) (1 20) (_ 30))` — the scrutinee is a CHECKED add. It is evaluated ONCE

@@ -4440,6 +4440,40 @@ fn emit_match_arms_tailable(
     out: &mut Emit,
     tail: TailPos,
 ) -> Result<(), Reject> {
+    // RANGE-BASED DEAD-ARM ELIMINATION: an arm with an `Int` literal probe the scrutinee's provable range
+    // EXCLUDES can never match — its `scrutinee == C` test is a compile-time `false`. Drop it, provided a
+    // LATER arm still covers (dropping it cannot break exhaustiveness: `lower` proved the arms cover the
+    // scrutinee's TYPE, and the range only removes values the type already covered, so the survivors still
+    // cover every REACHABLE value). The match analogue of the range-vs-constant comparison fold —
+    // `(match (& x 7) (100 a) (0 b) (_ c))` drops the dead `100` arm, and a flow-refined scrutinee
+    // (`(match n …)` under `(> n 100)`) drops arms below the refinement. Sound to drop a GUARDED dead arm
+    // too: a probe never true means the arm (guard and all) never runs. Done HERE — before the branchless
+    // 2-arm-select and the probe chain — so BOTH paths see the filtered arms (a dead arm in a 2-arm match
+    // must not force a `select` on a probe that is always false). Recurses with the kept arms only when the
+    // filter removed something (else infinite recursion / wasted re-run); order preserved.
+    //
+    // ⚠ The probe's NUMERIC value (`to_i64()`), NOT its bit pattern (`to_i64_bits()`), is what `value_range`
+    // reasons about: a wide UNSIGNED probe (`UInt64` `2^63`) has a NEGATIVE bit pattern that would falsely
+    // read as "below [0, …]" and drop a LIVE arm — a miscompile. `to_i64()` is `None` for such a value (out
+    // of i64), so the arm is conservatively KEPT.
+    let arm_is_dead = |db: &mut Db, i: usize, a: &crate::core::MatchArm| -> bool {
+        i + 1 < arms.len()
+            && matches!(&a.probe, crate::core::Probe::Int(v)
+                if v.to_i64().is_some_and(|c| crate::lower::value_excludes(db, scrutinee, c)))
+    };
+    if arms.len() > 1 && arms.iter().enumerate().any(|(i, a)| arm_is_dead(db, i, a)) {
+        let mut kept: Vec<crate::core::MatchArm> = Vec::with_capacity(arms.len());
+        for (i, a) in arms.iter().enumerate() {
+            if !arm_is_dead(db, i, a) {
+                kept.push(a.clone());
+            }
+        }
+        trace!(target: "rcdzc::select", dropped = arms.len() - kept.len(), "match: dropped dead arms the scrutinee's range excludes");
+        return emit_match_arms_tailable(
+            db, scrutinee, &kept, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out, tail,
+        );
+    }
     // Resolve the scrutinee to a SOURCE pushed once per probe. A match dispatches by testing the
     // scrutinee against each arm's literal in turn — so the scrutinee is read once PER PROBE. If it is a
     // reusable value (a parameter/local, or a constant), re-pushing it each time is free. But a COMPUTED
