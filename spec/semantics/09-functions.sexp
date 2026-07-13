@@ -489,6 +489,29 @@
   (input  (Some 1 2 3))
   (error  CDZ0203))
 
+; Over-applying a USER FUNCTION is arity-checked the SAME way — the case the comment above references
+; ("an over-applied constructor is arity-checked the same way an over-applied user function is"). A
+; lambda / named def of arity N applied to more than N arguments applies the fully-consumed result
+; (which is NOT a function) to the surplus — a type error (CDZ0203), never a silent argument drop.
+; `((fn (x) (+ x 1)) 5 9)` desugars to `(((fn (x) (+ x 1)) 5) 9)`: `(fn (x)…) 5` = 6 (an Int64, not a
+; function), applied to `9` — the apply-a-non-function error. This pins the over-applied-function half
+; that the constructor cases above pin for constructors.
+
+(case "over-applying a lambda by an extra argument is a type error"
+  (doc    "`((fn (x) (+ x 1)) 5 9)` — a unary lambda applied to two arguments. Desugars to `(((fn (x)
+           (+ x 1)) 5) 9)`: the inner application yields the Int64 6, and applying 6 to 9 applies a
+           non-function → CDZ0203. The compiler MUST reject it, not drop the 9 and yield 6.")
+  (input  (do (def (main) ((fn ((: x Int64)) (+ x 1)) 5 9)) (export main)))
+  (error  CDZ0203))
+
+(case "over-applying a named function by an extra argument is a type error"
+  (doc    "The named-def companion: `(def (f x) (+ x 1))`, `(f 5 9)` applies the unary `f` to two args.
+           By §Functions Are Single-Arity this desugars to `((f 5) 9)` — `(f 5)` = 6, applied to 9 is a
+           non-function application → CDZ0203. Arity is checked for a named function exactly as for a
+           lambda or a constructor.")
+  (input  (do (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main)))
+  (error  CDZ0203))
+
 ; The arity check has a lower end too: a UNARY variant applied to ZERO arguments is under-applied. A
 ; sum type constructor is a single-arity function that produces the tagged variant "when applied to
 ; EXACTLY ONE argument" (core-semantics.md #A Sum Type Constructor Is A Single-Arity Function). `Some`

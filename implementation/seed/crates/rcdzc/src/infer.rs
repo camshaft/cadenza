@@ -1230,6 +1230,34 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                     out.push(reject);
                 }
             }
+            // OVER-APPLICATION: more arguments than the lambda's arity, and the body's result is not
+            // itself a function to absorb them. `((fn (x) (+ x 1)) 5 9)` is a type error, not a decline —
+            // the SAME CDZ0201 the corpus assigns an over-applied CONSTRUCTOR ("over-applying a constructor
+            // is a type error, not a silent argument drop"). Without this, `apply_lambda` returns
+            // Err("applied more arguments…") and the reduced body is never collected, so the extra args
+            // silently graded as a to-do. A body whose result IS a function (a curried lambda returning a
+            // lambda) legitimately absorbs the extra args — so gate on the reduced result NOT being an
+            // arrow (checked via the full-application result type below).
+            if args.len() > params.len() {
+                // Type the lambda fully applied to its own arity; if the result is not a function, the
+                // surplus args over-apply it.
+                let applied_ty = apply_type(db, head, &args[..params.len()]);
+                if !matches!(applied_ty, Ty::Fn(_, _) | Ty::Any) {
+                    trace!(target: "rcdzc::infer", head = head.0, arity = params.len(), args = args.len(), "fault: over-applied lambda (CDZ0203)");
+                    // CDZ0203 (`TypeMismatch`) — the SAME code an over-applied CONSTRUCTOR and a
+                    // scheme-typed over-application use (applying the fully-consumed value, which is not a
+                    // function, to a further argument). Keeps the over-application taxonomy uniform.
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "applied {} arguments to a function of arity {} — it is not a function after \
+                             its arguments are consumed",
+                            args.len(),
+                            params.len()
+                        ),
+                    ));
+                }
+            }
         }
         // (2) Collect the REDUCED body's own faults. Substituting the concrete arguments turns a
         //     body use of a bare parameter into a use of the actual argument value, so a use at a
