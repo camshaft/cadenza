@@ -905,6 +905,7 @@ pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
+pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
 pass	distinct-signature capturing producers
 pass	dividing quantities divides their dimensions
 pass	division by zero traps
@@ -1149,6 +1150,7 @@ pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the same function called under two handlers is discharged by each in turn
+pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the second distinct-signature closure export returns its own type
 pass	the slice overflow guard holds on a chained slice-of-a-slice

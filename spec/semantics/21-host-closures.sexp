@@ -592,3 +592,32 @@
   (input  (do (def (main (: k Int64)) (fn ((: x Int64)) (let ((a (* x 2)) (b (+ x k))) (+ a b)))) (export main)))
   (call   main (: 10 Int64) (: 5 Int64))
   (output (: 25 Int64)))
+
+; SOUNDNESS: distinct component signatures that COLLAPSE to the same CORE valtype shape. `a : (-> Int64
+; Int64)` and `b : (-> Int64 UInt64)` are DISTINCT at the component boundary (s64 vs u64 result) — two
+; resource types — yet both lower to the SAME core functype `(i32 env, i64) -> i64`. Each must still
+; dispatch its OWN lifted body: the code slot rides in the resource rep (make-a → a t0 handle whose cell
+; points at a's slot; make-b → a t1 handle at b's slot), recovered per call, so the shared core functype
+; index is immaterial to WHICH body runs. If the two ever collided, `b` would run `a`'s body.
+
+(case "distinct signatures sharing a core valtype shape dispatch distinct bodies"
+  (doc    "`a : (-> Int64 Int64)` returns `x + 1000`; `b : (-> Int64 UInt64)` returns `x * 7` — distinct
+           component signatures (s64 vs u64 result) but the SAME core shape `(i64) -> i64`. Calling `a(3)`
+           = 1003 runs a's body. Pins that a's resource + slot dispatch its own code despite the shared
+           core functype.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x 1000)))
+              (def (b) (fn ((: x Int64)) (UInt64.wrap (* x 7))))
+              (export a) (export b)))
+  (call   a (: 3 Int64))
+  (output (: 1003 Int64)))
+
+(case "the same-core-shape sibling dispatches ITS body, not the first"
+  (doc    "The same program, calling `b(3)` = 21 = `x * 7` (b's OWN body), NOT 1003 (a's). Pins the
+           soundness property: two closures whose core functypes are identical still run distinct code,
+           because the code slot is recovered from the resource rep at call time — a mispick would surface
+           here as b returning a's result.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x 1000)))
+              (def (b) (fn ((: x Int64)) (UInt64.wrap (* x 7))))
+              (export a) (export b)))
+  (call   b (: 3 Int64))
+  (output (: 21 UInt64)))
