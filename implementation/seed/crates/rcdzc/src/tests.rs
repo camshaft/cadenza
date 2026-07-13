@@ -2212,6 +2212,54 @@ fn runtime_multiplication_traps_on_overflow() {
     ));
 }
 
+/// A full-width signed `(* a C)` with a constant `C > 0` (non-power-of-two) guards overflow with a
+/// compile-time BOUND CHECK (`a > MAX/C || a < MIN/C → trap`) instead of the `div_s` round-trip — but
+/// must trap at EXACTLY the same points. `(* a 3)`: `a = MAX/3` fits, `a = MAX/3 + 1` overflows up;
+/// `a = MIN/3` fits, `a = MIN/3 - 1` overflows down; 0 and small values compute. Pins the boundary is
+/// exact both directions (the bound check's truncated MAX/C, MIN/C match the true overflow point).
+#[test]
+fn a_constant_multiplier_bound_check_traps_at_the_exact_boundary() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: a Int64)) (* a 3)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let max_over_3 = i64::MAX / 3; // 3074457345618258602
+    let min_over_3 = i64::MIN / 3; // -3074457345618258602
+    // In range at the boundary and below.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(max_over_3)]),
+        max_over_3 * 3
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(min_over_3)]),
+        min_over_3 * 3
+    );
+    assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 0);
+    assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(-5)]), -15);
+    // One past the boundary overflows — both directions must trap.
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(max_over_3 + 1)]),
+        "a*3 just past MAX/3 must trap (overflow up)"
+    );
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(min_over_3 - 1)]),
+        "a*3 just past MIN/3 must trap (overflow down)"
+    );
+    // A NARROW const multiply keeps BOTH range bounds (a product can leave either side) — regression
+    // guard for the reachable-bounds interaction: Int8 `a*3` at 50 = 150 > 127 must trap, not wrap.
+    let narrow = "(module m (def (f (: a Int8)) (* a 3)) (export f))";
+    let nb = compile_component(&crate::codec::encode(&parse(narrow))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&nb, "f", &[Val::S8(42)]), 126);
+    assert!(
+        call_traps(&nb, "f", &[Val::S8(50)]),
+        "Int8 50*3=150 > 127 must trap"
+    );
+    assert!(
+        call_traps(&nb, "f", &[Val::S8(-50)]),
+        "Int8 -50*3=-150 < -128 must trap"
+    );
+}
+
 /// A NESTED runtime checked op composes and traps correctly — `(* (+ a b) c)` computes in range and
 /// the shared scratch pool does not corrupt across the nesting.
 #[test]
@@ -2748,10 +2796,20 @@ mod runtime_ops {
         assert_eq!(run::<u8>("(: n UInt8)", "(* 2 n)", &[Val::U8(3)]), 6);
         assert_eq!(run::<u8>("(: n UInt8)", "(& 15 n)", &[Val::U8(9)]), 9);
         assert_eq!(run::<u8>("(: n UInt8)", "(<< 1 n)", &[Val::U8(3)]), 8);
-        assert_eq!(run::<i64>("(: n UInt8)", "(if (< 1 n) 1 0)", &[Val::U8(5)]), 1);
+        assert_eq!(
+            run::<i64>("(: n UInt8)", "(if (< 1 n) 1 0)", &[Val::U8(5)]),
+            1
+        );
         // The const-RIGHT mirror (always worked) and a both-var form still compute the same.
         assert_eq!(run::<u8>("(: n UInt8)", "(+ n 1)", &[Val::U8(5)]), 6);
-        assert_eq!(run::<u8>("(: a UInt8) (: b UInt8)", "(+ a b)", &[Val::U8(100), Val::U8(50)]), 150);
+        assert_eq!(
+            run::<u8>(
+                "(: a UInt8) (: b UInt8)",
+                "(+ a b)",
+                &[Val::U8(100), Val::U8(50)]
+            ),
+            150
+        );
         // A wide left-const is unaffected (i64 result was always correct).
         assert_eq!(run::<i64>("(: n Int64)", "(+ 1 n)", &[Val::S64(41)]), 42);
         // (A genuine width conflict — UInt8 + Int64 — still rejects CDZ0301; the corpus guards that, and
@@ -7373,8 +7431,9 @@ mod stage1 {
         use crate::testkit::parse;
         let src = "(module m (def (sumto (: n Int64)) (if (< n 1) 0 (+ n (sumto (- n 1))))) \
                      (def (eq3) (if (= (Ok (sumto 3)) (Ok 6)) 1 0)) (export eq3))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a phantom-parameter multi-param sum equality compiles to a value-eq heap walk");
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a phantom-parameter multi-param sum equality compiles to a value-eq heap walk",
+        );
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping phantom-param value-eq run");
             return;
@@ -13553,4 +13612,3 @@ mod debug_info {
         );
     }
 }
-

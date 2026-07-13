@@ -4600,8 +4600,13 @@ fn emit_checked_arith_to(
     // — drop the dead check. `(+ a C)` C>0 (or `(- a C)` C<0) moves UP → only `r > max`; the reverse
     // moves DOWN → only `r < min`. (`C==0` is elided in `lower`; a two-const op folds there too.) The
     // general/two-runtime case, and `*`, keep BOTH bounds (a product can leave either side).
+    // A const `+`/`-` moves the exact result in ONE direction from an in-range operand, so a narrow
+    // range-check needs only that bound (cycle 38). This does NOT hold for `*`: a narrow `(* a C)`
+    // product can leave EITHER type bound (positive `a` overflows up, negative `a` down), so a const
+    // multiplier keeps BOTH range bounds. Restricted to `Add`/`Sub` explicitly (`const_operand_split`
+    // also matches `Mul` now — for the mul-guard fast path below — so the op check is load-bearing).
     let reach = match const_operand_split(op, sa, sb) {
-        Some((_, c)) if c != 0 => {
+        Some((_, c)) if c != 0 && matches!(op, Prim::Add | Prim::Sub) => {
             let moves_up = (matches!(op, Prim::Add) && c > 0) || (matches!(op, Prim::Sub) && c < 0);
             if moves_up {
                 ReachableBounds::UpperOnly
@@ -4672,7 +4677,8 @@ fn emit_operand_into(
 /// to the general guard. `None` when neither operand (of the eligible side) is a constant.
 fn const_operand_split(op: Prim, sa: OperandSrc, sb: OperandSrc) -> Option<(OperandSrc, i64)> {
     match op {
-        Prim::Add => {
+        // `+` and `*` are commutative — EITHER operand may be the constant; the other is the runtime `a`.
+        Prim::Add | Prim::Mul => {
             if let Some(c) = sb.const_value() {
                 Some((sa, c))
             } else {
@@ -4773,6 +4779,39 @@ fn emit_machine_overflow_guard(
             out.push(Lir::IfUnreachableEnd);
         }
         Prim::Mul => {
+            // CONSTANT-MULTIPLIER FAST PATH (full-width signed `(* a C)`, `C` a compile-time constant
+            // with `C > 1` and not a power of two — a power of two is already strength-reduced to a shift
+            // before reaching here, and `C ∈ {0, 1}` folds in `lower`). The general guard runs a `div_s`
+            // (the slowest integer op) on EVERY multiply; but for a known `C > 0` the product overflows
+            // iff `a` is outside `[MIN/C, MAX/C]` (truncated-toward-zero constants — the largest/smallest
+            // `a` whose `a*C` still fits). So two compile-time-constant compares — `a > MAX/C` or
+            // `a < MIN/C` → trap — replace the divide. Full-width only (the machine slot extremes ARE the
+            // type bounds); `C < 0` (sign flip, plus the `*-1` MIN case) and unsigned and a narrow width
+            // keep the `div_s` round-trip below. `MAX/C`/`MIN/C` use Rust's `/` (trunc toward zero),
+            // matching the boundary exactly (`(MAX/C)*C <= MAX < (MAX/C+1)*C`).
+            if !m.narrow()
+                && m.signed
+                && let Some((a_src, c)) = const_operand_split(Prim::Mul, sa, sb)
+                && c > 1
+                && (c & (c - 1)) != 0
+            {
+                let (slot_min, slot_max) = if m.slot32 {
+                    (i32::MIN as i64, i32::MAX as i64)
+                } else {
+                    (i64::MIN, i64::MAX)
+                };
+                // a > MAX/C → trap.
+                a_src.push(out);
+                out.push(m.konst(slot_max / c));
+                out.push(m.gt_s());
+                out.push(Lir::IfUnreachableEnd);
+                // a < MIN/C → trap.
+                a_src.push(out);
+                out.push(m.konst(slot_min / c));
+                out.push(m.lt_s());
+                out.push(Lir::IfUnreachableEnd);
+                return;
+            }
             // mul: `if a≠0 { if r/a ≠ b { unreachable } }` — guards div against a=0 (a=0 can't overflow);
             // the machine `div_s` traps on MIN/-1 itself (the sole case `r/a` can't detect at full width),
             // `div_u` is total for a≠0. Runs at every width — a narrow product can exceed the slot too.
@@ -5377,7 +5416,8 @@ fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
     // through its shared result-width var); a COMPARISON's result is `Bool`, so its operand widths are not
     // carried on a result var and must be reconciled HERE from the operands' own types. A grounded literal
     // is then narrowed by `emit_operand` at the shared width, whichever side it is on.
-    let concrete = |t: &Ty| matches!(t, Ty::Int(it) if matches!(it.width, crate::ty::Width::Fixed(_)));
+    let concrete =
+        |t: &Ty| matches!(t, Ty::Int(it) if matches!(it.width, crate::ty::Width::Fixed(_)));
     match (&lt, &rt) {
         (Ty::Int(it), _) if concrete(&lt) => *it,
         (_, Ty::Int(it)) if concrete(&rt) => *it,
@@ -5732,8 +5772,10 @@ mod tests {
 
     #[test]
     fn multiply_by_a_non_power_of_two_keeps_the_checked_multiply() {
-        // (* n 3) — 3 is not a power of two, so the strength reduction does NOT fire; the checked
-        // multiply (with its division-based overflow guard) stays.
+        // (* n 3) — 3 is not a power of two, so the strength reduction to a shift does NOT fire: the
+        // checked `i64.mul` stays. Its overflow guard, however, is the CONST-MULTIPLIER bound check
+        // (`n > MAX/3 || n < MIN/3 → trap`), NOT the general `div_s` round-trip — a constant `C > 0`
+        // multiplier lets two compile-time-constant compares replace the hardware divide.
         let ast = crate::testkit::parse(
             "(module m (def (f (: n Int64)) (* n 3)) (def (main) 0) (export main))",
         );
@@ -5749,6 +5791,37 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::I64Shl)),
             "a non-power-of-two multiply does not become a shift"
+        );
+        // The const-multiplier overflow guard is a bound check, NOT a `div_s` round-trip.
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64DivS)),
+            "a full-width const multiply's guard is a bound check, not div_s, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::ConstI64(i64::MAX / 3))
+                && f.code.contains(&Lir::ConstI64(i64::MIN / 3)),
+            "the guard compares against MAX/3 and MIN/3, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_non_const_multiply_keeps_the_div_s_guard() {
+        // Only a CONSTANT multiplier gets the bound check; a two-runtime-operand `(* a b)` keeps the
+        // general `div_s` round-trip guard (`if a≠0 { r/a≠b → trap }`) — there is no compile-time bound
+        // to compare against.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (* a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::I64DivS),
+            "a runtime-operand multiply keeps the div_s guard, got: {:?}",
+            f.code
         );
     }
 
