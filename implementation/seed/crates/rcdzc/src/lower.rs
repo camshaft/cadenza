@@ -3008,6 +3008,19 @@ fn pattern_constraints(
         };
     }
     let Some(disc) = crate::eval::variant_disc_of(db, head) else {
+        // The head names no variant. A `(. Sum Q)` head where `Q` is not a variant of the sum
+        // (`((V.Q) …)` on a `(type V (A …) (B))`) lowers as a MEMBER ACCESS that already carries the
+        // precise coded fault — `CDZ0201: record has no field \`Q\`` (a sum record's variants ARE its
+        // fields), the SAME code the value position `(V.Q)` gets. Propagate that coded poison rather than
+        // the generic UNCODED "not a variant constructor" decline, so a mistyped variant in a match
+        // pattern NAMES the offending variant and is graded a rejection (not a to-do). (The infer-side
+        // `no_field_reject` adds a "did you mean?" suggestion at the value position; this lowering path
+        // emits the bare coded message — the code + named variant are the load-bearing improvement.)
+        if let Core::Poison(reject) = core_of(db, head)
+            && reject.code.is_some()
+        {
+            return Err(reject);
+        }
         return Err(Reject::decline(
             "a sum match pattern head is not a variant constructor",
         ));

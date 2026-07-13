@@ -394,6 +394,7 @@ pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
+pass	a match pattern naming a non-existent variant is a coded rejection
 pass	a match returning multi-argument closures applies at full arity
 pass	a match takes another match's result as its scrutinee
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
@@ -1240,6 +1241,13 @@ pass	resolving a head against a prelude symbol rejects a length-mismatched prefi
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	resuming with a wrong-type value for a compound result type is a type error
+pass	round-trip byte-rope consumer alongside a plain export — the consumer
+pass	round-trip byte-rope consumer alongside a plain export — the plain
+pass	round-trip: a String-returning consumer of a closure
+pass	round-trip: a consumer applies the handed-back closure and returns Bytes
+pass	round-trip: a consumer returns a byte-rope built from a single closure result
+pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
+pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	scalar length counts Unicode scalar values, not bytes
@@ -1369,6 +1377,7 @@ pass	two differing runtime Ok values of a multi-parameter sum compare unequal by
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
+pass	two effects declared with the same name are distinct, not one merged effect
 pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal

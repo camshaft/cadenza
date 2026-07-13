@@ -3106,6 +3106,22 @@
               ((None) 0)))
   (error    CDZ0210))
 
+(case "a match pattern naming a non-existent variant is a coded rejection"
+  (doc    "A match arm whose constructor pattern names a variant the scrutinee's sum does NOT declare —
+           `(V.Q)` on `(type V (A Int64) (B))`, where `V` has no variant `Q` — is a rejection that NAMES
+           the offending variant, CDZ0201, the SAME code the value position `(V.Q)` gets (a sum record's
+           variants ARE its fields, so `Q` is `record has no field \`Q\``). This is distinct from a
+           variant of a DIFFERENT sum used on this scrutinee (`Some` on a `V` — CDZ0203, a real variant of
+           the wrong type) and from a non-exhaustive match (CDZ0210, every arm a valid variant but a
+           variant left uncovered): here the pattern head resolves to NO variant at all. A generation that
+           DECLINED such a pattern uncoded (a to-do) rather than rejecting it silently accepted a mistyped
+           variant name; the pattern position must match the value position's coded diagnostic.")
+  (input    (do (type V (A Int64) (B))
+                (def (f v) (match v ((V.A n) n) ((V.Q) 0)))
+                (def (main) (f (V.B)))
+                (export main)))
+  (error    CDZ0201))
+
 ; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a
 ; value no arm covers (CDZ0210, a rejection), a REDUNDANT arm is one no value reaches — an EARLIER arm
