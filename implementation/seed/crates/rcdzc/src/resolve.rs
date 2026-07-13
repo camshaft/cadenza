@@ -1399,9 +1399,20 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;
-            let p = decode_ty(db, *tail.first()?)?;
-            let r = decode_ty(db, *tail.get(1)?)?;
-            Some(Ty::Fn(Box::new(p), Box::new(r)))
+            // A SINGLE-element arrow `(-> R)` is a nullary type `Unit -> R` — the elided-unit convention
+            // (a nullary effect op `(op get (-> R))` performed as `(E.get)`); a two-element `(-> P R)` is
+            // the ordinary `P -> R`. (The arrow is strictly binary here — multi-arg curries as nested `->`.)
+            match tail.len() {
+                1 => {
+                    let r = decode_ty(db, tail[0])?;
+                    Some(Ty::Fn(Box::new(Ty::Unit), Box::new(r)))
+                }
+                _ => {
+                    let p = decode_ty(db, *tail.first()?)?;
+                    let r = decode_ty(db, *tail.get(1)?)?;
+                    Some(Ty::Fn(Box::new(p), Box::new(r)))
+                }
+            }
         }
         "Tuple" => {
             let tail = db.ast.as_form(node, "Tuple")?;

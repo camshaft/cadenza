@@ -659,6 +659,9 @@ pass	over-applying a constructor is a type error, not a silent argument drop
 pass	overflow of the default integer traps deterministically
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
+pass	performing a string-parameter operation with a non-string argument is a type error
+pass	performing an operation with a wrong-type argument for a compound parameter is a type error
+pass	performing an operation with an argument of the wrong type is a type error
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
@@ -675,6 +678,7 @@ pass	recursive fibonacci with literal match base cases
 pass	resolving a head against a prelude symbol rejects a length-mismatched prefix
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
+pass	resuming with a wrong-type value for a compound result type is a type error
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	scalar length counts Unicode scalar values, not bytes
@@ -1071,9 +1075,6 @@ todo	ordering a string against an integer is a type error regardless of operand 
 todo	ordering an integer against a string is a type error
 todo	parsing a length-framed message and rebuilding it yields the original bytes
 todo	pattern matching over AST distinguishes forms
-todo	performing a string-parameter operation with a non-string argument is a type error
-todo	performing an operation with a wrong-type argument for a compound parameter is a type error
-todo	performing an operation with an argument of the wrong type is a type error
 todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
 todo	popping an absent field is rejected
@@ -1095,7 +1096,6 @@ todo	record reshaping is subset comparison as explicit projection
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
-todo	resuming with a wrong-type value for a compound result type is a type error
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps

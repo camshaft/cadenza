@@ -153,6 +153,15 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let r = type_in_env(db, args[1], env)?;
                     Some(Ty::Fn(Box::new(p), Box::new(r)))
                 }
+                // A SINGLE-element arrow `(-> R)` is a NULLARY operation type `Unit -> R` — the unit
+                // domain is elided (an effect op `(op get (-> (List Int64)))` performed as `(E.get)`,
+                // the same elided-unit convention `apply_type`'s nullary-perform arm honors). Without
+                // this a nullary op has no `Fn` scheme, so its result type reads undetermined and the
+                // resume-value/result-type check (CDZ0201) can never fire.
+                Prim::FnCtor if args.len() == 1 => {
+                    let r = type_in_env(db, args[0], env)?;
+                    Some(Ty::Fn(Box::new(Ty::Unit), Box::new(r)))
+                }
                 // `(List a)` inside a type-lambda — the element reduced under the env (so `a` becomes its
                 // type variable), then `Ty::List(elem)`. This is what makes `List.len`'s `(meta t)` =
                 // `(fn (a) (-> (List a) Int64))` read as the scheme `∀a. (List a) → Int64`.
@@ -1313,12 +1322,23 @@ pub fn reduce_ctor(
             Ok(built)
         }
         Prim::FnCtor => {
-            if args.len() != 2 {
-                return Err("-> takes two type arguments".to_string());
-            }
-            let p =
-                typeval_of(db, args[0]).ok_or_else(|| "-> parameter is not a type".to_string())?;
-            let r = typeval_of(db, args[1]).ok_or_else(|| "-> result is not a type".to_string())?;
+            // A SINGLE-element arrow `(-> R)` is a nullary type `Unit -> R` — the elided-unit convention
+            // (a nullary effect op `(op get (-> R))`); a two-element `(-> P R)` is the ordinary `P -> R`.
+            let (p, r) = match args.len() {
+                1 => {
+                    let r = typeval_of(db, args[0])
+                        .ok_or_else(|| "-> result is not a type".to_string())?;
+                    (crate::ty::Ty::Unit, r)
+                }
+                2 => {
+                    let p = typeval_of(db, args[0])
+                        .ok_or_else(|| "-> parameter is not a type".to_string())?;
+                    let r = typeval_of(db, args[1])
+                        .ok_or_else(|| "-> result is not a type".to_string())?;
+                    (p, r)
+                }
+                _ => return Err("-> takes one or two type arguments".to_string()),
+            };
             let fn_ty = crate::ty::Ty::Fn(Box::new(p), Box::new(r));
             trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))
