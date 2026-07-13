@@ -1338,6 +1338,44 @@ fn fix_all_applies_a_verified_did_you_mean_and_the_result_compiles_clean() {
 }
 
 #[test]
+fn a_misspelled_export_carries_an_applicable_replace_fix_end_to_end() {
+    // The export-position did-you-mean, surfaced end-to-end: `(export computee)` for a defined `compute`
+    // reports CDZ0101 AND now carries a structural replace fix (previously it named the candidate in text
+    // but carried no applicable patch). `--json` emits the `edits` array; `fix --all` applies it and the
+    // repaired file recompiles clean. This is the export analogue of the unbound-name did-you-mean fix.
+    let dir = scratch_dir("export_dym");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (compute) 1) (export computee))\n").unwrap();
+    // The JSON channel carries the fix as an edits array an agent applies literally.
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the misspelled export is an error");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0101\""))
+        .expect("the export fault is emitted as JSON");
+    assert!(
+        line.contains("\"kind\":\"replace\"") && line.contains("\"edits\":[{"),
+        "CDZ0101 carries a structural replace patch, not just a message: {line}"
+    );
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("(export compute)") && !patched.contains("computee"),
+        "applying the patch renames the export to the real definition: {patched}"
+    );
+    // And `fix --all` applies it in place — the repaired file recompiles clean.
+    let (ok2, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok2, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(export compute)") && !repaired.contains("computee"),
+        "the file was repaired: {repaired}"
+    );
+    let (ok3, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok3, "the repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_json_reports_each_applied_fix() {
     // `cdz fix --json` tells an agent WHICH faults were repaired — a JSON array of `{code, kind, message}`
     // — not just the human "applied N" count. Two independent faults (a did-you-mean + an out-of-range

@@ -101,6 +101,14 @@ a design-from-scratch:
   frequency `second⁻¹` — the division runs in the inner type, so Float divides and Int TRUNCATES). Folds
   when constant, emits the arithmetic for a runtime magnitude. `Qty.pow q 2` derives the same dimension
   as `(* q q)`, and `Qty.pow q -1` the same as `(/ (Qty.of 1 Unit.one) q)` — the corpus pins both.
+- **`Qty.unit`** — ✅ LANDED (`Prim::QtyUnit`). `(Qty.unit q)` recovers `q`'s UNIT as a first-class
+  compile-time unit value (the inverse of `Qty.of`'s unit argument), so `(Qty.of new (Qty.unit y))` builds
+  another quantity in `y`'s unit without re-spelling it. It IS a unit expression (reduces via
+  `eval::unit_of`, reading `q`'s solved `Ty::Qty` for its unit — the eval→infer direction), so it flows
+  through the unit-reading path like `(Unit.base …)`, erases before emission, and the reconstructed
+  quantity is dimensionally checked in full. Carries a DERIVED unit (a velocity quotient), not only an
+  atomic base. The value-level companion of `Type.of` (which gives the whole type for annotations); a
+  non-quantity argument declines.
 - The base-dimension NAME in Layer 1: since Symbols don't exist yet, Layer 1 names a base dimension by
   a **string** carried in the `(Unit.base #"metre")` position. ⚠ The corpus WRITES `#"metre"` (a symbol
   literal). See §6 for how Layer 1 handles this without a full Symbol type.

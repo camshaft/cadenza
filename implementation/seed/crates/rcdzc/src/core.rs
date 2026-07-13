@@ -471,6 +471,8 @@ pub enum Core {
     /// variant's discriminant:
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
+    //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed
+    //# A value of a sum type MUST be constructed through one of its variants.
     SumNew { disc: u32, payloads: Vec<StructId> },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf
@@ -484,6 +486,10 @@ pub enum Core {
     /// because a sum walks the heap handle — the discriminant, not a scalar value, drives the dispatch. A
     /// payload binder in an arm body is NOT carried here: it resolves to a `SumPayload` independently (a
     /// reference reads `sum-payload` at the binder's path), so an arm needs only its discriminant + cont.
+    /// A sum value is deconstructed ONLY through this match form, which the exhaustiveness rule governs
+    /// (a match not covering the scrutinee's variant set is a CDZ0210 compile-time rejection):
+    //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed
+    //# A value of a sum type MUST be deconstructed only through a match that the exhaustiveness rule governs.
     MatchSum {
         scrutinee: StructId,
         /// The ROOT continuation of the decision tree. Normally a [`SumCont::Switch`] on the scrutinee's

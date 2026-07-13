@@ -6844,6 +6844,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::QtyOf
         | Prim::QtyValue
         | Prim::QtyPow
+        | Prim::QtyUnit
         | Prim::QtyCtor
         | Prim::TypeOf
         | Prim::TypeEq
@@ -7863,6 +7864,25 @@ pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool 
     }) else {
         return false;
     };
+    // CLEAR-LOW-BITS IDIOM: `(v >> k) << k` — a right shift by `k` then a left shift by the SAME `k` — just
+    // CLEARS the low `k` bits of `v`, so the result `floor(v / 2^k) * 2^k` NEVER leaves `v`'s type, for
+    // BOTH shift kinds. Signed (`>>ₛ`, floor toward −∞): `MIN` is a multiple of `2^k` (k ≤ 63), so the
+    // rounded-down value stays ≥ `MIN` and ≤ 0 ≤ `MAX`. Unsigned (`>>ᵤ`): `q·2^k ≤ v`, stays in `[0, max]`.
+    // The INTERVAL analysis below cannot prove this — a signed `v >>ₛ k` over a full-range `v` has no
+    // finite range, so `closed_range` returns the type bounds and `[MIN<<k, MAX<<k]` spuriously overflows.
+    // This structural recognizer sees the correlation the intervals lose. `val`'s type IS `v`'s type
+    // (`>>` preserves width), so the fit is against the right bounds. The inner count must be the SAME
+    // constant `k`.
+    if let Core::Arith {
+        op: Prim::Shr,
+        rhs: inner_count,
+        ..
+    } = core_of(db, val)
+        && let Core::ConstInt(ic) = core_of(db, inner_count)
+        && ic.to_i64() == Some(k as i64)
+    {
+        return true;
+    }
     let Some((vlo, vhi)) = closed_range(db, val) else {
         return false;
     };
@@ -10398,6 +10418,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
         Prim::QtyPow => "qty-pow",
+        Prim::QtyUnit => "qty-unit",
         Prim::QtyCtor => "Qty",
         Prim::TypeOf => "type-of",
         Prim::TypeEq => "type-eq",

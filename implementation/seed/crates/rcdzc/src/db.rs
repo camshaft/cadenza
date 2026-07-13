@@ -1629,6 +1629,12 @@ fn build_scope_skip(
     let n = ast.structure.len();
     let mut skip: Vec<Option<(StructId, StructId)>> = vec![None; n];
     let mut done = vec![false; n];
+    // MEMO of `is_binding_candidate(p)` per node — it is queried with the PARENT `p` once per CHILD of
+    // `p`, so a wide parent (a `(do …)` block or a big `(record …)`/apply with N children) asked the same
+    // question N times. `is_binding_candidate` is O(1) for most forms BUT O(children) for a `(do …)` (it
+    // scans the block's forms for a `def`/`module`), so the repeat made a wide `do` O(N²). Caching the
+    // per-parent verdict (a pure function of the node) collapses it to O(N) total. `None` = not yet asked.
+    let mut cand: Vec<Option<bool>> = vec![None; n];
     // A reusable stack of nodes whose entry is not yet computed, pushed child→ancestor until a resolved
     // (or root) node, then filled on the way back down.
     let mut stack: Vec<StructId> = Vec::new();
@@ -1654,7 +1660,16 @@ fn build_scope_skip(
         while let Some(node) = stack.pop() {
             let entry = match parent[node.0 as usize] {
                 Some(p) => {
-                    if is_binding_candidate(ast, parent, module_records, p) {
+                    // Memoized per-parent verdict (see `cand`): the same `p` is asked once per child.
+                    let is_cand = match cand[p.0 as usize] {
+                        Some(v) => v,
+                        None => {
+                            let v = is_binding_candidate(ast, parent, module_records, p);
+                            cand[p.0 as usize] = Some(v);
+                            v
+                        }
+                    };
+                    if is_cand {
                         Some((p, node)) // parent is the nearest candidate; enter it through `node`
                     } else {
                         skip[p.0 as usize] // inherit parent's candidate + its entry child

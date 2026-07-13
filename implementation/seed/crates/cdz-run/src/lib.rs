@@ -227,15 +227,33 @@ fn run_export(
         .instantiate(&mut *store, component)
         .map_err(|e| anyhow!("instantiate: {e}"))?;
 
+    // Whether `name` (or its kebab-normalized form) resolves to a TOP-LEVEL bare component func. Shared by
+    // the escape/closure dispatch below: a `--call <name>` that names a real bare func takes the plain path;
+    // a name that does NOT (a compound/closure result carries no bare func under that name) routes to the
+    // resource/closure escape instead.
+    let names_a_top_level_func = |store: &mut Store<()>, name: &str| -> bool {
+        instance.get_func(&mut *store, name).is_some() || {
+            let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
+            kebab != name && instance.get_func(&mut *store, &kebab).is_some()
+        }
+    };
+
     // The RESOURCE ESCAPE (`DESIGN-value-heap-rcdzc.md` §3a): a program whose result is a COMPOUND
     // exports no bare function — it publishes a `cadenza:run/run` instance carrying `make : () -> own<t>`
     // + `encode : (own<t>) -> list<u8>`. Call `make` then `encode`, DECODE the canonical binary value
     // form with the shared codec, and pretty-print `(: value type)` — the value crossing the boundary as
-    // a strongly-typed resource, rendered by the host (not spelled out in wasm). Taken when no explicit
-    // `--call` names a bare function.
-    if opts.export.is_none()
+    // a strongly-typed resource, rendered by the host (not spelled out in wasm). Taken when the run instance
+    // is present AND the named export (if any) is NOT a top-level bare func — a compound export carries no
+    // bare func under its name, so `(call greet)` on a `String`-returning `greet` routes here (the escape
+    // has ONE compound result; its make/encode take no export name). No `--call` (the corpus's nullary
+    // `main`) also routes here.
+    if has_run_instance(engine, component)
         && sole_func_export(engine, component).is_none()
-        && has_run_instance(engine, component)
+        && opts
+            .export
+            .as_deref()
+            .map(|name| !names_a_top_level_func(&mut *store, name))
+            .unwrap_or(true)
     {
         return run_resource_escape(&mut *store, &instance);
     }
@@ -247,14 +265,7 @@ fn run_export(
     // (so the args are the closure's arguments). A MIXED program (a closure export ALONGSIDE a plain export)
     // has BOTH the closure interface and top-level funcs — `--call <plain>` resolves as a bare func and
     // falls through to the plain path below; `--call <closure>` (or no `--call`, the corpus's `main`) has no
-    // top-level func and routes here. Resolve the name through the kebab rule so a camelCase PLAIN export is
-    // still recognized as a bare func (not misrouted to the closure path).
-    let names_a_top_level_func = |store: &mut Store<()>, name: &str| -> bool {
-        instance.get_func(&mut *store, name).is_some() || {
-            let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
-            kebab != name && instance.get_func(&mut *store, &kebab).is_some()
-        }
-    };
+    // top-level func and routes here.
     if has_closure_instance(engine, component)
         && opts
             .export
