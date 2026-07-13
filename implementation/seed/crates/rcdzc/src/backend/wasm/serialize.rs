@@ -1413,6 +1413,22 @@ pub fn multi_closure_resource_core_module(
         inner.push(op::CALL_INDIRECT);
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner); // table 0
+        // C-HOST-5: `call` took `own<t>` (the canonical ABI transferred ownership INTO it), so it owns the
+        // cell's last reference — RELEASE it now (`heap.drop(rep)`), after `call_indirect` has returned (the
+        // lifted body finished BORROWING the env for its captures). Balances `make`'s `arr-alloc`, so a
+        // closure make+call leaves NO live heap cell. `resource.rep` on a BORROWED self traps in wasmtime 37,
+        // so `call` keeps `own` and drops the rep itself rather than a `borrow<t>` + host-drop dtor
+        // ([[rcdzc-r1-resource-encode-linking-findings]]). The result R is already on the stack; `drop` takes
+        // the rep (a separate push) and returns nothing, leaving R on top.
+        inner.push(op::LOCAL_GET);
+        uleb128(cell_local as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(
+            *import_index
+                .get("drop")
+                .expect("drop imported for the closure-cell release") as u64,
+            &mut inner,
+        );
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);
@@ -1688,6 +1704,22 @@ pub fn roundtrip_resource_core_module(
         }
         inner.push(op::CALL);
         uleb128(c.consume_abs as u64, &mut inner);
+        // C-HOST-5: each closure param crossed as `own<t>` (ownership transferred INTO the consumer), so
+        // the wrapper owns each handed-back cell's last reference — RELEASE each now (`heap.drop(rep)`),
+        // after the consumer BODY returned (it finished borrowing the cell for every `(g x)` application,
+        // including a body that applies the closure more than once). The body's result R is on the stack;
+        // each `drop` takes a rep (a separate push) and returns nothing, leaving R on top.
+        for (_, cell) in cell_of.iter() {
+            inner.push(op::LOCAL_GET);
+            uleb128(*cell as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(
+                *import_index
+                    .get("drop")
+                    .expect("drop imported for the closure-cell release") as u64,
+                &mut inner,
+            );
+        }
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);

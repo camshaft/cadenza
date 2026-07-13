@@ -625,6 +625,20 @@ pub struct Db {
     /// discharged ops + their arm occurrences — NOT `format!("{:?}", body)`); the value is the `db.defs`
     /// index of the synthesized specialization, so the same call under the same context reuses one def.
     pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
+
+    /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
+    /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
+    /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
+    /// Pushed when emit enters the `then`/`else` of an `if` whose condition compares a variable against a
+    /// constant (`(< n 2)` refines `n` to `[MIN, 1]` in the then-branch, `[2, MAX]` in the else), popped
+    /// on exit. `value_range` consults the TOP frame so a guard-elision check (`arith_provably_in_range`,
+    /// etc.) sees the branch-narrowed range — eliding the dead underflow guard on `(- n 1)` inside `(> n
+    /// 0)`. EMIT-ONLY and NOT memoized: `value_range`/the guard fns are recomputed per call (never cached),
+    /// so a transient refinement can never poison a query result; the const-fold callers in `lower` run
+    /// with this EMPTY (no branch context), so their behavior is unchanged. A frame is the FULL set of
+    /// refinements in scope (each `if` merges its parent's frame with its own), so `value_range` reads
+    /// only `last()`.
+    pub(crate) range_refinements: Vec<crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>>,
 }
 
 impl Db {
@@ -774,6 +788,7 @@ impl Db {
             types: Column::new(),
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
+            range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
         // underlying structural type. `decode_ty` consults this to normalize a `Ty::Sum` naming an
@@ -799,6 +814,43 @@ impl Db {
         }
         self.reduce_depth += 1;
         Some(ReductionGuard { db: self })
+    }
+
+    /// Push a flow-sensitive refinement FRAME for a control-flow branch being emitted (see
+    /// [`range_refinements`]). The caller MUST call [`pop_range_refinements`] on every exit path — the
+    /// emit `if` arm brackets a branch's emission with a push/emit/pop so an early `?` return still pops.
+    /// A frame is the FULL in-scope set (the caller merges the parent frame in), so lookups read only the
+    /// top. An empty `frame` is still pushed (so the pop count matches) — it simply refines nothing.
+    ///
+    /// [`range_refinements`]: Db::range_refinements
+    /// [`pop_range_refinements`]: Db::pop_range_refinements
+    pub(crate) fn push_range_refinements(
+        &mut self,
+        frame: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
+    ) {
+        self.range_refinements.push(frame);
+    }
+
+    /// Pop the current refinement frame (pairs with [`push_range_refinements`]).
+    ///
+    /// [`push_range_refinements`]: Db::push_range_refinements
+    pub(crate) fn pop_range_refinements(&mut self) {
+        self.range_refinements.pop();
+    }
+
+    /// The flow-sensitive refined range for the binder `b` in the CURRENT branch, if any — the top
+    /// refinement frame's entry. `None` when no branch context is active (the const-fold callers) or the
+    /// binder is not refined here, so the caller falls back to the declared-type / arith range.
+    pub(crate) fn refined_range(&self, b: StructId) -> Option<(i64, Option<i64>)> {
+        self.range_refinements.last()?.get(&b).copied()
+    }
+
+    /// The current (top) refinement frame, or an empty map — so the `if` emit can clone it as the base a
+    /// child branch extends (each branch's frame = parent's refinements ∪ this branch's).
+    pub(crate) fn current_refinements(
+        &self,
+    ) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+        self.range_refinements.last().cloned().unwrap_or_default()
     }
 
     /// The occurrence a previously-built constructor value was cached at, if any — the evaluator
