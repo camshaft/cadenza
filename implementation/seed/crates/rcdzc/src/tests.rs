@@ -21049,7 +21049,16 @@ mod stage1 {
             body = format!("(f {body})");
         }
         let src = format!("(module m (def (f n) (+ n 1)) (def (main) {body}) (export main))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        // Compile through the SAME host-stack guard the `rcdzc`/`cdz` bin uses (`host.rs`: "the bin AND
+        // the deep-input test both go through it"). The recursive-descent compile (fold/lower/fault-walk)
+        // recurses ~per nesting level; a depth-25 chain can exceed a default `cargo test` worker's ≈2 MB
+        // stack and SIGABRT the whole lib-test binary (a HARD abort, not a `#[should_panic]`-catchable
+        // failure) on a build whose per-frame cost sits near the edge. `run_with_compiler_stack` sizes the
+        // stack from `DESCENT_DEPTH_LIMIT`, so the depth guard — not the native stack — bounds it, exactly
+        // as at the bin. (Sibling `a_pathologically_deep_expression_declines_not_crashes` already does this.)
+        let bytes = crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
+        });
         assert_eq!(
             run_returns::<i64>(&bytes, "main"),
             25,
@@ -21063,7 +21072,11 @@ mod stage1 {
             body = format!("(g {body})");
         }
         let src = format!("(module m (def (g n) (+ n n)) (def (main) {body}) (export main))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        // Same host-stack guard as the single-use chain above — a parameter-duplicating chain nests just
+        // as deep, so it must not rely on the default test stack either.
+        let bytes = crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
+        });
         assert_eq!(
             run_returns::<i64>(&bytes, "main"),
             4096,
