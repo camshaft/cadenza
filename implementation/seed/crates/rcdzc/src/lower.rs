@@ -557,6 +557,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             lc => match core_of(db, rhs) {
                 Core::ConstBool(rb) if rb == is_and => lc, // and-true / or-false → p (neutral, keeps p)
                 Core::ConstBool(_) if is_trap_free(db, lhs) => Core::ConstBool(!is_and), // absorbing
+                // IDEMPOTENCE: `(and a a)` → `a` and `(or a a)` → `a` — a boolean combined with itself is
+                // itself. The two operands are the SAME value (`core_equiv`), so the result is `a`. `lhs` is
+                // the short-circuit condition, ALWAYS evaluated (and evaluated ONCE by returning its core),
+                // so `a`'s own effects/traps are preserved regardless of the fold — no `is_trap_free` guard
+                // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
+                // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
+                _ if core_equiv(db, lhs, rhs) => lc,
                 _ => Core::And { lhs, rhs, is_and },
             },
         },

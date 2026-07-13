@@ -14765,6 +14765,70 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_with_identical_operands_folds_to_the_operand() {
+        // IDEMPOTENCE for the boolean short-circuit connectives: `(and a a)` → `a` and `(or a a)` → `a` (the
+        // sibling of the bitwise `(& a a)`/`(| a a)` fold). `a` is the short-circuit condition, always
+        // evaluated once, so the fold KEEPS its effects/traps — the redundant re-evaluation is dropped.
+        // Pins the fold at the Lir level (no `i32.and`/`i32.or`) AND value/trap parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let connectives = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I32And | Lir::I32Or)).count();
+        // `(and a a)` / `(or a a)` → just `a` (no connective op).
+        assert_eq!(connectives(&lir("(: a Bool)", "(: (and a a) Bool)")), 0, "and a a → a");
+        assert_eq!(connectives(&lir("(: a Bool)", "(: (or a a) Bool)")), 0, "or a a → a");
+        // A repeated COMPARISON operand also folds: `(and (< x 5) (< x 5))` → `(< x 5)`.
+        assert_eq!(connectives(&lir("(: x Int64)", "(: (and (< x 5) (< x 5)) Bool)")), 0, "and (<x5)(<x5) → (<x5)");
+        // DISTINCT operands do NOT fold — the connective (an `i32.and` or a short-circuit `if`) stays.
+        let distinct = lir("(: a Bool) (: b Bool)", "(: (and a b) Bool)");
+        assert!(
+            distinct.iter().any(|i| matches!(i, Lir::I32And | Lir::If(_))),
+            "distinct (and a b) is not folded, got: {distinct:?}"
+        );
+
+        // VALUE PARITY.
+        use wasmtime::component::Val;
+        let fb = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+            "(module m (def (f (: a Bool)) {body}) (export f))"
+        )))).expect("compile");
+        for (body, wt, wf) in [("(and a a)", true, false), ("(or a a)", true, false)] {
+            let b = fb(body);
+            assert_eq!(run_returns_with::<bool>(&b, "f", &[Val::Bool(true)]), wt, "{body} @true");
+            assert_eq!(run_returns_with::<bool>(&b, "f", &[Val::Bool(false)]), wf, "{body} @false");
+        }
+        // TRAP SAFETY: a repeated trapping operand is still evaluated once (as the condition), so it traps.
+        let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (> (/ 10 n) 0)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&gb, "f", &[Val::S64(0)]), "(and <traps> <traps>) keeps the div-by-zero trap");
+        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 1);
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
