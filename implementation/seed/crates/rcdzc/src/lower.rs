@@ -21,7 +21,7 @@ use crate::arena::Slot;
 use crate::ast::{IntValue, StructId};
 use crate::core::Core;
 use crate::db::Db;
-use crate::diag::{Code, Reject};
+use crate::diag::{Code, Fix, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved};
 use tracing::trace;
@@ -757,6 +757,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // constant integer to a `Core::ConstFloat` at the target width, else emit a runtime
                 // `f{64,32}.convert_i64_s`.
                 Some(Prim::FloatOfInt) => lower_float_of_int(db, id, &args),
+                // `Float64.of` / `Float32.of` — the explicit FLOAT-WIDTH conversion. Fold a constant
+                // float (round at the target width), else emit a runtime demote/promote.
+                Some(Prim::FloatOf) => lower_float_of(db, id, &args),
                 // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
                 // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
                 // declines (as the comparison prims do).
@@ -923,6 +926,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         )),
                     }
                 }
+                // `Char.to-int` — the TOTAL scalar-value read `Char → Int64`. FOLD a constant char to a
+                // `Core::ConstInt` of its Unicode scalar value (`c as u32`). A runtime char has no machine
+                // rep this increment, so a non-constant operand declines.
+                Some(Prim::CharToInt) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstChar(c) => {
+                        trace!(target: "rcdzc::fold", node = id.0, "Char.to-int folds to the scalar value");
+                        Core::ConstInt(IntValue::from_i64(c as u32 as i64))
+                    }
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Char.to-int on a runtime char is not yet computed (constant chars only)",
+                    )),
+                },
+                // `Char.from-int` — the FALLIBLE conversion `Int64 → (Option Char)`. FOLD a constant int
+                // to `(Some #\c)` when it is a Unicode scalar value, `(None unit)` for a surrogate /
+                // out-of-range integer (`collections-and-text.md` §A Char Converts To And From An Integer
+                // Totally). Never traps.
+                Some(Prim::CharFromInt) if args.len() == 1 => lower_char_from_int(db, id, args[0]),
                 // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
@@ -2186,6 +2207,75 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// The CDZ0210 non-exhaustive-sum-match rejection, enriched with the MISSING variants and a structural
+/// "add the missing arms" fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+/// Fix — the match analogue of rustc's `error[E0004]: … patterns not covered` + its "add arms"
+/// suggestion). `decl` is the scrutinee sum's declaration occurrence; `tested` the discriminants the
+/// arms already cover; `scrutinee` the match's scrutinee node (its parent IS the `(match …)` form the
+/// insert targets). The fix is Heuristic — the arm SHAPES cover the gap (applying makes the match
+/// exhaustive), but their BODIES are `unit` placeholders the author fills.
+fn non_exhaustive_sum_reject(
+    db: &Db,
+    decl: StructId,
+    tested: &[u32],
+    scrutinee: StructId,
+) -> Reject {
+    let generic = "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)";
+    let Some(t) = db.type_decl_by_occ(decl) else {
+        return Reject::coded(Code::NonExhaustive, generic);
+    };
+    // The variants whose discriminant no arm tested, in declaration order (a deterministic list).
+    let missing: Vec<&crate::db::Variant> = t
+        .variants
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !tested.contains(&(*i as u32)))
+        .map(|(_, v)| v)
+        .collect();
+    if missing.is_empty() {
+        return Reject::coded(Code::NonExhaustive, generic);
+    }
+    // Name the missing variants in the message (rustc "patterns `X` and `Y` not covered").
+    let names: Vec<String> = missing.iter().map(|v| format!("`{}`", v.name)).collect();
+    let message = format!(
+        "non-exhaustive match: pattern{} {} not covered",
+        if missing.len() == 1 { "" } else { "s" },
+        join_and(&names),
+    );
+    // One arm per missing variant. A nullary variant → `(Name unit)`; a payload variant → bind each
+    // payload with a fresh `_`-prefixed name so the arm is well-formed AND does not itself warn unused:
+    // `((Some _p0) unit)`. The body is `unit` (a placeholder the author replaces).
+    let arms: Vec<String> = missing
+        .iter()
+        .map(|v| {
+            if v.payloads.is_empty() {
+                format!("({} unit)", v.name)
+            } else {
+                let binders: Vec<String> =
+                    (0..v.payloads.len()).map(|i| format!("_p{i}")).collect();
+                format!("(({} {}) unit)", v.name, binders.join(" "))
+            }
+        })
+        .collect();
+    // The `(match …)` form is the scrutinee's parent — the list the arms append into.
+    match db.parent_of(scrutinee) {
+        Some(match_form) => Reject::coded(Code::NonExhaustive, message)
+            .with_fix(Fix::insert_arms_heuristic(match_form, arms)),
+        None => Reject::coded(Code::NonExhaustive, message),
+    }
+}
+
+/// Join names as `a`, `a and b`, or `a, b, and c` — the English list a "not covered" message reads
+/// naturally with (matching rustc's phrasing).
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 /// The discriminant of the variant named `name` in the sum `ty`, or `None` if `ty` is not a sum or has
 /// no such variant. This is what distinguishes a bare NULLARY-VARIANT pattern (`None` against `Option`)
 /// from a binder (`x`) — the name is looked up in the scrutinee sum's own declaration (occurrence-keyed,
@@ -2420,6 +2510,14 @@ fn build_tree(
     // the TYPE's variant set, independent of `known_disc` (see above).
     let has_default = !default_rows.is_empty();
     if !has_default && tested.len() < variant_count {
+        // Name the missing variants + carry an "add the missing arms" fix — but ONLY at the ROOT switch
+        // (`switch_path` empty): there the missing-variant arms append directly to the `(match …)` form
+        // and are well-formed top-level patterns. A NESTED non-exhaustive (a gap inside a payload
+        // pattern) would need arms shaped to the nesting, which the flat append cannot express, so it
+        // keeps the enriched message but no fix (the `db.parent_of(scrutinee)` there is not the match).
+        if switch_path.is_empty() {
+            return Err(non_exhaustive_sum_reject(db, decl, &tested, scrutinee));
+        }
         return Err(Reject::coded(
             Code::NonExhaustive,
             "a sum match must cover every variant or end in a wildcard `_` (non-exhaustive)",
@@ -3705,6 +3803,9 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
         Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s))),
+        // A constant char bakes as its `#\c` leaf — the codec encodes it (KIND_CHAR), and the host reader
+        // renders it `#\c`. This lets a constant `(Some #\a)` (a `Char.from-int` fold) cross the boundary.
+        Core::ConstChar(c) => Some(b.atom_leaf(Leaf::Char(c))),
         Core::Unit => Some(b.name("unit")),
         Core::Tuple { elems } => {
             let head = b.name("tuple");
@@ -3734,6 +3835,37 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             let mut children = vec![head];
             for e in elems {
                 children.push(const_value_ast(db, b, e)?);
+            }
+            Some(b.list(children))
+        }
+        // A CONSTANT map value — `(map (k1 v1) (k2 v2) …)` — its entries rendered in CANONICAL KEY ORDER
+        // (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order), independent of
+        // insertion order and DISTINGUISHABLE from a record (`map` head, `(key value)` pairs). The
+        // constant map already has each key at most once (the `Map.insert` fold replaced by key value);
+        // sort the entries by their canonical KEY order (`const_key_order`), then render each pair. A
+        // non-constant key/value makes an entry non-constant → `None`, declining the escape (a genuinely
+        // runtime map's escape is the deferred looping walker). This is the constant-escape (R1) companion
+        // of the map value — a fully-constant map crosses by baked bytes here.
+        Core::MapNew { entries, .. } => {
+            let mut sorted: Vec<(StructId, StructId)> = entries.clone();
+            // Sort by canonical key order. A key that is not orderable-as-a-constant declines the whole
+            // escape (the runtime walker path is deferred), so a failed comparison bails to `None`.
+            let mut orderable = true;
+            sorted.sort_by(|a, b| {
+                const_key_order(db, a.0, b.0).unwrap_or_else(|| {
+                    orderable = false;
+                    std::cmp::Ordering::Equal
+                })
+            });
+            if !orderable {
+                return None;
+            }
+            let head = b.name("map");
+            let mut children = vec![head];
+            for (k, v) in sorted {
+                let kv = const_value_ast(db, b, k)?;
+                let vv = const_value_ast(db, b, v)?;
+                children.push(b.list(vec![kv, vv]));
             }
             Some(b.list(children))
         }
@@ -4171,6 +4303,53 @@ fn lower_float_of_int(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     }
 }
 
+/// Lower a `Float64.of` / `Float32.of` — the TOTAL float-WIDTH conversion `Float M → (Float N)` (promote
+/// / demote / identity). FOLD a constant float by rounding the exact `Decimal` at the TARGET width
+/// (this node's solved `Ty::Float`): a same-width or widening conversion is exact, a narrowing rounds to
+/// nearest under the fixed mode. A runtime float emits `Core::Convert{op:FloatOf}` (select →
+/// demote/promote/nothing). Total — a float always has an image at another float width.
+fn lower_float_of(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
+    if args.len() != 1 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "of takes exactly 1 operand".to_string(),
+        ));
+    }
+    let width = match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Float(ft) => ft.ground_width(),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "a float conversion target is not a definite float type",
+            ));
+        }
+    };
+    match core_of(db, args[0]) {
+        Core::Poison(r) => Core::Poison(r),
+        Core::ConstFloat(d) => {
+            // Round the exact source value to the target width: `as f32 as f64` for a Float32 target
+            // (narrowing rounds to nearest binary32), the f64 value unchanged for a Float64 target
+            // (a promote/identity is exact). Rounding once at the target width matches the runtime op.
+            let src = f64::from_bits(d.to_f64_bits());
+            let rounded = if width == 32 { src as f32 as f64 } else { src };
+            match crate::ast::Decimal::from_f64(rounded) {
+                Some(nd) => {
+                    trace!(target: "rcdzc::lower", width, "folded constant float-width conversion");
+                    Core::ConstFloat(nd)
+                }
+                None => Core::Poison(Reject::decline(
+                    "a float conversion whose result is not finite has no value form",
+                )),
+            }
+        }
+        // A runtime float operand — emit the machine demote/promote at selection (source + target widths
+        // read off the solved types there). Total, no guard.
+        _ => Core::Convert {
+            op: Prim::FloatOf,
+            operand: args[0],
+        },
+    }
+}
+
 /// Apply a SAFE algebraic identity to a runtime arithmetic op with ONE constant operand, returning the
 /// simplified core (the runtime operand's own core, or a constant) — or `None` when no identity applies
 /// and the op stays a runtime `Arith`. `lc`/`rc` are the already-lowered operand cores; `lhs`/`rhs`
@@ -4451,6 +4630,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FDiv
         | Prim::FloatCtor
         | Prim::FloatOfInt
+        | Prim::FloatOf
         | Prim::MapCtor
         | Prim::MapNew
         | Prim::MapEmpty
@@ -4459,7 +4639,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapRemove
         | Prim::MapSize
         | Prim::MapSwap
-        | Prim::MapTake => {
+        | Prim::MapTake
+        | Prim::CharTy
+        | Prim::CharToInt
+        | Prim::CharFromInt => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -4809,6 +4992,25 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
     }
 }
 
+/// The CANONICAL KEY ORDER between two CONSTANT map keys `a`/`b` — the deterministic order a map's
+/// entries render in (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order). The
+/// compiler owns the sort (the runtime iterates hash order; the canonical form sorts by the key's value).
+/// Scalar keys order by VALUE: an integer by numeric value, a string lexicographically, a bool false<true,
+/// unit is a singleton. `None` when a key is not a compile-time-orderable constant (a nested compound key,
+/// or a runtime key) — the caller then declines the constant escape (the runtime walker is deferred).
+fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Ordering> {
+    match (core_of(db, a), core_of(db, b)) {
+        // Compare by numeric value. `to_i64` covers the ≤64-bit keys the corpus uses; a wider key
+        // declines the constant sort (deferred to the runtime walker).
+        (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
+        (Core::ConstStr(x), Core::ConstStr(y)) => Some(x.cmp(&y)),
+        (Core::ConstBool(x), Core::ConstBool(y)) => Some(x.cmp(&y)),
+        (Core::Unit, Core::Unit) => Some(std::cmp::Ordering::Equal),
+        // A nested-compound or runtime key has no compile-time canonical order here — decline.
+        _ => None,
+    }
+}
+
 /// Whether the operand at `id` has a type the runtime `value-eq` heap walk (`champ_eq`) compares
 /// CORRECTLY — a compound whose leaves are all SCALAR (Int/Bool/Unit), reached through tuples, records,
 /// and sum variants. Such a value is CANONICAL BY CONSTRUCTION: it holds no embedded RRB vector, CHAMP
@@ -4884,14 +5086,23 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             seen.pop();
             ok
         }
+        // A MAP handle is CANONICAL by construction (the runtime CHAMP is order-independent — equal maps
+        // are byte-identical under `champ_eq`/`champ_hash`), so two runtime maps compare correctly by the
+        // `value-eq` structural walk — walkable iff its KEY and VALUE types are themselves walkable (their
+        // canonical forms are stable). This is what makes map equality independent of insertion order AND
+        // independent of const-fold-vs-runtime construction (both build the same canonical CHAMP handle),
+        // and makes two maps with different key SETS compare `false` (well-typed, same `Map<K,V>` type) —
+        // NOT a rejection. A key/value whose canonical form needs machinery not yet emitted (Bytes rope,
+        // String, a nested collection) makes the map decline, deferring to that increment.
+        Ty::Map(k, v) => {
+            let (k, v) = ((**k).clone(), (**v).clone());
+            ty_heap_walkable(db, &k, seen) && ty_heap_walkable(db, &v, seen)
+        }
         // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
         // here (its canonical form needs machinery this increment does not emit, or it is not a runtime
         // value that reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at
         // run time). A `Char` has no runtime machine rep yet (its equality folds at compile time).
-        // NOTE: a `Ty::Map` handle IS canonical by construction (CHAMP), so map equality is wired directly
-        // (M3) via the top-level `=` → `value-eq` path, not through this compound-leaf walkability gate.
         Ty::List(_)
-        | Ty::Map(_, _)
         | Ty::Bytes
         | Ty::String
         | Ty::Char
@@ -5036,12 +5247,64 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
             "Map.insert result is not a solved map type",
         ));
     };
+    // FOLD onto a compile-time-visible constant map when the KEY is a constant (its value need not be —
+    // the value occurrence carries over regardless, exactly as `List.push` folds onto a constant list).
+    // Add-or-REPLACE by key VALUE: an existing entry whose key is `const_compound_eq` to the new key has
+    // its value replaced IN PLACE (preserving position — the each-key-at-most-once rule); otherwise the
+    // entry is appended. The result is a constant `Core::MapNew` that bakes at escape / renders sorted /
+    // compares by `value-eq`, so a chain `(Map.insert (Map.insert Map.empty 2 20) 1 10)` folds to one
+    // canonical two-entry map. A runtime map operand or a runtime key stays a `Core::MapInsert` (the
+    // persistent CHAMP op). Keys compared by VALUE (`const_compound_eq`), so two names bound to the same
+    // value collapse here just as they do at run time.
+    if let (Core::MapNew { entries, .. }, true) = (core_of(db, map), is_const_value(db, key)) {
+        let mut merged = entries.clone();
+        let mut replaced = false;
+        for e in merged.iter_mut() {
+            if const_compound_eq(db, e.0, key) == Some(true) {
+                *e = (e.0, val); // replace the value at this key (keep the key occurrence + position)
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            merged.push((key, val));
+        }
+        trace!(target: "rcdzc::fold", node = id.0, entries = merged.len(), "Map.insert folds onto a constant map");
+        return Core::MapNew {
+            entries: merged,
+            key_ty,
+            val_ty,
+        };
+    }
     Core::MapInsert {
         map,
         key,
         val,
         key_ty,
         val_ty,
+    }
+}
+
+/// Whether the node at `id` lowers to a compile-time CONSTANT value — a constant scalar/string/float/
+/// unit, or a constant compound (`SumNew`/`Tuple`/`Record`/`ListNew`/`MapNew`) all of whose parts are
+/// constant. Used to decide whether a `Map.insert` key can fold (a constant key merges into a constant
+/// map; a runtime key keeps the persistent op). Mirrors the constant test `const_value_ast` performs.
+fn is_const_value(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstFloat(_)
+        | Core::Unit => true,
+        Core::Tuple { elems } | Core::ListNew { elems } => {
+            elems.iter().all(|&e| is_const_value(db, e))
+        }
+        Core::SumNew { payloads, .. } => payloads.iter().all(|&p| is_const_value(db, p)),
+        Core::Record { fields } => fields.values().all(|&v| is_const_value(db, v)),
+        Core::MapNew { entries, .. } => entries
+            .iter()
+            .all(|&(k, v)| is_const_value(db, k) && is_const_value(db, v)),
+        _ => false,
     }
 }
 
@@ -5101,6 +5364,53 @@ fn lower_map_remove(db: &mut Db, map: StructId, key: StructId) -> Core {
 /// result Option's Some/None discriminants, so it rides the ordinary sum fold/escape/match — no string
 /// heap. A runtime string declines (the byte-rope indexed read is a later increment). A poison
 /// operand propagates.
+/// Lower `(Char.from-int n)` — the FALLIBLE integer→char conversion `Int64 → (Option Char)`. FOLD a
+/// constant integer: a value that IS a Unicode scalar (in `0..=0x10FFFF`, not a surrogate `0xD800..=
+/// 0xDFFF`) → `(Some #\c)` (a fresh `Leaf::Char` payload, the shape `String.at` uses for its scalar);
+/// a surrogate / out-of-range integer → `(None unit)`. Never traps (`collections-and-text.md` §A Char
+/// Converts To And From An Integer Totally). A runtime operand declines (no runtime char rep yet); a
+/// poison propagates. `char::from_u32` performs the exact scalar-validity test.
+fn lower_char_from_int(db: &mut Db, id: StructId, n: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, n) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Char.from-int result is not the built-in Option sum",
+        ));
+    };
+    match core_of(db, n) {
+        Core::ConstInt(v) => {
+            // A scalar iff the value fits u32 AND `char::from_u32` accepts it (excludes surrogates and
+            // > U+10FFFF). A negative or > u32 value is trivially not a scalar → None.
+            let scalar = v
+                .to_i64()
+                .and_then(|i| u32::try_from(i).ok())
+                .and_then(char::from_u32);
+            match scalar {
+                Some(c) => {
+                    trace!(target: "rcdzc::fold", node = id.0, "Char.from-int folds to Some (a valid scalar)");
+                    let payload = db.push_atom(crate::ast::Leaf::Char(c));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "Char.from-int folds to None (surrogate / out-of-range)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        _ => Core::Poison(Reject::decline(
+            "Char.from-int on a runtime integer is not yet computed (constant integers only)",
+        )),
+    }
+}
+
 fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, string) {
         return Core::Poison(r);
@@ -6136,6 +6446,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
         Prim::StringTy => "String",
+        Prim::CharTy => "Char",
+        Prim::CharToInt => "char-to-int",
+        Prim::CharFromInt => "char-from-int",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
@@ -6172,6 +6485,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FDiv => "/.",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
+        Prim::FloatOf => "of",
         Prim::MapCtor => "Map",
         Prim::MapNew => "map-new",
         Prim::MapEmpty => "map-empty",

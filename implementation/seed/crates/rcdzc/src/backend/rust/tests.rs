@@ -902,4 +902,14 @@ fn rustc_roundtrip_float_arithmetic_and_of_int() {
     if let Some(out) = rustc_run(&ofint, "f(42)") {
         assert_eq!(out, "42");
     }
+    // `Float32.of` demotes (`as f32`, rounds); `Float64.of` promotes (`as f64`, exact). Rust's `{}`
+    // for the f32 result prints the shortest round-tripping decimal for the binary32 value.
+    let demote = compile_rust("(module m (def (f (: x Float64)) (Float32.of x)) (export f))");
+    if let Some(out) = rustc_run(&demote, "f(0.1)") {
+        assert_eq!(out, "0.1"); // Rust prints the f32 nearest to 0.1 as "0.1" (shortest round-trip)
+    }
+    let promote = compile_rust("(module m (def (f (: x Float32)) (Float64.of x)) (export f))");
+    if let Some(out) = rustc_run(&promote, "f(1.5)") {
+        assert_eq!(out, "1.5");
+    }
 }

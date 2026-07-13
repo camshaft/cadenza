@@ -641,6 +641,16 @@ impl FromVal for f64 {
     }
 }
 
+// A Float32 crosses as the component `f32` primitive — read back as an `f32` (bits-compared in tests).
+impl FromVal for f32 {
+    fn from_val(v: &wasmtime::component::Val) -> f32 {
+        match v {
+            wasmtime::component::Val::Float32(n) => *n,
+            other => panic!("expected Float32 result, got {other:?}"),
+        }
+    }
+}
+
 /// Instantiate `component_bytes` under wasmtime, call its nullary export `name`, and return the single
 /// result decoded to `T` — the "run the artifact" behavior check, generic over the boundary type.
 fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
@@ -1924,6 +1934,34 @@ fn float_of_int_converts_a_runtime_integer() {
         big.to_bits(),
         (9223372036854775807i64 as f64).to_bits(),
         "of-int Int64.max rounds to the nearest f64"
+    );
+}
+
+/// The explicit FLOAT-WIDTH conversion `Float N.of` over a RUNTIME float: `Float32.of` DEMOTES
+/// (`f32.demote_f64`, rounds), `Float64.of` PROMOTES (`f64.promote_f32`, exact). A constant folds; a
+/// runtime float emits the machine op. Run under wasmtime and compared BY BITS.
+#[test]
+fn float_of_converts_a_runtime_float_width() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Demote: 0.1 : Float64 → Float32 rounds to the nearest binary32 (the f32 bits, lifted back to f64
+    // at the boundary read as an f32 result).
+    let demote = "(module m (def (f (: x Float64)) (Float32.of x)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(demote))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Float64(0.1)]);
+    assert_eq!(
+        got.to_bits(),
+        (0.1f64 as f32).to_bits(),
+        "Float32.of 0.1 demotes to the nearest binary32"
+    );
+    // Promote: a Float32 → Float64 is exact.
+    let promote = "(module m (def (f (: x Float32)) (Float64.of x)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(promote))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::Float32(1.5f32)]);
+    assert_eq!(
+        got.to_bits(),
+        (1.5f32 as f64).to_bits(),
+        "Float64.of 1.5f32 promotes exactly"
     );
 }
 
@@ -4432,6 +4470,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_repeated_payload_binder_read_shares_and_computes_correctly() {
+        // A pattern binder used MORE THAN ONCE — `(Some x)` then `(+ x x)` — has its payload read shared
+        // by the CSE (core_eq's SumPayload arm), computing `sum-payload ; get-int` once. Confirm the VALUE
+        // is right end-to-end (the shared slot holds the same `x` for both operands): collect `2*x` over a
+        // counter — `go(Some 7, 4, 0)` = (7+7)*4 = 56.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (go (: o (Option Int64)) (: n Int64) (: acc Int64)) \
+                     (match o ((Some x) (if (= n 0) acc (go o (- n 1) (+ acc (+ x x))))) ((None) acc))) \
+                   (def (main) (go (Some 7) 4 0)) (export main))",
+                vec![],
+            )
+            .unwrap_or_else(|| "56".to_string()),
+            "56",
+            "a doubled payload binder shares one read and computes (7+7)*4"
+        );
+        // The same value with x used across DIFFERENT subexprs `(+ (* x 2) (* x 3))` = 5*x — the reads are
+        // still shared (same scrutinee+path), value unchanged by the sharing.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (go (: o (Option Int64)) (: n Int64) (: acc Int64)) \
+                     (match o ((Some x) (if (= n 0) acc (go o (- n 1) (+ acc (+ (* x 2) (* x 3)))))) ((None) acc))) \
+                   (def (main) (go (Some 4) 2 0)) (export main))",
+                vec![],
+            )
+            .unwrap_or_else(|| "40".to_string()),
+            "40",
+            "x used in two products shares its read; (4*2 + 4*3) over 2 steps = 40"
+        );
+    }
+
+    #[test]
     fn a_nested_multi_payload_variant_pattern_destructures() {
         // A NESTED multi-payload variant pattern `(Cons h (Cons h2 rest))` switches TWO levels deep — the
         // second `Cons` sits in the tail payload position `[Payload, Elem(1)]`, whose sub-value type is
@@ -4748,6 +4820,38 @@ mod match_engine {
             reject_code("(module m (def (main) #\\u+110000) (export main))").as_deref(),
             Some("CDZ0002")
         );
+    }
+
+    #[test]
+    fn char_converts_to_and_from_an_integer_scalar_totally() {
+        // 13-strings CHAR increment 2 (`collections-and-text.md` §A Char Converts To And From An Integer
+        // Totally): `Char.to-int` is TOTAL (every char has an integer code point); `Char.from-int` is
+        // FALLIBLE — `Some` for a Unicode scalar, `None` for a surrogate / out-of-range integer. Both
+        // FOLD on a constant operand. `to-int` returns an Int64; the round-trip through a `Some` arm
+        // returns a Bool — both observable as scalars.
+        let run_i = |src: &str| run_returns::<i64>(&component(src), "main");
+        let run_b = |src: &str| run_returns::<bool>(&component(src), "main");
+        // to-int: the scalar value of `a` is 97.
+        assert_eq!(
+            run_i("(module m (def (main) ((. Char to-int) #\\a)) (export main))"),
+            97
+        );
+        // round-trip: from-int 97 → Some #\a, and to-int of that char is 97 again.
+        assert!(run_b(
+            "(module m (def (main) (match ((. Char from-int) 97) ((Some c) (= ((. Char to-int) c) 97)) ((None _) false))) (export main))"
+        ));
+        // from-int of a SURROGATE (55296 = U+D800) → None → the match takes the None arm.
+        assert!(!run_b(
+            "(module m (def (main) (match ((. Char from-int) 55296) ((Some c) true) ((None _) false))) (export main))"
+        ));
+        // from-int of an OUT-OF-RANGE integer (1114112 = U+10FFFF+1) → None.
+        assert!(!run_b(
+            "(module m (def (main) (match ((. Char from-int) 1114112) ((Some c) true) ((None _) false))) (export main))"
+        ));
+        // from-int of the LAST scalar (U+10FFFF = 1114111) → Some (the boundary is inclusive).
+        assert!(run_b(
+            "(module m (def (main) (match ((. Char from-int) 1114111) ((Some c) true) ((None _) false))) (export main))"
+        ));
     }
 
     #[test]
@@ -6068,6 +6172,33 @@ mod match_engine {
         assert_eq!(
             out, "(: (list 1 2 3) (List Int64))",
             "folded-arg list escape"
+        );
+    }
+
+    #[test]
+    fn a_char_from_int_option_escapes_and_renders() {
+        // `Char.from-int` folds to a constant `(Option Char)` sum whose `Some` payload is a `ConstChar`;
+        // it crosses the host boundary through the resource-escape path (the sum bakes, its char payload
+        // as a `Leaf::Char`), and the host renders it `(Some #\a)` with the `(Option Char)` type node —
+        // the char value form is `#\c`. `None` renders `(None unit)`.
+        let Some(out) =
+            escape_render("(module m (def (main) ((. Char from-int) 97)) (export main))")
+        else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (Some #\\a) (Option Char))",
+            "Char.from-int Some escape"
+        );
+        let Some(out) =
+            escape_render("(module m (def (main) ((. Char from-int) 55296)) (export main))")
+        else {
+            return;
+        };
+        assert_eq!(
+            out, "(: (None unit) (Option Char))",
+            "Char.from-int None escape"
         );
     }
 
@@ -10238,6 +10369,44 @@ mod stage1 {
     }
 
     #[test]
+    fn comparing_distinct_same_shape_nominal_sums_is_a_nominal_boundary_error() {
+        // Comparing two values whose types are distinct NOMINAL sums of the SAME structural shape —
+        // `(= (A.Mk 1) (B.Mk 1))` for `(type A (Mk Int64))` / `(type B (Mk Int64))` — is a comparison
+        // across the nominal boundary (CDZ0202), NOT the `false` an untagged structural comparison gives
+        // (type-system.md §Nominal Types Are Not Comparable Across Their Boundary). Two sums of DIFFERENT
+        // shape (disjoint variants — `Option` vs `Result`) are unrelated types → the plain CDZ0203; the
+        // same sum compared to itself is well-typed (→ false).
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (def (main) 0) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Same-shape distinct sums → CDZ0202.
+        assert_eq!(
+            code("(type A (Mk Int64)) (type B (Mk Int64)) (def (c) (= (A.Mk 1) (B.Mk 1)))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
+        // Disjoint-variant sums (Option vs Result) → CDZ0203 (unrelated types, not a nominal boundary).
+        assert_eq!(
+            code("(def (c) (= (Some 1) (Ok 1)))").as_deref(),
+            Some("CDZ0203")
+        );
+        // A scalar-vs-Bool mismatch stays CDZ0203.
+        assert_eq!(code("(def (c) (= 1 true))").as_deref(), Some("CDZ0203"));
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
@@ -10748,6 +10917,27 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a host effect reached through a recursive callee must compile"
+        );
+    }
+
+    #[test]
+    fn an_intra_program_handler_interposes_on_a_delegated_effect_and_forwards() {
+        // E2h-interpose: the entrypoint delegates `ask` to the host, but an inner handler INTERCEPTS every
+        // `ask.ask`, records it via the intra-program `Count.tick`, and RE-PERFORMS `(ask.ask)` in tail
+        // position (forwarding). The arm body `(do (Count.tick) (resume (ask.ask) s))` is a
+        // do-wrapped resume — the perform arm peels the trailing resume, keeps the `Count.tick` statement
+        // (folded to the OUTER Count handler), and forwards the re-performed `ask.ask` to the host (a
+        // `Core::HostCall`, since no nearer handler discharges it). `(+ (ask.ask) (ask.ask))` with host
+        // responses 3,4 → 7 (2 observed ask.ask calls). The host is unbound in-process, so assert it
+        // COMPILES; the corpus gate runs the value + host-call sequence.
+        let src = "(do (effect ask (op ask (-> Unit Int64))) (effect Count (op tick (-> Unit Unit))) \
+                   (def (main) (host (ask) \
+                     (handle unit ((Count.tick (u) s (resume unit s))) \
+                       (handle unit ((ask.ask () s (do (Count.tick) (resume (ask.ask) s)))) \
+                         (+ (ask.ask) (ask.ask)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an interposing handler that forwards a delegated effect must compile"
         );
     }
 
@@ -11981,6 +12171,50 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_exhaustive_sum_match_names_the_missing_variants_and_offers_an_add_arms_fix() {
+        // The rustc-gold structural suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries
+        // A Route To A Fix): a non-exhaustive sum match NAMES the uncovered variant AND carries an
+        // INSERT fix that appends a covering arm to the `(match …)` form.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (f (: s Int64)) (match (Option.Some s) ((Option.Some x) x))) (export f))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("non-exhaustive must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0210"), "got: {}", err.message);
+        assert!(
+            err.message.contains("`None`") && err.message.contains("not covered"),
+            "names the missing variant: {}",
+            err.message
+        );
+        let fix = err.fix.expect("an add-arms fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto, "it INSERTS arms");
+        // `None` is nullary → the synthesized arm is `(None unit)`.
+        assert_eq!(fix.replacement, "(None unit)", "the covering arm");
+        assert!(!fix.verified, "the arm body is a placeholder → heuristic");
+    }
+
+    #[test]
+    fn a_non_exhaustive_match_synthesizes_payload_binders_and_lists_multiple_missing() {
+        // Two missing variants, one with a PAYLOAD: the fix synthesizes a `_`-prefixed binder per payload
+        // (`(Some _p0) unit`) so the arm is well-formed and does not itself warn unused, and the message
+        // lists both missing variants.
+        use crate::testkit::parse;
+        let src = "(module m (type T (A Int64) B C) \
+                     (def (f (: t T)) (match t ((A x) x))) (export f))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("non-exhaustive must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0210"), "got: {}", err.message);
+        assert!(
+            err.message.contains("`B`") && err.message.contains("`C`"),
+            "lists both missing: {}",
+            err.message
+        );
+        let fix = err.fix.expect("an add-arms fix is carried");
+        // B and C are nullary; the fix appends both arms, space-joined.
+        assert_eq!(fix.replacement, "(B unit) (C unit)", "both covering arms");
+    }
+
+    #[test]
     fn a_runtime_sum_match_dispatches_on_the_discriminant() {
         // The RUNTIME sum match, composed + run: a function builds a sum from a runtime param, matches
         // it, and returns a scalar. `(pick n)` builds `(Some n)` when n>0 else `None`, then matches:
@@ -12960,6 +13194,43 @@ mod stage1 {
         };
         assert_eq!(r, "18"); // 3·(3+2+1)
         assert_eq!(run_closure(src, 4).unwrap(), "30"); // 3·(4+3+2+1)
+    }
+
+    #[test]
+    fn a_runtime_closure_body_calls_a_recursive_top_level_function() {
+        // A lifted closure whose body drives an ordinary RECURSIVE CALL — `(fn (x) (fact x))` (passed to
+        // the recursive `ap`, so it cannot fold) invokes the recursive `fact`. The lifted body holds a
+        // `Core::Call` to `fact` nested inside a `call_indirect`ed closure — the canonical "map a recursive
+        // function over a structure" shape. `ap g 3` = fact(3)+fact(2)+fact(1) = 6+2+1 = 9.
+        let src = "(module m \
+            (def (fact (: m Int64)) (if (= m 0) 1 (* m (fact (- m 1))))) \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: x Int64)) (fact x)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "9"); // fact(3)+fact(2)+fact(1)
+        assert_eq!(run_closure(src, 5).unwrap(), "153"); // 120+24+6+2+1
+    }
+
+    #[test]
+    fn a_runtime_closure_compares_its_argument_to_a_captured_value() {
+        // A captured value drives a COMPARISON + BRANCH inside the lifted body: `(fn (x) (if (= x k) 1 0))`
+        // captures `k` and branches on `x == k`. Through the recursive `ap` with k=2 over 3,2,1, only x=2
+        // matches, so the sum is 1. (A different k selects a different element — k=3 → 1 at x=3.)
+        let src = "(module m \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: k Int64)) (ap (fn ((: x Int64)) (if (= x k) 1 0)) 3)) (export main))";
+        let Some(r) = run_closure(src, 2) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "1"); // only x=2 matches k=2
+        assert_eq!(run_closure(src, 3).unwrap(), "1"); // only x=3 matches k=3
+        assert_eq!(run_closure(src, 9).unwrap(), "0"); // none of 3,2,1 equal 9
     }
 
     #[test]

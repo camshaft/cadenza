@@ -604,6 +604,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let operand_s = emit(db, operand, env, ctx)?;
                 Ok(format!("({operand_s} as {rty})"))
             }
+            // A runtime float-WIDTH conversion `Float N.of` → an `as f64`/`as f32` cast: Rust's `as`
+            // between floats demotes with rounding (f64→f32) / promotes exactly (f32→f64) / is the
+            // identity (same width) — matching the wasm demote/promote. Target width is the node's type.
+            Prim::FloatOf => {
+                let rty = types::rust_type(&type_of(db, id)).ok_or_else(|| {
+                    Reject::decline("of target has no native Rust representation")
+                })?;
+                let operand_s = emit(db, operand, env, ctx)?;
+                Ok(format!("({operand_s} as {rty})"))
+            }
             _ => Err(Reject::decline("not a runtime conversion")),
         },
         // A boolean negation `!operand`.

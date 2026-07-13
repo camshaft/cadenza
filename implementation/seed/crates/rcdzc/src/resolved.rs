@@ -133,6 +133,16 @@ pub enum Prim {
     /// promotion — the conversion is always written (numeric-model.md §A Conversion Involving A
     /// Floating-Point Type Is Explicit).
     FloatOfInt,
+    /// `Float64.of` / `Float32.of` — the explicit FLOAT-WIDTH conversion `Float M → Float N` (the `(meta
+    /// apply)` of a float module's `of` field). `Float64.of` from a narrower float PROMOTES (widening,
+    /// exact, `f64.promote_f32`); `Float32.of` from a wider float DEMOTES (narrowing, rounds to nearest
+    /// under the fixed mode, `f32.demote_f64`); a same-width conversion is the identity. TARGET width =
+    /// the module's own (read off the solved `Ty::Float`); SOURCE = the operand's own float width. A
+    /// CONSTANT float FOLDS (round the exact `Decimal` at the target width); a runtime float emits the
+    /// demote/promote op. The float-width companion of the integer `T.of`, but TOTAL (a float always has
+    /// an image at another float width — no trap). No implicit promotion (numeric-model.md §A Conversion
+    /// Involving A Floating-Point Type Is Explicit).
+    FloatOf,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
     /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
@@ -153,6 +163,18 @@ pub enum Prim {
     /// String)` reduces `String` (the record) to `Ty::String` via `typeval_of`. (A NULLARY type, like
     /// `Bool`/`Unit`; the `String` module ALSO carries operation fields, but its type role is this.)
     StringTy,
+    /// The ground `Char` type-value — held in the `Char` module record's `(meta t)`, so bare `Char` in
+    /// type position reduces to `Ty::Char` (a NULLARY type, like `String`; the `Char` module also carries
+    /// `to-int`/`from-int` operation fields, but its type role is this).
+    CharTy,
+    /// `Char.to-int` — the TOTAL conversion of a char to its integer scalar value (`Char → Int64`,
+    /// `collections-and-text.md` §A Char Converts To And From An Integer Totally). Folds a constant char
+    /// to a `Core::ConstInt` of its code point.
+    CharToInt,
+    /// `Char.from-int` — the FALLIBLE conversion of an integer to a char (`Int64 → (Option Char)`): `Some`
+    /// for a value that is a Unicode scalar, `None` for a surrogate / out-of-range integer. Folds a
+    /// constant integer to `Some`/`None`.
+    CharFromInt,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -381,12 +403,16 @@ impl Prim {
             "UInt" => Some(Prim::UIntCtor),
             "Float" => Some(Prim::FloatCtor),
             "float-of-int" => Some(Prim::FloatOfInt),
+            "float-of" => Some(Prim::FloatOf),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),
             "Record" => Some(Prim::RecordCtor),
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             "String" => Some(Prim::StringTy),
+            "Char" => Some(Prim::CharTy),
+            "char-to-int" => Some(Prim::CharToInt),
+            "char-from-int" => Some(Prim::CharFromInt),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
@@ -489,6 +515,7 @@ impl Prim {
             Prim::UnitTy => Some(crate::ty::Ty::Unit),
             Prim::BytesTy => Some(crate::ty::Ty::Bytes),
             Prim::StringTy => Some(crate::ty::Ty::String),
+            Prim::CharTy => Some(crate::ty::Ty::Char),
             _ => None,
         }
     }

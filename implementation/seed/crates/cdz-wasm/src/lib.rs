@@ -44,13 +44,16 @@ pub struct Diagnostic {
     pub to: u32,
     /// A proposed structural repair (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
     /// A Fix), surfaced to the guide's quick-fix affordance. `fix_replacement` is empty when the
-    /// diagnostic carries no fix; otherwise it is the surface spelling to splice over `[fix_from,
-    /// fix_to)` (the target node's byte range, mapped from the fix's node id here). `fix_verified`
-    /// distinguishes a machine-applicable fix from a heuristic the user should confirm.
+    /// diagnostic carries no fix; otherwise it is the surface payload. `fix_insert` picks the operation:
+    /// `false` = REPLACE the `[fix_from, fix_to)` byte range with `fix_replacement`; `true` = INSERT
+    /// `fix_replacement` (rendered child forms — the missing match arms) just before the byte at
+    /// `fix_to` (the end of the target list, i.e. before its closing paren). `fix_verified` distinguishes
+    /// a machine-applicable fix from a heuristic the user should confirm.
     pub fix_replacement: String,
     pub fix_from: u32,
     pub fix_to: u32,
     pub fix_verified: bool,
+    pub fix_insert: bool,
 }
 
 /// The outcome of a compile: on success `component` holds the WebAssembly component bytes and
@@ -89,12 +92,13 @@ fn to_js_diag(
     let (from, to) = d.node.map(span_of).unwrap_or((0, 0));
     // Carry the structural fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
     // Fix) through to the guide's quick-fix affordance — its target node mapped to a byte range here.
-    let (fix_replacement, fix_from, fix_to, fix_verified) = match &d.fix {
+    let (fix_replacement, fix_from, fix_to, fix_verified, fix_insert) = match &d.fix {
         Some(f) => {
             let (ff, ft) = span_of(f.node);
-            (f.replacement.clone(), ff, ft, f.verified)
+            let insert = matches!(f.kind, rcdzc::FixKind::InsertInto);
+            (f.replacement.clone(), ff, ft, f.verified, insert)
         }
-        None => (String::new(), 0, 0, false),
+        None => (String::new(), 0, 0, false, false),
     };
     Diagnostic {
         error: d.severity == rcdzc::Severity::Error,
@@ -107,6 +111,7 @@ fn to_js_diag(
         fix_from,
         fix_to,
         fix_verified,
+        fix_insert,
     }
 }
 
@@ -185,6 +190,7 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
                     fix_from: 0,
                     fix_to: 0,
                     fix_verified: false,
+                    fix_insert: false,
                 }],
             });
         }
@@ -284,14 +290,15 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
                 fix_from: 0,
                 fix_to: 0,
                 fix_verified: false,
+                fix_insert: false,
             }]);
         }
     };
     // Ride the first-class `Diagnostics` sidecar query (the same one `cdz check` runs) — a total fault
     // read that needs no export. Its result is one fault per line, TAB-separated:
-    // `severity  code  node  fix-node  fix-replacement  fix-verified  message` (each of code / node /
-    // the three fix columns is `-` when absent). We resolve each fault's node id — and its fix's node
-    // id — to a byte span here.
+    // `severity  code  node  fix-kind  fix-node  fix-replacement  fix-verified  message` (each of code /
+    // node / the four fix columns is `-` when absent). We resolve each fault's node id — and its fix's
+    // node id — to a byte span here.
     let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Diagnostics)?;
     let span_of = |field: &str| -> (u32, u32) {
         field
@@ -306,10 +313,11 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
         if line.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(7, '\t');
+        let mut parts = line.splitn(8, '\t');
         let severity = parts.next().unwrap_or("error");
         let code = parts.next().unwrap_or("-");
         let node_field = parts.next().unwrap_or("-");
+        let fix_kind = parts.next().unwrap_or("-");
         let fix_node_field = parts.next().unwrap_or("-");
         let fix_replacement = parts.next().unwrap_or("-");
         let fix_verified = parts.next().unwrap_or("-");
@@ -341,6 +349,7 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
             fix_from,
             fix_to,
             fix_verified: fix_verified == "verified",
+            fix_insert: fix_kind == "insert",
         });
     }
     Ok(out)
@@ -600,7 +609,11 @@ pub fn core_module(text: &str, from: &str) -> Result<Option<Vec<u8>>, JsError> {
     // module with none of the DWARF custom sections `compile()` adds for the debugger.
     let (ast_bytes, _spans) = parse_spanned(text, from).map_err(|m| JsError::new(&m))?;
     let out = rcdzc::compile(
-        &[rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes)],
+        &[rcdzc::Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        )],
         &[rcdzc::Target::Wasm],
     );
     let Some(component) = out.artifact(rcdzc::Target::Wasm.artifact_kind()) else {
