@@ -1114,20 +1114,22 @@ pub fn reduce_handle(
         let arm_body = ctx.arms.get(&(d, i))?.body;
         let body_ty = crate::infer::type_of(db, arm_body);
         let result_ty = op_result_type(db, arm_op);
-        // Compare structurally; an undetermined side (an `Any`/var) does not disqualify (the abort value
-        // then flows unconstrained, matching the E4-a strict cases that already work). Only a DEFINITE
-        // disagreement (two concrete, distinct ground types) declines. TWO checks: the abort value must
-        // match (a) its operation's declared RESULT type, and (b) the HANDLE BODY's type.
+        // Compare by COMPATIBILITY (`agrees_with`), NOT structural `==`: two `Int` types that differ only
+        // in DEFERRED-vs-Fixed sign/width are compatible (an undetermined Int unifies with Int64), so `==`
+        // would spuriously flag `(if (< (Bail.bail 7) 5) 1 2)` — the handle body infers `Int{Deferred}` and
+        // the abort arm value `Int64{Fixed}`. Only a genuine MISMATCH (Int64 vs Bool, scalar vs tuple)
+        // declines. An undetermined side (`Any`/var) never disqualifies. TWO checks: the abort value must
+        // agree with (a) its operation's declared RESULT type, and (b) the HANDLE BODY's type.
         if let Some(rt) = result_ty
             && !undetermined_ty(&body_ty)
             && !undetermined_ty(&rt)
-            && body_ty != rt
+            && !body_ty.agrees_with(&rt)
         {
             return None;
         }
         if !undetermined_ty(&body_ty)
             && !undetermined_ty(&handle_body_ty)
-            && body_ty != handle_body_ty
+            && !body_ty.agrees_with(&handle_body_ty)
         {
             return None;
         }

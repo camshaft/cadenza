@@ -14386,6 +14386,26 @@ mod stage1 {
     }
 
     #[test]
+    fn an_abort_in_an_if_condition_folds_by_type_compatibility() {
+        // E4 type-consistency guard uses COMPATIBILITY, not structural `==`. `(if (< (Bail.bail 7) 5) 1 2)`
+        // — the abort is in the condition, evaluated first, so it abandons the whole `if` → 7. The handle
+        // body infers `Int{Deferred}` (the `if` branches 1/2 not yet ground) while the abort arm value is
+        // `Int64{Fixed}`; a structural `!=` spuriously flagged this as a mismatch and DECLINED. Comparing
+        // with `agrees_with` (an undetermined Int agrees with Int64) folds it correctly. Regression guard
+        // for that false-positive decline — the abort-in-condition is a real "validate then bail" shape.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if (< (Bail.bail 7) 5) 1 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an abort in an if condition folds"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
