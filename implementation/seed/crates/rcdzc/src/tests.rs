@@ -4590,6 +4590,74 @@ mod match_engine {
             .and_then(|d| d.code.clone())
     }
 
+    /// The first error `Diagnostic` from compiling `src` (full record, so a test can read the carried
+    /// fix), or `None` if `src` compiled clean.
+    fn reject_full(src: &str) -> Option<crate::abi::Diagnostic> {
+        let out = compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::Wasm],
+        );
+        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+            return None;
+        }
+        out.diagnostics
+            .into_iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+    }
+
+    #[test]
+    fn a_non_exhaustive_scalar_match_offers_a_wildcard_arm_fix() {
+        // An open Int scalar match with no wildcard is CDZ0210; it now carries an INSERT fix that appends
+        // a `(_ unit)` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+        // A Fix — the scalar twin of the sum add-arms fix).
+        let d = reject_full("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
+            .expect("non-exhaustive must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
+        assert!(
+            d.message.contains("wildcard"),
+            "names the gap: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a wildcard-arm fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(fix.replacement, "(_ unit)", "appends a wildcard arm");
+        assert!(!fix.verified, "the arm body is a placeholder → heuristic");
+    }
+
+    #[test]
+    fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
+        // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly `(false unit)`
+        // (not a generic wildcard), the same precision as a missing sum variant.
+        let d = reject_full("(module m (def (main (: b Bool)) (match b (true 1))) (export main))")
+            .expect("non-exhaustive must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`false`") && d.message.contains("not covered"),
+            "names the missing literal: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(false unit)"),
+            "inserts the specific missing arm: {}",
+            d.message
+        );
+        // Symmetric: missing `true` → `(true unit)`.
+        let d2 =
+            reject_full("(module m (def (main (: b Bool)) (match b (false 2))) (export main))")
+                .expect("reject");
+        assert_eq!(
+            d2.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(true unit)"),
+            "message: {}",
+            d2.message
+        );
+    }
+
     #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
@@ -10472,7 +10540,8 @@ mod stage1 {
         };
         // Same-shape distinct sums → CDZ0202.
         assert_eq!(
-            code("(type A (Mk Int64)) (type B (Mk Int64)) (def (c) (= (A.Mk 1) (B.Mk 1)))").as_deref(),
+            code("(type A (Mk Int64)) (type B (Mk Int64)) (def (c) (= (A.Mk 1) (B.Mk 1)))")
+                .as_deref(),
             Some("CDZ0202")
         );
         // Disjoint-variant sums (Option vs Result) → CDZ0203 (unrelated types, not a nominal boundary).

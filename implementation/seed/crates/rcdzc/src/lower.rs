@@ -1279,17 +1279,18 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // A Bool scrutinee's two literals exhaust it. (A definitely-Bool or still-open `Any` scrutinee whose
     // arms are Bool literals — a bare parameter matched with `true`/`false` — is matching over Bool; a
     // definitely-Int scrutinee with a Bool probe already faulted in step (1) and never reaches here.)
-    let bool_exhaustive = scrut_ty.agrees_with(&crate::ty::Ty::Bool)
-        && probes
-            .iter()
-            .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Bool(true)))
-        && probes
-            .iter()
-            .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Bool(false)));
+    let bool_true = probes
+        .iter()
+        .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Bool(true)));
+    let bool_false = probes
+        .iter()
+        .any(|(p, g, _)| g.is_none() && matches!(p, crate::core::Probe::Bool(false)));
+    let bool_exhaustive = scrut_ty.agrees_with(&crate::ty::Ty::Bool) && bool_true && bool_false;
     if !has_wild && !bool_exhaustive {
-        return Core::Poison(Reject::coded(
-            Code::NonExhaustive,
-            "a scalar match must end in a wildcard `_` arm (non-exhaustive)",
+        // Name what is uncovered + carry an "add the covering arm" fix (the missing bool literal, or a
+        // wildcard for an open scalar) — the scalar twin of the sum add-arms fix.
+        return Core::Poison(non_exhaustive_scalar_reject(
+            db, scrutinee, &scrut_ty, bool_true, bool_false,
         ));
     }
 
@@ -2353,6 +2354,44 @@ fn join_and(items: &[String]) -> String {
         [a] => a.clone(),
         [a, b] => format!("{a} and {b}"),
         [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
+/// The CDZ0210 non-exhaustive-SCALAR-match rejection, enriched with an "add the covering arm" fix (the
+/// scalar analogue of `non_exhaustive_sum_reject` — `spec/capabilities/diagnostics.md` §A Diagnostic
+/// Carries A Route To A Fix). A BOOL scrutinee missing a literal (`bool_true`/`bool_false` = whether
+/// each is covered by an unguarded arm) is a FINITE gap: name + insert exactly the missing `(true unit)`
+/// / `(false unit)` arm, like a missing sum variant. Any OTHER scalar (an open Int/String, or a Bool
+/// with neither literal) is closed only by a wildcard: insert `(_ unit)`. The arm bodies are `unit`
+/// placeholders → Heuristic. Anchored at the `(match …)` form (parent of the scrutinee); falls back to
+/// the plain reject (no fix) if that parent is absent.
+fn non_exhaustive_scalar_reject(
+    db: &Db,
+    scrutinee: StructId,
+    scrut_ty: &crate::ty::Ty,
+    bool_true: bool,
+    bool_false: bool,
+) -> Reject {
+    // A Bool scrutinee with exactly one literal covered → the missing one is a KNOWN, finite gap.
+    let is_bool = scrut_ty.agrees_with(&crate::ty::Ty::Bool);
+    let (message, arms) = if is_bool && (bool_true ^ bool_false) {
+        let missing = if bool_true { "false" } else { "true" };
+        (
+            format!("non-exhaustive match: `{missing}` is not covered"),
+            vec![format!("({missing} unit)")],
+        )
+    } else {
+        // An open scalar (or a Bool with neither literal) — only a wildcard closes it.
+        (
+            "non-exhaustive match: add a wildcard `_` arm to cover the remaining values"
+                .to_string(),
+            vec!["(_ unit)".to_string()],
+        )
+    };
+    match db.parent_of(scrutinee) {
+        Some(match_form) => Reject::coded(Code::NonExhaustive, message)
+            .with_fix(Fix::insert_arms_heuristic(match_form, arms)),
+        None => Reject::coded(Code::NonExhaustive, message),
     }
 }
 
@@ -5336,9 +5375,7 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     // canonical two-entry map. A runtime map operand or a runtime key stays a `Core::MapInsert` (the
     // persistent CHAMP op). Keys compared by VALUE (`const_compound_eq`), so two names bound to the same
     // value collapse here just as they do at run time.
-    if let (Core::MapNew { entries, .. }, true) =
-        (core_of(db, map), is_const_value(db, key))
-    {
+    if let (Core::MapNew { entries, .. }, true) = (core_of(db, map), is_const_value(db, key)) {
         let mut merged = entries.clone();
         let mut replaced = false;
         for e in merged.iter_mut() {
