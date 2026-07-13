@@ -11389,6 +11389,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_captures_a_function_value_and_applies_it_through_a_recursive_hof() {
+        // HIGHER-ORDER CAPTURE: a closure whose captured free variable is ITSELF A FUNCTION. The inner
+        // `(fn (b) (g b))` closes over `g` — a fn-typed parameter of the recursive `rec` — so the closure
+        // cell must store `g`'s closure HANDLE (a u32 cell) as a capture and, in the lifted body, read it
+        // back and apply it via `call_indirect`. Because `rec` is recursive, `g` stays a genuine runtime
+        // value (not inlined), and it threads through the recursive specialization as a fresh param
+        // binder — so `collect_captures` must classify a ref whose target is a SYNTHESIZED param as a
+        // capture (not a global), and `box_op`/`get_op` must store/read a `Ty::Fn` handle as-is (like any
+        // compound handle), NOT box it as a scalar. Both were bugs: the capture was skipped (a bare
+        // `Core::Param` with no local slot → invalid module) and the fn handle was boxed as an i64 (an
+        // i32/i64 type mismatch → invalid module). `rec` builds `(fn (b) (g b))`, hands it to the
+        // recursive `sumapply` (applied at 2 and 1), and sums over its own recursion: each `rec` level
+        // contributes `g(2)+g(1)`, repeated n times. With `g = (+1)`: (2+1)+(1+1) = 5 per level, ×3 = 15.
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
+            (def (main (: n Int64)) (rec (fn ((: x Int64)) (+ x 1)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "15"); // 3 levels × (g(2)+g(1)) = 3 × ((2+1)+(1+1)) = 3×5
+        // A DIFFERENT captured function proves the handle dispatches the right code: `g = (*3)` →
+        // (2·3)+(1·3) = 9 per level, ×3 = 27.
+        let src2 = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
+            (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
+        assert_eq!(run_closure(src2, 3).unwrap(), "27");
+    }
+
+    #[test]
     fn an_unannotated_closure_param_is_grounded_from_its_body() {
         // A bare `(fn (x) (* x 2))` — no `(: x T)`. `x` types `Any` at its own occurrence (inference does
         // not thread the use-site arrow back), but the body `(* x 2)` uses it as an integer operand, so

@@ -350,8 +350,12 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
         // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), or a
         // BYTES sequence (`bytes-*` handle) — is already a u32 handle, so it is `arr-set` into the parent
-        // array (or used as a sum payload) as-is, no box op.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes => Ok(None),
+        // array (or used as a sum payload) as-is, no box op. A CLOSURE (`Ty::Fn`) is likewise a u32 cell
+        // handle (`valtype_of(Ty::Fn) = I32`) — a closure captured BY another closure (a fn-typed capture,
+        // e.g. a partial application capturing the function it partially applies) is stored as-is.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
+            Ok(None)
+        }
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -369,8 +373,11 @@ fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
         // A nested compound / SUM / LIST / BYTES handle `arr-get` (or `sum-payload`) yields is used
-        // as-is — no unbox.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes => Ok(None),
+        // as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed value
+        // (`Core::Captured` of a closure) reads back the handle directly, ready for a `call_indirect`.
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
+            Ok(None)
+        }
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
