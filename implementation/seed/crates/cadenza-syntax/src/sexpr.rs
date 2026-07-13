@@ -13,6 +13,7 @@
 //! classify literals identically to this, or the round-trip fails.
 
 use crate::ast::{Arenas, Builder, Leaf, LeafId, Struct, StructId};
+use crate::doc::Doc;
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
 use unicode_normalization::UnicodeNormalization;
@@ -131,6 +132,74 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
                 print_node(a, child, out);
             }
             out.push(')');
+        }
+    }
+}
+
+// ============================================================================
+// Pretty-printer: the same tree, but laid out across lines so it stays readable when a form is too
+// wide for one line. Where `print` above emits everything on a single line (the canonical, machine-
+// oriented rendering the round-trip oracle and codemod paths depend on), this walks the arena into
+// the shared Oppen [`Doc`] engine: each `(head child…)` list prints flat when it fits the target
+// width, else breaks with every child on its own line indented one level under the head —
+//
+//     (match e
+//       (Some n)
+//       (None 0))
+//
+// Whitespace is the ONLY difference from `print` (spaces become newline+indent between the same
+// tokens), so a pretty-printed form re-reads to a structurally-identical arena.
+// ============================================================================
+
+/// Indentation per nesting level (spaces). A layout choice, matching the ML printer's `INDENT`.
+const INDENT: isize = 2;
+
+/// The default target width for the pretty-printer (columns), shared with the ML printer.
+pub const DEFAULT_WIDTH: usize = crate::printer::DEFAULT_WIDTH;
+
+/// Pretty-print `arenas` as multi-line s-expression text targeting the default width.
+pub fn print_pretty(arenas: &Arenas) -> String {
+    print_pretty_width(arenas, DEFAULT_WIDTH)
+}
+
+/// Pretty-print `arenas` as multi-line s-expression text targeting `width` columns.
+pub fn print_pretty_width(arenas: &Arenas, width: usize) -> String {
+    print_pretty_from(arenas, arenas.root, width)
+}
+
+/// Pretty-print one occurrence (a sub-form at `id`) as multi-line s-expression text targeting
+/// `width` columns — the pretty counterpart of [`print_from`].
+pub fn print_pretty_from(arenas: &Arenas, id: StructId, width: usize) -> String {
+    let mut doc = Doc::new();
+    pretty_node(arenas, id, &mut doc);
+    doc.render(width)
+}
+
+fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc) {
+    match a.get(id) {
+        Struct::Atom(l) => {
+            let mut s = String::new();
+            print_leaf(a.leaf(*l), &mut s);
+            doc.word(s);
+        }
+        Struct::List(items) => {
+            // The reader never produces an empty list; render defensively as `()`.
+            if items.is_empty() {
+                doc.word("()");
+                return;
+            }
+            // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
+            // child break fires, so each child lands on its own line indented one level under the
+            // head. The head hugs the `(`; the closing `)` hugs the last child (no dangling paren).
+            doc.cbox(INDENT);
+            doc.word("(");
+            pretty_node(a, items[0], doc);
+            for &child in &items[1..] {
+                doc.space();
+                pretty_node(a, child, doc);
+            }
+            doc.word(")");
+            doc.end();
         }
     }
 }
@@ -705,6 +774,58 @@ mod tests {
         // A bare `b` is still an ordinary NAME — only the exact `b"` prefix opens a byte string.
         let a = read("b").unwrap();
         assert_eq!(a.as_name(a.root), Some("b"));
+    }
+
+    /// A form that fits the width stays on one line — pretty output matches the single-line print.
+    #[test]
+    fn pretty_keeps_small_forms_on_one_line() {
+        for src in ["(+ 1 2)", "(f a b c)", "42", "(. p x)"] {
+            let a = read(src).unwrap();
+            assert_eq!(print_pretty_width(&a, 80), print(&a), "for {src:?}");
+        }
+    }
+
+    /// A form too wide for the target width breaks: the head hugs the `(`, each child drops to its
+    /// own line indented one level, and the closing `)` hugs the last child.
+    #[test]
+    fn pretty_breaks_wide_forms_one_child_per_line() {
+        // The outer `match` overflows width 20 so it breaks one child per line, but each arm fits on
+        // its own line and stays flat — breaking is per-box, only where a form actually overflows.
+        let a = read("(match e ((Some n) n) ((None _) 0))").unwrap();
+        assert_eq!(
+            print_pretty_width(&a, 20),
+            "(match\n  e\n  ((Some n) n)\n  ((None _) 0))"
+        );
+    }
+
+    /// print_pretty ∘ read is stable AND structurally faithful: the pretty layout re-reads to the
+    /// same arena the single-line print does (whitespace is the only difference), and pretty-
+    /// printing the re-read tree is idempotent.
+    #[test]
+    fn pretty_reads_back_to_the_same_arena() {
+        for src in [
+            "(+ 1 2)",
+            "(let ((p (record (x 1) (y 2)))) (. p x))",
+            "(match e ((Some n) n) ((None _) 0))",
+            "(f a b c)",
+            "(quasiquote (unquote x))",
+            "\"a\\nb\"",
+        ] {
+            let a = read(src).unwrap();
+            // A tight width forces breaks so the layout logic is actually exercised.
+            let pretty = print_pretty_width(&a, 10);
+            let b = read(&pretty).unwrap();
+            assert_eq!(
+                a, b,
+                "pretty re-read differs for {src:?} (pretty:\n{pretty})"
+            );
+            // idempotent at the same width
+            assert_eq!(
+                print_pretty_width(&b, 10),
+                pretty,
+                "pretty not idempotent for {src:?}"
+            );
+        }
     }
 
     #[test]

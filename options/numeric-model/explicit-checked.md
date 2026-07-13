@@ -21,7 +21,7 @@
 | Integer conversions | **explicit** only: `T.of x` is a **checked** conversion (traps when `x` is outside `T`'s range), `T.wrap x` is a **truncating/wrapping** conversion (keeps the low `N` bits under `T`'s two's-complement representation). Neither is ever performed implicitly. |
 | Wrapping integers | available as a **distinct type**, not a mode on the default integer, so wrap is never silent |
 | Arbitrary-precision integer | a distinct **big-integer** type, opted into explicitly. A width `N` **above 64** is reserved to this multi-word layer, not to the width-indexed constructors above (see §"Widths above 64 are reserved"). |
-| Floating-point | **IEEE-754 binary64**, single fixed rounding mode (round-to-nearest-even), no fused-multiply-add contraction, canonical not-a-number bit pattern |
+| Floating-point | the **width-indexed type constructor** `Float`, applied to a compile-time width `N` in the admitted set `{32, 64}`: `(Float 32)` is IEEE-754 binary32, `(Float 64)` binary64. `Float32`/`Float64` are aliases. All use a single fixed rounding mode (round-to-nearest-even), no fused-multiply-add contraction, and a canonical not-a-number bit pattern. Arithmetic is written with the **distinct floating-point operators** `+.` `-.` `*.` `/.` — never the integer `+`/`-`/`*`/`/`. `Float64` is the type an unconstrained float literal takes. |
 | Exact rational | a **normalized pair of big-integers** (reduced to lowest terms, fixed sign convention), opted into explicitly |
 | Numeric promotion | **none** — an operation on two different numeric types (including two different integer widths or signednesses) requires an explicit conversion |
 
@@ -112,6 +112,46 @@ later optional increment MAY lift the ceiling and realize wide fixed-size intege
 representation, at which point `(UInt 128)` becomes a valid type with no change to the surface syntax —
 only the constraint's upper bound and the representation move. Until then, a program needing more than 64
 bits uses the opt-in arbitrary-precision big-integer type.
+
+## Floating-point is width-indexed, like the integers
+
+Floating-point is the **width-indexed type constructor** `Float`, a compile-time function from a width
+to a type — the exact machinery `Int`/`UInt` use, indexed by a width instead of by an element type. The
+admitted widths are the IEEE-754 binary formats the backend supports: **`{32, 64}`** — `(Float 32)` is
+binary32, `(Float 64)` binary64. `Float32` and `Float64` are ordinary **aliases** for `(Float 32)` /
+`(Float 64)`, not primitives, exactly as `Int32`/`Int64` alias `(Int 32)`/`(Int 64)`.
+
+- **The width is compile-time, and constrained.** `N` obeys the same fence a generic type argument does
+  (never runtime data). `N` must be a member of the admitted set; any other width — `(Float 16)`,
+  `(Float 128)`, `(Float 0)` — fails the constraint and is rejected `CDZ0302`, exactly as `(UInt 65)` is.
+  The set is `{32, 64}` because those are the widths a conforming wasm runtime provides as `f32`/`f64`;
+  reserving other widths (rather than rejecting the notation) keeps the door open to a later increment
+  that realizes `binary16` or `binary128` with no surface-syntax change — only the admitted set moves.
+- **`Float64` is the default float literal type.** A float literal (`3.5`, `1e19`, `-0.0`) with nothing
+  constraining it is `Float64`; an annotation reaches another width (`(: 3.5 Float32)`).
+- **Distinct types, no promotion.** `(Float 32)` and `(Float 64)` are distinct types, and each is
+  distinct from every integer type. No operation silently promotes across them: mixing an `Int64` and a
+  `Float64` (`(+ 2 2.0)`), or a `Float32` and a `Float64`, is rejected `CDZ0301` — the same
+  no-silent-promotion rule the integer widths obey (numeric-model.md §"Numeric Types Do Not Silently
+  Promote", §"A Conversion Involving A Floating-Point Type Is Explicit").
+- **Arithmetic uses the distinct floating-point operators.** `+.` `-.` `*.` `/.` are the float
+  arithmetic operators, spelled distinctly from the integer `+`/`-`/`*`/`/` (numeric-model.md §"A
+  Floating-Point Operation Uses A Floating-Point Operator"). This is why no operator has to guess a
+  mixed operand's intent: `(+ 2 2.0)` mixes types under the integer `+` and is rejected, `(+. 2 2.0)`
+  supplies an integer where the float `+.` wants a float and is rejected — a program adds two floats with
+  `(+. 1.0 2.0)`. Unlike integer arithmetic, a float operation **never traps on overflow**: an IEEE
+  operation that exceeds the finite range yields an infinity and division by zero yields ±infinity or
+  NaN, per the determinism-constrained emission — the trap-on-overflow discipline is the integers' alone.
+- **Conversions are explicit.** `Float64.of-int` converts an integer up to a float (the float analogue
+  of `T.of`); `Float32.of` / `Float64.of` convert between the two float widths (narrowing rounds under
+  the fixed mode). None is ever implicit.
+- **A literal beyond the finite range is malformed.** A float literal whose magnitude exceeds the
+  largest finite value of its type (`1e400` for `Float64`) is a **malformed literal** (`CDZ0201`),
+  rejected at the reader boundary exactly as `9223372036854775808` (past `Int64.max`) is — the language
+  provides no `inf` spelling, so a literal never silently produces a non-finite value with no written
+  form (this resolves the prior float-literal-overflow spec gap).
+- **Boundary mapping (ABI-level).** `(Float 32)` crosses as the component-model `f32`, `(Float 64)` as
+  `f64`. Both aliased widths have a stable boundary representation.
 
 ## Arbitrary-precision integer — `BigInt`, opted into explicitly
 

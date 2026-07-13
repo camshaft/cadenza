@@ -4843,16 +4843,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bin_bit_field_packs_msb_first() {
+        // `(bits v k)` packs the low `k` bits of `v` MSB-first; a byte-closing run of bit-fields folds to
+        // the packed bytes. `(bits 1 1)(bits 2 3)(bits 5 4)` = 1·010·0101 = 0b1010_0101 = 165. A wider
+        // multi-byte field splits big-endian; a byte-aligned field composes with an int segment.
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of (list 165))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (bin (bits 4660 16)) (Bytes.of (list 18 52))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (bin (bits 255 8) (u8 1)) (Bytes.of (list 255 1))) 1 0)) (export main))",
+                1,
+            ),
+            // a wrong expected packing → false
+            (
+                "(module m (def (main) (if (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of (list 164))) 1 0)) (export main))",
+                0,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant bin bit-field packs: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
         // A constant segment value that does not fit its width has no encoding → the build fails
         // (CDZ0304, the compile-provable companion of the runtime "binary value does not fit segment"
-        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned.
+        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned. A
+        // bit-field value wider than its width (`(bits 2 1)` — 2 needs 2 bits) is the sub-byte companion,
+        // also a provable rejection (CDZ0220 mis-alignment or CDZ0304 fit — both refuse, never truncate).
         for src in [
             "(module m (def (main) (Bytes.len (bin (u8 256)))) (export main))",
             "(module m (def (main) (Bytes.len (bin (u8 -1)))) (export main))",
         ] {
             assert_eq!(reject_code(src).as_deref(), Some("CDZ0304"), "src: {src}");
         }
+        // A byte-aligned bit-field whose value overflows its width is the CDZ0304 fit-trap (aligned, so
+        // the well-formedness check passes and the value-fit check fires): `(bits 256 8)` needs 9 bits.
+        assert_eq!(
+            reject_code("(module m (def (main) (Bytes.len (bin (bits 256 8)))) (export main))")
+                .as_deref(),
+            Some("CDZ0304"),
+        );
     }
 
     #[test]
@@ -7026,6 +7070,38 @@ mod diagnostics {
     }
 
     #[test]
+    fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
+        // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
+        // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
+        let unbound: Vec<_> = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) nope) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+        .collect();
+        assert_eq!(
+            unbound.len(),
+            1,
+            "one unbound-name fault, not two: {unbound:?}"
+        );
+
+        // But two DISTINCT occurrences of the same unbound name (different nodes) are NOT duplicates —
+        // both survive (each has its own source location).
+        let two: Vec<_> = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) (+ nope nope)) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+        .collect();
+        assert_eq!(
+            two.len(),
+            2,
+            "two distinct `nope` uses each reported once: {two:?}"
+        );
+        assert_ne!(two[0].node, two[1].node, "at different nodes");
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.
@@ -7110,13 +7186,18 @@ mod diagnostics {
             "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
             "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
         ] {
-            let ws = warnings_of(src);
+            // Exactly one DEAD-TRAP warning (CDZ0305). Some shapes also carry an unused-binding warning
+            // (CDZ0306 — the dropped `let t`, the unused param `y`), which is a separate, correct signal;
+            // filter to the dead-trap code so this test pins the dead-trap behavior specifically.
+            let dead: Vec<_> = warnings_of(src)
+                .into_iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+                .collect();
             assert_eq!(
-                ws.len(),
+                dead.len(),
                 1,
-                "expected exactly one dead-trap warning for `{src}`, got {ws:?}"
+                "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
             );
-            assert_eq!(ws[0].code.as_deref(), Some("CDZ0305"), "for `{src}`");
         }
     }
 
@@ -7171,6 +7252,73 @@ mod diagnostics {
             )
             .is_empty(),
             "a runtime (unprovable) trap in a dropped position must NOT warn"
+        );
+    }
+
+    /// The CDZ0306 unused-binding warning messages from `src`. Uses `diagnostics()` directly (the
+    /// export-independent fault+warning set `cdz check` drives) rather than `warnings_of` — a program
+    /// exporting a parameterized function does not emit a component, but its diagnostics are still
+    /// defined (that is the point of the export-independent query).
+    fn unused_of(src: &str) -> Vec<String> {
+        let mut db = Db::load(parse(src));
+        crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0306"))
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn an_unused_let_binding_and_parameter_warn() {
+        // `b` (a let binding) and `q` (a parameter) are declared but never referenced → CDZ0306; `a`
+        // and `p` are used, so they do not warn.
+        let src = "(module m (def (f p q) (let ((a (: 1 Int64)) (b (: 2 Int64))) (+ a p))) \
+                   (export f))";
+        let u = unused_of(src);
+        assert_eq!(u.len(), 2, "exactly b and q are unused: {u:?}");
+        assert!(
+            u.iter().any(|m| m.contains("`b`") && m.contains("binding")),
+            "{u:?}"
+        );
+        assert!(
+            u.iter()
+                .any(|m| m.contains("`q`") && m.contains("parameter")),
+            "{u:?}"
+        );
+    }
+
+    #[test]
+    fn an_underscore_prefix_silences_the_unused_warning() {
+        // Rust's convention: a name beginning with `_` is intentionally unused — no warning.
+        let src = "(module m (def (f p _q) (let ((a (: 1 Int64)) (_b (: 2 Int64))) (+ a p))) \
+                   (export f))";
+        assert!(
+            unused_of(src).is_empty(),
+            "`_q`/`_b` are silenced: {:?}",
+            unused_of(src)
+        );
+    }
+
+    #[test]
+    fn an_unused_nonexported_definition_warns_but_a_used_or_exported_one_does_not() {
+        // A nullary def nothing references (and not exported) is unused.
+        let unused = "(module m (def (helper) (: 9 Int64)) (def (main) 42) (export main))";
+        let u = unused_of(unused);
+        assert_eq!(u.len(), 1, "helper is unused: {u:?}");
+        assert!(
+            u[0].contains("`helper`") && u[0].contains("definition"),
+            "{u:?}"
+        );
+        // A def that IS referenced does not warn.
+        assert!(
+            unused_of("(module m (def (helper) (: 9 Int64)) (def (main) helper) (export main))")
+                .is_empty(),
+            "a used def must not warn"
+        );
+        // An EXPORTED def is part of the interface — never flagged.
+        assert!(
+            unused_of("(module m (def (helper) (: 9 Int64)) (export helper))").is_empty(),
+            "an exported def must not warn"
         );
     }
 }
@@ -14740,6 +14888,66 @@ mod debug_info {
         assert!(
             stdout.contains("DW_OP_WASM_location 0x0 0x1"),
             "the kept local must live at local slot 1:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn single_line_constructs_get_distinct_columns() {
+        // COLUMN granularity: an `if` whose condition, then-branch, and else-branch all sit on ONE
+        // source line still produces DISTINCT line-table rows — each carrying the sub-expression's
+        // COLUMN — so a debugger highlights the exact construct within the line (the payoff for
+        // s-expression Cadenza, where a whole `(if c a b)` is one line). Line-only granularity would
+        // collapse these to a single row. Skips if llvm-dwarfdump is absent.
+        use std::io::Write;
+        use std::process::Command;
+        // Everything on line 2 (line 1 is the module header) — distinct columns, same line.
+        let src = "(module m\n(def (f (: a Int64)) (if (< a 0) (- a 1) (+ a 1)))\n(export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-cols-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-line")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        // Line-table rows begin with `0x…`; columns are [Address, Line, Column, …]. Collect the
+        // (line, column) of the rows on line 2 (the single source line the code lives on).
+        let cols: Vec<u32> = stdout
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                if !l.starts_with("0x") {
+                    return None;
+                }
+                let mut it = l.split_whitespace();
+                let _addr = it.next()?;
+                let line: u32 = it.next()?.parse().ok()?;
+                let col: u32 = it.next()?.parse().ok()?;
+                (line == 2).then_some(col)
+            })
+            .collect();
+        // Several DISTINCT non-zero columns on the one source line — the condition, then, and else each
+        // get their own row (line-only granularity would give a single row / a single column).
+        let mut distinct: Vec<u32> = cols.iter().copied().filter(|&c| c != 0).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 3,
+            "expected ≥3 distinct source columns on line 2 (condition/then/else), got {distinct:?}\n{stdout}"
         );
     }
 

@@ -362,6 +362,17 @@ impl Decimal {
         // A well-formed `Decimal` always parses; a pathological one falls back to a canonical zero.
         text.parse::<f64>().unwrap_or(0.0).to_bits()
     }
+
+    /// Whether the value this decimal denotes rounds to a FINITE `Float64`. A literal whose magnitude
+    /// exceeds the largest finite double (`~1.8e308`) rounds to `±inf` — a value with no written form
+    /// the reader accepts — so it is a MALFORMED literal (`numeric-model.md` §A Floating-Point Literal
+    /// That Denotes No Representable Value Is Malformed), the float analogue of an out-of-range integer
+    /// literal. A `Decimal` is always finite itself (the reader produces no `inf`), so this asks only
+    /// whether the ROUNDING overflows. (`Float32` is narrower, so a `(: 1e40 Float32)` overflow is
+    /// caught at the annotation, not here; the bare-literal default is `Float64`.)
+    pub fn is_finite_f64(&self) -> bool {
+        f64::from_bits(self.to_f64_bits()).is_finite()
+    }
 }
 
 /// The two arenas plus the root occurrence — the whole AST of one program unit.

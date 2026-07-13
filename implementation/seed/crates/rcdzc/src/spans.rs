@@ -76,6 +76,27 @@ impl SpanData {
             .filter(|&&b| b == b'\n')
             .count() as u32
     }
+
+    /// The 1-based source COLUMN a byte offset falls on — the count of bytes since the last newline,
+    /// plus one. Symmetric to [`line_at`] (both derive from the same byte offset over `source`), so a
+    /// DWARF row can carry a `(line, column)` position and a debugger can highlight the exact
+    /// sub-expression on a line — the payoff for s-expression Cadenza, where `(if c a b)` packs several
+    /// constructs onto one line. Falls back to column 1 when the source is absent or the offset is past
+    /// its end (total — never panics). Byte columns (not UTF-8 scalar columns) — the DWARF convention,
+    /// and what a byte-offset debugger maps back with; ASCII source (the common case) makes them equal.
+    pub fn col_at(&self, byte_off: u32) -> u32 {
+        if self.source.is_empty() {
+            return 1;
+        }
+        let end = (byte_off as usize).min(self.source.len());
+        let bytes = &self.source.as_bytes()[..end];
+        match bytes.iter().rposition(|&b| b == b'\n') {
+            // Bytes after the last newline (the newline itself excluded), plus one for 1-based.
+            Some(nl) => (end - nl) as u32,
+            // No newline before `byte_off` — it is on the first line, column = offset + 1.
+            None => end as u32 + 1,
+        }
+    }
 }
 
 /// Decode a span side-table from its wire bytes. Total: a truncated or malformed table yields `None`
@@ -175,6 +196,24 @@ mod tests {
         // With no source text, everything is line 1 (the fallback).
         let empty = SpanData::default();
         assert_eq!(empty.line_at(42), 1);
+    }
+
+    #[test]
+    fn col_at_counts_bytes_since_the_last_newline() {
+        let data = SpanData {
+            source: "aaa\nbbbb\nc".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(data.col_at(0), 1); // first byte of "aaa" (no newline yet)
+        assert_eq!(data.col_at(2), 3); // third byte of "aaa"
+        assert_eq!(data.col_at(3), 4); // the '\n' is column 4 of line 1
+        assert_eq!(data.col_at(4), 1); // first byte of "bbbb" — column resets after the newline
+        assert_eq!(data.col_at(7), 4); // fourth byte of "bbbb"
+        assert_eq!(data.col_at(9), 1); // first byte of "c" on the last line
+        assert_eq!(data.col_at(999), 2); // past the end clamps to len (one past "c"), no panic
+        // With no source text, everything is column 1 (the fallback).
+        let empty = SpanData::default();
+        assert_eq!(empty.col_at(42), 1);
     }
 
     #[test]

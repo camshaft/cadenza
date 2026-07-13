@@ -134,7 +134,10 @@ pub fn write(arenas: &Arenas, to: Format) -> Result<Vec<u8>, ConvertError> {
 pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>, ConvertError> {
     match to {
         Format::Binary => Ok(codec::encode(arenas)),
-        Format::Sexpr => Ok(sexpr::print(arenas).into_bytes()),
+        // The s-expr surface pretty-prints across lines (breaking a form only when it overflows
+        // `width`), the same width knob the ML printer uses — a single-line dump is unreadable for
+        // anything but the smallest forms.
+        Format::Sexpr => Ok(sexpr::print_pretty_width(arenas, opts.width).into_bytes()),
         Format::Ml => Ok(crate::printer::print(arenas, opts.width).into_bytes()),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
         Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),

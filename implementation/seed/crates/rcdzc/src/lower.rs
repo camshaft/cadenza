@@ -468,6 +468,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // ungranted escape. (Reported cleanly rather than leaking the op's `(intrinsic perform)` marker
             // as an "unknown intrinsic".)
             if crate::eval::effect_op_of(db, head).is_some() {
+                // A perform DELEGATED to the host by an enclosing `(host (E…) …)` lowers to a HOST CALL —
+                // the operation is a component-level import the boundary resolves (E2). If no enclosing
+                // `host` delegates this effect, the perform is unhandled here: a DECLINE (a library def
+                // performing an effect whose home is its callers), and the entrypoint `check_no_home`
+                // reports a genuine ungranted escape as CDZ0401.
+                if let Some((effect, op, result)) =
+                    crate::effects::perform_host_target(db, id, head)
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall");
+                    return Core::HostCall {
+                        effect,
+                        op,
+                        args: args.to_vec(),
+                        result,
+                    };
+                }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
                 return Core::Poison(Reject::decline(
                     "this effect operation is performed with no enclosing handler here; its home is \
@@ -943,9 +959,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 )),
             }
         }
-        Resolved::Host { .. } => Core::Poison(Reject::decline(
-            "a host delegation is not yet lowered (the boundary import arrives in E2)",
-        )),
+        // A `(host (E…) body)` DELEGATES its listed effects to the component boundary (an entrypoint's
+        // routing decision). The delegation itself carries no runtime value — its VALUE is the body's
+        // value — so lower the BODY; a perform of a delegated effect inside it becomes a `Core::HostCall`
+        // (the perform arm resolves the enclosing `host` via `perform_host_target`). The manifest
+        // contribution (the escaping effect row) is handled at serialization.
+        Resolved::Host { body, .. } => core_of(db, body),
         Resolved::Resume { .. } => Core::Poison(Reject::decline(
             "resume outside a lowered handler arm is not yet realized",
         )),
@@ -4738,18 +4757,25 @@ fn lower_bytes_slice(
     }
 }
 
-/// Lower `(bin <segment>…)` in EXPRESSION position — construct a `Bytes`. BN1 realizes the FIXED-WIDTH
-/// INTEGER segments (`uNN`/`iNN`, big-endian, `le` modifier): a CONSTANT segment value folds to its `w`
-/// encoded bytes (big-endian MSB-first, reversed for `le`; signed values as two's-complement), assembled
-/// across all segments into a single `Core::BytesOf` of synthesized `UInt8` `Leaf::Int` elems — so a
-/// constant `(bin …)` bakes/compares/slices exactly like `(Bytes.of (list …))`, no runtime op. A value
-/// OUT OF RANGE for its segment (`(u8 256)`, `(u8 -1)`) is a compile-provable trap (CDZ0304 — the
-/// build-fail companion of the runtime "binary value does not fit segment" trap). `(bin)` (no segments)
-/// is the empty byte sequence. A `bits`/`bytes` segment, or a RUNTIME (non-constant) integer value, is
-/// not folded here yet — declines cleanly (BN2 bit-fields, BN4 dependent-bytes + the runtime path).
+/// Lower `(bin <segment>…)` in EXPRESSION position — construct a `Bytes`. Realizes the FIXED-WIDTH
+/// INTEGER segments (`uNN`/`iNN`, big-endian, `le` modifier) and BIT-FIELDS (`bits v k`): a CONSTANT
+/// segment folds to its encoded bytes, assembled across all segments into a single `Core::BytesOf` of
+/// synthesized `UInt8` `Leaf::Int` elems — so a constant `(bin …)` bakes/compares/slices exactly like
+/// `(Bytes.of (list …))`, no runtime op. An int emits its `w` two's-complement bytes (MSB-first, reversed
+/// for `le`); a `bits k` shifts `k` bits MSB-first into a bit-accumulator that flushes whole bytes as
+/// they close (the whole `bin` is byte-aligned — CDZ0220, checked in infer — so the accumulator is empty
+/// at every int/bytes segment and at the end). A value OUT OF RANGE for its segment (`(u8 256)`, `(u8
+/// -1)`, a `bits k` value ≥ 2^k) is a compile-provable trap (CDZ0304 — the build-fail companion of the
+/// runtime "binary value does not fit segment" trap). `(bin)` (no segments) is the empty byte sequence.
+/// A `bytes` splice, or a RUNTIME (non-constant) value, is not folded here yet — declines cleanly (BN4
+/// dependent-bytes + the runtime path).
 fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
     use crate::resolved::SegKind;
     let mut raw: Vec<u8> = Vec::new();
+    // The open bit-accumulator between `bits` segments: `acc` holds `nbits` bits, MSB-first (the first
+    // field's bits occupy the high end). Whole bytes are flushed to `raw` as soon as `nbits >= 8`.
+    let mut acc: u64 = 0;
+    let mut nbits: u32 = 0;
     for seg in segs {
         match &seg.kind {
             SegKind::Int { width, signed } => {
@@ -4787,14 +4813,54 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     }
                 }
             }
-            // Bit-fields (BN2) and bytes splices (BN4) are not folded yet.
-            SegKind::Bits { .. } => {
-                return Core::Poison(Reject::decline("a bin bit-field segment is not yet built"));
+            // A bit-field `(bits v k)`: the low `k` bits of `v`, packed MSB-first into the accumulator.
+            // `v` must fit `k` UNSIGNED bits (`bits 2 1` — 2 needs two bits, has one — traps). k ≤ 63 keeps
+            // `acc` (a u64) from overflowing between flushes (a whole `bin` is byte-aligned, so ≤ 7 bits
+            // are ever carried across a segment; a single field ≤ 63 bits fits with room to flush).
+            SegKind::Bits { k } => {
+                let k = *k;
+                match core_of(db, seg.slot) {
+                    Core::Poison(r) => return Core::Poison(r),
+                    Core::ConstInt(v) => {
+                        // A bit-field is an unsigned k-bit value; out of range (or negative) → trap.
+                        if k == 0 || k > 63 || !v.fits_width(false, k) {
+                            return Core::Poison(Reject::coded(
+                                Code::ConstTrap,
+                                "binary value does not fit segment",
+                            ));
+                        }
+                        let val = v.to_i64_bits() as u64 & ((1u64 << k) - 1);
+                        acc = (acc << k) | val;
+                        nbits += k;
+                        // Flush every whole byte from the TOP of the accumulator (MSB-first).
+                        while nbits >= 8 {
+                            let shift = nbits - 8;
+                            raw.push(((acc >> shift) & 0xff) as u8);
+                            nbits -= 8;
+                            acc &= (1u64 << nbits) - 1; // keep only the still-open low bits
+                        }
+                    }
+                    _ => {
+                        return Core::Poison(Reject::decline(
+                            "a bin bit-field with a runtime value is not yet built (constant segments only)",
+                        ));
+                    }
+                }
             }
+            // Bytes splices are not folded yet (BN4).
             SegKind::Bytes { .. } => {
                 return Core::Poison(Reject::decline("a bin bytes segment is not yet built"));
             }
         }
+    }
+    // A well-formed `bin` is byte-aligned, so no open bits remain here (CDZ0220 caught a mis-aligned one
+    // in infer before this runs). Defensively: any residual open bits mean an ill-formed form slipped
+    // through — decline rather than emit a wrong byte count.
+    if nbits != 0 {
+        return Core::Poison(Reject::coded(
+            Code::IllFormedBinary,
+            "a bin form's bit-fields must close to a whole number of bytes",
+        ));
     }
     // Assemble the emitted bytes into a constant `Core::BytesOf` (synthesized UInt8 element leaves), the
     // same shape `b"…"`/`String.to-bytes` produce — so it rides the constant-Bytes fold/escape/equality.

@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useMediaQuery } from "./useMediaQuery.ts";
 import { Link } from "react-router-dom";
 import { PlaygroundEditor } from "./PlaygroundEditor.tsx";
 import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx";
@@ -49,6 +50,8 @@ export default function PlaygroundPage() {
   const [ast, setAst] = useState<string>("");
   const [compiled, setCompiled] = useState<CompiledInfo | null>(null);
   const [cursor, setCursor] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
+  // Wide screens split editor|output side-by-side; narrow ones stack them (editor above output).
+  const isWide = useMediaQuery("(min-width: 768px)");
   const viewRef = useRef<EditorView | null>(null);
   // The last successfully-emitted component bytes, kept for lazily rendering the WAT view.
   const lastComponent = useRef<Uint8Array | null>(null);
@@ -231,8 +234,8 @@ export default function PlaygroundPage() {
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2">
+      {/* Toolbar — wraps on narrow screens so every control stays reachable. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-3 py-2">
         <Link to="/" className="mr-1 text-sm font-bold tracking-tight text-slate-100">
           Cadenza
         </Link>
@@ -271,9 +274,16 @@ export default function PlaygroundPage() {
         </div>
       </div>
 
-      {/* Editor | Output */}
-      <PanelGroup direction="horizontal" autoSaveId="cdz-playground" className="min-h-0 flex-1">
-        <Panel defaultSize={55} minSize={30} className="min-w-0">
+      {/* Editor + Output: side-by-side on wide screens, stacked (editor above output) on narrow ones.
+          Keyed by orientation + persisted separately so each layout keeps its own remembered sizes and
+          re-lays out cleanly when the viewport crosses the breakpoint. */}
+      <PanelGroup
+        key={isWide ? "h" : "v"}
+        direction={isWide ? "horizontal" : "vertical"}
+        autoSaveId={isWide ? "cdz-playground-h" : "cdz-playground-v"}
+        className="min-h-0 flex-1"
+      >
+        <Panel defaultSize={55} minSize={25} className="min-w-0">
           <PlaygroundEditor
             value={text}
             onChange={setText}
@@ -283,7 +293,11 @@ export default function PlaygroundPage() {
             onView={(v) => (viewRef.current = v)}
           />
         </Panel>
-        <PanelResizeHandle className="w-1.5 bg-slate-800 transition hover:bg-cadenza-600/50" />
+        <PanelResizeHandle
+          className={
+            "bg-slate-800 transition hover:bg-cadenza-600/50 " + (isWide ? "w-1.5" : "h-1.5")
+          }
+        />
         <Panel defaultSize={45} minSize={25} className="min-w-0">
           <OutputPanel
             run={runView}

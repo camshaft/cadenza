@@ -111,6 +111,26 @@ Constructing an exact rational with a zero denominator MUST fail at a defined po
 
 ## Floating-Point
 
+### A Floating-Point Type Is Indexed By A Compile-Time Width
+
+A floating-point type MUST be identified by a bit width drawn from the set of IEEE-754 binary formats the numeric model admits, so that two floating-point types of different width are distinct types that do not silently convert to one another.
+
+The bit width of a floating-point type MUST be resolved from a compile-time value and MUST NOT be determined by runtime data, so that a floating-point type's width is fixed before the program runs rather than dependent on a value computed at runtime.
+
+A floating-point bit width that is outside the set the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
+
+### A Conversion Involving A Floating-Point Type Is Explicit
+
+A conversion between a floating-point type and any other numeric type, or between two floating-point types of different width, MUST be written explicitly rather than performed as an implicit promotion or narrowing.
+
+### A Floating-Point Operation Uses A Floating-Point Operator
+
+An arithmetic operation on floating-point values MUST be written with a floating-point operator distinct from the integer arithmetic operator, so that no operator silently accepts one integer and one floating-point operand and no integer operator coerces a floating-point operand.
+
+### A Floating-Point Literal That Denotes No Representable Value Is Malformed
+
+A floating-point literal whose magnitude exceeds the largest finite value its type can represent MUST be rejected as a malformed literal at the reader boundary, rather than silently producing a non-finite value that has no written form, exactly as an integer literal outside its type's range is rejected.
+
 ### Floating-Point Follows The Determinism Contract
 
 A floating-point operation MUST produce a result consistent with the emission constraints in the determinism-and-fuel contract.

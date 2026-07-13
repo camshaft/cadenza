@@ -2,6 +2,15 @@
 
 *2026-07-08*
 
+> **RESOLVED 2026-07-13 (resolution 1 — reject as malformed).** The numeric-model spec now pins §"A
+> Floating-Point Literal That Denotes No Representable Value Is Malformed": a float literal whose
+> magnitude exceeds the finite range of its type is a **malformed literal (CDZ0201)** at the reader
+> boundary, exactly parallel to the out-of-range integer literal `9223372036854775808`. The language
+> provides no `inf` spelling, so a literal never silently produces a non-finite value. `rcdzc`'s
+> `resolve` rejects a `Leaf::Float` whose `Decimal::is_finite_f64()` is false; corpus case "an
+> out-of-range float literal is a malformed literal, not a non-finite value" (01-literals.sexp) pins it.
+> The rest of this note is retained as the record of why resolution 1 was chosen over admitting `inf`.
+
 **What happened (probe, not pinned).** Adversarial probing of the numeric-literal lexer found that a
 float literal whose magnitude exceeds Float64's range silently produces an infinity: `1e400` → `inf`,
 `-1e400` → `-inf`, `1e309` → `inf`. The renderer emits the text `inf` / `-inf` for these values, but the

@@ -274,6 +274,9 @@ prog.cdz:1:49: v : Int64
   def/field, …) read WITHOUT gating on export/emit, so a mid-edit buffer with no `(export …)` still
   reports. Each fault → `file:line:col: severity [CODE]: message`; exits non-zero iff any error-severity
   fault. This is the "as you type" primitive an editor's inline diagnostics (and a CI lint) ride on.
+  It also reports WARNINGS (non-error, don't fail the build): a dead computation (CDZ0305) and an
+  **unused binding** (CDZ0306) — a `let` binding, `fn`/`def` parameter, or non-exported def that is
+  never referenced. Prefix the name with `_` to silence it (`_x`/`_`, as in Rust).
 - **`def`** drives `Query::ResolveOf` — the go-to-definition counterpart of `uses`: the reference node
   at the cursor → its defining occurrence (`resolve::resolved_of` → `Ref`/`Lambda`), mapped to
   `file:line:col`. A non-navigable token (a literal, an unbound name) reports no definition.

@@ -21,13 +21,15 @@ export function SyntaxToggle() {
             aria-checked={active}
             onClick={() => setSurface(s.id)}
             className={
-              "rounded-md px-3 py-1 text-xs font-medium transition " +
+              "rounded-md px-2 py-1 text-xs font-medium transition sm:px-3 " +
               (active
                 ? "bg-cadenza-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200")
             }
           >
-            {s.label}
+            {/* Short labels on phones (ML / S-expr), full on wider screens. */}
+            <span className="sm:hidden">{s.short}</span>
+            <span className="hidden sm:inline">{s.label}</span>
           </button>
         );
       })}

@@ -28,9 +28,11 @@ pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare nullary constructor is the nullary sum value
+pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binding form with bindings but no body is rejected, not a crash
+pass	a bit-field width that is not a compile-time constant is ill-formed
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
@@ -102,6 +104,7 @@ pass	a cross-type variant pattern whose payload width differs is rejected, not m
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
+pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
@@ -171,6 +174,7 @@ pass	a helper projects a tuple parameter constrained by its argument
 pass	a helper sums two fields of a record parameter
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
+pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
@@ -229,6 +233,7 @@ pass	a multi-parameter closure keeps its captured environment distinct from its 
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
+pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
@@ -281,6 +286,7 @@ pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
+pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
@@ -404,6 +410,7 @@ pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
 pass	a shadowed-constructor application types at the binding's return type
+pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
@@ -463,6 +470,9 @@ pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
+pass	a u16 segment encodes an integer big-endian by default
+pass	a u32 segment encodes four big-endian bytes
+pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
@@ -479,6 +489,7 @@ pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
+pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
@@ -503,6 +514,7 @@ pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
 pass	an element read across a concatenation boundary is the right value
+pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
@@ -529,6 +541,8 @@ pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an option value annotated with the wrong payload type is rejected
 pass	an ordering operator with a single operand is rejected, not a crash
+pass	an out-of-range float literal is a malformed literal, not a non-finite value
+pass	an out-of-range integer literal is a malformed literal, not an unbound name
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
@@ -765,8 +779,10 @@ pass	the guarded-let conditional takes its else-branch when the conjunction is f
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the largest factorial that fits the integer type computes exactly
+pass	the le modifier encodes a u16 little-endian
 pass	the length of a byte sequence is its byte count
 pass	the length of a concatenation is the sum of the two lengths
+pass	the length of a fixed-width construction is the sum of its segment widths
 pass	the length of a grown list is its element count
 pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
@@ -848,8 +864,6 @@ todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bin arm whose fixed-width segment overruns the input falls through
 todo	a bin pattern binds an integer read from a fixed-width segment
 todo	a bin pattern must consume the whole scrutinee or it does not match
-todo	a binary form whose bit-fields do not close a byte is ill-formed
-todo	a bit-field width that is not a compile-time constant is ill-formed
 todo	a bits pattern segment reads sub-byte fields back into integers
 todo	a boolean connective with a non-boolean operand is a type error
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
@@ -877,10 +891,11 @@ todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
+todo	a float annotation reaches the 32-bit width
+todo	a float width outside the admitted set is rejected
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a header of packed nibbles and a length-prefixed body round-trips
-todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a list built by a recursive push-loop is then iterated by index
@@ -919,12 +934,13 @@ todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a name bound to a string keys a map by its value, not the literal name
+todo	a named float width alias and its width-indexed expansion name the same type
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
-todo	a non-final unsized bytes segment is ill-formed
+todo	a non-power-of-two float width is rejected
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
@@ -965,7 +981,6 @@ todo	a runtime symbol that differs from the interned constant does not match
 todo	a set collapses a duplicate element
 todo	a set is constructed from a list of its elements
 todo	a set with elements of two different types is a type error
-todo	a signed i8 segment encodes as two's complement
 todo	a signed pattern segment reads a two's-complement integer as negative
 todo	a string compared to a symbol is a type error
 todo	a sum type can mix nullary and payload-carrying variants
@@ -980,10 +995,7 @@ todo	a tail-recursive string accumulator builds a runtime string and its length 
 todo	a trailing bytes segment accepts the leftover the fixed segments leave
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a u16 segment encodes an integer big-endian by default
-todo	a u32 segment encodes four big-endian bytes
 todo	a u64 pattern segment reads eight big-endian bytes back into an integer
-todo	a u64 segment encodes eight big-endian bytes
 todo	a unary variant applied to a wrong-type payload is a type error
 todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
@@ -1005,7 +1017,6 @@ todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an element pattern matches a list by its length and elements
-todo	an empty binary form is the empty byte sequence
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 todo	an empty scrutinee matches an empty bin pattern
@@ -1019,7 +1030,6 @@ todo	an intra-program handler interposes on a delegated effect, counts it, and f
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an operation on mismatched types is rejected at compile time
-todo	an out-of-range integer literal is a malformed literal, not an unbound name
 todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
@@ -1071,6 +1081,10 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
+todo	float division rounds under the fixed mode
+todo	float division that does not divide evenly rounds to nearest
+todo	float multiplication uses the float operator
+todo	float subtraction uses the float operator
 todo	floating-point uses the fixed rounding mode
 todo	host calls are observed in the order they were made
 todo	inserting a key already present replaces its value, not the size
@@ -1091,6 +1105,7 @@ todo	membership of an absent element in the empty set is false
 todo	membership of an absent element is false, not a trap
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
+todo	mixing two float widths without a conversion does not silently promote
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
 todo	negative integer to byte uses two's complement
@@ -1141,9 +1156,8 @@ todo	the empty reader literal is the empty symbol
 todo	the empty set is equal to the empty set
 todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
+todo	the float operator rejects an integer operand and does not promote it
 todo	the intersection contains the elements in both sets
-todo	the le modifier encodes a u16 little-endian
-todo	the length of a fixed-width construction is the sum of its segment widths
 todo	the number of elements counts distinct elements
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the reader literal reads to Symbol.of
@@ -1151,6 +1165,7 @@ todo	the underlying numeric type obeys the numeric core — no silent promotion 
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
+todo	the width-indexed and aliased float annotations of one value do not conflict
 todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
 todo	two equal chars compare equal
