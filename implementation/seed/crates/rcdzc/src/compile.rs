@@ -286,10 +286,9 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
 /// The caller passes a `Db` it loaded from the SAME arena its span table was built from
 /// ([`Db::load`]), so the diagnostics' node ids index that span table directly.
 pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
-    let mut faults = collect_faults(db);
-    for f in &mut faults {
-        sanitize_origin(db, f);
-    }
+    // `collect_faults` already sanitizes each fault's origin (stripping a synthesized-node anchor) and
+    // dedups, so the faults are display-ready here.
+    let faults = collect_faults(db);
     let mut out: Vec<Diagnostic> = faults.iter().map(Diagnostic::from_reject).collect();
     // WARNINGS ride alongside the faults so "diagnostics as you type" (`Query::Diagnostics` / `cdz
     // check`) surfaces them too — an unused binding and a dead-trap are exactly the kind of thing an
@@ -511,6 +510,15 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for body in export_bodies {
         crate::effects::check_no_home(db, body, &mut faults);
     }
+    // SANITIZE ORIGINS BEFORE DEDUP. A fault anchored at a SYNTHESIZED/non-user node has its origin
+    // stripped to `None` (the front-end span table only covers user nodes). This must run BEFORE
+    // `dedup_faults` so the SAME fault reported once at a user node and once at a synthesized node — e.g.
+    // `(record (a 1) (a 2))`'s duplicate-field CDZ0201, collected at two nodes — collapses: after
+    // stripping, the synthesized copy is unanchored and `dedup_faults` drops it against the anchored
+    // twin. (Done here, not only in `diagnostics()`, so `compile()`'s error path dedups identically.)
+    for f in &mut faults {
+        sanitize_origin(db, f);
+    }
     dedup_faults(faults)
 }
 
@@ -536,10 +544,21 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     let has_not_a_function_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.starts_with(crate::diag::NOT_A_FUNCTION_PREFIX));
+    // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
+    // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
+    // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
+    // both slip through as two `error:` lines for one issue. Collect the (code, message) of every
+    // ANCHORED fault; an unanchored fault whose (code, message) matches one is that same fault minus its
+    // location — drop it, keeping the anchored copy (which carries a line:col).
+    let anchored_keys: std::collections::HashSet<(Option<Code>, &str)> = faults
+        .iter()
+        .filter(|r| r.at.is_some())
+        .map(|r| (r.code, r.message.as_str()))
+        .collect();
     let mut seen: std::collections::HashSet<(Option<Code>, Option<u32>, Option<String>)> =
         std::collections::HashSet::new();
     faults
-        .into_iter()
+        .iter()
         .filter(|r| {
             if has_no_home_reject
                 && r.is_decline()
@@ -553,11 +572,17 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             {
                 return false;
             }
+            // An unanchored fault that also appears ANCHORED (same code + message) is that fault minus
+            // its location — drop it, the anchored copy already carries the issue with a line:col.
+            if r.at.is_none() && anchored_keys.contains(&(r.code, r.message.as_str())) {
+                return false;
+            }
             // An anchored fault is identified by (code, node); an unanchored one by (code, message)
             // so distinct declines with no node still both appear.
             let msg_key = r.at.is_none().then(|| r.message.clone());
             seen.insert((r.code, r.at.map(|s| s.0), msg_key))
         })
+        .cloned()
         .collect()
 }
 
