@@ -23,6 +23,9 @@
 ///
 //= spec/capabilities/diagnostics.md#every-diagnostic-has-a-stable-code
 //# Every diagnostic the compiler emits MUST carry a machine-readable code that is stable across changes to unrelated diagnostics.
+///
+//= constitution.md#xi-diagnostics-are-machine-actionable
+//# Every diagnostic the compiler emits MUST carry a stable machine-readable code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Code {
     /// A LEXICAL well-formedness defect the READER detected but cannot itself report through the
@@ -38,6 +41,14 @@ pub enum Code {
     /// marker into this coded rejection (`collections-and-text.md` §A Char Is A Single Unicode Scalar
     /// Value). The static companion of the dynamic `(Char.from-int 55296)` → None.
     BadChar,
+    /// An `unquote` (`,x`) or `unquote-splicing` (`,@x`) OUTSIDE any quasiquote context — a SYNTAX error
+    /// (`metaprogramming.md` §Quasiquote Constructs AST With Selective Evaluation: "Unquote and
+    /// unquote-splicing outside a quasiquote context MUST be a syntax error"). `,`/`,@` only mean
+    /// something inside a `` ` `` template; a bare `,x`, or one nested only under a PLAIN `(quote …)`
+    /// (quote's body is inert data, NOT a selective-evaluation template), has no template to insert into.
+    /// In the CDZ00xx reader/syntax band with `BadEscape`/`BadChar` — a structural defect in the quoting
+    /// forms, distinct from `EffectNoHome` (CDZ0401), which the corpus formerly reused for this by mistake.
+    UnquoteOutsideQuasiquote,
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
     /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
     Unbound,
@@ -195,6 +206,7 @@ impl Code {
         match self {
             Code::BadEscape => "CDZ0001",
             Code::BadChar => "CDZ0002",
+            Code::UnquoteOutsideQuasiquote => "CDZ0003",
             Code::Unbound => "CDZ0101",
             Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",
@@ -260,6 +272,9 @@ pub enum Applicability {
 ///
 //= spec/capabilities/diagnostics.md#a-rejection-carries-a-structural-fix
 //# A diagnostic that reports a rejection MUST carry a proposed fix expressed as a structural edit of the program's abstract syntax tree, not a textual patch.
+///
+//= constitution.md#xi-diagnostics-are-machine-actionable
+//# Every diagnostic that reports a rejection MUST carry a machine-applicable route to a compliant program, expressed as a structural edit of the program's abstract syntax tree rather than a textual patch.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fix {
     /// A one-line human label for the edit (`replace with `foo``, `wrap in `(Some …)``) — what an
@@ -534,6 +549,27 @@ pub const HANDLE_NONCANONICAL_PREFIX: &str = "this handle is not in canonical fo
 pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducible by the tail-resumptive fold (cross-function \
      or non-tail resume arrives in a later increment)";
 
+/// The three UNCODED declines the emit path (`lower::lower_lambda_value`) returns when a closure that must
+/// cross the component boundary has a non-representable part — an `Any` (never-fixed) parameter or result,
+/// or a captured value with no machine type. When such a closure is an EXPORT'S result, `compile::
+/// collect_faults` reports the authoritative coded CDZ0201 ("returns a closure that cannot cross the
+/// component boundary … a parameter inference never fixed to a concrete scalar") at the export clause; the
+/// emit-path decline then rides alongside it as a second `error:` for the SAME root cause (the
+/// unrepresentable closure). Shared as consts so `dedup_faults` drops the decline whenever that CDZ0201 is
+/// present — ONE primary, actionable "no". A non-exported closure with an unrepresentable part (no CDZ0201
+/// covering it) keeps its honest decline.
+pub const CLOSURE_PARAM_NO_REPR_DECLINE: &str =
+    "a closure's parameter type has no machine representation";
+pub const CLOSURE_RESULT_NO_REPR_DECLINE: &str =
+    "a closure's result type has no machine representation";
+pub const CLOSURE_CAPTURE_NO_REPR_DECLINE: &str =
+    "a closure captures a value with no machine representation";
+
+/// A stable SUBSTRING of the coded CDZ0201 closure-boundary reject (`export <name> returns a closure that
+/// cannot cross the component boundary …`). `dedup_faults` matches this to recognize the reject that makes
+/// the [`CLOSURE_PARAM_NO_REPR_DECLINE`] family redundant, without pinning the whole (name/type-bearing) text.
+pub const CLOSURE_BOUNDARY_MARKER: &str = "cannot cross the component boundary";
+
 /// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
 /// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands
@@ -572,6 +608,8 @@ pub mod suggest {
     ///
     //= spec/capabilities/diagnostics.md#a-fix-is-a-deterministic-function-of-the-source
     //# A proposed fix and its verified-or-heuristic status MUST be a deterministic function of the source.
+    //= constitution.md#xi-diagnostics-are-machine-actionable
+    //# The route a diagnostic carries and its verified-or-heuristic status MUST be a deterministic function of the source, like every other compiler output.
     pub fn nearest<I, S>(name: &str, candidates: I) -> Option<String>
     where
         I: IntoIterator<Item = S>,

@@ -556,3 +556,64 @@
             (def (never-returns) (trap "unreachable"))
             (def (main) (match (never-returns))) (export main)))
   (trap   "unreachable"))
+
+; TYPE REFLECTION — `(Type.of e)` reduces at compile time to the type-VALUE of `e`'s inferred type,
+; realizing type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary (a type is
+; a first-class value the compiler can compute). It is a COMPILE-TIME operation: a `Type` value is
+; erased before the boundary (types-are-erased), so `Type.of` is used in TYPE positions — an annotation
+; `(: x (Type.of y))` gives `x` the same type as `y` — never returned at runtime. Attaching a unit or a
+; reflected type never changes the value's byte form, so an agreeing `(: x (Type.of y))` is transparent.
+
+(case "Type.of reflects a value's type for use as an annotation"
+  (doc    "Witnesses type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary: a
+           type is a first-class value the compiler computes. `(Type.of y)` reduces to `y`'s type-value
+           (here Int64), so `(: 100 (Type.of y))` annotates 100 with that reflected type — an agreeing
+           annotation, transparent, evaluating to 100. The reflected type is consumed in type position
+           and erased; nothing about it survives to runtime.")
+  (input  (let ((y 42)) (: 100 (Type.of y))))
+  (output (: 100 Int64)))
+
+(case "an annotation by a reflected type that contradicts the value is rejected"
+  (doc    "Witnesses type-system.md #Annotations Constrain, Never Contradict, over a REFLECTED type:
+           `(Type.of y)` is Int64 (y is 42), so `(: true (Type.of y))` annotates a Bool value with the
+           reflected Int64 — a contradiction rejected CDZ0203, exactly as a written `(: true Int64)` is.
+           Reflection does not weaken the check: the computed type constrains the value like any
+           annotation.")
+  (input  (let ((y 42)) (: true (Type.of y))))
+  (error  CDZ0203))
+
+(case "Type.of carries a quantity's unit into a same-type annotation"
+  (doc    "Witnesses type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary
+           over a unit-indexed type: `(Type.of y)` where `y : (Qty Float64 metre)` reflects the whole
+           quantity type — inner numeric AND unit — so `(: (Qty.of 9.0 metre) (Type.of y))` agrees and
+           the quantity erases to 9.0. Pins that reflection captures the full type, dimension included,
+           for reuse as `make another quantity of the same type as this one`.")
+  (input  (let ((y (Qty.of 3.0 (Unit.base #"metre"))))
+            (Qty.value (: (Qty.of 9.0 (Unit.base #"metre")) (Type.of y)))))
+  (output (: 9.0 Float64)))
+
+(case "a reflected quantity type rejects a value of a different dimension"
+  (doc    "The dimensional companion of the reflection annotation: `(Type.of y)` is `(Qty Float64 metre)`
+           (y is a length), so annotating a TIME quantity `(: (Qty.of 9.0 second) (Type.of y))` is a
+           dimensional mismatch, CDZ0501 — reflection carries the unit into the check exactly as a
+           written `(Qty Float64 metre)` annotation would. A reflected type is a real type, checked in
+           full.")
+  (input  (let ((y (Qty.of 3.0 (Unit.base #"metre"))))
+            (Qty.value (: (Qty.of 9.0 (Unit.base #"second")) (Type.of y)))))
+  (error  CDZ0501))
+
+(case "Type.of reflects a runtime parameter's type at compile time"
+  (doc    "Witnesses that reflection reads the STATIC type, not a runtime value: `(Type.of n)` for a
+           parameter `n : Int64` reduces to Int64 at compile time regardless of `n`'s runtime value, so
+           `(: 100 (Type.of n))` is an agreeing Int64 annotation and `main 7` returns 100. The reflected
+           type depends only on `n`'s inferred type, and is erased — `n`'s value is never consulted.")
+  (input  (do
+            (def (main (: n Int64)) (: 100 (Type.of n)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 100 Int64)))
+
+; (A reflected `Type` value is compile-time-only and cannot cross the component boundary — exporting a
+; definition whose result IS a `Type.of` value is rejected by the erasure fence, exactly as a bare unit
+; value is. That rejection is currently an UNCODED decline, so it is not pinned as an `(error CODE)`
+; case here; giving the erasure fence a diagnostic code is a separate increment.)

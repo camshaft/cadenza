@@ -6830,6 +6830,102 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_left_shifts_collapse_to_a_single_shift() {
+        // `(<< (<< v A) B)` → `(<< v (A+B))` when A+B < width. A LEFT shift is CHECKED (exact `·2^count`,
+        // traps on N-bit overflow) but collapses TRAP-IDENTICALLY: magnitude is monotonic in the count, so
+        // `(v<<A)<<B` overflows on exactly the inputs `v<<(A+B)` does. Bounded by A+B < width (a combined
+        // count ≥ width must trap as an out-of-range count / is masked mod width, disagreeing with the
+        // double shift). Pins the collapse (one shl), the width guard (two shifts when A+B ≥ width), the
+        // MIXED-direction non-collapse, and value + overflow-trap parity vs the single-shift form.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let shls = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Shl | Lir::I32Shl))
+                .count()
+        };
+        // A+B=5 < 64 → one shl; triple nest → one; Int8 3+4=7 < 8 → one.
+        assert_eq!(
+            shls(&lir("(: x Int64)", "(: (<< (<< x 2) 3) Int64)")),
+            1,
+            "shl-shl → one"
+        );
+        assert_eq!(
+            shls(&lir("(: x Int64)", "(: (<< (<< (<< x 1) 2) 3) Int64)")),
+            1,
+            "triple shl → one"
+        );
+        assert_eq!(
+            shls(&lir("(: x Int8)", "(: (<< (<< x 3) 4) Int8)")),
+            1,
+            "Int8 7 < 8 → one"
+        );
+        // A+B ≥ width does NOT combine: Int8 3+5=8, Int64 40+30=70.
+        assert_eq!(
+            shls(&lir("(: x Int8)", "(: (<< (<< x 3) 5) Int8)")),
+            2,
+            "8 >= 8 → keep two"
+        );
+        assert_eq!(
+            shls(&lir("(: x Int64)", "(: (<< (<< x 40) 30) Int64)")),
+            2,
+            "70 >= 64 → keep two"
+        );
+        // MIXED direction (`(<< (>> x 2) 3)`) is NOT collapsed — one of each stays.
+        let mixed = lir("(: x Int64)", "(: (<< (>> x 2) 3) Int64)");
+        assert_eq!(shls(&mixed), 1, "mixed shr-then-shl keeps its one shl");
+
+        // VALUE PARITY: 3<<5 = 96 (Int64 and in-range Int8); negatives shift correctly.
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(3)]),
+            96
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(-1)]),
+            -32
+        );
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(3)]),
+            96
+        );
+        // OVERFLOW-TRAP PARITY: Int8 8<<5 = 256 overflows — the collapsed `<< 5` traps exactly as the
+        // single-shift form does (the double-shift and single-shift agree on the trap set).
+        assert!(
+            traps("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(8)]),
+            "collapsed overflow traps"
+        );
+        assert!(
+            traps("(: x Int8)", "(: (<< x 5) Int8)", &[Val::S8(8)]),
+            "single-shift overflow traps"
+        );
+    }
+
+    #[test]
     fn a_mask_covering_a_shifted_values_range_is_elided() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
@@ -7846,10 +7942,41 @@ mod match_engine {
     }
 
     #[test]
+    fn comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error() {
+        // `(= (Age 1) 1)` for `(type Age (Age Int64))` compares a nominal newtype to its ERASED inner —
+        // the same nominal-boundary violation as Symbol-vs-String, so CDZ0202 (NOT the generic CDZ0203
+        // "type mismatch", which reads as unrelated types). Fires on either operand order; a generic
+        // newtype vs its instantiated inner (`(= (Mk 1) 1)`) is caught too.
+        assert_eq!(
+            reject_code(
+                "(module m (type Age (Age Int64)) (def (main) (= (Age 1) 1)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0202")
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (type Age (Age Int64)) (def (main) (= 1 (Age 1))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0202"),
+            "the boundary error fires regardless of operand order"
+        );
+        // A generic newtype `(Mk 1) : Box Int64` compared to a bare `Int64` also crosses the boundary.
+        assert_eq!(
+            reject_code("(module m (type Box (Mk a)) (def (main) (= (Mk 1) 1)) (export main))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
+    }
+
+    #[test]
     fn a_generic_newtype_at_two_instantiations_stays_distinct() {
         // `Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing
         // them across the boundary is a type error — the nominal-over-generic analogue of `Option Int64 ≠
-        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.)
+        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.) A
+        // nominal-vs-nominal clash stays CDZ0203 (the newtype-vs-untagged-inner CDZ0202 above fires only
+        // when the OTHER operand is not itself a nominal).
         assert_eq!(
             reject_code(
                 "(module m (type Box (Mk a)) \
@@ -7984,6 +8111,22 @@ mod match_engine {
     }
 
     #[test]
+    fn a_recursive_newtype_escapes_to_the_host() {
+        // Phase 3: a RECURSIVE newtype RETURNED to the host escapes via the recursive-sum shape walker,
+        // routed on the un-stripped nominal so its OWN name tags the value (`Lst`, not the inner
+        // `Option`). The recursion point (the nested `Mk None`) is tagged `Lst` too. Was a clean DECLINE
+        // pre-Phase-3.
+        let Some(v) = run_heap_value_escape(
+            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+               (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping recursive newtype escape");
+            return;
+        };
+        assert_eq!(v, "(: (Some (tuple 7 (: (None unit) Lst))) Lst)");
+    }
+
+    #[test]
     fn a_newtype_over_a_record_reads_a_field_at_runtime() {
         // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
         // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
@@ -8075,6 +8218,50 @@ mod match_engine {
             reject_code("(module m (def (a) (fn ((: x Int64)) (+ x 100))) (export a))"),
             None,
             "a well-typed exported closure must still compile"
+        );
+    }
+
+    #[test]
+    fn an_unrepresentable_closure_export_reports_one_error_not_a_shadowing_decline() {
+        // An exported closure with an UNANNOTATED param (`(fn (x) 1)` : `(-> Any Int64)`) cannot cross the
+        // boundary — CDZ0201 at the export clause, naming the concrete cause. The emit path ALSO returns
+        // an uncoded "a closure's parameter type has no machine representation" decline at the closure
+        // BODY (a different node), so both used to surface as two `error:` lines for ONE root cause.
+        // `dedup_faults` now drops that decline whenever the CDZ0201 is present → ONE primary, actionable
+        // error (an agent reads the coded reject, not a bare "no machine representation").
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) (fn (x) 1)) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an unrepresentable closure export = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0]
+                .message
+                .contains("cannot cross the component boundary"),
+            "the surviving error is the coded boundary reject: {}",
+            errors[0].message
+        );
+        // The shadowing decline is gone specifically.
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE),
+            "the 'no machine representation' decline must not accompany the coded reject"
         );
     }
 
@@ -8647,6 +8834,35 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_set_construction_deduplicates_by_value() {
+        // collections-and-text.md §A Set Is A Collection Of Unique Elements — `Set.of` DEDUPLICATES its
+        // constant elements by value, and set equality is order-independent + by value. This LOCKS IN the
+        // behavior the LINEAR `lower_set_of` dedup (a `ScalarKey` hash-set fast path) preserves: it
+        // replaced an O(elements²) pairwise `const_compound_eq` scan (each re-cloning a `Core`) — a
+        // `(Set.of (list 0 1 … N))` of N distinct ints was quadratic (N=3200 spent ~82% of the compile in
+        // `const_compound_eq`). The verdict is IDENTICAL — first occurrence of each value is kept, order
+        // is unobservable (the canonical form sorts). Folds to a constant `bool`, so no runtime is needed.
+        let run = |src: &str| {
+            run_returns::<bool>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        // A duplicate element collapses: {1,2,2,3} == {1,2,3} (corpus 19-sets §"collapses a duplicate").
+        assert!(run("(= (Set.of (list 1 2 2 3)) (Set.of (list 1 2 3)))"));
+        // Order-independent: {3,1,2} == {1,2,3}.
+        assert!(run("(= (Set.of (list 3 1 2)) (Set.of (list 1 2 3)))"));
+        // A repeated value at DIFFERENT list positions still collapses to one element (size 3 vs 4-list).
+        assert!(run("(= (Set.of (list 1 2 3 1 2 3)) (Set.of (list 1 2 3)))"));
+        // Distinct elements are NOT collapsed: {1,2,3} ≠ {1,2}.
+        assert!(!run("(= (Set.of (list 1 2 3)) (Set.of (list 1 2)))"));
+        // String elements dedup the same way (a non-int scalar key path).
+        assert!(run(
+            "(= (Set.of (list \"a\" \"b\" \"a\")) (Set.of (list \"a\" \"b\")))"
+        ));
+    }
+
+    #[test]
     fn symbol_reader_sugar_and_nominal_boundary() {
         // 17-symbols inc 2: `#"text"` reader sugar reads to the SAME value as `(Symbol.of "text")`, and a
         // Symbol is NOMINAL over String — comparing the two ACROSS the boundary is CDZ0202.
@@ -8742,6 +8958,45 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn a_recursive_module_function_lowers_to_a_runtime_call() {
+        // 11-modules "a module function is recursive": a module member `(def (fac n) …)` that calls
+        // itself resolves (in-module sibling scope, mutual visibility) AND now LOWERS — it is registered
+        // as an internal `db.defs` entry (`modules::register_callable`) so the recursive call becomes a
+        // standalone `Core::Call` (a real wasm function), exactly as a top-level recursive def does. fac(5)
+        // = 120. Its unannotated `n` is solved by the connected A2 param solve, keyed on the internal def.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module lib (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))) ((. lib fac) 5))) (export main))"
+                ),
+                "main"
+            ),
+            120
+        );
+        // A recursive function in a NESTED module — reached through the projection chain `(. (. outer
+        // inner) fac)`, whose `Member` head `callee_def_index` reduces to the same registered internal def.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))))) ((. (. outer inner) fac) 5))) (export main))"
+                ),
+                "main"
+            ),
+            120
+        );
+        // MUTUAL recursion between two module members — `ev`/`od` call each other; neither β-reduces, so
+        // both lower to runtime calls. ev(10) = true → 1.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def (ev n) (if (= n 0) true (od (- n 1)))) (def (od n) (if (= n 0) false (ev (- n 1))))) (if ((. m ev) 10) 1 0))) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+    }
     #[test]
     fn a_module_nested_in_a_module_projects_as_a_nested_record() {
         // 11-modules "a module nested in a module …": a `(module inner …)` written as a MEMBER of
@@ -9039,6 +9294,41 @@ mod match_engine {
             reject_code("(module m (def (main) (quote 5)) (export main))"),
             None,
             "a well-formed (quote FORM) declines (a Todo), it is not a coded rejection"
+        );
+    }
+
+    #[test]
+    fn unquote_outside_quasiquote_is_cdz0003_wrong_arity_is_cdz0201() {
+        // metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation: `,`/`,@` are meaningful
+        // ONLY inside a `` ` `` template. `unquote`/`unquote-splicing` are grammar heads now (reader-
+        // desugared from `,`/`,@`); the two syntax defects reject with distinct codes, split OFF the
+        // effect-no-home CDZ0401 they formerly (wrongly) shared.
+        // (1) An unquote OUTSIDE any quasiquote → CDZ0003 (the syntax-band unquote-outside code). A bare
+        //     `,x` reads to `(unquote x)`.
+        assert_eq!(
+            reject_code("(module m (def (main) (unquote x)) (export main))").as_deref(),
+            Some("CDZ0003")
+        );
+        // (2) An unquote nested only under a PLAIN `(quote …)` is STILL outside a quasiquote (a quote body
+        //     is inert data, not a selective-evaluation template) → CDZ0003, surfaced through the quoted
+        //     structure even though the enclosing quote itself declines.
+        assert_eq!(
+            reject_code("(module m (def (main) (quote (g (unquote x)))) (export main))").as_deref(),
+            Some("CDZ0003")
+        );
+        // (3) A wrong-ARITY unquote (≠1 operand) is CDZ0201 (malformed), checked before the context — so
+        //     `(quasiquote (unquote 1 2))` is the arity error, not the context error.
+        assert_eq!(
+            reject_code("(module m (def (main) (quasiquote (unquote 1 2))) (export main))")
+                .as_deref(),
+            Some("CDZ0201")
+        );
+        // (4) A WELL-FORMED unquote genuinely inside a quasiquote MUST evaluate its operand — so an unbound
+        //     name in it is the ordinary CDZ0101, NOT swallowed by the quasiquote's own decline.
+        assert_eq!(
+            reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))")
+                .as_deref(),
+            Some("CDZ0101")
         );
     }
 

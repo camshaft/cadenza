@@ -1809,7 +1809,7 @@ fn ml_drops_a_non_renderable_insert_fix_but_keeps_the_message() {
     let f = dir.join("prog.cdz");
     std::fs::write(
         &f,
-        "effect Diag {\n  emit : Int64 -> Unit\n  collect : Unit -> List(Int64)\n};\n\n\
+        "effect Diag =\n  | emit : Int64 -> Unit\n  | collect : Unit -> List(Int64)\n\n\
          def main() =\n  handle Diag([]) with\n    | emit(code, s) => resume(unit, List.push(s, code))\n  in\n  Diag.emit(1)\n",
     )
     .unwrap();

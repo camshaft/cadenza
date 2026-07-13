@@ -338,6 +338,12 @@ const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 ///
 //= spec/capabilities/type-system.md#every-expression-has-a-static-type
 //# A program that is not well-typed MUST be rejected at compile time rather than compiled to a component carrying a deferred type error.
+///
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# Every expression in a well-formed program MUST have a statically determined type before the program is compiled to a component.
+///
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# The compiler MUST reject a program that is not well-typed rather than emit a component carrying a deferred type error.
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
@@ -633,7 +639,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // ENTRYPOINT-level property (a library def that performs an effect is fine — its home is its callers'
     // context), so it is checked over each EXPORT's body, following the call graph, rather than per-def.
     // A perform enclosed by a `handle` that discharges its effect, or a `host` that delegates it, has a
-    // home and is skipped; one that reaches the entrypoint top with no home is CDZ0401.
+    // home and is skipped; one that reaches the entrypoint top with no home is CDZ0401. This is the
+    // no-ambient-authority floor: a program that reaches a host operation it never declared is REJECTED
+    // here rather than compiled to a component carrying that undeclared (latent) import.
+    //= constitution.md#iv-no-ambient-authority
+    //# A program that reaches a host operation it does not declare MUST be rejected at compile time rather than compiled to a component carrying a latent import.
     let export_bodies: Vec<StructId> = db
         .exports
         .iter()
@@ -800,6 +810,15 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             && r.message
                 .starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
     });
+    // Likewise: an exported closure with a non-representable part (an `Any` param/result, a captured
+    // value with no machine type) is reported as the coded CDZ0201 "cannot cross the component boundary"
+    // at the export clause. The emit path ALSO returns an uncoded "a closure's <part> has no machine
+    // representation" decline at the closure BODY — a DIFFERENT node, so the same-node general rule below
+    // does not catch it; drop the decline program-wide when the CDZ0201 is present, keeping the coded
+    // reject (which names the concrete cause — unannotated param / partial application) as the ONE "no".
+    let has_closure_boundary_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.contains(crate::diag::CLOSURE_BOUNDARY_MARKER));
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -848,6 +867,17 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_malformed_handler_reject
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
+            {
+                return false;
+            }
+            if has_closure_boundary_reject
+                && r.is_decline()
+                && matches!(
+                    r.message.as_str(),
+                    crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
+                )
             {
                 return false;
             }
