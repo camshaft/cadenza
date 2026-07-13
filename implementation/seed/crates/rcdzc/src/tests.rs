@@ -11971,19 +11971,66 @@ mod stage1 {
     }
 
     #[test]
-    fn a_conditional_abortive_perform_declines_rather_than_miscompiles() {
-        // E4 soundness guard: an abortive perform inside an `if` BRANCH fires on only ONE control path,
-        // so the E4-a unconditional short-circuit (which collapses the WHOLE handle body to the arm value)
-        // would be UNSOUND — `(if (< x 5) (Bail.bail 7) 0)` must yield 0 when `x >= 5`, not 7. A runtime
-        // condition can't fold, so the perform stays genuinely conditional. `reduce_handle` DECLINES it
-        // (a real `block`/`br` control node for a conditional abort is a later increment) rather than
-        // miscompile. Regression guard for a live-on-spec miscompile E4-a's guard missed.
+    fn an_abortive_perform_in_a_tail_if_branch_folds_per_branch() {
+        // E4 branch-tail fold: an abortive perform in the TAIL of a tail-position `if` branch is LOCAL to
+        // that branch — the `if` IS the handle body's value, so per-branch the abort just yields the arm
+        // value for that branch and the sibling branch survives. `(if true (Bail.bail 7) 99)` folds to
+        // `(if true 7 99)` → 7; `(if false (Bail.bail 7) 99)` → 99. A constant condition here keeps the
+        // test to the fold (a runtime param in a handle body is a separate, not-yet-supported case); the
+        // guard is STRUCTURAL — it does not rely on the constant folding away.
+        let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if true (Bail.bail 7) 99))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(aborts)))
+                    .expect("a tail-if-branch abort compiles"),
+                "main"
+            ),
+            7
+        );
+        let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if false (Bail.bail 7) 99))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(survives)))
+                    .expect("the non-aborting branch survives"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
+    fn a_non_tail_conditional_abortive_perform_declines_rather_than_miscompiles() {
+        // E4 soundness guard: an abortive perform under a NON-tail conditional cannot be realized by either
+        // sound shape — the unconditional collapse (whole handle → arm value) would abort the other path
+        // too, and the per-branch fold needs the `if` to BE the handle value. `(+ 1 (if true (Bail.bail 7)
+        // 0))` would have to abort OUT of the enclosing `+ 1`, which needs a real `block`/`br` control node
+        // (a later increment). `body_has_unsound_abortive_perform` flags it (`under_cond && !tail`) and
+        // `reduce_handle` DECLINES rather than miscompile. The guard is STRUCTURAL — a constant condition
+        // does not let the abort slip past as an unconditional one. Regression guard for the E4-a miscompile.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) \
-                     (handle 99 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) 0))) (export main))";
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a conditional abortive perform must decline, not miscompile the other branch"
+            "a non-tail conditional abortive perform must decline, not miscompile"
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_in_a_short_circuit_operand_declines() {
+        // E4 soundness guard, the short-circuit variant: `(or true (Bail.bail 7))` evaluates its right
+        // operand only when `true` is false — a CONDITIONAL abort. Unlike an `if`, the threading path folds
+        // `and`/`or` as a STRICT `Apply` (both operands, no per-branch abort capture), so an abort in the
+        // right operand would set the abort cell and collapse the whole handle — the wrong value. The guard
+        // marks a short-circuit right operand `under_cond`, so the abort is flagged and `reduce_handle`
+        // DECLINES (a short-circuit conditional abort needs the `if`-style per-branch fold, a later step).
+        // `Bail.bail` returns `Bool` here so it can sit in an `or`.
+        let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
+                   (def (main) (handle false ((Bail.bail (n) s n)) (or true (Bail.bail 7)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an abortive perform in a short-circuit right operand must decline, not miscompile"
         );
     }
 
