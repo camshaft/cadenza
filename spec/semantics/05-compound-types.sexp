@@ -1157,6 +1157,17 @@
   (call   main)
   (output (: "hi" String)))
 
+(case "a Char-payload sum value escapes across the boundary in its canonical form"
+  (needs  chars)
+  (doc    "The escape companion: a `(Ch Char)` variant value returned across the boundary renders in its
+           canonical value form `(Ch #\\a)` — the char payload survives the value-escape walk exactly as
+           an Int64 payload does. Pins that the Char leaf's payload round-trips not only through the
+           type-value decode (construction/match) but through the ESCAPE path (the deterministic value
+           form), so a Char payload is a first-class sum payload end to end.")
+  (input  (do (type Tok (Ch Char) (End)) (def (main) (Tok.Ch #\a)) (export main)))
+  (call   main)
+  (output (: (Ch #\a) Tok)))
+
 ; --- A variant carrying a BARE NULLARY variant with an unconstrained payload type-checks ---------
 ; type-system.md #Generics Are Type-Valued Parameters: a nullary variant `None : ∀a. Option a` is
 ; generic in its payload. Constructing `(Some (None))`, the inner `None`'s payload `a` is a free type
