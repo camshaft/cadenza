@@ -1722,6 +1722,53 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             return;
         }
     }
+    // A built-in arithmetic/comparison/equality operator with a TEXT operand (String/Bytes) against a
+    // SCALAR operand (a number, a Bool, a Char) is a CROSS-KIND clash — a malformed operation, CDZ0201,
+    // NOT the CDZ0203 a same-kind SHAPE mismatch (two tuples of different arity, Int-vs-Bool) gets. This
+    // mirrors the map-vs-record kind clash above: `(+ 1 "two")`, `(< 1 "x")`, `(> "x" 1)` compare a
+    // heap-allocated text value against an unboxed scalar — there is no shared order or arithmetic across
+    // that kind boundary (type-system.md §Structural Values Are Comparable Only When Their Shapes Match —
+    // the cross-kind case; 07-type-system.sexp pins these at CDZ0201, the equality-companion code, while
+    // Int-vs-Bool `(< 1 true)` — two scalars — stays the generic CDZ0203). The generic scheme-unify below
+    // would report `unify::mismatch` = CDZ0203; catch the text/scalar clash FIRST for the right code. Only
+    // fires when EXACTLY one side is text and the other is a definite scalar — String-vs-String (a valid
+    // comparison), text-vs-compound, and two scalars all fall through to the generic path unchanged.
+    if args.len() == 2
+        && matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::Eq
+                    | crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Compare
+                    | crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            )
+        )
+    {
+        let (a, b) = (type_of(db, args[0]), type_of(db, args[1]));
+        let is_text = |t: &Ty| matches!(t, Ty::String | Ty::Bytes);
+        let is_scalar = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char);
+        if (is_text(&a) && is_scalar(&b)) || (is_scalar(&a) && is_text(&b)) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: text operand against a scalar operand — distinct kinds (CDZ0201)");
+            out.push(Reject::coded(
+                Code::Malformed,
+                format!(
+                    "a {} and a {} are different types (this operation is not defined across that kind boundary)",
+                    a.render_name(),
+                    b.render_name()
+                ),
+            ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
+    }
     // DIMENSIONAL check on a binary operator applied to QUANTITIES (units-of-measure.md §A Dimensional
     // Mismatch Is An Error). Fires BEFORE the generic scheme-unify (whose `∀a. (Int a) → …` scheme has no
     // notion of a unit) and `return`s to avoid a duplicate report:
@@ -3136,13 +3183,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let missing = crate::effects::handler_missing_operations(db, &arms);
                 if !missing.is_empty() {
                     let list = missing.join(", ");
+                    // Name the missing ops AND spell the arm(s) to add — the "add the missing arms"
+                    // guidance for a non-exhaustive handler (the effect analogue of a non-exhaustive
+                    // match; `spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+                    // ⚠ A STRUCTURAL InsertArms fix is NOT attached: the handle's arms-list is a
+                    // SYNTHESIZED node (the canonical `(handle E seed arms body)` is desugared in place to
+                    // the internal form with a fresh arms-list — `effects::canonical_handle_rewrite`), so
+                    // it carries no source span for a consumer to splice at. The concrete arm text goes in
+                    // the message instead, so an agent still gets the exact fix to add.
+                    let add = crate::effects::handler_missing_arm_skeletons(db, &arms)
+                        .map(|arms| format!(" — add {}", arms.join(" ")))
+                        .unwrap_or_default();
                     out.push(
                         Reject::coded(
                             Code::HandlerNotExhaustive,
                             format!(
                                 "this handler does not bind every operation its effect declares \
                                  (missing: {list}) — a handle must discharge its effect's whole \
-                                 operation set"
+                                 operation set{add}"
                             ),
                         )
                         .at(body),

@@ -6106,6 +6106,17 @@ fn emit_checked_arith_to(
         _ => return Err(Reject::decline("not a checked arithmetic op")),
     });
     out.push(Lir::LocalSet(sr));
+    // GUARD ELISION: when interval arithmetic over the operands' known ranges proves the result CANNOT
+    // leave the type (`(+ (& x 15) (& y 15))` sums two `[0,15]` values → `[0,30]`, fits Int64), BOTH the
+    // machine overflow guard AND the narrow range-check are dead — the machine op already computed the
+    // exact result. Skip them. `arith_provably_in_range` is conservative (a value with no finite range
+    // bound → keep the guards), and verified sound by exhaustive endpoint checks.
+    if crate::lower::arith_provably_in_range(db, op, lhs, rhs) {
+        if matches!(dest, ResultDest::Stack) {
+            out.push(Lir::LocalGet(sr));
+        }
+        return Ok(());
+    }
     // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot).
     emit_machine_overflow_guard(op, m, sa, sb, sr, out);
     // Step 2: the narrow-width range-check on the exact result in `$r`. For a narrow signed `± const`
@@ -7942,6 +7953,54 @@ mod tests {
             !f.code.iter().any(|i| matches!(i, Lir::I64And)),
             "the `& (r^b)` half is gone — x & x = x, got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn a_provably_in_range_arith_op_elides_its_overflow_guard() {
+        let select = |src: &str| {
+            let mut db = Db::load(crate::testkit::parse(src));
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(+ (& x 15) (& y 15))`: both operands ∈ [0,15], sum ∈ [0,30], fits Int64 → NO overflow guard
+        // (no `((r^a)&(r^b))<0` sign test).
+        let add = select(
+            "(module m (def (f (: x Int64) (: y Int64)) (+ (& x 15) (& y 15))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !add.iter().any(|i| matches!(i, Lir::I64Xor))
+                && !add.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a provably-in-range add drops its guard; got {add:?}"
+        );
+        // `(* (& x 15) 3)`: [0,15]×3 = [0,45], fits → NO const-multiplier bound check.
+        let mul =
+            select("(module m (def (f (: x Int64)) (* (& x 15) 3)) (def (main) 0) (export main))");
+        assert!(
+            !mul.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a provably-in-range mul drops its bound check; got {mul:?}"
+        );
+        // A full-range add (either operand unbounded) KEEPS its guard.
+        let kept = select(
+            "(module m (def (f (: x Int64) (: y Int64)) (+ x y)) (def (main) 0) (export main))",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a full-range add keeps its overflow guard; got {kept:?}"
+        );
+        // A NARROW result whose interval EXCEEDS the type keeps its range-check: [0,200]+[0,200]=[0,400]
+        // > UInt8 255.
+        let narrow_over = select(
+            "(module m (def (f (: x UInt8) (: y UInt8)) (+ (& x 200) (& y 200))) (def (main) 0) (export main))",
+        );
+        assert!(
+            narrow_over
+                .iter()
+                .any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "an over-range narrow add keeps its range-check; got {narrow_over:?}"
         );
     }
 

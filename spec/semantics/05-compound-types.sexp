@@ -585,20 +585,20 @@
   (call   main (: 41 Int64))
   (output (: 41 Int64)))
 
-(case "a recursive resolver whose trapping arm builds a compound compiles"
+(case "a recursive resolver whose dead arm builds a trapping compound compiles"
   (doc    "A recursive `Node → Core` resolver — the self-hosting compiler's front rung — applied to a
-           runtime-built `Node` and consumed as a scalar. One arm (`unknown-head`) builds a Core whose
-           payload is a DEFINITE TRAP: `(Core.KConst (bad))` where `(bad)` = `(Bytes.len (Bytes.of (list
-           256)))` (256 is out of byte range, so the payload const-folds to a trap → `Kind::Never`).
-           `resolve` of `(NPrim '+' …)` takes the `KAdd` arm (not the trapping one), so `kind-of` of the
-           result is 1. Pins that a divergent (Never) compound element does NOT poison the whole
-           function: earlier the trapping arm made `resolve`'s entire body emit an INVALID component on
-           the runtime-heap path (a Never element boxed as a half-built `sum-new`; a Never-returning
-           helper's i64 leaking to a Heap caller), which declined 'cannot box' / failed validation — the
-           final blocker on connecting the reader to the pipeline. A Never element now short-circuits to
-           `unreachable`, a Never-bodied function stubs to `unreachable` keeping its inferred signature,
-           and a Never argument makes its call diverge — so a resolver with a trapping arm compiles, and
-           an actually-unknown head traps at run time (the front-end rejection point).")
+           runtime-built `Node` and consumed as a scalar. Its `NPrim` arm dispatches on the head `h`; a
+           statically-dead branch (`(if false …)`) would build a Core whose payload is a COMPILE-PROVABLE
+           TRAP: `(Core.KConst (bad))` where `(bad)` = `(Bytes.len (Bytes.of (list 256)))` (256 is out of
+           byte range, so that payload const-folds to a trap). Because the branch is guarded by a constant
+           `false`, the trapping compound is unreachable and is folded away before lowering — so it does
+           NOT poison the whole function, and `resolve` compiles. Pins the dead-code shielding rule: a
+           compile-provable trap sitting in a statically-dead compound-constructor position is dropped
+           with its branch rather than boxed as a half-built `sum-new` (which earlier emitted an INVALID
+           component on the runtime-heap path — the final blocker on connecting the reader to the
+           pipeline). This is distinct from a trap in a runtime-LIVE arm, which stays a build failure per
+           `reference-compiler.md` #A Compile-Provable Trap Fails The Build: only the dead branch is
+           shielded. `resolve` of `(NPrim '+' …)` takes the `KAdd` arm, so `kind-of` of the result is 1.")
   (needs  sum-type-declaration)
   (input  (do
             (type Node (NInt Int64) (NPrim (Tuple String Node Node)))
@@ -609,7 +609,7 @@
                 ((Node.NInt n) (Core.KConst n))
                 ((Node.NPrim (tuple h a b))
                   (if (= h "+") (Core.KAdd (tuple (resolve a) (resolve b)))
-                                (Core.KConst (bad))))))
+                                (if false (Core.KConst (bad)) (Core.KConst 0))))))
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
             (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
   (output (: 1 Int64)))

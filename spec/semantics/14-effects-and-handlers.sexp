@@ -241,6 +241,24 @@
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
 
+(case "an abortive perform under a non-tail conditional abandons the enclosing computation"
+  (doc    "The abortive early-exit from MID-EXPRESSION, not just a tail branch. `(+ 100 (if (< x 5)
+           (Bail.bail 7) 50))` — the abort is a strict OPERAND of `+`, not the handle's tail. Because an
+           abort ABANDONS the enclosing computation, the surrounding `+ 100` is dead on the aborting path,
+           so the expression is equivalent to `(if (< x 5) (Bail.bail 7) (+ 100 50))`: distributing the
+           pure enclosing op into both branches lifts the abort to a branch tail (value-preserving because
+           the sibling operand `100` is pure). Called with `x = 3` (< 5) the abort fires, discarding the
+           `+ 100` → 7; with `x = 9` the false branch runs → `100 + 50` = 150. This is the 'validate an
+           argument, bail out of the whole computation on failure' shape (`DESIGN-effects-rcdzc.md` §4.2).")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: x Int64))
+              (handle 0 ((Bail.bail (n) s n))
+                (+ 100 (if (< x 5) (Bail.bail 7) 50)))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: 7 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

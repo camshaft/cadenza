@@ -6121,6 +6121,13 @@ fn fold_comparison_at_type_bound(
 /// `[0, 2^B − 1]`, tighter than its type) and falls back to the value's declared-type bounds. Feeds the
 /// range-vs-constant comparison fold.
 fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
+    // A CONSTANT's range is exactly itself — `[v, v]` (the tightest possible). This gives interval
+    // arithmetic a precise endpoint for a constant operand (`(* (& x 15) 3)`: `[0,15] × [3,3] = [0,45]`).
+    if let Core::ConstInt(v) = core_of(db, id)
+        && let Some(v) = v.to_i64()
+    {
+        return Some((v, Some(v)));
+    }
     // A derived nonnegative bit-bound gives the tightest range `[0, 2^B − 1]`. `B < 64` (the helper caps
     // it), so `2^B − 1` fits i64.
     if let Some(b) = unsigned_value_bits(db, id) {
@@ -6135,6 +6142,53 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
         },
         _ => None,
     }
+}
+
+/// A CLOSED range `[min, max]` (both bounds i64) for a value, or `None` if either bound is unknown — the
+/// form INTERVAL ARITHMETIC needs. Wraps `value_range`, demanding a finite `max` (an unbounded value can
+/// overflow any op, so no fit proof).
+fn closed_range(db: &mut Db, id: StructId) -> Option<(i64, i64)> {
+    match value_range(db, id) {
+        Some((lo, Some(hi))) => Some((lo, hi)),
+        _ => None,
+    }
+}
+
+/// Whether a CHECKED `+`/`-`/`*` at `id` provably CANNOT overflow its result type — so its overflow guard
+/// (and narrow range-check) can be elided at emit. Computes the exact result INTERVAL from the operands'
+/// `closed_range`s (in `i128`, so the interval endpoints never wrap) and checks it lies within the result
+/// type's `[min, max]`. The interval per op: `+` → `[alo+blo, ahi+bhi]`; `-` → `[alo−bhi, ahi−blo]`; `*` →
+/// the min/max of the four corner products. A `None` operand range → `false` (unknown, keep the guard).
+/// Verified sound by exhaustive endpoint check. Lets a masked/narrowed operand (`(+ (& x 15) (& y 15))`,
+/// sum ≤ 30) shed its guard.
+pub(crate) fn arith_provably_in_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> bool {
+    let id_ty = crate::infer::type_of(db, lhs); // both operands share the op's width (binary-op unify)
+    let crate::ty::Ty::Int(it) = id_ty else {
+        return false;
+    };
+    // The result type's inclusive bounds (both must be i64-representable — an unsigned-64 result has no
+    // i64 max, so we cannot prove a fit against it here).
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+        Some(b) => b,
+        None => return false,
+    }) else {
+        return false;
+    };
+    let (Some((alo, ahi)), Some((blo, bhi))) = (closed_range(db, lhs), closed_range(db, rhs))
+    else {
+        return false;
+    };
+    let (alo, ahi, blo, bhi) = (alo as i128, ahi as i128, blo as i128, bhi as i128);
+    let (rlo, rhi) = match op {
+        Prim::Add => (alo + blo, ahi + bhi),
+        Prim::Sub => (alo - bhi, ahi - blo),
+        Prim::Mul => {
+            let c = [alo * blo, alo * bhi, ahi * blo, ahi * bhi];
+            (*c.iter().min().unwrap(), *c.iter().max().unwrap())
+        }
+        _ => return false,
+    };
+    rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are

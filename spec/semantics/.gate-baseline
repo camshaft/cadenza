@@ -438,6 +438,7 @@ pass	a recursive predicate with the self-call in the else branch is a Bool condi
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
+pass	a recursive resolver whose dead arm builds a trapping compound compiles
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -535,6 +536,9 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a set collapses a duplicate element
+pass	a set is constructed from a list of its elements
+pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
@@ -645,6 +649,7 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an annotated destructuring let binder
@@ -703,6 +708,7 @@ pass	an internally ill-typed unselected match arm body is a type error
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
+pass	an operation on mismatched types is rejected at compile time
 pass	an option value annotated with the wrong payload type is rejected
 pass	an ordering operator with a single operand is rejected, not a crash
 pass	an out-of-range float literal is a malformed literal, not a non-finite value
@@ -851,7 +857,9 @@ pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
 pass	inserting a key already present replaces its value, not the size
 pass	inserting a key of a different type into a map is a type error
+pass	inserting a present element is a no-op value
 pass	inserting a value of a different type into a map is a type error
+pass	inserting an element yields a set containing it
 pass	inserting into the empty map then looking a key up yields the value
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
@@ -890,6 +898,9 @@ pass	member access on a non-record is a type error
 pass	member access on a record chosen by a conditional projects the field
 pass	member access on a string is a type error
 pass	member access on a tuple is a type error
+pass	membership of a present element is true
+pass	membership of an absent element in the empty set is false
+pass	membership of an absent element is false, not a trap
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
 pass	mixing two float widths without a conversion does not silently promote
@@ -915,8 +926,10 @@ pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nullary constructor patterns are uniform with unary
 pass	one generic sum instantiated at two different types in one program
+pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
+pass	ordering an integer against a string is a type error
 pass	over-applying a constructor by several arguments is a type error
 pass	over-applying a constructor is a type error, not a silent argument drop
 pass	over-applying a lambda by an extra argument is a type error
@@ -947,6 +960,7 @@ pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
 pass	removing a key drops its association and the size
 pass	removing an absent key leaves the map unchanged
+pass	removing an element yields a set without it
 pass	resolving a head against a prelude symbol rejects a length-mismatched prefix
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
@@ -956,6 +970,7 @@ pass	runtime float inequality compares by canonical byte form
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
 pass	scaling a quantity by a dimensionless quantity keeps its dimension
+pass	set equality is independent of the order elements are written
 pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
 pass	slicing a runtime byte sequence with a negative start yields None
@@ -989,7 +1004,9 @@ pass	the LEB128 byte composition runs on a runtime operand
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the difference contains the elements not in the second set
 pass	the empty byte sequence has length zero
+pass	the empty set is equal to the empty set
 pass	the empty string has length zero
 pass	the entrypoint adds one to its runtime argument
 pass	the entrypoint branches on its runtime argument
@@ -1002,6 +1019,7 @@ pass	the float operator rejects an integer operand and does not promote it
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
+pass	the intersection contains the elements in both sets
 pass	the largest factorial that fits the integer type computes exactly
 pass	the le modifier encodes a u16 little-endian
 pass	the length of a byte sequence is its byte count
@@ -1017,6 +1035,7 @@ pass	the minimum Int64 literal reads as an integer
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
 pass	the nullary-first if returns the None arm on the base path
+pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
 pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
@@ -1032,6 +1051,7 @@ pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
+pass	the union contains the elements of either set
 pass	the unit value
 pass	the value-yielding insert reports the value it replaced
 pass	the value-yielding remove reports the value it dropped
@@ -1075,6 +1095,8 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+pass	two sets of different sizes are unequal, not a type error
+pass	two sets with different elements are unequal, not a type error
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two unequal runtime strings compare false by their contents
@@ -1154,14 +1176,10 @@ todo	a rational-magnitude quantity erases to its exact rational value
 todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
-todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
-todo	a set collapses a duplicate element
-todo	a set is constructed from a list of its elements
-todo	a set with elements of two different types is a type error
 todo	a string compared to a symbol is a type error
 todo	a symbol compared to a string is a type error
 todo	a symbol converts back to its content string
@@ -1190,7 +1208,6 @@ todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	an operation on mismatched types is rejected at compile time
 todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
@@ -1220,19 +1237,12 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	inserting a present element is a no-op value
-todo	inserting an element yields a set containing it
 todo	interning the same string twice yields equal symbols
-todo	membership of a present element is true
-todo	membership of an absent element in the empty set is false
-todo	membership of an absent element is false, not a trap
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
-todo	ordering a string against an integer is a type error regardless of operand order
-todo	ordering an integer against a string is a type error
 todo	pattern matching over AST distinguishes forms
 todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
@@ -1249,8 +1259,6 @@ todo	quote produces an AST value without evaluating
 todo	quote-vs-constructor AST equality holds regardless of operand order
 todo	reading the text a printer produced round-trips to an equal value
 todo	record reshaping is subset comparison as explicit projection
-todo	removing an element yields a set without it
-todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
 todo	splicing a non-list value into a quasiquote is a type error
@@ -1263,18 +1271,11 @@ todo	the AST is a sum type deconstructible by pattern matching
 todo	the built-in Ast is transformed as an ordinary value
 todo	the built-in list is folded by an element-with-rest pattern
 todo	the default-integer pragma is definition-site scoped, not use-site
-todo	the difference contains the elements not in the second set
 todo	the empty reader literal is the empty symbol
-todo	the empty set is equal to the empty set
 todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
-todo	the intersection contains the elements in both sets
-todo	the number of elements counts distinct elements
 todo	the reader literal reads to Symbol.of
-todo	the union contains the elements of either set
 todo	two rationals denoting the same number are equal regardless of how they were written
-todo	two sets of different sizes are unequal, not a type error
-todo	two sets with different elements are unequal, not a type error
 todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote outside quasiquote is a syntax error
 todo	unquote with more than one operand inside a quasiquote is malformed
