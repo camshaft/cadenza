@@ -11,6 +11,16 @@
 //! demanding `type_of`/`def_scheme` (a lazy read of the type column). The export NAME crosses
 //! verbatim; no export is recognized by name or body shape.
 //!
+//! The exported entries come from the program's `(export …)` clauses — the compiler reads which
+//! definitions are exported from the source, so the entry the runtime invokes is determined by the
+//! program rather than left implicit:
+//!
+//= spec/contracts/component-abi.md#a-component-exports-a-defined-entry
+//# A derived component MUST export an entry through which the runtime invokes it.
+//!
+//= spec/contracts/component-abi.md#a-component-exports-a-defined-entry
+//# The compiler MUST determine a program's entry from the program rather than leave it implicit.
+//!
 //! Reachability lives here: an export drives which definitions are reached, and only reachable
 //! definitions are emitted (dead code dropped once, target-neutrally). A runtime `Core::Call` reaches
 //! its callee, so the reachable set is grown by a worklist over each reachable body's calls (not just
