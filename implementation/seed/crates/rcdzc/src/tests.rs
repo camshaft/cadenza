@@ -17743,6 +17743,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_delegated_op_does_not_also_report_latent_authority() {
+        // A MISSPELLED op in a delegated body — `(E.emitt 5)` for declared `emit` — is the primary
+        // CDZ0201 typo ("did you mean `emit`?"). It must NOT ALSO trigger CDZ0404 latent authority: the
+        // misspelled `E.emitt` does not resolve as a perform, so `body_reaches_effect` is false, but the
+        // author DID intend to reach `E` — the CDZ0404 is a pure cascade of the typo (fixing the typo
+        // clears both). Only the root CDZ0201 should surface.
+        let src = "(do (effect E (op emit (-> Int64 Unit))) \
+                   (def (main) (host (E) (E.emitt 5))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let codes: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
+        assert!(
+            codes.iter().any(|c| c == "CDZ0201"),
+            "the misspelled op is a CDZ0201 typo; got {codes:?}"
+        );
+        assert!(
+            !codes.iter().any(|c| c == "CDZ0404"),
+            "the latent-authority CDZ0404 is a cascade of the typo and must be suppressed; got {codes:?}"
+        );
+    }
+
+    #[test]
     fn a_latent_authority_delegation_offers_a_delete_fix() {
         // The CDZ0404 repair is to DROP the unreached effect from the manifest — a DELETE fix on the
         // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A

@@ -984,7 +984,13 @@ fn check_no_home_walk(
             // delegated effect is reached by a perform in the body; if not, CDZ0404 (anchored at the
             // delegation's effect-name occurrence).
             for &(occ, decl) in &added {
-                if !body_reaches_effect(db, body, decl, 0) {
+                // Suppress CDZ0404 when the body has a MEMBER ACCESS on this effect that just does not
+                // resolve as a perform — a MISSPELLED op (`(E.emitt …)`). That is a cascade of the typo's
+                // primary CDZ0201 ("did you mean `emit`?"), not a genuine unreached-effect: the author
+                // DID intend to reach `E`. Fixing the typo makes both vanish, so report only the root.
+                if !body_reaches_effect(db, body, decl, 0)
+                    && !body_has_effect_member_access(db, body, decl)
+                {
                     // The repair is to DROP the unreached effect from the manifest — a delete edit on the
                     // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
                     // Route To A Fix). The effect's name (for the label) comes from its declaration.
@@ -1032,6 +1038,32 @@ fn check_no_home_walk(
 fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bool {
     let mut visited = std::collections::HashSet::new();
     body_reaches_effect_visited(db, node, decl, depth, &mut visited)
+}
+
+/// Whether the body subtree at `node` contains a MEMBER ACCESS `(. E k)` whose operand resolves to the
+/// effect `decl` — REGARDLESS of whether `k` is a declared operation. A MISSPELLED op (`(E.emitt …)` for
+/// declared `emit`) does not resolve as a perform, so `body_reaches_effect` returns false and the effect
+/// would be falsely flagged as latent authority (CDZ0404) — a CASCADE of the typo, which is already the
+/// primary CDZ0201 "record has no field `emitt` — did you mean `emit`?". Recognizing the mis-typed
+/// `E`-member here suppresses the derived CDZ0404 so the author sees ONE root error (the typo), whose fix
+/// makes both vanish (`reference-compiler.md` §Outcomes Are Ordered By Safety — one primary "no" per root
+/// cause). Only a member access ON THIS EFFECT counts; an unrelated typo elsewhere does not mask a
+/// genuine latent-authority.
+fn body_has_effect_member_access(db: &mut Db, node: StructId, decl: u32) -> bool {
+    // The `(. operand key)` form: if `operand` resolves to this effect's record, it is an E-member —
+    // a perform the author intends (a valid op reaches via `body_reaches_effect`; a typo lands here).
+    if let Some(tail) = db.ast.as_form(node, ".")
+        && let Some(&operand) = tail.first()
+        && effect_decl_of_value(db, operand) == Some(decl)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_effect_member_access(db, c, decl)),
+        Struct::Atom(_) => false,
+    }
 }
 
 fn body_reaches_effect_visited(
