@@ -793,6 +793,15 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
         r.code == Some(Code::Malformed)
             && r.message.starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
     });
+    // Likewise: an exported closure with a non-representable part (an `Any` param/result, a captured
+    // value with no machine type) is reported as the coded CDZ0201 "cannot cross the component boundary"
+    // at the export clause. The emit path ALSO returns an uncoded "a closure's <part> has no machine
+    // representation" decline at the closure BODY — a DIFFERENT node, so the same-node general rule below
+    // does not catch it; drop the decline program-wide when the CDZ0201 is present, keeping the coded
+    // reject (which names the concrete cause — unannotated param / partial application) as the ONE "no".
+    let has_closure_boundary_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.contains(crate::diag::CLOSURE_BOUNDARY_MARKER));
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -841,6 +850,17 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_malformed_handler_reject
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
+            {
+                return false;
+            }
+            if has_closure_boundary_reject
+                && r.is_decline()
+                && matches!(
+                    r.message.as_str(),
+                    crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
+                )
             {
                 return false;
             }

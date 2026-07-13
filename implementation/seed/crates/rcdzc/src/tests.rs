@@ -8039,6 +8039,48 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unrepresentable_closure_export_reports_one_error_not_a_shadowing_decline() {
+        // An exported closure with an UNANNOTATED param (`(fn (x) 1)` : `(-> Any Int64)`) cannot cross the
+        // boundary — CDZ0201 at the export clause, naming the concrete cause. The emit path ALSO returns
+        // an uncoded "a closure's parameter type has no machine representation" decline at the closure
+        // BODY (a different node), so both used to surface as two `error:` lines for ONE root cause.
+        // `dedup_faults` now drops that decline whenever the CDZ0201 is present → ONE primary, actionable
+        // error (an agent reads the coded reject, not a bare "no machine representation").
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) (fn (x) 1)) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an unrepresentable closure export = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0].message.contains("cannot cross the component boundary"),
+            "the surviving error is the coded boundary reject: {}",
+            errors[0].message
+        );
+        // The shadowing decline is gone specifically.
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE),
+            "the 'no machine representation' decline must not accompany the coded reject"
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param

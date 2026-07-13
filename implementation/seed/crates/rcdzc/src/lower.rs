@@ -3721,7 +3721,7 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         }
         if crate::backend::wasm::lir::valtype_of(&pt).is_none() {
             return Core::Poison(Reject::decline(
-                "a closure's parameter type has no machine representation",
+                crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE,
             ));
         }
         // RECORD the solved param type so the LIFTED BODY's own `type_of(p)` reads it — otherwise the
@@ -3743,14 +3743,14 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     };
     if crate::backend::wasm::lir::valtype_of(&ret_ty).is_none() {
         return Core::Poison(Reject::decline(
-            "a closure's result type has no machine representation",
+            crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE,
         ));
     }
     // Every captured value must have a machine representation too (it is boxed into the cell).
     for &cap in &captures {
         if crate::backend::wasm::lir::valtype_of(&crate::infer::type_of(db, cap)).is_none() {
             return Core::Poison(Reject::decline(
-                "a closure captures a value with no machine representation",
+                crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE,
             ));
         }
     }

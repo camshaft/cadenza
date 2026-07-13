@@ -534,6 +534,24 @@ pub const HANDLE_NONCANONICAL_PREFIX: &str = "this handle is not in canonical fo
 pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducible by the tail-resumptive fold (cross-function \
      or non-tail resume arrives in a later increment)";
 
+/// The three UNCODED declines the emit path (`lower::lower_lambda_value`) returns when a closure that must
+/// cross the component boundary has a non-representable part — an `Any` (never-fixed) parameter or result,
+/// or a captured value with no machine type. When such a closure is an EXPORT'S result, `compile::
+/// collect_faults` reports the authoritative coded CDZ0201 ("returns a closure that cannot cross the
+/// component boundary … a parameter inference never fixed to a concrete scalar") at the export clause; the
+/// emit-path decline then rides alongside it as a second `error:` for the SAME root cause (the
+/// unrepresentable closure). Shared as consts so `dedup_faults` drops the decline whenever that CDZ0201 is
+/// present — ONE primary, actionable "no". A non-exported closure with an unrepresentable part (no CDZ0201
+/// covering it) keeps its honest decline.
+pub const CLOSURE_PARAM_NO_REPR_DECLINE: &str = "a closure's parameter type has no machine representation";
+pub const CLOSURE_RESULT_NO_REPR_DECLINE: &str = "a closure's result type has no machine representation";
+pub const CLOSURE_CAPTURE_NO_REPR_DECLINE: &str = "a closure captures a value with no machine representation";
+
+/// A stable SUBSTRING of the coded CDZ0201 closure-boundary reject (`export <name> returns a closure that
+/// cannot cross the component boundary …`). `dedup_faults` matches this to recognize the reject that makes
+/// the [`CLOSURE_PARAM_NO_REPR_DECLINE`] family redundant, without pinning the whole (name/type-bearing) text.
+pub const CLOSURE_BOUNDARY_MARKER: &str = "cannot cross the component boundary";
+
 /// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
 /// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands
