@@ -7524,6 +7524,27 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
+        // A RECURSIVE function freshens its parameter binder when its body is resolved (and the
+        // accumulator transform may rewrite the body entirely), so a reference resolves to a
+        // SYNTHESIZED param copy, not the original occurrence. The usage check keys on the resolution
+        // KIND (does a body reference resolve to a `Param`?), not the target occ, so it is not fooled:
+        // `n` here is used three times → it must NOT warn (the reported false positive).
+        let src = "(module m (def (sm n) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))";
+        assert!(
+            unused_of(src).is_empty(),
+            "a used recursive param must not warn: {:?}",
+            unused_of(src)
+        );
+        // A genuinely-unused parameter still warns (the check is real, not just disabled for
+        // functions): `z` is never referenced.
+        let with_unused = "(module m (def (f p z) (+ p 1)) (export f))";
+        let u = unused_of(with_unused);
+        assert_eq!(u.len(), 1, "the truly-unused param z warns: {u:?}");
+        assert!(u[0].contains("`z`"), "{u:?}");
+    }
+
+    #[test]
     fn an_unused_let_binding_and_parameter_warn() {
         // `b` (a let binding) and `q` (a parameter) are declared but never referenced → CDZ0306; `a`
         // and `p` are used, so they do not warn.
