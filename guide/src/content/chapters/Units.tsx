@@ -101,6 +101,25 @@ export default function Units() {
         power, and <C>Unit.one</C> for a plain dimensionless number.
       </P>
 
+      <H2>Raising a quantity to a power</H2>
+      <P>
+        <C>Qty.pow</C> raises a whole quantity — value <em>and</em> unit — to a compile-time integer power.
+        Square a length and you get an area; the unit becomes metres-squared while the value squares. A
+        five-metre side gives twenty-five square metres:
+      </P>
+      <Runnable source={`(Qty.value (Qty.pow (Qty.of 5.0 (Unit.of #"metre")) 2))`} />
+      <P>
+        The exponent can be <em>negative</em>, and that's where units earn their keep. A period is a time;
+        its <em>reciprocal</em> is a frequency, with the unit inverted to per-second. A four-second period
+        is a frequency of <C>0.25</C> per second:
+      </P>
+      <Runnable source={`(Qty.value (Qty.pow (Qty.of 4.0 (Unit.of #"second")) -1))`} />
+      <P>
+        That <C>-1</C> didn't just divide the number — it flipped the dimension from <em>time</em> to{" "}
+        <em>per-time</em>. Try to add the result to a plain length and you'll get the same CDZ0501 you saw
+        above: a frequency and a length are different dimensions, and the compiler knows it.
+      </P>
+
       <H2>Prefixes: SI and binary</H2>
       <P>
         A prefix scales a unit by an exact factor. The SI decimal prefixes — <C>kilo</C> (10³),{" "}
@@ -171,6 +190,25 @@ export default function Units() {
           <>
             The unit divides along with the number — you don't spell the <C>metre/second</C> yourself, the
             division builds it. <C>100.0 / 8.0</C> is <C>12.5</C>.
+          </>
+        }
+      />
+
+      <Exercise
+        id="units:3"
+        prompt={
+          <>
+            Cube a <C>2.0</C>-metre edge with <C>Qty.pow</C> to get a volume in cubic metres. Raising to
+            the power <C>3</C> gives <C>8</C>.
+          </>
+        }
+        starter={`(Qty.value (Qty.pow (Qty.of 2.0 (Unit.of #"metre")) ?))`}
+        solution={`(Qty.value (Qty.pow (Qty.of 2.0 (Unit.of #"metre")) 3))`}
+        expected="8"
+        hint={
+          <>
+            The second argument to <C>Qty.pow</C> is the exponent. A cube is the third power, so it's{" "}
+            <C>3</C> — and <C>2.0</C> cubed is <C>8</C>.
           </>
         }
       />

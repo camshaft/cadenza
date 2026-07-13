@@ -519,7 +519,18 @@ fn gcd_i128(mut a: u128, mut b: u128) -> u128 {
 }
 
 /// A solved type — the closed variant set inference determines and every pass below reads.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// `PartialEq` is HAND-WRITTEN (not derived) for ONE reason: a [`Ty::Nominal`]'s identity is its
+/// `decl + args` (its fully-qualified name + instantiation, `type-system.md §A Nominal Type's Identity
+/// Is Its Fully-Qualified Name`), NOT its structural `inner`. A RECURSIVE nominal's `inner` DIVERGES by
+/// derivation path — the folded (annotation) path collapses the recursion to a `Ty::Sum{decl}` back-edge
+/// while the unfolded (value) path holds a `Ty::Nominal{decl}` there — so comparing `inner` structurally
+/// would make `Lst != Lst`. Comparing by `decl + args` makes them equal (the μ-type equality the recursion
+/// needs) AND keeps generic instantiations distinct (`Box Int64 != Box Bool`, args differ). `inner` is a
+/// machine-representation HINT (depth-1 shape for `valtype_of`/`box_op_ty`, which take `&Ty` and cannot
+/// reach `Db`); it is derived from `decl + args` and NEVER compared. (`Ty` is never hashed / never used as
+/// a map key — Phase 0 audit — so this custom eq carries no `Hash`-consistency obligation.)
+#[derive(Clone, Debug)]
 pub enum Ty {
     /// An integer of a given signedness and a possibly-deferred width.
     Int(IntTy),
@@ -670,22 +681,25 @@ pub enum Ty {
     /// value IS its `inner` value (no `sum-new` box, no discriminant), so its machine representation
     /// (`valtype_of`, boundary encode/decode) reads THROUGH `inner`.
     ///
-    /// **Identity is opaque; representation is transparent.** `decl` is the nominal FQN identity (the
-    /// declaration occurrence, exactly like `Ty::Sum::decl`): two `Nominal` types are the SAME iff their
-    /// `decl` matches AND their `inner`s unify — so `UserId` never unifies with the bare `Int64` it wraps
-    /// (a different `Ty` variant ⇒ mismatch; no forging, §Nominal Types Are Not Comparable Across Their
-    /// Boundary), and two same-shape declarations `(type A (Mk Int64))` / `(type B (Mk Int64))` are
-    /// DISTINCT (distinct `decl`s). Unlike `Ty::Sum`, a nominal carries NO separate `args` vec: `inner`
-    /// already encodes the instantiation, so a generic `(type Box (Mk a))` at `Box Int64` is `Nominal {
-    /// inner: Int64 }` and at `Box Bool` is `Nominal { inner: Bool }` — distinct via the recursive
-    /// `inner` unify. `name` is the declared LOCAL name, carried for rendering only.
+    /// **Identity is `decl + args`; `inner` is a machine-rep hint.** `decl` is the nominal FQN identity
+    /// (the declaration occurrence, exactly like `Ty::Sum::decl`) and `args` its type-argument
+    /// instantiation (exactly like `Ty::Sum::args`): two `Nominal` types are the SAME iff their `decl` AND
+    /// `args` match (the hand-written `PartialEq` / `agrees_with` / `unify`). So `UserId` never unifies
+    /// with the bare `Int64` it wraps (a different `Ty` variant ⇒ mismatch, §Nominal Types Are Not
+    /// Comparable Across Their Boundary); two same-shape declarations `(type A (Mk Int64))` / `(type B
+    /// (Mk Int64))` are DISTINCT (distinct `decl`s); and a generic `Box Int64 != Box Bool` (same `decl`,
+    /// different `args`). `name` is the declared LOCAL name, carried for rendering only.
     ///
-    /// A RECURSIVE single-variant sum (`(type Stream (More (Tuple Int64 Stream)))`) is NOT erased — its
-    /// `inner` would be an infinite `Ty` — so it stays an ordinary boxed `Ty::Sum`. `Ty::Nominal` is
-    /// produced only for the erasable case (`Db::newtype_underlying`).
+    /// `inner` is the erased UNDERLYING type — the machine representation `valtype_of`/`box_op_ty`/field
+    /// access read THROUGH (it takes `&Ty`, cannot reach `Db`). It is DERIVED from `decl + args`
+    /// (`Db::normalize_sum` substitutes `args` into the stored template) and NEVER compared — because a
+    /// RECURSIVE nominal's `inner` diverges by derivation path (folded `Ty::Sum{decl}` back-edge vs
+    /// unfolded `Ty::Nominal{decl}`), and comparing it would make `Lst != Lst`. Excluding it from equality
+    /// is what lets a recursive newtype erase (the μ-type equality problem dissolves).
     Nominal {
         decl: crate::ast::StructId,
         name: String,
+        args: Vec<Ty>,
         inner: Box<Ty>,
     },
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
@@ -709,6 +723,65 @@ pub enum Ty {
     /// and `unify`.
     Any,
 }
+
+/// Structural equality, HAND-WRITTEN so a [`Ty::Nominal`] compares by `decl + args` (its identity), NOT
+/// its `inner` — see the `Ty::Nominal` doc. Every other variant compares exactly as a derive would
+/// (all fields). `Eq` is a marker (the relation is reflexive/symmetric/transitive: a nominal's
+/// `decl + args` equality is, and every other arm is derive-equivalent).
+impl PartialEq for Ty {
+    fn eq(&self, other: &Ty) -> bool {
+        match (self, other) {
+            (Ty::Int(a), Ty::Int(b)) => a == b,
+            (Ty::Bool, Ty::Bool)
+            | (Ty::Unit, Ty::Unit)
+            | (Ty::Bytes, Ty::Bytes)
+            | (Ty::String, Ty::String)
+            | (Ty::Char, Ty::Char)
+            | (Ty::Symbol, Ty::Symbol)
+            | (Ty::Type, Ty::Type)
+            | (Ty::Any, Ty::Any) => true,
+            (Ty::Float(a), Ty::Float(b)) => a == b,
+            (Ty::Record(a), Ty::Record(b)) => a == b,
+            (Ty::Tuple(a), Ty::Tuple(b)) => a == b,
+            (Ty::List(a), Ty::List(b)) => a == b,
+            (Ty::Set(a), Ty::Set(b)) => a == b,
+            (Ty::Map(ak, av), Ty::Map(bk, bv)) => ak == bk && av == bv,
+            (
+                Ty::Sum {
+                    decl: da, args: aa, ..
+                },
+                Ty::Sum {
+                    decl: db, args: ab, ..
+                },
+            ) => da == db && aa == ab,
+            // A NOMINAL compares by `decl + args` ONLY — NOT `inner` (which diverges by derivation path
+            // for a recursive nominal; comparing it would make `Lst != Lst`). `name` is render-only.
+            (
+                Ty::Nominal {
+                    decl: da, args: aa, ..
+                },
+                Ty::Nominal {
+                    decl: db, args: ab, ..
+                },
+            ) => da == db && aa == ab,
+            (Ty::Fn(ap, ar), Ty::Fn(bp, br)) => ap == bp && ar == br,
+            (
+                Ty::Qty {
+                    inner: ai,
+                    unit: au,
+                },
+                Ty::Qty {
+                    inner: bi,
+                    unit: bu,
+                },
+            ) => ai == bi && au == bu,
+            (Ty::Var(a), Ty::Var(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Ty {}
 
 impl Ty {
     /// A fresh integer-literal type: signed, width deferred. Inference or the backend fixes the width.
@@ -764,9 +837,11 @@ impl Ty {
             // A quantity's free variables are its INNER numeric type's — the unit is a concrete
             // compile-time value (a canonical exponent map), never a variable.
             Ty::Qty { inner, .. } => inner.has_free_var(),
-            // A nominal's free variables are its underlying type's — a generic `Box a` at an
-            // unsolved instantiation carries the free var in `inner`.
-            Ty::Nominal { inner, .. } => inner.has_free_var(),
+            // A nominal's free variables are its type ARGS' (exactly like `Ty::Sum`) — a generic `Box ?0`
+            // at an unsolved instantiation carries the free var in `args`. NOT `inner` (a recursive
+            // nominal's inner holds a `Ty::Sum{decl}` back-edge that is not a free var anyway; `args` is
+            // the identity/instantiation axis).
+            Ty::Nominal { args, .. } => args.iter().any(|t| t.has_free_var()),
             // Bytes, String, Char, and Symbol are leaves — no inner type, so no free variable.
             Ty::Int(_)
             | Ty::Bool
@@ -855,19 +930,20 @@ impl Ty {
                     decl: b, args: ab, ..
                 },
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
-            // Two nominals agree iff their DECLARATIONS match AND their underlying types agree — the
-            // nominal analogue of the sum rule (decl is the opaque identity; `inner` carries the
-            // instantiation). A nominal never agrees with its bare underlying type — the `(_, _)`
-            // fallthrough handles `(Nominal, Int)` — so `UserId` cannot be passed where `Int64` is
-            // required, nor vice versa (§Nominal Types Are Not Comparable Across Their Boundary).
+            // Two nominals agree iff their DECLARATIONS match AND their type ARGS agree pairwise — the
+            // exact `Ty::Sum` rule (decl is identity, args the instantiation). NOT `inner` — a recursive
+            // nominal's inner diverges by derivation path, so comparing it would make `Lst` disagree with
+            // `Lst`. A nominal never agrees with its bare underlying type (the `(_, _)` fallthrough handles
+            // `(Nominal, Int)`), so `UserId` cannot pass where `Int64` is required (§Nominal Types Are Not
+            // Comparable Across Their Boundary).
             (
                 Ty::Nominal {
-                    decl: a, inner: ia, ..
+                    decl: a, args: aa, ..
                 },
                 Ty::Nominal {
-                    decl: b, inner: ib, ..
+                    decl: b, args: ab, ..
                 },
-            ) => a == b && ia.agrees_with(ib),
+            ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
             // `Char` is monomorphic — the one char type agrees only with itself.
@@ -984,18 +1060,25 @@ impl Ty {
                 inner: Box::new(ia.join(ib)),
                 unit: ua.clone(),
             },
-            // Two agreeing nominals join their underlying types — a deferred inner (a nullary/empty
-            // instantiation) is fixed by the other branch, the nominal analogue of the sum-arg join.
-            // `agrees_with` guarantees the same `decl`.
-            (Ty::Nominal { decl, name, inner }, Ty::Nominal { inner: ib, .. })
-                if self.agrees_with(other) =>
-            {
+            // Two agreeing nominals (same `decl`, guaranteed by `agrees_with`) join their type ARGS
+            // pairwise — a deferred arg in one `if` branch is fixed by the other, the nominal analogue of
+            // the sum-arg join. `inner` is re-derived from the joined args (the join of the two inners
+            // would DIVERGE for a recursive nominal — `Ty::Sum{decl}` vs `Ty::Nominal{decl}` — so join by
+            // args and keep this branch's inner, which the joined-args value makes representative).
+            (
                 Ty::Nominal {
-                    decl: *decl,
-                    name: name.clone(),
-                    inner: Box::new(inner.join(ib)),
-                }
-            }
+                    decl,
+                    name,
+                    args: aa,
+                    inner,
+                },
+                Ty::Nominal { args: ab, .. },
+            ) if self.agrees_with(other) => Ty::Nominal {
+                decl: *decl,
+                name: name.clone(),
+                args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
+                inner: inner.clone(),
+            },
             _ => self.clone(),
         }
     }

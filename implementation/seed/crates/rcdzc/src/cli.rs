@@ -243,21 +243,57 @@ pub fn run_prepared(
     // `path:line:col` prefix, so `compile` gives the SAME located errors as `check` rather than leaking a
     // raw internal `(node N)` id. Without spans (a bare artifacts-in compile) the node id still rides
     // along for a caller that holds its own table — the historical behavior, unchanged.
-    let span_tables: Vec<crate::spans::SpanData> = inputs
+    // Each `spans` input paired with its ARTIFACT NAME — the name is what the `link-map` keys a file by
+    // (`FileSpan.path`), which `SpanData.module_path` (a debug basename) does not preserve, so a linked
+    // demux must match on the name.
+    let span_tables: Vec<(String, crate::spans::SpanData)> = inputs
         .iter()
         .filter(|a| a.kind == crate::spans::KIND_SPANS)
-        .filter_map(|a| crate::spans::decode(&a.bytes))
+        .filter_map(|a| crate::spans::decode(&a.bytes).map(|s| (a.name.clone(), s)))
         .collect();
-    // The START byte offset of a diagnostic's node in its source table, if locatable — the sort key that
-    // orders diagnostics as a reader scans top-to-bottom. (node ids are unique across the merged arena,
-    // so the first covering table is the right one.)
-    let start_of = |d: &crate::Diagnostic| -> Option<(String, u32)> {
-        d.node.and_then(|n| {
-            span_tables.iter().find_map(|s| {
-                s.range(crate::ast::StructId(n))
-                    .map(|(start, _)| (s.module_path.clone(), start))
-            })
+    // The package `link-map` (if any): a LINKED build reports a diagnostic's GLOBAL node id (post-splice,
+    // offset by the file's base), but each file's span table is keyed by LOCAL (pre-link) ids — so a raw
+    // lookup misses in every table and the error loses its `file:line:col`. The link-map demuxes: the
+    // global id `n` falls in one file's `[base, base+count)` → `(path, n - base)` = the file + LOCAL id
+    // its span table can resolve (`DESIGN-package-linking.md` §6). Empty for a single-file compile, whose
+    // ids are already local (the direct lookup below handles it).
+    let link_map: Vec<crate::link::FileSpan> = out
+        .artifacts
+        .iter()
+        .find(|a| a.kind == crate::link::KIND_LINK_MAP)
+        .map(|a| crate::link::decode_link_map(&a.bytes))
+        .unwrap_or_default();
+    // Locate a diagnostic's node as `(&span-table, start_byte)`. First try the LINKED demux (global id →
+    // file + local id via the link-map), then fall back to a DIRECT lookup across the tables (a
+    // single-file build, whose ids are already local). Returns the OWNING table (not just its path) so
+    // line/col are read off the right file even if two files share a basename. `None` for a node no
+    // table covers.
+    let locate = |node: u32| -> Option<(&crate::spans::SpanData, u32)> {
+        // Linked: find the file whose global range contains the node, then resolve the LOCAL id in the
+        // span table with the matching artifact name.
+        if let Some(fs) = link_map
+            .iter()
+            .find(|f| f.contains(crate::ast::StructId(node)))
+        {
+            let local = node - fs.struct_base;
+            if let Some((_, s)) = span_tables.iter().find(|(name, _)| *name == fs.path)
+                && let Some((start, _)) = s.range(crate::ast::StructId(local))
+            {
+                return Some((s, start));
+            }
+        }
+        // Single-file (or a node the link-map didn't cover): the id is already local to some table.
+        span_tables.iter().find_map(|(_, s)| {
+            s.range(crate::ast::StructId(node))
+                .map(|(start, _)| (s, start))
         })
+    };
+    // The START byte offset of a diagnostic's node in its source, if locatable — the sort key that
+    // orders diagnostics as a reader scans top-to-bottom. Keyed by (module path, start) so a two-file
+    // package still orders deterministically.
+    let start_of = |d: &crate::Diagnostic| -> Option<(String, u32)> {
+        d.node
+            .and_then(|n| locate(n).map(|(s, start)| (s.module_path.clone(), start)))
     };
     // Report in SOURCE ORDER (by module path, then start byte), not fault-collection order — the tree
     // walk that gathers faults does not visit strictly left-to-right, so without this a reader sees an
@@ -277,14 +313,12 @@ pub fn run_prepared(
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
-        // Prefer a source location from the spans: find the table whose range covers this node (node ids
-        // are unique across the merged arena, so the first hit is right). Fall back to `(node N)` when no
-        // spans were supplied, or to nothing when the diagnostic carries no node.
+        // Prefer a source location from the spans: locate the node (via the linked demux or the direct
+        // lookup), then render `path:line:col`. Fall back to `(node N)` when no spans were supplied, or
+        // to nothing when the diagnostic carries no node.
         let located = d.node.and_then(|n| {
-            span_tables.iter().find_map(|s| {
-                s.range(crate::ast::StructId(n)).map(|(start, _)| {
-                    format!("{}:{}:{}", s.module_path, s.line_at(start), s.col_at(start))
-                })
+            locate(n).map(|(s, start)| {
+                format!("{}:{}:{}", s.module_path, s.line_at(start), s.col_at(start))
             })
         });
         match (located, d.node) {

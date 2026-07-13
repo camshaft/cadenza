@@ -222,14 +222,22 @@ pub enum Core {
     /// occurrence. A field read FOLDS (`core_of` of a member projects the field's core directly), so a
     /// `Record` that SURVIVES to selection is one used as a runtime value (e.g. returned) — the backend
     /// builds it on the value heap (`arr-alloc` + per-field `box-*`/`arr-set`, fields in canonical
-    /// order). Carrying the variant lets member-access fold read the field set.
+    /// order). Carrying the variant lets member-access fold read the field set. The field set is fixed
+    /// and statically known (the `Symbol` keys), each field holding a value of its own type:
+    //= spec/capabilities/core-semantics.md#a-record-has-a-fixed-set-of-named-fields
+    //# A record MUST associate a fixed set of statically-known field names each with a value, where distinct fields may hold values of distinct types.
     Record { fields: BTreeMap<Symbol, StructId> },
     /// A TUPLE value — a fixed-arity positional product, each element referenced by its AST occurrence.
     /// Present only when the tuple SURVIVES to selection as a RUNTIME value (constructed from runtime
     /// operands, or a constant tuple that escapes — a projection of a compile-time-visible tuple folds to
     /// the element in `lower`, leaving no `Tuple`). The backend builds it on the value heap
     /// (`arr-alloc` + per-element `box-*`/`arr-set`), or — for a proven-CONSTANT tuple — builds it ONCE
-    /// (the static build-once path, §2d). Elements are lowered on demand.
+    /// (the static build-once path, §2d). Elements are lowered on demand. Fixed-size and positional (the
+    /// `elems` vector's length is the arity), and its elements may be of distinct types:
+    //= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
+    //# A tuple MUST be a fixed-size value whose elements are accessed positionally.
+    //= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
+    //# A tuple MAY hold elements of distinct types.
     Tuple { elems: Vec<StructId> },
     /// A tuple PROJECTION — read element `index` of the tuple the `operand` occurrence denotes. Present
     /// only when the operand is a RUNTIME tuple (a projection of a compile-time-visible tuple folds to
@@ -449,7 +457,11 @@ pub enum Core {
     /// payload handle is: an empty array `arr-alloc(0)` for a nullary variant (`value-heap-runtime.md`
     /// §Sum: "a nullary variant carries the unit value — an arr of length 0"), the single boxed payload
     /// for a one-payload variant, or a tuple handle built from the payloads for a multi-payload variant.
-    /// The nominal tag is compile-time only — the runtime holds only `(disc, payload)`.
+    /// The nominal tag is compile-time only — the runtime holds only `(disc, payload)`. This is what a
+    /// constructor application produces: applying `Some`/`None`/… yields a Sum value tagged with the
+    /// variant's discriminant:
+    //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+    //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
     SumNew { disc: u32, payloads: Vec<StructId> },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf
@@ -483,13 +495,15 @@ pub enum Core {
         path: Vec<PathStep>,
     },
     /// `Option.expect` / `Result.expect` on a RUNTIME sum — unwrap the PRESENT variant's payload or TRAP
-    /// on absence (core-semantics.md §Requiring The Value Of An Optional Traps On Absence). The present
-    /// variant is discriminant `disc_present` (Some/Ok = 0); the backend probes `sum-disc(scrutinee) ==
-    /// disc_present`, and on a match reads `sum-payload` + unboxes by this node's solved type (the payload
-    /// type), else emits `unreachable` (an unconditional trap). The `"message"` operand is DROPPED — the
-    /// wasm trap carries no text (the corpus `(trap MSG)` grades on the trap, not its message). Present
-    /// only when the scrutinee is a runtime sum; a constant present variant FOLDS to its payload in
-    /// `lower` (a constant absent variant is a provable trap — not yet folded, declines).
+    /// on absence. The present variant is discriminant `disc_present` (Some/Ok = 0); the backend probes
+    /// `sum-disc(scrutinee) == disc_present`, and on a match reads `sum-payload` + unboxes by this node's
+    /// solved type (the payload type), else emits `unreachable` (an unconditional trap). The `"message"`
+    /// operand is DROPPED — the wasm trap carries no text (the corpus `(trap MSG)` grades on the trap, not
+    /// its message; so the "trap carries the message as its reason" obligation is NOT yet realized —
+    /// UNCITED). Present only when the scrutinee is a runtime sum; a constant present variant FOLDS to its
+    /// payload in `lower` (a constant absent variant is a provable trap — not yet folded, declines).
+    //= spec/capabilities/core-semantics.md#requiring-the-value-of-an-optional-traps-on-absence
+    //# An optional MUST offer an operation that returns its contained value when one is present and raises a trap when it is absent, so that turning absence into a halt is one explicit operation rather than a behavior wired into each operation that produces an optional.
     SumExpect {
         scrutinee: StructId,
         disc_present: u32,
@@ -500,8 +514,15 @@ pub enum Core {
     /// leaves the stack polymorphic, so a `Core::Trap` validates in ANY result position (the runtime
     /// counterpart of its `Never` type — the else-branch of `SumExpect` emits the same instruction). The
     /// `String` message argument is DROPPED (the wasm trap carries no text); the node carries nothing.
+    ///
+    /// The `unreachable` halts the program at THIS point rather than continuing with an unspecified value:
+    //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
+    //# A trap MUST halt the program at a defined point rather than continue with an unspecified value.
     Trap,
-    /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
+    /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s. The
+    /// backend emits a wasm `if`/`else`, so ONLY the branch the condition selects executes:
+    //= spec/capabilities/core-semantics.md#conditionals-evaluate-one-branch
+    //# A conditional MUST evaluate only the branch its condition selects.
     If {
         cond: StructId,
         then_: StructId,
@@ -511,8 +532,10 @@ pub enum Core {
     /// when it did not fold to a constant in `lower`. `is_and` picks the semantics: `and` emits `if lhs
     /// then rhs else false`, `or` emits `if lhs then true else rhs` — so the RIGHT operand is evaluated
     /// only on the non-short-circuiting branch, shielding a trapping/effectful `rhs` exactly as a
-    /// conditional's unselected branch does (core-semantics.md §Boolean Connectives Short-Circuit). The
-    /// backend emits it as that `if` over the operands' i32 boolean values.
+    /// conditional's unselected branch does. The backend emits it as that `if` over the operands' i32
+    /// boolean values.
+    //= spec/capabilities/core-semantics.md#boolean-connectives-short-circuit
+    //# A logical conjunction MUST evaluate its right operand only when its left operand is true, and a logical disjunction MUST evaluate its right operand only when its left operand is false, so that a connective shields a trapping or effectful right operand exactly as the unselected branch of a conditional does.
     And {
         lhs: StructId,
         rhs: StructId,
@@ -608,6 +631,12 @@ pub enum Core {
     /// (`memory-and-resource-model.md` §The Value Heap Is Acyclic). `DESIGN-runtime-closures-rcdzc.md`
     /// §3. (This increment builds the EMPTY-capture combinator; a non-empty capture set is a later
     /// increment — a lambda with free variables declines the lift.)
+    ///
+    /// The `captures` are the lambda's free variables captured BY VALUE at the point the closure is
+    /// BUILT, so applying it later observes those captured bindings — not whatever is in scope at the
+    /// call site:
+    //= spec/capabilities/core-semantics.md#a-function-is-a-first-class-value
+    //# A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
     Closure {
         code: usize,
         captures: Vec<StructId>,

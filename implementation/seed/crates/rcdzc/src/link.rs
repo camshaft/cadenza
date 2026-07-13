@@ -57,6 +57,34 @@ pub fn encode_link_map(files: &[FileSpan]) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// Decode the `link-map` artifact bytes back into its `FileSpan` list — the inverse of
+/// [`encode_link_map`], so a CLI reporter can demux a linked-package diagnostic's GLOBAL node id to the
+/// `(file, local id)` its per-file span table is keyed by. A malformed line (wrong column count, a
+/// non-numeric base/count) is skipped rather than failing the whole decode — the reporter degrades to a
+/// location-less diagnostic, never a crash. `path` may itself contain no tab (an artifact name), so the
+/// split takes exactly the first two tabs.
+pub fn decode_link_map(bytes: &[u8]) -> Vec<FileSpan> {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut cols = line.rsplitn(3, '\t');
+            // Right-split: count, base, then the remaining prefix is the path (which never contains a
+            // tab in practice, but rsplitn keeps a tabbed path intact as the final piece).
+            let count = cols.next()?.parse::<u32>().ok()?;
+            let base = cols.next()?.parse::<u32>().ok()?;
+            let path = cols.next()?.to_string();
+            Some(FileSpan {
+                path,
+                struct_base: base,
+                struct_count: count,
+            })
+        })
+        .collect()
+}
+
 /// One file's contribution to the merged arena — the span of structure ids it owns, so a global
 /// `StructId` demuxes back to `(path, local id)` for source mapping (`DESIGN-package-linking.md` §6).
 /// A diagnostic's global node id `n` falls in exactly one file's `[struct_base, struct_base +
@@ -992,6 +1020,50 @@ mod tests {
             owning,
             vec!["app"],
             "the `nope` reference must demux to `app` (node {node})"
+        );
+    }
+
+    /// `decode_link_map` is the inverse of `encode_link_map` — the CLI reporter uses it to demux a
+    /// linked diagnostic's GLOBAL node id to `(file, local id)` so the error carries `file:line:col`
+    /// instead of a bare `cdz:` prefix. Round-trips the emitted artifact and confirms the decoded spans
+    /// attribute a real diagnostic node to exactly one file (the same `app` the manual parse above found).
+    #[test]
+    fn decode_link_map_round_trips_and_demuxes() {
+        let out = compile_files(
+            &[
+                ("lib", "(do (def (helper) 1) (export helper))"),
+                ("app", "(do (def (main) (nope)) (export main))"),
+            ],
+            "app",
+        );
+        let map = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == KIND_LINK_MAP)
+            .expect("a linked package carries a link-map");
+        let files = decode_link_map(&map.bytes);
+        assert_eq!(files.len(), 2, "decoded one FileSpan per file");
+        // Byte-identical re-encode — the decode is a true inverse.
+        assert_eq!(
+            encode_link_map(&files),
+            map.bytes,
+            "encode∘decode is identity"
+        );
+        let node = out
+            .diagnostics
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101"))
+            .and_then(|d| d.node)
+            .expect("an unbound-name node");
+        let owner: Vec<&str> = files
+            .iter()
+            .filter(|f| f.contains(StructId(node)))
+            .map(|f| f.path.as_str())
+            .collect();
+        assert_eq!(
+            owner,
+            vec!["app"],
+            "the decoded map demuxes node {node} to `app`"
         );
     }
 

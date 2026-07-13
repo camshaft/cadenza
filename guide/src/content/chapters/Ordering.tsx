@@ -41,8 +41,8 @@ export default function Ordering() {
       <H2>Three answers, not two</H2>
       <P>
         A single <C>&lt;</C> only tells you yes-or-no. But comparing two values really has{" "}
-        <em>three</em> possible answers: less, equal, or greater. A function that returns all three at
-        once — here as <C>-1</C>, <C>0</C>, <C>1</C> — lets a caller decide once and handle every case:
+        <em>three</em> possible answers: less, equal, or greater. You <em>could</em> encode that as{" "}
+        <C>-1</C> / <C>0</C> / <C>1</C> and nest a couple of <C>if</C>s:
       </P>
       <Runnable
         source={`(def (cmp a b)
@@ -50,32 +50,124 @@ export default function Ordering() {
       (if (= a b) 0 1)))
 (def (main) (cmp 3 9))`}
       />
+      <P>
+        That works, but those numbers are a convention you have to remember, and nothing stops a caller
+        from forgetting the <C>equal</C> case or inventing a meaningless <C>2</C>. Cadenza gives you the
+        three answers as a <em>value</em> instead.
+      </P>
+
+      <H2>The <C>Ordering</C> value</H2>
+      <P>
+        <C>compare</C> takes two values and returns an <C>Ordering</C> — a sum with exactly three
+        variants, <C>Less</C>, <C>Equal</C>, and <C>Greater</C>. You read it apart with <C>match</C>, the
+        same way you would any sum. Here <C>3</C> is less than <C>9</C>, so the <C>Less</C> arm fires:
+      </P>
+      <Runnable
+        source={`(def (order-sign a b)
+  (match (compare a b)
+    ((Less _)    (- 0 1))
+    ((Equal _)   0)
+    ((Greater _) 1)))
+(def (main) (order-sign 3 9))`}
+      />
+      <P>
+        Now the three cases have names, not magic numbers — and because <C>Ordering</C> is a closed sum,
+        the compiler holds you to all three. Delete the <C>Greater</C> arm and Run: instead of a value
+        you get a compile-time error, <C>non-exhaustive match: pattern `Greater` not covered</C>:
+      </P>
+      <Note>
+        This one is <strong>meant to be rejected</strong>. The point is that a forgotten case is caught
+        when you write it, not discovered as a wrong answer in production.
+      </Note>
+      <Runnable
+        source={`(match (compare 3 9)
+  ((Less _)  1)
+  ((Equal _) 0))`}
+        expect="error"
+      />
+
+      <P>
+        <C>compare</C> is <em>generic</em> — it works on any two values of the same type, not just
+        numbers. Text compares in dictionary order, so <C>"apple"</C> comes before <C>"banana"</C> and
+        the <C>Less</C> arm fires again:
+      </P>
+      <Runnable
+        source={`(def (order-sign a b)
+  (match (compare a b)
+    ((Less _)    (- 0 1))
+    ((Equal _)   0)
+    ((Greater _) 1)))
+(def (main) (order-sign "apple" "banana"))`}
+      />
 
       <Why tenet="A total order is a three-way answer">
-        Returning <C>-1 / 0 / 1</C> works, but Cadenza's design goes one better: comparison yields a
-        small sum value with three named variants — <em>less</em>, <em>equal</em>, <em>greater</em> —
-        that you take apart with <C>match</C>. Why a sum instead of a number or a pair of booleans?
-        Because then the compiler can check that a caller handled <em>all three</em> cases, and there's
-        no fourth nonsense value (what would <C>2</C>, or <C>true,true</C>, even mean?). One comparison,
-        three cases, exhaustively handled.
+        Returning <C>-1 / 0 / 1</C> works, but it leans on a convention and can't be enforced. Cadenza's{" "}
+        <C>compare</C> yields the <C>Ordering</C> sum — <em>less</em>, <em>equal</em>, <em>greater</em> —
+        so the three cases have names and the compiler checks a caller handled <em>all</em> of them
+        (you saw the missing-arm error above). There's no fourth nonsense value to guard against: what
+        would <C>2</C>, or <C>true,true</C>, even mean? And it's one order for every type — numbers, text,
+        and the rest — so sorting and lookup behave the same way everywhere, observed identically by every
+        consumer.
       </Why>
 
       <H2>Your turn</H2>
       <Exercise
         id="ordering:1"
-        prompt={<>Finish <C>max</C> so <C>(max 8 3)</C> gives <C>8</C> — the mirror of <C>min</C>.</>}
-        starter={`(def (max a b) (if ? a b))
-(def (main) (max 8 3))`}
-        solution={`(def (max a b) (if (> a b) a b))
-(def (main) (max 8 3))`}
-        expected="8"
-        hint={<>Keep <C>a</C> when it's the larger one: <C>(&gt; a b)</C>.</>}
+        prompt={
+          <>
+            Finish the <C>Greater</C> arm so <C>order-sign</C> returns <C>1</C> when <C>a</C> is the
+            larger. With <C>(order-sign 9 3)</C> the answer is <C>1</C>.
+          </>
+        }
+        starter={`(def (order-sign a b)
+  (match (compare a b)
+    ((Less _)    (- 0 1))
+    ((Equal _)   0)
+    ((Greater _) ?)))
+(def (main) (order-sign 9 3))`}
+        solution={`(def (order-sign a b)
+  (match (compare a b)
+    ((Less _)    (- 0 1))
+    ((Equal _)   0)
+    ((Greater _) 1)))
+(def (main) (order-sign 9 3))`}
+        expected="1"
+        hint={
+          <>
+            The convention here is <C>-1</C> for less and <C>0</C> for equal, so "greater" is the last of
+            the three: <C>1</C>.
+          </>
+        }
       />
 
-      <Note>
-        Comparison is defined for more than just numbers — the language surfaces one total order that
-        every consumer observes the same way, so sorting and ordering behave consistently across types.
-      </Note>
+      <Exercise
+        id="ordering:2"
+        prompt={
+          <>
+            Write <C>max</C> using <C>compare</C> and <C>match</C> — pick <C>a</C> when it's greater or
+            equal, and <C>b</C> when <C>a</C> is less. <C>(max 8 3)</C> should give <C>8</C>.
+          </>
+        }
+        starter={`(def (max a b)
+  (match (compare a b)
+    ((Less _)    ?)
+    ((Equal _)   a)
+    ((Greater _) a)))
+(def (main) (max 8 3))`}
+        solution={`(def (max a b)
+  (match (compare a b)
+    ((Less _)    b)
+    ((Equal _)   a)
+    ((Greater _) a)))
+(def (main) (max 8 3))`}
+        expected="8"
+        hint={
+          <>
+            The <C>Less</C> arm is the one case where <C>a</C> is <em>not</em> the maximum — so return{" "}
+            <C>b</C> there.
+          </>
+        }
+      />
     </article>
   );
 }

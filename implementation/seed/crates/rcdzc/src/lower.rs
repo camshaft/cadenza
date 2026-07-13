@@ -122,6 +122,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
     // intermediates are all PURE keeps the `Ref{last}` fold (the intermediates contribute nothing), so
     // this only fires when a non-final statement genuinely reaches a host call. Each sequenced statement
     // is a def-free value form (a do-local `(def …)` is a binding, not a statement — resolved by name).
+    //
+    // `Core::Seq { stmts, tail }` emits the statements in written order then the tail, and the block's
+    // value is the tail (the last form) — and an earlier statement's host call is emitted before a later
+    // statement's, so host effects observe the written order:
+    //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+    //# A sequencing block MUST evaluate each of its forms in the order they are written.
+    //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+    //# A sequencing block MUST evaluate to the value of its last form.
+    //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+    //# A host call a form in a sequencing block makes MUST be observed before a host call made by a later form in the same block.
     if db.ast.head_name(id) == Some("do")
         && let Some(forms) = db.ast.as_form(id, "do")
         && let Some((&tail, stmts)) = forms.split_last()
@@ -901,6 +911,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.value erases to its argument");
                     core_of(db, args[0])
                 }
+                // `Qty.pow q n` — raise the erased magnitude to the `n`th power (the unit is a
+                // compile-time concern handled by the solved type). Erases to `value * value * … ` (`n`
+                // factors) over the inner numeric type; `n = 0` is the dimensionless literal `1`. A
+                // negative exponent declines (needs a reciprocal). Folds when the magnitude is constant.
+                Some(Prim::QtyPow) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.pow repeated multiply");
+                    lower_qty_pow(db, args[0], args[1])
+                }
                 // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
                 // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
                 // units are already equal). Folds the constant case; a runtime operand declines.
@@ -1057,8 +1075,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             Core::ConstInt(IntValue::from_i64(n as i64))
                         }
                         Core::Poison(r) => Core::Poison(r),
+                        // A RUNTIME string: its `byte-len` is the byte count of its underlying leaf. A
+                        // runtime String value IS a flat UTF-8 byte leaf (an i32 heap handle — the same rep
+                        // `str-new` would give, built via `bytes-alloc`/`bytes-set`), so its byte length is
+                        // exactly `bytes-len` over that handle — `Core::BytesLen`, the runtime op already
+                        // working for `Bytes.len`. (`scalar-len` is the UTF-8 SCALAR count, which needs a
+                        // decoding walk over the bytes, not a leaf-length read, so it still declines here.)
+                        _ if matches!(prim, Prim::StrByteLen)
+                            && matches!(
+                                crate::infer::type_of(db, args[0]),
+                                crate::ty::Ty::String
+                            ) =>
+                        {
+                            trace!(target: "rcdzc::lower", node = id.0, "String.byte-len on a runtime string → bytes-len over its byte leaf");
+                            Core::BytesLen { operand: args[0] }
+                        }
                         _ => Core::Poison(Reject::decline(
-                            "a runtime string's length is not yet computed (constant strings only)",
+                            "a runtime string's scalar length needs a UTF-8 decoding walk (not yet built; byte-len works)",
                         )),
                     }
                 }
@@ -1198,6 +1231,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             Core::ConstStr(format!("{a}{b}"))
                         }
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        // A RUNTIME string concatenation: a String value IS a flat UTF-8 byte leaf (an i32
+                        // heap handle), and a UTF-8 join is byte concatenation (no re-normalization for
+                        // this increment — the operands are already well-formed UTF-8), so it is exactly
+                        // `bytes-concat` over the two byte handles — `Core::BytesConcat`, the runtime op
+                        // already working for `Bytes.concat`, producing a fresh joined byte leaf (a String
+                        // handle). Guarded on BOTH operands being definite Strings (defensive; the
+                        // `StrConcat` scheme already constrains them).
+                        _ if matches!(
+                            crate::infer::type_of(db, args[0]),
+                            crate::ty::Ty::String
+                        ) && matches!(
+                            crate::infer::type_of(db, args[1]),
+                            crate::ty::Ty::String
+                        ) =>
+                        {
+                            trace!(target: "rcdzc::lower", node = id.0, "String.concat on runtime strings → bytes-concat over their byte leaves");
+                            Core::BytesConcat {
+                                lhs: args[0],
+                                rhs: args[1],
+                            }
+                        }
                         _ => Core::Poison(Reject::decline(
                             "a string concatenation is only folded for constant ASCII operands (the \
                              normalizing byte-rope join arrives with the runtime string heap)",
@@ -2224,28 +2278,41 @@ struct MatchRow {
 }
 
 /// Reject a match-arm pattern that binds the same name more than once (CDZ0102) — a pattern is a BINDER
-/// POSITION and must be LINEAR (`core-semantics.md §Patterns Compose`). Walks the whole pattern collecting
-/// BINDER names (a bare non-`_` name that is NOT a variant constructor of a sum in scope, NOR a literal),
-/// and faults the second occurrence, anchored there. A `_` binds nothing (may repeat); a variant name
-/// (`Some`, `E.Lit`) is a constructor, not a binder; a literal is a value, not a binder. Recurses into
-/// tuple/variant sub-patterns and peels a `(guard …)` wrapper. (A non-deduping walk — unlike resolve's
+/// POSITION and must be LINEAR. Walks the whole pattern collecting BINDER names (a bare non-`_` name that
+/// is NOT a variant constructor of a sum in scope, NOR a literal), and faults the second occurrence,
+/// anchored there. A `_` binds nothing (may repeat); a variant name (`Some`, `E.Lit`) is a constructor,
+/// not a binder; a literal is a value, not a binder. Recurses into tuple/variant sub-patterns and peels a
+/// `(guard …)` wrapper — so linearity holds across the WHOLE composed pattern, a name in two sub-patterns
+/// faulting exactly as one appearing twice in a flat pattern. (A non-deduping walk — unlike resolve's
 /// binder lookups it must SEE every occurrence to catch the repeat.)
+///
+//= spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch
+//# A pattern MUST bind each name at most once; a pattern that binds the same name more than once MUST be a compile-time error (`CDZ0102`), so that a pattern is linear rather than silently shadowing an earlier binder or imposing a hidden equality constraint.
+//= spec/capabilities/core-semantics.md#patterns-compose
+//# A composed pattern MUST bind the union of its sub-patterns' bindings, matched recursively, and MUST remain linear across the whole pattern, so that a name appearing in more than one sub-pattern is the same `CDZ0102` error as one appearing twice in a flat pattern.
 fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     collect_pattern_binders(db, pat, &mut seen)
 }
 
 /// Validate a pattern in a BINDING position — a `let` binder, a `def`/`fn` parameter — where there is NO
-/// alternative arm, so the pattern MUST be irrefutable (`core-semantics.md §A Binding Position Accepts An
-/// Irrefutable Pattern`). `value_ty` is the type of the value being bound (a `let` initializer's type, or
-/// a parameter's solved type), used for the shape/arity check; pass `Ty::Any` when it is not yet solved
-/// (the permissive treatment a projection of `Any` gets — no shape check, only classification+linearity).
+/// alternative arm, so the pattern MUST be irrefutable. `value_ty` is the type of the value being bound (a
+/// `let` initializer's type, or a parameter's solved type), used for the shape/arity check; pass `Ty::Any`
+/// when it is not yet solved (the permissive treatment a projection of `Any` gets — no shape check, only
+/// classification+linearity).
 ///
 /// A binding pattern IS a single-arm match, so an ill-formed one gets the code the desugared match would.
 /// A REFUTABLE pattern (a multi-variant constructor, a literal, a length-constrained list pattern) is
 /// CDZ0210 (non-exhaustive — the other cases are uncovered and there is no fall-through arm). A
 /// SHAPE-INCOMPATIBLE pattern (a wrong-arity tuple, a tuple pattern vs a non-tuple value) is CDZ0201. A
 /// NON-LINEAR pattern (a binder repeated, flat or nested) is CDZ0102 (via `check_pattern_linear`).
+///
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A binding position has no alternative arm, so its pattern MUST be irrefutable — it MUST match every value of the bound value's type.
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A refutable pattern in a binding position — a constructor pattern of a multi-variant sum, a literal, or a length-constrained list pattern, none of which matches every value of its type — MUST be a compile-time error (`CDZ0210`), the same non-exhaustiveness the equivalent single-arm match would raise under *Matching Is Exhaustive Or Rejected*.
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A pattern whose shape cannot match the bound value's type at all — a tuple pattern of the wrong arity, or a tuple pattern against a non-tuple value — MUST be a compile-time error (`CDZ0201`), and a non-linear binding pattern MUST be the same `CDZ0102` error as in any other pattern position.
 ///
 /// A pattern that is irrefutable in principle but not-yet-supported (a record pattern, a single-variant
 /// user sum, any list pattern) DECLINES (reject-don't-miscompile — a later increment accepts it), NOT a
@@ -5649,6 +5716,65 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
     }
 }
 
+/// Lower `(Qty.pow q n)` — raise q's erased magnitude to the `n`th power over the inner numeric type.
+/// The unit is a compile-time concern (the solved `Ty::Qty` already carries `unit^n`); at runtime this
+/// is just `value * value * … ` (`|n|` factors), synthesized as ordinary arithmetic over q's value
+/// occurrence and re-lowered (so the constant case FOLDS through the normal arith path and a runtime
+/// magnitude emits the multiplies). `n = 0` is the dimensionless `1` (the multiplicative identity in the
+/// inner type). A NEGATIVE `n` is the reciprocal `1 / value^|n|` (an inverse unit like a frequency
+/// `second⁻¹`) — the division runs in the inner type, so Float divides and Int TRUNCATES (`1 / 8 = 0`),
+/// the documented "precision loss only where the numeric type is itself inexact / integer truncates".
+fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
+    let inner_is_float = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Float(_))
+    );
+    let n = match crate::resolve::resolved_of(db, exp) {
+        crate::resolved::Resolved::Int(v) => match v.to_i64() {
+            Some(n) => n,
+            None => return Core::Poison(Reject::decline("Qty.pow exponent out of range")),
+        },
+        _ => {
+            return Core::Poison(Reject::decline(
+                "Qty.pow exponent is not a compile-time integer",
+            ));
+        }
+    };
+    // `n = 0` — the dimensionless identity `1` (`1.0` for a float inner).
+    if n == 0 {
+        let one = num_literal(db, 1, inner_is_float);
+        return core_of(db, one);
+    }
+    let value = match crate::eval::qty_value_occ(db, q) {
+        Some(v) => v,
+        None => {
+            return Core::Poison(Reject::decline(
+                "Qty.pow over a non-Qty.of magnitude (not yet emitted)",
+            ));
+        }
+    };
+    // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the inner
+    // type's multiply (`*.` float / `*` int).
+    let mul = if inner_is_float { "*." } else { "*" };
+    let mut node = value;
+    for _ in 1..n.unsigned_abs() {
+        let mul_head = db.push_name(mul);
+        node = db.push_list(vec![mul_head, node, value]);
+    }
+    // A negative exponent is the reciprocal `1 / value^|n|`, dividing in the inner type (`/.` float / `/`
+    // int); a positive one is the power itself. Lower the synthesized node through the ordinary arith
+    // path (so the constant case folds and a runtime magnitude emits the multiplies/division).
+    if n < 0 {
+        let (one, div) = (
+            num_literal(db, 1, inner_is_float),
+            if inner_is_float { "/." } else { "/" },
+        );
+        let div_head = db.push_name(div);
+        node = db.push_list(vec![div_head, one, node]);
+    }
+    core_of(db, node)
+}
+
 /// Apply `op` to two converted FLOAT reference values, producing the result core: `+`/`-` a
 /// `ConstFloat`, a comparison a `ConstBool`.
 fn fold_float_combine(op: Prim, l: f64, r: f64) -> Core {
@@ -5996,14 +6122,16 @@ fn arith_identity(
         // constant — `(& x M)` returns `lc` (x) when `rc` (M) masks x's whole width; symmetric for `(& M x)`.
         Prim::BitAnd if is_full_mask_for(db, lhs, rc) => Some(lc.clone()),
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
-        // NESTED-MASK COLLAPSE: `(& (& v C1) C2)` → `(& v (C1 & C2))`. AND is associative and total
-        // (never traps), so masking twice with constants is one mask by their bitwise-AND — one fewer op,
-        // and the folded constant often enables downstream range folds (`(& (& x 255) 15)` → `(& x 15)`,
-        // range [0,15]). `v` keeps its own traps (it stays the operand). Either the LEFT or RIGHT outer
-        // operand may be the inner `(& v C1)`; the other must be the constant `C2`. Guarded on the shape
-        // (via `nested_mask_collapse`, which returns `None` when it does not apply) so the same-operand
-        // `& a a` fold below still fires. Verified value-identical: `(a & C1) & C2 == a & (C1 & C2)`.
-        Prim::BitAnd if let Some(folded) = nested_mask_collapse(db, lhs, lc, rhs, rc) => {
+        // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
+        // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
+        // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
+        // 6)`); the `&` case's folded constant also enables downstream range folds. `v` keeps its own
+        // traps (it stays the operand). Guarded on the shape (`nested_bitwise_collapse` returns `None`
+        // when it does not apply) so the same-operand `& a a`/`| a a` fold below still fires. Verified
+        // value-identical: each op is associative, so `(v OP C1) OP C2 == v OP (C1 ⊙ C2)`.
+        Prim::BitAnd | Prim::BitOr | Prim::BitXor
+            if let Some(folded) = nested_bitwise_collapse(db, op, lhs, lc, rhs, rc) =>
+        {
             Some(folded)
         }
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
@@ -6057,28 +6185,44 @@ fn arith_identity(
     }
 }
 
-/// The NESTED-MASK COLLAPSE for an outer `&` whose operands are `(lhs, rhs)` (cores `lc`/`rc`): when one
-/// operand is `(& v C1)` and the OTHER is a constant `C2`, returns `(& v (C1 & C2))` — one mask instead
-/// of two. `None` when neither shape matches (so the caller's later folds still fire). AND is total, so
-/// no trap is dropped; `v` stays the operand (its own traps preserved). The folded constant `C1 & C2` is
-/// a fresh `Leaf::Int` atom, lowered lazily to `Core::ConstInt` and grounded to the op width at selection.
-fn nested_mask_collapse(
+/// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
+/// are `(lhs, rhs)` (cores `lc`/`rc`): when one operand is `(OP v C1)` — the SAME op — and the OTHER is a
+/// constant `C2`, returns `(OP v (C1 ⊙ C2))` where `⊙` is that op's constant fold — one op instead of
+/// two. `(& (& v C1) C2)` → `(& v (C1&C2))`, `(| (| v C1) C2)` → `(| v (C1|C2))`, `(^ (^ v C1) C2)` →
+/// `(^ v (C1^C2))`. `None` when neither shape matches (so the caller's later folds still fire). All three
+/// ops are TOTAL (never trap) and ASSOCIATIVE, so no trap is dropped and the value is identical; `v` stays
+/// the operand (its own traps preserved). The folded constant is a fresh `Leaf::Int` atom, lowered lazily
+/// to `Core::ConstInt` and grounded to the op width at selection. (NOT for `+`/`-`/`*`/`<<` — those are
+/// CHECKED, so `(v OP C1) OP C2` traps differently from `v OP (C1⊙C2)`.)
+fn nested_bitwise_collapse(
     db: &mut Db,
+    op: Prim,
     lhs: StructId,
     lc: &Core,
     rhs: StructId,
     rc: &Core,
 ) -> Option<Core> {
-    // The `(v, C1)` of an inner `(& v C1)` node, C1 a constant on either side.
-    let nested_and_const = |db: &mut Db, inner: StructId| -> Option<(StructId, i64)> {
+    if !matches!(op, Prim::BitAnd | Prim::BitOr | Prim::BitXor) {
+        return None;
+    }
+    let apply = |a: i64, b: i64| match op {
+        Prim::BitAnd => a & b,
+        Prim::BitOr => a | b,
+        _ => a ^ b, // BitXor
+    };
+    // The `(v, C1)` of an inner `(OP v C1)` node with the SAME op, C1 a constant on either side.
+    let nested_op_const = |db: &mut Db, inner: StructId| -> Option<(StructId, i64)> {
         let Core::Arith {
-            op: Prim::BitAnd,
+            op: inner_op,
             lhs: il,
             rhs: ir,
         } = core_of(db, inner)
         else {
             return None;
         };
+        if inner_op != op {
+            return None;
+        }
         match (core_of(db, il), core_of(db, ir)) {
             (Core::ConstInt(c), _) => c.to_i64().map(|c| (ir, c)),
             (_, Core::ConstInt(c)) => c.to_i64().map(|c| (il, c)),
@@ -6086,27 +6230,27 @@ fn nested_mask_collapse(
         }
     };
     let combine = |db: &mut Db, inner: StructId, outer_c: i64| -> Option<Core> {
-        let (v, inner_c) = nested_and_const(db, inner)?;
-        let folded = inner_c & outer_c;
+        let (v, inner_c) = nested_op_const(db, inner)?;
+        let folded = apply(inner_c, outer_c);
         let fc = db.push_atom(crate::ast::Leaf::Int {
             value: IntValue::from_i64(folded),
             radix: crate::ast::Radix::Dec,
         });
-        trace!(target: "rcdzc::fold", inner_c, outer_c, folded, "nested-mask collapse (& (& v C1) C2) → (& v (C1&C2))");
+        trace!(target: "rcdzc::fold", ?op, inner_c, outer_c, folded, "nested-bitwise collapse (OP (OP v C1) C2) → (OP v (C1⊙C2))");
         Some(Core::Arith {
-            op: Prim::BitAnd,
+            op,
             lhs: v,
             rhs: fc,
         })
     };
-    // `(& (& v C1) C2)` — inner on the LEFT, constant C2 on the RIGHT.
+    // inner on the LEFT, constant C2 on the RIGHT.
     if let Core::ConstInt(c2) = rc
         && let Some(c2) = c2.to_i64()
         && let Some(folded) = combine(db, lhs, c2)
     {
         return Some(folded);
     }
-    // `(& C2 (& v C1))` — constant C2 on the LEFT, inner on the RIGHT.
+    // constant C2 on the LEFT, inner on the RIGHT.
     if let Core::ConstInt(c2) = lc
         && let Some(c2) = c2.to_i64()
         && let Some(folded) = combine(db, rhs, c2)
@@ -6463,6 +6607,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitIn
         | Prim::QtyOf
         | Prim::QtyValue
+        | Prim::QtyPow
         | Prim::QtyCtor
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
         | Prim::Trap => {
@@ -6673,11 +6818,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
         }
-        // NaN under the CANONICAL BYTE FORM (core-semantics.md #Floating-Point Equality Follows The
-        // Canonical Byte Form): every NaN shares one canonical byte form, so `(= nan nan)` is TRUE (NOT
-        // IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float (distinct byte
-        // forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as the finite-pair
-        // path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair.
+        // NaN under the CANONICAL BYTE FORM: every NaN shares one canonical byte form, so `(= nan nan)`
+        // is TRUE (NOT IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float
+        // (distinct byte forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as
+        // the finite-pair path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair. (A
+        // negative zero is likewise a distinct byte form from positive zero, so `(= -0.0 0.0)` is false —
+        // the `ConstFloat` pair compares the canonical decimal, which carries the sign.)
+        //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+        //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
         (Core::ConstFloatNan, Core::ConstFloatNan) => {
             if matches!(op, Prim::Eq) {
                 trace!(target: "rcdzc::fold", "folded nan = nan → true (canonical byte form)");
@@ -6741,11 +6889,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // booleans, which have a machine representation the backend can compare); a compound operand
         // still declines (heap-walk equality is a later stage).
         _ => {
-            // CONSTANT COMPOUND EQUALITY folds STRUCTURALLY (`core-semantics.md §Equality Is Structural`:
-            // two values are equal when they have the same type and their contents are equal
-            // component-wise). Only for `=` (a total ordering `<`/`>` over compounds is a later stage);
-            // only when BOTH operands are compile-time-visible constant compounds (a `SumNew`/`Tuple`/
-            // `Record`/`ListNew`, recursively) — a runtime operand still needs the heap walk (deferred).
+            // CONSTANT COMPOUND EQUALITY folds STRUCTURALLY: two values are equal when they have the same
+            // type and their contents are equal component-wise. Only for `=` (a total ordering `<`/`>`
+            // over compounds is a later stage); only when BOTH operands are compile-time-visible constant
+            // compounds (a `SumNew`/`Tuple`/`Record`/`ListNew`, recursively) — a runtime operand still
+            // needs the heap walk (`value-eq`/`champ_eq`, deferred to the backend).
+            //= spec/capabilities/core-semantics.md#equality-is-structural
+            //# Two values MUST be equal when they have the same type and their contents are equal component-wise.
             // `(= (Some 1) (Some 1))` → true, `(= (Some 1) (Some 2))` → false, `(= None None)` → true,
             // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
             // element that is itself a compound). Returns `None` when either side is not a constant
@@ -6926,9 +7076,6 @@ fn fold_comparison_at_type_bound(
     lhs: StructId,
     rhs: StructId,
 ) -> Option<Core> {
-    if matches!(op, Prim::Eq) {
-        return None;
-    }
     let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
@@ -6943,6 +7090,23 @@ fn fold_comparison_at_type_bound(
         } else {
             return None;
         };
+    // EQUALITY against a value with a known range is DECIDABLE when `c` lies OUTSIDE `[min, max]` (no
+    // value in the range equals `c` → `false`) or the range pins `v` to the single point `{c}` (`v` can
+    // only be `c` → `true`). `=` is symmetric, so `v_on_left` is immaterial. This subsumes the classic
+    // `(= (& x 15) 100)` → false (`x & 15 ∈ [0,15]`, `100` above). Discards `v`, so — like the ordering
+    // rules below — only fires when `v` is TRAP-FREE (a trapping operand must keep its runtime compare so
+    // the trap survives). The single-point `true` case rarely fires at lower time (a `[c,c]` range comes
+    // from a `ConstInt`, already folded), but is sound and DOES fire via the refinement sibling
+    // (`refined_comparison_const`, a match arm pinning the scrutinee to `{c}`).
+    if matches!(op, Prim::Eq) {
+        let outside = c < min || max.is_some_and(|m| c > m);
+        let pinned = min == c && max == Some(c);
+        if (outside || pinned) && is_trap_free(db, v) {
+            trace!(target: "rcdzc::fold", node = v.0, c, min, ?max, result = pinned, "range-vs-constant equality is decidable — folds to a constant");
+            return Some(Core::ConstBool(pinned));
+        }
+        return None;
+    }
     // Normalize to the `(cmp v c)` sense — the LEFT-const forms are the mirror (`c < v` ≡ `v > c`).
     let cmp = match (op, v_on_left) {
         (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt,
@@ -7019,9 +7183,6 @@ pub(crate) fn refined_comparison_const(
     lhs: StructId,
     rhs: StructId,
 ) -> Option<bool> {
-    if matches!(op, Prim::Eq) {
-        return None;
-    }
     let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
@@ -7049,6 +7210,23 @@ pub(crate) fn refined_comparison_const(
     // Discarding `v` must not drop a trap (a refined `Param`/`LocalRef` is trap-free, so this holds).
     if !is_trap_free(db, v) {
         return None;
+    }
+    // EQUALITY against the refined range: DECIDABLE when `c` lies OUTSIDE `[min, max]` (→ false) or the
+    // range PINS `v` to `{c}` (→ true). The pin case is the payoff a match arm's exact-value refinement
+    // enables — `refined_frame_for_match_arm` sets the scrutinee to `[c, c]`, so a redundant `(= n 5)`
+    // inside the `(5 …)` arm folds to `true`; the outside case folds a re-test the enclosing branch's
+    // interval already excludes (`(if (> n 10) (= n 3) …)` → `false`). `=` is symmetric — `v_on_left` is
+    // immaterial. Sibling of the ordering rules below.
+    if matches!(op, Prim::Eq) {
+        let outside = c < min || max.is_some_and(|m| c > m);
+        let pinned = min == c && max == Some(c);
+        return if outside {
+            Some(false)
+        } else if pinned {
+            Some(true)
+        } else {
+            None
+        };
     }
     // Normalize to `(cmp v c)`.
     let cmp = match (op, v_on_left) {
@@ -7238,18 +7416,42 @@ fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i
             let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
             Some(clamp(0, (hi as i128) << k))
         }
-        // `v >>ᵤ k` (constant `k`, LOGICAL — an unsigned/nonneg operand): a nonneg `v ∈ [0,hi]` → `[0, hi
-        // >> k]`. Only for a value proven nonnegative (`value_range` gives `[0, …]`); a signed `>>ₛ`
-        // sign-extends and is excluded because a negative operand's range would not start at 0.
+        // `v >>ᵤ k` (constant `k`, LOGICAL — an unsigned/nonneg operand): a nonneg `v` shifted right by
+        // `k` loses its low `k` bits. Two cases, both requiring `v` proven NONNEGATIVE (`value_range` lo
+        // == 0; a signed `>>ₛ` sign-extends and is excluded):
+        //   • a KNOWN finite `v ∈ [0, hi]` → `[0, hi >> k]`;
+        //   • an UNBOUNDED-above nonneg `v` (a bare `UInt64`, whose max `2^64-1` is not i64-representable)
+        //     → still bounded by the TYPE WIDTH: an unsigned width-`W` value is `< 2^W`, so `v >>ᵤ k <
+        //     2^(W−k)` → `[0, 2^(W−k) − 1]`. This is what makes `(& (>> x 56) 255)` on a UInt64 drop its
+        //     redundant mask (`x >>ᵤ 56 ∈ [0,255]` already fits the mask). `W − k` may be ≥ 64 for small
+        //     `k` at width 64 → the bound is not i64-representable, so leave it unbounded (`None`).
         Prim::Shr => {
-            let (0, Some(hi)) = value_range(db, lhs)? else {
+            let (0, hi_opt) = value_range(db, lhs)? else {
                 return None;
             };
             let Core::ConstInt(k) = core_of(db, rhs) else {
                 return None;
             };
             let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
-            Some((0, Some(hi >> k)))
+            match hi_opt {
+                Some(hi) => Some((0, Some(hi >> k))),
+                None => {
+                    // Unbounded-above nonneg: bound by the type width. `W − k` significant bits remain.
+                    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, lhs) else {
+                        return None;
+                    };
+                    let crate::ty::Width::Fixed(w) = it.width else {
+                        return None;
+                    };
+                    let bits = (w as i64) - k;
+                    // `bits` in `1..=63` → `2^bits − 1` fits i64; `bits ≥ 64` (or ≤ 0) → not representable.
+                    if (1..=63).contains(&bits) {
+                        Some((0, Some((1i64 << bits) - 1)))
+                    } else {
+                        Some((0, None)) // still nonneg, but no finite i64 upper bound
+                    }
+                }
+            }
         }
         // `v % C` (constant divisor `C`): the truncated-toward-zero remainder has magnitude `< |C|`, so
         // its range is `[-(|C|-1), |C|-1]` in general, tightened to `[0, |C|-1]` when the DIVIDEND is
@@ -9814,6 +10016,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitIn => "unit-in",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
+        Prim::QtyPow => "qty-pow",
         Prim::QtyCtor => "Qty",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",

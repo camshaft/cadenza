@@ -470,6 +470,13 @@ pub enum Prim {
     /// The explicit exit from the dimensional layer (the widening that requires no check). Erases to its
     /// argument's lowering (the quantity's inner value IS its erased value).
     QtyValue,
+    /// `Qty.pow q n` — raise a quantity to a compile-time NON-NEGATIVE integer power, composing the unit
+    /// the same way `Unit.^` does: `(Qty.pow (Qty.of 3.0 metre) 2)` = `9.0 : (Qty Float64 metre²)`. The
+    /// unit's exponents (and scale) are raised to the `n`th power (`Unit::pow`); the numeric magnitude
+    /// erases to `value * value * … ` (`n` factors) — `n = 0` is the dimensionless `1`. The exponent `n`
+    /// is a compile-time `Int` literal read off arg1 (not an HM variable), exactly as `Unit.^` reads its
+    /// power and `Qty.of` reads its unit. A negative exponent DECLINES for now (needs a reciprocal).
+    QtyPow,
     /// `Qty : (Type, Unit) → Type` — the QUANTITY-TYPE constructor. `(Qty Float64 u)` in TYPE position
     /// builds the type-value `Ty::Qty { inner, unit }` (used in an annotation `(: e (Qty T u))`), reading
     /// the first argument as the inner numeric type and the second as a compile-time unit (`unit_of`).
@@ -605,6 +612,7 @@ impl Prim {
             "unit-in" => Some(Prim::UnitIn),
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
+            "qty-pow" => Some(Prim::QtyPow),
             "Qty" => Some(Prim::QtyCtor),
             "Set" => Some(Prim::SetCtor),
             "set-of" => Some(Prim::SetOf),

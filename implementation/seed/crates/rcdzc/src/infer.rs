@@ -164,10 +164,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
         }
         // Member access — the field's type is the type of the field's VALUE, found by reducing the
-        // operand to a record and projecting (the one projection, via the evaluator, so it works off a
-        // literal record, a `let`-bound one, OR a module a type constructor built like `(Int 64)`). A
-        // non-record operand or an absent field has no field type — typed `Any` here so it does not
-        // cascade; the actual fault (CDZ0201) is reported by `type_errors`.
+        // operand to a record and PROJECTING the field named by the key (the one projection, via the
+        // evaluator, so it works off a literal record, a `let`-bound one, OR a module a type constructor
+        // built like `(Int 64)`). A non-record operand or an absent field has no field type — typed
+        // `Any` here so it does not cascade; the actual fault (CDZ0201) is reported by `type_errors`.
+        //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
+        //# Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
         Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
             crate::eval::Member::Field(value) => type_of(db, value),
             // The operand does not reduce to a compile-time-visible record (a call result, an `if`
@@ -360,6 +362,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Param { binder } => param_annot_ty(db, binder)
             .or_else(|| crate::effects::handle_arm_param_ty(db, binder))
             .or_else(|| solved_param_ty(db, binder))
+            .or_else(|| lambda_param_ty_from_context(db, binder))
             .unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
         // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
@@ -763,7 +766,65 @@ pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option
             return Some(*p);
         }
     }
+    // (3) A FUNCTION-ARGUMENT position — the parent is an application `(f … lambda …)` whose head `f` is a
+    //     FUNCTION (a lambda / a top-level def) that DECLARES an arrow at the lambda's parameter slot: a
+    //     `(def (app (: g (-> Int8 Int8))) …)` applied `(app (fn (n) …))` types the lambda from `app`'s
+    //     `g` param. Read `f`'s parameter occurrences and take the type of the one at the lambda's index;
+    //     if it is itself an arrow, that is the lambda's expected type. This is the argument-position
+    //     analogue of the constructor-payload case above — a declared higher-order parameter is exactly
+    //     the "storage context declares an arrow" the recovery serves, so an unannotated closure argument's
+    //     narrow param width reaches the body's const-fold (a const arg then overflows at the declared
+    //     width, matching an explicit `(fn ((: n Int8)) …)` — else the const-fold runs at the default Int64
+    //     and MISSES the narrow overflow). A non-function head, or a param slot that is not an arrow, yields
+    //     no expected arrow (the HOF call's own unification, or a genuinely unconstrained position).
+    if let Some(params) = crate::eval::lambda_params_of(db, head)
+        && let Some(&param_occ) = params.get(arg_ix)
+        && let t @ Ty::Fn(_, _) = type_of(db, param_occ)
+    {
+        return Some(t);
+    }
     None
+}
+
+/// The type of an UNANNOTATED lambda PARAMETER recovered from the lambda's storage-context arrow — the
+/// per-parameter analogue of [`expected_arrow_for_lambda`], read at the PARAMETER's own `type_of`. A
+/// bare `(fn (n) …)` param types `Any` bottom-up (no annotation, no def entry), but when the lambda sits
+/// where an arrow is DECLARED — a `(: g (-> Int8 Int8))` higher-order parameter it is passed to, a
+/// variant payload, an annotation — that arrow fixes the param's type. Recovering it HERE (not only at
+/// `lower_lambda_value`, which runs at LOWERING) is what makes the body's type-check / const-fold see the
+/// narrow width: `(+ n 1)` over a context-Int8 `n` then overflows a const arg exactly as an explicit
+/// `(fn ((: n Int8)) …)` does, instead of folding at the default Int64 and missing the overflow. `None`
+/// unless `binder` is a bare lambda param whose lambda has a recoverable arrow with a concrete type at
+/// this param's index (so an annotated param, a non-lambda binder, or an unconstrained position is
+/// unaffected — no invented width, no over-reject).
+fn lambda_param_ty_from_context(db: &mut Db, binder: StructId) -> Option<Ty> {
+    // The binder of a bare lambda param IS the param node, sitting in the lambda's `(fn (p0 p1 …) body)`
+    // parameter list. Find that params list (the binder's parent) and the lambda (its grandparent), and
+    // the binder's index within the list.
+    let params_list = db.parent_of(binder)?;
+    let lambda = db.parent_of(params_list)?;
+    let crate::resolved::Resolved::Lambda { params, .. } = resolved_of(db, lambda) else {
+        return None;
+    };
+    // The index of THIS binder among the lambda's params (compare against each param's name occurrence,
+    // so an annotated sibling `(: m T)` is matched through its `:` form too — though an annotated binder
+    // never reaches here, since `param_annot_ty` handled it before this fallback).
+    let idx = params
+        .iter()
+        .position(|&p| crate::eval::param_name_occ(db, p) == binder)?;
+    // Peel the lambda's expected arrow to its idx-th parameter type; use it only if concrete (an arrow
+    // that runs out of parameters, or an `Any` at this slot, recovers nothing).
+    let mut cur = expected_arrow_for_lambda(db, lambda)?;
+    for _ in 0..idx {
+        match cur {
+            Ty::Fn(_, r) => cur = *r,
+            _ => return None,
+        }
+    }
+    match cur {
+        Ty::Fn(p, _) if !matches!(*p, Ty::Any) => Some(*p),
+        _ => None,
+    }
 }
 
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
@@ -1286,6 +1347,24 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
     }
 }
 
+/// The result type of `(Qty.pow q n)`: q's inner numeric type carried over, with q's unit raised to the
+/// `n`th power (`Unit::pow`). `None` when arg0 is not a quantity or arg1 is not a compile-time `Int`
+/// literal (the caller then falls through). `#[inline(never)]` so it does NOT enlarge `apply_type`'s
+/// stack frame — that function is on the deep `type_of`↔`apply_type` recursion.
+#[inline(never)]
+fn qty_pow_type(db: &mut Db, args: &[StructId]) -> Option<Ty> {
+    if let Ty::Qty { inner, unit } = type_of(db, args[0])
+        && let Resolved::Int(v) = resolved_of(db, args[1])
+        && let Some(n) = v.to_i64()
+    {
+        return Some(Ty::Qty {
+            inner,
+            unit: unit.pow(n),
+        });
+    }
+    None
+}
+
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // CASE-OF-CASE (matches `lower`): a head that reduces to a runtime `if` — `((if c a b) args…)` —
     // types as the `if` of the two branch applications. Each branch's lambda applies (β-reduces) to a
@@ -1358,6 +1437,20 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             Ty::Qty { inner, .. } => *inner,
             _ => Ty::Any,
         };
+    }
+    // `Qty.pow q n` — the result unit is q's unit raised to the `n`th power (`Unit::pow`, composing
+    // exponents + scale exactly as `Unit.^`); the inner numeric type is unchanged. `n` is a compile-time
+    // Int literal read off arg1 (not an HM variable, like `Unit.^`'s power / `Qty.of`'s unit). A
+    // negative `n` is left to `check_application`/lower to reject; here we still shape the type (the unit
+    // map handles a negative power fine) so downstream sees a sane `Ty::Qty`. A non-quantity arg0 or a
+    // non-literal exponent falls through to the generic path (→ Any, faulted elsewhere). The body is a
+    // separate (never-inlined) helper so it keeps its `Ty::Qty` destructure (a `Box` + an inline `Unit`
+    // map) out of `apply_type`'s frame, which is on the deep `type_of`↔`apply_type` recursion.
+    if args.len() == 2
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyPow)
+        && let Some(ty) = qty_pow_type(db, args)
+    {
+        return ty;
     }
     // `Unit.in target q` — explicit conversion. The result is a quantity at the TARGET unit (read from
     // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in metre (Qty.of 3.0 km))` :
@@ -2282,7 +2375,13 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
-fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+fn check_application(
+    db: &mut Db,
+    app: StructId,
+    head: StructId,
+    args: &[StructId],
+    out: &mut Vec<Reject>,
+) {
     // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
     // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
@@ -2787,7 +2886,25 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
         if let Some(mut guard) = db.enter_reduction() {
             let g = guard.db();
             if let Ok(Some(reduced)) = crate::eval::apply_lambda(g, head, args) {
-                collect(g, reduced, out);
+                // Collect the reduced body's faults into a LOCAL vec first so a fault anchored to a
+                // SYNTHESIZED node (β-reduction mints fresh nodes for the substituted body — a use of a
+                // bare parameter becomes a use of the argument VALUE, on a node with no source span) can
+                // be re-anchored to the CALL SITE. Without this, `(helper true)` where `helper`'s body is
+                // `(+ x 1)` reduces to `(+ true 1)` on spanless nodes, so its CDZ0203 reported with NO
+                // location (a bare `cdz:`/`file:` prefix). The call `(helper true)` IS the source the
+                // author must fix — anchoring the reduced-body fault to `app` (when it landed on a
+                // non-user, hence spanless, node) restores its `file:line:col`. A fault already anchored
+                // to a real user node (e.g. inside an argument sub-expression) keeps its own, more precise
+                // anchor.
+                let mut body_faults = Vec::new();
+                collect(g, reduced, &mut body_faults);
+                for mut f in body_faults {
+                    let on_user_node = f.at.is_some_and(|o| g.is_user_node(o));
+                    if !on_user_node {
+                        f.at = Some(app);
+                    }
+                    out.push(f);
+                }
                 reduced_ok = true;
             }
         } else {
@@ -3110,42 +3227,79 @@ fn no_field_reject(
     }
 }
 
-/// Whether a key occurrence is a DIRECT LITERAL — a constant written IN the map literal (an int/string/
-/// bool/float/unit atom), NOT a name reference. The duplicate-key reject compares only these: a repeated
-/// WRITTEN literal (`(map ("a" 1) ("a" 2))`) is the ambiguous duplicate the spec forbids, whereas two
-/// distinct NAMES that merely fold to the same value (`(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))`)
-/// are a RUNTIME overwrite (size 1, keys compared by value), NOT a compile-time reject. Reading the key
-/// through a name binding would conflate the two, so a name key (`Resolved::Ref`) is NOT a direct literal.
-fn is_direct_literal_key(db: &mut Db, key: StructId) -> bool {
-    matches!(
-        resolved_of(db, key),
-        Resolved::Int(_)
-            | Resolved::Str(_)
-            | Resolved::Bool(_)
-            | Resolved::Float(_)
-            | Resolved::Unit
-    )
+/// The canonical, HASHABLE identity of a DIRECT-LITERAL map key — a scalar written in the map literal.
+/// Two keys are the duplicate the spec forbids exactly when their tokens are EQUAL, and this token is
+/// built to reproduce `const_compound_eq`'s scalar equality precisely: an integer by its VALUE (leading
+/// zero bytes trimmed and a zero sign-normalized, so `1`/`0x1` and `0`/`-0` collide exactly as
+/// `IntValue::eq_value` decides), a float by its canonical `Float64` bits (so `-0.0` and `0.0` are
+/// DISTINCT keys), a string/bool by value, unit a singleton. Only the five direct-literal scalar kinds
+/// (int/string/bool/float/unit) produce a token; every other key (crucially a NAME reference, even one
+/// that folds to a literal value) yields `None` so it is never compared — a runtime overwrite, not a
+/// compile-time duplicate.
+#[derive(PartialEq, Eq, Hash)]
+enum LitKey {
+    Int { negative: bool, magnitude: Vec<u8> },
+    Str(String),
+    Bool(bool),
+    FloatBits(u64),
+    Unit,
+}
+
+/// The [`LitKey`] token for a DIRECT-LITERAL key at `id`, or `None` for any non-literal key (a name
+/// reference, a compound). Reads `resolved_of` ONCE per key — the O(1)-per-key basis of the linear
+/// duplicate scan. A NAME key resolves to `Resolved::Ref`
+/// (not one of these arms) → `None`, preserving the "two distinct names bound to the same value are a
+/// runtime overwrite, not a reject" rule. For a direct literal the resolved value equals its lowered
+/// `core_of` constant, so a token match is exactly `const_compound_eq == Some(true)` on that pair.
+fn literal_key_token(db: &mut Db, id: StructId) -> Option<LitKey> {
+    match resolved_of(db, id) {
+        // Trim leading zero bytes and normalize a zero's sign to non-negative — the SAME canonicalization
+        // `IntValue::eq_value` applies, so equal tokens ⟺ `eq_value` is true (magnitude representation and
+        // a signed zero do not create spurious distinctions).
+        Resolved::Int(v) => {
+            let start = v.magnitude.iter().take_while(|&&b| b == 0).count();
+            let magnitude = v.magnitude[start..].to_vec();
+            let negative = !magnitude.is_empty() && v.negative;
+            Some(LitKey::Int {
+                negative,
+                magnitude,
+            })
+        }
+        Resolved::Str(s) => Some(LitKey::Str(s)),
+        Resolved::Bool(b) => Some(LitKey::Bool(b)),
+        // A written float literal is always finite (`Decimal` holds no NaN), and its canonical `Float64`
+        // bits are what `const_compound_eq` compares — so `-0.0` ≠ `0.0` and two spellings of one value
+        // (`2.0`/`2.00`) collide, matching the scalar `=` fold.
+        Resolved::Float(d) => Some(LitKey::FloatBits(d.to_f64_bits())),
+        Resolved::Unit => Some(LitKey::Unit),
+        _ => None,
+    }
 }
 
 /// A map literal has a DUPLICATE WRITTEN-LITERAL key → CDZ0201 (the association is ambiguous — which
 /// value does the key hold? collections-and-text.md §A Map Associates Keys With Values: each key at most
-/// once). Only DIRECT LITERAL keys are checked (see `is_direct_literal_key`): two literal keys that
-/// compare structurally equal (`const_compound_eq`) are a duplicate. A NAME key — even two distinct
-/// names bound to the same value — is a runtime overwrite (size 1), never a reject. `None` if no duplicate.
+/// once). Only DIRECT LITERAL keys are checked (see `literal_key_token`): two
+/// literal keys that compare structurally equal are a duplicate. A NAME key — even two distinct names
+/// bound to the same value — is a runtime overwrite (size 1), never a reject. `None` if no duplicate.
+///
+/// LINEAR in the entry count: each direct-literal key is canonicalized to a hashable [`LitKey`] ONCE and
+/// inserted into a set; a collision is the duplicate. This replaced an O(entries²) pairwise
+/// `const_compound_eq` scan — which additionally re-derived and deep-cloned each key's `Core` on every
+/// one of the ~N²/2 comparisons (a `(map (0 0) (1 1) …)` literal of N distinct integer keys was
+/// quadratic: N=1600 spent ~72% of the whole compile in `const_compound_eq`). The verdict is IDENTICAL —
+/// a duplicate exists iff two direct-literal keys share a token, iff two of them are `const_compound_eq`-
+/// equal — and the reject is anchored to the map node with no pair-specific data, so reporting the FIRST
+/// collision (insertion order) rather than the first pair (scan order) yields byte-identical output.
 fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Option<Reject> {
-    for i in 0..entries.len() {
-        if !is_direct_literal_key(db, entries[i].0) {
-            continue;
-        }
-        for j in (i + 1)..entries.len() {
-            if is_direct_literal_key(db, entries[j].0)
-                && crate::lower::const_compound_eq(db, entries[i].0, entries[j].0) == Some(true)
-            {
-                return Some(Reject::coded(
-                    Code::Malformed,
-                    "a map contains each key at most once (a duplicate literal key)",
-                ));
-            }
+    let mut seen: crate::fxhash::FxHashSet<LitKey> = crate::fxhash::FxHashSet::default();
+    for &(key, _) in entries {
+        if let Some(token) = literal_key_token(db, key)
+            && !seen.insert(token)
+        {
+            return Some(Reject::coded(
+                Code::Malformed,
+                "a map contains each key at most once (a duplicate literal key)",
+            ));
         }
     }
     None
@@ -3312,10 +3466,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect(db, operand, out);
         }
         // Member access: the operand must be a record, and it must have the named field. Both faults
-        // are CDZ0201 (`core-semantics.md` §Member Access Projects A Record Field — projecting a field
-        // of a non-record, or an absent field, has no defined result). A built-in module is CLOSED the
-        // same way a user record is: it carries every field it will ever have, and an unrealized field
-        // DECLINES when projected rather than being absent (`prelude.rs` — there is no open-module rule).
+        // are compile-time rejections (a non-record operand, or an absent field, has no defined result —
+        // never an unspecified value or a runtime trap). A built-in module is CLOSED the same way a user
+        // record is: it carries every field it will ever have, and an unrealized field DECLINES when
+        // projected rather than being absent (`prelude.rs` — there is no open-module rule). (Projection
+        // of a PRESENT field to the field's value is realized at the `type_of`/`lower` Member arm — the
+        // `Member::Field` case here is the well-formed no-fault path.)
+        //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
+        //# Member access applied to a value that is not a record MUST be rejected at compile time with the machine-readable code for a type error rather than produce an unspecified value or a runtime trap.
+        //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
+        //# Member access naming a field the record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent rather than produce an unspecified value or a runtime trap, so that a projection cannot name a field the operand's type never held.
         Resolved::Member { operand, key } => {
             // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
             // built module is caught too. A poison operand reports its OWN fault (via the descent
@@ -3661,7 +3821,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         //= spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote
         //# The type of an arithmetic result MUST be determined by the operand types and the operation, not by an implicit widening the author did not write.
         Resolved::Apply { head, args } => {
-            check_application(db, head, &args, out);
+            check_application(db, id, head, &args, out);
             // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
             // and each operand for their own faults.
             collect(db, head, out);
@@ -3919,6 +4079,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // member projection would otherwise emit. When it fires, skip the generic `collect` of the
                 // op (which would add the CDZ0201 duplicate).
                 if crate::effects::arm_op_names_undeclared_operation(db, arm.op) {
+                    // Anchor at the op-KEY occurrence, NOT `arm.op`: the desugar synthesizes the arm's op
+                    // projection `(. E k)` (spanless), so `.at(arm.op)` maps to no source and the error
+                    // loses its `file:line:col`; the key child carries the arm's op-name span. Fall back
+                    // to the projection only if the key child is somehow absent.
+                    let anchor = crate::effects::arm_op_key_occ(db, arm.op).unwrap_or(arm.op);
                     // Name the nearest DECLARED operation of the effect + carry a replace fix on the
                     // mistyped op key (the effect-op analogue of the absent-field "did you mean?").
                     match crate::effects::nearest_declared_op(db, arm.op) {
@@ -3930,7 +4095,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                      — did you mean `{candidate}`?"
                                 ),
                             )
-                            .at(arm.op)
+                            .at(key_occ)
                             .with_fix(Fix::replace_heuristic(key_occ, candidate)),
                         ),
                         None => out.push(
@@ -3938,7 +4103,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 Code::HandlerUndeclaredOp,
                                 "this handler arm names an operation its effect does not declare",
                             )
-                            .at(arm.op),
+                            .at(anchor),
                         ),
                     }
                 } else {

@@ -21,6 +21,8 @@ pass	a CBOR reader walks a variable-length array using its decoded length as the
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
+pass	a HOF callback matching a tuple argument computes through the nested reduction
+pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a NaN nested in a list compares equal under the canonical byte form
@@ -109,6 +111,8 @@ pass	a closure capturing two values is made and called by the host
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure driving control flow off a captured boolean
+pass	a closure export alongside a plain scalar export — the closure runs
+pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
@@ -260,6 +264,7 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
+pass	a higher-order function applies a callback that matches its own sum argument
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
@@ -394,6 +399,8 @@ pass	a negative constant argument to an unsigned parameter is rejected, not laun
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
+pass	a negative power is the reciprocal, deriving an inverse unit
+pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
 pass	a negative shift count traps rather than masking
 pass	a negative string index yields None rather than wrapping to a large offset
@@ -447,6 +454,8 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a parameterized plain export alongside a closure export applies its argument
+pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
@@ -469,6 +478,7 @@ pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
@@ -604,6 +614,8 @@ pass	a runtime value is constructed into a fixed-width segment and its length re
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
+pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
+pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
@@ -663,6 +675,7 @@ pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
+pass	a tail-recursive string accumulator builds a runtime string and its length is measured
 pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-element runtime tuple is returned as a result
@@ -754,6 +767,7 @@ pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absurd runtime width is rejected, not silently ignored
+pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
@@ -833,6 +847,8 @@ pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
 pass	an unannotated closure in a user variant payload is typed from the declared arrow
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
+pass	an unannotated closure typed Int8 from context computes an in-range constant
+pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected
@@ -1083,6 +1099,7 @@ pass	projecting an if-of-tuples does not evaluate the untaken branch's unproject
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
+pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
@@ -1093,6 +1110,8 @@ pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
+pass	redeclaring a built-in unit with its own conversion is admissible
+pass	redeclaring a user-declared unit with the same conversion is admissible
 pass	removing a key drops its association and the size
 pass	removing an absent key leaves the map unchanged
 pass	removing an element yields a set without it
@@ -1175,11 +1194,14 @@ pass	the maximum unsigned 8-bit value is its per-width bound
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
+pass	the negative power agrees with dividing into the dimensionless one
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
 pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
+pass	the power form cubes an integer-magnitude quantity exactly
+pass	the power form derives the same dimension as repeated multiplication
 pass	the prelude binds Constructor values not pre-applied Sums
 pass	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of
@@ -1243,6 +1265,8 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+pass	two same-signature closures alongside a plain export all coexist
+pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two structural values of the same shape are equal
@@ -1316,7 +1340,6 @@ todo	a recursive function that installs a fresh handler on each call grows its c
 todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
-todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a tautology comparison against a masked value's derived range still traps on the operand
 todo	a tautology comparison against the type minimum still traps on a div-by-zero operand
 todo	a transformation over the built-in Ast composes across a function call

@@ -373,6 +373,14 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
     // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
     // payload, not a plain occurrence) — `binder_in` returns the full resolved form.
+    //
+    // Scope-FIRST is what makes binding lexical and shadowing well-defined: `lookup_scope` walks
+    // parents to the NEAREST enclosing binder, so a name resolves to its closest binding, and a local
+    // binding is found before (thus shadows) a top-level def or prelude entry of the same name.
+    //= spec/capabilities/core-semantics.md#binding-is-lexical
+    //# A name MUST resolve to the nearest enclosing binding of that name.
+    //= spec/capabilities/core-semantics.md#shadowing-is-well-defined
+    //# A binding that shadows an outer binding of the same name MUST take effect for references in its scope as defined by the corpus.
     if let Some(resolved) = lookup_scope(db, id, name) {
         trace!(target: "rcdzc::resolve", node = id.0, %name, "name → lexical scope");
         return resolved;
@@ -481,8 +489,10 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         return Resolved::Ref { value };
     }
     // 3. Off the end of the lookup — the name is unbound. This is a REJECTION (the program is
-    // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
-    // §Binding Is Lexical).
+    // ill-formed), not a decline: the unbound-name rule is unconditional. A reference that reaches here
+    // has no enclosing binding (and is no top-level def / prelude entry), so it is a compile-time error:
+    //= spec/capabilities/core-semantics.md#binding-is-lexical
+    //# A reference to a name with no enclosing binding MUST be a compile-time error.
     //
     // BUT a DIGIT-LED token is a NUMBER, never an identifier (an identifier may not start with a
     // digit). The reader classifies a numeric token that fails to parse — `0o17` (octal is not a
@@ -817,16 +827,25 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // Case 2: `form` is a let's BINDINGS-LIST, ascended from pair `from` → the bindings BEFORE `from`
     // are visible (an initializer sees the earlier bindings, not itself or later ones). A bindings-list
     // has NO head name (it is a bare list of pairs), so this is only reached for a headless/other-headed
-    // form — its own parent-shape check (`let_of_bindings_list`) confirms it.
+    // form — its own parent-shape check (`let_of_bindings_list`) confirms it. This is the let's
+    // in-order scope: an initializer observes the bindings written before it and none written after,
+    // and `last_binder_named` returns the LAST match, so a repeated name shadows the earlier one for the
+    // initializers that follow.
+    //= spec/capabilities/core-semantics.md#the-bindings-of-one-let-take-effect-in-order
+    //# The bindings of a single `let` MUST take effect in the order they are written: each binding's initializer MUST observe the bindings written before it in the same `let`, and MUST NOT observe the bindings written after it.
+    //= spec/capabilities/core-semantics.md#the-bindings-of-one-let-take-effect-in-order
+    //# A binding whose name repeats an earlier binding in the same `let` MUST shadow the earlier one for the initializers and body that follow it, in accordance with §"Shadowing Is Well-Defined".
     if let_of_bindings_list(db, form).is_some() {
         return last_binder_named(db, form, name, Some(from));
     }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
-    // this arm's body (`core-semantics.md` §Bindings Introduced By A Pattern Are Scoped To Its Branch).
-    // The bound value IS the scrutinee, so a reference resolves to the scrutinee occurrence — its type
-    // and (at lowering) its value flow straight through, no separate slot. Scoped to THIS arm only:
-    // an arm is reached from the enclosing `(match …)`, so a binder in one arm is invisible to another.
+    // this arm's body. The bound value IS the scrutinee, so a reference resolves to the scrutinee
+    // occurrence — its type and (at lowering) its value flow straight through, no separate slot. Scoped
+    // to THIS arm only: an arm is reached from the enclosing `(match …)` and this case fires ONLY when
+    // ascending from that arm's own body, so a binder in one arm is invisible to another arm.
+    //= spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch
+    //# A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
     if let Some(scrutinee) = match_arm_binds(db, form, from, name) {
         return Some(Resolved::Ref { value: scrutinee });
     }
@@ -2429,10 +2448,10 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             // for the param vars); a non-erasable decl stays a boxed `Ty::Sum`.
             Some(db.normalize_sum(decl, name, args))
         }
-        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the dual of `eval::encode_ty`'s
-        // `Nominal` arm. Carries its own encoded `inner`, so it round-trips independently of
-        // `newtype_inner` (an already-built `Ty::Nominal` re-encoded, e.g. through `reduce_ctor`). Name +
-        // decl are the identity/render; `inner` is the underlying structural type.
+        // A nominal type-value: `(Nominal <name> <decl> (args…) <inner>)` — the dual of `eval::encode_ty`'s
+        // `Nominal` arm. Carries its own `decl + args` (identity) and encoded `inner` (machine-rep hint),
+        // so it round-trips independently of `newtype_inner` (an already-built `Ty::Nominal` re-encoded,
+        // e.g. through `reduce_ctor`).
         "Nominal" => {
             let tail = db.ast.as_form(node, "Nominal")?;
             let name = db.ast.as_name(*tail.first()?)?.to_string();
@@ -2445,10 +2464,16 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => return None,
             };
-            let inner = decode_ty(db, *tail.get(2)?)?;
+            let args_tail = db.ast.as_form(*tail.get(2)?, "args")?;
+            let mut args = Vec::with_capacity(args_tail.len());
+            for &a in args_tail {
+                args.push(decode_ty(db, a)?);
+            }
+            let inner = decode_ty(db, *tail.get(3)?)?;
             Some(Ty::Nominal {
                 decl: StructId(decl),
                 name,
+                args,
                 inner: Box::new(inner),
             })
         }

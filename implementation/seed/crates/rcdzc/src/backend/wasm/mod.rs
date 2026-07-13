@@ -321,21 +321,19 @@ pub fn emit(
         // exports by signature and publishes G resource types (the `distinct_signature_…` oracle proved it).
         return emit_distinct_sig_resource(db, layout, spans);
     }
-    // A closure export ALONGSIDE a non-closure export (a mixed multi-export) is also not yet supported —
-    // the closure needs the resource envelope while the scalar export needs the plain boundary; composing
-    // the two envelopes is a later increment. Decline naming the feature (else the scalar path emits a
-    // confusing generic "type `(-> A B)` has no component boundary representation").
+    // A closure export ALONGSIDE a non-closure (plain) export — a MIXED multi-export. The closure(s) cross
+    // via the resource envelope (`make`/`call` under `cadenza:closure/exports`); each plain export is
+    // aliased off the SAME program instance and published as an ORDINARY top-level component func (the
+    // `oracle_mixed_component` byte anchor proved the coexistence). Handled when the closure exports all
+    // share ONE signature (the shared-`call` shape); distinct closure signatures alongside a plain export
+    // remain a further widening (declined inside `emit_mixed_closure_resource`).
     if layout.exports.len() > 1
         && layout
             .exports
             .iter()
             .any(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
     {
-        return Err(Reject::decline(
-            "a program that exports a closure ALONGSIDE a non-closure export is not yet supported — the \
-             closure needs the resource envelope and the other export the plain boundary; composing them \
-             is a later increment (DESIGN-closure-host-resource-rcdzc.md, multi-export closures)",
-        ));
+        return emit_mixed_closure_resource(db, layout, spans);
     }
 
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
@@ -925,11 +923,14 @@ fn resource_escape_dwarf(
         let export_abs = layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping bytes export is not in the emission order")
         })?;
-        let main_core = serialize::runtime_resource_core_module_form(
+        // MUST match Mode E's `emit_runtime_bytes_resource` (with_len=true — the Bytes resource carries
+        // `t-len`), or the sidecar's code offsets diverge from the embedded component's (VM-1).
+        let main_core = serialize::runtime_resource_core_module_form_ex(
             &funcs,
             &imports,
             export_abs,
             serialize::EscapeForm::RuntimeBytes(&form),
+            true,
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1558,6 +1559,7 @@ fn emit_multi_closure_resource(
         &funcs,
         &imports,
         &ser_makes,
+        &[], // no plain (non-closure) exports on the pure multi-export path
         &arg_vts,
         ret_vt,
         lifted_type_idx,
@@ -1581,6 +1583,266 @@ fn emit_multi_closure_resource(
         &abi_makes,
         &arg_bytes,
         result_byte,
+    ))
+}
+
+/// Emit a MIXED multi-export component: one or more CLOSURE exports of the SAME signature (crossing via the
+/// resource envelope's `make-<name>` + shared `call`) ALONGSIDE one or more PLAIN (non-closure) exports
+/// (each an ORDINARY top-level component func). The closure interface instance and the plain funcs coexist
+/// in one component — the `oracle_mixed_component` byte anchor proved it. This increment's scope: the
+/// closure exports share ONE signature (distinct closure signatures alongside a plain export decline), and
+/// each plain export has an ALIASED-SCALAR param/result shape (a compound/closure plain result declines —
+/// its `list<u8>` boundary would need the memory/realloc lift shape, a later widening).
+fn emit_mixed_closure_resource(
+    db: &mut Db,
+    layout: &Layout,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    // Partition the exports: CLOSURE exports (result `Ty::Fn`) vs PLAIN exports (everything else).
+    let closure_defs: Vec<usize> = layout
+        .exports
+        .iter()
+        .filter(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+        .map(|e| e.def)
+        .collect();
+    let plain_exports: Vec<&crate::layout::ExportPlan> = layout
+        .exports
+        .iter()
+        .filter(|e| !matches!(e.result, crate::ty::Ty::Fn(_, _)))
+        .collect();
+    // The closure exports must all share ONE signature (the shared `call` functype). Distinct closure
+    // signatures alongside a plain export is a further widening (the distinct-sig envelope has no plain slot).
+    let first_sig = &layout
+        .exports
+        .iter()
+        .find(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+        .ok_or_else(|| Reject::decline("a mixed closure program has no closure export"))?
+        .result;
+    if !layout
+        .exports
+        .iter()
+        .filter(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+        .all(|e| &e.result == first_sig)
+    {
+        return Err(Reject::decline(
+            "a program exporting closures of DISTINCT signatures ALONGSIDE a non-closure export is not \
+             yet supported (the distinct-signature resource envelope has no plain-export slot) — a later \
+             widening (DESIGN-closure-host-resource-rcdzc.md)",
+        ));
+    }
+
+    // Flatten the shared closure signature → arg types + result.
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = first_sig.clone();
+    while let crate::ty::Ty::Fn(dom, rng) = cur {
+        arg_tys.push((*dom).clone());
+        cur = *rng;
+    }
+    let ret_ty = cur;
+    // Reject a closure escaping an effect (same rule as the other closure paths): scan the lifted bodies.
+    {
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it, so the effect would have no home \
+                     when the host invokes it (closures escaping effects are not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
+    let arg_bytes: Vec<u8> = arg_tys
+        .iter()
+        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+        .collect::<Result<_, _>>()?;
+    let result_byte =
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
+        .iter()
+        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+        .collect::<Result<_, _>>()?;
+    let ret_vt = valtype_of(&ret_ty)
+        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+
+    // Per closure export: its params (each `make` forwards them) as core valtypes + boundary bytes.
+    struct MakeSpec {
+        def: usize,
+        name: String,
+        param_vts: Vec<crate::backend::wasm::lir::ValType>,
+        param_bytes: Vec<u8>,
+    }
+    let mut make_specs: Vec<MakeSpec> = Vec::new();
+    for &def in &closure_defs {
+        let export = layout
+            .exports
+            .iter()
+            .find(|e| e.def == def)
+            .ok_or_else(|| Reject::decline("a closure export is not in the layout"))?;
+        let param_vts: Vec<_> = export
+            .params
+            .iter()
+            .map(|(_, t)| {
+                valtype_of(t)
+                    .ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
+            })
+            .collect::<Result<_, _>>()?;
+        let param_bytes: Vec<u8> = export
+            .params
+            .iter()
+            .map(|(_, t)| {
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            })
+            .collect::<Result<_, _>>()?;
+        make_specs.push(MakeSpec {
+            def,
+            name: format!("make-{}", export.name),
+            param_vts,
+            param_bytes,
+        });
+    }
+
+    // Per PLAIN export: its source name (both the core export name and — kebab-normalized — the public
+    // boundary name), its param bytes, and its scalar result byte. A NULLARY export gives `()` params; a
+    // compound/closure result has no `closure_boundary_byte` → declines (a later widening).
+    struct PlainSpec {
+        def: usize,
+        name: String,
+        param_bytes: Vec<u8>,
+        result_byte: u8,
+    }
+    let mut plain_specs: Vec<PlainSpec> = Vec::new();
+    for e in &plain_exports {
+        let param_bytes: Vec<u8> = e
+            .params
+            .iter()
+            .map(|(_, t)| {
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            })
+            .collect::<Result<_, _>>()?;
+        let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
+            Reject::decline(format!(
+                "a plain export `{}` returning {} has no scalar host-boundary representation — a \
+                 compound result alongside a closure export is a later widening",
+                e.name,
+                e.result.render_name()
+            ))
+        })?;
+        plain_specs.push(PlainSpec {
+            def: e.def,
+            name: e.name.clone(),
+            param_bytes,
+            result_byte,
+        });
+    }
+
+    // Lifted-body ops (a capturing closure's env reads appear only in the lifted bodies).
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
+    let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+        used.extend(lifted_ops.iter().copied());
+    })?;
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline(
+            "a mixed closure program produced no lifted lambda",
+        ));
+    }
+    // APPEND the lifted closure bodies after the order defs (trailing funcs, env-prepended params).
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+
+    // Build the serializer's make specs + plain specs (resolve each body's core func index post-build).
+    let ser_makes: Vec<serialize::ClosureMake> = make_specs
+        .iter()
+        .map(|m| {
+            let export_abs = layout
+                .abs(m.def)
+                .ok_or_else(|| Reject::decline("a closure export is not in the emission order"))?;
+            Ok(serialize::ClosureMake {
+                export_name: m.name.clone(),
+                export_abs,
+                param_vts: m.param_vts.clone(),
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+    let ser_plain: Vec<serialize::PlainExport> = plain_specs
+        .iter()
+        .map(|p| {
+            let body_abs = layout
+                .abs(p.def)
+                .ok_or_else(|| Reject::decline("a plain export is not in the emission order"))?;
+            Ok(serialize::PlainExport {
+                export_name: p.name.clone(),
+                body_abs,
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+    let main_core = serialize::multi_closure_resource_core_module(
+        &funcs,
+        &imports,
+        &ser_makes,
+        &ser_plain,
+        &arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    let abi_makes: Vec<envelope::ClosureMakeAbi> = make_specs
+        .iter()
+        .map(|m| envelope::ClosureMakeAbi {
+            name: m.name.clone(),
+            make_param_bytes: m.param_bytes.clone(),
+        })
+        .collect();
+    let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
+        .iter()
+        .map(|p| envelope::PlainExportAbi {
+            name: p.name.clone(),
+            core_name: p.name.clone(),
+            param_bytes: p.param_bytes.clone(),
+            result_byte: p.result_byte,
+        })
+        .collect();
+    Ok(envelope::assemble_mixed_closure_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &abi_makes,
+        &arg_bytes,
+        result_byte,
+        &abi_plain,
     ))
 }
 
@@ -2465,11 +2727,15 @@ fn emit_runtime_bytes_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
 
-    let mut main_core = serialize::runtime_resource_core_module_form(
+    // VM-1: a Bytes result crosses as a resource carrying make + encode + a scalar `len : borrow<t> ->
+    // u32` (= `bytes-len(rep)`). The core emits `t-len` (with_len=true; `bytes-len` is already in the
+    // imports for the encode walker), and the envelope lifts the third method.
+    let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
+        true, // with_len — a Bytes resource exposes `len`
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -2478,7 +2744,7 @@ fn emit_runtime_bytes_resource(
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_runtime_resource(
+    Ok(envelope::assemble_runtime_resource_with_len(
         &main_core,
         &dtor_core,
         &imports,

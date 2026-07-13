@@ -1149,19 +1149,17 @@ fn check_prints_a_did_you_mean_help_line_for_a_misspelled_name() {
 }
 
 #[test]
-fn check_json_emits_a_machine_readable_diagnostic_with_a_structured_fix() {
-    // `--json` gives an agent the fix as DATA — code, message, byte range, and a nested `fix` object
-    // (kind + replacement + verified + byte range) it applies directly, not the human `help:` text.
+fn check_json_emits_a_machine_readable_diagnostic_with_a_structural_patch() {
+    // `--json` gives an agent the fix as DATA — code, message, and a nested `fix` object carrying a
+    // STRUCTURAL PATCH (`edits: [{from,to,text}]`, computed by the structural rewriter) it applies
+    // literally (`source[from..to] := text`), not the human `help:` text. A did-you-mean is one edit
+    // replacing the faulting call `(computee 1)` with `(compute 1)`.
     let dir = scratch_dir("check_json");
     let f = dir.join("prog.sexp");
-    std::fs::write(
-        &f,
-        "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n",
-    )
-    .unwrap();
+    let original = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n";
+    std::fs::write(&f, original).unwrap();
     let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
     assert!(!ok, "the unbound name is still an error (exit non-zero)");
-    // One JSON object, carrying the code, a byte range, and the structured replace fix.
     let line = stdout.lines().next().unwrap_or("");
     assert!(
         line.starts_with('{') && line.ends_with('}'),
@@ -1173,26 +1171,65 @@ fn check_json_emits_a_machine_readable_diagnostic_with_a_structured_fix() {
         "a structured fix with a kind: {stdout}"
     );
     assert!(
-        line.contains("\"replacement\":\"compute\""),
-        "the replacement text: {stdout}"
-    );
-    assert!(
         line.contains("\"verified\":false"),
         "the applicability marker as a JSON bool: {stdout}"
     );
     assert!(
-        line.contains("\"from\":") && line.contains("\"to\":"),
-        "a byte range to apply the edit over: {stdout}"
+        line.contains("\"edits\":[{") && line.contains("\"text\":"),
+        "an edits array with byte-range replacements: {stdout}"
+    );
+    // Applying the patch (each `source[from..to] := text`) fixes the program: `computee` → `compute`.
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("(compute 1)") && !patched.contains("computee"),
+        "applying the structural patch repairs the source: {patched}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Apply a diagnostic JSON line's `fix.edits` to `src` (each `src[from..to] := text`, descending so
+/// offsets stay valid) — the exact thing an agent does with the machine channel. A minimal JSON reader
+/// (the edits are flat `{from,to,text}` objects); good enough for the test's known shape.
+fn apply_json_edits(src: &str, json_line: &str) -> String {
+    // Extract the `"edits":[ ... ]` array substring, then each `{from,to,text}` triple.
+    let arr = match json_line.split_once("\"edits\":[") {
+        Some((_, rest)) => rest.split_once("]}").map(|(a, _)| a).unwrap_or(rest),
+        None => return src.to_string(),
+    };
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for obj in arr.split("},{") {
+        let num = |key: &str| -> usize {
+            let pat = format!("\"{key}\":");
+            let start = obj.find(&pat).map(|i| i + pat.len()).unwrap_or(0);
+            obj[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        };
+        // `"text":"…"` — the value between the quotes after the key (no escapes in these fixtures).
+        let text = obj
+            .split_once("\"text\":\"")
+            .and_then(|(_, r)| r.split_once('"'))
+            .map(|(t, _)| t.to_string())
+            .unwrap_or_default();
+        edits.push((num("from"), num("to"), text));
+    }
+    edits.sort_by_key(|(from, _, _)| std::cmp::Reverse(*from));
+    let mut out = src.to_string();
+    for (from, to, text) in edits {
+        out.replace_range(from..to, &text);
+    }
+    out
+}
+
 #[test]
-fn check_json_splits_a_wrap_fix_into_prefix_and_suffix_without_the_hole_sentinel() {
-    // A `wrap` fix in the machine channel must NOT leak the internal `…` (U+2026) HOLE sentinel: an agent
-    // that spliced `(host (E) …)` raw would write a literal `…` and corrupt the file. `--json` splits a
-    // wrap into `prefix`/`suffix` so the agent applies `prefix + source[from..to] + suffix` — unambiguous
-    // and sentinel-free. (CDZ0401 is a wrap: `(host (E) <body>)`.)
+fn check_json_wrap_patch_is_two_inserts_that_preserve_the_wrapped_bytes() {
+    // A `wrap` fix's machine-channel patch must NOT leak the internal `…` (U+2026) HOLE sentinel, and must
+    // PRESERVE the wrapped node's bytes. The structural rewriter emits a wrap as TWO insert edits (an empty
+    // range each) around the node — `(host (E) ` before, `)` after — so applying them wraps the untouched
+    // body verbatim. No sentinel, no whole-node reprint. (CDZ0401 is a wrap: `(host (E) <body>)`.)
     let dir = scratch_dir("check_json_wrap");
     let f = dir.join("prog.sexp");
     std::fs::write(
@@ -1202,43 +1239,22 @@ fn check_json_splits_a_wrap_fix_into_prefix_and_suffix_without_the_hole_sentinel
     .unwrap();
     let (_, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
     let line = stdout.lines().find(|l| l.contains("CDZ0401")).unwrap_or("");
-    assert!(
-        line.contains("\"kind\":\"wrap\"")
-            && line.contains("\"prefix\":\"(host (E) \"")
-            && line.contains("\"suffix\":\")\""),
-        "a wrap carries prefix/suffix: {line}"
-    );
+    assert!(line.contains("\"kind\":\"wrap\""), "a wrap fix: {line}");
     assert!(
         !line.contains('…') && !line.contains("\"replacement\""),
-        "no HOLE sentinel and no ambiguous single `replacement` for a wrap: {line}"
-    );
-    // Applying prefix + the node's existing text + suffix over [from,to) yields valid source.
-    let source = std::fs::read_to_string(&f).unwrap();
-    let from: usize = extract_json_num(line, "from");
-    let to: usize = extract_json_num(line, "to");
-    let repaired = format!(
-        "{}(host (E) {}){}",
-        &source[..from],
-        &source[from..to],
-        &source[to..]
+        "no HOLE sentinel, no ambiguous single `replacement`: {line}"
     );
     assert!(
-        repaired.contains("(host (E) (+ 1 (E.get unit)))"),
-        "the wrap applies cleanly: {repaired}"
+        line.contains("\"text\":\"(host (E) \"") && line.contains("\"text\":\")\""),
+        "two insert edits — the wrapper prefix and suffix: {line}"
+    );
+    // Applying the patch preserves the inner `E.get` bytes (a whole-node reprint would canonicalize it).
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("(host (E) (+ 1 (E.get unit)))"),
+        "the wrap applies cleanly, wrapped bytes preserved: {patched}"
     );
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Read the integer value of a top-level `"key":<n>` from a one-line JSON string (test helper — the fix
-/// object's `from`/`to` are the innermost occurrences, which is what a wrap's range uses).
-fn extract_json_num(line: &str, key: &str) -> usize {
-    let pat = format!("\"{key}\":");
-    let start = line.rfind(&pat).expect("key present") + pat.len();
-    let rest = &line[start..];
-    let end = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().expect("a number")
 }
 
 #[test]
@@ -1318,6 +1334,76 @@ fn fix_all_applies_a_verified_did_you_mean_and_the_result_compiles_clean() {
     // The repaired file re-checks clean (the CDZ0101 is gone) — exit 0.
     let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
     assert!(ok2, "repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_json_reports_each_applied_fix() {
+    // `cdz fix --json` tells an agent WHICH faults were repaired — a JSON array of `{code, kind, message}`
+    // — not just the human "applied N" count. Two independent faults (a did-you-mean + an out-of-range
+    // widen) → two report objects, and the file is still written.
+    let dir = scratch_dir("fix_json");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (compute x) x) (def (main) (+ (computee 1) (: 999 Int8))) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["fix", "--all", "--json", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds");
+    assert!(
+        stdout.trim_start().starts_with('[') && stdout.trim_end().ends_with(']'),
+        "a JSON array report: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"code\":\"CDZ0101\"") && stdout.contains("\"code\":\"CDZ0302\""),
+        "both repaired faults are reported by code: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"kind\":\"replace\""),
+        "each fix names its kind: {stdout}"
+    );
+    // The file was actually repaired (JSON report does not imply dry-run).
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(compute 1)") && repaired.contains("Int16"),
+        "the file was written: {repaired}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_json_dry_run_reports_without_writing_and_empty_when_nothing_applies() {
+    // `--json --dry-run` emits the report but leaves the file untouched; a clean-of-fixes file reports an
+    // empty array `[]` (the honest "nothing applied" for a machine consumer).
+    let dir = scratch_dir("fix_json_dry");
+    let f = dir.join("prog.sexp");
+    let original = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n";
+    std::fs::write(&f, original).unwrap();
+    let (ok, stdout, _) = run(
+        &["fix", "--all", "--json", "--dry-run", f.to_str().unwrap()],
+        "",
+    );
+    assert!(ok);
+    assert!(
+        stdout.contains("\"code\":\"CDZ0101\""),
+        "reports the fix: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "--dry-run leaves the file untouched"
+    );
+    // A file with no applicable fix → empty array.
+    let g = dir.join("clean.sexp");
+    std::fs::write(&g, "(module m (def (main) 0) (export main))\n").unwrap();
+    let (ok2, stdout2, _) = run(&["fix", "--all", "--json", g.to_str().unwrap()], "");
+    assert!(ok2);
+    assert_eq!(
+        stdout2.trim(),
+        "[]",
+        "nothing applied → empty report: {stdout2}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

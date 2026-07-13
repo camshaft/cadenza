@@ -410,8 +410,27 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // residual's scope, where the captured name is unbound (the CDZ0101 the partial-application copy hit).
     // A body-internal `let`-local is NEVER pinned (it resolves lazily, after the copy), so it still falls
     // to `copy_structural` below and correctly re-resolves against the copied scope.
+    //
+    // EXCEPTION — a MATCH-ARM (or tuple-pattern) BINDER whose SCRUTINEE IS BEING SUBSTITUTED: such a
+    // binder resolves to a `SumPayload` READING THE SCRUTINEE (Case 5/6 in `resolve`). If `resolve_subtree`
+    // pinned it (it pins the whole lambda body before an application) AND the scrutinee it reads is a
+    // parameter THIS reduction is substituting, sharing the binder as-is keeps a `SumPayload` pointing at
+    // the ORIGINAL scrutinee node — which β-reduction is replacing in this same copy (a lambda whose param
+    // IS the match scrutinee, applied through a nested inline). The shared binder would then read a
+    // now-orphaned scrutinee (lowered standalone as a slot-less `Core::Param` — the "no local slot"
+    // decline). So such a binder must COPY and re-resolve against the copied match's substituted scrutinee.
+    // NARROW to exactly that case: only when the `SumPayload`'s scrutinee resolves to a param in `arg_of`.
+    // A binder over an EXTERNAL scrutinee (a genuine capture — an enclosing match's binder captured by an
+    // inner lambda) is NOT being substituted, so it keeps sharing (copying it would break its resolution
+    // and, on a deep nested-call chain, re-resolve exponentially — the stack-overflow regression).
     if db.ast.as_name(body).is_some() && db.resolved_subtrees.contains(&body) {
-        return body;
+        if let Resolved::SumPayload { scrutinee, .. } = resolved_of(db, body)
+            && scrutinee_is_substituted(db, scrutinee, arg_of)
+        {
+            // Fall through to `copy_structural` — re-resolve against the copied, substituted scrutinee.
+        } else {
+            return body;
+        }
     }
     // Otherwise structurally copy. A CONSTANT atom (int/bool/float/string leaf) is self-contained — it
     // resolves to its own value regardless of scope, so SHARE it (cheap, no re-resolution needed). A
@@ -425,6 +444,36 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // never reaches here (the substitution branches above return the arg first); a prelude/free name
     // re-resolves to the same global, harmlessly.
     copy_structural(db, body, arg_of)
+}
+
+/// Whether the match scrutinee at `scrutinee` reads a PARAMETER that THIS β-reduction is substituting —
+/// i.e. its (transitive `Ref`-chased) binder is a key in `arg_of`. When true, a pattern binder reading
+/// this scrutinee must be COPIED (so it re-resolves against the substituted scrutinee in the copy) rather
+/// than shared as a capture; when false (the scrutinee is external — a genuine capture), the binder keeps
+/// sharing. This is the exact test that distinguishes "the scrutinee is being replaced here" from "the
+/// scrutinee is an outer value the closure captured" (see the capture-share exception in `beta_reduce`).
+fn scrutinee_is_substituted(
+    db: &mut Db,
+    scrutinee: StructId,
+    arg_of: &HashMap<StructId, StructId>,
+) -> bool {
+    // The scrutinee is a value reference — a bare param (`Param { binder }`) or a `Ref` chain ending at
+    // one. Chase it the same way `beta_reduce`'s substitution branches do; if any link is a substituted
+    // key, the scrutinee is being replaced.
+    if let Resolved::Param { binder } = resolved_of(db, scrutinee) {
+        return arg_of.contains_key(&binder);
+    }
+    let mut target = scrutinee;
+    loop {
+        if arg_of.contains_key(&target) {
+            return true;
+        }
+        match resolved_of(db, target) {
+            Resolved::Ref { value } => target = value,
+            Resolved::Param { binder } => return arg_of.contains_key(&binder),
+            _ => return false,
+        }
+    }
 }
 
 /// Structurally copy `body` (no substitution at THIS node — the caller decided it is not a
@@ -788,6 +837,31 @@ fn substituted_arg(db: &mut Db, param: StructId, arg: StructId) -> StructId {
         .as_form(param, ":")
         .and_then(|tail| tail.get(1).copied())
     else {
+        // A BARE parameter with NO written annotation — but if its type was RECOVERED from the lambda's
+        // storage context (a `(fn (n) …)` passed where a `(-> Int8 Int8)` is declared), that narrow width
+        // must ALSO check the argument, exactly as a written `(: n Int8)` would. Without this, a const arg
+        // into the body's arithmetic folds at the default Int64 and MISSES the narrow overflow (`(+ n 1)`
+        // with n=127 → 128 instead of an Int8 overflow-reject). Synthesize the SAME `(: arg (Int/UInt N))`
+        // wrap the annotated path builds, from the recovered NARROW integer type — so the fit-check fires
+        // on the substituted argument and travels with it through any later β-copy. Only a bare param whose
+        // context recovers a concrete NARROW int (a wide Int64/UInt64 needs no width fit-check; a non-int
+        // or unrecovered type substitutes the arg raw, unchanged).
+        let name_occ = param_name_occ(db, param);
+        if let crate::ty::Ty::Int(it) = crate::infer::type_of(db, name_occ) {
+            let (signed, width) = (it.ground_signed(), it.ground_width());
+            // Only a NARROW width (< 64) needs the fit-check wrap; a full-width int fits its own slot.
+            if width < 64 {
+                let ctor = db.push_name(if signed { "Int" } else { "UInt" });
+                let w = db.push_atom(Leaf::Int {
+                    value: IntValue::from_i64(width as i64),
+                    radix: crate::ast::Radix::Dec,
+                });
+                let ty_node = db.push_list(vec![ctor, w]);
+                crate::resolve::resolve_subtree(db, ty_node);
+                let colon = db.push_name(":");
+                return db.push_list(vec![colon, arg, ty_node]);
+            }
+        }
         return arg;
     };
     // Pin the annotation type before it is shared into the synthesized `(: arg T)` — its names resolve
@@ -2273,20 +2347,32 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             }
             db.push_list(items)
         }
-        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the declared name (for rendering),
-        // the declaration occurrence (the identity, an integer literal), and the encoded UNDERLYING type.
-        // Round-trips with `resolve::decode_ty`'s `"Nominal"` arm. Without this arm the catch-all below
-        // encoded a `Ty::Nominal` as `Unit`, so a ctor arrow `(-> Int64 UserId)` round-tripped through
-        // `reduce_ctor`'s `encode_typeval` to `(-> Int64 Unit)` — the newtype vanished.
-        Ty::Nominal { decl, name, inner } => {
+        // A nominal type-value: `(Nominal <name> <decl> (args…) <inner>)` — the declared name (render),
+        // the declaration occurrence (identity, an integer literal), the type ARGS (the instantiation, in
+        // an `(args …)` group — empty for a monomorphic/recursive nominal), and the encoded UNDERLYING
+        // type (the machine-rep hint). Round-trips with `resolve::decode_ty`'s `"Nominal"` arm. Without
+        // this arm the catch-all encoded a `Ty::Nominal` as `Unit`, so a ctor arrow `(-> Int64 UserId)`
+        // round-tripped to `(-> Int64 Unit)` — the newtype vanished.
+        Ty::Nominal {
+            decl,
+            name,
+            args,
+            inner,
+        } => {
             let head = db.push_name("Nominal");
             let nm = db.push_name(name);
             let d = db.push_atom(Leaf::Int {
                 value: IntValue::from_i64(decl.0 as i64),
                 radix: crate::ast::Radix::Dec,
             });
+            let args_head = db.push_name("args");
+            let mut args_items = vec![args_head];
+            for a in args {
+                args_items.push(encode_ty(db, a));
+            }
+            let args_node = db.push_list(args_items);
             let i = encode_ty(db, inner);
-            db.push_list(vec![head, nm, d, i])
+            db.push_list(vec![head, nm, d, args_node, i])
         }
         // A list type-value: `(List <elem>)` — the head then the element type. Round-trips with
         // `decode_ty`'s `"List"` arm.

@@ -1831,8 +1831,21 @@ fn op_arr_alloc_reuse(len: u32, token: Handle) -> Handle {
         None => op_arr_alloc(len),
         Some(n) => {
             n.rc = 1;
-            n.handles.clear();
-            n.handles.resize(len as usize, Handle::NULL);
+            // Refit the handles to `len` NULL slots, matching what a FRESH `op_arr_alloc(len)` produces:
+            // ≤cap → INLINE, wider → a heap Vec. A wide reset token carries a `Handles::Heap` whose Vec
+            // `clear()`/`resize` KEEP (clear retains capacity; resize only spills inline→heap, never
+            // re-inlines heap→inline) — so refitting it SMALL would leave a stray heap Vec where the fresh
+            // node is inline: a retained allocation for the node's life AND a forked storage rep for one
+            // logical value, invisible to `champ_eq`/`champ_hash` (they read via `as_slice`). This is the
+            // handles-arm twin of the raw-arm divergence normalized below. Assign a fresh inline `Handles`
+            // for a ≤cap refit (dropping any leftover heap Vec); reuse the token's Vec backing in place
+            // only for a WIDE refit (the FBIP win — the common same-length refit reallocates nothing).
+            if (len as usize) <= INLINE_HANDLES_CAP {
+                n.handles = Handles::inline_nulls(len as usize);
+            } else {
+                n.handles.clear();
+                n.handles.resize(len as usize, Handle::NULL);
+            }
             // Reset to an EMPTY INLINE raw (an array node carries no raw). `raw.clear()` would keep a
             // heap buffer if the token came from a reset bytes/string leaf — an empty heap Vec retained
             // for the node's life, and a non-canonical rep vs the inline-empty raw a fresh `op_arr_alloc`
@@ -1853,8 +1866,14 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
         None => op_sum_new(disc, payload),
         Some(n) => {
             n.rc = 1;
-            n.handles.clear();
-            n.handles.push(payload);
+            // A sum node is ALWAYS arity 1 (a single payload), so a fresh `op_sum_new` gives INLINE
+            // handles. A wide reset token carries a `Handles::Heap` whose Vec `clear()` + `push` KEEP the
+            // heap arm (clear retains capacity; push on a Heap stays Heap) — leaving the reused sum node
+            // carrying a stray heap Vec where the fresh node is inline: a retained allocation AND a forked
+            // storage rep, invisible to `champ_eq`/`champ_hash` (the handles-arm twin of the raw-arm
+            // divergence normalized below). Assign a fresh inline single-payload `Handles` directly,
+            // dropping any leftover heap Vec — matching `op_sum_new` byte-for-byte.
+            n.handles = Handles::inline_from(&[payload]);
             // Assign a fresh INLINE raw rather than clear()+extend_from_slice: if the token came from a
             // reset bytes/string leaf its raw was `Heap`, and clear() keeps a heap buffer (Vec::clear
             // semantics) — so extending 4 disc bytes into it would leave the reused sum node carrying a
@@ -6324,6 +6343,17 @@ mod tests {
         matches!(unsafe { &(*h.0).raw }, Raw::Heap(_))
     }
 
+    /// Test-only: is the node's handle vector HEAP-backed (spilled past the inline cap) rather than
+    /// inline? The handles-arm twin of `raw_is_heap`: used to assert the reuse constructors normalize a
+    /// reused shell's HANDLES back to inline for a ≤`INLINE_HANDLES_CAP`-child node, matching a fresh
+    /// constructor's rep (a wide reset token keeps a `Handles::Heap` unless the refit re-inlines it).
+    fn handles_is_heap(h: Handle) -> bool {
+        if is_immediate(h) {
+            return false;
+        }
+        matches!(unsafe { &(*h.0).handles }, Handles::Heap(_))
+    }
+
     /// A DEFINITELY-BOXED int leaf (test-only): bypasses `op_box_int`'s P2 normalize so the RC /
     /// reuse / cascade tests keep exercising a real heap Node with rc == 1 (a small `op_box_int(v)`
     /// now inlines and would make those node-count / drop-a-leaf scenarios vacuous). Byte-identical
@@ -7592,6 +7622,69 @@ mod tests {
         op_arr_set(a, 1, op_box_int(2));
         assert_eq!(op_get_int(op_arr_get(a, 1)), 2);
         op_drop(a);
+
+        assert_eq!(live_nodes(), before, "no leak: every reused/fresh node reclaimed");
+    }
+
+    /// The HANDLES-arm twin of `reuse_ctor_normalizes_a_heap_raw_token_to_inline`. A reuse TOKEN whose
+    /// shell came from a WIDE node (arity > `INLINE_HANDLES_CAP`, so its handle vector spilled to the
+    /// heap) must NOT leave the reused node carrying that heap Vec when it is refit to a ≤cap child
+    /// count: `op_arr_alloc_reuse`/`op_sum_new_reuse` normalize the HANDLES back to INLINE, matching what
+    /// the fresh constructors (`op_arr_alloc`/`op_sum_new`, which build ≤cap nodes inline) produce.
+    ///
+    /// (Regression guard: `Handles::clear()`/`resize`/`push` all KEEP the `Heap` arm — `clear` retains
+    /// the Vec's capacity, and `push`/`resize` only SPILL inline→heap, never re-inline heap→inline. So a
+    /// wide token refit small kept a stray heap Vec for the node's life AND a non-canonical storage rep
+    /// for one logical value. Byte-equal via `as_slice` → `champ_eq`/`champ_hash` could NOT catch it,
+    /// hence this explicit rep check — the same class the raw-arm guard covers.)
+    #[test]
+    fn reuse_ctor_normalizes_a_wide_heap_handles_token_to_inline() {
+        reset();
+        let before = live_nodes();
+
+        // (1) reuse a WIDE array shell (arity 4 → heap handles) as a ≤cap ARRAY node.
+        let wide = op_arr_alloc(4); // 4 > INLINE_HANDLES_CAP → Handles::Heap
+        for i in 0..4 {
+            op_arr_set(wide, i, op_box_int(i as i64));
+        }
+        assert!(handles_is_heap(wide), "precondition: an arity-4 array has a heap handle vector");
+        let token = op_reset(wide); // childless heap-handles shell, rc==1
+        assert_eq!(token, wide, "unique reset yields the shell");
+        let a = op_arr_alloc_reuse(2, token); // refit to 2 slots (≤ cap)
+        assert!(
+            !handles_is_heap(a),
+            "reused array node's handles are INLINE for a ≤cap arity, not the token's leftover heap Vec"
+        );
+        op_arr_set(a, 0, op_box_int(10));
+        op_arr_set(a, 1, op_box_int(20));
+        // Byte-identical rep to a FRESH arity-2 array built the same way.
+        let fresh_arr = op_arr_alloc(2);
+        op_arr_set(fresh_arr, 0, op_box_int(10));
+        op_arr_set(fresh_arr, 1, op_box_int(20));
+        assert!(champ_eq(a, fresh_arr), "reused array equals a fresh one built the same way");
+        assert_eq!(champ_hash(a), champ_hash(fresh_arr), "…and hashes identically");
+        op_drop(a);
+        op_drop(fresh_arr);
+
+        // (2) reuse a WIDE array shell as a SUM node (arity 1 → inline handles when fresh).
+        let wide2 = op_arr_alloc(5);
+        for i in 0..5 {
+            op_arr_set(wide2, i, op_box_int(i as i64));
+        }
+        assert!(handles_is_heap(wide2));
+        let token2 = op_reset(wide2);
+        let s = op_sum_new_reuse(1, op_box_int(42), token2);
+        assert!(
+            !handles_is_heap(s),
+            "reused sum node's single-payload handles are INLINE, not the token's leftover heap Vec"
+        );
+        assert_eq!(op_sum_disc(s), 1, "disc correct");
+        assert_eq!(op_get_int(op_sum_payload(s)), 42, "payload correct");
+        let fresh_sum = op_sum_new(1, op_box_int(42));
+        assert!(champ_eq(s, fresh_sum), "reused sum equals a fresh one built the same way");
+        assert_eq!(champ_hash(s), champ_hash(fresh_sum), "…and hashes identically");
+        op_drop(s);
+        op_drop(fresh_sum);
 
         assert_eq!(live_nodes(), before, "no leak: every reused/fresh node reclaimed");
     }

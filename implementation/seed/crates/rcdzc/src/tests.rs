@@ -882,6 +882,43 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
     }
 }
 
+/// A RUNTIME string's `byte-len` and `concat` run on the value-heap byte leaf. A String value IS a flat
+/// UTF-8 byte leaf (an i32 heap handle — the same rep `str-new` would give), so `String.concat` is
+/// `bytes-concat` over the two handles and `String.byte-len` is `bytes-len` over the joined leaf
+/// (collections-and-text.md §Strings Concatenate / §A String Offers … A Byte Length). Exercised through a
+/// tail-recursive accumulator that threads a runtime string (the 13-strings corpus shape) — three
+/// one-byte appends of "x" onto "" → byte-len 3. A recursive call keeps the string opaque to the fold, so
+/// this genuinely emits the runtime ops + composes the value-heap runtime.
+#[test]
+fn a_runtime_string_concat_and_byte_len_run_on_the_byte_leaf() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (rep s n) (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (String.byte-len (rep \"\" 3))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.concat/byte-len must build on the byte-rope heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "three one-byte appends → byte-len 3"),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime string concat/byte-len trapped (miscompile?): {t}")
+        }
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted
@@ -3608,6 +3645,108 @@ mod runtime_ops {
                 &[Val::S64(2)]
             ),
             1
+        );
+    }
+
+    #[test]
+    fn an_equality_against_a_value_outside_its_range_folds_to_a_constant() {
+        // `v == c` is DECIDABLE from `v`'s provable range: FALSE when `c` lies outside `[min, max]`, TRUE
+        // when the range pins `v` to `{c}`. `(= (& x 15) 100)` → false (`x & 15 ∈ [0,15]`, 100 above); the
+        // whole `and ; const ; eq` collapses to one `const 0`. Extends the range-vs-constant comparison
+        // fold (previously ordering-only) to `=`. Discards `v`, so a TRAPPING operand keeps its runtime
+        // compare (mirrors the ordering fold's `is_trap_free` guard).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let eqs = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Eq | Lir::I32Eq | Lir::I64Eqz | Lir::I32Eqz))
+                .count()
+        };
+        let ands = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64And | Lir::I32And))
+                .count()
+        };
+        // `(= (& x 15) 100)` — masked value ∈ [0,15], `100` outside → folds to a constant: no eq, no and.
+        let outside = lir("(: x Int64)", "(= (: (& x 15) Int64) 100)");
+        assert_eq!(eqs(&outside), 0, "outside-range equality drops the eq");
+        assert_eq!(
+            ands(&outside),
+            0,
+            "outside-range equality drops the mask too (whole expr constant)"
+        );
+        // A NEGATIVE constant below the nonneg range folds the same way (`x & 15 ∈ [0,15]`, `-1` below).
+        assert_eq!(
+            eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) -1)")),
+            0,
+            "below-range → const"
+        );
+        // An IN-RANGE constant is NOT decidable — the compare stays.
+        assert!(
+            eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) 8)")) >= 1,
+            "in-range equality stays runtime"
+        );
+
+        // VALUE PARITY: outside-range folds to false; in-range computes the real answer.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= (: (& x 15) Int64) 100) 1 0)",
+                &[Val::S64(200)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= (: (& x 15) Int64) 8) 1 0)",
+                &[Val::S64(200)]
+            ),
+            1
+        ); // 200&15=8
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= (: (& x 15) Int64) 8) 1 0)",
+                &[Val::S64(199)]
+            ),
+            0
+        ); // 199&15=7
+
+        // TRAP PRESERVATION: `(% (/ 100 z) 3) ∈ [-2,2]`, `== 5` is unsatisfiable, but the operand divides
+        // by zero — the fold must NOT discard that trap.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(= (: (% (: (/ 100 z) Int64) 3) Int64) 5)",
+                &[Val::S64(0)]
+            ),
+            "an unsatisfiable equality must still trap on a div-by-zero operand"
         );
     }
 
@@ -6471,6 +6610,109 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_or_and_xor_by_constants_collapse_to_a_single_op() {
+        // `(| (| v C1) C2)` → `(| v (C1|C2))` and `(^ (^ v C1) C2)` → `(^ v (C1^C2))` — the OR/XOR
+        // analogues of the AND collapse: all three are total + associative. One op instead of two; the
+        // same-operand fold (`| a a`→a, `^ a a`→0) is not shadowed; a MIXED op pair (`(| (& …) …)`) is
+        // left intact.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let ors = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Or | Lir::I32Or))
+                .count()
+        };
+        let xors = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor))
+                .count()
+        };
+        let ands = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64And | Lir::I32And))
+                .count()
+        };
+        // `(| (| x 5) 3)` → one `or`; `(^ (^ x 5) 3)` → one `xor`; constant-left too.
+        assert_eq!(
+            ors(&lir("(: x Int64)", "(: (| (| x 5) 3) Int64)")),
+            1,
+            "two ors → one"
+        );
+        assert_eq!(
+            ors(&lir("(: x Int64)", "(: (| 5 (| x 3)) Int64)")),
+            1,
+            "left-const or → one"
+        );
+        assert_eq!(
+            xors(&lir("(: x Int64)", "(: (^ (^ x 5) 3) Int64)")),
+            1,
+            "two xors → one"
+        );
+        // Same-operand folds are NOT shadowed: `(^ x x)` → 0 (no xor), `(| x x)` → x (no or).
+        assert_eq!(
+            xors(&lir("(: x Int64)", "(: (^ x x) Int64)")),
+            0,
+            "^ a a → 0"
+        );
+        assert_eq!(
+            ors(&lir("(: x Int64)", "(: (| x x) Int64)")),
+            0,
+            "| a a → a"
+        );
+        // A MIXED op pair (`(| (& x 240) 15)`) is NOT collapsed — keeps both.
+        let mixed = lir("(: x Int64)", "(: (| (& x 240) 15) Int64)");
+        assert_eq!(ors(&mixed) + ands(&mixed), 2, "and-then-or keeps both ops");
+
+        // VALUE PARITY.
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(8)]),
+            15
+        ); // 8|7
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(16)]),
+            23
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(10)]),
+            12
+        ); // 10^6
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(6)]),
+            0
+        ); // 6^6
+        // Double complement `(^ (^ x -1) -1)` = `x ^ 0` = x.
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (^ (^ x -1) -1) Int64)", &[Val::S64(42)]),
+            42
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
@@ -6653,6 +6895,93 @@ mod runtime_ops {
             run::<u8>("(: x UInt8)", "(& (>> x 4) 7)", &[Val::U8(255)]),
             7
         ); // 15 & 7 = 7
+    }
+
+    #[test]
+    fn a_logical_shift_of_an_unbounded_value_bounds_the_result_by_the_type_width() {
+        // A `>>ᵤ k` of an UNBOUNDED-above nonneg value (a bare UInt32/UInt64, whose max is not
+        // i64-representable so `value_range` gives `[0, None]`) is still bounded by the TYPE WIDTH: an
+        // unsigned width-W value is < 2^W, so `x >>ᵤ k < 2^(W-k)`. That lets a covering mask drop —
+        // `(& (>> x 56) 255)` on a UInt64 (top byte only) needs no `& 255`. Before, the unbounded upper
+        // made the shift range unknown, so the mask stayed.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let has_and = |c: &[Lir]| c.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And));
+        // UInt64 >> 56 ∈ [0,255] → `& 255` elided; >> 60 ∈ [0,15] → `& 15` elided.
+        assert!(
+            !has_and(&lir("(: x UInt64)", "(& (>> x 56) 255)")),
+            "x>>56 ∈ [0,255], mask dropped"
+        );
+        assert!(
+            !has_and(&lir("(: x UInt64)", "(& (>> x 60) 15)")),
+            "x>>60 ∈ [0,15], mask dropped"
+        );
+        // UInt32 >> 28 ∈ [0,15] → `& 15` elided.
+        assert!(
+            !has_and(&lir("(: x UInt32)", "(& (>> x 28) 15)")),
+            "u32 x>>28 ∈ [0,15], mask dropped"
+        );
+        // But `>> 8` on a UInt64 (∈ [0, 2^56-1]) does NOT fit `& 255` → mask KEPT.
+        assert!(
+            has_and(&lir("(: x UInt64)", "(& (>> x 8) 255)")),
+            "x>>8 exceeds 255, mask kept"
+        );
+        // A mask NARROWER than the shifted range is kept (`x>>56 ∈ [0,255]` vs `& 15`).
+        assert!(
+            has_and(&lir("(: x UInt64)", "(& (>> x 56) 15)")),
+            "mask narrower than range, kept"
+        );
+
+        // VALUE PARITY. Top byte 0xFF → 255; top byte 0x05 → 5. And the kept-mask control.
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(& (>> x 56) 255)",
+                &[Val::U64(0xFF00_0000_0000_0000)]
+            ),
+            255
+        );
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(& (>> x 56) 255)",
+                &[Val::U64(0x0500_0000_0000_0000)]
+            ),
+            5
+        );
+        assert_eq!(
+            run::<u32>("(: x UInt32)", "(& (>> x 28) 15)", &[Val::U32(0xA000_0000)]),
+            10
+        );
+        assert_eq!(
+            run::<u64>("(: x UInt64)", "(& (>> x 8) 255)", &[Val::U64(0x1234)]),
+            0x12
+        );
     }
 
     #[test]
@@ -7720,6 +8049,43 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
+        // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
+        // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
+        // type for the runtime path, but the body's CONST-FOLD ran on the still-`Any` param → a const arg
+        // folded at Int64, MISSING the Int8 overflow. `(app (fn (n) (+ n 1)))` @ (g 127) yielded 128 (Int64)
+        // instead of the CDZ0302 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
+        // context arrow at `type_of` (so the body types narrow) AND wrapping the substituted arg in the
+        // recovered `(: arg (Int N))` at β-reduction (so the fit-check fires + travels through copies).
+        let overflows = "(module m (def (app (: g (-> Int8 Int8))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(
+            reject_code(overflows).as_deref(),
+            Some("CDZ0302"),
+            "an unannotated context-Int8 param overflows a const arg like an explicit Int8 param"
+        );
+        // The `*` variant: 12*12 = 144 > Int8.max 127.
+        let mul = "(module m (def (app (: g (-> Int8 Int8))) (g 12)) (def (main) (app (fn (n) (* n n)))) (export main))";
+        assert_eq!(reject_code(mul).as_deref(), Some("CDZ0302"));
+        // UInt8: 255 + 1 = 256 overflows.
+        let uint = "(module m (def (app (: g (-> UInt8 UInt8))) (g 255)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(reject_code(uint).as_deref(), Some("CDZ0302"));
+        // NO OVER-REJECTION: an IN-RANGE const still compiles + runs (g 5 → 5+1 = 6, fits Int8).
+        let in_range = "(module m (def (app (: g (-> Int8 Int8))) (g 5)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(
+            reject_code(in_range),
+            None,
+            "an in-range const through a context-Int8 param must still compile"
+        );
+        // A WIDE (Int64) context param must NOT be false-rejected — 128 fits Int64.
+        let wide = "(module m (def (app (: g (-> Int64 Int64))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(
+            reject_code(wide),
+            None,
+            "a wide-Int64 context param has no narrow width to overflow"
+        );
+    }
+
     /// Run a program whose RESULT escapes to the host as a resource (no bare func export), returning its
     /// rendered value form, or `None` if the runtime wasm is absent.
     fn run_heap_value_escape(src: &str) -> Option<String> {
@@ -8527,6 +8893,32 @@ mod match_engine {
         assert_eq!(
             reject_code("(do (pragma frobnicate 3) (def (main) 1) (export main))").as_deref(),
             Some("CDZ0601")
+        );
+    }
+
+    #[test]
+    fn an_unknown_directive_near_a_registry_key_suggests_it() {
+        // CDZ0601 is a CLOSED-SET violation (the pragma registry is fixed), so a near-miss typo gets the
+        // same "did you mean?" fix a mistyped name/field/variant does: `default-integr` → replace with
+        // `default-integer`, targeting the KEY occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix). The candidate pool IS the registry, so the suggestion is always a
+        // key the validator accepts. (The corrected pragma still declines downstream — the directive's
+        // semantic effect is unbuilt — so the fix stays HEURISTIC and `cdz fix --all` won't auto-apply it;
+        // the VALUE is the suggestion an agent reads, exactly as rustc suggests a spelling amid other errors.)
+        let d = reject_full("(do (pragma default-integr Int64) (def (main) 1) (export main))")
+            .expect("an unknown directive key is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0601"), "got: {}", d.message);
+        let fix = d.fix.expect("a near-miss key carries a did-you-mean fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "default-integer");
+        assert!(!fix.verified, "a nearest-key guess is heuristic");
+        // A FAR key gets no misleading suggestion (the plain reject).
+        let far =
+            reject_full("(do (pragma frobnicate 3) (def (main) 1) (export main))").expect("reject");
+        assert!(
+            far.fix.is_none(),
+            "no suggestion for an unrelated key: {:?}",
+            far.fix
         );
     }
 
@@ -10766,6 +11158,87 @@ mod match_engine {
         )
         .expect("runtime present");
         assert_eq!(out, "(: b\"ABC\" Bytes)", "runtime concat escape");
+    }
+
+    #[test]
+    fn a_runtime_bytes_resource_exposes_a_repeatable_len_method() {
+        // VM-1: a runtime-Bytes result crosses as a resource carrying make + encode + `len : borrow<t> ->
+        // u32` (= `bytes-len(rep)`). The host reaches `len` INSIDE the `cadenza:run/run` instance and calls
+        // it TWICE on one handle (repeatable — borrow, no consume), then `encode` still renders correctly,
+        // then drops (the dtor reclaims). Proves the compiler-EMITTED (not oracle) value-resource-method
+        // shape end-to-end. `(concat b"AB" b"C")` → len 3, encode `(: b"ABC" Bytes)`.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping VM-1 len-method run");
+            return;
+        };
+        // A RECURSIVE (unfoldable) LEB128 builder — a genuine runtime Bytes that imports the runtime (a
+        // constant-arg concat would FOLD to a baked constant with no runtime import, which the resource
+        // still exposes `len` on, but `ComposedRuntime` requires a runtime-importing program). `(uleb
+        // 624485)` = 3 bytes `E5 8E 26`.
+        let src = "(module m (def (uleb n) (if (< n 128) \
+                        ((. Bytes of) (list ((. UInt8 wrap) n))) \
+                        ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7))))) \
+                     (def (main) (uleb 624485)) (export main))";
+        let program = component(src);
+        use wasmtime::component::{ResourceAny, Val};
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        let iface = rt
+            .program
+            .get_export_index(&mut rt.store, None, "cadenza:run/run")
+            .expect("run iface");
+        let get = |rt: &mut super::ComposedRuntime, n: &str| {
+            let idx = rt
+                .program
+                .get_export_index(&mut rt.store, Some(&iface), n)
+                .unwrap_or_else(|| panic!("{n} exported by the value resource"));
+            rt.program.get_func(&mut rt.store, idx).expect("func")
+        };
+        let make = get(&mut rt, "make");
+        let len = get(&mut rt, "len");
+        let encode = get(&mut rt, "encode");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut rt.store, &[], &mut handle).expect("make");
+        make.post_return(&mut rt.store).expect("make post");
+        // len TWICE on the same handle — repeatable borrow method.
+        for round in 0..2 {
+            let mut out = [Val::Bool(false)];
+            len.call(&mut rt.store, &handle, &mut out)
+                .unwrap_or_else(|e| panic!("len round {round}: {e}"));
+            len.post_return(&mut rt.store).expect("len post");
+            assert!(
+                matches!(out[0], Val::U32(3)),
+                "VM-1 len round {round}: expected 3 (uleb 624485 = 3 bytes), got {:?}",
+                out[0]
+            );
+        }
+        // encode after the len calls — the value is still intact.
+        let mut out = [Val::Bool(false)];
+        encode
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("encode");
+        encode.post_return(&mut rt.store).expect("encode post");
+        let bytes: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("expected list<u8>: {o:?}"),
+        };
+        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode value form");
+        assert_eq!(
+            cadenza_syntax::sexpr::print(&arenas).trim(),
+            "(: b\"\\xe5\\x8e&\" Bytes)",
+            "encode still renders after the repeated len calls"
+        );
+        if let Val::Resource(r) = handle[0] {
+            let r: ResourceAny = r;
+            r.resource_drop(&mut rt.store).expect("resource drop");
+        } else {
+            panic!("make did not return a resource handle");
+        }
     }
 
     #[test]
@@ -13296,6 +13769,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_wrong_type_arg_to_a_user_function_anchors_to_the_call_site() {
+        // Calling a user function with a wrong-type argument — `(helper true)` where `helper`'s body is
+        // `(+ x 1)` — β-reduces to `(+ true 1)` on SYNTHESIZED nodes, whose CDZ0203 once reported with
+        // NO node (an unanchored `cdz:`/`file:` prefix, no line:col). The reduced-body fault is now
+        // re-anchored to the CALL SITE when it landed on a non-user node, so the error carries a real
+        // user node the front-end maps to `file:line:col`.
+        let src = "(module m (def (helper x) (+ x 1)) (def (main) (helper true)) (export main))";
+        let d = first_error(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+        let node = d
+            .node
+            .expect("the mismatch must carry a node, not be unanchored");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node so it maps to a source location"
+        );
+    }
+
+    #[test]
+    fn a_fault_inside_an_argument_keeps_its_own_precise_anchor() {
+        // The call-site re-anchor fires ONLY when the reduced-body fault landed on a synthesized node. A
+        // fault genuinely inside an ARGUMENT sub-expression — `(id (+ 1 true))` — is on a real user node,
+        // so it keeps its OWN anchor and never regresses to unanchored.
+        let src = "(module m (def (id x) x) (def (main) (id (+ 1 true))) (export main))";
+        let d = first_error(src);
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"));
+        let node = d.node.expect("the mismatch carries a node");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a real user node the front-end can map"
+        );
+    }
+
+    #[test]
     fn a_provable_overflow_does_not_leak_a_synthesized_node() {
         // `(+ Int64.max 1)` proves an overflow (CDZ0304). The fold runs over evaluator-SYNTHESIZED
         // nodes (the built `Int64` module / reduced operands), but the reported origin must be either a
@@ -14146,6 +14655,57 @@ mod stage1 {
     fn non_adjacent_duplicate_field_name_is_rejected() {
         // (record (a 1) (b 2) (a 3)) — the check is over the whole field list, not adjacent pairs.
         assert!(expect_decline("(. (record (a 1) (b 2) (a 3)) b)").contains("more than once"));
+    }
+
+    #[test]
+    fn a_duplicate_written_literal_map_key_is_rejected() {
+        // collections-and-text.md §A Map Associates Keys With Values — each key at most once. A repeated
+        // WRITTEN literal is the ambiguous duplicate the spec forbids, across every direct-literal key
+        // kind (int, string, bool, unit) and independent of magnitude representation (`1` == `0x1`). The
+        // reject is CDZ0201 anchored at the map node. This LOCKS IN the semantics the O(N) hash-set
+        // duplicate scan (`map_duplicate_const_key` / `literal_key_token`) replaced the O(entries²)
+        // pairwise `const_compound_eq` scan under — a `(map (0 0) (1 1) …)` of N distinct integer keys
+        // was quadratic (N=1600 spent ~72% of the whole compile in `const_compound_eq`, re-deriving and
+        // deep-cloning each key's `Core` on every one of the ~N²/2 comparisons).
+        let dup = "a map contains each key at most once";
+        // Int keys — the same value twice, including two spellings of one value (dec `1` and hex `0x1`).
+        assert!(expect_decline("(map (1 10) (1 20))").contains(dup));
+        assert!(expect_decline("(map (1 10) (2 20) (0x1 30))").contains(dup));
+        // String keys.
+        assert!(expect_decline("(map (\"a\" 1) (\"a\" 2))").contains(dup));
+        // Bool keys.
+        assert!(expect_decline("(map (true 1) (true 2))").contains(dup));
+        // Unit keys.
+        assert!(expect_decline("(map (() 1) (() 2))").contains(dup));
+    }
+
+    /// Whether the program shape `(module m (def (main) BODY) (export main))` COMPILES (no decline/reject)
+    /// — a compile-time verdict, no runtime needed. The complement of `expect_decline` for this module.
+    fn compiles_ok(body: &str) -> bool {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        compile_component(&crate::codec::encode(&parse(&src))).is_ok()
+    }
+
+    #[test]
+    fn distinct_literal_map_keys_are_not_a_duplicate() {
+        // The negative direction the O(N) scan must preserve: distinct written literals are NOT a
+        // duplicate, so the map literal compiles clean (no CDZ0201). Distinct ints (incl. one dec + one
+        // hex that are DIFFERENT values), distinct strings, distinct bools.
+        assert!(compiles_ok("(map (1 10) (2 20))"));
+        assert!(compiles_ok("(map (1 10) (0x2 20) (3 30))"));
+        assert!(compiles_ok("(map (\"a\" 1) (\"b\" 2))"));
+        assert!(compiles_ok("(map (true 1) (false 2))"));
+    }
+
+    #[test]
+    fn two_distinct_names_bound_to_the_same_value_are_a_runtime_overwrite_not_a_duplicate() {
+        // The crucial subtlety `literal_key_token` preserves by returning `None` for a NAME key: two
+        // DISTINCT names that merely FOLD to the same value are a RUNTIME overwrite (the map holds one
+        // entry at run time, keys compared BY VALUE), NOT a compile-time duplicate reject. Reading the
+        // key THROUGH its binding — as a pairwise `const_compound_eq` on the folded values would —
+        // conflates the two; the direct-literal gate keeps them apart, so the program COMPILES (the
+        // overwrite is a runtime fact, checked by the 05-compound-types §2510 corpus case's `Map.size`).
+        assert!(compiles_ok("(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))"));
     }
 
     #[test]
@@ -16516,6 +17076,49 @@ mod stage1 {
             Some("CDZ0403"),
             "expected CDZ0403 (handler arm names an undeclared op), got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn an_undeclared_handler_op_anchors_to_a_user_node() {
+        // CDZ0403's anchor must be a real USER node so the error carries `file:line:col`. The desugar
+        // synthesizes the arm's op projection `(. E k)` (spanless), so anchoring there once lost the
+        // location; it now anchors at the op-KEY occurrence (which keeps the arm's op-name span).
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle Choose unit ((guess () s (resume 5 s))) ((. Choose pick)))) \
+                   (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0403"))
+            .expect("a CDZ0403 diagnostic");
+        let node = d
+            .node
+            .expect("CDZ0403 must carry a node, not be unanchored");
+        assert!(
+            db.is_user_node(crate::ast::StructId(node)),
+            "node {node} must be a user node (the op key), not the synthesized projection"
+        );
+    }
+
+    #[test]
+    fn an_unbound_effect_name_in_a_handle_anchors_to_a_user_node() {
+        // `(handle Nope …)` names an effect that does not exist → CDZ0101. The desugar drops the head
+        // effect name and projects it into each arm as `(. Nope op)`; the FIRST arm reuses the SOURCE
+        // effect-name occurrence (M31), so the unbound-name reject anchors to the real `Nope` token —
+        // a user node with `file:line:col` — not a spanless minted atom.
+        let src = "(do (def (main) (handle Nope 0 ((go () s (resume 1 s))) 5)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Nope"))
+            .expect("an unbound-effect CDZ0101");
+        let node = d
+            .node
+            .expect("the unbound-effect CDZ0101 must carry a node, not be unanchored");
+        assert!(
+            db.is_user_node(crate::ast::StructId(node)),
+            "node {node} must be the source `Nope` occurrence, not a synthesized atom"
         );
     }
 
@@ -25771,6 +26374,225 @@ mod closure_host_resource {
         );
     }
 
+    /// MIXED-EXPORT oracle core (the byte anchor for "a closure ALONGSIDE a non-closure export"): ONE
+    /// closure export `adder : () -> (-> Int64 Int64)` (slot 0 = `(fn (x) (+ x 1))`, `make`/`call`) PLUS a
+    /// PLAIN scalar export `two : () -> i64` (returns 2). Both live in the SAME core module (one program
+    /// instance): the module exports `make`, `call`, AND `two`. The outer component publishes the closure
+    /// `make`/`call` under the `cadenza:closure/exports` instance AND `two` as an ORDINARY top-level
+    /// component func — proving the resource envelope and the plain boundary compose in one component.
+    fn mixed_closure_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64)->i64; 2 = make ()->i32;
+        // 3 = call (i32,i64)->i64; 4 = two ()->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1 (lifted / indirect)
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I64]); // 3 call
+        types.ty().function(vec![], vec![ValType::I64]); // 4 two
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        // Defined funcs: lifted = 2, make = 3, call = 4, two = 5.
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        funcs.function(4); // two
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+        let f_two = 5u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        exports.export("two", ExportKind::Func, f_two);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(x) = x + 1
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::I64Const(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, x) = call_indirect[type 1](x, resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1));
+        call.instruction(&Instruction::LocalGet(0));
+        call.instruction(&Instruction::Call(f_rrep));
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        // two() = 2
+        let mut two = Function::new(vec![]);
+        two.instruction(&Instruction::I64Const(2));
+        two.instruction(&Instruction::End);
+        code.function(&two);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The outer MIXED-EXPORT oracle: wraps `mixed_closure_core` so the closure `make`/`call` publish under
+    /// `cadenza:closure/exports` while the plain `two` publishes as an ORDINARY top-level component func
+    /// `two : () -> s64`. Standalone (no heap runtime — the cell IS the table slot). The byte anchor for the
+    /// compiler emitting a closure export alongside a non-closure export.
+    fn oracle_mixed_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let two_core = c.core_alias_export(prog_inst, "two", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, x: s64) -> s64
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        // lift two : () -> s64  (a PLAIN top-level export, no resource envelope).
+        let (two_ty, mut tf) = c.type_function();
+        tf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let two_comp = c.lift_func(two_core, two_ty, []);
+        // inner re-export → cadenza:closure/exports.
+        let inner_idx = c.component(inner_reexport_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        // The plain scalar export, published DIRECTLY at the top level.
+        c.export("two", ComponentExportKind::Func, two_comp, None);
+        c.finish()
+    }
+
+    /// MIXED-EXPORT END-TO-END ORACLE: a program that exports a closure resource (`make`/`call`) ALONGSIDE
+    /// a plain scalar export (`two : () -> 2`) validates + runs. Proves the closure interface instance and
+    /// an ordinary top-level func coexist in one component — the byte anchor licensing the compiler's
+    /// mixed-export envelope (the hand-emitted production path is the next increment).
+    #[test]
+    fn a_closure_export_and_a_plain_export_coexist_and_the_host_drives_both() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_mixed_component(&mixed_closure_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("mixed-export component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+
+        // The plain `two` is a TOP-LEVEL func export (not inside the closure interface).
+        let two_idx = instance
+            .get_export_index(&mut store, None, "two")
+            .expect("two export");
+        let two = instance.get_func(&mut store, two_idx).expect("two func");
+        let mut out = [Val::Bool(false)];
+        two.call(&mut store, &[], &mut out).expect("two()");
+        two.post_return(&mut store).expect("post_return");
+        assert_eq!(out[0], Val::S64(2), "the plain export two() = 2");
+
+        // The closure interface still works alongside it.
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+        let mut h = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut h).expect("make");
+        make.post_return(&mut store).expect("post_return");
+        let mut cout = [Val::Bool(false)];
+        call.call(&mut store, &[h[0].clone(), Val::S64(5)], &mut cout)
+            .expect("call");
+        call.post_return(&mut store).expect("post_return");
+        assert_eq!(cout[0], Val::S64(6), "the closure (+ x 1) applied to 5 = 6");
+    }
+
     /// DISTINCT-SIGNATURE oracle core (the byte anchor for the N-resource-type multi-export): TWO closures
     /// of DIFFERENT signatures — `inc : (-> Int64 Int64)` (slot 0) and `isz : (-> Int64 Bool)` (slot 1) —
     /// each with its OWN `make` + `call` (distinct call functypes: `(i32,i64)->i64` vs `(i32,i64)->i32`).
@@ -26662,6 +27484,7 @@ mod closure_host_resource {
             &funcs,
             &imports,
             &makes,
+            &[],
             &[ValType::I64],
             ValType::I64,
             lifted_type_idx,
@@ -27587,11 +28410,12 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures now COMPILE for BOTH the same-signature (one resource type, shared `call`) and
-    /// the DISTINCT-signature (N resource types, per-group `call-g<n>`) shapes. The only REMAINING
-    /// multi-export shape that declines is a closure exported ALONGSIDE a non-closure export (composing the
-    /// resource envelope with the plain scalar boundary is a later increment). Pins the two working cases +
-    /// the honest Todo.
+    /// MULTI-EXPORT closures now COMPILE for the same-signature (one resource type, shared `call`), the
+    /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (a same-signature
+    /// closure ALONGSIDE a plain non-closure export — the closure via the resource envelope, the plain export
+    /// as an ordinary top-level func). The only REMAINING declining shape is DISTINCT closure signatures
+    /// alongside a plain export (the distinct-sig envelope has no plain-export slot). Pins the three working
+    /// cases + the honest Todo.
     #[test]
     fn multi_export_closures_compile_same_or_distinct_signature_else_decline() {
         use crate::testkit::parse;
@@ -27607,14 +28431,24 @@ mod closure_host_resource {
         crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
             .expect("distinct-signature closure exports compile (distinct-sig path)");
 
-        // A closure ALONGSIDE a non-closure export → still declines naming the slice.
+        // A same-signature closure ALONGSIDE a non-closure export → now COMPILES (the mixed envelope: the
+        // closure crosses via make/call, the plain export as an ordinary top-level func).
         let mixed = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                      (def (two) 2) (export inc) (export two))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
-            .expect_err("a closure alongside a non-closure export must DECLINE");
+        crate::compile::compile_component(&crate::codec::encode(&parse(mixed))).expect(
+            "a same-signature closure alongside a plain export compiles (mixed-export path)",
+        );
+
+        // DISTINCT closure signatures ALONGSIDE a non-closure export → still declines (the distinct-sig
+        // resource envelope has no plain-export slot; that composition is a later widening).
+        let mixed_distinct = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                              (def (isz) (fn ((: x Int64)) (= x 0))) \
+                              (def (two) 2) (export inc) (export isz) (export two))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct)))
+            .expect_err("distinct-signature closures alongside a plain export must DECLINE");
         assert!(
-            err.message.contains("ALONGSIDE a non-closure") && err.code.is_none(),
-            "expected the closure-plus-scalar multi-export decline, got: {:?} / {}",
+            err.message.contains("DISTINCT signatures ALONGSIDE") && err.code.is_none(),
+            "expected the distinct-sig-plus-plain decline, got: {:?} / {}",
             err.code,
             err.message
         );
