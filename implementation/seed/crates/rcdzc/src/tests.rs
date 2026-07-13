@@ -1678,6 +1678,60 @@ fn runtime_value_eq_borrowed_operand_survives_and_balances() {
     );
 }
 
+/// KNOWN LEAK (tracking probe): a RECURSIVE function with a HEAP-typed PARAMETER threaded through the
+/// recursion and only BORROWED (never destructured/consumed) leaks the cell — a BOUNDED O(1) leak (one
+/// cell per heap value created, NOT per recursion level), correctness-PRESERVING (the answer is right).
+/// This is a CROSS-CUTTING Perceus-in-recursion gap, NOT closure-specific: a `(Tuple …)` param threaded
+/// the same way leaks identically (verified — 0 `drop`s emitted). ROOT: a function that received an
+/// OWNED heap param and does not consume it on a control path (the base case `n=0` returns `0` without
+/// touching `g`) must DROP it there; today no such drop is inserted (`emit_call_args` also does not
+/// `dup` a re-passed heap arg). The correct fix is whole-function last-use drop insertion for params
+/// (the general Perceus pass), which is its own workstream — a partial fix risks a double-free (far worse
+/// than a bounded leak), so it is tracked here rather than hacked in. This probe ASSERTS the current
+/// (leaking) count so the leak cannot silently WORSEN (grow past O(1)); flip the expected value to 0 when
+/// the Perceus pass lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_closure_leaks_exactly_one_cell_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[closure-leak] debug-counters runtime not in the store; skipping known-leak probe"
+        );
+        return;
+    };
+    let src = "(module m \
+                 (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+                    (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+                 (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The answer is CORRECT despite the leak (the leak is a reclamation gap, not a miscompile).
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(10)]),
+        Val::S64(36),
+        "the closure still computes 36"
+    );
+    // ONE closure cell leaks, regardless of the recursion depth (the cell is built once and only
+    // borrowed down the recursion). A larger `n` must NOT increase the leak — that would signal a
+    // per-level allocation regression, which this pins.
+    let mut rt_deep = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(rt_deep.call("main", &[Val::S64(50)]), Val::S64(6 + 3 * 50));
+    assert_eq!(
+        rt.live_objects(),
+        1,
+        "KNOWN GAP: a heap closure param threaded through recursion leaks exactly 1 cell (flip to 0 when \
+         the general Perceus param-drop pass lands). A count > 1 is a REGRESSION (per-level allocation)."
+    );
+    assert_eq!(
+        rt_deep.live_objects(),
+        1,
+        "the leak is O(1): n=50 leaks the same ONE cell as n=3 (no per-recursion-level growth)"
+    );
+}
+
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
 /// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
 /// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
