@@ -45,6 +45,12 @@ use tracing::trace;
 pub struct Emit {
     code: Vec<Lir>,
     lines: Vec<(u32, StructId)>,
+    /// Named SCALAR `let`-binding locals discovered during emit (D3 variable inspection extended to
+    /// locals — `DESIGN-debug-info-rcdzc.md` §2.4). A kept multi-use scalar binding lives in a stable
+    /// slot; recorded here at the `Core::Let` arm so `DW_TAG_variable` DIEs describe it, letting a
+    /// debugger `print x` for a local, not just a parameter. Params are collected separately in
+    /// `select_function_of` (slots `0..n`); these are the bindings above `base`.
+    binding_locals: Vec<LocalVar>,
 }
 
 impl Emit {
@@ -60,6 +66,16 @@ impl Emit {
         if self.lines.last().map(|&(i, _)| i) != Some(at) {
             self.lines.push((at, id));
         }
+    }
+    /// Record a named scalar `let`-binding local at its persistent slot (D3 locals). Called at the
+    /// `Core::Let` arm for each SCALAR binding whose binder occurrence has a source name.
+    fn binding_local(&mut self, slot: u32, name: String, ty: Ty) {
+        self.binding_locals.push(LocalVar {
+            slot,
+            name,
+            ty,
+            is_param: false,
+        });
     }
 }
 
@@ -415,12 +431,15 @@ pub struct SelectedFunc {
     pub stmt_lines: Vec<(u32, StructId)>,
 }
 
-/// A named scalar local for debug info (D3): its wasm local slot, source name, and solved scalar type.
+/// A named scalar local for debug info (D3): its wasm local slot, source name, solved scalar type, and
+/// whether it is a function PARAMETER (vs a `let`-binding local) — so the backend picks
+/// `DW_TAG_formal_parameter` vs `DW_TAG_variable`.
 #[derive(Clone, Debug)]
 pub struct LocalVar {
     pub slot: u32,
     pub name: String,
     pub ty: Ty,
+    pub is_param: bool,
 }
 
 /// An inert STUB function with the given parameter types and result type `ret` — its body is a single
@@ -868,6 +887,7 @@ pub fn select_function_of(
                 slot: i as u32,
                 name: name.to_string(),
                 ty: ty.clone(),
+                is_param: true,
             });
         }
     }
@@ -992,6 +1012,10 @@ pub fn select_function_of(
         .map(|s| scratch_ty.get(&s).copied().unwrap_or(ValType::I64))
         .collect();
     peephole_emit(&mut code);
+    // Named scalar locals (D3): the function's PARAMETERS (slots `0..n`, collected above) plus the
+    // scalar `let`-bindings discovered during emit (`Emit::binding_local`). Both become `DW_TAG_variable`
+    // DIEs, so a debugger can `print` an argument OR a local.
+    locals.extend(code.binding_locals);
     Ok(SelectedFunc {
         params: param_vts,
         ret,
@@ -999,7 +1023,7 @@ pub fn select_function_of(
         declared,
         // The body occurrence is this function's source anchor for debug info (§2.1b).
         src_body: Some(body),
-        // Named scalar params for debug-info variable inspection (§2.4, D3).
+        // Scalar params + `let`-binding locals for debug-info variable inspection (§2.4, D3).
         locals,
         // Per-construct source line markers (per-statement granularity), remapped through the peephole.
         stmt_lines: code.lines,
@@ -1484,6 +1508,15 @@ fn emit_tail(
                 scratch_ty.insert(slot, vt);
                 if slot + 1 > *high {
                     *high = slot + 1;
+                }
+                // DEBUG (D3 locals): a SCALAR binding with a source name lives in this slot for its whole
+                // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. The
+                // binder key is the initializer occurrence, so recover the name from its `(name init)`
+                // pair (`let_binding_name`), not from the binder itself.
+                if matches!(ty, Ty::Int(_) | Ty::Bool)
+                    && let Some(name) = db.let_binding_name(*binder)
+                {
+                    out.binding_local(slot, name.to_string(), ty.clone());
                 }
                 extended.insert(*binder, slot);
                 floor = slot + 1;
@@ -2676,6 +2709,15 @@ fn emit(
                 }
                 if is_heap_type(&ty) {
                     heap_bindings.push((*binder, slot));
+                }
+                // DEBUG (D3 locals): a SCALAR binding with a source name lives in this slot for its whole
+                // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. (A heap
+                // binding is a handle DWARF can't walk (§3), so only scalars are recorded.) The binder key
+                // is the initializer occurrence, so recover the name from its `(name init)` pair.
+                if matches!(ty, Ty::Int(_) | Ty::Bool)
+                    && let Some(name) = db.let_binding_name(*binder)
+                {
+                    out.binding_local(slot, name.to_string(), ty.clone());
                 }
                 extended.insert(*binder, slot);
                 floor = slot + 1;

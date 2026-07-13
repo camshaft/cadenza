@@ -14663,6 +14663,59 @@ mod debug_info {
     }
 
     #[test]
+    fn a_kept_scalar_let_binding_gets_a_variable_die() {
+        // D3 locals: a `let` binding whose runtime value is used more than once is KEPT as a named slot
+        // (`Core::Let`); a scalar one earns a `DW_TAG_variable` DIE with a type and a wasm-local location,
+        // so a debugger can `print` the local. The binder key is the initializer occurrence, so the name
+        // is recovered from its `(name init)` pair (`db.let_binding_name`) — this test guards that path.
+        use std::io::Write;
+        use std::process::Command;
+        // `x` is used twice, so it survives A-normalization as a kept `Core::Let` binding.
+        let src = "(module m (def (f (: a Int64)) (let ((x (+ a 1))) (+ x x))) (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-letloc-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump error:\n{stdout}"
+        );
+        // The kept binding `x` is a variable (not a formal parameter), with a wasm-local location.
+        assert!(
+            stdout.contains("DW_TAG_variable"),
+            "no variable DIE for the kept let binding:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"x\""),
+            "the local `x` is unnamed:\n{stdout}"
+        );
+        // `x` sits ABOVE the single param slot 0 — a variable at a non-zero local slot.
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x1"),
+            "the kept local must live at local slot 1:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn a_runtime_bytes_returning_program_carries_dwarf() {
         // A program returning a RUNTIME `Bytes` (a recursion + `Bytes.concat` result) crosses via the
         // looping-walker escape path (`emit_runtime_bytes_resource`) — a THIRD resource core beyond the
