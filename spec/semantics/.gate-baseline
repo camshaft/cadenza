@@ -130,6 +130,7 @@ pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
 pass	a guarded variant arm falls through when the guard fails
+pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler folds a counter across the operations it discharges
@@ -300,6 +301,7 @@ pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
 pass	a runtime conditional selects its then-branch when the runtime condition holds
+pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime division by zero traps
 pass	a runtime division truncates toward zero
 pass	a runtime greater-than compares by signed order
@@ -395,6 +397,7 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
 pass	a well-formed annotation still checks and accepts a matching type (the control)
