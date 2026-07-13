@@ -2683,6 +2683,81 @@ mod runtime_ops {
     }
 
     #[test]
+    fn unsigned_comparison_with_zero_is_simplified() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(< u 0)` unsigned → constant FALSE, no runtime compare.
+        let lt0 = lir("(: u UInt64)", "(< u 0)");
+        assert!(
+            lt0.contains(&Lir::ConstI32(0))
+                && !lt0.iter().any(|i| matches!(i, Lir::I64LtU | Lir::I32LtU)),
+            "unsigned (< u 0) folds to false, no lt_u; got {lt0:?}"
+        );
+        // `(>= u 0)` unsigned → constant TRUE.
+        let ge0 = lir("(: u UInt64)", "(>= u 0)");
+        assert!(
+            ge0.contains(&Lir::ConstI32(1))
+                && !ge0.iter().any(|i| matches!(i, Lir::I64GeU | Lir::I32GeU)),
+            "unsigned (>= u 0) folds to true, no ge_u; got {ge0:?}"
+        );
+        // `(<= u 0)` unsigned → `u == 0` → `eqz` (no le_u).
+        let le0 = lir("(: u UInt64)", "(<= u 0)");
+        assert!(
+            le0.contains(&Lir::I64Eqz) && !le0.iter().any(|i| matches!(i, Lir::I64LeU)),
+            "unsigned (<= u 0) folds to eqz; got {le0:?}"
+        );
+        // SIGNED must NOT fold — a signed value can be < 0, so `lt_s` stays.
+        let s = lir("(: x Int64)", "(< x 0)");
+        assert!(
+            s.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "signed (< x 0) keeps lt_s (not folded); got {s:?}"
+        );
+
+        // VALUE PARITY over runtime unsigned inputs (the fold must agree with the true comparison).
+        assert!(!run::<bool>("(: u UInt64)", "(< u 0)", &[Val::U64(0)]));
+        assert!(!run::<bool>("(: u UInt64)", "(< u 0)", &[Val::U64(5)]));
+        assert!(!run::<bool>(
+            "(: u UInt64)",
+            "(< u 0)",
+            &[Val::U64(u64::MAX)]
+        ));
+        assert!(run::<bool>("(: u UInt64)", "(>= u 0)", &[Val::U64(0)]));
+        assert!(run::<bool>(
+            "(: u UInt64)",
+            "(>= u 0)",
+            &[Val::U64(u64::MAX)]
+        ));
+        assert!(run::<bool>("(: u UInt64)", "(<= u 0)", &[Val::U64(0)]));
+        assert!(!run::<bool>("(: u UInt64)", "(<= u 0)", &[Val::U64(1)]));
+        // The LEFT-const mirror computes identically.
+        assert!(run::<bool>("(: u UInt64)", "(<= 0 u)", &[Val::U64(9)]));
+        assert!(!run::<bool>("(: u UInt64)", "(> 0 u)", &[Val::U64(9)]));
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
@@ -4590,6 +4665,74 @@ mod match_engine {
             .and_then(|d| d.code.clone())
     }
 
+    /// The first error `Diagnostic` from compiling `src` (full record, so a test can read the carried
+    /// fix), or `None` if `src` compiled clean.
+    fn reject_full(src: &str) -> Option<crate::abi::Diagnostic> {
+        let out = compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[Target::Wasm],
+        );
+        if out.artifact(Target::Wasm.artifact_kind()).is_some() {
+            return None;
+        }
+        out.diagnostics
+            .into_iter()
+            .find(|d| d.severity == crate::abi::Severity::Error)
+    }
+
+    #[test]
+    fn a_non_exhaustive_scalar_match_offers_a_wildcard_arm_fix() {
+        // An open Int scalar match with no wildcard is CDZ0210; it now carries an INSERT fix that appends
+        // a `(_ unit)` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+        // A Fix — the scalar twin of the sum add-arms fix).
+        let d = reject_full("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
+            .expect("non-exhaustive must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
+        assert!(
+            d.message.contains("wildcard"),
+            "names the gap: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a wildcard-arm fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(fix.replacement, "(_ unit)", "appends a wildcard arm");
+        assert!(!fix.verified, "the arm body is a placeholder → heuristic");
+    }
+
+    #[test]
+    fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
+        // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly `(false unit)`
+        // (not a generic wildcard), the same precision as a missing sum variant.
+        let d = reject_full("(module m (def (main (: b Bool)) (match b (true 1))) (export main))")
+            .expect("non-exhaustive must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`false`") && d.message.contains("not covered"),
+            "names the missing literal: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(false unit)"),
+            "inserts the specific missing arm: {}",
+            d.message
+        );
+        // Symmetric: missing `true` → `(true unit)`.
+        let d2 =
+            reject_full("(module m (def (main (: b Bool)) (match b (false 2))) (export main))")
+                .expect("reject");
+        assert_eq!(
+            d2.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(true unit)"),
+            "message: {}",
+            d2.message
+        );
+    }
+
     #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
@@ -5762,6 +5905,85 @@ mod match_engine {
                 cdz_run::Outcome::Trap(_)
             ),
             "a runtime u8 of -1 must trap"
+        );
+    }
+
+    #[test]
+    fn a_runtime_bin_match_decodes_a_runtime_bytes_scrutinee_under_wasmtime() {
+        // A `(bin …)` PATTERN over a RUNTIME `Bytes` scrutinee (built from a boundary param, so it cannot
+        // fold): the matcher probes `bytes-len == total & (each literal segment == its literal)` and, on a
+        // match, binds each segment via `BinIntRead`. One bin arm + a catch-all (the supported shape). The
+        // scrutinee here is `(bin (uNN n))` built from the param, then matched back — a runtime round-trip.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime bin match run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // u16 round-trip: build (u16 n) at runtime, match it back → n.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
+                &["258"]
+            ),
+            "258",
+            "runtime u16 match round-trip"
+        );
+        // Signed i8: byte 0xFF decodes to -1 (two's complement).
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (i8 n)) ((bin (i8 m)) m) (_ -9))) (export main))",
+                &["-1"]
+            ),
+            "-1",
+            "runtime signed i8 match"
+        );
+        // Little-endian read matches the little-endian build.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u16 n le)) ((bin (u16 m le)) m) (_ -9))) (export main))",
+                &["258"]
+            ),
+            "258",
+            "runtime le match round-trip"
+        );
+        // A leading LITERAL tag dispatches: tag 1 matches → decode the u16; else the catch-all.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u8 1) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
+                &["300"]
+            ),
+            "300",
+            "runtime literal-tag match"
+        );
+        // A mismatched literal tag (built 2, pattern wants 1) → the catch-all (-9), NOT a wrong decode.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u8 2) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
+                &["300"]
+            ),
+            "-9",
+            "runtime literal-tag mismatch → catch-all"
+        );
+        // Whole-scrutinee: a length mismatch (built 1 byte, pattern wants 2) → the catch-all.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u8 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
+                &["5"]
+            ),
+            "-9",
+            "runtime length mismatch → catch-all"
         );
     }
 
@@ -13231,6 +13453,36 @@ mod stage1 {
         assert_eq!(r, "1"); // only x=2 matches k=2
         assert_eq!(run_closure(src, 3).unwrap(), "1"); // only x=3 matches k=3
         assert_eq!(run_closure(src, 9).unwrap(), "0"); // none of 3,2,1 equal 9
+    }
+
+    #[test]
+    fn a_runtime_fn_value_is_manually_eta_wrapped_and_applied() {
+        // A genuinely-RUNTIME fn value partially applied via a MANUAL eta-wrap. `g` is a runtime
+        // two-parameter fn parameter (no compile-time lambda to partially apply); `(fn (b) (g n b))`
+        // captures `g` (a runtime closure handle) AND `n`, and applies `g` at full arity inside — an
+        // ordinary capturing closure whose body is a full-arity `call_indirect` on the captured `g`. Both
+        // `ap` and `sumapply` recurse, so nothing folds: TWO nested indirect calls (ap→wrapper, wrapper→g).
+        // This composes the captured-closure-call path (a closure captures a runtime fn and calls it) with
+        // a two-level HOF. `ap g n` = sum over i=n..1 of (g(i,2)+g(i,1)) = (i+2)+(i+1) = 2i+3; n=3 → 21.
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g n b)) 2) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "21"); // (9)+(7)+(5)
+        // The NON-recursive-outer form folds `ap` but the eta-wrapper still runs through recursive
+        // `sumapply`: `sumapply (fn (b) (g 5 b)) 2` = (5+2)+(5+1) = 13.
+        let flat = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (fn ((: b Int64)) (g n b)) 2)) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        assert_eq!(run_closure(flat, 5).unwrap(), "13"); // (5+2)+(5+1)
     }
 
     #[test]

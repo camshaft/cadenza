@@ -276,6 +276,8 @@ fn map_module(ast: &mut Arenas) -> StructId {
     let lookup_lambda = map_lookup_type_lambda(ast);
     let remove_lambda = map_remove_type_lambda(ast);
     let size_lambda = map_size_type_lambda(ast);
+    let swap_lambda = map_swap_type_lambda(ast);
+    let take_lambda = map_take_type_lambda(ast);
     let mut children = vec![head, apply_field];
     for (name, prim, lambda) in [
         ("empty", "map-empty", empty_lambda),
@@ -283,6 +285,8 @@ fn map_module(ast: &mut Arenas) -> StructId {
         ("lookup", "map-lookup", lookup_lambda),
         ("remove", "map-remove", remove_lambda),
         ("size", "map-size", size_lambda),
+        ("swap", "map-swap", swap_lambda),
+        ("take", "map-take", take_lambda),
     ] {
         let op = list_op_record(ast, prim, lambda);
         let k = push_atom(ast, Leaf::Name(name.to_string()));
@@ -365,6 +369,46 @@ fn map_size_type_lambda(ast: &mut Arenas) -> StructId {
     let map_l = map_k_v_type(ast);
     let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
     let body = arrow_type(ast, map_l, int64); // (-> (Map k v) Int64)
+    map_type_lambda(ast, body)
+}
+
+/// Build `(Tuple (Option v) (Map k v))` — the value-yielding form's result: the prior/removed value as
+/// an optional PAIRED with the new map. Shared by `Map.swap`/`Map.take` (collections-and-text.md §A Map
+/// Is Built By Functional Construction — the two-form rule).
+fn map_optional_and_map_tuple(ast: &mut Arenas) -> StructId {
+    let option_v = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let v = push_atom(ast, Leaf::Name("v".to_string()));
+        push_list(ast, vec![option, v])
+    };
+    let map_k_v = map_k_v_type(ast);
+    let tuple = push_atom(ast, Leaf::Name("Tuple".to_string()));
+    push_list(ast, vec![tuple, option_v, map_k_v]) // (Tuple (Option v) (Map k v))
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) (-> k (-> v (Tuple (Option v) (Map k v))))))` for
+/// `Map.swap` — `∀k v. (Map k v) → k → v → (Tuple (Option v) (Map k v))`: add-or-replace, reporting the
+/// value the key held before (present when it was associated) paired with the new map.
+fn map_swap_type_lambda(ast: &mut Arenas) -> StructId {
+    let result = map_optional_and_map_tuple(ast);
+    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let val_arrow = arrow_type(ast, v, result); // (-> v (Tuple …))
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let key_arrow = arrow_type(ast, k, val_arrow); // (-> k (-> v (Tuple …)))
+    let map_l = map_k_v_type(ast);
+    let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (-> v (Tuple …))))
+    map_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) (-> k (Tuple (Option v) (Map k v)))))` for `Map.take` —
+/// `∀k v. (Map k v) → k → (Tuple (Option v) (Map k v))`: remove, reporting the value the key held
+/// (present when it was associated) paired with the new map. The remove companion of `Map.swap`.
+fn map_take_type_lambda(ast: &mut Arenas) -> StructId {
+    let result = map_optional_and_map_tuple(ast);
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let key_arrow = arrow_type(ast, k, result); // (-> k (Tuple …))
+    let map_l = map_k_v_type(ast);
+    let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Tuple …)))
     map_type_lambda(ast, body)
 }
 

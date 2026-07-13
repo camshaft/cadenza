@@ -514,6 +514,33 @@
   (call   main (: 2 Int64))
   (output (: 1 Int64)))
 
+; MANUAL ETA-WRAP of a genuinely-RUNTIME function value. `g` is a runtime two-parameter fn PARAMETER (of
+; the recursive `ap`), so it has no compile-time lambda to partially apply. Writing `(fn (b) (g n b))`
+; captures `g` (a runtime closure handle) AND `n`, and applies `g` at full arity inside — the eta-wrapper
+; is an ordinary capturing closure whose body is a full-arity `call_indirect` on the captured `g`. This is
+; the composition of two runtime paths: an outer closure that captures a runtime fn value and CALLS it,
+; passed to a second recursive HOF. Both `ap` and `sumapply` recurse, so nothing folds — the program runs
+; on TWO nested indirect calls (ap→the eta-wrapper, the eta-wrapper→g). `ap g n` sums over i=n…1 of
+; `sumapply((fn (b) (g i b)), 2)` = (g(i,2))+(g(i,1)) = (i+2)+(i+1) = 2i+3; for n=3: 9+7+5 = 21.
+
+(case "a runtime function value is manually eta-wrapped and applied through nested recursive HOFs"
+  (doc    "`g` is a runtime two-parameter fn parameter; `(fn (b) (g n b))` captures `g` and `n` and applies
+           `g` at full arity inside — a capturing closure whose body is an indirect call on the captured
+           runtime `g`. Passed to the recursive `sumapply`, itself driven by the recursive `ap`, so nothing
+           folds: two nested call_indirects (ap→wrapper, wrapper→g). `ap g 3` = sum over i=3,2,1 of
+           (g(i,2)+g(i,1)) = (2i+3) = 9+7+5 = 21. Pins that a genuinely-runtime fn value can be captured by
+           an eta-wrapper and applied — the manual form of runtime currying, on the capture + full-arity
+           machinery.")
+  (input  (do
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1)))))
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64))
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g n b)) 2) (ap g (- n 1)))))
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 21 Int64)))
+
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
 ; ONLY inside the LIFTED closure body, never in a top-level def, so the module's import set (which is
