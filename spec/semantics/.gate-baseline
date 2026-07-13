@@ -85,6 +85,7 @@ pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure with a let binding in its body
+pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
@@ -821,7 +822,10 @@ pass	an out-of-range float literal is a malformed literal, not a non-finite valu
 pass	an out-of-range integer literal is a malformed literal, not an unbound name
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
+pass	an unannotated closure in a Some payload is typed from the Option's element arrow
+pass	an unannotated closure in a user variant payload is typed from the declared arrow
 pass	an unannotated closure parameter is grounded from its body and applied at runtime
+pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string

@@ -281,6 +281,75 @@
             ((. lib fac) 5)))
   (output (: 120 Int64)))
 
+; ── MODULE-IN-MODULE (nested modules) ──────────────────────────────────────────────────────────────────
+; A module MAY contain another module as a member. Because a module IS a record of its exports
+; (core-semantics.md #A Module Evaluates To A Record Of Its Exports) and a nested module is itself a
+; definition grouped under a name, the inner module registers as a FIELD of the outer's record whose
+; VALUE is the inner module's own record — a nested record. So an outer/inner export is reached by a
+; MEMBER-ACCESS CHAIN `(. (. outer inner) v)`, exactly two ordinary projections, with nothing privileged
+; by name (the same one accessor a flat export uses, applied twice). Nesting is arbitrary-depth. A
+; compiler that registers only `(def …)` members drops a nested module: `(. outer inner)` then names a
+; field the outer record does not carry and TRAPS at run time on the emitted component — a decline-don't-
+; miscompile violation, so a generation that does not model nested modules DECLINES rather than emitting a
+; component whose projection traps.
+
+(case "a module nested in a module projects as a nested record field"
+  (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports for a NESTED module:
+           `(module inner (def v 7))` written as a member of `(module outer …)` registers `inner` as a
+           field of the outer's record whose value is the inner module's OWN record, so `(. (. outer inner)
+           v)` is two ordinary member projections (core-semantics.md #Member Access Projects A Record Field)
+           and yields 7 — the nested-record analogue of a flat export, nothing privileged by name. A compiler
+           that registers only `(def …)` members drops the nested module; `(. outer inner)` then names a
+           missing field and TRAPS on the emitted component — a decline-don't-miscompile violation, so a
+           generation that does not model nested modules declines rather than emitting a trapping projection.")
+  (input  (do
+            (module outer
+              (module inner
+                (def v 7)))
+            (. (. outer inner) v)))
+  (output (: 7 Int64)))
+
+(case "a module may nest three deep"
+  (doc    "Nesting is arbitrary-depth: `(module a (module b (module c (def v 42))))` reaches `v` through
+           three member accesses `(. (. (. a b) c) v)`. Pins that a nested module is itself a record whose
+           fields may be records recursively — no depth privilege, the same `synth_by_occ`-embed at each
+           level (`modules::synthesize` builds inner-first so each enclosing module embeds an already-built
+           record).")
+  (input  (do
+            (module a
+              (module b
+                (module c
+                  (def v 42))))
+            (. (. (. a b) c) v)))
+  (output (: 42 Int64)))
+
+(case "a nested module's function export is applied through the projection chain"
+  (doc    "A nested module's FUNCTION export is reached AND applied through the member-access chain: the
+           inner field value is the same `(fn (params) body)` lambda a flat export carries, so `((. (. outer
+           inner) f) 21)` β-reduces by the ordinary application path — f(21) = 42. Pins that the nested
+           record's fields carry lambdas identically to a top-level module's, not only bare values.")
+  (input  (do
+            (module outer
+              (module inner
+                (def (f x) (* x 2))))
+            ((. (. outer inner) f) 21)))
+  (output (: 42 Int64)))
+
+(case "an outer definition references a sibling nested module by bare name"
+  (doc    "A module's members are mutually visible (core-semantics.md #A Module Evaluates To A Record Of
+           Its Exports), and a nested module is a member — so an outer `(def …)` may reference the sibling
+           nested module by BARE name. `f`'s body reads `(. inner dbl)`, resolving `inner` to the inner
+           module's record via the same in-module sibling scope a bare def reference uses; f(21) = dbl(21) =
+           42. Pins that the nested module participates in in-module scope as a member, not only as a
+           qualified projection target.")
+  (input  (do
+            (module outer
+              (module inner
+                (def (dbl x) (* x 2)))
+              (def (f y) ((. inner dbl) y)))
+            ((. outer f) 21)))
+  (output (: 42 Int64)))
+
 (case "a module's delegated capability is reachable as metadata, not as an export"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata:
            the capabilities are reached by the (meta …) key, distinct from the export

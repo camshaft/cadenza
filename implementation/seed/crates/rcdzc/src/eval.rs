@@ -309,8 +309,16 @@ fn pin_free_vars(db: &mut Db, node: StructId, lam_body: StructId, own_params: &[
         // of the lambda's own params, it is a free capture — pin it. A param formal (substituted by
         // `arg_of`), a body-internal binding (within `lam_body`), or a prelude/global name is left
         // unpinned.
+        //
+        // A binder that is a MODULE SYNTH RECORD (a nested `(module inner …)` reached by bare name from a
+        // sibling def's body — `module_sibling_binds`'s nested-module arm) is a genuine SCOPE capture even
+        // though the record is a SYNTHESIZED node (not a `is_user_node`): unlike a prelude global — which
+        // re-resolves by name regardless of position, so a fresh copy is fine — a module member is in
+        // scope ONLY via the enclosing module's record, which the β-copy's orphan loses. So it MUST be
+        // pinned (shared), exactly as a sibling `def`'s lambda binder is. Pin when the binder is a user
+        // node OR such a module record.
         if let Some(binder) = ref_binder(db, node)
-            && db.is_user_node(binder)
+            && (db.is_user_node(binder) || db.module_by_synth_record(binder).is_some())
             && !db.is_within(binder, lam_body)
             && !own_params.contains(&binder)
         {
