@@ -10310,6 +10310,52 @@ mod match_engine {
     }
 
     #[test]
+    fn checked_integer_conversion_folds_in_range_and_traps_out_of_range() {
+        // `T.of` — the CHECKED (range-checked, TRAPPING) integer conversion (numeric-model.md §A
+        // Conversion Between Integer Types Is Explicit): a constant IN RANGE folds to the value at the
+        // target type, a constant OUT OF RANGE compiles to a `Core::Trap` that fires at run time.
+        // Distinct from `T.wrap` (which truncates totally, never traps).
+        // In range: `(UInt8.of 200)` = 200 : UInt8 (unchanged, not truncated).
+        assert_eq!(
+            run_returns::<u8>(
+                &component("(module m (def (main) ((. UInt8 of) (: 200 Int32))) (export main))"),
+                "main"
+            ),
+            200,
+            "an in-range checked conversion yields the value unchanged"
+        );
+        // Signed boundary: `(Int8.of 127)` = 127 (Int8.max, the largest that fits).
+        assert_eq!(
+            run_returns::<i8>(
+                &component("(module m (def (main) ((. Int8 of) (: 127 Int32))) (export main))"),
+                "main"
+            ),
+            127,
+            "the boundary value fits and converts unchanged"
+        );
+        // Out of range (magnitude): `(UInt8.of 256)` is one past UInt8.max → the compiled program TRAPS
+        // (it must not silently truncate to 0 the way `wrap` would).
+        assert!(
+            call_traps(
+                &component("(module m (def (main) ((. UInt8 of) (: 256 Int32))) (export main))"),
+                "main",
+                &[]
+            ),
+            "a checked conversion out of the target range traps at run time"
+        );
+        // Out of range (sign): `(UInt8.of -1)` — UInt8 has no negatives → trap (where `(UInt8.wrap -1)`
+        // would give 255). Pins that `of` checks the sign boundary, not only the magnitude boundary.
+        assert!(
+            call_traps(
+                &component("(module m (def (main) ((. UInt8 of) (: -1 Int32))) (export main))"),
+                "main",
+                &[]
+            ),
+            "a checked conversion of a negative into an unsigned type traps"
+        );
+    }
+
+    #[test]
     fn wrapping_arithmetic_identities_elide_the_op() {
         // Wrapping ops have the SAME algebraic identities as checked `+`/`*` (the wrap is total, so the
         // fold is value-identical): `a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`. Over a RUNTIME operand the
@@ -13510,9 +13556,12 @@ mod stage1 {
 
     #[test]
     fn an_unrealized_builtin_field_declines() {
-        // `(. Int64 of)` — the field EXISTS (present as a poison), so projecting it declines "not yet
-        // realized" rather than rejecting as absent. No open-module rule: it is filled with a poison.
-        let msg = expect_decline("(. Int64 of)");
+        // `(. (Int 100) max)` — the field EXISTS (present as a poison: a >64-bit width's bounds are not
+        // yet realized, `int_bounds` returns `None`), so projecting it declines "not yet realized" rather
+        // than rejecting as absent. No open-module rule: it is filled with a poison. (The former exemplar
+        // `(. Int64 of)` is now REALIZED — `of` is the checked conversion — so a still-unrealized field is
+        // used here; see `checked_integer_conversion_folds_in_range_and_traps_out_of_range`.)
+        let msg = expect_decline("(. (Int 100) max)");
         assert!(msg.contains("not yet realized"), "got: {msg}");
     }
 

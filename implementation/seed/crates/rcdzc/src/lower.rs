@@ -5902,7 +5902,9 @@ fn arith_identity(
         // operand may be the inner `(& v C1)`; the other must be the constant `C2`. Guarded on the shape
         // (via `nested_mask_collapse`, which returns `None` when it does not apply) so the same-operand
         // `& a a` fold below still fires. Verified value-identical: `(a & C1) & C2 == a & (C1 & C2)`.
-        Prim::BitAnd if let Some(folded) = nested_mask_collapse(db, lhs, lc, rhs, rc) => Some(folded),
+        Prim::BitAnd if let Some(folded) = nested_mask_collapse(db, lhs, lc, rhs, rc) => {
+            Some(folded)
+        }
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
         // NESTED RIGHT-SHIFT COLLAPSE: `(>> (>> v A) B)` → `(>> v (A+B))` when A, B are constants and
@@ -6273,6 +6275,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::Eq
         | Prim::Compare
         | Prim::Wrap
+        | Prim::CheckedOf
         | Prim::IntCtor
         | Prim::UIntCtor
         | Prim::FnCtor
@@ -6885,14 +6888,14 @@ pub(crate) fn refined_comparison_const(
     let above_max = |c: i64| max.is_some_and(|m| c > m); // c strictly above the range → v < c always
     let at_or_above_max = |c: i64| max.is_some_and(|m| c >= m);
     match cmp {
-        Prim::Lt if above_max(c) => Some(true),      // v < c: c > max → always
-        Prim::Lt if c <= min => Some(false),         // v < c: c <= min → never
-        Prim::Ge if above_max(c) => Some(false),     // v >= c: c > max → never
-        Prim::Ge if c <= min => Some(true),          // v >= c: c <= min → always
+        Prim::Lt if above_max(c) => Some(true), // v < c: c > max → always
+        Prim::Lt if c <= min => Some(false),    // v < c: c <= min → never
+        Prim::Ge if above_max(c) => Some(false), // v >= c: c > max → never
+        Prim::Ge if c <= min => Some(true),     // v >= c: c <= min → always
         Prim::Le if at_or_above_max(c) => Some(true), // v <= c: c >= max → always
-        Prim::Le if c < min => Some(false),          // v <= c: c < min → never
+        Prim::Le if c < min => Some(false),     // v <= c: c < min → never
         Prim::Gt if at_or_above_max(c) => Some(false), // v > c: c >= max → never
-        Prim::Gt if c < min => Some(true),           // v > c: c < min → always
+        Prim::Gt if c < min => Some(true),      // v > c: c < min → always
         _ => None,
     }
 }
@@ -6923,7 +6926,9 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
     {
         // Intersect with the declared-type bounds (a refinement only NARROWS a real value).
         let type_range = match crate::infer::type_of(db, id) {
-            crate::ty::Ty::Int(it) => resolved_int_bounds(it).and_then(|(lo, hi)| lo.map(|lo| (lo, hi))),
+            crate::ty::Ty::Int(it) => {
+                resolved_int_bounds(it).and_then(|(lo, hi)| lo.map(|lo| (lo, hi)))
+            }
             _ => None,
         };
         let (tlo, thi) = type_range.unwrap_or((i64::MIN, Some(i64::MAX)));
@@ -9345,16 +9350,41 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
     };
     let (signed, width) = (target.ground_signed(), target.ground_width());
     match core_of(db, args[0]) {
-        Core::ConstInt(v) => {
-            // Fold: truncate to the target width at arbitrary precision (total — never traps).
-            let wrapped = v.wrap_to(signed, width);
-            trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded constant wrap");
-            Core::ConstInt(wrapped)
-        }
+        Core::ConstInt(v) => match op {
+            // `T.wrap` — truncate to the target width at arbitrary precision (total, never traps).
+            Prim::Wrap => {
+                let wrapped = v.wrap_to(signed, width);
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded constant wrap");
+                Core::ConstInt(wrapped)
+            }
+            // `T.of` — the CHECKED conversion: in range → the value UNCHANGED at the target type; out of
+            // range → TRAP (numeric-model.md §A Conversion Between Integer Types Is Explicit). The value is
+            // not altered when it fits (`(UInt8.of 200) = 200`), distinguishing it from the truncating
+            // `wrap` (which would keep the low bits of an out-of-range value instead of trapping).
+            _ => {
+                if v.fits_width(signed, width) {
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded checked conversion (in range)");
+                    Core::ConstInt(v)
+                } else {
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "checked conversion out of range → trap");
+                    Core::Trap
+                }
+            }
+        },
         Core::Poison(r) => Core::Poison(r),
         // A runtime operand: emit the mask-and-reinterpret at selection (the target is read off this
         // node's solved type there, the same `type_of(id)` used here).
         _ => {
+            // `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not yet built,
+            // so decline rather than emit a truncating `Convert` (that would be `wrap`'s semantics — a
+            // MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). No corpus case
+            // exercises a runtime `T.of` (they all convert constants); a runtime one waits on the checked
+            // emit (the `Core::CheckedArith` companion, task follow-up).
+            if matches!(op, Prim::CheckedOf) {
+                return Core::Poison(Reject::decline(
+                    "a runtime checked integer conversion (T.of) is not yet emitted (convert a constant, or use T.wrap)",
+                ));
+            }
             if is_scalar(db, args[0]) {
                 // WRAP COMPOSITION: `T.wrap(U.wrap(x))` where this outer target width `N` is ≤ the inner
                 // wrap's target width `M` — the inner wrap keeps the low `M` bits, and the outer keeps the
@@ -9432,6 +9462,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::Eq => "=",
         Prim::Compare => "compare",
         Prim::Wrap => "wrap",
+        Prim::CheckedOf => "of",
         Prim::IntCtor => "Int",
         Prim::UIntCtor => "UInt",
         Prim::FnCtor => "->",
