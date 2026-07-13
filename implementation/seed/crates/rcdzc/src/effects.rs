@@ -1154,6 +1154,22 @@ pub fn reduce_handle(
     if !ctx.abortive.is_empty() && body_has_unsound_abortive_perform(db, body, &ctx, true, false) {
         return None;
     }
+    // RESUMPTIVE (tail-resume) NON-TAIL CONDITIONAL HOIST. A `perform` inside an `if`/`match` BRANCH
+    // advances the handler state LOCALLY, but the `if` thread arm returns the post-CONDITION state as its
+    // out-state — so the state advance is LOST to any CONTINUATION after the conditional (`(do (if c
+    // (E.op) x) (E.op))` runs the second `(E.op)` against the pre-branch state). The branch-out-state is
+    // genuinely a runtime PHI of the two branches, which the tail fold does not represent. Fix by the same
+    // distribution the abortive hoist uses: lift the `if`/`match` OUT of the strict continuation into a
+    // TAIL position, distributing the continuation into both branches — `(do (if c t e) k)` ≡ `(if c (do
+    // t k) (do e k))`, `(+ (if c t e) rhs)` ≡ `(if c (+ t rhs) (+ e rhs))`. Then each branch threads its
+    // own state THROUGH its copy of the continuation (the `if` is now in tail position, where the fold is
+    // correct). Sound: the CONDITION stays the single `if` condition (evaluated exactly once, never
+    // duplicated), and the continuation is duplicated across both branches but only one branch runs at
+    // runtime — so every effect in it happens exactly once, in the same relative order, as long as no
+    // EFFECTFUL sibling is evaluated BEFORE the `if` (that would jump the condition ahead of it); the
+    // hoist requires every preceding sibling pure. Runs to a fixpoint (bounded). A shape it cannot lift
+    // (a perform under a conditional the hoist could not raise to tail) is left as-is and declines below.
+    let body = hoist_resumptive_conditional(db, body, &ctx);
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
@@ -1440,6 +1456,174 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
     if let Struct::List(children) = db.ast.get(node).clone() {
         for (k, &c) in children.iter().enumerate() {
             if let Some(new_c) = hoist_once(db, c, ctx) {
+                let mut new_children = children.clone();
+                new_children[k] = new_c;
+                return Some(db.push_list(new_children));
+            }
+        }
+    }
+    None
+}
+
+/// Lift a RESUMPTIVE `if`/`match` (whose taken branch performs a discharged op) out of a strict
+/// continuation position, distributing the continuation into both branches to a fixpoint, so the
+/// conditional ends up in TAIL position where the tail-resume fold threads state correctly. See the
+/// call site in `reduce_handle` for the value-preservation argument. `None`-free (returns the rewritten
+/// tree, or the input unchanged when no site is found).
+fn hoist_resumptive_conditional(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    let mut cur = node;
+    // Each pass lifts at least one conditional one level toward tail position; a body nests far fewer
+    // than this many strict positions. The bound prevents any accidental non-convergence.
+    for _ in 0..256 {
+        match hoist_resumptive_once(db, cur, ctx) {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    cur
+}
+
+/// Whether `node` is an `if`/`match` whose SELECTED-branch position (a branch of an `if`, or an arm body
+/// of a `match`) contains a perform of an op this handler discharges — the shape whose branch-local state
+/// advance the tail fold drops to a continuation. The condition/scrutinee performing is irrelevant here
+/// (that threads fine); only a BRANCH/ARM-BODY perform is the hoist trigger.
+fn conditional_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    match resolved_of(db, node) {
+        Resolved::If { then_, else_, .. } => {
+            subtree_performs(db, then_, ctx) || subtree_performs(db, else_, ctx)
+        }
+        Resolved::Match { arms, .. } => arms
+            .iter()
+            .any(|&(_, body)| subtree_performs(db, body, ctx)),
+        _ => false,
+    }
+}
+
+/// Rebuild `node`'s branch/arm-body positions by mapping each through `f` (which wraps a branch in the
+/// distributed continuation). The condition/scrutinee is left UNTOUCHED (evaluated once, not duplicated).
+fn map_conditional_branches(
+    db: &mut Db,
+    node: StructId,
+    mut f: impl FnMut(&mut Db, StructId) -> StructId,
+) -> StructId {
+    match resolved_of(db, node) {
+        Resolved::If { cond, then_, else_ } => {
+            let nt = f(db, then_);
+            let ne = f(db, else_);
+            let if_head = db.push_atom(Leaf::Name("if".to_string()));
+            db.push_list(vec![if_head, cond, nt, ne])
+        }
+        Resolved::Match { scrutinee, arms } => {
+            let match_head = db.push_atom(Leaf::Name("match".to_string()));
+            let mut children = vec![match_head, scrutinee];
+            for (pat, body) in arms {
+                let nbody = f(db, body);
+                children.push(db.push_list(vec![pat, nbody]));
+            }
+            db.push_list(children)
+        }
+        _ => node,
+    }
+}
+
+/// One rewrite step of [`hoist_resumptive_conditional`]. Finds the FIRST (pre-order) strict position
+/// holding an `if`/`match` whose branch performs, distributes the enclosing strict context into the
+/// branches, and returns the rewritten WHOLE tree. Two site shapes (mirroring the abortive hoist):
+///   * a NON-TAIL `do` item `(do a0 … (if c t e) … an)` → `(do a0 … (if c (do t … an) (do e … an)))`,
+///     the conditional and everything AFTER it moved into each branch (it was a strict item, so it and
+///     its continuation always run). Every item BEFORE it must be pure (they run before the condition;
+///     duplicating them is not needed — they stay in the outer `do` prefix — but the conditional must
+///     become the do's tail, so items before it that PERFORM would still be threaded strictly, which is
+///     fine; the real constraint is only that we don't reorder — handled by keeping the prefix intact).
+///   * a strict application operand `(op a0 … (if c t e) … ak)` → `(if c (op … t …) (op … e …))`, with
+///     every operand BEFORE the conditional pure (else the condition would jump ahead of an earlier
+///     perform) and the head perform-free. Operands AFTER may perform (duplicated, run once per taken
+///     branch, in order).
+fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+    // Site 1: a `do` whose a NON-LAST item is a branch-performing conditional. Move that item and every
+    // following item into each branch as a `(do <branch> rest…)`; keep the preceding items as the do's
+    // prefix. Reduces to the tail-position shape one conditional at a time.
+    if let Some(items) = db.ast.as_form(node, "do").map(|t| t.to_vec())
+        && items.len() >= 2
+    {
+        for (i, &it) in items.iter().enumerate() {
+            if i + 1 < items.len() && conditional_branch_performs(db, it, ctx) {
+                let rest: Vec<StructId> = items[i + 1..].to_vec();
+                // Wrap a branch in `(do <branch> rest…)` — the continuation after the conditional.
+                let wrap = |db: &mut Db, branch: StructId| -> StructId {
+                    let do_head = db.push_name("do");
+                    let mut ch = vec![do_head, branch];
+                    ch.extend_from_slice(&rest);
+                    db.push_list(ch)
+                };
+                let new_cond = map_conditional_branches(db, it, wrap);
+                // The rewritten `do` keeps items[..i] as a prefix, with the distributed conditional as its
+                // new tail. If i==0 there is no prefix and the conditional IS the whole do's value.
+                if i == 0 {
+                    return Some(new_cond);
+                }
+                let do_head = db.push_name("do");
+                let mut ch = vec![do_head];
+                ch.extend_from_slice(&items[..i]);
+                ch.push(new_cond);
+                return Some(db.push_list(ch));
+            }
+        }
+    }
+    // Site 2: a strict application `(op a0 … ak)` — head not a perform — with a branch-performing
+    // conditional operand and every PRECEDING operand pure. Distribute the op into the branches.
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && !subtree_performs(db, head, ctx)
+    {
+        for (i, &a) in args.iter().enumerate() {
+            if conditional_branch_performs(db, a, ctx) {
+                // Every operand BEFORE the conditional must be pure — else distributing moves the `if`
+                // condition ahead of an earlier perform, reordering effects. Operands AFTER may perform
+                // (they are duplicated into each branch but only one branch runs, preserving order/count).
+                let preceding_pure = args[..i].iter().all(|&b| !subtree_performs(db, b, ctx));
+                if preceding_pure {
+                    let rebuild = |db: &mut Db, branch: StructId| -> StructId {
+                        let children: Vec<StructId> = std::iter::once(head)
+                            .chain(
+                                args.iter()
+                                    .enumerate()
+                                    .map(|(j, &b)| if j == i { branch } else { b }),
+                            )
+                            .collect();
+                        db.push_list(children)
+                    };
+                    return Some(map_conditional_branches(db, a, rebuild));
+                }
+            }
+        }
+    }
+    // Site 3: a SHORT-CIRCUIT connective `(and lhs rhs)` / `(or lhs rhs)` whose RHS performs is itself a
+    // conditional in disguise — `rhs` runs only on one value of `lhs`, so its perform's state advance is a
+    // branch-local one that the strict two-operand threading would drop to a continuation. Desugar it to
+    // the equivalent `if` (`(and lhs rhs)` ≡ `(if lhs rhs false)`, `(or lhs rhs)` ≡ `(if lhs true rhs)`)
+    // so the next pass sees a branch-performing `if` and lifts it out of its continuation (Site 1/2). `lhs`
+    // becomes the `if` CONDITION — evaluated exactly once either way, so no duplication and no purity
+    // constraint on it. Only fires when `rhs` performs (a pure connective threads/copies wholesale).
+    if let Resolved::And { lhs, rhs, is_and } = resolved_of(db, node)
+        && subtree_performs(db, rhs, ctx)
+    {
+        let if_head = db.push_atom(Leaf::Name("if".to_string()));
+        let (then_, else_) = if is_and {
+            let false_lit = db.push_atom(Leaf::Bool(false));
+            (rhs, false_lit) // (and lhs rhs) ≡ (if lhs rhs false)
+        } else {
+            let true_lit = db.push_atom(Leaf::Bool(true));
+            (true_lit, rhs) // (or lhs rhs) ≡ (if lhs true rhs)
+        };
+        return Some(db.push_list(vec![if_head, lhs, then_, else_]));
+    }
+    // Not a site here — recurse into children, rebuilding with the FIRST rewritten child (so a
+    // conditional nested inside a `let` init / branch / arm is lifted within that sub-position, then the
+    // enclosing pass lifts it further if needed).
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for (k, &c) in children.iter().enumerate() {
+            if let Some(new_c) = hoist_resumptive_once(db, c, ctx) {
                 let mut new_children = children.clone();
                 new_children[k] = new_c;
                 return Some(db.push_list(new_children));

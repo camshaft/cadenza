@@ -14707,6 +14707,40 @@ mod stage1 {
     }
 
     #[test]
+    fn a_branch_perform_threads_its_state_to_the_continuation() {
+        // A `perform` in an `if`/`match` BRANCH must thread its state advance OUT to the continuation
+        // after the conditional — the branch-out-state is a runtime phi realized by distributing the
+        // continuation into each branch. Here the then-branch reads 0 (threads 0->1); the continuation
+        // `(Fresh.next)` reads 1. Before the fix the continuation ran against the pre-branch state (0).
+        let if_src = "(do (effect Fresh (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (do (if true ((. Fresh next)) 99) ((. Fresh next))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(if_src)))
+                    .expect("a branch-perform if threads to its continuation"),
+                "main"
+            ),
+            1,
+            "the then-branch perform's state advance must reach the continuation"
+        );
+        // The short-circuit connective is the same shape via its if-desugar, and its CONDITION performs
+        // too: `(and (= (next) 0) (= (next) 1))` reads 0 then 1 (threads 0->2); the continuation reads 2.
+        let and_src = "(do (effect Fresh (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (do (and (= ((. Fresh next)) 0) (= ((. Fresh next)) 1)) ((. Fresh next))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(and_src)))
+                    .expect("a short-circuit branch perform threads to its continuation"),
+                "main"
+            ),
+            2,
+            "both connective reads plus the continuation must thread through the desugared branch"
+        );
+    }
+
+    #[test]
     fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
         // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
         // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces

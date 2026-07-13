@@ -70,6 +70,7 @@ pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a bound name in a map key is used by its value, not the literal name
+pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a built map renders its entries in canonical key order
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
@@ -427,6 +428,8 @@ pass	a partially-applied function escapes as a value and runs through a recursiv
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a perform in a taken if-branch threads its state to the continuation after the if
+pass	a perform in a taken match-arm threads its state to the continuation after the match
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a pipeline chain applies its stages left to right
@@ -586,6 +589,7 @@ pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
+pass	a short-circuit connective threads a branch perform to the continuation
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
@@ -814,6 +818,7 @@ pass	bitwise OR of an integer and a float does not silently promote
 pass	bitwise XOR is its own inverse
 pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
+pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -1075,6 +1080,7 @@ pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the difference contains the elements not in the second set
+pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set
