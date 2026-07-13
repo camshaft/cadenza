@@ -328,10 +328,13 @@ the component type. The new work:
   REPEATED-call callbacks stays blocked upstream (wasmtime-37 borrow trap); own-per-call + self-drop is
   the sound leak-free posture today — a stored host callback is single-use per handle.
 - **REMAINING (post-C-HOST-5, all optional widenings):** (1) genuine `borrow<t>` repeated-call handle
-  (blocked on the wasmtime-37 borrow trap — an upstream fix or a workaround); (2) widen closure
-  args/result beyond aliased scalar widths; (3) distinct-signature multi-export (N resource types); (4) a
-  consumer with MORE than one closure param; (5) a compound/closure-typed closure ARG. The core vertical
-  (Direction 1 + the round-trip + leak-free) is COMPLETE.
+  (blocked on the wasmtime-37 borrow trap — an upstream fix or a workaround); (2) ✅ **DONE `@a7535e96` —
+  WIDENED closure args/result to EVERY aliased-width scalar** (s8/u8/s16/u16/s32/u32/s64/u64, bool,
+  f32/f64), via `closure_boundary_byte` = `comp_valtype_of` restricted to Int/Bool/Float (a `Tuple`'s u32
+  threading handle is NOT a host boundary type → compound closure args still decline; +6 corpus, +1 decline
+  test); (3) distinct-signature multi-export (N resource types); (4) a consumer with MORE than one closure
+  param; (5) a compound/closure-typed closure ARG. The core vertical (Direction 1 + the round-trip +
+  leak-free + all scalar widths) is COMPLETE.
 
 ## Risks / open questions
 
