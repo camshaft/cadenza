@@ -493,9 +493,15 @@ the component type. The new work:
   `call` returns a RAW `list<u8>` (the host reads the bytes directly), so the render is the byte sequence —
   `call(5)` on `(fn (n) (bin (u8 n) (u8 n+1)))` → `(5 6)`. +3 corpus (Bytes closure ×2 args + a capturing
   closure returning Bytes). Gate 1359p/0f.
-- **REMAINING (all optional, none blocking):** a String/tuple/list closure RESULT (reuse the escape's
-  `encode` walker + value-form framing instead of the raw `to_bytes` copy — the render would then be the
-  typed `(: … T)` form, not a bare byte list); a compound closure ARG (host→guest decode — harder); a
+- **✅ STRING-RESULT CLOSURE COMPLETE `@3934dc37`.** A `String` is a UTF-8 byte-rope handle
+  representationally IDENTICAL to `Bytes` (same `bytes-*` store), so a `String` closure result crosses on
+  the EXACT bytes-`call` path — one-line change: `emit_closure_resource`'s `ret_is_bytes` now accepts
+  `Ty::String | Ty::Bytes` (both peeling nominals). The `call` copies the UTF-8 bytes out as `list<u8>`; the
+  host gets the raw encoded bytes (not a decoded string), same render as `Bytes`. +3 corpus (constant
+  `"hi"`→`(104 105)`, runtime `concat`→`(97 98 99)`, capturing). Gate 1362p/0f.
+- **REMAINING (all optional, none blocking):** a tuple/list/record closure RESULT (needs the escape's
+  `encode` walker + value-form framing instead of the raw byte copy — the render would then be the typed
+  `(: … T)` form, not a bare byte list); a compound closure ARG (host→guest decode — harder); a
   compound-RESULT plain export alongside a closure; a closure TRANSFORMER (`own<t>` both directions — cleanly
   declined); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
 

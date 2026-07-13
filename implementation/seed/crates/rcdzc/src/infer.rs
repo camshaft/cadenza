@@ -386,6 +386,43 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
     }
 }
 
+/// The CONCRETE integer type a bare literal takes from its BINARY-OPERATOR context, if any — the type
+/// its SIBLING operand fixes. An integer binary op (`is_binop`: arith/bitwise/comparison) constrains its
+/// two operands to one type (`+ : ∀a. (Int a) → (Int a) → (Int a)`; a comparison relates two of one
+/// type), so a bare literal beside a `UInt64`-typed operand takes `UInt64` — the constraint
+/// numeric-model.md §"An Explicit … Or Other Constraint On An Integer Literal MUST Take Precedence"
+/// requires. Per-node `type_of` does NOT thread this back to the literal (a bare literal always solves to
+/// a DEFERRED `Ty::int()`; the shared width is reconciled at selection via `operand_int_ty`), so the
+/// well-formedness range check must consult the context itself to avoid fitting a `UInt64` literal
+/// against the i64 default. Returns the sibling's `IntTy` only when it is CONCRETELY fixed (a deferred
+/// sibling — two bare literals — imposes nothing, and both then default to Int64). Keyed on the
+/// operator's PRIM (`is_binop`), never a name — no key outside the prelude.
+fn literal_binop_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::IntTy> {
+    let parent = db.parent_of(id)?;
+    let Resolved::Apply { head, args } = resolved_of(db, parent) else {
+        return None;
+    };
+    // The head must be an integer binary operator; the literal must be one of its (exactly two) operands.
+    let prim = crate::eval::meta_apply_of(db, head)?;
+    if !prim.is_binop() || args.len() != 2 {
+        return None;
+    }
+    let sibling = if args[0] == id {
+        args[1]
+    } else if args[1] == id {
+        args[0]
+    } else {
+        return None;
+    };
+    // The sibling's type fixes the shared width only when it is a CONCRETELY-fixed integer (a `UInt64`
+    // variable, an annotated operand) — the same "prefer a concrete width over a deferred literal" rule
+    // `operand_int_ty` applies at selection. A deferred/var sibling imposes no constraint.
+    match type_of(db, sibling) {
+        Ty::Int(it) if it.width_is_fixed() => Some(it),
+        _ => None,
+    }
+}
+
 /// The CDZ0302 fault if the value at `value` is an integer LITERAL that does not fit the NARROW integer
 /// type the type-expression `ty_expr` denotes, else `None`. The literal analogue of "Annotations
 /// Constrain" (numeric-model.md §A Bare Integer Literal Is Grounded By Its Annotation, Subject To A Range
@@ -4541,35 +4578,49 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        // "try wrapping the expression in `Some`": if the expected sum has a single-payload
-                        // variant whose payload IS the value's type, wrapping the value in that ctor makes
-                        // it type-check. Derived generically from the sum's declaration.
-                        let wrap = wrap_variant_for(db, &annot_ty, &expr_ty);
-                        let mut reject = match &wrap {
-                            Some(ctor) => Reject::coded(
-                                Code::TypeMismatch,
-                                format!(
-                                    "annotation type {} does not match value type {} — wrap the value in `{ctor}`",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name()
-                                ),
+                        // The annotation mismatch has a MECHANICAL REPAIR in two cases, each a wrap of the
+                        // value that makes it type-check in one shot (the annotation position mirrors the
+                        // argument position's coercion wraps):
+                        //  • the annotation is a SUM with a single-payload variant whose payload is the
+                        //    value's type — "wrap in `Some`" (`(: n Option)` for `n : Int64`), derived
+                        //    generically from the sum's declaration; and
+                        //  • both types are INTEGERS and the annotation is an aliased width — wrap in the
+                        //    annotation type's checked conversion `(<AnnotInt>.of value)` (`(: n Int64)` for
+                        //    `n : Int8`), the same `.of` coercion the arg-position mismatch offers.
+                        // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
+                        let wrap: Option<(String, String, String, String)> =
+                            if let Some(ctor) = wrap_variant_for(db, &annot_ty, &expr_ty) {
+                                Some((
+                                    format!("({ctor} "),
+                                    ")".to_string(),
+                                    format!("wrap in `({ctor} …)`"),
+                                    format!(" — wrap the value in `{ctor}`"),
+                                ))
+                            } else if let (Ty::Int(annot_int), Ty::Int(_)) = (&annot_ty, &expr_ty)
+                                && crate::ty::ALIASED_INT_WIDTHS.contains(&annot_int.ground_width())
+                            {
+                                let n = annot_ty.render_name();
+                                Some((
+                                    format!("({n}.of "),
+                                    ")".to_string(),
+                                    format!("convert to {n} with `{n}.of` (checked)"),
+                                    format!(" — convert with `({n}.of …)`"),
+                                ))
+                            } else {
+                                None
+                            };
+                        let mut reject = Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "annotation type {} does not match value type {}{}",
+                                annot_ty.render_name(),
+                                expr_ty.render_name(),
+                                wrap.as_ref().map(|w| w.3.as_str()).unwrap_or(""),
                             ),
-                            None => Reject::coded(
-                                Code::TypeMismatch,
-                                format!(
-                                    "annotation type {} does not match value type {}",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name()
-                                ),
-                            ),
-                        };
-                        if let Some(ctor) = wrap {
-                            reject = reject.with_fix(Fix::wrap_heuristic(
-                                expr,
-                                format!("({ctor} "),
-                                ")",
-                                format!("wrap in `({ctor} …)`"),
-                            ));
+                        );
+                        if let Some((prefix, suffix, verb, _)) = wrap {
+                            reject =
+                                reject.with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
                         }
                         out.push(reject);
                     }
@@ -4714,15 +4765,33 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 .and_then(|p| db.ast.as_form(p, ":"))
                 .and_then(|t| t.first().copied())
                 == Some(id);
+            // A literal that is an OPERAND of an integer binary op takes its sibling's CONCRETE type
+            // (numeric-model.md §a constraint on a literal takes precedence): `(& x 0xFFFF…FFFF)` with
+            // `x : UInt64` fixes the literal to UInt64, whose range holds 2^64-1 — so it is NOT malformed,
+            // even though the same value overflows the signed-64 DEFAULT. Only UInt64 exposes this gap (it
+            // has representable values above i64::MAX); UInt8/16/32 literals always fit i64, and the
+            // selection path already grounds the literal to the shared width. Fit against the CONTEXTUAL
+            // type when there is one, else the Int64 default.
+            let context = literal_binop_context_ty(db, id);
+            let (signed, width) = match context {
+                Some(it) => (it.ground_signed(), it.ground_width()),
+                None => (true, crate::ty::DEFAULT_INT_WIDTH),
+            };
             if !annotated
                 && let Ty::Int(it) = type_of(db, id)
                 && !it.width_is_fixed()
-                && !v.fits_width(true, crate::ty::DEFAULT_INT_WIDTH)
+                && !v.fits_width(signed, width)
             {
-                trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds the default Int64 (malformed, CDZ0201)");
+                // Name the type the value actually overflowed: the CONTEXTUAL type when one fixed it (a
+                // literal too big even for its `UInt64` operand), else the Int64 default (a bare literal
+                // with no width in sight). Both are CDZ0201 — a number with no annotation to blame.
+                let ty_name = context
+                    .map(|it| Ty::Int(it).render_name())
+                    .unwrap_or_else(|| "Int64".to_string());
+                trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds its width (malformed, CDZ0201)");
                 out.push(Reject::coded(
                     Code::Malformed,
-                    "integer literal is out of range for Int64",
+                    format!("integer literal is out of range for {ty_name}"),
                 ));
             }
         }

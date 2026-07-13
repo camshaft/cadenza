@@ -52,6 +52,8 @@ use crate::backend::wasm::encode::{section, sleb128, uleb128};
 /// A fixed, non-provenance-leaking producer string (design §4 — never the live toolchain banner).
 //= spec/capabilities/debug-information.md#debug-information-carries-no-provenance
 //# The compiler MUST NOT embed into debug information a producer or build-environment string that would otherwise vary between builds of the same source.
+//= spec/contracts/reproducible-derivation.md#provenance-is-stripped-or-normalized
+//# The compiler MUST remove or normalize any embedded producer string, build path, or timestamp that would otherwise vary between builds of the same source.
 const PRODUCER: &str = "cadenza-rcdzc";
 /// A fixed sentinel compilation directory — never the build directory (design §4). This is the debug
 /// section's face of the constitution's reproducibility floor: the compiler embeds no build-host path
@@ -60,6 +62,8 @@ const PRODUCER: &str = "cadenza-rcdzc";
 //# The compiler MUST NOT embed into debug information a wall-clock time, an absolute filesystem path, or a build-host identifier.
 //= constitution.md#ii-compilation-is-reproducible
 //# The compiler MUST NOT embed a wall-clock time, an absolute filesystem path, or a build-host identifier into its output.
+//= spec/contracts/reproducible-derivation.md#provenance-is-stripped-or-normalized
+//# The compiler MUST NOT embed into its output any value derived from the build host's environment that is not a function of the source and the pinned toolchain.
 const COMP_DIR: &str = "/";
 
 // ── DWARF constants (from the DWARF 4 spec; hand-transcribed — the values are stable and standardized,

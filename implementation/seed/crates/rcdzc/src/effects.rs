@@ -1239,49 +1239,54 @@ pub fn reduce_handle(
     // hoist requires every preceding sibling pure. Runs to a fixpoint (bounded). A shape it cannot lift
     // (a perform under a conditional the hoist could not raise to tail) is left as-is and declines below.
     let body = hoist_resumptive_conditional(db, body, &ctx);
-    // E5 IDENTITY-CONTINUATION slice (general one-shot, the trivial-continuation case). When the handle
-    // BODY is EXACTLY a perform `(E.op args…)` of a discharged op, that perform sits in the handle's TAIL
-    // position, so its CONTINUATION is the IDENTITY (there is no surrounding computation to return into).
-    // A NON-tail resume then needs no captured continuation: `(resume v s)` yields `v` in place (the
-    // identity applied to `v`), so the handle's value is the arm body with every `(resume v s)` rewritten
-    // to `v` — `(handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a
-    // MULTI-shot arm (`(+ (resume 1 s) (resume 2 s))`) is sound here: each `resume v` is just `v`, no
-    // continuation to duplicate. This is the sliver of E5 that needs no frame machinery; a perform NOT in
-    // tail position (`(+ 100 (Amb.flip))`) has a non-identity continuation and still declines (real E5).
-    if let Resolved::Apply { head, args } = resolved_of(db, body)
+    // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
+    // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
+    // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
+    // returns into that context, so `(resume v s)` yields `C[v]` — a copy of the body with `P` replaced by
+    // `v`. The handle's value is then the arm body with every `(resume v s)` rewritten to `C[v]`:
+    //   `(handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))`
+    //     → arm `(+ 1 (resume 10 0))`, `C = (+ 100 □)` → `(+ 1 (+ 100 10))` = 111.
+    // Because `C` is STRONGLY pure (no effect of any kind), a MULTI-shot arm may duplicate it safely:
+    //   `(+ (resume 1 s) (resume 2 s))` over `(+ 100 (Amb.flip))` → `(+ (+ 100 1) (+ 100 2))` = 203.
+    // The IDENTITY slice (`body` IS the bare perform, `C = □`, so `C[v] = v`) is the special case. A
+    // perform under a CONDITIONAL (`if`/`match`/`and`/`or` — a non-uniform continuation), a SECOND
+    // perform, a `resume`, a nested `handle`, or a non-primitive call disqualifies (`pure_hole` → this
+    // block does not fire and threading declines below); those need the full captured-continuation
+    // machinery (defunctionalized frames — a later increment).
+    if let PureHole::Hole(perform) = pure_hole(db, body, &ctx)
+        && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
         && !ctx.abortive.contains(&(decl, idx))
         && tail_resume(db, arm.body).is_none()
     {
-        // Only the IDENTITY-continuation case: the args must be pure (no nested perform whose own
-        // continuation would be non-trivial) and the resume's NEXT-STATE is irrelevant (nothing runs
-        // after — the continuation is empty). Substitute the arm params ↦ (pure-copied) args and the
-        // state binder ↦ the init seed, then rewrite every tail/non-tail `(resume v s)` → `v`.
-        if args.iter().all(|&a| !subtree_performs(db, a, &ctx)) {
-            let mut subst: HashMap<StructId, StructId> = HashMap::default();
-            if arm.params.len() == args.len() {
-                for (&p, &a) in arm.params.iter().zip(args.iter()) {
-                    if !is_unit_param(db, p) {
-                        subst.insert(p, copy_pure(db, a));
-                    }
-                }
-            } else if arm.params.len() == 1 && args.is_empty() {
-                let p = arm.params[0];
+        // Substitute the arm's params ↦ (pure-copied) perform args and its state binder ↦ the init seed
+        // (nothing runs before the perform on a pure spine, so the state seen at the perform is the seed),
+        // then rewrite every `(resume v s)` → `C[v]`. The perform's args are pure (`pure_hole` admits only
+        // strongly-pure arguments), so evaluating them has no effect and they need no state threading.
+        let mut subst: HashMap<StructId, StructId> = HashMap::default();
+        if arm.params.len() == args.len() {
+            for (&p, &a) in arm.params.iter().zip(args.iter()) {
                 if !is_unit_param(db, p) {
-                    let unit = db.push_list(vec![]);
-                    subst.insert(p, unit);
+                    subst.insert(p, copy_pure(db, a));
                 }
-            } else {
-                return None;
             }
-            subst.insert(arm.state, init);
-            let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
-            // Rewrite every `(resume v s)` → `v` (identity continuation). The arm body's free names (an
-            // enclosing param) keep their pinned resolution through `beta_reduce`/`copy_pure`, so no
-            // re-anchor is needed (a free `x` in `(+ x (resume 10 s))` resolves against the handle scope).
-            return Some(rewrite_resume_to_value(db, substituted));
+        } else if arm.params.len() == 1 && args.is_empty() {
+            let p = arm.params[0];
+            if !is_unit_param(db, p) {
+                let unit = db.push_list(vec![]);
+                subst.insert(p, unit);
+            }
+        } else {
+            return None;
         }
+        subst.insert(arm.state, init);
+        let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+        // Rewrite every `(resume v s)` → `C[v]` (the pure delimited continuation applied to the resume
+        // value). The arm body's free names keep their pinned resolution through `beta_reduce`; `C`'s free
+        // names resolve against the handle scope (the structural splice copy re-parents them). The
+        // next-state is dead — nothing after the perform reads state on a pure spine.
+        return Some(rewrite_resume_to_context(db, substituted, body, perform));
     }
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
@@ -2785,23 +2790,224 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
     }
 }
 
-/// Rewrite every `(resume value next-state)` in `node` to a fresh copy of its VALUE — the E5 identity-
-/// continuation reduction. When the perform sits in the handle body's tail position the continuation is
-/// the identity, so `resume v s` is just `v` (there is nothing to return into, and the next-state is dead
-/// — nothing runs after). A resume anywhere in the arm body (tail or not, once or many times) reduces this
-/// way. Non-resume nodes are copied structurally so the result is self-contained. The value copy detaches
-/// it from the dead `resume` node's scope (fresh parentage when spliced).
-fn rewrite_resume_to_value(db: &mut Db, node: StructId) -> StructId {
+/// Whether the application `head` is a PURE primitive operator — one whose `(meta apply)` channel names a
+/// `Prim` (arithmetic, comparison, a constructor, …). Such an operator is STRICT and effect-free: its
+/// operands evaluate exactly once, unconditionally, with no side effect. This is exactly the head-set the
+/// pure one-hole-context walk descends into. A USER function head is not a record with a `(meta apply)`
+/// prim (it resolves to a lambda), so it yields `None` and is treated as opaque/possibly-effectful. A
+/// PERFORM head's `(meta apply)` is `(intrinsic perform)`, which is NOT a `Prim` (`Prim::from_name`
+/// doesn't know "perform"), so it too yields `None` — so this predicate excludes EVERY perform, discharged
+/// or not, which is what strong purity needs (a non-discharged perform is still an effect to guard against).
+fn is_pure_operator_head(db: &mut Db, head: StructId) -> bool {
+    crate::eval::meta_apply_of(db, head).is_some()
+}
+
+/// The result of classifying a handle body as a PURE one-hole continuation context (`pure_hole`).
+enum PureHole {
+    /// The body reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free
+    /// positions, and everything ELSE in the body is strongly pure — so `C = body[P := □]` is a pure
+    /// one-hole context. Carries the perform occurrence `P` (the hole).
+    Hole(StructId),
+    /// No discharged perform on a pure spine — the body is fully pure (nothing for THIS handler to
+    /// discharge). Not a fold this block handles.
+    Pure,
+    /// Not a pure one-hole context: a SECOND discharged perform, a perform under a conditional
+    /// (`if`/`match`/`and`/`or`), a `resume`, a nested `handle`, or any other effect — needs the full
+    /// captured-continuation machinery, so this block declines and threading is attempted / declines.
+    Impure,
+}
+
+/// Classify the handle `body` as a PURE one-hole continuation context: does it reach EXACTLY ONE
+/// discharged perform `P` through strict, unconditional, effect-free positions, with everything else
+/// strongly pure? If so, `C = body[P := □]` is pure and `(resume v s)` folds to `C[v]` (see the E5
+/// pure-continuation block in `reduce_handle`). The walk is CONSERVATIVE — it admits only the shapes it
+/// can prove pure-and-uniform and returns `Impure` for anything else, so a mis-fold (duplicating or
+/// reordering an effect) is impossible; an over-decline just leaves the case to the (later) frame vertical.
+///
+/// STRICT UNCONDITIONAL positions (the continuation is uniform — the perform's result flows into exactly
+/// one deterministic downstream computation): an operator/primitive-call OPERAND, a strict one-operand
+/// form's operand (`not`/projection/member/annotation), a tuple/list element. NOT admitted (a non-uniform
+/// or effect-shielding continuation): `if`/`match`/`and`/`or` (a conditional — the continuation differs by
+/// branch / the perform may not run), a `let` (the binding could be duplicated by a multi-shot resume in a
+/// way this simple splice does not model), a nested `handle`, a user/recursive call (its body may perform).
+fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
+    // A discharged perform IS the hole. Its ARGS must be strongly pure (a nested perform in an arg would be
+    // a second effect whose own continuation is non-trivial) — checked by the caller-side spine below via
+    // `strongly_pure`. Here, at the perform node, verify the args are strongly pure and this is the hole.
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_some()
+    {
+        if args.iter().all(|&a| strongly_pure(db, a, ctx)) {
+            return PureHole::Hole(node);
+        }
+        return PureHole::Impure; // a perform whose arg is itself effectful — not a simple one-hole context
+    }
+    // A `resume`, a nested `handle`, an `if`/`match`/`and`/`or` with a perform inside, a `let`, or a
+    // user/recursive call are all NON-uniform or effect-shielding — decline (Impure) if they carry an
+    // effect, else they are pure and fall through to the strongly-pure check below.
+    match resolved_of(db, node) {
+        // A conditional / short-circuit connective / match: if a discharged perform is anywhere inside, the
+        // continuation is non-uniform (branch-dependent, or the perform may not run) → Impure. If none, the
+        // whole form is pure and admissible as opaque context (handled by the strongly-pure fall-through).
+        Resolved::If { .. }
+        | Resolved::And { .. }
+        | Resolved::Match { .. }
+        | Resolved::Let { .. }
+        | Resolved::Handle { .. }
+        | Resolved::Resume { .. } => {
+            if strongly_pure(db, node, ctx) {
+                PureHole::Pure
+            } else {
+                PureHole::Impure
+            }
+        }
+        // A STRICT form: descend into its operands in order, finding at most one hole. `not`/projection/
+        // member/annotation (one operand), a tuple/list (positional elements), and an ORDINARY application
+        // (a primitive operator over operands — NOT a user/recursive call, which `strongly_pure` rejects)
+        // are strict — every operand is evaluated exactly once, unconditionally, before the form. So a hole
+        // in one operand has a uniform continuation.
+        Resolved::Not { operand } => pure_hole(db, operand, ctx),
+        Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
+            pure_hole(db, operand, ctx)
+        }
+        Resolved::Annot { expr, .. } => pure_hole(db, expr, ctx),
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
+            pure_hole_seq(db, elems.iter().copied(), ctx)
+        }
+        Resolved::Apply { head, args } => {
+            // The head must be a PRIMITIVE operator (a strict n-ary op) — a user/recursive call could
+            // perform, so `strongly_pure` treats it as effectful; here mirror that: only a pure-operator
+            // head is a strict operator whose operands have uniform continuations. A perform head was
+            // handled above.
+            if !is_pure_operator_head(db, head) {
+                // Not a primitive operator: if it reaches an effect it is Impure, else opaque-pure.
+                return if strongly_pure(db, node, ctx) {
+                    PureHole::Pure
+                } else {
+                    PureHole::Impure
+                };
+            }
+            // The head itself is pure (an operator); find the single hole across the args, left to right.
+            pure_hole_seq(db, args.iter().copied(), ctx)
+        }
+        // Any other shape (a literal, a bare ref, a param, a record, a type value, …) has no discharged
+        // perform reachable on a pure spine here — classify by strong purity.
+        _ => {
+            if strongly_pure(db, node, ctx) {
+                PureHole::Pure
+            } else {
+                PureHole::Impure
+            }
+        }
+    }
+}
+
+/// Find at most ONE hole across a sequence of strict operands (evaluated left-to-right, each exactly
+/// once). Each operand is either strongly pure (no hole) or the single hole; two holes, or a hole
+/// alongside an impure operand, is `Impure`.
+fn pure_hole_seq(db: &mut Db, items: impl Iterator<Item = StructId>, ctx: &HandlerCtx) -> PureHole {
+    let mut hole: Option<StructId> = None;
+    for it in items {
+        match pure_hole(db, it, ctx) {
+            PureHole::Pure => {}
+            PureHole::Hole(p) => {
+                if hole.is_some() {
+                    return PureHole::Impure; // a SECOND discharged perform — not a one-hole context
+                }
+                hole = Some(p);
+            }
+            PureHole::Impure => return PureHole::Impure,
+        }
+    }
+    match hole {
+        Some(p) => PureHole::Hole(p),
+        None => PureHole::Pure,
+    }
+}
+
+/// Whether the subtree at `node` is STRONGLY pure — free of ANY effect (not just this handler's discharged
+/// ops): no discharged perform (`subtree_performs`) AND no `resume`, nested `handle`, or NON-primitive
+/// call anywhere (a user/recursive call's body could perform an effect this handler does NOT discharge,
+/// and a multi-shot resume would duplicate it). This is the guard the pure one-hole context needs: `C` is
+/// spliced possibly-many times, so it must contain no observable effect of any kind. Conservative — a
+/// call to a provably-pure function is rejected too (safe: an over-decline, never a mis-fold).
+fn strongly_pure(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    // A discharged perform, a `resume`, or a call reaching a discharged effect — not pure. (Reuses the
+    // discharged-op detector, which also follows calls into discharged effects.)
+    if subtree_performs(db, node, ctx) {
+        return false;
+    }
+    // A nested `handle` or a `resume` — control-flow effects. (`subtree_performs` catches a bare `resume`,
+    // but be explicit so intent is clear and a future `subtree_performs` change cannot silently admit one.)
+    if matches!(
+        resolved_of(db, node),
+        Resolved::Handle { .. } | Resolved::Resume { .. }
+    ) {
+        return false;
+    }
+    // An APPLICATION whose head is NOT a pure primitive operator is a user/recursive/host call whose body
+    // may perform an effect this handler does not discharge — reject it (a multi-shot splice would
+    // duplicate that effect). A primitive operator (arith/comparison/ctor/…) is pure, so descend into its
+    // operands.
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && !is_pure_operator_head(db, head)
+    {
+        return false;
+    }
+    // Descend structurally — every child must be strongly pure.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children.iter().all(|&c| strongly_pure(db, c, ctx)),
+        Struct::Atom(_) => true,
+    }
+}
+
+/// Rewrite every `(resume value next-state)` in `node` to `C[value]` — the E5 pure one-hole-continuation
+/// reduction. `C = handle_body[perform := □]` is the pure delimited continuation the resume returns into,
+/// realized as a copy of `handle_body` with the sole discharged `perform` node replaced by the resume's
+/// VALUE. When `C` is the identity (`handle_body` IS the bare `perform`, so `C = □`), this is `value` in
+/// place — the identity slice. `C` is STRONGLY pure (`pure_hole` admits only effect-free one-hole
+/// contexts), so a MULTI-shot arm may splice a fresh copy of it per resume with no effect duplication.
+/// Non-resume nodes are copied structurally so the result is self-contained. Each spliced copy detaches
+/// from the dead `resume` node's scope (fresh parentage), and `C`'s free names re-parent under the splice.
+fn rewrite_resume_to_context(
+    db: &mut Db,
+    node: StructId,
+    handle_body: StructId,
+    perform: StructId,
+) -> StructId {
     if let Resolved::Resume { value, .. } = resolved_of(db, node) {
-        return copy_pure(db, value);
+        // Splice a fresh copy of `C` with the hole filled by (a fresh copy of) the resume value: copy the
+        // handle body, replacing the sole `perform` occurrence with the resume value.
+        return splice_context(db, handle_body, perform, value);
     }
     match db.ast.get(node).clone() {
         Struct::List(children) => {
             let rewritten: Vec<StructId> = children
                 .iter()
-                .map(|&c| rewrite_resume_to_value(db, c))
+                .map(|&c| rewrite_resume_to_context(db, c, handle_body, perform))
                 .collect();
             db.push_list(rewritten)
+        }
+        Struct::Atom(_) => copy_pure(db, node),
+    }
+}
+
+/// Copy the one-hole context `handle_body` (the pure delimited continuation), replacing the sole hole
+/// occurrence `perform` with (a fresh copy of) `filler` — i.e. build `C[filler]`. The hole `perform` is a
+/// UNIQUE occurrence in the arena (`pure_hole` verified exactly one discharged perform reaches on a pure
+/// spine), so a by-identity match locates it. Everything else is copied structurally so the result is
+/// self-contained and re-parents its free names against the splice site.
+fn splice_context(db: &mut Db, node: StructId, perform: StructId, filler: StructId) -> StructId {
+    if node == perform {
+        return copy_pure(db, filler);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let spliced: Vec<StructId> = children
+                .iter()
+                .map(|&c| splice_context(db, c, perform, filler))
+                .collect();
+            db.push_list(spliced)
         }
         Struct::Atom(_) => copy_pure(db, node),
     }
