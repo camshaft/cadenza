@@ -1689,11 +1689,34 @@
            `sm` folds a `Tree Int64` — `(Branch (tuple (Leaf 3) (Branch (tuple (Leaf 4) (Leaf 5)))))`
            sums to 12. Pins that a bare self-reference in a generic sum is `(Tree a)`, not the
            args-less type constructor (which would not unify with the `(Tree Int64)` a `Branch` value
-           carries). The parameter is annotated because inferring a recursive-sum parameter's
-           instantiation from its match arms is a separate increment.")
+           carries). The parameter is annotated here for clarity; the unannotated companion below pins
+           that the instantiation is now inferred from the arms when an arm anchors the payload type.")
   (input  (do
             (type Tree (Leaf a) (Branch (Tuple Tree Tree)))
             (def (sm (: t (Tree Int64)))
+              (match t
+                ((Tree.Leaf n) n)
+                ((Tree.Branch (tuple l r)) (+ (sm l) (sm r)))))
+            (def (main)
+              (sm (Tree.Branch (tuple (Tree.Leaf 3)
+                                      (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
+            (export main)))
+  (output (: 12 Int64)))
+
+(case "an unannotated generic branching sum fold infers its parameter's instantiation from the arms"
+  (doc    "The UNANNOTATED companion: the same generic branching tree folded by `sm` with NO annotation on
+           `t`. The `Branch` arm `(+ (sm l) (sm r))` ANCHORS the fold result to Int64 (`+` yields Int64),
+           and the arms-agree constraint flows that to the `Leaf` arm's payload binder `n`, whose type is
+           the sum's generic parameter — so the parameter's instantiation `(Tree Int64)` is inferred rather
+           than annotated. The tuple-element projections `l`/`r` (each a `(Tree a)`) then resolve at that
+           instantiation, which was the blocker (`projecting a tuple element of type ?N`). `sm` of the
+           three-leaf tree sums to 12. Pins recursive-sum-parameter inference for a GENERIC branching sum
+           whose fold anchors the payload type — the annotation is needed only when NO arm anchors it (the
+           result is purely the polymorphic payload, e.g. a max/identity fold, which stays annotated).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Tree (Leaf a) (Branch (Tuple Tree Tree)))
+            (def (sm t)
               (match t
                 ((Tree.Leaf n) n)
                 ((Tree.Branch (tuple l r)) (+ (sm l) (sm r)))))

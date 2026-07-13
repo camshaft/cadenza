@@ -6310,6 +6310,15 @@ fn arith_identity(
         // constant — `(& x M)` returns `lc` (x) when `rc` (M) masks x's whole width; symmetric for `(& M x)`.
         Prim::BitAnd if is_full_mask_for(db, lhs, rc) => Some(lc.clone()),
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
+        // `x | M` / `M | x` → M when the constant `M` covers ALL of `x`'s value bits — the OR-SATURATION
+        // dual of the `&`-mask elision. `x | M` sets every bit of M plus x's bits; if M already has all the
+        // bits x could set (`is_full_mask_for`: x nonneg in `[0, 2^B)`, M's low B bits all 1), the OR adds
+        // nothing NEW and the result is exactly M (`(| x 255)` with `x ∈ [0,255]` → 255). DISCARDS x (the
+        // result is the constant M, not x), so — like `& 0`/`* 0` — only when x is TRAP-FREE (a trapping x
+        // must still trap). Returns the CONSTANT operand's core (M). Same `is_full_mask_for` predicate as
+        // the `&` fold, so it too fires on an emit-refined range via the emit-time sibling.
+        Prim::BitOr if is_full_mask_for(db, lhs, rc) && is_trap_free(db, lhs) => Some(rc.clone()),
+        Prim::BitOr if is_full_mask_for(db, rhs, lc) && is_trap_free(db, rhs) => Some(lc.clone()),
         // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
         // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
         // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
@@ -6576,6 +6585,31 @@ pub(crate) fn redundant_and_mask_value(
     let lc = core_of(db, lhs);
     if is_full_mask_for(db, rhs, &lc) {
         return Some(rhs); // `(& M v)` → v
+    }
+    None
+}
+
+/// For a `BitOr` at emit time, whether the constant `M` on ONE side covers the WHOLE provable range of the
+/// value `v` on the other side — so `v | M == M` (OR-SATURATION) and the `|` is redundant. Returns the
+/// CONSTANT operand (`Some(M_occ)`) to emit alone, or `None`. The emit-time sibling of the `BitOr`
+/// OR-saturation lower fold, firing on a flow-refined `v` the lower fold cannot see (`(if (and (>= x 0)
+/// (< x 256)) (| x 255) …)` → `x | 255 == 255` under `x ∈ [0,255]`). DISCARDS `v` (the result is the
+/// constant M), so the caller must first confirm `v` is TRAP-FREE — a trapping `v` must still trap. Both
+/// operand orders tried; returns whichever operand is the covering constant.
+pub(crate) fn redundant_or_mask_const(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<StructId> {
+    // `(| v M)` — v on the left, constant M on the right covering v's range → M (rhs).
+    let rc = core_of(db, rhs);
+    if is_full_mask_for(db, lhs, &rc) && is_trap_free(db, lhs) {
+        return Some(rhs);
+    }
+    // `(| M v)` — constant M on the left → M (lhs).
+    let lc = core_of(db, lhs);
+    if is_full_mask_for(db, rhs, &lc) && is_trap_free(db, rhs) {
+        return Some(lhs);
     }
     None
 }

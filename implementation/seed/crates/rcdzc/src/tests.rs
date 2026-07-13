@@ -5523,6 +5523,114 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_saturating_or_mask_folds_to_the_constant() {
+        // OR-SATURATION: `x | M` where the constant `M` covers x's whole range is just `M` — every bit x
+        // could set is already set in M, so the OR adds nothing (`x | 255` with `x ∈ [0,255]` → 255). The
+        // dual of the `& M → x` mask elision. Fires both at LOWER time (an unsigned-typed x: `UInt8 | 255`)
+        // and at EMIT time on a flow-REFINED signed x. DISCARDS x, so a trapping x keeps its trap. Pins the
+        // fold at the Lir level (no `or`, a `const M`) AND value/trap parity; a PARTIAL mask stays.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or)).count();
+        // EMIT-time refined: under `x ∈ [0,255]`, `(| x 255)` folds to `255` — no `i64.or`.
+        let refined = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 255) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            ors(&refined),
+            0,
+            "the saturating `| 255` under x∈[0,255] folds to 255, got: {refined:?}"
+        );
+        // LOWER-time unsigned: `UInt8 | 255` → 255 (the type bounds x to [0,255]).
+        let unsigned = select(
+            "(module m (def (f (: x UInt8)) (| x 255)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            ors(&unsigned),
+            0,
+            "UInt8 `| 255` saturates to 255 at lower time, got: {unsigned:?}"
+        );
+        // A PARTIAL mask (`| 15` under x∈[0,255]) is NOT a saturation — bits 4-7 of x survive, so it stays.
+        let partial = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 15) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            ors(&partial),
+            1,
+            "a partial `| 15` under x∈[0,255] is kept, got: {partial:?}"
+        );
+
+        // VALUE PARITY: saturates to the constant in range; else branch out of range; partial still ORs.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
+                &[Val::S64(200)]
+            ),
+            255
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
+                &[Val::S64(0)]
+            ),
+            255
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
+                &[Val::S64(1000)]
+            ),
+            1000
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 15) x)",
+                &[Val::S64(200)]
+            ),
+            207
+        ); // 200|15
+        // TRAP PRESERVATION: the `|` fold DISCARDS x, so a trapping `(& (/ 100 z) 7)` still ÷0-traps.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(| (: (& (: (/ 100 z) Int64) 7) Int64) 255)",
+                &[Val::S64(0)]
+            ),
+            "the saturating-or fold must not drop a trapping operand"
+        );
+    }
+
+    #[test]
     fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
         // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
         // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its
@@ -15375,6 +15483,36 @@ mod diagnostics {
                 redundant_arms_of(src)
             );
         }
+    }
+
+    #[test]
+    fn a_redundant_arm_warning_carries_a_delete_fix_for_the_whole_arm() {
+        // The rustc-gold repair for an unreachable arm: DELETE it. The warning now carries a `delete` fix
+        // targeting the ARM node (the `(pattern body)` list, the pattern's PARENT) — not the pattern alone
+        // — so applying it removes pattern AND body together. Heuristic: a redundant arm is often a pattern
+        // bug (the author meant a different, reachable pattern), so an agent confirms rather than applies blind.
+        let src = "(module m (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main))";
+        let ws = redundant_arms_of(src);
+        assert_eq!(ws.len(), 1);
+        let fix = ws[0]
+            .fix
+            .as_ref()
+            .expect("a redundant-arm warning carries a delete fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(
+            !fix.verified,
+            "a redundant arm is often a pattern bug — confirm, don't apply blind"
+        );
+        // The fix targets the ARM (`(pattern body)`), which is the PARENT of the warning's pattern node.
+        let db = Db::load(parse(src));
+        let pat = StructId(ws[0].node.expect("the warning carries the dead pattern"));
+        let arm = db
+            .parent_of(pat)
+            .expect("the pattern has an enclosing arm node");
+        assert_eq!(
+            fix.node, arm.0,
+            "the delete targets the whole arm, not just the pattern"
+        );
     }
 
     #[test]

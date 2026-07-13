@@ -1376,6 +1376,54 @@ fn a_misspelled_export_carries_an_applicable_replace_fix_end_to_end() {
 }
 
 #[test]
+fn a_redundant_match_arm_carries_a_delete_fix_that_fix_all_applies() {
+    // A WARNING that carries a machine-applicable fix, surfaced end-to-end: an unreachable match arm
+    // (CDZ0213) now carries a `delete` fix. `--json` emits the deletion as an `edits` array; `fix --all`
+    // applies it (the FIRST warning-severity fix `--all` verifies — the verify machinery clears the
+    // warning, not just an error) and the repaired file rechecks clean. rustc offers exactly this for an
+    // unreachable pattern.
+    let dir = scratch_dir("redundant_arm");
+    let f = dir.join("prog.sexp");
+    let original = "(module m (def (f (: n Int64)) (match n (0 10) (0 20) (_ 30))) (export f))\n";
+    std::fs::write(&f, original).unwrap();
+    // The JSON channel carries the delete as an edits array (removing the shadowed `(0 20)` arm).
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(ok, "a redundant arm is a WARNING — check still exits 0");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0213\""))
+        .expect("the redundant-arm warning is emitted as JSON");
+    assert!(
+        line.contains("\"kind\":\"delete\"") && line.contains("\"edits\":[{"),
+        "CDZ0213 carries a structural delete patch: {line}"
+    );
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("(0 10)") && patched.contains("(_ 30)") && !patched.contains("(0 20)"),
+        "applying the patch removes the shadowed arm, keeps the rest: {patched}"
+    );
+    // `fix --all` applies the warning fix in place (the verify machinery now clears warnings, not only
+    // errors) — the repaired file rechecks clean.
+    let (ok2, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok2, "fix succeeds: {stderr}");
+    assert!(
+        stderr.contains("applied 1 fix"),
+        "reports the applied fix: {stderr}"
+    );
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(0 10)") && repaired.contains("(_ 30)") && !repaired.contains("(0 20)"),
+        "the file was repaired: {repaired}"
+    );
+    let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok3 && out3.trim().is_empty(),
+        "the repaired file is clean: {out3}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_json_reports_each_applied_fix() {
     // `cdz fix --json` tells an agent WHICH faults were repaired — a JSON array of `{code, kind, message}`
     // — not just the human "applied N" count. Two independent faults (a did-you-mean + an out-of-range
