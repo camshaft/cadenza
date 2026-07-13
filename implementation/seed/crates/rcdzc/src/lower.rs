@@ -6811,8 +6811,37 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         Core::ListLen { operand } | Core::BytesLen { operand } => is_trap_free(db, operand),
         Core::MapSize { map } => is_trap_free(db, map),
         Core::SetLen { set } => is_trap_free(db, set),
-        // Everything else — checked arithmetic (+/-/*/shifts), div/rem, calls, control flow, heap
-        // constructs, poison — is conservatively treated as possibly-trapping.
+        // A RIGHT SHIFT by a CONSTANT in-range count (`0 <= k < width`) never traps: `>>` cannot overflow
+        // (its magnitude only shrinks), and a valid constant count trips no count-guard. So it is trap-free
+        // when its value operand is. (A `<<` is EXCLUDED — it is exact `·2^k` and can overflow the type, so
+        // it is genuinely trapping even with a valid count. A RUNTIME count is also excluded — an
+        // out-of-range count traps.) This lets a `(>> x k)` feed a discarding fold: `(< (>>ᵤ x 60) 20)` on
+        // a UInt64 (range `[0,15]`) folds to `true` without keeping a bogus "shift might trap" compare.
+        Core::Arith {
+            op: Prim::Shr,
+            lhs,
+            rhs,
+        } if matches!(core_of(db, rhs), Core::ConstInt(k)
+                if k.to_i64().is_some_and(|k| k >= 0 && (k as u32) < shift_width(db, lhs))) =>
+        {
+            is_trap_free(db, lhs)
+        }
+        // A `/` or `%` by a CONSTANT divisor `C ∉ {0, -1}` never traps: `C != 0` rules out ÷0, and `C != -1`
+        // rules out the sole signed-division overflow `MIN / -1`. So it is trap-free when its dividend is.
+        // (`C == 0` is a constant-trap poison in `lower` before here; `C == -1` keeps the guard. A RUNTIME
+        // divisor is excluded — it could be 0 or -1.) Lets `(< (% (& x 255) 10) 10)` fold to `true`.
+        Core::Arith {
+            op: Prim::Div | Prim::Rem,
+            lhs,
+            rhs,
+        } if matches!(core_of(db, rhs), Core::ConstInt(c)
+                if matches!(c.to_i64(), Some(v) if v != 0 && v != -1)) =>
+        {
+            is_trap_free(db, lhs)
+        }
+        // Everything else — checked arithmetic (+/-/*), a LEFT shift, a runtime-count/-divisor shift or
+        // div/rem, calls, control flow, heap constructs, poison — is conservatively treated as possibly-
+        // trapping.
         _ => false,
     }
 }

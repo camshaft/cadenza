@@ -5296,6 +5296,65 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_constant_count_shift_and_constant_divisor_rem_are_trap_free_for_a_discarding_fold() {
+        // `is_trap_free` now accepts a RIGHT shift by a CONSTANT in-range count (`>>` cannot overflow, a
+        // valid const count trips no guard) and a `/`/`%` by a CONSTANT divisor ∉ {0,-1} (no ÷0, no MIN/-1
+        // overflow). So a range comparison whose operand is such an op — a TAUTOLOGY — folds to a constant
+        // instead of keeping a bogus "might trap" compare: `(< (>>ᵤ x 60) 20)` on a UInt64 (∈ [0,15]) → true,
+        // `(< (% (& x 255) 10) 10)` (∈ [0,9]) → true. A LEFT shift, a RUNTIME count, or a RUNTIME divisor
+        // stays trapping, so its comparison is NOT folded and any real trap survives.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtU | Lir::I64LtS | Lir::I32LtU | Lir::I32LtS))
+                .count()
+        };
+        // TAUTOLOGIES fold — no comparison remains.
+        assert_eq!(cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 20) Bool)")), 0, "shr [0,15] < 20 → folded");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (< (% (: (& x 255) Int64) 10) 10) Bool)")), 0, "rem [0,9] < 10 → folded");
+        // NON-tautology (const inside the range) KEEPS its compare.
+        assert_eq!(cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 8) Bool)")), 1, "shr [0,15] < 8 → runtime compare");
+
+        // VALUE PARITY: the folded tautologies are true; a non-tautology computes correctly.
+        assert_eq!(run::<i64>("(: x UInt64)", "(if (< (>> x 60) 20) 111 222)", &[Val::U64(12345)]), 111);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (< (% (: (& x 255) Int64) 10) 10) 111 222)", &[Val::S64(12345)]), 111);
+        assert_eq!(run::<i64>("(: x UInt64)", "(if (< (>> x 60) 8) 111 222)", &[Val::U64(12345)]), 111); // 12345>>60=0 < 8
+
+        // TRAP SAFETY: a LEFT shift is NOT trap-free (it can overflow), so a `(>= (<< x 2) MIN)` tautology
+        // is NOT folded and a genuine overflow still traps; a RUNTIME-divisor `%` likewise traps on ÷0.
+        assert!(traps("(: x Int64)", "(>= (<< x 2) -9223372036854775808)", &[Val::S64(1i64 << 62)]),
+            "a left-shift overflow must still trap (<< is not trap-free)");
+        assert!(traps("(: x Int64) (: d Int64)", "(< (% (: (& x 255) Int64) d) 300)", &[Val::S64(12345), Val::S64(0)]),
+            "a runtime-divisor rem must still trap on ÷0 (not trap-free)");
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound
