@@ -26,6 +26,26 @@ use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved};
 use tracing::trace;
 
+/// A LAMBDA-LIFTED closure — a `(fn (param) body)` that survived lowering as a runtime value and was
+/// hoisted to a standalone wasm function. Its position in `db.lifted` is its funcref-TABLE slot. The
+/// backend selects it like a def body: `param` occupies wasm local slot 0, `body` is the returned
+/// expression. Only NO-CAPTURE (combinator) lambdas lift in this increment — `param` is the single
+/// parameter's binder occurrence (single-arity per `core-semantics.md`). The param + result machine
+/// types come from the lambda's SOLVED function type at its use site (captured in `param_ty`/`ret_ty`).
+/// `DESIGN-runtime-closures-rcdzc.md` §3.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LiftedLambda {
+    /// The lambda's `body` occurrence — the identity that dedups a lambda lifted more than once, and
+    /// what the backend selects as the function body.
+    pub body: StructId,
+    /// The single parameter's binder occurrence (wasm local slot 0).
+    pub param: StructId,
+    /// The parameter's solved machine type (from the lambda's function type at its use site).
+    pub param_ty: crate::ty::Ty,
+    /// The result's solved machine type.
+    pub ret_ty: crate::ty::Ty,
+}
+
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
 /// resolved form; children stay ids, lowered on their own demand.
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
@@ -434,6 +454,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 let rewritten = db.push_list(vec![if_head, cond, then_app, else_app]);
                 return core_of(db, rewritten);
             }
+            // A RUNTIME CLOSURE APPLICATION: the head is a runtime FUNCTION VALUE that does NOT reduce to
+            // a compile-time lambda and is NOT a known constructor/operator/type-builder — a
+            // function-typed PARAMETER `g` applied inside a body (`(g n)`), or a runtime-held closure. It
+            // cannot β-reduce (its value is unknown at compile time), so it applies via `call_indirect`:
+            // lower to `Core::CallClosure`. The head must be a `Resolved::Param` (the only runtime
+            // function-value source in this increment); a sum-variant constructor (`Ok`, whose type is
+            // also an arrow), an operator prim, a type builder, and a named def all have their own paths
+            // (constructors build, prims fold, defs β-reduce/inline) and must NOT be diverted here — so
+            // this is gated on the head being a bare parameter, not merely on its type being `Ty::Fn`.
+            // Single-arity per `core-semantics.md`. Checked before the lambda-head path.
+            if head_is_param(db, head)
+                && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
+            {
+                if args.len() != 1 {
+                    return Core::Poison(Reject::decline(
+                        "a runtime closure applies to one argument at a time (curried)",
+                    ));
+                }
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: runtime closure application → Core::CallClosure");
+                return Core::CallClosure {
+                    closure: head,
+                    arg: args[0],
+                };
+            }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
             // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed
@@ -558,46 +602,84 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // propagates; otherwise emit the runtime op (no constant fold — a persistent push/concat
                 // builds a new heap value, not worth folding a constant spine here).
                 Some(Prim::ListPush) if args.len() == 2 => {
-                    if let Core::Poison(r) = core_of(db, args[0]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[1]) {
-                        Core::Poison(r)
-                    } else {
-                        Core::ListPush {
+                    match (core_of(db, args[0]), core_of(db, args[1])) {
+                        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        // FOLD a compile-time-visible list literal + an element into ONE `Core::ListNew`
+                        // with the element APPENDED — a constant list (bakes at escape / folds through
+                        // `List.at`/`len`), exactly as a written `(list …)`. The pushed element's own
+                        // occurrence (`args[1]`) carries over regardless of whether IT is constant.
+                        (Core::ListNew { elems: mut a }, _) => {
+                            a.push(args[1]);
+                            trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.push folds onto a constant list");
+                            Core::ListNew { elems: a }
+                        }
+                        // A runtime list — the persistent `vec-push` on the heap.
+                        _ => Core::ListPush {
                             list: args[0],
                             elem: args[1],
-                        }
+                        },
                     }
                 }
                 Some(Prim::ListConcat) if args.len() == 2 => {
-                    if let Core::Poison(r) = core_of(db, args[0]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[1]) {
-                        Core::Poison(r)
-                    } else {
-                        Core::ListConcat {
+                    match (core_of(db, args[0]), core_of(db, args[1])) {
+                        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        // FOLD two compile-time-visible list literals into ONE merged `Core::ListNew`
+                        // (the elements of the left followed by those of the right) — a constant list
+                        // that bakes at escape / folds through `List.at`/`len`, exactly as a written
+                        // `(list …)` does. `List Int64` concat `List Int64` → `List Int64`; the element
+                        // occurrences carry over unchanged (they keep their own types).
+                        (Core::ListNew { elems: mut a }, Core::ListNew { elems: b }) => {
+                            a.extend(b);
+                            trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.concat folds two constant lists");
+                            Core::ListNew { elems: a }
+                        }
+                        // A runtime list operand — the persistent `vec-concat` on the heap.
+                        _ => Core::ListConcat {
                             lhs: args[0],
                             rhs: args[1],
-                        }
+                        },
                     }
                 }
                 // `List.update` — replace the element at an index (runtime `vec-update`). Three args:
-                // the list, the Int64 index, the replacement element. Any poison operand propagates;
-                // otherwise emit the runtime op (no constant fold — a persistent update builds a new
-                // heap value, like push/concat).
+                // the list, the Int64 index, the replacement element. Any poison operand propagates.
                 Some(Prim::ListUpdate) if args.len() == 3 => {
-                    if let Core::Poison(r) = core_of(db, args[0]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[1]) {
-                        Core::Poison(r)
-                    } else if let Core::Poison(r) = core_of(db, args[2]) {
-                        Core::Poison(r)
-                    } else {
-                        Core::ListUpdate {
+                    match (
+                        core_of(db, args[0]),
+                        core_of(db, args[1]),
+                        core_of(db, args[2]),
+                    ) {
+                        (Core::Poison(r), _, _)
+                        | (_, Core::Poison(r), _)
+                        | (_, _, Core::Poison(r)) => Core::Poison(r),
+                        // FOLD a constant list literal + a constant index: an IN-RANGE index (`0 <= i <
+                        // len`) replaces that element (a new `Core::ListNew` with the slot swapped for the
+                        // replacement's occurrence — a constant list that escapes/folds). An OUT-OF-RANGE
+                        // index (negative or `>= len`) is a PROVABLE TRAP — the runtime `vec-update` traps
+                        // OOB, so the compiler proves it and FAILS the build (CDZ0304), never ships a
+                        // trapping component (numeric-model.md §A Constant Operation With No Value Is
+                        // Rejected At Compile Time). The replacement element's own occurrence carries over.
+                        (Core::ListNew { elems: mut a }, Core::ConstInt(i), _) => {
+                            match i.to_i64() {
+                                Some(n) if n >= 0 && (n as usize) < a.len() => {
+                                    a[n as usize] = args[2];
+                                    trace!(target: "rcdzc::fold", node = id.0, index = n, "List.update folds (in-range constant index)");
+                                    Core::ListNew { elems: a }
+                                }
+                                _ => {
+                                    trace!(target: "rcdzc::fold", node = id.0, "List.update out-of-range constant index → CDZ0304");
+                                    Core::Poison(Reject::coded(
+                                        Code::ConstTrap,
+                                        "List.update index is out of bounds (a constant out-of-range update traps)",
+                                    ))
+                                }
+                            }
+                        }
+                        // A runtime list or index — the persistent `vec-update` on the heap.
+                        _ => Core::ListUpdate {
                             list: args[0],
                             index: args[1],
                             elem: args[2],
-                        }
+                        },
                     }
                 }
                 // `List.at` — the FALLIBLE indexed read `(List a) → Int64 → (Option a)`. FOLD when the
@@ -766,11 +848,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // only reaches lowering when its function body is emitted STANDALONE — an exported function; at
         // a constant call site the param is substituted by the fold and never lowered as a param.)
         Resolved::Param { binder } => Core::Param { binder },
-        // A type value or a compile-time lambda is compile-time-only — no runtime core form (the
-        // erasure fence forbids one reaching runtime), so lowering it as a runtime value declines.
-        Resolved::TypeVal(_) | Resolved::Lambda { .. } => Core::Poison(Reject::decline(
-            "a type value or compile-time lambda has no runtime form",
-        )),
+        // A TYPE VALUE is compile-time-only — no runtime core form (the erasure fence forbids one
+        // reaching runtime), so lowering it as a runtime value declines.
+        Resolved::TypeVal(_) => Core::Poison(Reject::decline("a type value has no runtime form")),
+        // A LAMBDA that survives to lowering as a RUNTIME value (it could not be β-reduced away — it is
+        // passed to a recursive callee, or stored in a runtime cell). LIFT it to a standalone function
+        // and produce a `Core::Closure` naming its table slot. Only a NO-CAPTURE (combinator) lambda
+        // lifts in this increment; a lambda with free variables declines (captures are a later step).
+        Resolved::Lambda { params, body } => lower_lambda_value(db, id, &params, body),
         // A `handle` is REDUCED AWAY (E1c): resolve each enclosed perform to its concrete arm and rewrite
         // the tail-resumptive case to plain code — the perform becomes the arm's resume value, the
         // next-state threads forward (`DESIGN-effects-rcdzc.md` §4.1). `reduce_handle` produces a
@@ -1938,6 +2023,119 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
         crate::core::Probe::Bool(p) => *p == b,
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_) => false,
+    }
+}
+
+/// Whether the application head at `id` resolves (through refs) to a FUNCTION PARAMETER — the one
+/// runtime function-value source this increment applies via `call_indirect`. A body reference to a
+/// parameter `g` resolves to `Ref { value: <param occ> }`, and the param occurrence itself to
+/// `Resolved::Param`, so follow the ref chain to its end. A named def / constructor / prim / lambda
+/// resolves to something else and is NOT diverted to the closure-application path.
+fn head_is_param(db: &mut Db, id: StructId) -> bool {
+    match resolved_of(db, id) {
+        Resolved::Param { .. } => true,
+        Resolved::Ref { value } => head_is_param(db, value),
+        _ => false,
+    }
+}
+
+/// Lower a `(fn (param…) body)` that survives as a RUNTIME value — LAMBDA-LIFT it to a standalone
+/// function and produce a `Core::Closure` naming its funcref-table slot. Only a SINGLE-parameter,
+/// NO-CAPTURE (combinator) lambda lifts in this increment: a multi-param lambda (the curried case
+/// β-reduces via partial application before reaching here, so a bare multi-param survivor is rare) and
+/// a lambda with FREE VARIABLES (which would need the captures stored on a heap cell — a later step)
+/// both DECLINE. The lambda's parameter + result machine types come from its SOLVED function type at
+/// this occurrence (threaded by unification from the use site's expected `(-> A B)`).
+fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: StructId) -> Core {
+    // Single-arity only (the curried surface reduces multi-param application via partial application
+    // upstream; a bare multi-param lambda value has no single-arity table entry yet).
+    if params.len() != 1 {
+        return Core::Poison(Reject::decline(
+            "a multi-parameter lambda has no runtime form yet (only a single-arity closure lifts)",
+        ));
+    }
+    let param = crate::eval::param_name_occ(db, params[0]);
+    // NO-CAPTURE only: the body must reference no binding OUTSIDE the lambda (other than its own param
+    // and top-level defs / the prelude). A captured free variable needs a heap closure cell — a later
+    // increment — so decline it cleanly here rather than silently dropping the capture.
+    if lambda_captures(db, body, param, id) {
+        return Core::Poison(Reject::decline(
+            "a closure that captures a free variable is not yet built (only a no-capture closure lifts)",
+        ));
+    }
+    // The lambda's param + result machine types. A bare `(fn (x) …)` types with FRESH variables at its
+    // own occurrence (inference does not thread the use-site's expected `(-> A B)` back onto the arg's
+    // memoized type), so read the types from the BODY instead: the result is `type_of(body)`, and the
+    // param's type is what its uses in the body ground it to (`type_of` of the param occurrence). For
+    // the target `(fn (x) (* x 2))`, `2`'s Int64 grounds `*` → `x : Int64` and the body : Int64. A
+    // param the body does not constrain to a machine type declines below (no invented width).
+    let ret_ty = crate::infer::type_of(db, body);
+    let param_ty = crate::infer::type_of(db, param);
+    if crate::backend::wasm::lir::valtype_of(&param_ty).is_none()
+        || crate::backend::wasm::lir::valtype_of(&ret_ty).is_none()
+    {
+        return Core::Poison(Reject::decline(
+            "a closure's parameter or result type has no machine representation",
+        ));
+    }
+    // Register the lift (dedup by body occurrence); its position in `db.lifted` is its table slot.
+    let code = db.lift_lambda(crate::lower::LiftedLambda {
+        body,
+        param,
+        param_ty,
+        ret_ty,
+    });
+    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, "lift lambda → Core::Closure (no-capture)");
+    Core::Closure {
+        code,
+        captures: Vec::new(),
+    }
+}
+
+/// Whether the lambda `body` references a FREE VARIABLE — a local binding (a `let` or an enclosing
+/// parameter) OTHER than this lambda's own `param`, lexically outside the lambda `lam_id`. Such a
+/// reference is a CAPTURE (the value must be stored in the closure cell). A reference to the lambda's
+/// own param, to a top-level def, or to a prelude name is NOT a capture. Conservative: any reference
+/// this cannot prove is non-capturing counts as a capture (so a capturing lambda declines rather than
+/// miscompiles). Walks the body's occurrences via the resolved column.
+fn lambda_captures(db: &mut Db, body: StructId, param: StructId, lam_id: StructId) -> bool {
+    // A `Resolved::Param` whose binder is NOT this lambda's param is a captured enclosing parameter.
+    match resolved_of(db, body) {
+        Resolved::Param { binder } => return binder != param,
+        // A `Ref` to a binding: a capture iff the binding is a LOCAL (a `let` init / a param) that sits
+        // OUTSIDE this lambda. A `Ref` to a top-level def (its body is a `db.defs` entry) or a prelude
+        // record is global — not a capture. Detected by whether the referenced binder occurrence is a
+        // user-program node lexically outside the lambda AND not a def body.
+        Resolved::Ref { value } => {
+            if db.def_index_by_body(value).is_some() {
+                return false; // a top-level def reference — global, not captured.
+            }
+            // A reference to a PRELUDE or evaluator-SYNTHESIZED node (`*`, `+`, a built `(Int W)` module)
+            // is global — not a capture. Only a USER-program binding can be captured. (A synthesized
+            // node also has no meaningful parent chain, so the `is_within` walk below would wrongly flag
+            // it.)
+            if !db.is_user_node(value) {
+                return false;
+            }
+            // A reference into the lambda's own subtree is local to it (its param, a nested let). A
+            // reference to a USER node OUTSIDE the lambda's subtree is a capture.
+            if !db.is_within(value, lam_id) {
+                return true;
+            }
+            // Within the lambda — recurse through the ref target to catch a nested capture.
+            return lambda_captures(db, value, param, lam_id);
+        }
+        _ => {}
+    }
+    // Descend into the children of the body's AST node (a form's operands, an if's branches, …).
+    match db.ast.get(body) {
+        crate::ast::Struct::List(children) => {
+            let children: Vec<StructId> = children.clone();
+            children
+                .iter()
+                .any(|&c| lambda_captures(db, c, param, lam_id))
+        }
+        crate::ast::Struct::Atom(_) => false,
     }
 }
 

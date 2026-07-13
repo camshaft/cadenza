@@ -156,6 +156,15 @@ pub fn emit(
         };
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
+    // LAMBDA-LIFTED closures emit as standalone functions AFTER the def functions (their wasm indices
+    // are `import_base + order.len() + slot`, which the funcref element section points at). Each is a
+    // single-arity `(param) -> result` function selected like a def body: its param occupies local slot
+    // 0, its body is the returned expression. The lifted set is fixed at layout time (in table-slot
+    // order); empty for a program with no runtime closure (byte-identical to before).
+    for lifted in layout.lifted.clone() {
+        let params = vec![(lifted.param, lifted.param_ty.clone())];
+        funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
+    }
 
     // Serialize the embedded core module (multi-export core module, functions in emission order). The
     // `name` + `.debug_*` sections are appended by `append_debug_sections` below (both paths, one place).

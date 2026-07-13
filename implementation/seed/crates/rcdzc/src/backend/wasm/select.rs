@@ -1556,6 +1556,27 @@ fn tl_body_of(db: &Db, member: usize) -> Result<StructId, Reject> {
         .ok_or_else(|| Reject::decline("a loop member has no body"))
 }
 
+/// The `call_indirect` TYPE-section index for applying the closure value at `closure` — resolved from
+/// the closure head's solved `Ty::Fn(param, result)` by finding the lambda-lifted function with a
+/// matching signature and returning ITS functype's type index (`layout.lifted_type_index`). Structural
+/// functypes mean any type index with the same `(param)->result` validates; using a matching lifted
+/// lambda's keeps it exact. `None` if the head is not a function type, or no lifted lambda matches (a
+/// closure whose only source is a runtime value with no lifted body — not reachable in this increment).
+fn closure_type_index(db: &mut Db, closure: StructId, layout: &Layout) -> Option<u32> {
+    let (param, result) = match type_of(db, closure) {
+        Ty::Fn(p, r) => (*p, *r),
+        _ => return None,
+    };
+    let pv = valtype_of(&param)?;
+    let rv = valtype_of(&result)?;
+    // Find a lifted lambda whose param/result machine types match this closure's signature.
+    let slot = layout
+        .lifted
+        .iter()
+        .position(|l| valtype_of(&l.param_ty) == Some(pv) && valtype_of(&l.ret_ty) == Some(rv))?;
+    Some(layout.lifted_type_index(slot, layout.import_base))
+}
+
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
 /// name occurrence to its wasm local slot; `base` is the next free SCRATCH slot (a guarded op claims
 /// `[base, base+1, base+2]` and recurses operands at `base+3`); `high` is the running high-water mark of
@@ -2693,15 +2714,34 @@ fn emit(
             out.push(Lir::End);
             Ok(())
         }
-        // A runtime CLOSURE VALUE and its application — emitted below (`emit_closure` /
-        // `emit_call_closure`). Placeholder declines until wired; kept as explicit arms so the match
-        // stays exhaustive.
-        Core::Closure { .. } => Err(Reject::decline(
-            "a runtime closure value is not yet emitted (call_indirect path in progress)",
-        )),
-        Core::CallClosure { .. } => Err(Reject::decline(
-            "a runtime closure application is not yet emitted (call_indirect path in progress)",
-        )),
+        // A runtime CLOSURE VALUE — a NO-CAPTURE closure is exactly its funcref-TABLE SLOT, an i32
+        // constant. The element section maps slot `code` → the lifted function's wasm index, so pushing
+        // the slot is the whole closure value (no heap cell — captures would add an `arr-alloc` here).
+        Core::Closure { code, captures } => {
+            if !captures.is_empty() {
+                return Err(Reject::decline(
+                    "a capturing closure is not yet emitted (only a no-capture closure)",
+                ));
+            }
+            out.push(Lir::ConstI32(code as i32));
+            Ok(())
+        }
+        // A runtime CLOSURE APPLICATION — `call_indirect` through the funcref table. Emit the argument,
+        // then the closure value (its table slot i32, the indirection index on top of the stack), then
+        // `call_indirect` at the closure's signature type. The type index is the lifted function's
+        // functype (structural — any matching `(param)->result` validates); resolve it from the closure
+        // head's solved `Ty::Fn` by finding the lifted lambda with that signature.
+        Core::CallClosure { closure, arg } => {
+            let type_index = closure_type_index(db, closure, layout).ok_or_else(|| {
+                Reject::decline("a runtime closure application has no matching function type")
+            })?;
+            // Argument first (wasm calling convention: args below the table index), then the closure
+            // value (the table slot), then `call_indirect`.
+            emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            emit(db, closure, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::CallIndirect(type_index));
+            Ok(())
+        }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
@@ -2967,8 +3007,17 @@ fn emit_probe_chain(
         match &arm.probe {
             crate::core::Probe::Int(v) => {
                 let m = Machine::of(it);
-                out.push(m.konst(v.to_i64_bits()));
-                out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+                // PROBE-AGAINST-ZERO → `eqz`. A `0` literal arm (the shape of every recursion base case
+                // `(match n (0 …) …)`) is `scrutinee == 0` — exactly `i32.eqz`/`i64.eqz` (one
+                // instruction), not a pushed `0` constant + `eq` (two). Same instruction-selection the
+                // comparison path applies to `(= n 0)`; mirrored here for the match probe. A nonzero
+                // literal keeps the `const ; eq`.
+                if v.to_i64_bits() == 0 {
+                    out.push(if m.slot32 { Lir::I32Eqz } else { Lir::I64Eqz });
+                } else {
+                    out.push(m.konst(v.to_i64_bits()));
+                    out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+                }
             }
             crate::core::Probe::Bool(b) => {
                 out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
@@ -3530,12 +3579,18 @@ fn emit_sum_cont(
                     }
                 }
             }
-            // Read the leaf scalar and compare against the literal.
+            // Read the leaf scalar and compare against the literal. A `0` literal (a `(Some 0)`/`(Ok 0)`
+            // payload pattern) is `payload == 0` — `i64.eqz` (one instruction), not `const 0 ; eq` (two);
+            // the sum-payload twin of the scalar-probe eqz special case.
             match probe {
                 crate::core::Probe::Int(v) => {
                     out.push(Lir::CallImport(OP_GET_INT)); // [i64]
-                    out.push(Lir::ConstI64(v.to_i64_bits()));
-                    out.push(Lir::I64Eq); // [bool]
+                    if v.to_i64_bits() == 0 {
+                        out.push(Lir::I64Eqz); // [bool]
+                    } else {
+                        out.push(Lir::ConstI64(v.to_i64_bits()));
+                        out.push(Lir::I64Eq); // [bool]
+                    }
                 }
                 crate::core::Probe::Bool(b) => {
                     out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]

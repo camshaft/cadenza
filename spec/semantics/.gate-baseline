@@ -84,6 +84,7 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a delegation naming an effect that is never reached is rejected as latent authority
+pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
@@ -103,6 +104,7 @@ pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a float in integer-width position is rejected
 pass	a floating-point literal
 pass	a function applied to an argument
+pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
 pass	a function chosen by a runtime condition is applied (false branch)
@@ -128,6 +130,7 @@ pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
 pass	a guarded variant arm falls through when the guard fails
+pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler folds a counter across the operations it discharges
 pass	a handler resumes its continuation at most once by default
@@ -205,6 +208,7 @@ pass	a narrow-width parameter compared to a bare literal computes at the paramet
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
+pass	a nearer handler on the call chain shadows an outer one
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
@@ -511,6 +515,7 @@ pass	conjunction shields a trapping right operand when the left is false
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
 pass	constructor pattern binders capture the payload uniformly
+pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an overlong UTF-8 encoding yields none
 pass	decoding ill-formed UTF-8 bytes yields none, not a trap
@@ -562,6 +567,7 @@ pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant
 pass	matching a runtime Bytes.at Option binds the byte in the Some arm
 pass	matching a runtime Bytes.at Option takes the None arm past the end
+pass	matching against zero probes the normalized narrow value, not the raw wide slot
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
 pass	member access of a field the record does not have is a type error
@@ -604,6 +610,7 @@ pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	pushing an element of a different type onto a list is a type error
+pass	pushing an element onto a list appends it
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
 pass	record equality is independent of the order fields are written
@@ -698,6 +705,7 @@ pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two functions defined by mutual recursion compute a result
+pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
@@ -715,6 +723,7 @@ pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
+pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
@@ -782,7 +791,6 @@ todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
-todo	a handler accumulates into a list and a read-out operation reads it back
 todo	a header of packed nibbles and a length-prefixed body round-trips
 todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 todo	a later declaration in a do block sees an earlier one
@@ -824,7 +832,6 @@ todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a name bound to a string keys a map by its value, not the literal name
-todo	a nearer handler on the call chain shadows an outer one
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
@@ -1046,7 +1053,6 @@ todo	projecting a record onto an absent field is rejected
 todo	projecting a record restricts it to the named fields
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
-todo	pushing an element onto a list appends it
 todo	quasiquote constructs AST with selective evaluation
 todo	quasiquote makes AST construction readable
 todo	quasiquote nests with inner unquote evaluated
@@ -1101,7 +1107,6 @@ todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
 todo	two equal chars compare equal
 todo	two host calls consume their responses in order
-todo	two lists are concatenated into one flat list
 todo	two maps of different sizes are unequal, not a type error
 todo	two maps with different keys are unequal, not a type error
 todo	two rationals denoting the same number are equal regardless of how they were written
@@ -1115,7 +1120,6 @@ todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned comparison orders by magnitude, not by signed interpretation
 todo	unsigned subtraction below zero traps rather than wrapping
-todo	updating a list index replaces that element, leaving others
 todo	updating a record field changes its type to the new value's
 todo	updating a record field replaces its value
 todo	updating an absent record field is rejected
