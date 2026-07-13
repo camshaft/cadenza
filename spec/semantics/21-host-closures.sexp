@@ -1211,3 +1211,81 @@
               (export greet) (export dbl)))
   (call   dbl (: 21 Int64))
   (output (: 42 Int64)))
+
+; BYTE-ROPE result on the DISTINCT-SIGNATURE path — closures of DIFFERENT signatures each returning a
+; `Bytes`/`String` cross as G distinct resource types, each with its OWN `call-<g>` that returns `list<u8>`
+; (memory + cabi_realloc shared across groups). Extends the byte-rope compound `call` from the single/multi/
+; mixed shapes to the N-resource-type shape. Also covers a byte-rope group coexisting with a SCALAR group in
+; the same component (the scalar `call-<g>` returns by value; the byte-rope one via the copy loop).
+
+(case "distinct-sig byte-rope closures — the Int64→Bytes one"
+  (doc    "`mkb : () -> (-> Int64 Bytes)` (returns `(bin n n+1)`) and `mks : () -> (-> Bool Bytes)` cross as
+           TWO distinct resource types (different arg types → distinct signatures), each with its own
+           `list<u8>`-returning `call`. `call(mkb-handle, 5)` copies `[5,6]` out. Pins the byte-rope result
+           on the distinct-signature path.")
+  (input  (do (def (mkb) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (def (mks) (fn ((: b Bool)) (bin (u8 (if b 1 0)))))
+              (export mkb) (export mks)))
+  (call   mkb (: 5 Int64))
+  (output (5 6)))
+
+(case "distinct-sig byte-rope closures — the Bool→Bytes one"
+  (doc    "The SAME two-resource program, driving the OTHER signature: `call(mks-handle, true)` → `[1]`.
+           Confirms each distinct byte-rope resource dispatches its own closure body.")
+  (input  (do (def (mkb) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (def (mks) (fn ((: b Bool)) (bin (u8 (if b 1 0)))))
+              (export mkb) (export mks)))
+  (call   mks (: true Bool))
+  (output (1)))
+
+(case "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one"
+  (doc    "`mkb : () -> (-> Int64 Bytes)` and `inc : () -> (-> Int64 Int64)` are distinct signatures → two
+           resource types. The byte-rope group's `call` returns `list<u8>` (memory + realloc); the scalar
+           group's returns by value. `call(mkb-handle, 9)` → `[9,10]`. Pins a byte-rope and a scalar group
+           coexisting in ONE component.")
+  (input  (do (def (mkb) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkb) (export inc)))
+  (call   mkb (: 9 Int64))
+  (output (9 10)))
+
+(case "distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one"
+  (doc    "The SAME mixed byte-rope/scalar program, driving the SCALAR group: `call(inc-handle, 41)` → 42
+           (returned by value, NOT as a byte list). Confirms the scalar `call-<g>` is unaffected by the
+           sibling byte-rope group's memory/realloc plumbing.")
+  (input  (do (def (mkb) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (export mkb) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))
+
+(case "distinct-sig: a String closure + a Bytes closure of different signatures — the String one"
+  (doc    "`greet : () -> (-> Int64 String)` returns \"hi\" (UTF-8 `[104,105]`), alongside `mkb : () -> (->
+           Bool Bytes)`. Both cross as byte-rope `list<u8>` results but through DISTINCT resource types.
+           `call(greet-handle, 0)` → `[104,105]`.")
+  (input  (do (def (greet) (fn ((: n Int64)) "hi"))
+              (def (mkb) (fn ((: b Bool)) (bin (u8 (if b 7 8)))))
+              (export greet) (export mkb)))
+  (call   greet (: 0 Int64))
+  (output (104 105)))
+
+(case "distinct-sig byte-rope closure alongside a plain export — the closure"
+  (doc    "Two distinct byte-rope closures (`mkb : Int64→Bytes`, `isz : Bool→Bytes`) AND a plain `two : ()
+           -> 2` all in one component. `call(mkb-handle, 3)` → `[3]`. Pins the byte-rope distinct-sig path
+           carrying a plain export alongside (via `assemble_distinct_sig_resource_mixed`).")
+  (input  (do (def (mkb) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)))))
+              (def (isz) (fn ((: b Bool)) (bin (u8 (if b 0 1)))))
+              (def (two) 2)
+              (export mkb) (export isz) (export two)))
+  (call   mkb (: 3 Int64))
+  (output (3)))
+
+(case "distinct-sig byte-rope closure alongside a plain export — the plain"
+  (doc    "The SAME program, calling the plain `two` → 2. Confirms the plain top-level export is reachable
+           when TWO distinct byte-rope closure resources share the component.")
+  (input  (do (def (mkb) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)))))
+              (def (isz) (fn ((: b Bool)) (bin (u8 (if b 0 1)))))
+              (def (two) 2)
+              (export mkb) (export isz) (export two)))
+  (call   two)
+  (output (: 2 Int64)))

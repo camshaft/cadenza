@@ -1729,6 +1729,30 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
+    // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded
+    // integer back to a fixed width (`options/numeric-model/explicit-checked.md`: `Int64.of` converts a
+    // `BigInt` back, trapping when out of range). `CheckedOf`'s prelude scheme source is `(Int a)`, which
+    // does NOT accept a `BigInt` — so a dedicated arm handles a `BigInt` source: the result is the
+    // conversion op's TARGET type (this application's own solved type, an `Ty::Int`), exactly as the
+    // fixed-width→fixed-width `of` result is. The lower fold already range-checks the constant (`fits_width`
+    // on the unbounded `IntValue`) and rejects an out-of-range one CDZ0302, source-type-agnostically.
+    // Only when the source really is a `BigInt`; a fixed-width source stays on the scheme path below.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::CheckedOf)
+        && args.len() == 1
+        && matches!(type_of(db, args[0]), Ty::BigInt)
+    {
+        // The result is the conversion op's TARGET width — the RESULT of its `∀a. (Int a) → TARGET`
+        // scheme (TARGET is baked into this module's `of` field). Instantiate the head's scheme and peel
+        // the arrow's result; the source `(Int a)` is ignored (a `BigInt` source, not unified here). A
+        // head without a scheme (malformed) falls through to `Any`.
+        let mut fresh = Fresh::new();
+        if let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh)
+            && let Ty::Fn(_, result) = crate::unify::instantiate(&scheme, &mut fresh)
+        {
+            return *result;
+        }
+        return Ty::Any;
+    }
     // `Qty.of x u` — attach a compile-time unit to a numeric value. Its result type is `(Qty T u)` where
     // `T` is the VALUE argument's type and `u` is the VALUE of the second argument (a compile-time unit,
     // read by `eval::unit_of` — NOT an HM-unified variable, exactly as `Prim::Wrap` reads its target
@@ -1795,6 +1819,44 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             union.insert(k.clone(), v.clone());
         }
         return Ty::Record(std::sync::Arc::new(union));
+    }
+    // `Record.extend r (z v)` / `Record.with r (z v)` — ADD (extend) or REPLACE (with) field `z` with the
+    // VALUE `v`'s type. Both yield a NEW record type = `r`'s fields with `z ↦ typeof(v)` inserted (an
+    // insert covers both: for `extend` z is new, for `with` it overwrites the old entry with the possibly-
+    // DIFFERENT new type — §A Field Is Added To Or Replaced …, 'a new value of a possibly different type').
+    // The presence/absence fault (extend→CDZ0211 if present, with→CDZ0212 if absent) is `check_application`'s;
+    // the shape here is the same insert for both. The second operand is a `(name value)` pair read by
+    // `record_op_pair`; `v` IS an evaluated value (its type is `typeof(v)`), unlike a label list.
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
+    ) && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some((label, value)) = crate::resolve::record_op_pair(db, args[1])
+    {
+        let mut out: std::collections::BTreeMap<_, _> =
+            fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        out.insert(label, type_of(db, value));
+        return Ty::Record(std::sync::Arc::new(out));
+    }
+    // `Record.pop r z` — yields `(tuple (. r z) (r without z))`: the field's value paired with the record
+    // of the remaining fields (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its
+    // Fields). Result type `(Tuple <typeof field z> (Record <r minus z>))`. The absent-field CDZ0212 is
+    // `check_application`'s; here an absent field would leave the tuple's first element `Any` (faulted
+    // there). The second operand is a BARE field NAME (a label via `read_key`).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordPop)
+        && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some(label) = crate::resolve::read_label(db, args[1])
+    {
+        let field_ty = fields.get(&label).cloned().unwrap_or(Ty::Any);
+        let rest: std::collections::BTreeMap<_, _> = fields
+            .iter()
+            .filter(|(k, _)| **k != label)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let rest_ty = Ty::Record(std::sync::Arc::new(rest));
+        return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
     }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
@@ -2773,6 +2835,19 @@ fn check_application(
     args: &[StructId],
     out: &mut Vec<Reject>,
 ) {
+    // `(Int64.of b)` / `(UInt N).of b` where `b : BigInt` — the CHECKED NARROWING from the unbounded
+    // integer. `CheckedOf`'s HM scheme source is `(Int a)`, which does NOT unify with a `BigInt` — so
+    // the generic scheme-unify below would wrongly fault CDZ0203. Skip it for a `BigInt` source: the
+    // conversion is well-typed (its result is the target width, filled in `apply_type`), and the fold in
+    // `lower` does the range check (an out-of-range constant → CDZ0302). Descend into the source for its
+    // own faults, then return. A fixed-width source stays on the scheme path (its `(Int a)` unifies).
+    if args.len() == 1
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::CheckedOf)
+        && matches!(type_of(db, args[0]), Ty::BigInt)
+    {
+        collect(db, args[0], out);
+        return;
+    }
     // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
     // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
@@ -2804,6 +2879,9 @@ fn check_application(
                 crate::resolved::Prim::RecordProject
                     | crate::resolved::Prim::RecordWithout
                     | crate::resolved::Prim::RecordMerge
+                    | crate::resolved::Prim::RecordExtend
+                    | crate::resolved::Prim::RecordWith
+                    | crate::resolved::Prim::RecordPop
             )
         )
     {
@@ -4619,6 +4697,83 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             );
                         }
                     }
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
+            ) && args.len() == 2
+            {
+                // `Record.extend r (z v)` / `Record.with r (z v)` — the FIRST operand `r` is a record
+                // expression (descend it); the SECOND is a `(z v)` pair whose NAME is a label and whose
+                // VALUE is an ordinary expression (descend the value, NOT the whole pair — descending it
+                // would resolve `z` as applied to `v`). `extend` REQUIRES `z` ABSENT (a present field →
+                // CDZ0211, never a silent overwrite); `with` REQUIRES `z` PRESENT (an absent field →
+                // CDZ0212, stays distinct from `extend`). A malformed pair is CDZ0201.
+                let is_extend = crate::eval::meta_apply_of(db, head)
+                    == Some(crate::resolved::Prim::RecordExtend);
+                collect(db, args[0], out);
+                match (
+                    type_of(db, args[0]),
+                    crate::resolve::record_op_pair(db, args[1]),
+                ) {
+                    (Ty::Record(fields), Some((label, value))) => {
+                        collect(db, value, out);
+                        let present = fields.contains_key(&label);
+                        if is_extend && present {
+                            out.push(
+                                Reject::coded(
+                                    Code::PresentField,
+                                    format!(
+                                        "record already has field `{}` (use `Record.with` to replace)",
+                                        label.name
+                                    ),
+                                )
+                                .at(args[1]),
+                            );
+                        } else if !is_extend && !present {
+                            out.push(
+                                Reject::coded(
+                                    Code::AbsentField,
+                                    format!(
+                                        "record has no field `{}` to update (use `Record.extend` to add)",
+                                        label.name
+                                    ),
+                                )
+                                .at(args[1]),
+                            );
+                        }
+                    }
+                    (_, None) => out.push(Reject::coded(
+                        Code::Malformed,
+                        "the second operand is a `(name value)` field pair, e.g. `(z 5)`",
+                    )),
+                    _ => {}
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordPop)
+            ) && args.len() == 2
+            {
+                // `Record.pop r z` — the FIRST operand `r` is a record expression (descend it); the SECOND
+                // is a BARE field NAME (a label, not an expression). An absent field is CDZ0212 (a static
+                // label, never a runtime None). A non-label second operand is CDZ0201.
+                collect(db, args[0], out);
+                let label = crate::resolve::read_label(db, args[1]);
+                match (type_of(db, args[0]), label) {
+                    (Ty::Record(fields), Some(label)) if !fields.contains_key(&label) => {
+                        out.push(
+                            Reject::coded(
+                                Code::AbsentField,
+                                format!("record has no field `{}` to pop", label.name),
+                            )
+                            .at(args[1]),
+                        );
+                    }
+                    (_, None) => out.push(Reject::coded(
+                        Code::Malformed,
+                        "the second operand is a field name, e.g. `z`",
+                    )),
+                    _ => {}
                 }
             } else if crate::eval::lambda_body(db, head).is_some() {
                 // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which
