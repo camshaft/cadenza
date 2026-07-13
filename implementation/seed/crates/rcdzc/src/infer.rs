@@ -3999,10 +3999,26 @@ fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Opt
         if let Some(token) = literal_key_token(db, key)
             && !seen.insert(token)
         {
-            return Some(Reject::coded(
+            // The mechanical repair: DELETE the redundant `(key value)` entry — the entry is `key`'s
+            // enclosing list (`parent_of(key)`). An earlier entry already binds this key; a map holds each
+            // key once. Anchor at the entry so `cdz fix` edits it. Heuristic: WHICH duplicate to drop (and
+            // whether the author meant a different key) is a guess, but removing THIS one resolves the
+            // ambiguity. (Falls back to an unanchored reject if the entry structure is unexpected.)
+            let mut reject = Reject::coded(
                 Code::Malformed,
                 "a map contains each key at most once (a duplicate literal key)",
-            ));
+            );
+            if let Some(entry) = db.parent_of(key)
+                && matches!(db.ast.get(entry), crate::ast::Struct::List(_))
+            {
+                reject = reject
+                    .at(entry)
+                    .with_fix(crate::diag::Fix::delete_heuristic(
+                        entry,
+                        "remove the duplicate map entry",
+                    ));
+            }
+            return Some(reject);
         }
     }
     None

@@ -623,23 +623,47 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // duplicate export are rejected for (CDZ0201) — the fourth closed name-set. Each variant after the
     // first with a given name (WITHIN one type declaration) is reported, anchored at its name
     // occurrence. (Two different types may reuse a variant name — the set is per-declaration.)
-    for ty in &db.type_decls {
-        let mut seen_variants: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for variant in &ty.variants {
-            if !seen_variants.insert(variant.name.as_str()) {
-                faults.push(
-                    Reject::coded(
-                        Code::Malformed,
-                        format!(
-                            "variant `{}` is declared more than once in sum `{}` (a sum has a \
-                             fixed set of variant names)",
-                            variant.name, ty.name
-                        ),
-                    )
-                    .at(variant.name_occ),
-                );
-            }
-        }
+    // Collect (name, ty_name, name_occ) for each REDUNDANT variant first (the immutable `type_decls`
+    // borrow), then resolve the delete-clause + push (which needs `&db`, a separate borrow). The clause is
+    // the whole variant syntax to DELETE. A variant is written either as a BARE atom (`(type C A B)` — the
+    // atom IS the clause, directly in the type form) or PARENTHESIZED (`(A)` / `(A Int64)` — the enclosing
+    // list is the clause, so the fix removes the name AND any payloads). Distinguish by whether
+    // `name_occ`'s parent is a list HEADED by `name_occ` (a `(name …)` wrapper) vs the `(type …)` form.
+    let dup_variants: Vec<(String, String, StructId)> = db
+        .type_decls
+        .iter()
+        .flat_map(|ty| {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            ty.variants
+                .iter()
+                .filter(move |v| !seen.insert(v.name.as_str()))
+                .map(|v| (v.name.clone(), ty.name.clone(), v.name_occ))
+        })
+        .collect();
+    for (name, ty_name, name_occ) in dup_variants {
+        // The clause is `name_occ`'s parent when that parent is a `(name …)` wrapper (head == name_occ),
+        // else `name_occ` itself (a bare-atom variant sitting directly in the `(type …)` form).
+        let wraps_name = |parent: StructId| matches!(db.ast.get(parent), crate::ast::Struct::List(items) if items.first() == Some(&name_occ));
+        let clause = match db.parent_of(name_occ) {
+            Some(parent) if wraps_name(parent) => parent,
+            _ => name_occ,
+        };
+        // Each variant after the first with a given name is a REDUNDANT declaration — delete it (the first
+        // already binds the name; a sum's variant names are a fixed set). Anchor at the name occurrence.
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!(
+                    "variant `{name}` is declared more than once in sum `{ty_name}` (a sum has a \
+                     fixed set of variant names)"
+                ),
+            )
+            .at(name_occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                clause,
+                format!("remove the duplicate `{name}` variant"),
+            )),
+        );
     }
     // DUPLICATE EFFECT OPERATION. An effect `(effect E (op f …) (op f …))` declares its operation NAMES
     // as a fixed SET (capabilities-and-effects.md §An Effect Declaration Names The Effect And Types Its
@@ -649,23 +673,40 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // name (WITHIN one effect declaration) is reported, anchored at its name occurrence. (Two different
     // effects may reuse an operation name — the set is per-declaration, since an operation is reached
     // through its declaring effect.)
-    for eff in &db.effect_decls {
-        let mut seen_ops: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for op in &eff.ops {
-            if !seen_ops.insert(op.name.as_str()) {
-                faults.push(
-                    Reject::coded(
-                        Code::Malformed,
-                        format!(
-                            "operation `{}` is declared more than once in effect `{}` (an effect has \
-                             a fixed set of operation names)",
-                            op.name, eff.name
-                        ),
-                    )
-                    .at(op.name_occ),
-                );
-            }
+    // Collect (name, eff_name, name_occ) for each redundant op first (immutable `effect_decls` borrow),
+    // then resolve the clause + push. An op is ALWAYS parenthesized `(op NAME (-> …))`, so `name_occ` (the
+    // NAME atom) is nested one level below the `(op …)` clause AND below the `op` head — the clause to
+    // DELETE is the enclosing `(op …)` list, i.e. `parent_of(name_occ)` (whose head is `op`, not `name_occ`).
+    let dup_ops: Vec<(String, String, StructId)> = db
+        .effect_decls
+        .iter()
+        .flat_map(|eff| {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            eff.ops
+                .iter()
+                .filter(move |o| !seen.insert(o.name.as_str()))
+                .map(|o| (o.name.clone(), eff.name.clone(), o.name_occ))
+        })
+        .collect();
+    for (name, eff_name, name_occ) in dup_ops {
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "operation `{name}` is declared more than once in effect `{eff_name}` (an effect has \
+                 a fixed set of operation names)"
+            ),
+        )
+        .at(name_occ);
+        // The `(op NAME …)` clause is `name_occ`'s parent (a list headed by `op`). Delete it.
+        if let Some(clause) = db.parent_of(name_occ)
+            && matches!(db.ast.get(clause), crate::ast::Struct::List(_))
+        {
+            reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
+                clause,
+                format!("remove the duplicate `{name}` operation"),
+            ));
         }
+        faults.push(reject);
     }
     // Validate every definition's PARAMETER ANNOTATIONS — a garbage type in a `(: name T)` parameter
     // (an unbound name, a value, a malformed type application) is rejected, not silently typed `Any`.

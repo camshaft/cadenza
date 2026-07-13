@@ -16861,6 +16861,50 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix() {
+        // The remaining duplicate-name family members (siblings of dup-field/dup-export D32) now carry a
+        // DELETE fix removing the redundant clause: a repeated sum VARIANT (payload form), a repeated
+        // effect OPERATION, and a repeated literal MAP KEY. Search ALL diagnostics for the target fault
+        // (a program may carry other, unrelated diagnostics ahead of it — `first_error` is order-dependent).
+        let find = |src: &str, needle: &str| -> crate::abi::Diagnostic {
+            crate::diagnostics(&mut Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains(needle))
+                .unwrap_or_else(|| panic!("no diagnostic containing {needle:?} for {src}"))
+        };
+        let variant = find(
+            "(module m (type C (Mk Int64) (Mk Int64) (Other)) (def (main) 0) (export main))",
+            "variant `Mk`",
+        );
+        assert_eq!(
+            variant.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup variant carries a delete fix: {:?}",
+            variant.fix
+        );
+        let op = find(
+            "(module m (effect E (op a (-> Int64 Unit)) (op a (-> Int64 Unit))) (def (main) 5) (export main))",
+            "operation `a`",
+        );
+        assert_eq!(
+            op.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup op carries a delete fix: {:?}",
+            op.fix
+        );
+        let map = find(
+            "(module m (def (f) (Map.size (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main))",
+            "map contains each key",
+        );
+        assert_eq!(
+            map.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup map key carries a delete fix: {:?}",
+            map.fix
+        );
+    }
+
+    #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
         // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
