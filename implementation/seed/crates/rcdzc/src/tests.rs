@@ -10388,13 +10388,14 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0303")
         );
-        // A type argument that does NOT reduce to a concrete `Ty` is never a false CDZ0303 — the domain
-        // predicate is conservative (fires only on a type PROVEN non-integer, not on absence of proof), so
-        // a valid unmodeled integer default is not falsely rejected. `BigInt` names such a type in the
-        // numeric model; in THIS compiler it is not yet a bound name either, so the pragma's own resolution
-        // reports it CDZ0101 (unbound) — the SAME code the downstream unbound-`m` reference gives, never a
-        // false CDZ0303. (When `BigInt` becomes a bound-but-unmodeled type, it will resolve to something,
-        // its `typeval_of` will be `None`, and the conservative accept — not CDZ0101 — will apply.)
+        // `BigInt` names an INTEGER type the numeric model admits as a declarable default
+        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), and B0 makes
+        // it a modeled `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain
+        // predicate takes `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. The program's reported error is
+        // then the downstream unbound `m` (the nested module's export is not in scope at `((. m x) unit)`)
+        // — CDZ0101, confirming the pragma itself raised nothing. (Before B0, `BigInt` was unbound and the
+        // PRAGMA's own resolution gave CDZ0101; now the pragma succeeds and the SAME code comes from the
+        // downstream reference — the assertion value is unchanged, its cause corrected.)
         assert_eq!(
             reject_code(
                 "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
@@ -14652,6 +14653,41 @@ mod match_engine {
                 decoded,
                 ty,
                 "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
+                ty.render_name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_bigint_type_round_trips_through_encode_and_decode() {
+        // B0 SAFETY (the DESIGN-bigint doc §10 mandatory test, the Ty::Qty lesson): `Ty::BigInt` MUST
+        // survive the `Ty → type-value AST → Ty` round-trip (`eval::encode_typeval` /
+        // `resolve::decode_ty`, via `typeval_of`). A MISSING `encode_ty`/`decode_ty` arm would silently
+        // encode `BigInt` as `Unit` (the catch-all) — mis-typing a `(-> (Int N) BigInt)` conversion
+        // scheme to `(-> (Int N) Unit)` — exactly the hole the `Bytes`/`String`/`Char`/`Symbol` arms
+        // closed. Test bare `BigInt` AND `BigInt` NESTED in a compound (where a missing arm bites: a
+        // tuple/variant-payload boxes and would collapse the element to `Unit`).
+        use crate::db::Db;
+        use crate::eval::{encode_typeval, typeval_of};
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let cases = vec![
+            Ty::BigInt,
+            // Nested in a tuple — the case a missing arm silently mis-encodes.
+            Ty::Tuple(vec![Ty::BigInt, Ty::int64()].into()),
+            // Nested in a list element.
+            Ty::List(Box::new(Ty::BigInt)),
+        ];
+        for ty in cases {
+            let node = encode_typeval(&mut db, &ty);
+            let decoded = typeval_of(&mut db, node)
+                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            assert_eq!(
+                decoded,
+                ty,
+                "a {} type MUST survive the encode/decode round-trip (a missing arm would encode BigInt as Unit)",
                 ty.render_name()
             );
         }

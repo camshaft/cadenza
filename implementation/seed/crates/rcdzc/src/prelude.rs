@@ -49,6 +49,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // type position projects `(meta t)`; it is not applyable (no `(meta apply)`).
     names.insert("Bool".to_string(), ground_type_record(ast, "Bool"));
     names.insert("Unit".to_string(), ground_type_record(ast, "Unit"));
+    // `BigInt` — the arbitrary-precision integer ground type (a NULLARY type like `String`/`Symbol`).
+    // B0 binds it as a bare ground-type record so `BigInt` in type position reduces to `Ty::BigInt`
+    // (via `(meta t) = (intrinsic "BigInt")` → `Prim::BigIntTy` → `ground_type`). Its `of` conversion
+    // field + arithmetic arrive in B1 (constant folding) — B0 is byte-neutral, nothing constructs one.
+    names.insert("BigInt".to_string(), ground_type_record(ast, "BigInt"));
 
     // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
     // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;

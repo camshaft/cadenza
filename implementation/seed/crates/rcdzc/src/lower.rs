@@ -5488,9 +5488,10 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol` are monomorphic named types
-        // too, so their surface is the bare `String`/`Char`/`Symbol` atom (`render_name`).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char | Ty::Symbol => {
+        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol`/`BigInt` are monomorphic
+        // named types too, so their surface is the bare `String`/`Char`/`Symbol`/`BigInt` atom
+        // (`render_name`).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char | Ty::Symbol | Ty::BigInt => {
             Some(b.name(ty.render_name()))
         }
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
@@ -7232,6 +7233,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SymbolTy
         | Prim::SymbolOf
         | Prim::SymbolToString
+        // `BigIntTy` is a ground type-value builder (bare `BigInt` in type position → `Ty::BigInt`),
+        // never an integer binary operation — like `StringTy`/`SymbolTy`.
+        | Prim::BigIntTy
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -8667,9 +8671,17 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
         // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
         // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
-        Ty::List(_) | Ty::Bytes | Ty::Char | Ty::Float(_) | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
-            false
-        }
+        // A `BigInt` will be canonical-byte-form-walkable once its runtime leaf exists (B3) — B0 adds the
+        // type only and constructs none, so it declines here for now (a constant `BigInt` `=` folds in the
+        // compiler at B1; a runtime `BigInt` `=` is wired with the runtime limb library).
+        Ty::List(_)
+        | Ty::Bytes
+        | Ty::Char
+        | Ty::BigInt
+        | Ty::Float(_)
+        | Ty::Fn(_, _)
+        | Ty::Type
+        | Ty::Any => false,
     }
 }
 
@@ -10839,6 +10851,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
         Prim::StringTy => "String",
+        Prim::BigIntTy => "BigInt",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

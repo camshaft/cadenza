@@ -2505,6 +2505,10 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // variant's `#\a` argument then unified against `Unit` ("Char and Unit must be the same type").
         Ty::Char => db.push_name("Char"),
         Ty::Symbol => db.push_name("Symbol"),
+        // The arbitrary-precision integer: the bare name `BigInt` (a monomorphic leaf, the `String`
+        // analogue). Round-trips with `decode_ty`'s `"BigInt"` arm; without it the catch-all would
+        // encode it as `Unit` (the same round-trip hole the `Bytes`/`String`/`Char`/`Symbol` arms fix).
+        Ty::BigInt => db.push_name("BigInt"),
         // A float type-value: the `(Float N)` HEAD form (like `(Int N)`), so the WIDTH round-trips
         // FAITHFULLY through `decode_ty`'s `(Float N)` arm — INCLUDING the sentinel width 0 a
         // non-admitted `(Float 16)` reduces to (a bare alias name would lose it: width 0 has no alias,

@@ -335,6 +335,12 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // same slot a `String` uses. A CONSTANT symbol folds (no runtime slot this increment); this is
         // the slot a runtime symbol handle would occupy.
         Ty::Symbol => Some(ValType::I32),
+        // A `BigInt` will be a value-heap leaf — an i32 HANDLE to its sign-magnitude limb array (the
+        // `Bytes`-leaf slot). B0 adds the TYPE only (byte-neutral); nothing constructs a `BigInt` yet, so
+        // no `BigInt`-typed value reaches a real slot. A constant `BigInt` folds (B1); the runtime handle
+        // slot arrives with the runtime limb library (B3). Until then a runtime-slot `BigInt` declines
+        // cleanly — `None`, like `Char` — never inventing a heap rep B0 has not built.
+        Ty::BigInt => None,
         // A float occupies its width's machine slot: `Float32` → f32, `Float64` → f64. A float literal
         // that crosses the boundary (or a float arithmetic result) lives here.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
@@ -461,6 +467,12 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // resource `encode()` path, like a String. (Constant symbol escape is a later increment; for now
         // a Symbol crossing the boundary declines cleanly.)
         Ty::Symbol => None,
+        // A `BigInt` HAS a boundary representation per the spec — a `list<u8>` in the pinned
+        // two's-complement encoding (`options/type-mapping`), so it MAY cross an exported signature. But
+        // that encoding path is a later increment (B4); B0 adds the type only. So a `BigInt` at the
+        // boundary declines cleanly for now (`None`), like the compound types that escape via `encode()`,
+        // rather than mapping to a wrong primitive. It is NOT a primitive valtype in any case.
+        Ty::BigInt => None,
         // A float crosses the component boundary as its width's primitive: `Float32` → `f32`, `Float64`
         // → `f64`. Both admitted widths ({32,64}) have a faithful component-model float primitive.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {

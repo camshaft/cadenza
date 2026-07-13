@@ -200,6 +200,10 @@ pub enum Prim {
     /// in type position reduces to `Ty::Symbol` (a NULLARY type, like `String`/`Char`; the `Symbol` module
     /// also carries `of`/`to-string` operation fields, but its type role is this).
     SymbolTy,
+    /// The ground `BigInt` type-value — held in the `BigInt` module record's `(meta t)`, so bare `BigInt`
+    /// in type position reduces to `Ty::BigInt` (a NULLARY type, like `String`/`Symbol`; the `BigInt`
+    /// module also carries the `of` conversion field, but this is its type role). `ground_type` maps it.
+    BigIntTy,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -604,6 +608,7 @@ impl Prim {
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             "String" => Some(Prim::StringTy),
+            "BigInt" => Some(Prim::BigIntTy),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
@@ -744,6 +749,7 @@ impl Prim {
             Prim::StringTy => Some(crate::ty::Ty::String),
             Prim::CharTy => Some(crate::ty::Ty::Char),
             Prim::SymbolTy => Some(crate::ty::Ty::Symbol),
+            Prim::BigIntTy => Some(crate::ty::Ty::BigInt),
             _ => None,
         }
     }

@@ -104,6 +104,7 @@ impl Subst {
             | Ty::String
             | Ty::Char
             | Ty::Symbol
+            | Ty::BigInt
             | Ty::Type
             | Ty::Any => ty.clone(),
         }
@@ -305,6 +306,9 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // `Symbol` is monomorphic — it unifies only with itself (not with the `String` it wraps: the
         // nominal boundary, which falls to `mismatch` below).
         (Ty::Symbol, Ty::Symbol) => Ok(()),
+        // `BigInt` is monomorphic — it unifies only with itself, NEVER with a fixed-width `Ty::Int` (no
+        // silent promotion: an `Int64`/`BigInt` mix falls to `mismatch` below, CDZ0301).
+        (Ty::BigInt, Ty::BigInt) => Ok(()),
         // Two floats unify iff their WIDTHS unify — reusing the integer `unify_width` (a width variable is
         // a width variable). So `Float32`/`Float64` are distinct (two fixed widths conflict → CDZ0301),
         // a deferred/variable float width solves. A float does NOT unify with `Ty::Int` (it falls to the
@@ -468,6 +472,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         | Ty::String
         | Ty::Char
         | Ty::Symbol
+        | Ty::BigInt
         | Ty::Type
         | Ty::Any => false,
     }
@@ -676,6 +681,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
         | Ty::String
         | Ty::Char
         | Ty::Symbol
+        | Ty::BigInt
         | Ty::Type
         | Ty::Any => ty.clone(),
     }
@@ -801,6 +807,7 @@ fn freshen_free_go(
         | Ty::String
         | Ty::Char
         | Ty::Symbol
+        | Ty::BigInt
         | Ty::Type
         | Ty::Any => ty.clone(),
     }
