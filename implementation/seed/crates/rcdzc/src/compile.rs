@@ -176,6 +176,9 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // Unused-binding warnings (a let binding / parameter / non-exported def nothing references, unless
     // `_`-prefixed) ride alongside the artifact too — well-formed, just likely a defect (CDZ0306).
     diagnostics.extend(collect_unused_binding_warnings(&mut db));
+    // Redundant-match-arm warnings (an arm an earlier arm already covers — CDZ0211): dead code, like an
+    // unused binding, so a warning that rides alongside the artifact without denying it.
+    diagnostics.extend(collect_redundant_arm_warnings(&mut db));
 
     // A run that emits BOTH a plain component (`Wasm`) AND a detached DWARF sidecar (`Dwarf`) links the
     // two: the component carries an `external_debug_info` custom section naming the sidecar file, so a
@@ -295,6 +298,7 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
     // editor's inline lint should show. They are non-error severity, so they never deny an artifact.
     out.extend(collect_dead_trap_warnings(db));
     out.extend(collect_unused_binding_warnings(db));
+    out.extend(collect_redundant_arm_warnings(db));
     out
 }
 
@@ -962,6 +966,124 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::Trap
         | Core::Unit => {}
     }
+}
+
+/// How much of the scrutinee an arm PATTERN covers, for redundant-arm detection. Only the shapes whose
+/// coverage is DECIDABLE from the pattern alone are represented; anything subtler is not classified (its
+/// arm is treated as covering nothing and shadowing nothing), so the check stays conservative — it never
+/// warns where it cannot prove redundancy.
+#[derive(PartialEq, Eq)]
+enum ArmCover {
+    /// A bare binder / `_` — matches EVERY value, so it shadows all arms after it.
+    CatchAll,
+    /// A scalar literal (`0`, `true`, `"x"`) — covers exactly that value. A duplicate literal is dead.
+    Lit(String),
+    /// A variant constructor whose payload sub-patterns are ALL bare binders/wildcards — covers the WHOLE
+    /// variant (identified by its discriminant). A second full-cover arm for the same variant is dead. A
+    /// variant arm that REFINES its payload (a nested literal/constructor) is NOT this — it covers only
+    /// part of the variant, so it never shadows and is never classified (returns `None`).
+    Variant(u32),
+}
+
+/// Classify a match arm's pattern into the part of the scrutinee it covers, for redundant-arm detection —
+/// `None` when the coverage is not decidable from the pattern alone (a guarded arm, a payload-refining
+/// variant, a tuple/list/record pattern), so such an arm neither shadows nor is flagged. A GUARDED arm
+/// `(guard <pat> <cond>)` is always `None`: its match is conditional on a runtime boolean, so it can
+/// never be proven to cover its shape (nor proven dead by an earlier arm).
+fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
+    // A guarded arm is conditional — never a full cover, never provably dead.
+    if db.ast.as_form(pat, "guard").is_some() {
+        return None;
+    }
+    // A bare NAME is a wildcard/binder UNLESS it is a nullary-variant constructor used bare (`None`,
+    // `C.Red` reached as a member is a list, but a bare prelude `None` resolves to a variant). A variant
+    // name covers only its variant; a true binder covers everything.
+    if db.ast.as_name(pat).is_some() {
+        if let Some(disc) = crate::eval::variant_disc_of(db, pat) {
+            return Some(ArmCover::Variant(disc));
+        }
+        return Some(ArmCover::CatchAll);
+    }
+    // A scalar literal pattern (`0`, `true`, `"x"`) covers exactly its value.
+    match crate::resolve::resolved_of(db, pat) {
+        crate::resolved::Resolved::Int(v) => {
+            // A value-unique key: sign + big-endian magnitude bytes (total for any width, unlike to_i64).
+            return Some(ArmCover::Lit(format!("i{}:{:x?}", v.negative, v.magnitude)));
+        }
+        crate::resolved::Resolved::Bool(b) => return Some(ArmCover::Lit(format!("b{b}"))),
+        crate::resolved::Resolved::Str(s) => return Some(ArmCover::Lit(format!("s{s}"))),
+        _ => {}
+    }
+    // A constructor-headed pattern `(C.Red)`, `(Some x)`, `((. Sum V) x)`. It covers the WHOLE variant
+    // only when every payload sub-pattern is a bare binder/wildcard; a refining sub-pattern (a nested
+    // literal/constructor) covers only part, so it is not classified.
+    if let crate::ast::Struct::List(children) = db.ast.get(pat) {
+        let children = children.to_vec();
+        // The ctor head: a bare member `(. Sum V)` used whole is the pattern itself; else the first child.
+        let (head, payload_start) = match children.first().copied() {
+            Some(first) if db.ast.as_name(first) == Some(".") => (pat, children.len()),
+            Some(first) => (first, 1),
+            None => return None,
+        };
+        let disc = crate::eval::variant_disc_of(db, head)?;
+        // Every payload sub-pattern must be a bare binder/wildcard for this to be a FULL-variant cover; a
+        // refining sub-pattern (not a bare name) covers only part of the variant, so bail to `None`.
+        for &sub in &children[payload_start.min(children.len())..] {
+            db.ast.as_name(sub)?;
+        }
+        return Some(ArmCover::Variant(disc));
+    }
+    None
+}
+
+/// Collect REDUNDANT-ARM warnings (CDZ0211) across every `match` in every def body — an arm an EARLIER
+/// arm already fully covers, so first-match-wins makes it dead. Walks all user nodes (like the unused-
+/// binding pass) rather than only reached bodies, so a redundant arm in an uncalled helper is surfaced
+/// too. For each match, scan arms left to right keeping the set of already-covered keys plus whether a
+/// catch-all has appeared; an arm whose cover is already subsumed (a prior catch-all shadows anything, a
+/// prior identical literal/variant shadows its repeat) warns. Conservative: an unclassifiable arm
+/// (`arm_cover` → `None`) neither shadows nor is flagged, so a guarded/refining/tuple arm never yields a
+/// false positive.
+fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
+    use crate::resolved::Resolved;
+    let node_count = db.ast.structure.len();
+    let mut out = Vec::new();
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if !db.is_user_node(id) {
+            continue;
+        }
+        let Resolved::Match { arms, .. } = crate::resolve::resolved_of(db, id) else {
+            continue;
+        };
+        let mut catch_all_seen = false;
+        let mut covered: Vec<ArmCover> = Vec::new();
+        for (pat, _) in &arms {
+            let cover = arm_cover(db, *pat);
+            let redundant = match &cover {
+                // Any arm after a catch-all is unreachable.
+                _ if catch_all_seen => true,
+                // A repeat of an already-covered literal / full-variant cover.
+                Some(c) => covered.contains(c),
+                // Unclassifiable — not provably redundant.
+                None => false,
+            };
+            if redundant && db.is_user_node(*pat) {
+                out.push(Diagnostic::warning(
+                    crate::diag::Code::RedundantArm,
+                    "this match arm is unreachable — an earlier arm already covers every value it \
+                     would match (a duplicate or a pattern shadowed by an earlier catch-all)",
+                    Some(*pat),
+                ));
+            }
+            match cover {
+                Some(ArmCover::CatchAll) => catch_all_seen = true,
+                Some(c) if !covered.contains(&c) => covered.push(c),
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// Collect DEAD-TRAP warnings across the reachable definitions — the non-error diagnostics that ride

@@ -178,6 +178,7 @@ pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
+pass	a duplicate match arm is dead code but the program still runs
 pass	a failing guard falls through to a later arm
 pass	a false variant guard shields its arm's trapping body
 pass	a field is projected from a record chosen across a call boundary by a runtime conditional

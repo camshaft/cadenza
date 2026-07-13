@@ -66,6 +66,14 @@ pub enum Code {
     /// non-exhaustiveness rejection, distinct from a shape defect). For a scalar scrutinee this is a
     /// match with no wildcard tail; for a sum it is a missing variant (a later increment).
     NonExhaustive,
+    /// A `match` ARM that can never be reached because an EARLIER arm already covers every value it would
+    /// — a duplicate variant/literal arm, or any arm after a catch-all binder/wildcard. The DUAL of
+    /// non-exhaustiveness: where CDZ0210 flags a value NO arm covers, this flags an arm NO value reaches.
+    /// A WARNING (not a rejection): the program is well-formed and runs correctly (first-match wins, so
+    /// the shadowed arm is simply dead), but a redundant arm is almost always a defect (a typo in a
+    /// variant name, a copy-paste, a misordered wildcard). The pattern analogue of the `DeadTrap` /
+    /// `UnusedBinding` warnings — dead code the build surfaces rather than silently keeping.
+    RedundantArm,
     /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
     /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
     /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
@@ -170,6 +178,7 @@ impl Code {
             Code::DeadTrap => "CDZ0305",
             Code::UnusedBinding => "CDZ0306",
             Code::NonExhaustive => "CDZ0210",
+            Code::RedundantArm => "CDZ0213",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::HandlerNotExhaustive => "CDZ0405",

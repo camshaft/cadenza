@@ -12521,6 +12521,75 @@ mod diagnostics {
             "an exported def must not warn"
         );
     }
+
+    // ── Redundant-arm warning (CDZ0213) — a match arm an earlier arm already covers. A WARNING that
+    // rides alongside a produced component (the program is well-formed; first-match-wins makes the
+    // shadowed arm dead), the pattern dual of the non-exhaustiveness rejection.
+
+    /// The CDZ0213 redundant-arm warnings from `src` (asserting a component WAS produced — a warning
+    /// must accompany a success, never a denial).
+    fn redundant_arms_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+        warnings_of(src)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0213"))
+            .collect()
+    }
+
+    #[test]
+    fn a_duplicate_or_shadowed_match_arm_warns_but_still_compiles() {
+        // Each shape has an arm an earlier arm already fully covers: a repeated variant, a repeated
+        // literal, an arm after a catch-all, a repeated Option variant. All COMPILE (first-match wins)
+        // and emit exactly one CDZ0213.
+        for src in [
+            "(module m (type C Red Green) (def (f (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0))) (def (main) (f (C.Red))) (export main))",
+            "(module m (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main))",
+            "(module m (def (f (: n Int64)) (match n (_ 1) (0 2))) (def (main) (f 5)) (export main))",
+            "(module m (def (f (: o (Option Int64))) (match o ((Some n) n) ((Some m) m) ((None) 0))) (def (main) (f (Some 5))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "expected exactly one redundant-arm (CDZ0213) warning for `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_match_with_distinct_or_refining_or_guarded_arms_does_not_warn() {
+        // Negatives: distinct variants, distinct literals, a payload-REFINING arm (`(Some 0)` before
+        // `(Some n)` — covers only the value 0, not the whole variant), and GUARDED same-variant arms
+        // (the guard is conditional, so neither arm subsumes the other) must NOT warn.
+        for src in [
+            "(module m (type C Red Green Blue) (def (f (: c C)) (match c ((C.Red) 1) ((C.Green) 2) ((C.Blue) 3))) (def (main) (f (C.Red))) (export main))",
+            "(module m (def (f (: n Int64)) (match n (0 1) (1 2) (_ 3))) (def (main) (f 0)) (export main))",
+            "(module m (def (f (: o (Option Int64))) (match o ((Some 0) 100) ((Some n) n) ((None) 0))) (def (main) (f (Some 5))) (export main))",
+            "(module m (type B (V Int64)) (def (f (: x B)) (match x ((guard (B.V n) (> n 0)) 1) ((B.V n) 0))) (def (main) (f (B.V 5))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a well-formed match must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
+    fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
+        // The warning carries the DEAD arm's PATTERN node — a real user node the front-end maps to the
+        // redundant arm's span (not a prelude/synthesized id).
+        let src = "(module m (type C Red Green) (def (f (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0))) (def (main) (f (C.Red))) (export main))";
+        let ws = redundant_arms_of(src);
+        assert_eq!(ws.len(), 1);
+        let node = ws[0]
+            .node
+            .expect("a redundant-arm warning must carry a node");
+        let db = Db::load(parse(src));
+        assert!(
+            db.is_user_node(StructId(node)),
+            "node {node} must be a user node"
+        );
+    }
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
