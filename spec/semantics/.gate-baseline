@@ -142,7 +142,10 @@ pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
+pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
+pass	a consumer returns a different type than the closure it applies
+pass	a consumer takes the handed-back closure as its SECOND parameter
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -159,6 +162,7 @@ pass	a deeper nested call chain still folds in linear time near the inliner limi
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
+pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
@@ -327,6 +331,7 @@ pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
+pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-field record with one param-named key survives the call
@@ -1198,7 +1203,6 @@ todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimensio
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
-todo	a delegated capability is not itself an export field
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never
@@ -1214,7 +1218,6 @@ todo	a match on an uninhabited scrutinee is exhaustive with zero arms
 todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
 todo	a module function is recursive
-todo	a module value definition registers a reachable export field
 todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched

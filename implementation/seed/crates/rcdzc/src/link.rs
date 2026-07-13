@@ -201,6 +201,9 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
     // Per-file export NAME sets, gathered in the first pass so an import can be validated against the
     // target module's public surface in the second (a file may import a name from a file spliced later).
     let mut exports_of: Vec<Vec<String>> = Vec::with_capacity(files.len());
+    // Per-file DEFINED names (top-level def/type/effect) — parallel to `exports_of`; used only to make an
+    // "imported name is defined but not exported" diagnostic actionable.
+    let mut defined_of: Vec<Vec<String>> = Vec::with_capacity(files.len());
     // Per-file base offsets, kept so the second pass can map an import clause's local id → global.
     let mut struct_bases: Vec<u32> = Vec::with_capacity(files.len());
 
@@ -243,16 +246,23 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
             do_children.push(StructId(item.0 + struct_base));
         }
 
-        // Gather this file's public surface (its `(export …)` names) for import validation.
+        // Gather this file's public surface (its `(export …)` names) for import validation, AND its
+        // DEFINED names (top-level `def`/`type`/`effect`) — the latter lets an import of a name the file
+        // DEFINES but does not EXPORT give an actionable "add `export`" message instead of a bare "does
+        // not export".
         let mut exports = Vec::new();
+        let mut defined = Vec::new();
         for item in top_items(ast) {
             if let Some(tail) = ast.as_form(item, "export")
                 && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))
             {
                 exports.push(name.to_string());
+            } else if let Some(name) = top_item_defined_name(ast, item) {
+                defined.push(name);
             }
         }
         exports_of.push(exports);
+        defined_of.push(defined);
 
         file_spans.push(FileSpan {
             path: path.clone(),
@@ -276,6 +286,7 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
                     struct_bases[fi],
                     &name_to_ix,
                     &exports_of,
+                    &defined_of,
                     &mut imports,
                 )?;
             }
@@ -334,6 +345,10 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
 ///  - an unknown module `"path"`, or a name the target does not `(export …)` (visibility, §4) →
 ///    CDZ0201 (a positively-proven ill-formed program: it names a file / a private name that the
 ///    package does not provide, exactly as an unbound name is ill-formed).
+// Each parameter is a distinct per-file link input the clause reads (the arena, the clause occurrence,
+// the name→file map, the export + defined tables); bundling them into a struct would only obscure the
+// one call site. One over the lint's soft threshold.
+#[allow(clippy::too_many_arguments)]
 fn resolve_import_clause(
     ast: &Arenas,
     item: StructId,
@@ -341,6 +356,7 @@ fn resolve_import_clause(
     base: u32,
     name_to_ix: &std::collections::HashMap<&str, usize>,
     exports_of: &[Vec<String>],
+    defined_of: &[Vec<String>],
     out: &mut Vec<Import>,
 ) -> Result<(), Reject> {
     use crate::diag::Code;
@@ -390,11 +406,25 @@ fn resolve_import_clause(
             .at(occ));
         };
         if !exports_of[from_file].iter().any(|e| e == name) {
-            return Err(Reject::coded(
-                Code::Malformed,
-                format!("`(import …)`: `{path}` does not export `{name}`"),
-            )
-            .at(occ));
+            // Distinguish the two reasons the name is not importable, so the message is ACTIONABLE:
+            //  - `{path}` DEFINES `{name}` but does not `(export …)` it → say so + name the fix (add an
+            //    export to that file), the "private item" case (rustc's "consider making it public").
+            //  - `{path}` does not define it at all → the plain "does not export", enriched with a "did
+            //    you mean?" over what the file DOES export (a typoed import name).
+            let msg = if defined_of[from_file].iter().any(|d| d == name) {
+                format!(
+                    "`(import …)`: `{path}` defines `{name}` but does not export it — add `export \
+                     {{ {name} }}` to `{path}`"
+                )
+            } else {
+                match crate::diag::suggest::nearest(name, &exports_of[from_file]) {
+                    Some(near) => format!(
+                        "`(import …)`: `{path}` does not export `{name}` — did you mean `{near}`?"
+                    ),
+                    None => format!("`(import …)`: `{path}` does not export `{name}`"),
+                }
+            };
+            return Err(Reject::coded(Code::Malformed, msg).at(occ));
         }
         // COLLIDING IMPORTED NAMES (`modules-and-namespaces.md` §Colliding Imported Names Are
         // Rejected): two imports binding the SAME local name into one file's scope is a compile-time
@@ -491,6 +521,35 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
         return tail.to_vec();
     }
     vec![root]
+}
+
+/// The name a top-level item DEFINES, if it is a `def`/`type`/`effect` — used only to tell an import of
+/// a defined-but-unexported name from an import of an absent one. A `def` is `(def (NAME param…) BODY)`
+/// (list signature → its head) or `(def NAME VALUE)` (bare-name value def), mirroring `db::scan_top_level`;
+/// a `type`/`effect` is `(type NAME …)`/`(effect NAME …)` (the name is the first tail element). `None`
+/// for anything else (an import/export clause, a bare expression).
+fn top_item_defined_name(ast: &Arenas, item: StructId) -> Option<String> {
+    if let Some(tail) = ast.as_form(item, "def") {
+        return match tail.first().map(|&s| (s, ast.get(s))) {
+            // `(def (NAME param…) …)` — the signature is a non-empty list; the name is its head.
+            Some((_, Struct::List(children))) if !children.is_empty() => {
+                ast.as_name(children[0]).map(str::to_string)
+            }
+            // `(def NAME VALUE)` — a bare-name value def.
+            Some((sig, Struct::Atom(_))) => ast.as_name(sig).map(str::to_string),
+            _ => None,
+        };
+    }
+    if let Some(tail) = ast
+        .as_form(item, "type")
+        .or_else(|| ast.as_form(item, "effect"))
+    {
+        return tail
+            .first()
+            .and_then(|&s| ast.as_name(s))
+            .map(str::to_string);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -673,11 +732,33 @@ mod tests {
             out.has_error(),
             "importing an unexported name must be rejected"
         );
+        // The message is ACTIONABLE: `lib` DEFINES `helper` but does not export it, so name the fix (add
+        // an export) rather than the bare "does not export".
+        assert!(
+            out.diagnostics.iter().any(|d| d
+                .message
+                .contains("defines `helper` but does not export it")
+                && d.message.contains("add `export { helper }`")),
+            "expected the actionable add-export message; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A TYPO of an exported name — the file does not DEFINE it either — gets a "did you mean?" over the
+    /// module's actual exports, the import analogue of the unbound-name suggestion.
+    #[test]
+    fn importing_a_typoed_exported_name_suggests_the_nearest() {
+        let out = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (import \"lib\" (helpr)) (def (main) (helpr)) (export main))",
+        );
+        assert!(out.has_error(), "a typoed import name must be rejected");
         assert!(
             out.diagnostics
                 .iter()
-                .any(|d| d.message.contains("does not export")),
-            "expected a 'does not export' diagnostic; got {:?}",
+                .any(|d| d.message.contains("does not export `helpr`")
+                    && d.message.contains("did you mean `helper`?")),
+            "expected a did-you-mean suggestion; got {:?}",
             out.diagnostics
         );
     }
