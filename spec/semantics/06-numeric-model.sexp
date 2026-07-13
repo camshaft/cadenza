@@ -706,6 +706,42 @@
   (input  (/ 10 (- 3 3)))
   (error  CDZ0304))
 
+; A COMPARISON that FOLDS to a constant (a tautology `>= min` / unsatisfiable `< min`, against the
+; operand's type bound OR a derived masked/shifted range) must NOT discard the operand's evaluation —
+; a trapping operand still traps (core-semantics.md #Partial Operations Have A Defined Outcome). The
+; fold is an optimization on the comparison RESULT; it must preserve the operand's effect. A
+; provably-total operand may be dropped, but a possibly-trapping one keeps the runtime comparison (which
+; evaluates it). These use a RUNTIME divisor `z` so the div-by-zero fires at run time, under a
+; comparison the compiler folds to a constant.
+
+(case "a tautology comparison against the type minimum still traps on a div-by-zero operand"
+  (doc    "`(>= (/ 10 z) Int64.min)` is a tautology — every Int64 is >= Int64.min — so the compiler folds
+           it to true. But the operand `(/ 10 z)` with z = 0 divides by zero and MUST trap: the fold to a
+           constant must not drop the operand's evaluation. A genuine comparison `(< (/ 10 z) 5)` traps on
+           z = 0, and the self-comparison fold preserves the operand's trap — the type-bound fold must too.")
+  (input  (do (def (main (: z Int64)) (if (>= (/ 10 z) -9223372036854775808) 1 0)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a tautology comparison against a masked value's derived range still traps on the operand"
+  (doc    "`(< (& (/ 10 z) 15) 16)` — the masked value `(& _ 15)` lives in [0,15], so `< 16` is a
+           tautology the derived-range fold collapses to true. But the operand `(/ 10 z)` with z = 0
+           divides by zero and MUST trap. The mask op itself preserves the trap (`(& (/ 10 z) 0)` traps);
+           the comparison-to-constant fold must not drop it either — the derived-range companion of the
+           type-bound case.")
+  (input  (do (def (main (: z Int64)) (if (< (& (/ 10 z) 15) 16) 1 0)) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "a tautology comparison still folds when its operand cannot trap"
+  (doc    "The optimization is preserved for a TRAP-FREE operand: `(< (& z 15) 16)` masks the runtime
+           parameter `z` to [0,15], so `< 16` is always true and the comparison folds to a constant (no
+           runtime compare) — the mask of a bare parameter cannot trap. With z = 5 the `if` yields 1.
+           Pins that trap-preservation does not over-conservatively suppress the fold on a total operand.")
+  (input  (do (def (main (: z Int64)) (if (< (& z 15) 16) 1 0)) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
 (case "modulo gives the remainder"
   (doc    "The compiler needs modulo for LEB128 encoding: extract 7-bit groups from an integer.")
   (input  (% 130 128))

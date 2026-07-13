@@ -42,6 +42,30 @@ impl SpanTable {
         self.spans.get(id.0 as usize).copied()
     }
 
+    /// Re-key this table through an OLD→NEW structure-id map (from `canon::canonicalize_with_map`), so
+    /// the table is indexed by the CANONICAL ids — the ids `codec::encode` produces, hence the ids the
+    /// COMPILER reports back. Without this, a table built by a non-canonical reader (the ML surface) is
+    /// keyed by pre-canonical ids and a lookup by a compiler node id lands on the wrong node
+    /// (`ml-parser-node-order`). `new_len` sizes the result (the canonical arena's node count); a `None`
+    /// map entry (an unreachable old node) is dropped. A span whose new id is out of range is dropped
+    /// (defensive). The file id is preserved.
+    pub fn remap(&self, id_map: &[Option<StructId>], new_len: usize) -> SpanTable {
+        let default = Span { start: 0, end: 0 };
+        let mut spans = vec![default; new_len];
+        for (old, &new) in id_map.iter().enumerate() {
+            if let Some(new) = new
+                && let Some(&s) = self.spans.get(old)
+                && (new.0 as usize) < new_len
+            {
+                spans[new.0 as usize] = s;
+            }
+        }
+        SpanTable {
+            file: self.file,
+            spans,
+        }
+    }
+
     /// The file these spans are in.
     pub fn file(&self) -> FileId {
         self.file

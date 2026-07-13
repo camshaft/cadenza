@@ -1352,6 +1352,51 @@ fn fix_all_deletes_a_latent_authority_effect_and_recompiles_clean() {
 }
 
 #[test]
+fn ml_type_at_resolves_a_nested_node_to_the_right_type() {
+    // Regression for the ML span↔node mismatch: `read_ml` builds nodes non-canonically, so without the
+    // load-time canonicalize+remap a `type-at` on a nested node returned the WRONG node's type (the body
+    // reference reported the enclosing def's arrow). `def add(a: Int64, b: Int64) = a + b` — hovering the
+    // body `a` must be Int64 (its own type), not the arrow. (An ANNOTATED param so the type is definite;
+    // a bare param is `unknown` until a call site, which would not exercise the id-mismatch.)
+    let dir = scratch_dir("ml_typeat");
+    let f = dir.join("prog.cdz");
+    let src = "def add(a: Int64, b: Int64) = a + b\n";
+    std::fs::write(&f, src).unwrap();
+    let body_a = src.rfind("a + b").unwrap(); // the body reference `a`
+    let (ok, stdout, _) = run(&["type-at", f.to_str().unwrap(), &body_a.to_string()], "");
+    assert!(ok, "type-at succeeds: {stdout}");
+    assert!(
+        stdout.starts_with("Int64"),
+        "the body `a` is Int64, not add's arrow (the span-mismatch bug): {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ml_fix_targets_the_value_node_not_the_annotation_type() {
+    // The ML span fix, at the fix layer: an annotation-mismatch wrap on a `.cdz` file must target the
+    // VALUE being wrapped (byte range of `n`), not the annotation type — the shifted-node bug would have
+    // pointed the fix at `Option`. Checked via the JSON fix range.
+    let dir = scratch_dir("ml_fixrange");
+    let f = dir.join("prog.cdz");
+    std::fs::write(
+        &f,
+        "def f(n: Int64) = (n : Option)\ntype Option = Some(Int64) | None\n",
+    )
+    .unwrap();
+    let (_, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    // The CDZ0203 line's fix must span the body `n` at byte 19 (`(n : Option)` — the `n`), width 1.
+    let line = stdout.lines().find(|l| l.contains("CDZ0203")).unwrap_or("");
+    assert!(
+        line.contains("\"kind\":\"wrap\"")
+            && line.contains("\"from\":19")
+            && line.contains("\"to\":20"),
+        "the wrap targets the value `n` (byte 19-20), not the annotation type: {line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");

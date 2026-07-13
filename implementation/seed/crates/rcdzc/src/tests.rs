@@ -3169,6 +3169,53 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_comparison_fold_to_a_constant_preserves_a_trapping_operand() {
+        // A tautology/unsatisfiable comparison folds to a CONSTANT — but that must NOT discard the runtime
+        // operand's evaluation, or a TRAPPING operand loses its trap. `(>= (/ 10 z) Int64.min)` is a
+        // tautology (every Int64 >= min), but the operand `(/ 10 z)` with z==0 divides by zero and MUST
+        // trap; likewise `(< (& (/ 10 z) 15) 16)` (the masked value ∈ [0,15], so `< 16` is a tautology the
+        // derived-range fold collapses). Both the type-bound and derived-range folds now refuse to fold to
+        // a constant when the operand may trap (`is_trap_free` guard), keeping the runtime compare so the
+        // operand is evaluated and traps — matching the self-comparison fold's discipline.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(>= (/ 10 z) -9223372036854775808)",
+                &[Val::S64(0)]
+            ),
+            "a tautology `>= Int64.min` must still trap on a div-by-zero operand"
+        );
+        assert!(
+            traps("(: z Int64)", "(< (& (/ 10 z) 15) 16)", &[Val::S64(0)]),
+            "a derived-range tautology must still trap on a div-by-zero operand"
+        );
+        // The doubling-overflow operand: `(+ z z)` at MAX overflows (checked arith traps), and `>= min` is
+        // a tautology — the fold must not drop the overflow.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(>= (+ z z) -9223372036854775808)",
+                &[Val::S64(i64::MAX)]
+            ),
+            "a tautology must still trap on an overflowing operand"
+        );
+        // NO OVER-CONSERVATISM: a TRAP-FREE operand (a masked PARAM) still FOLDS and computes correctly —
+        // `(< (& z 15) 16)` is always true, and a non-trapping div-tautology returns the folded result.
+        assert_eq!(
+            run::<i64>("(: z Int64)", "(if (< (& z 15) 16) 1 0)", &[Val::S64(5)]),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: z Int64)",
+                "(if (>= (/ 10 z) -9223372036854775808) 1 0)",
+                &[Val::S64(2)]
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
@@ -4817,6 +4864,24 @@ mod runtime_ops {
             ),
             -7 // 3 - 10
         );
+        // CHAINED (range propagates through nested arith): (+ (+ (& x 15) (& y 15)) (& z 15)) ∈ [0,45],
+        // both adds guardless — value must still be exact.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(+ (+ (& x 15) (& y 15)) (& z 15))",
+                &[Val::S64(255), Val::S64(255), Val::S64(255)]
+            ),
+            45 // 15+15+15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(+ (+ (& x 15) (& y 15)) (& z 15))",
+                &[Val::S64(1), Val::S64(2), Val::S64(4)]
+            ),
+            7 // 1+2+4
+        );
     }
 }
 
@@ -5447,6 +5512,54 @@ mod match_engine {
                 "main"
             ),
             1
+        );
+    }
+
+    #[test]
+    fn a_same_name_newtype_constructs_and_matches_by_the_type_name() {
+        // `(type UserId (UserId Int64))` — the idiomatic `newtype` spelling where the constructor name IS
+        // the type name. The ONE name means the CONSTRUCTOR in application/pattern-HEAD position and the
+        // TYPE everywhere else; resolve picks by POSITION (head → ctor), so `(UserId 42)` constructs and
+        // `(UserId n)` binds — no `.Mk` ceremony. Erases to the raw payload like any newtype.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (UserId Int64)) \
+                       (def (main) (match (UserId 42) ((UserId n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_same_name_newtype_name_is_still_a_type_in_annotation_position() {
+        // The same name in a NON-head position stays the TYPE: `(: (UserId 5) UserId)` uses `UserId` as
+        // the constructor (head of `(UserId 5)`) AND as the type annotation (non-head) — both resolve
+        // correctly, and the value escapes tagged with the nominal name.
+        let v = run_heap_value_escape(
+            "(module m (type UserId (UserId Int64)) (def (main) (: (UserId 5) UserId)) (export main))",
+        );
+        // Skips (returns None) when the runtime wasm is absent — same guard the other escape tests use.
+        if let Some(v) = v {
+            assert_eq!(v, "(: 5 UserId)");
+        }
+    }
+
+    #[test]
+    fn a_same_name_newtype_over_a_record_reads_a_field() {
+        // The same-name spelling composes with record payloads: `(Point (record …))` constructs by the
+        // type name and `.y` reads the inner field through the erased tag.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Point (Point (Record (x Int64) (y Int64)))) \
+                       (def (main) (. (Point (record (x 3) (y 4))) y)) (export main))"
+                ),
+                "main"
+            ),
+            4
         );
     }
 
@@ -12739,18 +12852,22 @@ mod stage1 {
             "expected CDZ0405 (non-exhaustive handler), got: {}",
             err.message
         );
-        // The message NAMES the missing op AND spells the arm to add (the "route to a fix" — a
-        // structural fix is not attached because the desugared arms-list is span-less; see infer.rs).
+        // The message NAMES the omitted operation AND spells the arm to add inline; AND a machine-
+        // applicable "add the missing arm" fix carries the same template arm (`collect` is nullary → empty
+        // params, a `(resume unit s)` placeholder body the author fills). The structural fix is possible
+        // because the in-place desugar preserved the arms-list's source span.
         assert!(
-            err.message.contains("missing: collect"),
-            "names the missing op: {}",
+            err.message.contains("`collect`")
+                && err.message.contains("add (collect () s (resume unit s))"),
+            "names the omitted op AND spells the arm to add: {}",
             err.message
         );
-        assert!(
-            err.message.contains("add (collect (v) s (resume v s))"),
-            "spells the arm to add: {}",
-            err.message
+        let fix = err.fix.expect("a missing-arm fix is carried");
+        assert_eq!(
+            fix.replacement, "(collect () s (resume unit s))",
+            "the fix appends a template arm for the missing op"
         );
+        assert!(!fix.verified, "a template-body arm is heuristic");
     }
 
     #[test]
