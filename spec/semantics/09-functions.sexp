@@ -309,6 +309,29 @@
   (call   main (: 10 Int64))
   (output (: 36 Int64)))
 
+; The same runtime closure, but capturing TWO enclosing bindings rather than one — a MULTI-SLOT
+; environment. `(fn (x) (+ (+ x a) b))` closes over both `main`'s parameter `a` and the let-bound `b`,
+; so the lifted closure cell must carry two captured slots, not one. Threaded through the recursive
+; `apply-sum` and applied at each step, every indirect call observes both captured values. This pins
+; that the closure environment generalizes past a single capture — the environment product holds an
+; arbitrary number of captured slots, read back positionally in the lifted body.
+
+(case "a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF"
+  (doc    "`(fn (x) (+ (+ x a) b))` captures BOTH `a` (main's parameter) and `b` (an enclosing `let`) —
+           a two-slot closure environment, not the single capture of the case above. Passed to the
+           recursive `apply-sum` and applied at each step, every application observes both captured
+           values. With a=10, b=100: (3+10+100)+(2+10+100)+(1+10+100) = 336. Pins that a runtime
+           closure's environment holds MORE THAN ONE captured slot, read back positionally.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: a Int64))
+              (let ((b 100))
+                (apply-sum (fn ((: x Int64)) (+ (+ x a) b)) 3)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 336 Int64)))
+
 ; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
 ; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
 ; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls
