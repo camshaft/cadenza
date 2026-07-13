@@ -576,7 +576,12 @@ pub enum Ty {
     /// `false`), and a `List (Map K V)` whose elements have different key sets is homogeneous. `Map
     /// Int64 Int64` and `Map Int64 Bool` are distinct. Backed at run time by the persistent CHAMP
     /// `map-*` heap ops; keys are compared by VALUE under structural equality, and its canonical form
-    /// renders entries in sorted key order.
+    /// renders entries in sorted key order. The CHAMP holds each key at most once (an add-or-replace,
+    /// never a second entry), so a map is a key→value association with unique keys.
+    //= spec/capabilities/collections-and-text.md#a-map-associates-keys-with-values
+    //# A map MUST associate keys of one type with values of one type.
+    //= spec/capabilities/collections-and-text.md#a-map-associates-keys-with-values
+    //# A map MUST contain each key at most once.
     Map(Box<Ty>, Box<Ty>),
     /// A SET: a persistent UNORDERED collection of UNIQUE ELEMENTS of one type (`collections-and-text.md`
     /// §A Set Is A Collection Of Unique Elements). PARAMETRIC in ONE element type (like `List`, unlike
@@ -585,7 +590,12 @@ pub enum Ty {
     /// is a runtime collection, not a shape), so comparing them is well-typed (yields `false`). `Set
     /// Int64` and `Set Bool` are distinct. Backed at run time by the persistent CHAMP `set-*` heap ops
     /// (CHAMP-minus-value-column); elements are compared by VALUE under structural equality, and its
-    /// canonical form renders `(Set.of (list …))` with elements in sorted order.
+    /// canonical form renders `(Set.of (list …))` with elements in sorted order. The CHAMP holds each
+    /// element at most once, so a set is a collection of UNIQUE elements of one type.
+    //= spec/capabilities/collections-and-text.md#a-set-is-a-collection-of-unique-elements
+    //# A set MUST be a collection of elements of one type.
+    //= spec/capabilities/collections-and-text.md#a-set-is-a-collection-of-unique-elements
+    //# A set MUST contain each element at most once.
     Set(Box<Ty>),
     /// A BYTES sequence: a homogeneous, variable-length sequence of BYTES (`collections-and-text.md` §A
     /// Byte Sequence Is A Sequence Of Bytes). NOT parametric — a byte is a byte, so unlike `List` it
@@ -594,12 +604,15 @@ pub enum Ty {
     /// compiler keeps them separate types even though a byte is an integer. Backed at run time by the
     /// persistent rope `bytes-*` heap ops; its observable form is the byte-string literal.
     Bytes,
-    /// A STRING: an immutable sequence of Unicode text (`collections-and-text.md` §A String Is A
-    /// Sequence Of Unicode Scalar Values). One monomorphic type (no element parameter, unlike `List`) —
-    /// every string is `String`. Backed at run time by the same UTF-8 byte-rope the value heap uses for
-    /// `Bytes`; only the STATIC type differs (a `String` renders `"…"` with the closed escape set, a
-    /// `Bytes` renders `\xNN`). This increment realizes the CONSTANT string (a literal folds + equality);
-    /// runtime string ops (`concat`/`len`/`at`) + string escape arrive later.
+    /// A STRING: an immutable sequence of Unicode text — a sequence of Unicode SCALAR VALUES, so its
+    /// contents are independent of any byte encoding (the UTF-8 rope below is a representation, not the
+    /// value). One monomorphic type (no element parameter, unlike `List`) — every string is `String`.
+    /// Backed at run time by the same UTF-8 byte-rope the value heap uses for `Bytes`; only the STATIC
+    /// type differs (a `String` renders `"…"` with the closed escape set, a `Bytes` renders `\xNN`). This
+    /// increment realizes the CONSTANT string (a literal folds + equality); runtime string ops
+    /// (`concat`/`len`/`at`) + string escape arrive later.
+    //= spec/capabilities/collections-and-text.md#a-string-is-a-sequence-of-unicode-scalar-values
+    //# A string MUST be a sequence of Unicode scalar values, so that its contents are independent of any byte encoding.
     String,
     /// A CHAR: a single Unicode scalar value — the element type of a string's scalar sequence. One
     /// monomorphic LEAF type (no parameter). Its value is its scalar, so equality is scalar equality and
