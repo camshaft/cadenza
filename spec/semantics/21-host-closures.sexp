@@ -76,3 +76,45 @@
   (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
   (call   adder (: 100 Int64) (: 7 Int64))
   (output (: 107 Int64)))
+
+; C-HOST-3 — a MULTI-ARGUMENT closure. `(-> Int64 (-> Int64 Int64))` (curried sugar `(fn (a b) …)`)
+; crosses as a resource whose `call` takes BOTH arguments: `call : (self, a: s64, b: s64) -> s64`. The
+; guest's lifted body is `(env, a, b) -> result`, so `call` pushes both args before the `call_indirect`.
+; The `call` method's arity generalizes past one argument (C-HOST-1/2 were single-arg).
+
+(case "a two-argument closure exported to the host is called with both arguments"
+  (doc    "`(fn (a b) (+ a b))` crosses as a resource whose `call` takes two Int64 args. The host calls
+           `make()` then `call(handle, 3, 4)` = 7 — both args pushed to the guest's `call_indirect`. Pins
+           that a closure's `call` method carries more than one argument.")
+  (input  (do (def (main) (fn ((: a Int64) (: b Int64)) (+ a b))) (export main)))
+  (call   main (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "a three-argument closure exported to the host is called with all three"
+  (doc    "`(fn (a b c) (+ (+ a b) c))` → `call(handle, 2, 3, 4)` = 9. Pins that the `call` arity is not
+           special-cased to two — any number of scalar args crosses.")
+  (input  (do (def (main) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c))) (export main)))
+  (call   main (: 2 Int64) (: 3 Int64) (: 4 Int64))
+  (output (: 9 Int64)))
+
+; A PARAMETERIZED export returning a MULTI-ARG CAPTURING closure — C-HOST-2 (capture + make-forwarding)
+; composed with C-HOST-3 (multi-arg call). `make`'s param (k) and the closure's two args (a, b) are all
+; supplied through the split `(call …)` list: the first (k) to `make`, the rest (a, b) to `call`.
+
+(case "a parameterized export returning a multi-argument capturing closure"
+  (doc    "`(def (adder3 (: k Int64)) (fn (a b) (+ (+ a b) k)))` — `make(100)` builds a closure capturing
+           k=100, then `call(handle, 2, 3)` = 2 + 3 + 100 = 105. Composes make-param forwarding, a
+           captured env, and a two-argument `call`.")
+  (input  (do (def (adder3 (: k Int64)) (fn ((: a Int64) (: b Int64)) (+ (+ a b) k))) (export adder3)))
+  (call   adder3 (: 100 Int64) (: 2 Int64) (: 3 Int64))
+  (output (: 105 Int64)))
+
+; A closure whose RESULT type is Bool — `(-> Int64 Bool)`. The `call` method returns a boolean; the host
+; renders it. Pins that the closure's result valtype is not fixed to an integer.
+
+(case "a closure returning a boolean is called by the host"
+  (doc    "`(fn (x) (= x 0))` is a `(-> Int64 Bool)` closure; `make()` then `call(handle, 0)` = true (0
+           equals 0), `call(handle, 5)` = false. The `call` method's result crosses as a boolean.")
+  (input  (do (def (main) (fn ((: x Int64)) (= x 0))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: true Bool)))
