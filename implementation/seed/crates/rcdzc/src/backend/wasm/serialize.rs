@@ -2247,6 +2247,299 @@ pub fn multi_closure_bytes_resource_core_module(
     Ok(core)
 }
 
+/// The MULTI-EXPORT COMPOUND-VALUE-result closure core module: N `make-<name>` functions sharing ONE
+/// `call` that returns `list<u8>` carrying the canonical VALUE FORM of a tuple/record/sum result. Combines
+/// [`multi_closure_bytes_resource_core_module`] (N makes + shared list-`call` + memory/cabi_realloc + plain
+/// exports) with [`closure_value_resource_core_module`]'s value-form body (a data-section template walked
+/// from the closure's returned handle). Every export shares the closure SIGNATURE — hence the SAME result
+/// type + the ONE value-form `template` — so a single shared `call` dispatches whichever closure a handle
+/// names (the code slot travels in the rep), then walks its compound result into the template.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_value_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    makes: &[ClosureMake],
+    plain: &[PlainExport],
+    arg_vts: &[ValType],
+    lifted_type_idx: u32,
+    template: &crate::lower::ValueFormTemplate,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let nmk = makes.len();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+
+    // ── Type section ── imports 0..k; resource-new/rep; defined bodies; N make functypes; shared call
+    // `(i32 self, args…)->i32 retptr`; cabi_realloc `(i32×4)->i32`.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    type_items.extend_from_slice(&i32_to_i32); // resource-new (k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep (k+1)
+    let defined_type_base = k + 2;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    let make_type_base = defined_type_base + n;
+    for mk in makes {
+        let params: Vec<u8> = mk.param_vts.iter().map(|v| vt_byte(*v)).collect();
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let call_type_idx = make_type_base + nmk;
+    {
+        let mut params = vec![wasm_abi::CORE_I32];
+        params.extend(arg_vts.iter().map(|v| vt_byte(*v)));
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let realloc_type_idx = call_type_idx + 1;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + nmk + 2;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ──
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", k as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
+    let f_rnew = k as u32;
+    let f_rrep = (k + 1) as u32;
+
+    // ── Function section ── defined bodies, N makes, call, cabi_realloc.
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    for i in 0..nmk {
+        uleb128((make_type_base + i) as u64, &mut func_items);
+    }
+    uleb128(call_type_idx as u64, &mut func_items);
+    uleb128(realloc_type_idx as u64, &mut func_items);
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + nmk + 2, &func_items),
+    );
+    let make_abs_base = (defined_type_base + n) as u32;
+    let call_abs = make_abs_base + nmk as u32;
+    let realloc_abs = call_abs + 1;
+
+    // ── Table + Memory ──
+    let n_lifted = layout.lifted.len();
+    let mut table_entry = vec![0x70u8, 0x01];
+    uleb128(n_lifted as u64, &mut table_entry);
+    uleb128(n_lifted as u64, &mut table_entry);
+    let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+
+    // ── Export section ── memory, N make-<name>, call, cabi_realloc, then plain exports.
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+        for (i, mk) in makes.iter().enumerate() {
+            items.extend_from_slice(&export(
+                &mk.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                make_abs_base + i as u32,
+            ));
+        }
+        items.extend_from_slice(&export("call", wasm_abi::EXPORT_KIND_FUNC, call_abs));
+        items.extend_from_slice(&export(
+            "cabi_realloc",
+            wasm_abi::EXPORT_KIND_FUNC,
+            realloc_abs,
+        ));
+        for p in plain {
+            items.extend_from_slice(&export(
+                &p.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                p.body_abs,
+            ));
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(nmk + 3 + plain.len(), &items),
+        )
+    };
+
+    // ── Element ──
+    let elem_sec = {
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg))
+    };
+
+    // ── Data section ── the value-form template at `byte_off=0`, its `(ptr,len)` return area at `ret_off`.
+    let byte_off = 0usize;
+    let mut data_bytes: Vec<u8> = template.bytes.clone();
+    let ret_off = (data_bytes.len() + 3) & !3;
+    data_bytes.resize(ret_off, 0);
+    data_bytes.extend_from_slice(&(byte_off as u32).to_le_bytes());
+    data_bytes.extend_from_slice(&(template.bytes.len() as u32).to_le_bytes());
+    let data_sec = {
+        let mut item = vec![0x00];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut item);
+        item.push(op::END);
+        item.extend_from_slice(&uleb_bytes(data_bytes.len() as u64));
+        item.extend_from_slice(&data_bytes);
+        section(wasm_abi::CORE_SEC_DATA, &wasm_vec(1, &item))
+    };
+
+    // ── Code section ── defined bodies, N makes, shared value-form call, cabi_realloc.
+    let imp = |name: &str| {
+        *import_index
+            .get(name)
+            .unwrap_or_else(|| panic!("`{name}` imported")) as u64
+    };
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    for mk in makes {
+        let mut inner = uleb_bytes(0);
+        for p in 0..mk.param_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128(p as u64, &mut inner);
+        }
+        inner.push(op::CALL);
+        uleb128(mk.export_abs as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rnew as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // The shared value-form `call` — identical body to the single-export value core (the code slot is
+    // recovered from the rep, so ONE `call` serves all makes; the value form is the same for every export
+    // since they share the result type).
+    {
+        let arity = arg_vts.len() as u32;
+        let cell = 1 + arity;
+        let rep = cell + 1;
+        let scratch = rep + 1;
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&wasm_vec(2, &{
+            let mut g = uleb_bytes(2);
+            g.push(wasm_abi::CORE_I32);
+            let mut g2 = uleb_bytes(1);
+            g2.push(wasm_abi::CORE_I64);
+            g.extend_from_slice(&g2);
+            g
+        }));
+        let get = |l: u32, out: &mut Vec<u8>| {
+            out.push(op::LOCAL_GET);
+            uleb128(l as u64, out);
+        };
+        let set = |l: u32, out: &mut Vec<u8>| {
+            out.push(op::LOCAL_SET);
+            uleb128(l as u64, out);
+        };
+        get(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rrep as u64, &mut inner);
+        set(cell, &mut inner);
+        get(cell, &mut inner);
+        for a in 0..arity {
+            get(1 + a, &mut inner);
+        }
+        get(cell, &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("arr-get"), &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("get-int"), &mut inner);
+        inner.push(op::I32_WRAP_I64);
+        inner.push(op::CALL_INDIRECT);
+        uleb128(lifted_type_idx as u64, &mut inner);
+        uleb128(0, &mut inner);
+        set(rep, &mut inner);
+        get(cell, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("drop"), &mut inner);
+        for hole in &template.leaves {
+            emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
+        }
+        get(rep, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("drop"), &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(ret_off as i64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + nmk + 2, &code_items));
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    core.extend_from_slice(&code_sec);
+    core.extend_from_slice(&data_sec);
+    Ok(core)
+}
+
 /// The MULTI-EXPORT closure-resource core module: N `make-<name>` functions (one per closure export,
 /// each building its export's cell + `resource.new`) sharing ONE `call` method. The shared `call` is the
 /// load-bearing realization (proven by the `multi_export_closures_share_one_call` oracle): the closure's

@@ -1479,3 +1479,60 @@
   (input  (do (def (mk) (fn ((: n Int64)) (tuple n (- 0 n)))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: (tuple 5 -5) (Tuple Int64 Int64))))
+
+; A COMPOUND (tuple/record) closure RESULT on the MULTI-EXPORT path — N same-signature closures each
+; returning a tuple/record share ONE `call` that returns the value form as `list<u8>`. The shared `call`
+; recovers each closure's code slot from the resource rep, dispatches it, and walks the returned compound
+; handle into the ONE value-form template (all exports share the result type → one template). The host
+; decodes each result to the typed `(: value T)` document. (Record fields render in CANONICAL sorted-name
+; order — `hi` before `lo` — same as the single-export path and the value-heap escape.)
+
+(case "multi-export compound result — the first closure's tuple"
+  (doc    "Two same-signature closures — `mkpair : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n
+           n+1)`, `mkdbl` returns `(tuple n 2n)`. `call(mkpair-handle, 5)` walks its returned tuple → `(:
+           (tuple 5 6) (Tuple Int64 Int64))`. Pins the compound value-form result on the shared-`call`
+           multi-export path.")
+  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+              (export mkpair) (export mkdbl)))
+  (call   mkpair (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "multi-export compound result — the second closure's tuple"
+  (doc    "The SAME two-closure program, driving the OTHER export: `call(mkdbl-handle, 5)` → `(tuple 5 10)`.
+           Confirms the shared `call` dispatches whichever closure a handle names and walks ITS distinct
+           result (the code slot rides in the rep, the value form is shared since the type is).")
+  (input  (do (def (mkpair) (fn ((: n Int64)) (tuple n (+ n 1))))
+              (def (mkdbl) (fn ((: n Int64)) (tuple n (* n 2))))
+              (export mkpair) (export mkdbl)))
+  (call   mkdbl (: 5 Int64))
+  (output (: (tuple 5 10) (Tuple Int64 Int64))))
+
+(case "multi-export record result — canonical field order"
+  (doc    "Two closures returning a `(Record (lo Int64) (hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
+           (hi 103))`, rendered in CANONICAL sorted-name order `(record (hi 103) (lo 3))`.")
+  (input  (do (def (mka) (fn ((: n Int64)) (record (lo n) (hi (+ n 100)))))
+              (def (mkb) (fn ((: n Int64)) (record (lo (- 0 n)) (hi n))))
+              (export mka) (export mkb)))
+  (call   mka (: 3 Int64))
+  (output (: (record (hi 103) (lo 3)) (Record (hi Int64) (lo Int64)))))
+
+(case "multi-export record result — the second closure, with a negative leaf"
+  (doc    "The SAME program's other export: `call(mkb-handle, 3)` → `(record (lo -3) (hi 3))` → canonical
+           `(record (hi 3) (lo -3))`. The negative `lo` leaf flips its value form's kind byte.")
+  (input  (do (def (mka) (fn ((: n Int64)) (record (lo n) (hi (+ n 100)))))
+              (def (mkb) (fn ((: n Int64)) (record (lo (- 0 n)) (hi n))))
+              (export mka) (export mkb)))
+  (call   mkb (: 3 Int64))
+  (output (: (record (hi 3) (lo -3)) (Record (hi Int64) (lo Int64)))))
+
+(case "multi-export compound result — three capturing closures share one call"
+  (doc    "THREE same-signature closures (two capturing `k`, one not) each returning `(Tuple Int64 Int64)`.
+           `b(7)` captures `k=7`; `call(b-handle, 2)` → `(tuple 2 7)`. Pins the shared value-form `call`
+           dispatching among 3 closures, with captured values flowing into the compound result.")
+  (input  (do (def (a (: k Int64)) (fn ((: n Int64)) (tuple k n)))
+              (def (b (: k Int64)) (fn ((: n Int64)) (tuple n k)))
+              (def (c) (fn ((: n Int64)) (tuple n n)))
+              (export a) (export b) (export c)))
+  (call   b (: 7 Int64) (: 2 Int64))
+  (output (: (tuple 2 7) (Tuple Int64 Int64))))
