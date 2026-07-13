@@ -158,6 +158,44 @@
   (input  (do (def (main) 42) (export main) (export main)))
   (error  CDZ0201))
 
+; --- A non-kebab export name crosses under a normalized kebab-case extern name ------------------------
+; A Cadenza identifier may contain uppercase letters (`fA`, `Foo`) or underscores (`my_func`) — all valid
+; source names — but the component model requires an export's extern name to be KEBAB-CASE (lowercase
+; words, hyphen-separated). Emitting a non-kebab name verbatim produces a component that fails to validate
+; (an unloadable artifact). The compiler NORMALIZES a non-kebab export name to a valid kebab extern name
+; (`fA` → `f-a`, `my_func` → `my-func`) — deterministically, so a caller still names the export by its
+; source identifier and the runner resolves it through the same rule. Two DISTINCT source names that
+; normalize to the SAME extern name is a collision the compiler rejects (CDZ0201), like a duplicate export.
+
+(case "an export whose name is not kebab-case crosses under a normalized extern name"
+  (doc    "`(def (fA (: x Int64)) (+ x 1))` with `(export fA)` — `fA` is a valid Cadenza identifier
+           (uppercase identifiers are legal) but NOT a valid component extern name. Rather than emit an
+           unloadable component (the old miscompile: `export name fA is not a valid extern name`), the
+           compiler normalizes the extern name to kebab-case `f-a`; the export is invoked by its SOURCE
+           name `fA`, which the runner resolves through the same normalization. `(fA 5)` = 6. Pins that a
+           non-kebab export name produces a LOADABLE component, not a silently-invalid artifact.")
+  (input  (do (def (fA (: x Int64)) (+ x 1)) (export fA)))
+  (call   fA (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "an underscore export name crosses under a normalized extern name"
+  (doc    "The underscore shape: `(def (my_func (: x Int64)) (+ x 1))` with `(export my_func)` normalizes
+           to the kebab extern name `my-func`. `(my_func 5)` = 6. Confirms the normalization covers the
+           underscore separator, not only camelCase — every non-kebab source name yields a loadable
+           component.")
+  (input  (do (def (my_func (: x Int64)) (+ x 1)) (export my_func)))
+  (call   my_func (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "two exports normalizing to the same kebab extern name are rejected"
+  (doc    "`(export fA)` and `(export f-a)` both normalize to the extern name `f-a` — a collision the
+           component boundary cannot carry (two exports of one name). The compiler rejects it CDZ0201, the
+           same duplicate-export ill-formedness as two identical export names, rather than silently
+           merging or dropping one. Distinct from the duplicate-export cases above: here the SOURCE names
+           differ (`fA` vs `f-a`) but their normalized extern names coincide.")
+  (input  (do (def (fA (: x Int64)) (+ x 1)) (def (f-a (: y Int64)) (+ y 2)) (export fA) (export f-a)))
+  (error  CDZ0201))
+
 (case "a top-level value definition binds a name usable by the program's functions"
   (doc    "A definition is 'a value, function, type' (glossary), and each registers its name in the module
            (core-semantics.md #A Module Evaluates To A Record Of Its Exports). So a VALUE definition
