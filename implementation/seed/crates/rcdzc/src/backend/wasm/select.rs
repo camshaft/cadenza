@@ -6984,13 +6984,18 @@ fn emit_div_rem(
     // A narrow signed division needs a range-check on the quotient (its `min_N / -1` overflows the type
     // but not the slot). Every other case — `%` (bounded by the divisor), unsigned `/` (magnitude only
     // shrinks), full-width signed `/` (the machine `div_s` traps MIN/-1 itself) — is exact after the
-    // native trap, so no scratch is needed. And the range-check is DEAD when the divisor provably is NOT
-    // `-1` (the sole overflowing quotient is `MIN_N / -1`): a constant divisor `≠ -1`, or one whose range
-    // excludes -1 (`(/ x:Int8 3)`, `(/ x (& y 7))`) — then the machine `div_s` result always fits.
+    // native trap, so no scratch is needed. And the range-check is DEAD in two cases, since the sole
+    // overflowing quotient is `MIN_N / -1`:
+    //   • the DIVISOR provably is NOT `-1` — a constant `≠ -1`, or a range excluding -1 (`(/ x:Int8 3)`,
+    //     `(/ x (& y 7))`); or
+    //   • the DIVIDEND is provably NON-NEGATIVE — `MIN_N` is negative, so a nonneg dividend can never be
+    //     it. For `a ≥ 0` and any `d ≠ 0`, `|a/d| ≤ a ≤ MAX_N`, so the quotient always fits the type
+    //     (`(/ (& x 7) d)`, a loop counter, an unsigned-sourced value). (÷0 still native-traps via `div_s`.)
     let needs_range_check = matches!(op, Prim::Div)
         && m.signed
         && m.narrow()
-        && crate::lower::divisor_can_be_neg_one(db, rhs);
+        && crate::lower::divisor_can_be_neg_one(db, rhs)
+        && !crate::lower::value_provably_nonneg(db, lhs);
     if !needs_range_check {
         emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
         emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
