@@ -726,6 +726,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesCompact { .. }
         | Core::Closure { .. }
         | Core::CallClosure { .. }
+        | Core::Captured { .. }
         // Runtime structural equality is a value-heap walk — the Rust backend's scalar slice does not
         // emit heap ops, so it declines (decline-don't-miscompile), as it does every compound op.
         | Core::ValueEq { .. } => Err(Reject::decline(
@@ -943,6 +944,14 @@ fn emit_match_impl(
         let pat = match arm.probe {
             crate::core::Probe::Int(ref v) => int_pattern(db, scrutinee, v)?,
             crate::core::Probe::Bool(x) => (if x { "true" } else { "false" }).to_string(),
+            // A string-literal probe only ever FOLDS (a constant scrutinee); a runtime string match
+            // declines at `is_scalar` before a `Core::Match` is built, so no `Probe::Str` reaches a
+            // runtime match emit on either backend.
+            crate::core::Probe::Str(_) => {
+                return Err(crate::diag::Reject::decline(
+                    "a runtime string-literal match is not yet emitted",
+                ));
+            }
             crate::core::Probe::Wild => "_".to_string(),
         };
         let guard = match arm.guard {

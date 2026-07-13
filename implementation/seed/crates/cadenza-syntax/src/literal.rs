@@ -209,6 +209,58 @@ pub fn unescape_string_token(token: &str) -> String {
     unescape_string(inner)
 }
 
+/// Unescape a byte-string TOKEN (`b"…"`, the `b` + quotes included, as the ml lexer spans it) into
+/// the raw bytes it denotes. The INVERSE of [`escape_bytes`] (the render side) and identical to the
+/// sexpr `read_byte_string` reader, so `b"…"` produces byte-identical `Leaf::Bytes` on both surfaces:
+/// `\n \t \r \\ \"` are the named byte escapes, `\xNN` is a two-hex-digit byte, any other `\c` keeps
+/// `c` verbatim, and a raw byte stands for itself. Returns `vec![]` if the token is not `b"…"`-shaped.
+pub fn unescape_byte_string_token(token: &str) -> Vec<u8> {
+    let inner = token
+        .strip_prefix("b\"")
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or("");
+    let bytes = inner.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            match bytes[i] {
+                b'n' => out.push(b'\n'),
+                b't' => out.push(b'\t'),
+                b'r' => out.push(b'\r'),
+                b'\\' => out.push(b'\\'),
+                b'"' => out.push(b'"'),
+                // `\xNN` — exactly two hex digits, the byte they name; otherwise keep `x` verbatim.
+                b'x' if i + 2 < bytes.len() => {
+                    match (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                        (Some(h), Some(l)) => {
+                            out.push((h << 4) | l);
+                            i += 2;
+                        }
+                        _ => out.push(b'x'),
+                    }
+                }
+                other => out.push(other),
+            }
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A single hex digit `0-9a-fA-F` to its nibble value.
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Decode a backtick-name TOKEN (`` `…` ``, backticks included) to the escaped name it denotes.
 /// Inside backticks, `\`` and `\\` are the only escapes; anything else passes through.
 pub fn unescape_backtick_name(token: &str) -> String {

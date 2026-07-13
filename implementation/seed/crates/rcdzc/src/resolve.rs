@@ -155,13 +155,10 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A string literal — its text is already unescaped to canonical form by the reader. A
             // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
             Leaf::Str(s) => Resolved::Str(s.clone()),
-            // A `Leaf::Bytes` is the value-form leaf a `Bytes` VALUE round-trips through (rendered
-            // `b"…"`); it is not something a source program writes directly (a byte sequence is written
-            // `(Bytes.of (list …))`, or a `b"…"` literal the reader desugars). If one appears in source
-            // position it has no meaning yet — decline (the `b"…"` reader-literal surface is a later slice).
-            Leaf::Bytes(_) => Resolved::Poison(Reject::decline(
-                "a bytes literal is not yet supported in source",
-            )),
+            // A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes`
+            // constant (lowers to a `Core::BytesOf` of its bytes, so it bakes/compares/slices exactly
+            // like `(Bytes.of (list …))`, and renders back `b"…"`). The companion of the `Str` literal.
+            Leaf::Bytes(bs) => Resolved::Bytes(bs.clone()),
             // A FLOAT literal — types as `Ty::Float`, distinct from `Ty::Int` (so mixing rejects, no
             // silent promotion). Its VALUE does not run yet (`core_of` declines): a pure-float program
             // declines, an int↔float mix rejects at the type check.
@@ -360,6 +357,18 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // special-case in resolve (`prelude-and-resolution.md` §Nothing Is Privileged By Name).
     if let Some(value) = db.effect_decl_by_name(name) {
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → effect decl");
+        return Resolved::Ref { value };
+    }
+    // 3c. A BARE VARIANT CONSTRUCTOR of a user `(type …)` declaration — `NLit`/`NNil` for `(type Node
+    // (NLit Int64) NNil)`, the same ctor field a qualified `(. Node NLit)` projects. A nullary variant
+    // may be used bare as a VALUE (`NNil`) and a payload variant bare-applied (`(NLit 5)`); both bind to
+    // the ctor field and take the ordinary member/application paths. This is the user-declaration analog
+    // of the built-in sums binding bare `Some`/`None`/`Ok`/`Err` in the prelude map — after the type name
+    // + effect decls (a type/effect name shadows a variant) and before the prelude (a variant shadows a
+    // built-in), resolved generically off `type_decls` (no name special-case). FIRST-WINS across sums; a
+    // qualified `(. Type Variant)` disambiguates a shared variant name.
+    if let Some(value) = db.variant_ctor_by_name(name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → user sum variant ctor");
         return Resolved::Ref { value };
     }
     // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
@@ -564,6 +573,52 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(binder) = handle_arm_binds(db, form, from, name) {
         return Some(Resolved::Ref { value: binder });
     }
+    // Case 8: `form` is a `(do f0 … fn)` SEQUENCING block, ascended from one of its forms `from` → a
+    // do-local `(def …)` DECLARATION appearing BEFORE `from` binds `name` for `from` (`core-semantics.md`
+    // §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It). Sequential, backward-
+    // only scope like a `let` bindings-list: a form sees the declarations before it, last-wins (a later
+    // `def` of the same name shadows an earlier one), and a declaration does NOT see itself or the forms
+    // after it. The bound value is resolved by `do_def_binds` (a `Ref`/`Lambda`, exactly a top-level
+    // def's shape) — so a later reference / call resolves and folds by the ordinary paths.
+    if let Some(binder) = do_local_binds(db, form, from, name) {
+        return Some(binder);
+    }
+    None
+}
+
+/// If `form` is a `(do …)` block ascended from its child `from`, and a do-local `(def …)` before `from`
+/// binds `name`, the value the name denotes (last-wins among the declarations before `from`). `None`
+/// otherwise. Sequential backward scope: only declarations strictly before `from` are visible, matching a
+/// `let` bindings-list (`last_binder_named` with `stop_before`).
+fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Resolved> {
+    // The PROGRAM ROOT `(do …)` is the top-level block owned by the top-level scan (`db::scan_top_level`)
+    // — its defs are resolved by the FILE-SCOPED `def_by_name` path (step 2 of `resolve_name`), which
+    // enforces package linkage (a sibling file's def is invisible without an import). A lexical do-scope
+    // binder here would bypass that (walking `app`'s `main` body up into the merged root would see
+    // `lib`'s defs). So the root do binds NOTHING lexically; only a NESTED `(do …)` in expression
+    // position is a do-scope. (A single-file program's root do is likewise covered by the scan.)
+    if form == db.ast.root {
+        return None;
+    }
+    let forms = db.ast.as_form(form, "do")?;
+    // The window is the forms strictly BEFORE `from` (a form sees earlier declarations, not itself or
+    // later ones). `from` is a direct child of the `do`, so its position among ALL children is the O(1)
+    // `child_ix`; `forms` is the tail AFTER the `do` head at child index 0, so `from`'s index in `forms`
+    // is `child_ix - 1` (a headed form, unlike a `let`'s headless bindings-list).
+    let ix = db.child_ix_of(from);
+    if ix == 0 {
+        return None; // `from` is the `do` head itself, not a do-form (defensive)
+    }
+    let k = ix - 1;
+    if forms.get(k) != Some(&from) {
+        return None; // `from` is not a direct do-form (defensive; a genuine child always matches)
+    }
+    // Reverse-scan the earlier forms so the LAST declaration of `name` wins, stopping at the first hit.
+    for &f in forms[..k].iter().rev() {
+        if let Some(binder) = do_def_binds(db, f, name) {
+            return Some(binder);
+        }
+    }
     None
 }
 
@@ -598,7 +653,7 @@ fn handle_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Opti
 
 /// Whether `arm` is a HANDLE ARM — its parent is a handle's arms-list (the handle's 2nd tail element).
 /// Used by `handle_arm_binds` and `is_binding_candidate` to confirm an arm's shape from a node up.
-fn is_handle_arm(db: &Db, arm: StructId) -> bool {
+pub(crate) fn is_handle_arm(db: &Db, arm: StructId) -> bool {
     let Some(arms_list) = db.parent_of(arm) else {
         return false;
     };
@@ -1011,27 +1066,84 @@ fn binding_pairs(db: &Db, bindings_occ: StructId) -> Vec<(StructId, StructId)> {
 /// the declaration; an empty `(do)` is malformed.
 fn resolve_do(db: &Db, id: StructId) -> Resolved {
     let forms = db.ast.as_form(id, "do").unwrap_or(&[]);
-    let Some((&last, intermediates)) = forms.split_last() else {
+    let Some((&last, _)) = forms.split_last() else {
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
             "an empty `do` block has no value",
         ));
     };
-    // An in-block declaration (`(def …)`) needs its name scoped to the following forms — a later
-    // increment. Until then, a `do` block carrying a declaration declines cleanly (not a silent drop).
-    for &f in forms {
-        if db.ast.head_name(f) == Some("def") {
-            return Resolved::Poison(Reject::decline(
-                "a `def` inside a `do` block (binding the following forms) is not yet supported",
-            ));
-        }
+    // A do-local `(def …)` DECLARATION binds its name for the forms that FOLLOW it (`core-semantics.md`
+    // §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It) — resolved lazily by
+    // `binder_in`'s do-case (the same way a top-level/module def is resolved by name), sequentially like
+    // a `let` (a form sees only the declarations BEFORE it). But a sequencing block YIELDS its last
+    // form's value, so the last form must be a value expression: a TRAILING declaration leaves the block
+    // valueless (`(do (def x 5))` has nothing to yield).
+    if db.ast.head_name(last) == Some("def") {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "a `do` block must end in a value form, not a declaration",
+        ));
     }
-    // The block's value IS the last form's value — a `Ref` to it (the same shape a bare name takes to its
-    // binding). The intermediates are pure (no effect model yet); their values are discarded, but the
-    // fault walk still reaches them through this node so an ill-typed or provably-trapping intermediate
-    // is caught (a `do`-node descent in `type_errors`/`collect_reached_poisons`).
-    let _ = intermediates;
+    // The block's value IS the last form's value — a `Ref` to it (the same shape a bare name takes to
+    // its binding). The earlier forms are declarations (bound by `binder_in`) or pure statements (their
+    // value discarded); either way the fault walk still reaches them through this node's `do`-descent so
+    // an ill-typed or provably-trapping form is caught (`infer::collect_node`/`collect_reached_poisons`).
     Resolved::Ref { value: last }
+}
+
+/// If `def_form` is a do-local `(def SIG BODY)` declaration binding `name`, the value the name denotes —
+/// a `Ref` to the value (a VALUE declaration `(def x V)` or a nullary `(def (x) V)`) or a `Lambda` (a
+/// FUNCTION declaration `(def (f p…) BODY)`). Mirrors [`def_as_resolved`] for a declaration reached
+/// through a sequencing block rather than the top-level scan; the bare-name value form `(def x V)` is a
+/// do/module surface the top-level scan does not carry. `None` if `def_form` is not a `def`, is bodyless
+/// (malformed — no binding), or does not bind `name`.
+fn do_def_binds(db: &Db, def_form: StructId, name: &str) -> Option<Resolved> {
+    let tail = db.ast.as_form(def_form, "def")?;
+    let sig = *tail.first()?;
+    let body = *tail.get(1)?;
+    // Bare-name value declaration `(def x V)` — the name denotes its value.
+    if let Some(n) = db.ast.as_name(sig) {
+        return (n == name).then_some(Resolved::Ref { value: body });
+    }
+    // List signature `(NAME param…)`: a nullary `(def (x) V)` denotes its body; a `(def (f p…) BODY)`
+    // with parameters denotes the lambda `(p…) BODY` (applied by the ordinary application path). The
+    // params are the raw signature occurrences after NAME (bare `a` or annotated `(: a T)`), exactly the
+    // shape `def_as_resolved` builds from a scanned def's `params`.
+    if let Struct::List(children) = db.ast.get(sig) {
+        let def_name = children.first().and_then(|&c| db.ast.as_name(c))?;
+        if def_name != name {
+            return None;
+        }
+        let params: Vec<StructId> = children[1..].to_vec();
+        if params.is_empty() {
+            return Some(Resolved::Ref { value: body });
+        }
+        return Some(Resolved::Lambda {
+            params: params.into(),
+            body,
+        });
+    }
+    None
+}
+
+/// The value occurrence a do-local VALUE declaration binds — `V` in `(def x V)` or the body of a nullary
+/// `(def (x) V)`. `None` for a FUNCTION declaration `(def (f p…) BODY)` (its body is checked on CALL, via
+/// β-reduction of a reference — an uncalled lambda body is not eagerly checked, matching a `let`-bound
+/// lambda) or a malformed def. The fault walks use this to type-check a value declaration's value eagerly
+/// (a value binding's value is a fault whether or not the name is used, like a `let` binding value).
+pub(crate) fn do_value_def_value(db: &Db, def_form: StructId) -> Option<StructId> {
+    let tail = db.ast.as_form(def_form, "def")?;
+    let sig = *tail.first()?;
+    let body = *tail.get(1)?;
+    if db.ast.as_name(sig).is_some() {
+        return Some(body); // `(def x V)`
+    }
+    if let Struct::List(children) = db.ast.get(sig)
+        && children.len() == 1
+    {
+        return Some(body); // nullary `(def (x) V)`
+    }
+    None
 }
 
 /// Resolve `(if COND THEN ELSE)`.
@@ -1287,9 +1399,20 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;
-            let p = decode_ty(db, *tail.first()?)?;
-            let r = decode_ty(db, *tail.get(1)?)?;
-            Some(Ty::Fn(Box::new(p), Box::new(r)))
+            // A SINGLE-element arrow `(-> R)` is a nullary type `Unit -> R` — the elided-unit convention
+            // (a nullary effect op `(op get (-> R))` performed as `(E.get)`); a two-element `(-> P R)` is
+            // the ordinary `P -> R`. (The arrow is strictly binary here — multi-arg curries as nested `->`.)
+            match tail.len() {
+                1 => {
+                    let r = decode_ty(db, tail[0])?;
+                    Some(Ty::Fn(Box::new(Ty::Unit), Box::new(r)))
+                }
+                _ => {
+                    let p = decode_ty(db, *tail.first()?)?;
+                    let r = decode_ty(db, *tail.get(1)?)?;
+                    Some(Ty::Fn(Box::new(p), Box::new(r)))
+                }
+            }
         }
         "Tuple" => {
             let tail = db.ast.as_form(node, "Tuple")?;

@@ -153,6 +153,15 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let r = type_in_env(db, args[1], env)?;
                     Some(Ty::Fn(Box::new(p), Box::new(r)))
                 }
+                // A SINGLE-element arrow `(-> R)` is a NULLARY operation type `Unit -> R` — the unit
+                // domain is elided (an effect op `(op get (-> (List Int64)))` performed as `(E.get)`,
+                // the same elided-unit convention `apply_type`'s nullary-perform arm honors). Without
+                // this a nullary op has no `Fn` scheme, so its result type reads undetermined and the
+                // resume-value/result-type check (CDZ0201) can never fire.
+                Prim::FnCtor if args.len() == 1 => {
+                    let r = type_in_env(db, args[0], env)?;
+                    Some(Ty::Fn(Box::new(Ty::Unit), Box::new(r)))
+                }
                 // `(List a)` inside a type-lambda — the element reduced under the env (so `a` becomes its
                 // type variable), then `Ty::List(elem)`. This is what makes `List.len`'s `(meta t)` =
                 // `(fn (a) (-> (List a) Int64))` read as the scheme `∀a. (List a) → Int64`.
@@ -263,6 +272,47 @@ fn sign_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
 /// `arg_of` maps a parameter occurrence to the argument occurrence substituted for it. A body
 /// occurrence that IS a reference to one of these params is replaced by its argument; every other node
 /// is structurally copied (its children reduced in turn).
+/// PIN (memoize the resolution of) every FREE-VARIABLE name occurrence in `node` — a reference whose
+/// binder lies OUTSIDE `lam_body` (the lambda body being β-reduced). A free variable is a CAPTURE of an
+/// enclosing `let`/parameter; pinning it (via `resolve_subtree` on the single occurrence) records its
+/// resolution against its real binding, so `beta_reduce`'s "captured free variable" arm SHARES the
+/// occurrence rather than copying it fresh into the orphan reduced node (where it would re-resolve
+/// unbound). A name bound WITHIN `lam_body` (its own param, a body-internal `let`-local) is left
+/// unpinned so it copies + re-resolves against the copied scope. Recurses the AST; a nested lambda's
+/// captures are relative to the SAME `lam_body` (they bind further out), so the one bound suffices.
+fn pin_free_vars(db: &mut Db, node: StructId, lam_body: StructId, own_params: &[StructId]) {
+    if db.ast.as_name(node).is_some() {
+        // A name occurrence. If it resolves (through refs) to a binder OUTSIDE `lam_body` that is NOT one
+        // of the lambda's own params, it is a free capture — pin it. A param formal (substituted by
+        // `arg_of`), a body-internal binding (within `lam_body`), or a prelude/global name is left
+        // unpinned.
+        if let Some(binder) = ref_binder(db, node)
+            && db.is_user_node(binder)
+            && !db.is_within(binder, lam_body)
+            && !own_params.contains(&binder)
+        {
+            crate::resolve::resolve_subtree(db, node);
+        }
+        return;
+    }
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
+        for c in children.clone() {
+            pin_free_vars(db, c, lam_body, own_params);
+        }
+    }
+}
+
+/// The binder occurrence a name reference resolves to (following `Ref`s / a `Param`), or `None` if it is
+/// not a resolvable reference to a binding (a prelude/global name, a literal, a form). Used to tell a
+/// captured free variable (binder outside the lambda) from a local one.
+fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
+    match resolved_of(db, id) {
+        Resolved::Param { binder } => Some(binder),
+        Resolved::Ref { value } => Some(value),
+        _ => None,
+    }
+}
+
 pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, StructId>) -> StructId {
     // A name occurrence in a BINDER POSITION (the name slot of a `let` binding pair, or a match-arm
     // pattern binder) NAMES a binding — it is not a reference to be substituted. Its `resolved_of`
@@ -473,6 +523,10 @@ fn apply_lambda_uncached(
             crate::resolve::resolve_subtree(db, *a);
             arg_of.insert(param_name_occ(db, *p), *a);
         }
+        // NOTE: the partial path does NOT pin free vars — the REMAINING (un-applied) params are bound by
+        // the lambda's `fn` (outside `body`), so a `pin_free_vars` keyed on `body` would misclassify a
+        // remaining-param reference as a capture and share it, breaking the residual's re-resolution. A
+        // genuine capture in a residual is handled by the existing pin-of-args + `resolved_subtrees` arm.
         let reduced_body = beta_reduce(db, body, &arg_of);
         let remaining: Vec<StructId> = params[args.len()..]
             .iter()
@@ -499,6 +553,19 @@ fn apply_lambda_uncached(
         // node for an annotated param) — else the arg would never match the body's references.
         arg_of.insert(param_name_occ(db, *p), *a);
     }
+    // PIN the body's FREE VARIABLES — a reference in the body that binds OUTSIDE the lambda (an enclosing
+    // `let`/param the lambda CAPTURES, e.g. `(let ((k 10)) ((fn (x) (+ x k)) 5))` — `k` binds to the
+    // enclosing `let`). Without this, `beta_reduce` would COPY the free name fresh (`copy_structural`),
+    // and the copy — re-parented into the freshly-built reduced node (an orphan, parent = None) — would
+    // re-resolve against a scope where the capture is UNBOUND (a spurious CDZ0101 / a miscompile). Pinning
+    // shares the ORIGINAL occurrence (its resolution memoized against the capture's real binding), the
+    // same mechanism arg-pinning uses; `beta_reduce`'s `resolved_subtrees` check (the "captured free
+    // variable" arm) then preserves it. A body-INTERNAL `let`-local is NOT pinned (its binder is within
+    // the lambda), so it still copies + re-resolves against the copied scope. The lambda's OWN params are
+    // excluded (they resolve to the `fn`'s param list, outside `body`, but are substituted by `arg_of`
+    // here — pinning them would wrongly SHARE a param ref that must be replaced by its argument).
+    let own_params: Vec<StructId> = params.iter().map(|&p| param_name_occ(db, p)).collect();
+    pin_free_vars(db, body, body, &own_params);
     let reduced = beta_reduce(db, body, &arg_of);
     let rest = &args[params.len()..];
     if rest.is_empty() {
@@ -649,6 +716,19 @@ fn ensure_callees(db: &mut Db, node: StructId) {
 /// per node. (`collect_callees` recurses into sub-expressions of the SAME body, accumulating into
 /// `out`; the memo keys only whole body/callee nodes the DFS visits, not every interior node.)
 fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
+    // A nested `(do e0 … en)` — EVERY item runs (in sequence), so a self-call in ANY of them is a real
+    // recursion edge. `resolve_do` collapses a `do` to `Ref{last}` (its intermediates are discarded as
+    // pure — no effect model at that layer), which would HIDE a self-call in an intermediate from the
+    // callee walk (e.g. `(do (E.emit n) (walk (- n 1)))` — the recursive `(walk …)` is the last item, but
+    // an intermediate could also self-call). Read the `do` by raw AST and descend every item, so
+    // `is_recursive` sees a self-call wherever it sits in the block. (Checked before the `resolved_of`
+    // match, which would only see the collapsed `Ref{last}` and miss the intermediates.)
+    if let Some(items) = db.ast.as_form(node, "do") {
+        for &item in items.to_vec().iter() {
+            collect_callees(db, item, out);
+        }
+        return;
+    }
     match resolved_of(db, node) {
         Resolved::Apply { head, args } => {
             if let Some(cb) = callee_body(db, head) {
@@ -734,6 +814,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -1241,12 +1322,23 @@ pub fn reduce_ctor(
             Ok(built)
         }
         Prim::FnCtor => {
-            if args.len() != 2 {
-                return Err("-> takes two type arguments".to_string());
-            }
-            let p =
-                typeval_of(db, args[0]).ok_or_else(|| "-> parameter is not a type".to_string())?;
-            let r = typeval_of(db, args[1]).ok_or_else(|| "-> result is not a type".to_string())?;
+            // A SINGLE-element arrow `(-> R)` is a nullary type `Unit -> R` — the elided-unit convention
+            // (a nullary effect op `(op get (-> R))`); a two-element `(-> P R)` is the ordinary `P -> R`.
+            let (p, r) = match args.len() {
+                1 => {
+                    let r = typeval_of(db, args[0])
+                        .ok_or_else(|| "-> result is not a type".to_string())?;
+                    (crate::ty::Ty::Unit, r)
+                }
+                2 => {
+                    let p = typeval_of(db, args[0])
+                        .ok_or_else(|| "-> parameter is not a type".to_string())?;
+                    let r = typeval_of(db, args[1])
+                        .ok_or_else(|| "-> result is not a type".to_string())?;
+                    (p, r)
+                }
+                _ => return Err("-> takes one or two type arguments".to_string()),
+            };
             let fn_ty = crate::ty::Ty::Fn(Box::new(p), Box::new(r));
             trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))

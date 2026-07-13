@@ -549,7 +549,7 @@
 ; Typed And Contributes To The Row: "Performing an operation MUST check its arguments against the operation's
 ; declared parameter types … so that an effect operation is typed exactly as an ordinary function
 ; application is"). So performing `E.op` — declared `(-> Int64 Int64)` — on a Bool argument is a type
-; mismatch, rejected (CDZ0201) exactly as an ordinary `(f true)` on an Int64-parameter `f` is. A compiler
+; mismatch, rejected (CDZ0203) exactly as an ordinary `(f true)` on an Int64-parameter `f` is. A compiler
 ; that lowers the perform without checking the argument against the declared parameter type MISCOMPILES: it
 ; feeds the Bool (or worse, a String) through the op's Int64 slot and produces a garbage value rather than
 ; rejecting — `(E.op "str")` returns a nonsense integer. A generation that does not yet type-check a perform's
@@ -557,25 +557,25 @@
 
 (case "performing an operation with an argument of the wrong type is a type error"
   (doc    "`E.op` is declared `(-> Int64 Int64)`, so performing `(E.op true)` supplies a Bool where the
-           operation's parameter type is Int64 — a type mismatch the compiler MUST reject (CDZ0201,
+           operation's parameter type is Int64 — a type mismatch the compiler MUST reject (CDZ0203,
            capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row: a
            perform's arguments are checked against the declared parameter types, exactly as an ordinary
-           function application's are — `(f true)` on an Int64-parameter `f` is rejected the same way).
-           Pins that an effect operation's arguments are type-checked: a compiler that lowers the perform
-           without checking feeds the Bool through the op's Int64 slot and produces a wrong value (and a
-           String argument yields a garbage integer). A generation that does not yet check a perform's
-           arguments declines rather than emitting the mistyped operation.")
+           function application's are — `(f true)` on an Int64-parameter `f` is rejected the same way,
+           CDZ0203). Pins that an effect operation's arguments are type-checked: a compiler that lowers the
+           perform without checking feeds the Bool through the op's Int64 slot and produces a wrong value
+           (and a String argument yields a garbage integer). A generation that does not yet check a
+           perform's arguments declines rather than emitting the mistyped operation.")
   (needs  effects)
   (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
               (handle unit ((E.op (n) s (resume n s)))
                 (E.op true))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
 ; declared `(-> String Unit)` performed on an Int64 argument — `(E.emit 42)` — is the same type mismatch
-; as the Int64-parameter case above and MUST be rejected (CDZ0201). This is the STRING-parameter sibling:
+; as the Int64-parameter case above and MUST be rejected (CDZ0203). This is the STRING-parameter sibling:
 ; a compiler whose perform lowering dispatches on the DECLARED parameter type (routing a String-parameter
 ; op to a string-argument path) before checking the ARGUMENT's actual type skips the check when the
 ; declared parameter is String, and feeds the Int through the op's String slot — the handler arm binds `s`
@@ -587,7 +587,7 @@
 
 (case "performing a string-parameter operation with a non-string argument is a type error"
   (doc    "`E.emit` is declared `(-> String Unit)`, so performing `(E.emit 42)` supplies an Int64 where the
-           operation's parameter type is String — a type mismatch the compiler MUST reject (CDZ0201,
+           operation's parameter type is String — a type mismatch the compiler MUST reject (CDZ0203,
            capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row),
            exactly as the Int64-parameter case `(E.op true)` above is. Pins that the perform-argument check
            fires for a STRING-declared parameter too, not only Int64: a compiler that dispatches a perform
@@ -602,11 +602,11 @@
             (def (main)
               (handle unit ((E.emit (s) st (resume unit st)))
                 (E.emit 42))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The perform-argument check must also fire for a COMPOUND declared parameter type, not only the scalar
 ; types Int64 (above) and String (above). An operation declared `(-> (List Int64) Unit)` performed on an
-; Int64 argument — `(E.put 42)` — is the same type mismatch and MUST be rejected (CDZ0201). This is the
+; Int64 argument — `(E.put 42)` — is the same type mismatch and MUST be rejected (CDZ0203). This is the
 ; COMPOUND-parameter sibling of the two scalar-parameter cases: a compiler whose perform check compares the
 ; argument only against a scalar Kind skips the check when the declared parameter is a compound, binds the
 ; Int `42` into the handler arm typed as a `List Int64`, and `(E.put 42)` runs to `unit` (a downstream
@@ -618,7 +618,7 @@
 (case "performing an operation with a wrong-type argument for a compound parameter is a type error"
   (doc    "`E.put` is declared `(-> (List Int64) Unit)`, so performing `(E.put 42)` supplies an Int64 where
            the operation's parameter type is the compound `List Int64` — a type mismatch the compiler MUST
-           reject (CDZ0201, capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To
+           reject (CDZ0203, capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To
            The Row), exactly as the Int64-parameter (`(E.op true)`) and String-parameter (`(E.emit 42)`)
            cases above are. Pins that the perform-argument check fires for a COMPOUND declared parameter
            too, not only scalars: a compiler that compares the argument only against a scalar Kind skips the
@@ -632,7 +632,7 @@
             (def (main)
               (handle unit ((E.put (xs) s (resume unit s)))
                 (E.put 42))) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0203))
 
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
 ; RESULT type" (capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row).

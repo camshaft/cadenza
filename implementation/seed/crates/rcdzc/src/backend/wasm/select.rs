@@ -238,16 +238,18 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Closure { captures, .. } => captures
             .iter()
             .any(|&c| binding_escapes(db, c, binder, false)),
-        Core::CallClosure { closure, arg } => {
-            binding_escapes(db, closure, binder, false) || binding_escapes(db, arg, binder, false)
+        Core::CallClosure { closure, args } => {
+            binding_escapes(db, closure, binder, false)
+                || args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
-        // Leaves reference no binding.
+        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding).
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
         | Core::ConstFloat(_)
         | Core::Unit
         | Core::Param { .. }
+        | Core::Captured { .. }
         | Core::Poison(_) => false,
     }
 }
@@ -365,6 +367,32 @@ pub struct LocalVar {
     pub slot: u32,
     pub name: String,
     pub ty: Ty,
+}
+
+/// An inert STUB function with the given parameter types and result type `ret` — its body is a single
+/// zero of the result's machine type. Used for an UNREACHED lambda-lifted closure (a dead lift the
+/// emitted code folds away and never calls): the stub keeps the function-index + type section consistent
+/// with the funcref table's slot numbering without carrying the dead lambda's (possibly ill-formed) body.
+/// It is never invoked (its table entry is omitted), so returning a zero is safe. `params` is the
+/// `(binder, type)` list the real selection would use; only the value types matter here.
+pub fn stub_function(params: &[(StructId, Ty)], ret: &Ty) -> SelectedFunc {
+    let param_vts: Vec<ValType> = params.iter().filter_map(|(_, t)| valtype_of(t)).collect();
+    // A zero of the result's machine slot. A result with no machine rep (should not happen for a lifted
+    // lambda, whose result type was checked at lift time) defaults to an i32 zero — harmless in a
+    // never-called stub.
+    let zero = match valtype_of(ret) {
+        Some(ValType::I64) => Lir::ConstI64(0),
+        Some(ValType::F64) => Lir::F64ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    SelectedFunc {
+        params: param_vts,
+        ret: ret.clone(),
+        code: vec![zero],
+        declared: Vec::new(),
+        src_body: None,
+        locals: Vec::new(),
+    }
 }
 
 /// Select one NULLARY definition body (rooted at AST occurrence `body`) into its flat instruction
@@ -632,17 +660,35 @@ pub fn collect_used_ops(
             }
             collect_used_ops(db, scrutinee, out);
         }
-        // A closure VALUE: a no-capture closure is a plain table-slot i32 constant (no heap op). Its
-        // captured values (when captures land) would need `arr-alloc`/`arr-set` — added then. A closure
-        // APPLICATION uses `call_indirect` (a core instruction, not a runtime import), plus its operands.
+        // A closure VALUE is a heap CELL — `arr-alloc(1 + captures)` then `arr-set` of `box-int(code)`
+        // (slot 0) and each boxed capture. So it uses `arr-alloc`/`arr-set`/`box-int` always, plus the
+        // per-capture box op. A closure APPLICATION reads the code slot (`arr-get`+`get-int`) then
+        // `call_indirect` (a core instruction, not a runtime import), plus its operands.
         Core::Closure { captures, .. } => {
-            for c in captures {
+            out.insert(OP_ARR_ALLOC);
+            out.insert(OP_ARR_SET);
+            out.insert(OP_BOX_INT); // slot 0 = box-int(code)
+            for &c in &captures {
+                if let Ok(Some(op)) = box_op(db, c) {
+                    out.insert(op);
+                }
                 collect_used_ops(db, c, out);
             }
         }
-        Core::CallClosure { closure, arg } => {
+        Core::CallClosure { closure, args } => {
+            out.insert(OP_ARR_GET); // read the code slot from the cell
+            out.insert(OP_GET_INT); // unbox it to the table index
             collect_used_ops(db, closure, out);
-            collect_used_ops(db, arg, out);
+            for arg in args {
+                collect_used_ops(db, arg, out);
+            }
+        }
+        // A CAPTURED-variable read: `arr-get(env, 1+index)` then unbox by the captured value's type.
+        Core::Captured { .. } => {
+            out.insert(OP_ARR_GET);
+            if let Ok(Some(op)) = get_op(db, id) {
+                out.insert(op);
+            }
         }
         // Leaves and references emit no runtime op. (A constant string CROSSES only via the escape
         // path's baked bytes — it emits no in-body op; a runtime string handle op arrives later.)
@@ -690,6 +736,15 @@ fn collect_cont_ops(
             match probe {
                 crate::core::Probe::Int(_) => out.insert(OP_GET_INT),
                 crate::core::Probe::Bool(_) => out.insert(OP_GET_BOOL),
+                // A string-literal probe reaches only the CONSTANT-scrutinee fold (top-level scalar match);
+                // the sum decision-tree does not classify a `Resolved::Str` payload pattern, and a runtime
+                // string scrutinee declines at `is_scalar` — so no `Probe::Str` is ever emitted to a
+                // runtime `LitTest`. (A runtime string-equality probe is a later increment.)
+                crate::core::Probe::Str(_) => {
+                    unreachable!(
+                        "a string-literal probe folds; it is never emitted to a runtime LitTest"
+                    )
+                }
                 crate::core::Probe::Wild => false,
             };
             collect_cont_ops(db, then_, out);
@@ -1563,24 +1618,43 @@ fn tl_body_of(db: &Db, member: usize) -> Result<StructId, Reject> {
         .ok_or_else(|| Reject::decline("a loop member has no body"))
 }
 
-/// The `call_indirect` TYPE-section index for applying the closure value at `closure` — resolved from
-/// the closure head's solved `Ty::Fn(param, result)` by finding the lambda-lifted function with a
-/// matching signature and returning ITS functype's type index (`layout.lifted_type_index`). Structural
-/// functypes mean any type index with the same `(param)->result` validates; using a matching lifted
-/// lambda's keeps it exact. `None` if the head is not a function type, or no lifted lambda matches (a
-/// closure whose only source is a runtime value with no lifted body — not reachable in this increment).
-fn closure_type_index(db: &mut Db, closure: StructId, layout: &Layout) -> Option<u32> {
-    let (param, result) = match type_of(db, closure) {
-        Ty::Fn(p, r) => (*p, *r),
-        _ => return None,
-    };
-    let pv = valtype_of(&param)?;
-    let rv = valtype_of(&result)?;
-    // Find a lifted lambda whose param/result machine types match this closure's signature.
-    let slot = layout
-        .lifted
+/// The `call_indirect` TYPE-section index for applying the closure value at `closure` to `args` (at
+/// FULL arity) — resolved by finding the lambda-lifted function whose `(env, params…) -> result`
+/// signature matches the call's machine shape, and returning ITS functype's type index
+/// (`layout.lifted_type_index`). The match is by MACHINE valtype: the lifted lambda must have exactly
+/// `args.len()` params whose valtypes equal the call args' valtypes, and its result valtype must equal
+/// the whole application's result valtype. Structural functypes mean any type index with the same shape
+/// validates; using a matching lifted lambda's keeps it exact. `None` if no lifted lambda matches (a
+/// runtime closure with no lifted body — e.g. a partial application / runtime currying, not yet built).
+fn closure_type_index(
+    db: &mut Db,
+    closure: StructId,
+    args: &[StructId],
+    layout: &Layout,
+) -> Option<u32> {
+    // Each argument's machine valtype, and the application's result valtype (the closure's type peeled
+    // by `args.len()` arrows).
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = args
         .iter()
-        .position(|l| valtype_of(&l.param_ty) == Some(pv) && valtype_of(&l.ret_ty) == Some(rv))?;
+        .map(|&a| valtype_of(&type_of(db, a)))
+        .collect::<Option<_>>()?;
+    let mut result_ty = type_of(db, closure);
+    for _ in 0..args.len() {
+        result_ty = match result_ty {
+            Ty::Fn(_, r) => *r,
+            _ => return None,
+        };
+    }
+    let rv = valtype_of(&result_ty)?;
+    // Find a lifted lambda with the same param valtypes (in order) + result valtype.
+    let slot = layout.lifted.iter().position(|l| {
+        l.params.len() == arg_vts.len()
+            && l.params
+                .iter()
+                .zip(&arg_vts)
+                .all(|((_, pt), av)| valtype_of(pt) == Some(*av))
+            && valtype_of(&l.ret_ty) == Some(rv)
+    })?;
     Some(layout.lifted_type_index(slot, layout.import_base))
 }
 
@@ -2237,11 +2311,16 @@ fn emit(
                     }
                 },
             };
-            // disc(handle) == disc_present ?
+            // disc(handle) == disc_present ?  (`disc_present == 0` → `i32.eqz`, one instruction — the
+            // sum-disc eqz special case; a `Some`/`Ok` present variant is discriminant 0.)
             out.push(Lir::LocalGet(handle_slot));
             out.push(Lir::CallImport(OP_SUM_DISC)); // [disc]
-            out.push(Lir::ConstI32(disc_present as i32));
-            out.push(Lir::I32Eq); // [present?]
+            if disc_present == 0 {
+                out.push(Lir::I32Eqz); // [present?]
+            } else {
+                out.push(Lir::ConstI32(disc_present as i32));
+                out.push(Lir::I32Eq); // [present?]
+            }
             out.push(Lir::If(block_ty));
             // THEN — the present payload: sum-payload + unbox by result type.
             out.push(Lir::LocalGet(handle_slot));
@@ -2750,29 +2829,94 @@ fn emit(
         // A runtime CLOSURE VALUE — a NO-CAPTURE closure is exactly its funcref-TABLE SLOT, an i32
         // constant. The element section maps slot `code` → the lifted function's wasm index, so pushing
         // the slot is the whole closure value (no heap cell — captures would add an `arr-alloc` here).
+        // A runtime CLOSURE VALUE — a heap CELL `arr-alloc(1 + captures)`: slot 0 = `box-int(code)` (the
+        // funcref-table slot), slots 1.. = each captured value (boxed if a scalar). Leaves the cell's u32
+        // handle on the stack. Uniform shape for capturing AND non-capturing closures, so a fn-typed
+        // parameter holds either interchangeably. Built exactly like a tuple (`arr-set` returns the array
+        // handle for threading, so no scratch local needed).
         Core::Closure { code, captures } => {
-            if !captures.is_empty() {
-                return Err(Reject::decline(
-                    "a capturing closure is not yet emitted (only a no-capture closure)",
-                ));
+            out.push(Lir::ConstI32(1 + captures.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [cell]
+            // Slot 0: box-int(code). `box-int` takes an i64, so the table slot is an `i64.const`.
+            out.push(Lir::ConstI32(0)); // index
+            out.push(Lir::ConstI64(code as i64)); // the table slot (box-int wants i64)
+            out.push(Lir::CallImport(OP_BOX_INT));
+            out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
+            // Slots 1..: each captured value, boxed if scalar (a narrow int extends i32→i64 first, like a
+            // tuple element), arr-set into place.
+            for (k, &cap) in captures.iter().enumerate() {
+                out.push(Lir::ConstI32(1 + k as i32)); // index
+                emit(db, cap, slots, base, high, scratch_ty, layout, out)?;
+                if let Some(op) = box_op(db, cap)? {
+                    if let Some(m) = is_narrow_int(db, cap) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op));
+                }
+                out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
             }
-            out.push(Lir::ConstI32(code as i32));
             Ok(())
         }
-        // A runtime CLOSURE APPLICATION — `call_indirect` through the funcref table. Emit the argument,
-        // then the closure value (its table slot i32, the indirection index on top of the stack), then
-        // `call_indirect` at the closure's signature type. The type index is the lifted function's
-        // functype (structural — any matching `(param)->result` validates); resolve it from the closure
-        // head's solved `Ty::Fn` by finding the lifted lambda with that signature.
-        Core::CallClosure { closure, arg } => {
-            let type_index = closure_type_index(db, closure, layout).ok_or_else(|| {
+        // A runtime CLOSURE APPLICATION — `call_indirect` through the funcref table. The lifted function
+        // is `(env, arg) -> result`: push the arg, then the env cell, then read the table slot from the
+        // cell (`arr-get(cell, 0)` + `get-int`) as the indirection index, then `call_indirect`. The cell
+        // must be materialized into a local so it is read TWICE (once passed as env, once for the code
+        // slot) without recomputation.
+        Core::CallClosure { closure, args } => {
+            let type_index = closure_type_index(db, closure, &args, layout).ok_or_else(|| {
                 Reject::decline("a runtime closure application has no matching function type")
             })?;
-            // Argument first (wasm calling convention: args below the table index), then the closure
-            // value (the table slot), then `call_indirect`.
-            emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
-            emit(db, closure, slots, base, high, scratch_ty, layout, out)?;
+            // Materialize the closure cell into a scratch local (read twice: env arg + code slot).
+            let cell_slot = base.max(*high);
+            *high = (*high).max(cell_slot + 1);
+            scratch_ty.insert(cell_slot, ValType::I32);
+            emit(
+                db,
+                closure,
+                slots,
+                cell_slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(cell_slot));
+            // The lifted function is `(env, args…) -> result`, so push env (param 0) THEN each arg, in
+            // order, before the indirection index. Each arg emits above the cell slot (never reusing it).
+            out.push(Lir::LocalGet(cell_slot)); // env (the cell)
+            for &arg in &args {
+                emit(db, arg, slots, cell_slot + 1, high, scratch_ty, layout, out)?;
+            }
+            // …then the indirection index: arr-get(cell, 0) → box-int(code); get-int → the table slot as
+            // an i64; `call_indirect` needs the index as an i32, so narrow it (`i32.wrap_i64`). The code
+            // is a small table slot, so the wrap is exact.
+            out.push(Lir::LocalGet(cell_slot));
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_GET));
+            out.push(Lir::CallImport(OP_GET_INT));
+            out.push(Lir::I32WrapI64);
             out.push(Lir::CallIndirect(type_index));
+            Ok(())
+        }
+        // A CAPTURED free-variable read inside a lifted closure body — `arr-get(env, 1 + index)` then
+        // unbox by the captured value's type (a scalar `get-int`/`get-bool`, then a NARROW int narrows
+        // i64→i32; a compound handle is used as-is). The env cell is the lifted function's local slot 0.
+        // The node's own `type_of` is the captured value's type (set at lowering), so `get_op`/`is_narrow`
+        // read it exactly as a tuple projection does.
+        Core::Captured { index, .. } => {
+            out.push(Lir::LocalGet(0)); // the env cell (lifted fn's 1st param)
+            out.push(Lir::ConstI32(1 + index as i32));
+            out.push(Lir::CallImport(OP_ARR_GET));
+            if let Some(op) = get_op(db, id)? {
+                out.push(Lir::CallImport(op));
+                if is_narrow_int(db, id).is_some() {
+                    out.push(Lir::I32WrapI64);
+                }
+            }
             Ok(())
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
@@ -2858,10 +3002,14 @@ fn emit_match_arms_tailable(
         // full scratch region from `base`.
         Some(src) => (src, base),
         None => {
-            // Evaluate the scrutinee ONCE into scratch slot `base`, and run the probe chain from `base+1`
-            // so the arm bodies and later probes never clobber that live slot (it must survive every
-            // probe). The scrutinee's own emit uses `base+1` too (it is fully consumed into `base` before
-            // any probe runs). `slot` is at least `base`, so the high-water covers it.
+            // Evaluate the scrutinee ONCE into scratch slot `base`; the arm bodies and later probes run
+            // ABOVE that live slot (it must survive every probe). The scrutinee's own emit uses `base+1`
+            // as its floor, and may itself claim MORE scratch — a runtime `value-eq`/`MatchSum` scrutinee
+            // (`(match (= (mk n) (mk 3)) …)`) stashes i32 heap handles in slots the high-water records.
+            // So the probe chain starts at the high-water the scrutinee emit REACHED (`*high`), NOT a bare
+            // `base+1`: reusing a scrutinee-scratch slot the value-eq typed i32 for a branch's i64
+            // iteration arithmetic would force one wasm local to two types (invalid module). A scalar
+            // scrutinee leaves `*high == base+1`, so `chain_base == base+1` and the bytes are unchanged.
             let slot = base;
             if slot + 1 > *high {
                 *high = slot + 1;
@@ -2878,13 +3026,104 @@ fn emit_match_arms_tailable(
                 out,
             )?;
             out.push(Lir::LocalSet(slot));
-            (OperandSrc::Slot(slot), base + 1)
+            (OperandSrc::Slot(slot), *high)
         }
     };
+    // BRANCHLESS 2-ARM SELECT: a match of exactly TWO UNGUARDED arms — a literal probe then a wildcard
+    // (`(match n (0 a) (_ b))`), or a Bool's two literals (`(match p (true a) (false b))`) — is
+    // `(if (scrutinee == probe0) body0 body1)`, so when both bodies are cheap trap-free LEAVES and the
+    // result is a scalar it emits wasm's `select` instead of an `if`/`else` block: `body0 ; body1 ;
+    // (scrutinee == probe0) ; select`. This is the match analogue of the `if`→`select` rewrite and rests
+    // on the same soundness (a `select` evaluates both operands, safe precisely because each leaf is
+    // trap/allocation-free). Excluded for a heap/unit result (a `select` on a handle would drop-leak;
+    // unit has no value). TAIL position is fine here even though a `select` cannot carry a tail call: a
+    // `is_select_leaf` body is a param/local/const, which is never a call, so no arm is ever a tail call
+    // to preserve. A NON-leaf body, a guard, or >2 arms falls through to the probe chain (which does
+    // handle tail bodies). `arms[1]` is the wildcard/second-literal cover (`lower` guaranteed
+    // exhaustiveness), so `(scrutinee == probe0) ? body0 : body1` is total.
+    if arms.len() == 2
+        && arms.iter().all(|a| a.guard.is_none())
+        && matches!(
+            arms[0].probe,
+            crate::core::Probe::Int(_) | crate::core::Probe::Bool(_)
+        )
+        && is_select_leaf(db, arms[0].body)
+        && is_select_leaf(db, arms[1].body)
+        && !matches!(block_ty, BlockType::Empty)
+    {
+        // The body leaves are grounded to the match's result width (as the probe-chain arms are),
+        // recovered from `result_it` (an Int result) or the block valtype (a Bool result is an i32).
+        let res_ty = match result_it {
+            Some(rit) => Ty::Int(rit),
+            None => Ty::Bool,
+        };
+        emit_branch(
+            db,
+            arms[0].body,
+            &res_ty,
+            slots,
+            chain_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        emit_branch(
+            db,
+            arms[1].body,
+            &res_ty,
+            slots,
+            chain_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        emit_probe_condition(&arms[0].probe, src, it, out);
+        out.push(Lir::Select);
+        return Ok(());
+    }
     emit_probe_chain(
         db, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty, layout, out,
         tail,
     )
+}
+
+/// Emit the boolean `scrutinee == probe` for a match's literal probe: push the scrutinee `src`, then the
+/// comparison. Uses the same instruction selection the probe chain applies — an `Int` `0` probe is
+/// `i64.eqz`/`i32.eqz` (one instruction, cycle-43), a nonzero `Int` is `const ; eq`, and a `Bool` probe
+/// against `true` is IDENTITY (a Bool is canonical i32 0/1, so `p == 1` is just `p` — push nothing more),
+/// against `false` is `i32.eqz`. Shared by the branchless 2-arm select; the `Wild` probe is not a
+/// condition (it's the fallthrough) so it never reaches here.
+fn emit_probe_condition(
+    probe: &crate::core::Probe,
+    src: OperandSrc,
+    it: IntTy,
+    out: &mut Vec<Lir>,
+) {
+    src.push(out);
+    match probe {
+        crate::core::Probe::Int(v) => {
+            let m = Machine::of(it);
+            if v.to_i64_bits() == 0 {
+                out.push(if m.slot32 { Lir::I32Eqz } else { Lir::I64Eqz });
+            } else {
+                out.push(m.konst(v.to_i64_bits()));
+                out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+            }
+        }
+        // A Bool is canonical i32 0/1: `p == true` IS `p` (nothing more), `p == false` is `i32.eqz`.
+        crate::core::Probe::Bool(true) => {}
+        crate::core::Probe::Bool(false) => out.push(Lir::I32Eqz),
+        // A string-literal probe only ever FOLDS (a constant scrutinee) — a runtime string scrutinee is
+        // not a scalar (`is_scalar`), so a `Probe::Str` never reaches the runtime scalar probe emit.
+        crate::core::Probe::Str(_) => {
+            unreachable!(
+                "a string-literal probe folds; it is never emitted as a runtime scalar probe"
+            )
+        }
+        crate::core::Probe::Wild => {}
+    }
 }
 
 /// The wasm slot type of a scalar match scrutinee (Int → its width's slot, Bool → i32), or `None` if
@@ -3056,6 +3295,11 @@ fn emit_probe_chain(
                 out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                 out.push(Lir::I32Eq);
             }
+            crate::core::Probe::Str(_) => {
+                unreachable!(
+                    "a string-literal probe folds; a runtime string match declines at is_scalar"
+                )
+            }
             crate::core::Probe::Wild => unreachable!("has_literal_probe"),
         }
         out.push(Lir::If(block_ty));
@@ -3063,10 +3307,19 @@ fn emit_probe_chain(
             db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
             out, inner,
         )?;
+        // The probe's ELSE (the fall-through probe chain) starts scratch ABOVE the high-water the THEN
+        // (a guarded body) reached, NOT at `base`. A guard in the THEN may stash an i32 HEAP HANDLE (a
+        // runtime `value-eq`/`MatchSum`) in a low slot, typing it i32 for the whole function; the ELSE's
+        // fall-through i64 iteration arithmetic reusing that slot number would force one wasm local to
+        // two types (invalid module). The two `if` branches are mutually exclusive at RUN time but share
+        // ONE function-global local declaration, so a slot used at two widths across them is illegal. A
+        // scalar guard/body leaves `*high` unchanged, so this is byte-identical for the common case. (The
+        // `src` scrutinee slot is below `base`-relative scratch and stays live regardless.)
+        let else_base = *high;
         out.push(Lir::Else);
         emit_probe_chain(
-            db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-            inner,
+            db, src, rest, it, result_it, block_ty, slots, else_base, high, scratch_ty, layout,
+            out, inner,
         )?;
         out.push(Lir::End);
         Ok(())
@@ -3536,16 +3789,31 @@ fn emit_sum_match_arms(
                 }
             }
             out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc]
-            out.push(Lir::ConstI32(disc as i32));
-            out.push(Lir::I32Eq);
+            // `disc == 0` is `i32.eqz` (one instruction), not `const 0 ; i32.eq` (two) — the sum-disc
+            // twin of the scalar/probe eqz special case (cycle 43). A `0` discriminant is the FIRST
+            // declared variant (`Some`, `Ok`, …), so this fires on the common first-arm test.
+            if disc == 0 {
+                out.push(Lir::I32Eqz);
+            } else {
+                out.push(Lir::ConstI32(disc as i32));
+                out.push(Lir::I32Eq);
+            }
             out.push(Lir::If(block_ty));
             emit_sum_cont(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out,
             )?;
+            // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
+            // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the
+            // `Core::If` / guard sites. The THEN's continuation may contain a guard that stashes an i32
+            // HEAP HANDLE (`value-eq`/`MatchSum`) in a low slot, typing it i32 for the whole function; the
+            // ELSE's fall-through loop-iteration i64 arithmetic reusing that slot fails validation (the two
+            // `if` branches share one function-global local declaration). A THEN that touches no heap
+            // handle leaves `*high` where it was, so this is byte-identical for the common case.
+            let else_base = *high;
             out.push(Lir::Else);
             emit_sum_match_arms(
-                db, scrutinee, path, rest, result_it, block_ty, slots, base, high, scratch_ty,
+                db, scrutinee, path, rest, result_it, block_ty, slots, else_base, high, scratch_ty,
                 layout, out,
             )?;
             out.push(Lir::End);
@@ -3586,15 +3854,25 @@ fn emit_sum_cont(
         // recurses — it is the rest of the sub-matrix (a later arm of the same variant, or the default).
         crate::core::SumCont::Guarded { cond, body, els } => {
             emit(db, *cond, slots, base, high, scratch_ty, layout, out)?;
+            // The body and fall-through start scratch ABOVE the high-water the GUARD reached, NOT at
+            // `base` — the same discipline as the `Core::If` / scalar-match-guard / probe-else sites. A
+            // guard that stashes an i32 HEAP HANDLE (a runtime `value-eq`/`MatchSum` — `(guard (N.I x)
+            // (= (mk x) (mk 3)))`) types a low slot i32 for the whole function; the fall-through's
+            // loop-iteration i64 arithmetic reusing that slot fails validation. A scalar guard leaves
+            // `*high == base`, so this is byte-identical for the common case.
+            let body_base = *high;
             out.push(Lir::If(block_ty));
             if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out)?;
+                emit_operand(
+                    db, *body, rit, slots, body_base, high, scratch_ty, layout, out,
+                )?;
             } else {
-                emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
+                emit(db, *body, slots, body_base, high, scratch_ty, layout, out)?;
             }
             out.push(Lir::Else);
             emit_sum_cont(
-                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+                db, scrutinee, els, result_it, block_ty, slots, body_base, high, scratch_ty,
+                layout, out,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -3643,6 +3921,14 @@ fn emit_sum_cont(
                     out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                     out.push(Lir::I32Eq); // [bool]
                 }
+                crate::core::Probe::Str(_) => {
+                    // The sum decision-tree does not classify a string-literal payload pattern (a
+                    // `Resolved::Str` is not a recognized `LitTest` probe there), so no `Probe::Str`
+                    // reaches this sum-payload literal-test emit. A string-literal probe folds instead.
+                    return Err(Reject::decline(
+                        "a string-literal payload pattern is not yet emitted at run time",
+                    ));
+                }
                 crate::core::Probe::Wild => {
                     return Err(Reject::decline("a wildcard literal test is a compiler bug"));
                 }
@@ -3652,9 +3938,14 @@ fn emit_sum_cont(
                 db, scrutinee, then_, result_it, block_ty, slots, base, high, scratch_ty, layout,
                 out,
             )?;
+            // The `els` continuation starts scratch above the `then_`'s high-water — same discipline as
+            // the disc-switch/guard sites: a `then_` that stashes an i32 heap handle must not have its
+            // slot reused by `els`'s i64 loop arithmetic (byte-identical when `then_` touches no handle).
+            let els_base = *high;
             out.push(Lir::Else);
             emit_sum_cont(
-                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+                db, scrutinee, els, result_it, block_ty, slots, els_base, high, scratch_ty, layout,
+                out,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -4338,8 +4629,13 @@ fn emit_checked_arith_to(
     // — drop the dead check. `(+ a C)` C>0 (or `(- a C)` C<0) moves UP → only `r > max`; the reverse
     // moves DOWN → only `r < min`. (`C==0` is elided in `lower`; a two-const op folds there too.) The
     // general/two-runtime case, and `*`, keep BOTH bounds (a product can leave either side).
+    // A const `+`/`-` moves the exact result in ONE direction from an in-range operand, so a narrow
+    // range-check needs only that bound (cycle 38). This does NOT hold for `*`: a narrow `(* a C)`
+    // product can leave EITHER type bound (positive `a` overflows up, negative `a` down), so a const
+    // multiplier keeps BOTH range bounds. Restricted to `Add`/`Sub` explicitly (`const_operand_split`
+    // also matches `Mul` now — for the mul-guard fast path below — so the op check is load-bearing).
     let reach = match const_operand_split(op, sa, sb) {
-        Some((_, c)) if c != 0 => {
+        Some((_, c)) if c != 0 && matches!(op, Prim::Add | Prim::Sub) => {
             let moves_up = (matches!(op, Prim::Add) && c > 0) || (matches!(op, Prim::Sub) && c < 0);
             if moves_up {
                 ReachableBounds::UpperOnly
@@ -4410,7 +4706,8 @@ fn emit_operand_into(
 /// to the general guard. `None` when neither operand (of the eligible side) is a constant.
 fn const_operand_split(op: Prim, sa: OperandSrc, sb: OperandSrc) -> Option<(OperandSrc, i64)> {
     match op {
-        Prim::Add => {
+        // `+` and `*` are commutative — EITHER operand may be the constant; the other is the runtime `a`.
+        Prim::Add | Prim::Mul => {
             if let Some(c) = sb.const_value() {
                 Some((sa, c))
             } else {
@@ -4511,6 +4808,48 @@ fn emit_machine_overflow_guard(
             out.push(Lir::IfUnreachableEnd);
         }
         Prim::Mul => {
+            // CONSTANT-MULTIPLIER FAST PATH (full-width signed `(* a C)`, `C` a compile-time constant).
+            // The general guard runs a `div_s` (the slowest integer op) on EVERY multiply; but for a
+            // known `C` the product `a*C` overflows iff `a` leaves the interval of `a`-values whose
+            // product fits — a compile-time-constant interval, tested with TWO compares. `MAX/C` and
+            // `MIN/C` truncate toward zero (Rust `/`), which is exactly the interval endpoints
+            // (brute-verified at every boundary, both signs of C):
+            //   C > 0: `aC` grows with `a` → fits iff `MIN/C <= a <= MAX/C`; trap iff `a > MAX/C || a < MIN/C`.
+            //   C < 0: `aC` shrinks with `a` → fits iff `MAX/C <= a <= MIN/C`; trap iff `a < MAX/C || a > MIN/C`.
+            // Eligible when `|C| >= 2` (`C ∈ {-1,0,1}` excluded: 0/1 fold in `lower`, and `C == -1` is the
+            // negation whose `MIN/-1 = 2^63` bound is NOT i64-representable — `i64::MIN / -1` even panics —
+            // so `-1` keeps the `div_s` guard) AND `C` is not a POSITIVE power of two (already
+            // strength-reduced to a shift; a NEGATIVE power like `-2`/`-4` is not, so it IS eligible here).
+            // Full-width only (the machine slot extremes ARE the type bounds); unsigned and narrow keep the
+            // `div_s` round-trip below.
+            if !m.narrow()
+                && m.signed
+                && let Some((a_src, c)) = const_operand_split(Prim::Mul, sa, sb)
+                && c.unsigned_abs() >= 2
+                && !(c > 0 && (c & (c - 1)) == 0)
+            {
+                let (slot_min, slot_max) = if m.slot32 {
+                    (i32::MIN as i64, i32::MAX as i64)
+                } else {
+                    (i64::MIN, i64::MAX)
+                };
+                // The interval endpoints (both trunc-toward-zero); which compare traps depends on C's sign.
+                // C>0: a > MAX/C (upper) or a < MIN/C (lower). C<0: a < MAX/C (lower) or a > MIN/C (upper).
+                let (lt_bound, gt_bound) = if c > 0 {
+                    (slot_min / c, slot_max / c) // trap if a < MIN/C  or  a > MAX/C
+                } else {
+                    (slot_max / c, slot_min / c) // trap if a < MAX/C  or  a > MIN/C
+                };
+                a_src.push(out);
+                out.push(m.konst(gt_bound));
+                out.push(m.gt_s());
+                out.push(Lir::IfUnreachableEnd);
+                a_src.push(out);
+                out.push(m.konst(lt_bound));
+                out.push(m.lt_s());
+                out.push(Lir::IfUnreachableEnd);
+                return;
+            }
             // mul: `if a≠0 { if r/a ≠ b { unreachable } }` — guards div against a=0 (a=0 can't overflow);
             // the machine `div_s` traps on MIN/-1 itself (the sole case `r/a` can't detect at full width),
             // `div_u` is total for a≠0. Runs at every width — a narrow product can exceed the slot too.
@@ -5104,14 +5443,26 @@ fn compare_op(op: Prim, it: IntTy) -> Lir {
 fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
     // A boolean operand is an i32; represent that as a signed ≤32-bit width so `compare_op` picks i32.
     let bool_as_i32 = IntTy::fixed(true, 32);
-    match type_of(db, lhs) {
-        Ty::Int(it) => it,
-        Ty::Bool => bool_as_i32,
-        _ => match type_of(db, rhs) {
-            Ty::Int(it) => it,
-            Ty::Bool => bool_as_i32,
-            _ => IntTy::i64(),
-        },
+    let lt = type_of(db, lhs);
+    let rt = type_of(db, rhs);
+    // Both operands share ONE machine width. Prefer whichever carries a CONCRETELY-fixed integer width
+    // (a narrow-typed variable `n : UInt8` pins the pair to i32) over a still-DEFERRED bare literal (whose
+    // width defaults to i64). POSITION-INDEPENDENT: `(< 1 n)` and `(< n 1)` both pick `n`'s width. Reading
+    // `lhs` first unconditionally emitted a deferred LEFT literal at its i64 default beside the i32
+    // variable → a mismatched operand pair → INVALID WASM ("expected i64, found i32"). This is the emit-
+    // side companion of the `unify_width`/`unify_sign` inference fix (which links an ARITH op's operands
+    // through its shared result-width var); a COMPARISON's result is `Bool`, so its operand widths are not
+    // carried on a result var and must be reconciled HERE from the operands' own types. A grounded literal
+    // is then narrowed by `emit_operand` at the shared width, whichever side it is on.
+    let concrete =
+        |t: &Ty| matches!(t, Ty::Int(it) if matches!(it.width, crate::ty::Width::Fixed(_)));
+    match (&lt, &rt) {
+        (Ty::Int(it), _) if concrete(&lt) => *it,
+        (_, Ty::Int(it)) if concrete(&rt) => *it,
+        (Ty::Int(it), _) => *it,
+        (_, Ty::Int(it)) => *it,
+        (Ty::Bool, _) | (_, Ty::Bool) => bool_as_i32,
+        _ => IntTy::i64(),
     }
 }
 
@@ -5238,6 +5589,53 @@ mod tests {
     }
 
     #[test]
+    fn a_negated_if_condition_swaps_branches_and_drops_the_eqz() {
+        // `(if (not c) a b)` ≡ `(if c b a)`: the negation is absorbed by swapping the branches — no
+        // `i32.eqz`. It then selects branchlessly (leaf branches): `b ; a ; c ; select`, where the
+        // branch operands are swapped (else-then `a`, then-first `b`) vs the un-negated `(if c a b)`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) (if (not c) a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(2), // b (the else branch, now first — swapped)
+                Lir::LocalGet(1), // a (the then branch)
+                Lir::LocalGet(0), // c (the un-negated condition)
+                Lir::Select,
+            ],
+            "the negation is absorbed by the branch swap — no i32.eqz"
+        );
+        assert!(
+            !f.code.contains(&Lir::I32Eqz),
+            "the `not` must be gone (swapped into the branch order), got: {:?}",
+            f.code
+        );
+        // A double negation `(if (not (not c)) a b)` cancels back to the un-swapped order `a ; b ; c`.
+        let ast2 = crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) (if (not (not c)) a b)) (def (main) 0) (export main))",
+        );
+        let mut db2 = Db::load(ast2);
+        let layout2 = layout_of(&mut db2);
+        let (params2, body2) = function_of(&mut db2, "f");
+        let f2 = select_function(&mut db2, body2, &params2, &layout2).expect("select");
+        assert_eq!(
+            f2.code,
+            vec![
+                Lir::LocalGet(1),
+                Lir::LocalGet(2),
+                Lir::LocalGet(0),
+                Lir::Select
+            ],
+            "double negation cancels — branches back in original order, no eqz"
+        );
+    }
+
+    #[test]
     fn keeps_the_structured_if_when_a_branch_is_not_a_cheap_leaf() {
         // A branch that is NOT a cheap trap-free leaf (here `(+ a a)`, a checked add) must keep the
         // structured `if`/`else`/`end`: `select` evaluates BOTH branches unconditionally, so converting
@@ -5260,6 +5658,61 @@ mod tests {
             !f.code.contains(&Lir::Select),
             "a non-leaf branch must NOT use select, got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn a_two_arm_match_with_leaf_bodies_selects() {
+        // The match analogue of the `if`→`select` rewrite: a 2-arm scalar/bool match with a literal
+        // probe + wildcard (or the two Bool literals) and cheap trap-free LEAF bodies emits a branchless
+        // `select`, not an `if`/`else`. `(match n (0 a) (_ b))` → `a ; b ; (n eqz) ; select` (the 0-probe
+        // uses `eqz`, cycle-43); `(match p (true a) (false b))` → `a ; b ; p ; select` (a Bool IS its own
+        // condition — no `p == 1` compare). A NON-leaf body / a guard / >2 arms keeps the probe chain.
+        let lir = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // (match n (0 a) (_ b)) → a ; b ; n ; eqz ; select.
+        let zero = lir(
+            "(module m (def (f (: n Int64) (: a Int64) (: b Int64)) (match n (0 a) (_ b))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            zero,
+            vec![
+                Lir::LocalGet(1), // a
+                Lir::LocalGet(2), // b
+                Lir::LocalGet(0), // n
+                Lir::I64Eqz,      // n == 0
+                Lir::Select,
+            ],
+            "a 2-arm 0-probe match selects with eqz"
+        );
+        // (match p (true a) (false b)) → a ; b ; p ; select — no `p == 1` compare (a Bool is the cond).
+        let boolm = lir(
+            "(module m (def (f (: p Bool) (: a Int64) (: b Int64)) (match p (true a) (false b))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            boolm,
+            vec![
+                Lir::LocalGet(1),
+                Lir::LocalGet(2),
+                Lir::LocalGet(0),
+                Lir::Select,
+            ],
+            "a Bool 2-arm match selects on the bare condition"
+        );
+        // A NON-leaf body keeps the structured if (no select).
+        let nonleaf = lir(
+            "(module m (def (f (: n Int64) (: a Int64) (: b Int64)) (match n (0 (+ a 1)) (_ b))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !nonleaf.contains(&Lir::Select) && nonleaf.iter().any(|i| matches!(i, Lir::If(_))),
+            "a non-leaf arm body keeps the if, got: {nonleaf:?}"
         );
     }
 
@@ -5404,8 +5857,10 @@ mod tests {
 
     #[test]
     fn multiply_by_a_non_power_of_two_keeps_the_checked_multiply() {
-        // (* n 3) — 3 is not a power of two, so the strength reduction does NOT fire; the checked
-        // multiply (with its division-based overflow guard) stays.
+        // (* n 3) — 3 is not a power of two, so the strength reduction to a shift does NOT fire: the
+        // checked `i64.mul` stays. Its overflow guard, however, is the CONST-MULTIPLIER bound check
+        // (`n > MAX/3 || n < MIN/3 → trap`), NOT the general `div_s` round-trip — a constant `C > 0`
+        // multiplier lets two compile-time-constant compares replace the hardware divide.
         let ast = crate::testkit::parse(
             "(module m (def (f (: n Int64)) (* n 3)) (def (main) 0) (export main))",
         );
@@ -5421,6 +5876,37 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::I64Shl)),
             "a non-power-of-two multiply does not become a shift"
+        );
+        // The const-multiplier overflow guard is a bound check, NOT a `div_s` round-trip.
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64DivS)),
+            "a full-width const multiply's guard is a bound check, not div_s, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::ConstI64(i64::MAX / 3))
+                && f.code.contains(&Lir::ConstI64(i64::MIN / 3)),
+            "the guard compares against MAX/3 and MIN/3, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_non_const_multiply_keeps_the_div_s_guard() {
+        // Only a CONSTANT multiplier gets the bound check; a two-runtime-operand `(* a b)` keeps the
+        // general `div_s` round-trip guard (`if a≠0 { r/a≠b → trap }`) — there is no compile-time bound
+        // to compare against.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (* a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::I64DivS),
+            "a runtime-operand multiply keeps the div_s guard, got: {:?}",
+            f.code
         );
     }
 

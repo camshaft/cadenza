@@ -157,13 +157,32 @@ pub fn emit(
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
     // LAMBDA-LIFTED closures emit as standalone functions AFTER the def functions (their wasm indices
-    // are `import_base + order.len() + slot`, which the funcref element section points at). Each is a
-    // single-arity `(param) -> result` function selected like a def body: its param occupies local slot
-    // 0, its body is the returned expression. The lifted set is fixed at layout time (in table-slot
-    // order); empty for a program with no runtime closure (byte-identical to before).
-    for lifted in layout.lifted.clone() {
-        let params = vec![(lifted.param, lifted.param_ty.clone())];
-        funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
+    // are `import_base + order.len() + slot`, which the funcref element section points at). Each is
+    // UNIFORMLY an `(env, param) -> result` function: local slot 0 is the closure CELL (the env — read
+    // by `Core::Captured` as `arr-get(local 0, 1+index)`), slot 1 is the lambda's own parameter. So the
+    // params list PREPENDS an env parameter (an i32 handle) whose binder key is the lifted body itself
+    // (a `StructId` nothing resolves to as a `Core::Param`, so it claims slot 0 without shadowing).
+    // The lifted set is fixed at layout time (in table-slot order); empty for a closure-free program.
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        // The env's type is any type whose machine rep is an i32 HANDLE (the closure cell) — `Ty::Bytes`
+        // is a heap-handle leaf (`valtype_of` → i32), used here purely as the "i32 handle" marker for the
+        // env slot. The env's slot-map KEY must be a node NOTHING in the body resolves to (the body reads
+        // the env only via `Core::Captured` → `local.get 0`, never by name) — so a FRESH synthesized atom,
+        // NOT the body occurrence (which would make `select`'s `slots.get(body)` return slot 0 and emit the
+        // env instead of the body).
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        // An UNREACHED lifted lambda (demanded during type-checking / a fold that erased it — no reachable
+        // `Core::Closure` builds it) is emitted as an inert STUB with the same signature but a trivial body
+        // (return a zero of the result type). It is never called (its funcref-table entry is omitted), so a
+        // stub keeps the function-index space + type section consistent without carrying the dead lambda's
+        // (possibly ill-formed) body. A REACHED lambda selects its real body.
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
     }
 
     // Serialize the embedded core module (multi-export core module, functions in emission order). The
@@ -220,10 +239,20 @@ pub fn emit(
             }
             let why = if multi_export {
                 "a compound result crosses the host boundary only as the single export's result (this program has multiple exports)"
-            } else {
-                // A single export reached here (the nullary-single case escaped above), so it is
-                // parameterized — the resource-escape path covers only a NULLARY compound export.
+            } else if !e.params.is_empty() {
+                // A single PARAMETERIZED export — the resource-escape path covers only a NULLARY compound
+                // export, so a compound return from a function that takes a parameter declines here.
                 "a compound result escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized compound return is not yet supported)"
+            } else {
+                // A single NULLARY export whose compound result reached here — the resource-escape path
+                // above TRIED and its value-form template was `None`: the result has no runtime value form
+                // yet. This is the RECURSIVE-sum / dynamic-shape case (a self-referential `(type IntList
+                // (Cons (Tuple Int64 IntList)) Nil)` built at runtime has an UNBOUNDED static shape, so the
+                // `encode()` walker would need to LOOP to a runtime-determined depth — the analogue of the
+                // runtime-`Bytes` looping walker, a later increment). The honest reason is the missing
+                // walker, NOT a (non-existent) parameter — `main` is nullary. Consuming such a value to a
+                // scalar already works; only rendering it as the boundary result is deferred.
+                "rendering this compound as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / dynamic-shape result is not yet emitted); folding it to a scalar works"
             };
             return Err(Reject::decline(format!(
                 "returning a {} from `{}`: {why}",

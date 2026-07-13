@@ -319,10 +319,63 @@ fn ctor_arrow(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId 
     // Wrap right-to-left in `(-> payload …)` so the arrow curries in declaration order.
     for &payload in variant.payloads.iter().rev() {
         let arrow = push_atom(ast, Leaf::Name("->".to_string()));
-        let p = copy_subtree(ast, payload);
+        let p = copy_payload_type(ast, payload, decl);
         ty = push_list(ast, vec![arrow, p, ty]);
     }
     ty
+}
+
+/// Copy a payload TYPE occurrence for a constructor arrow, rewriting a BARE SELF-REFERENCE in a GENERIC
+/// sum to carry the declaration's own type parameters. In `(type Tree (Leaf a) (Branch (Tuple Tree
+/// Tree)))` the bare `Tree` in the payload is the sum applied to its OWN params — `(Tree a)` — exactly
+/// as the constructor's RESULT type is (`sum_applied`). Without this rewrite a bare `Tree` reduced to the
+/// args-LESS `Ty::Sum{args:[]}`, which does not unify with the `(Tree a)` a `Branch` value carries →
+/// `cannot unify Tree with (Tree Int64)`. This is the generic analogue of a MONOMORPHIC sum's bare
+/// self-reference (`(Tuple Int64 IntList)`), which needs no rewrite (no params to apply); so the rewrite
+/// fires ONLY when the sum has params AND the payload names the sum bare (an already-applied `(Tree X)`
+/// or an unrelated type is copied verbatim by `copy_subtree`). Descends compound payloads (`(Tuple Tree
+/// Tree)`, `(List Tree)`, `(Option Tree)`) so a self-reference at any depth is rewritten.
+fn copy_payload_type(ast: &mut Arenas, node: StructId, decl: &TypeDecl) -> StructId {
+    if decl.params.is_empty() {
+        // Monomorphic — a bare self-reference is already the whole type; nothing to apply.
+        return copy_subtree(ast, node);
+    }
+    match ast.get(node).clone() {
+        // A bare atom naming THIS sum — rewrite `Tree` → `(Tree a b…)` (the decl's params), the same
+        // form `sum_applied` builds for the result type. Any other name is copied verbatim.
+        Struct::Atom(lid) => {
+            if let Leaf::Name(n) = ast.leaf(lid).clone()
+                && n == decl.name
+            {
+                return sum_applied(ast, decl);
+            }
+            copy_subtree(ast, node)
+        }
+        // A compound type expr — descend so a self-reference nested in `(Tuple …)`/`(List …)`/`(Option
+        // …)` is rewritten too. CRUCIAL: if this list is ALREADY an application of the sum to arguments
+        // (`(Tree a)` — head atom == the sum name), the head must be copied VERBATIM, not re-applied:
+        // rewriting it would produce `((Tree a) a)`. So a self-named head is left as the bare application
+        // head; only the ARGUMENTS are descended (they may hold deeper self-refs). Any other head
+        // (`Tuple`/`List`/`Option`/`->`) is an ordinary type-ctor whose children all get the rewrite.
+        Struct::List(children) => {
+            let head_is_self = children
+                .first()
+                .and_then(|&c| ast.as_name(c).map(|n| n == decl.name))
+                .unwrap_or(false);
+            let copied: Vec<StructId> = children
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| {
+                    if head_is_self && i == 0 {
+                        copy_subtree(ast, c) // the application head — verbatim, not re-applied
+                    } else {
+                        copy_payload_type(ast, c, decl)
+                    }
+                })
+                .collect();
+            push_list(ast, copied)
+        }
+    }
 }
 
 /// The sum the constructor produces, as a type expression: for a GENERIC sum, the sum NAME applied to
