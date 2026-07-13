@@ -452,9 +452,16 @@ the component type. The new work:
   `emit_distinct_sig_roundtrip_resource`'s "neither a producer nor a consumer" decline now collects the
   export as plain. cdz-run unchanged. +6 corpus (single-sig RT + plain, both driven + parameterized plain;
   distinct-sig RT + plain, both signature sides + the plain driven). Gate 1329p/0f.
-- **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
-  into the value-heap escape's encode/decode); a compound-RESULT plain export alongside a closure (needs
-  the memory/realloc lift shape); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
+- **✅ NOMINAL-over-scalar closure boundary PINNED `@80f50beb` (corpus-only).** A single-variant nominal
+  (`(type UserId (Mk Int64))`) erases to its underlying scalar (type-system.md §156), so a closure whose
+  arg/result is such a nominal ALREADY crosses as the scalar — `closure_boundary_byte` peels via
+  `strip_nominal`, and the emitted `call` functype is `(own<t>) -> s64` (the nominal peeled, NO wrapper
+  resource). Worked but was uncovered; +5 corpus (nominal result, nominal arg, capturing→nominal,
+  round-trip through a nominal, nominal-over-Bool — the peel is kind-agnostic). Gate 1351p/0f.
+- **REMAINING (all optional, none blocking):** a compound (String/Bytes/tuple/list) closure ARG-or-RESULT
+  (recursion into the value-heap escape's encode/decode); a compound-RESULT plain export alongside a closure
+  (compose the closure envelope with the value-escape's memory/realloc/t-encode `cadenza:run/run` shape — a
+  large two-envelope composition); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
   wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
 
 ## Risks / open questions

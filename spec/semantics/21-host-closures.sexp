@@ -990,3 +990,60 @@
               (export adder) (export appa) (export isz) (export appb) (export two)))
   (call   two)
   (output (: 2 Int64)))
+
+; NOMINAL-over-scalar at the closure boundary. A single-variant nominal like `(type UserId (Mk Int64))`
+; ERASES to its underlying scalar at run time (type-system.md §156 — the tag "adds nothing to the value's
+; runtime representation"), so a closure whose arg or result is such a nominal crosses the `call` boundary
+; as the underlying scalar (`UserId` → `s64`), the tag stripped. `closure_boundary_byte` peels the nominal
+; (`strip_nominal`) to pick the boundary byte, and the core `call` functype uses the scalar valtype — so
+; the host sends/receives a plain scalar and the nominal identity is a compile-time-only concern. These pin
+; that the nominal is transparent at the boundary (the host sees the scalar, not a wrapper resource).
+
+(case "a closure returning a nominal-over-scalar crosses as the underlying scalar"
+  (doc    "`(type UserId (Mk Int64))` + `(fn (x) (Mk x))` — the closure result type is `UserId`, which
+           erases to Int64. The `call` method's result functype is `s64` (the nominal peeled), so
+           `call(handle, 42)` returns 42 rendered as the scalar. Pins that a nominal result is transparent
+           at the host boundary — no wrapper resource, just the underlying scalar.")
+  (input  (do (type UserId (Mk Int64)) (def (main) (fn ((: x Int64)) (Mk x))) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
+
+(case "a closure taking a nominal-over-scalar argument receives the underlying scalar"
+  (doc    "`(fn (u) (+ (unwrap u) 1))` where `u : UserId` — the closure's ARG is a nominal, crossing as
+           Int64. The host passes 7, the guest matches out the payload (`(Mk n) → n`), adds 1 → 8. Pins the
+           nominal ARG side of the boundary (companion to the result case).")
+  (input  (do (type UserId (Mk Int64))
+              (def (unwrap (: u UserId)) (match u ((Mk n) n)))
+              (def (main) (fn ((: u UserId)) (+ (unwrap u) 1)))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: 8 Int64)))
+
+(case "a capturing closure returning a nominal-over-scalar"
+  (doc    "`(def (tagger base) (fn (x) (Mk (+ x base))))` captures `base` and returns a `Tag` (nominal over
+           Int64). `make(100)` builds a closure over base=100, then `call(handle, 5)` = Mk(105) → 105 at
+           the boundary. Composes make-param capture with a nominal result.")
+  (input  (do (type Tag (Mk Int64))
+              (def (tagger (: base Int64)) (fn ((: x Int64)) (Mk (+ x base))))
+              (export tagger)))
+  (call   tagger (: 100 Int64) (: 5 Int64))
+  (output (: 105 Int64)))
+
+(case "a round-trip consumer applies a closure whose result is a nominal-over-scalar"
+  (doc    "Producer `mk : () -> (-> Int64 Tag)` mints a closure returning `Tag`; consumer `app` takes it
+           back, applies it, matches out the payload and doubles it. `mk()` → a handle → `app(handle, 7)` =
+           `(Mk 7)` → 14. Pins a nominal-result closure through the round trip (produce + consume).")
+  (input  (do (type Tag (Mk Int64))
+              (def (mk) (fn ((: x Int64)) (Mk x)))
+              (def (app (: g (-> Int64 Tag)) (: x Int64)) (match (g x) ((Mk n) (* n 2))))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: 14 Int64)))
+
+(case "a closure returning a nominal-over-Bool erases to bool at the boundary"
+  (doc    "`(type Flag (Mk Bool))` + `(fn (x) (Mk (> x 0)))` — a nominal over Bool, not Int. The `call`
+           result crosses as `bool` (the peeled underlying type), so `call(handle, 5)` = Mk(true) → true.
+           Confirms the nominal peel is width/kind-agnostic (Bool underlying, not only integers).")
+  (input  (do (type Flag (Mk Bool)) (def (main) (fn ((: x Int64)) (Mk (> x 0)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: true Bool)))

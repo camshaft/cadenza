@@ -97,6 +97,7 @@ pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure returning a nominal-over-scalar
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure with a let binding in its body
@@ -128,6 +129,9 @@ pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning a boolean is called by the host
+pass	a closure returning a nominal-over-Bool erases to bool at the boundary
+pass	a closure returning a nominal-over-scalar crosses as the underlying scalar
+pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
 pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
@@ -570,6 +574,7 @@ pass	a round-trip alongside a parameterized plain export applies its argument
 pass	a round-trip alongside a plain export — the plain export runs
 pass	a round-trip alongside a plain export — the round-trip still works
 pass	a round-trip at a widened scalar width (UInt32)
+pass	a round-trip consumer applies a closure whose result is a nominal-over-scalar
 pass	a round-trip consumer applies the closure in a match wildcard arm
 pass	a round-trip consumer applies the closure only in the taken if-branch
 pass	a round-trip consumer binds the applied closure through a let
@@ -897,6 +902,7 @@ pass	an unannotated closure parameter is grounded from its body and applied at r
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
+pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected

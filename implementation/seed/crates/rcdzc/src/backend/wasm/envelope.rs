@@ -3923,6 +3923,21 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 /// result form is `00 <valtype>` for one result (a primitive's own byte, or a DEFINED type by index for
 /// a `list<u8>`), `01 00` for none. `list_type_idx` is the component-type index of the shared `list u8`
 /// defined type, referenced when the result is [`BoundaryResult::Bytes`].
+///
+/// This is a PLAIN `params → result` function type: nothing beyond the input and output — no resume
+/// parameter, no suspension/trap arm on the result. A trap is the wasm-level out-of-band halt the
+/// embedder observes, not a variant the result declares; how a host suspends/resumes a host call is its
+/// own policy the ABI does not represent. The params and result each carry a boundary valtype fixed by
+/// this contract (`BoundaryExport` built from `export_result`/param selection), lowered/lifted by the
+/// same canonical-ABI convention any boundary value uses.
+//= spec/contracts/component-abi.md#the-entry-is-a-plain-function
+//# The entry's exported signature MUST be a plain function from the program's input type to its result type, carrying no additional outcome arm — no suspension outcome and no injected trap outcome — so that a run either returns its result value or halts out-of-band, and the interface declares nothing beyond `input -> output`.
+//= spec/contracts/component-abi.md#the-entry-is-a-plain-function
+//# The entry MUST NOT carry a resume parameter and its result MUST NOT encode a pending host call or a position in the program's execution, so that how a host call suspends and resumes is host runtime policy the ABI does not represent (capabilities-and-effects.md §A Host Call Returns A Response) and the same emitted bytes serve a host that answers inline, one that suspends a fiber and resumes in place, and one that tears down and replays from a log.
+//= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
+//# The entry's parameter and result types MUST each have a boundary representation fixed by this contract.
+//= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
+//# The entry's input and output MUST lower and lift across the boundary by the same calling convention as any other boundary value.
 fn comp_functype(e: &BoundaryExport, list_type_idx: u32) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM]; // function type form
     let mut param_items = Vec::new();

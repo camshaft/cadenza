@@ -1484,12 +1484,28 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 None => false,
             };
             if redundant && db.is_user_node(*pat) {
-                out.push(Diagnostic::warning(
+                let mut diag = Diagnostic::warning(
                     crate::diag::Code::RedundantArm,
                     "this match arm is unreachable — an earlier arm already covers every value it \
                      would match (a duplicate or a pattern shadowed by an earlier catch-all)",
                     Some(*pat),
-                ));
+                );
+                // The rustc-gold repair: DELETE the whole `(<pattern> <body>)` arm. An unreachable arm
+                // never matches, so removing it is behaviour-preserving (it cannot change which arm runs
+                // or any value) — but heuristic, not verified: a redundant arm is often a PATTERN BUG (the
+                // author meant a different, reachable pattern), so an agent confirms the delete rather than
+                // applying it blind. The delete targets the ARM node (`(pattern body)` list = the pattern's
+                // parent), not the pattern alone, so pattern AND body go together. Only when that arm node
+                // is itself a user node (an editable source span).
+                if let Some(arm) = db.parent_of(*pat)
+                    && db.is_user_node(arm)
+                {
+                    diag = diag.with_fix(&crate::diag::Fix::delete_heuristic(
+                        arm,
+                        "remove this unreachable arm",
+                    ));
+                }
+                out.push(diag);
             }
             match cover {
                 Some(ArmCover::CatchAll) => catch_all_seen = true,

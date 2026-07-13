@@ -830,7 +830,18 @@ fn op_get_bool(h: Handle) -> bool {
     with_node(h, false, |n| n.raw.first().is_some_and(|&b| b != 0))
 }
 fn op_box_float(v: f64) -> Handle {
-    alloc_raw(Vec::new(), Raw::inline(&v.to_bits().to_le_bytes())) // 8-byte scalar: inline, no heap raw
+    // Normalize-on-construct to the CANONICAL byte form (deterministic-value-form.md §A Value Has One
+    // Canonical Byte Form): every NaN — of ANY bit pattern (a distinct literal NaN, or a runtime
+    // arithmetic NaN like `0.0/0.0` whose payload/sign wasm need not fix) — collapses to the ONE
+    // canonical quiet NaN `f64::NAN.to_bits()`, exactly the pattern the compiler's `ConstFloatNan`
+    // emits. Without this, two NaN values with differing bits would be DISTINCT map/set keys and
+    // structurally-unequal under `champ_hash`/`champ_eq` (which compare raw bytes), whereas the spec's
+    // canonical form makes every NaN equal to every NaN. A NON-NaN value (incl. ±0.0 and ±inf) keeps
+    // its bits verbatim, so `-0.0` stays DISTINCT from `0.0` (their canonical forms genuinely differ).
+    // This is the float twin of `op_box_int`'s normalize-on-construct: `box-float` is the SOLE producer
+    // of a float leaf, so canonicalizing here guarantees every stored float has one byte form.
+    let bits = if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() };
+    alloc_raw(Vec::new(), Raw::inline(&bits.to_le_bytes())) // 8-byte scalar: inline, no heap raw
 }
 fn op_get_float(h: Handle) -> f64 {
     if is_immediate(h) {
@@ -6126,6 +6137,60 @@ mod tests {
             op_drop(h);
         }
         assert_eq!(live_nodes(), 0, "no leak");
+    }
+
+    /// `op_box_float` normalizes every NaN — of ANY bit pattern — to the ONE canonical quiet NaN
+    /// (`f64::NAN.to_bits()`), so a float leaf has a single canonical byte form (deterministic-value-
+    /// form.md). Two NaN values that differ ONLY in their (unobservable) payload/sign bits must therefore
+    /// box to byte-IDENTICAL leaves and be equal under `champ_eq` / hash-identical under `champ_hash` —
+    /// otherwise they would be distinct map/set keys, violating the spec (every NaN equals every NaN). A
+    /// finite value keeps its bits, so `-0.0` stays DISTINCT from `0.0`.
+    #[test]
+    fn box_float_canonicalizes_nan_to_one_byte_form() {
+        reset();
+        let before = live_nodes();
+
+        // Two DIFFERENT NaN bit patterns (a signaling-ish NaN with payload, and a sign-bit-set NaN).
+        let nan_a = f64::from_bits(0x7ff8_0000_0000_0001); // quiet NaN, payload 1
+        let nan_b = f64::from_bits(0xfff8_0000_dead_beef); // sign bit + different payload
+        assert!(nan_a.is_nan() && nan_b.is_nan());
+        assert_ne!(nan_a.to_bits(), nan_b.to_bits(), "the two source NaNs differ in raw bits");
+
+        let a = op_box_float(nan_a);
+        let b = op_box_float(nan_b);
+        // Both stored as the canonical NaN → byte-identical leaves → champ_eq true, champ_hash equal.
+        assert_eq!(
+            op_get_float(a).to_bits(),
+            f64::NAN.to_bits(),
+            "a boxed NaN reads back as the canonical quiet NaN"
+        );
+        assert_eq!(op_get_float(b).to_bits(), f64::NAN.to_bits());
+        assert!(champ_eq(a, b), "two NaN values are structurally EQUAL (one canonical form)");
+        assert_eq!(champ_hash(a), champ_hash(b), "…and hash identically (so they are the SAME map key)");
+        // A NaN also equals the canonical `f64::NAN` produced the ordinary way.
+        let c = op_box_float(f64::NAN);
+        assert!(champ_eq(a, c) && champ_hash(a) == champ_hash(c));
+        op_drop(a);
+        op_drop(b);
+        op_drop(c);
+
+        // -0.0 and 0.0 keep their DISTINCT byte forms (only NaN is collapsed): NOT equal, NOT same key.
+        let zpos = op_box_float(0.0);
+        let zneg = op_box_float(-0.0);
+        assert_eq!(op_get_float(zneg).to_bits(), (-0.0f64).to_bits(), "-0.0 keeps its sign bit");
+        assert!(!champ_eq(zpos, zneg), "-0.0 ≠ 0.0 (distinct canonical byte forms)");
+        op_drop(zpos);
+        op_drop(zneg);
+
+        // ±inf keep their bits too (finite-check is is_nan, not is_finite).
+        let inf = op_box_float(f64::INFINITY);
+        let ninf = op_box_float(f64::NEG_INFINITY);
+        assert_eq!(op_get_float(inf).to_bits(), f64::INFINITY.to_bits(), "inf unchanged");
+        assert!(!champ_eq(inf, ninf), "+inf ≠ -inf");
+        op_drop(inf);
+        op_drop(ninf);
+
+        assert_eq!(live_nodes(), before, "no leak: every float value dropped");
     }
 
     fn alloc_calls() -> u64 {

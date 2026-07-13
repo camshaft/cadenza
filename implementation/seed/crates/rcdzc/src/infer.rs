@@ -1172,6 +1172,23 @@ fn collect_param_constraints(
                     Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some() => {
                         arg_ty_in_env(db, body, env, subst)
                     }
+                    // A PAYLOAD BINDER of the scrutinee being solved — `n` in `(match t ((Tree.Leaf n) n)
+                    // …)` returned directly by the arm. Its type is `t`'s local instantiation walked down
+                    // the payload path (`arg_ty_in_env`'s `SumPayload` case); a still-open var (a generic
+                    // sum's payload `a` not yet pinned) makes this arm a pass-through a sibling's
+                    // determined type fixes — solving the generic arg. A binder whose type is already
+                    // determined (a concrete-payload sum) is NOT open (falls through, supplies its type).
+                    Resolved::SumPayload { scrutinee, .. }
+                        if matches!(
+                            resolved_of(db, scrutinee),
+                            Resolved::Ref { value } if env.contains_key(&value)
+                        ) || matches!(
+                            resolved_of(db, scrutinee),
+                            Resolved::Param { binder } if env.contains_key(&binder)
+                        ) =>
+                    {
+                        arg_ty_in_env(db, body, env, subst)
+                    }
                     _ => return None,
                 };
                 // Open iff it applies to a bare var — a solved/annotated type supplies, not borrows.
@@ -1351,11 +1368,77 @@ fn arg_ty_in_env(
                 return cur;
             }
         }
+        // A PAYLOAD BINDER of the parameter being solved — `n` in `(match t ((Tree.Leaf n) …))`, which
+        // resolves to a `SumPayload` reading `t` down a path. Its type must be walked from `t`'s LOCAL
+        // instantiation (`Tree ?a1`, set by the scrutinee shape-unify), NOT from `type_of(SumPayload)`
+        // (which reads `t`'s type from the empty-mid-solve `db.param_types` → `Any`, disconnected from
+        // `?a1`). Walking the local subst links the binder's type to the sum's generic arg var, so pinning
+        // the binder (`n = Int64` via arms-agree) pins `?a1` — solving a GENERIC recursive sum's parameter
+        // whose payload binder use / result fixes the instantiation. The analogue of the fn-param arrow
+        // peel above, for a data payload.
+        Resolved::SumPayload {
+            scrutinee,
+            steps,
+            heads,
+        } => {
+            let root = match resolved_of(db, scrutinee) {
+                Resolved::Ref { value } => env.get(&value).cloned(),
+                Resolved::Param { binder } => env.get(&binder).cloned(),
+                _ => None,
+            };
+            if let Some(root) = root {
+                return walk_payload_ty(db, subst.apply(&root), &steps, &heads, subst);
+            }
+        }
         _ => {}
     }
     // Not a parameter reference — its ordinary type. (Reads the type column; a nested op over a param
     // returns the op's result type, which the enclosing unify relates to the param var separately.)
     type_of(db, arg)
+}
+
+/// Walk `root` (a sum's LOCAL-subst instantiation) down a `SumPayload` access path — the same descent
+/// `type_of`'s `SumPayload` arm does, but starting from a caller-supplied type and re-applying `subst` at
+/// each step so the generic arg vars stay linked. A `Payload` step descends the variant's payload at the
+/// current instantiation (`payload_ty_at_instantiation`, or a nominal newtype's inner); an `Elem(i)` step
+/// descends a tuple element / a list's element. Used by `arg_ty_in_env` to type a payload binder of the
+/// parameter being solved against its local instantiation. `Ty::Any` on a malformed/unresolvable path.
+fn walk_payload_ty(
+    db: &mut Db,
+    root: Ty,
+    steps: &[crate::core::PathStep],
+    heads: &[StructId],
+    subst: &Subst,
+) -> Ty {
+    let mut cur = root;
+    let mut heads = heads.iter();
+    for step in steps {
+        cur = subst.apply(&cur);
+        cur = match step {
+            crate::core::PathStep::Payload => {
+                let Some(&head) = heads.next() else {
+                    return Ty::Any;
+                };
+                if let Ty::Nominal { inner, .. } = &cur {
+                    *inner.clone()
+                } else {
+                    match payload_ty_at_instantiation(db, head, &cur) {
+                        Some(t) => t,
+                        None => return Ty::Any,
+                    }
+                }
+            }
+            crate::core::PathStep::Elem(i) => match &cur {
+                Ty::Tuple(elems) => match elems.get(*i) {
+                    Some(t) => t.clone(),
+                    None => return Ty::Any,
+                },
+                Ty::List(elem) => (**elem).clone(),
+                _ => return Ty::Any,
+            },
+        };
+    }
+    subst.apply(&cur)
 }
 
 /// The type VARIABLE of the parameter a call HEAD names, if the head resolves (through a `Ref`) to a
