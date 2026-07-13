@@ -481,14 +481,23 @@ the component type. The new work:
   returns the retptr `0`. Reuses the value-escape's `to_bytes` copy-loop shape. Test
   `closure_bytes_resource_core_module_is_structurally_valid` (closure body builds `[x,x+1]` via
   `bytes-alloc`/`bytes-set`) — the shape `oracle_closure_list_component` proved runs. Gate 1352p/0f.
-- **REMAINING (all optional, none blocking):** wire the Bytes-result seam through the ENVELOPE (lift `call`
-  with Memory/Realloc — a `assemble_closure_bytes_resource` fork of `assemble_closure_resource`) + EMIT
-  (`closure_boundary_byte`/`emit_closure_resource` route a `Bytes` result to the bytes-`call` shape + import
-  `bytes-len`/`bytes-get`) + a corpus case, for the end-to-end `Bytes`-returning closure; then a
-  String/tuple/list result (reuse the escape's `encode` walker instead of the raw `to_bytes` copy); a compound
-  closure ARG (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a closure
-  TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
-  handle. Everything else DONE.
+- **✅✅ BYTES-RESULT CLOSURE COMPLETE — END-TO-END `@08f5343f`.** A closure whose result is a runtime
+  `Bytes` now crosses `call` as `list<u8>`, compiled by the real pipeline + run under the composed runtime.
+  (a) `envelope::assemble_closure_bytes_resource` — a fork of `assemble_closure_resource` that ALSO aliases
+  the program core's `memory` + `cabi_realloc` and lifts `call` with Memory/Realloc against `(self: own<t>,
+  args…) -> list<u8>` (`resource_inner_component_closure_bytes` types the result; `closure_call_list_functype`
+  is the functype). (b) `emit_closure_resource` — a `Bytes` result (peeling nominals, `ret_is_bytes`) routes
+  to the bytes core + memory/realloc envelope instead of declining; the used-set gains `bytes-len`/
+  `bytes-get`. The scalar path is unchanged; a compound ARG still declines (host→guest decode); other
+  compound results (String/tuple/list) still decline (they need the escape's `encode` walker). The closure
+  `call` returns a RAW `list<u8>` (the host reads the bytes directly), so the render is the byte sequence —
+  `call(5)` on `(fn (n) (bin (u8 n) (u8 n+1)))` → `(5 6)`. +3 corpus (Bytes closure ×2 args + a capturing
+  closure returning Bytes). Gate 1359p/0f.
+- **REMAINING (all optional, none blocking):** a String/tuple/list closure RESULT (reuse the escape's
+  `encode` walker + value-form framing instead of the raw `to_bytes` copy — the render would then be the
+  typed `(: … T)` form, not a bare byte list); a compound closure ARG (host→guest decode — harder); a
+  compound-RESULT plain export alongside a closure; a closure TRANSFORMER (`own<t>` both directions — cleanly
+  declined); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
 
 ## Risks / open questions
 
