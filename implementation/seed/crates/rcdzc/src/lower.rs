@@ -6686,6 +6686,18 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", result = eq, "folded constant compound equality (structural)");
                 return Core::ConstBool(eq);
             }
+            // BOOL-INT EQUALITY: `(= (if c 1 0) K)` / `(= (if c 0 1) K)` with `K` ∈ {0,1} — the `if` is a
+            // bool coerced to an int (0/1), so comparing it to 0/1 is just the condition or its negation:
+            // `(if c 1 0) == 1` → `c`, `== 0` → `!c`; `(if c 0 1)` is the mirror. Folds away the whole
+            // materialize-then-compare (`lt_s ; extend ; const 1 ; eq` → `lt_s`). Only for `Eq`, only a
+            // 0/1 constant against a `(if c <1> <0>)`-shaped bool-int (either operand order). Reuses `c`'s
+            // occurrence (no synthesis); `!c` is `Core::Not`. Verified value-identical over c ∈ {T,F}.
+            if matches!(op, Prim::Eq)
+                && let Some(folded) = fold_bool_int_eq(db, args[0], args[1])
+            {
+                trace!(target: "rcdzc::fold", "(= (if c 1 0) 0/1) folds to c / !c");
+                return folded;
+            }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
                 // SELF-COMPARISON: the two operands are the SAME value (`core_equiv`), so the ordering is
                 // fixed regardless of what that value is — `x < x`/`x > x` → false, `x <= x`/`x >= x`/`x =
@@ -6751,6 +6763,59 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 ))
             }
         }
+    }
+}
+
+/// Fold `(= <bool-int-if> K)` where `K` ∈ {0,1} and the other operand is a `(if c 1 0)` / `(if c 0 1)`
+/// (a boolean coerced to an integer). Returns `c` when the `if`-value equals `K`, `!c` (`Core::Not`) when
+/// it is the complement — dropping the materialize-then-compare. `None` when neither operand is a 0/1
+/// constant, or the other is not a `(if c <one> <zero>)`-shaped bool-int, so the caller keeps the runtime
+/// compare. Value-identical: `(if c 1 0)` is `1` iff `c` (so `== 1` is `c`, `== 0` is `!c`); `(if c 0 1)`
+/// is the mirror. `c` is trap-free by construction (it was an `if` condition, a Bool) and is REUSED, so
+/// no synthesis and no dropped trap. Only `Eq` (equality) — an ordering `<`/`>` against 0/1 is handled by
+/// the range fold (`[0,1]` vs a bound).
+fn fold_bool_int_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
+    // (the bool-int `if` node, the 0/1 constant K) in either operand order.
+    let as_const01 = |db: &mut Db, id: StructId| -> Option<i64> {
+        match core_of(db, id) {
+            Core::ConstInt(v) => v.to_i64().filter(|&k| k == 0 || k == 1),
+            _ => None,
+        }
+    };
+    let (if_node, k) = if let Some(k) = as_const01(db, rhs) {
+        (lhs, k)
+    } else if let Some(k) = as_const01(db, lhs) {
+        (rhs, k)
+    } else {
+        return None;
+    };
+    // The `if` must be `(if c <then> <else>)` with the branches the integer constants 1 and 0.
+    let Core::If {
+        cond,
+        then_,
+        else_,
+    } = core_of(db, if_node)
+    else {
+        return None;
+    };
+    let branch_val = |db: &mut Db, b: StructId| -> Option<i64> {
+        match core_of(db, b) {
+            Core::ConstInt(v) => v.to_i64().filter(|&x| x == 0 || x == 1),
+            _ => None,
+        }
+    };
+    let (t, e) = (branch_val(db, then_)?, branch_val(db, else_)?);
+    // `then`/`else` must be the two distinct values {1,0}. The `if`-value equals `t` when `c`, else `e`.
+    if !((t == 1 && e == 0) || (t == 0 && e == 1)) {
+        return None;
+    }
+    // `(if c t e) == k`: true exactly when the SELECTED branch equals k. Since one branch is 1 and the
+    // other 0, `== k` picks out the condition polarity: it holds under `c` iff `t == k`.
+    // t==k → the value equals k precisely when c holds → fold to `c`; else → `!c`.
+    if t == k {
+        Some(core_of(db, cond)) // (= (if c 1 0) 1) → c ;  (= (if c 0 1) 0) → c
+    } else {
+        Some(Core::Not { operand: cond }) // (= (if c 1 0) 0) → !c ; (= (if c 0 1) 1) → !c
     }
 }
 

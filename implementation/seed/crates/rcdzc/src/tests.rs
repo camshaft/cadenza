@@ -3324,6 +3324,56 @@ mod runtime_ops {
     }
 
     #[test]
+    fn comparing_a_bool_materialized_if_to_0_or_1_folds_to_the_condition() {
+        // `(= (if c 1 0) 1)` is just `c`; `(= (if c 1 0) 0)` is `!c`; `(if c 0 1)` is the mirror. The
+        // whole materialize-then-compare (`lt_s ; extend ; const 1 ; eq`) collapses to the condition — no
+        // `i32.eq`, no `extend`. Pins the fold at the Lir level and the value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout).expect("select").code
+        };
+        // `(= (if (< x 0) 1 0) 1)` → `(< x 0)`: exactly one compare (`lt_s`), NO `i32.eq`, NO extend.
+        let c = lir("(: x Int64)", "(= (if (< x 0) 1 0) 1)");
+        assert_eq!(
+            c.iter().filter(|i| matches!(i, Lir::I64LtS)).count(),
+            1,
+            "one lt_s compare only, got: {c:?}"
+        );
+        assert!(
+            !c.iter().any(|i| matches!(i, Lir::I32Eq | Lir::I64Eq | Lir::I64ExtendI32U)),
+            "the materialize-then-compare is folded away, got: {c:?}"
+        );
+        // VALUE PARITY across the four shapes (both K and both branch orders).
+        assert!(run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 1)", &[Val::S64(-1)])); // c → true
+        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 1)", &[Val::S64(5)]));
+        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 0)", &[Val::S64(-1)])); // !c
+        assert!(run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 0)", &[Val::S64(5)]));
+        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 0 1) 1)", &[Val::S64(-1)])); // flipped → !c
+        assert!(run::<bool>("(: x Int64)", "(= (if (< x 0) 0 1) 1)", &[Val::S64(5)]));
+        // A constant OTHER than 0/1 does NOT use this fold (range fold makes it false): (= bool-int 5).
+        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 5)", &[Val::S64(-1)]));
+    }
+
+    #[test]
     fn a_comparison_against_a_derived_range_bound_is_simplified() {
         use crate::backend::wasm::lir::Lir;
         use crate::backend::wasm::select::select_function;
