@@ -11879,6 +11879,85 @@ mod stage1 {
     }
 
     #[test]
+    fn newtype_underlying_reads_the_erased_structural_type() {
+        // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
+        // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
+        // predicate the erasure (N3/N4) keys off — the realization of `§Nominal Is An Orthogonal
+        // Modifier` (the tag adds nothing to the runtime representation).
+        use crate::db::Db;
+        use crate::infer::newtype_underlying;
+        use crate::testkit::parse;
+        use crate::ty::{IntTy, Ty};
+
+        let decl_of = |db: &Db, n: &str| db.type_decls.iter().find(|t| t.name == n).unwrap().occ;
+
+        // A newtype over a scalar → the scalar's type.
+        let ast = parse("(module m (type UserId (Mk Int64)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "UserId");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::Int(IntTy::i64())),
+            "a newtype over Int64 erases to Int64"
+        );
+
+        // A multi-payload single variant (a struct) → a tuple of the payload types.
+        let ast = parse("(module m (type Point (Mk Int64 Int64)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Point");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::Tuple(
+                vec![Ty::Int(IntTy::i64()), Ty::Int(IntTy::i64())].into()
+            )),
+            "a two-payload single variant erases to a 2-tuple"
+        );
+
+        // A nullary single variant (a unit tag) → Unit.
+        let ast = parse("(module m (type Marker (The)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Marker");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::Unit),
+            "a nullary single variant erases to Unit"
+        );
+
+        // A MULTI-variant sum is NOT a newtype (it needs the discriminant).
+        let ast = parse("(module m (type E (A Int64) (B Int64)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "E");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            None,
+            "a two-variant sum stays boxed"
+        );
+
+        // A RECURSIVE single-variant sum is NOT erased (its inner would be infinite / inconsistently
+        // boxed) — the recursion guard declines.
+        let ast = parse(
+            "(module m (type Stream (More (Tuple Int64 Stream))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Stream");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            None,
+            "a recursive single-variant sum stays boxed"
+        );
+
+        // A GENERIC single-variant sum stays boxed for now (erasure is monomorphic-only this increment).
+        let ast = parse("(module m (type Box (Mk a)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Box");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            None,
+            "a generic single-variant sum stays boxed (monomorphic-only erasure)"
+        );
+    }
+
+    #[test]
     fn a_generic_sum_monomorphizes_at_a_concrete_instantiation() {
         // A GENERIC sum `(type Option (Some a) None)` has an implicit type parameter `a` (a free
         // lowercase name in a payload). `(Option Int64)` in type position APPLIES the sum constructor,

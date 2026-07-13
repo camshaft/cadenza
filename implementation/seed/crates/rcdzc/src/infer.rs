@@ -1324,6 +1324,73 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
+/// The UNDERLYING structural type of the nominal NEWTYPE declared at `decl`, or `None` if `decl` is not
+/// an erasable newtype (so it stays an ordinary boxed `Ty::Sum`). A newtype is a SINGLE-variant sum
+/// whose runtime box is erased — the realization of `type-system.md §Nominal Is An Orthogonal Modifier`
+/// (the tag "adds nothing to the value's runtime representation", §156). The returned type is the
+/// nominal's `inner` (a caller wraps it as `Ty::Nominal { decl, name, inner }`); the underlying shape:
+///  - 0 payloads (`(type Marker (The))`) → `Ty::Unit`,
+///  - 1 payload  (`(type UserId (Mk Int64))`) → that payload's type,
+///  - n payloads (`(type Point (Mk Int64 Int64))`) → `Ty::Tuple([payload tys…])` — the same shape a
+///    multi-payload variant already boxes, so the erased value IS that tuple handle.
+///
+/// A declaration is an erasable newtype iff ALL of:
+///  1. it has EXACTLY ONE variant (a multi-variant sum needs the discriminant → stays boxed),
+///  2. it is MONOMORPHIC (no type parameters — a generic single-variant sum's erasure is a follow-up;
+///     until then it stays boxed, which is still correct), AND
+///  3. no payload type mentions the declaration's OWN name (directly or nested). A recursive
+///     single-variant sum (`(type Stream (More (Tuple Int64 Stream)))`) is NOT erased: its self-reference
+///     `decode`s to a BOXED `Ty::Sum`, so erasing the outer while the inner stays boxed would be an
+///     inconsistent representation for the same type. It stays a boxed `Ty::Sum` (decline-to-erase).
+// `allow(dead_code)`: N2 lands the predicate + its unit tests; N3 wires it into the solve. Removed then.
+#[allow(dead_code)]
+pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
+    // Copy out what the predicate needs before the `&mut db` call below (the borrow of `type_decl_by_occ`
+    // is immutable and must end first).
+    let (name, payload_count, ctor, payloads) = {
+        let td = db.type_decl_by_occ(decl)?;
+        // (1) exactly one variant, (2) monomorphic.
+        if td.variants.len() != 1 || !td.params.is_empty() {
+            return None;
+        }
+        let v = &td.variants[0];
+        (td.name.clone(), v.payloads.len(), v.ctor, v.payloads.clone())
+    };
+    // (3) recursion guard — a payload mentioning the decl's own name is not erasable.
+    if payloads
+        .iter()
+        .any(|&p| subtree_mentions_name(&db.ast, p, &name))
+    {
+        return None;
+    }
+    // A NULLARY single variant is a nominal Unit (`(type Marker (The))`).
+    if payload_count == 0 {
+        return Some(Ty::Unit);
+    }
+    // Otherwise the underlying type is the variant's payload type at the (monomorphic) base sum — a
+    // single payload's type, or the `Ty::Tuple` of a multi-payload variant, computed by the same
+    // arrow-peel `payload_ty_at_instantiation` uses. The base scrutinee is the args-less `Ty::Sum`.
+    let ctor = ctor?;
+    let base = Ty::Sum {
+        decl,
+        name,
+        args: Vec::new(),
+    };
+    payload_ty_at_instantiation(db, ctor, &base)
+}
+
+/// Whether the arena subtree rooted at `node` contains a NAME atom equal to `name` — the self-reference
+/// probe for the newtype recursion guard. Walks the structure arena; a name atom matches by string.
+#[allow(dead_code)]
+fn subtree_mentions_name(ast: &crate::ast::Arenas, node: StructId, name: &str) -> bool {
+    match ast.get(node) {
+        crate::ast::Struct::Atom(_) => ast.as_name(node) == Some(name),
+        crate::ast::Struct::List(children) => children
+            .iter()
+            .any(|&c| subtree_mentions_name(ast, c, name)),
+    }
+}
+
 /// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive
 /// call by its scheme. Follows a `Ref` to a `Lambda` whose body matches a def's body occurrence. (The
 /// infer-side sibling of `lower::callee_def_index`; kept here so infer does not depend on lower.)
