@@ -799,6 +799,14 @@ impl Db {
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let mut prelude = crate::prelude::install(&mut ast);
+        // The prelude's TYPE-CONSTRUCTOR / MODULE names (`Int`/`List`/`String`/…) — captured BEFORE the
+        // built-in sums inject their DATA-CONSTRUCTOR names (`Some`/`None`/`Ok`/`Err`/…) into `prelude`
+        // below. A user variant may legitimately shadow a data constructor (redeclaring `type Option =
+        // Some(Int64) | None` rebinds bare `Some`/`None` to the user's ctor), but must NOT shadow a
+        // type/module name — see the `variant_ctor_index` guard. Guarding against this pre-injection
+        // snapshot, not the polluted map, is what keeps the two cases distinct.
+        let prelude_type_module_names: crate::fxhash::FxHashSet<String> =
+            prelude.keys().cloned().collect();
         let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
@@ -909,15 +917,18 @@ impl Db {
         for decl in &type_decls {
             for v in &decl.variants {
                 // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
-                // a variant whose name COLLIDES with a built-in prelude entry (`Int`/`List`/`Name` — a type
-                // constructor, a collection module) would SHADOW it, breaking that name everywhere it is
-                // used as a type/module (a payload `(Int Int64)`, an annotation `(: x Int64)` whose reduction
-                // touches `Int`). A colliding variant is reached ONLY qualified — `(. T Int)` / the built-in
-                // `(. Ast Int)` — via the sum RECORD's field, never the bare-name index; so DON'T index a
-                // variant name the prelude already binds. (`Some`/`None`/`Neg`/… do not collide, so they
-                // still bind bare — the common case is unaffected.) The qualified member access is
-                // unchanged: it projects the sum record's field, independent of this bare-name index.
-                if prelude.contains_key(&v.name) {
+                // a variant whose name COLLIDES with a built-in prelude TYPE-CONSTRUCTOR / MODULE name
+                // (`Int`/`List`/`Name`) would SHADOW it, breaking that name everywhere it is used as a
+                // type/module (a payload `(Int Int64)`, an annotation `(: x Int64)` whose reduction touches
+                // `Int`). Such a colliding variant is reached ONLY qualified — `(. T Int)` / the built-in
+                // `(. Ast Int)` — via the sum RECORD's field, never the bare-name index; so DON'T index it.
+                // Guard against the PRE-INJECTION snapshot (`prelude_type_module_names`), NOT the current
+                // `prelude` map: by now the built-in sums have injected their DATA-CONSTRUCTOR names
+                // (`Some`/`None`/`Ok`/`Err`/…) into `prelude`, and a user variant MAY shadow those — a
+                // redeclared `(type Option (Some Int64) None)` rebinds bare `Some`/`None` to the user's ctor
+                // (the common case). Checking the polluted map would wrongly skip those, so bare `Some`/`None`
+                // would fall through to the built-in generic Option — a silent miscompile.
+                if prelude_type_module_names.contains(&v.name) {
                     continue;
                 }
                 if let Some(ctor) = v.ctor {

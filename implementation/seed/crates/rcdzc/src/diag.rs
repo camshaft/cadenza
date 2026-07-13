@@ -807,7 +807,10 @@ pub mod suggest {
         S: AsRef<str> + Clone,
     {
         // Collect once so both tiers see the same set (an iterator is single-pass).
-        let cands: Vec<String> = candidates.into_iter().map(|c| c.as_ref().to_string()).collect();
+        let cands: Vec<String> = candidates
+            .into_iter()
+            .map(|c| c.as_ref().to_string())
+            .collect();
         if let Some(near) = nearest(name, cands.iter()) {
             return format!(" — did you mean `{near}`?");
         }

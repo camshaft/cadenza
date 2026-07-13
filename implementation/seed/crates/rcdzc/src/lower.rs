@@ -594,7 +594,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // redundant. Returns the nested node (all operands stay evaluated → trap-safe, like the
                 // bitwise idempotent collapse c117). Only the SAME connective (`is_and` matches). Both outer
                 // orders are tried by `bool_nested_idempotent`.
-                _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => core_of(db, keep),
+                _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => {
+                    core_of(db, keep)
+                }
                 // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
                 // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
                 // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
@@ -6988,7 +6990,12 @@ fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
 /// `core_equiv` to it), the outer re-application is redundant — `(and (and a b) a)` == `(and a b)`. Returns
 /// the NESTED node to keep (all its operands stay evaluated → trap-safe, no operand dropped). Both outer
 /// operand orders and both nested-operand positions are tried. `None` when the shape does not match.
-fn bool_nested_idempotent(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Option<StructId> {
+fn bool_nested_idempotent(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<StructId> {
     // `nested` is `(op p q)` with the SAME connective; `outer` must be `core_equiv` to `p` or `q`.
     let check = |db: &mut Db, nested: StructId, outer: StructId| -> Option<StructId> {
         let Core::And {

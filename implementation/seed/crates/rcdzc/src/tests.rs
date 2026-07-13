@@ -15345,30 +15345,67 @@ mod match_engine {
                 .expect("select")
                 .code
         };
-        let conn = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I32And | Lir::I32Or)).count();
+        let conn = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or))
+                .count()
+        };
         // Both nested positions and both connectives collapse to ONE connective op.
-        assert_eq!(conn(&lir("(: a Bool) (: b Bool)", "(: (and (and a b) a) Bool)")), 1, "(and (and a b) a) → (and a b)");
-        assert_eq!(conn(&lir("(: a Bool) (: b Bool)", "(: (and a (and a b)) Bool)")), 1, "outer order");
-        assert_eq!(conn(&lir("(: a Bool) (: b Bool)", "(: (or (or a b) b) Bool)")), 1, "(or (or a b) b) → (or a b)");
+        assert_eq!(
+            conn(&lir("(: a Bool) (: b Bool)", "(: (and (and a b) a) Bool)")),
+            1,
+            "(and (and a b) a) → (and a b)"
+        );
+        assert_eq!(
+            conn(&lir("(: a Bool) (: b Bool)", "(: (and a (and a b)) Bool)")),
+            1,
+            "outer order"
+        );
+        assert_eq!(
+            conn(&lir("(: a Bool) (: b Bool)", "(: (or (or a b) b) Bool)")),
+            1,
+            "(or (or a b) b) → (or a b)"
+        );
         // A DISTINCT third operand does NOT fold.
-        assert_eq!(conn(&lir("(: a Bool) (: b Bool) (: c Bool)", "(: (and (and a b) c) Bool)")), 2, "distinct c kept");
+        assert_eq!(
+            conn(&lir(
+                "(: a Bool) (: b Bool) (: c Bool)",
+                "(: (and (and a b) c) Bool)"
+            )),
+            2,
+            "distinct c kept"
+        );
 
         // VALUE PARITY over all truth combinations.
         use wasmtime::component::Val;
-        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-            "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
-        )))).expect("compile");
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
         let andn = f("(and (and a b) a)");
         let orn = f("(or (or a b) b)");
         for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(run_returns_with::<bool>(&andn, "f", &[Val::Bool(a), Val::Bool(b)]), a && b, "and @{a},{b}");
-            assert_eq!(run_returns_with::<bool>(&orn, "f", &[Val::Bool(a), Val::Bool(b)]), a || b, "or @{a},{b}");
+            assert_eq!(
+                run_returns_with::<bool>(&andn, "f", &[Val::Bool(a), Val::Bool(b)]),
+                a && b,
+                "and @{a},{b}"
+            );
+            assert_eq!(
+                run_returns_with::<bool>(&orn, "f", &[Val::Bool(a), Val::Bool(b)]),
+                a || b,
+                "or @{a},{b}"
+            );
         }
         // TRAP SAFETY: the nested node is retained, so a trapping operand in it still traps.
         let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: n Int64) (: b Bool)) (if (and (and (> (/ 10 n) 0) b) (> (/ 10 n) 0)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&tb, "f", &[Val::S64(0), Val::Bool(true)]), "a trapping nested operand keeps its trap");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0), Val::Bool(true)]),
+            "a trapping nested operand keeps its trap"
+        );
     }
 
     #[test]
@@ -15668,7 +15705,10 @@ mod match_engine {
         // compares stay. (`(and (< x 5) (< 10 x))` — same var, opposite direction — is NOT tested here: it
         // is `x<5 && x>10`, a disjoint pair the interval fold correctly collapses to `false`.)
         assert_eq!(
-            cmps(&lir("(: x Int64) (: y Int64)", "(: (and (< x 5) (< 10 y)) Bool)")),
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (< x 5) (< 10 y)) Bool)"
+            )),
             2,
             "different variable kept"
         );
@@ -15738,38 +15778,89 @@ mod match_engine {
                 .count()
         };
         // Disjoint `and` → false (0 cmp); covering `or` → true (0 cmp).
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (> x 10)) Bool)")), 0, "disjoint and → false");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (> x 3)) Bool)")), 0, "covering or → true");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (> x 10)) Bool)")),
+            0,
+            "disjoint and → false"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (> x 3)) Bool)")),
+            0,
+            "covering or → true"
+        );
         // Boundary: touching `or` (`<= 5` / `>= 6`, `6 <= 5+1`) → true; empty `and` (`<= 5` / `>= 6`) → false.
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (<= x 5) (>= x 6)) Bool)")), 0, "touching or → true");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (<= x 5) (>= x 6)) Bool)")), 0, "empty and → false");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (<= x 5) (>= x 6)) Bool)")),
+            0,
+            "touching or → true"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (<= x 5) (>= x 6)) Bool)")),
+            0,
+            "empty and → false"
+        );
         // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares; a
         // singleton ∩ (`<= 6` / `>= 6`, non-empty at 6) is kept.
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 10) (> x 5)) Bool)")), 2, "non-empty and kept");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 3) (> x 10)) Bool)")), 2, "gapped or kept");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (<= x 6) (>= x 6)) Bool)")), 2, "singleton and kept");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 10) (> x 5)) Bool)")),
+            2,
+            "non-empty and kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 3) (> x 10)) Bool)")),
+            2,
+            "gapped or kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (<= x 6) (>= x 6)) Bool)")),
+            2,
+            "singleton and kept"
+        );
 
         // VALUE PARITY across the boundary.
         use wasmtime::component::Val;
-        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-            "(module m (def (f (: x Int64)) {body}) (export f))"
-        )))).expect("compile");
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x Int64)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
         for x in [0, 3, 5, 12] {
-            assert!(!run_returns_with::<bool>(&f("(and (< x 5) (> x 10))"), "f", &[Val::S64(x)]), "disjoint and @{x}");
+            assert!(
+                !run_returns_with::<bool>(&f("(and (< x 5) (> x 10))"), "f", &[Val::S64(x)]),
+                "disjoint and @{x}"
+            );
         }
         for x in [0, 4, 100, -5] {
-            assert!(run_returns_with::<bool>(&f("(or (< x 5) (> x 3))"), "f", &[Val::S64(x)]), "covering or @{x}");
+            assert!(
+                run_returns_with::<bool>(&f("(or (< x 5) (> x 3))"), "f", &[Val::S64(x)]),
+                "covering or @{x}"
+            );
         }
         // The gapped-or computes its real (non-constant) value: x=5 is in the gap [3,10] → false.
-        assert!(!run_returns_with::<bool>(&f("(or (< x 3) (> x 10))"), "f", &[Val::S64(5)]), "gapped or @5 = false");
+        assert!(
+            !run_returns_with::<bool>(&f("(or (< x 3) (> x 10))"), "f", &[Val::S64(5)]),
+            "gapped or @5 = false"
+        );
         // The non-empty-and computes correctly: 5 < x < 10.
-        assert!(run_returns_with::<bool>(&f("(and (< x 10) (> x 5))"), "f", &[Val::S64(7)]));
-        assert!(!run_returns_with::<bool>(&f("(and (< x 10) (> x 5))"), "f", &[Val::S64(3)]));
+        assert!(run_returns_with::<bool>(
+            &f("(and (< x 10) (> x 5))"),
+            "f",
+            &[Val::S64(7)]
+        ));
+        assert!(!run_returns_with::<bool>(
+            &f("(and (< x 10) (> x 5))"),
+            "f",
+            &[Val::S64(3)]
+        ));
         // TRAP SAFETY: a trapping operand in a disjoint-and keeps its trap.
         let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (> (/ 100 z) 10)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "a trapping operand keeps its trap");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping operand keeps its trap"
+        );
     }
 
     #[test]
