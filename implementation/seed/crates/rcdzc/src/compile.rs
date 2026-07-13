@@ -655,7 +655,9 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, s.value, out);
             }
         }
-        Core::BinIntRead { bytes, .. } => collect_reached_poisons(db, bytes, out),
+        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+            collect_reached_poisons(db, bytes, out)
+        }
         Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
             collect_reached_poisons(db, operand, out)
         }

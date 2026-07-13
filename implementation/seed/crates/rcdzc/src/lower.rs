@@ -1794,13 +1794,18 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     acc = Some(*body);
                 }
                 BinArm::Bin(segs, body) => {
-                    // Only ALL-int, fixed-width segments are handled at runtime for now.
-                    if !segs
-                        .iter()
-                        .all(|s| matches!(&s.kind, crate::resolved::SegKind::Int { .. }))
-                    {
+                    // Handled at runtime: fixed-width INT segments, plus (optionally) a FINAL UNSIZED
+                    // `(bytes rest)` — a header + a variable-length tail (static offsets throughout). A
+                    // bit-field, or a dependent-size `(bytes b n)` (dynamic offset), is a later slice.
+                    let ok = segs.iter().enumerate().all(|(i, s)| match &s.kind {
+                        crate::resolved::SegKind::Int { .. } => true,
+                        // A final unsized bytes segment is the LAST segment with no dependent size.
+                        crate::resolved::SegKind::Bytes { size: None } => i + 1 == segs.len(),
+                        _ => false,
+                    });
+                    if !ok {
                         return Core::Poison(Reject::decline(
-                            "a runtime bin match with a bit-field / bytes segment is not yet lowered",
+                            "a runtime bin match with a bit-field or dependent-size segment is not yet lowered",
                         ));
                     }
                     let Some(else_body) = acc else {
@@ -5284,6 +5289,19 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 return Core::ConstBool(eq);
             }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
+                // SELF-COMPARISON: the two operands are the SAME value (`core_equiv`), so the ordering is
+                // fixed regardless of what that value is — `x < x`/`x > x` → false, `x <= x`/`x >= x`/`x =
+                // x` → true. Sound ONLY for a TOTAL order and a TRAP-FREE operand: `is_scalar` is Int/Bool
+                // (a total order — Float, where `NaN < NaN` etc. is false and `NaN = NaN` is false, is NOT
+                // scalar and never reaches here), and the operand must be trap-free since the fold DISCARDS
+                // it — `(< (/ a b) (/ a b))` must still trap on b==0 (`core_equiv` matches pure cores, but a
+                // matched pure compare/arith can still wrap a trapping `/`). `compare_ord` gives the result
+                // for each operator at `Ordering::Equal`.
+                if core_equiv(db, args[0], args[1]) && is_trap_free(db, args[0]) {
+                    let r = compare_ord(op, std::cmp::Ordering::Equal);
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "self-comparison folds to a constant (x is a total-order scalar)");
+                    return Core::ConstBool(r);
+                }
                 // TYPE-BOUND simplification: a comparison of a runtime integer against a constant AT its
                 // own type's min/max is (partly) decidable — `v < min`/`v > max` are unsatisfiable, `v >=
                 // min`/`v <= max` are tautologies, and `v <= min`/`v >= max` rewrite to `v == bound` (the
@@ -7147,8 +7165,29 @@ fn decode_bin_field_runtime(
                 "a runtime bin segment after a variable-length segment is not yet decoded",
             )),
         },
+        // A FINAL unsized `(bytes rest)` binder — the tail after the fixed prefix. Read it as
+        // `bytes-slice(scrutinee, off, len-off)` via `Core::BinRestRead`; the offset is the static sum of
+        // the preceding int widths (a dependent-size preceding segment would make it dynamic → decline).
+        SegKind::Bytes { size: None } if seg_index + 1 == segs.len() => {
+            match bin_static_offset(segs, seg_index) {
+                Some(byte_offset) => {
+                    let scrut_ref = synth_core(
+                        db,
+                        Core::LocalRef { binder: scrutinee },
+                        crate::ty::Ty::Bytes,
+                    );
+                    Core::BinRestRead {
+                        bytes: scrut_ref,
+                        byte_offset,
+                    }
+                }
+                None => Core::Poison(Reject::decline(
+                    "a runtime bin rest binder after a variable-length segment is not yet decoded",
+                )),
+            }
+        }
         SegKind::Bits { .. } | SegKind::Bytes { .. } => Core::Poison(Reject::decline(
-            "a runtime bin bit-field / bytes binder is not yet decoded (integer segments only)",
+            "a runtime bin bit-field / sized-bytes binder is not yet decoded",
         )),
     }
 }
@@ -7189,10 +7228,15 @@ fn build_bin_arm_predicate(
             _ => 0,
         })
         .sum();
-    // Length probe: `bytes-len(scrutinee) == total` (whole-scrutinee accounting — a `bin` pattern with no
-    // trailing unsized bytes matches only the exact length). `BytesLen` yields Int64; compare to a const.
-    // `Bytes.len : Int64` emits an i64; type both compare operands FIXED Int64 so the literal grounds to
-    // i64 (an i32-vs-i64 compare is an invalid module).
+    // Length probe. Whole-scrutinee accounting: a `bin` pattern with no trailing unsized bytes matches
+    // only the EXACT fixed length (`bytes-len == total`); one ending in a final `(bytes rest)` matches any
+    // length `>= total` (the fixed int prefix, with the rest absorbing the remainder). `BytesLen` yields
+    // Int64; type both compare operands FIXED Int64 so the literal grounds to i64 (an i32-vs-i64 compare
+    // is an invalid module).
+    let has_final_rest = matches!(
+        segs.last().map(|s| &s.kind),
+        Some(SegKind::Bytes { size: None })
+    );
     let len_node = synth_core(
         db,
         Core::BytesLen { operand: scrutinee },
@@ -7206,7 +7250,7 @@ fn build_bin_arm_predicate(
     let mut pred = synth_core(
         db,
         Core::Compare {
-            op: Prim::Eq,
+            op: if has_final_rest { Prim::Ge } else { Prim::Eq },
             lhs: len_node,
             rhs: total_node,
         },
