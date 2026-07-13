@@ -9,6 +9,12 @@
 //! concretely, never reconstructed downstream from an artifact's shape
 //! (`reference-compiler.md` §The Kind Of A "No" Is Fixed Where It Is Produced).
 //!
+//! The kind is machine-branchable: [`Reject::code`] is `Some` for a reject and `None` for a decline,
+//! and a trap's compile-provable form is a coded poison — so an agent branches on the outcome kind:
+//!
+//= spec/capabilities/diagnostics.md#a-diagnostic-names-its-kind
+//# The compiler MUST expose a machine-branchable kind for each outcome distinguishing a rejection (the program is ill-formed), a decline (the compiler does not yet handle the construct), and a trap (a runtime halt), so an agent routes around compiler limits rather than chasing them.
+//!
 //! The taxonomy grows one variant per added check; its `str` form is the stable `CDZ####` string a
 //! tool branches on.
 
@@ -175,7 +181,16 @@ pub enum Code {
 
 impl Code {
     /// The stable `CDZ####` string. These are the identities a tool and the corpus branch on, so
-    /// they change only by the coordinated act a code taxonomy change is.
+    /// they change only by the coordinated act a code taxonomy change is. This table IS the pinned
+    /// code set: each variant maps to one `CDZ####` a build emits for that rejection, and the string is
+    /// a function of the variant alone — independent of any diagnostic's human wording, so re-wording a
+    /// message never moves a code:
+    ///
+    //= spec/capabilities/diagnostics.md#the-code-set-is-pinned-outside-the-specification
+    //# The set of diagnostic codes and the rejection each code names MUST be pinned at the declared-default location so that two builds emit the same code for the same rejection.
+    ///
+    //= spec/capabilities/diagnostics.md#every-diagnostic-has-a-stable-code
+    //# The code a diagnostic carries MUST NOT change when the diagnostic's human-readable wording changes.
     pub fn code(self) -> &'static str {
         match self {
             Code::BadEscape => "CDZ0001",
@@ -219,11 +234,14 @@ impl Code {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Applicability {
     /// The compiler confirmed applying this fix recompiles the program clean and clears the diagnostic
-    /// — apply it without review (`spec/capabilities/diagnostics.md` §A Confirmed Fix Is Marked
-    /// Verified). Machine-applicable.
+    /// — apply it without review. Machine-applicable.
+    //= spec/capabilities/diagnostics.md#a-confirmed-fix-is-marked-verified
+    //# A fix whose application the compiler has confirmed recompiles the program clean and clears the diagnostic MUST be marked verified.
     Verified,
     /// A best-effort suggestion the compiler could NOT so confirm — a nearest-name replacement, a
     /// wrapping edit. Likely right, but an agent should confirm it matches intent before applying.
+    //= spec/capabilities/diagnostics.md#an-unconfirmed-fix-carries-an-applicability-marker
+    //# A fix the compiler cannot so confirm MUST carry an applicability marker declaring it a heuristic, so an agent can branch on it.
     Heuristic,
 }
 
@@ -239,6 +257,9 @@ pub enum Applicability {
 /// suggested name for a "did you mean", the wrapped form for a coercion) — a rendered s-expression the
 /// front-end splices over the target node's span, which keeps the fix a tree edit at the point of
 /// application while remaining a compact, printable payload here.
+///
+//= spec/capabilities/diagnostics.md#a-rejection-carries-a-structural-fix
+//# A diagnostic that reports a rejection MUST carry a proposed fix expressed as a structural edit of the program's abstract syntax tree, not a textual patch.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fix {
     /// A one-line human label for the edit (`replace with `foo``, `wrap in `(Some …)``) — what an
@@ -545,6 +566,12 @@ pub mod suggest {
     /// 1 edit, a 9-char name up to 3. Ties break on the smaller distance, then the
     /// lexicographically-smaller name, so the result is a DETERMINISTIC function of the candidate SET —
     /// independent of the order they are supplied in (a hash-map iteration order never leaks through).
+    /// The candidate set is itself a function of the source (the names in scope), so the whole
+    /// suggestion — and the fix built from it, with its fixed verified/heuristic status — is a
+    /// deterministic function of the source:
+    ///
+    //= spec/capabilities/diagnostics.md#a-fix-is-a-deterministic-function-of-the-source
+    //# A proposed fix and its verified-or-heuristic status MUST be a deterministic function of the source.
     pub fn nearest<I, S>(name: &str, candidates: I) -> Option<String>
     where
         I: IntoIterator<Item = S>,

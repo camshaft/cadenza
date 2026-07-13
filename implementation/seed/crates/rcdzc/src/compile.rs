@@ -155,7 +155,10 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     };
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
-    // the first — `compiler-pipeline.md` §Phases Recover From Errors).
+    // the first — `compiler-pipeline.md` §Phases Recover From Errors). The check does not stop at the
+    // first fault; it recovers and gathers the whole independent set in one pass:
+    //= spec/capabilities/diagnostics.md#diagnosis-reports-the-maximal-independent-set-in-one-pass
+    //# The compiler MUST recover from an error and report the maximal set of independent problems in one pass rather than only the first.
     let _ = &layout; // layout gates EMISSION below; well-formedness (faults) is layout-independent.
     let mut faults = collect_faults(&mut db);
     if !faults.is_empty() {
