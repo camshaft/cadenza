@@ -947,6 +947,9 @@ pub fn runtime_resource_core_module_form(
 pub enum CoreMethod {
     /// `t-len : (rep i32) -> i32` = `bytes-len(rep)` — a scalar length query (VM-1).
     Len,
+    /// `t-is-empty : (rep i32) -> i32` = `bytes-len(rep) == 0` (VM-3c) — a bool query (crosses as `bool`).
+    /// `bytes-len(rep); i32.eqz`. Proves a SECOND scalar method (bool result) coexists with `len`.
+    IsEmpty,
     /// `t-to-bytes : (rep i32) -> i32` = the RAW payload copied into the (ptr,len) retarea and `0` returned
     /// (VM-3). A `bytes-get` copy loop with NO value-form framing (unlike `t-encode`). Exports memory +
     /// cabi_realloc (already present for encode), so the canonical ABI reads the `list<u8>` from `(OUT, n)`.
@@ -1081,6 +1084,7 @@ pub fn runtime_resource_core_module_form_ex(
         for (i, meth) in methods.iter().enumerate() {
             let name = match meth {
                 CoreMethod::Len => "t-len",
+                CoreMethod::IsEmpty => "t-is-empty",
                 CoreMethod::ToBytes => "t-to-bytes",
             };
             items.extend_from_slice(&export(name, wasm_abi::EXPORT_KIND_FUNC, method_abs(i)));
@@ -1196,6 +1200,20 @@ pub fn runtime_resource_core_module_form_ex(
                 uleb128(0, &mut inner); // the borrow self param = the rep
                 inner.push(op::CALL);
                 uleb128(f_bytes_len as u64, &mut inner);
+                inner.push(op::END);
+                inner
+            }
+            // t-is-empty(rep) -> i32: `bytes-len(rep) == 0` (i32.eqz) — crosses as bool.
+            CoreMethod::IsEmpty => {
+                let f_bytes_len = *import_index
+                    .get("bytes-len")
+                    .expect("IsEmpty method requires the bytes-len op imported");
+                let mut inner = uleb_bytes(0); // no locals
+                inner.push(op::LOCAL_GET);
+                uleb128(0, &mut inner);
+                inner.push(op::CALL);
+                uleb128(f_bytes_len as u64, &mut inner);
+                inner.push(op::I32_EQZ); // len == 0
                 inner.push(op::END);
                 inner
             }
@@ -1583,6 +1601,7 @@ pub fn distinct_sig_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     groups: &[SigGroup],
+    plain: &[PlainExport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
@@ -1727,9 +1746,14 @@ pub fn distinct_sig_resource_core_module(
             }
             items.extend_from_slice(&export(&format!("call-g{gi}"), call_abs_base + gi as u32));
         }
+        // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, so just name each
+        // by its core-func index (the envelope aliases + lifts them as ordinary top-level component funcs).
+        for p in plain {
+            items.extend_from_slice(&export(&p.export_name, p.body_abs));
+        }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(total_makes + g, &items),
+            &wasm_vec(total_makes + g + plain.len(), &items),
         )
     };
 

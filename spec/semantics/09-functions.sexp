@@ -422,6 +422,24 @@
             (export main)))
   (output (: 30 Int64)))
 
+(case "a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT"
+  (doc    "The callback is applied not to a payload but to the RESULT OF THE RECURSIVE CALL — `(f (foldn f
+           z m))` over Peano `(type N Z (S N))`. `f`'s parameter is that recursive result and its result is
+           the `S` arm's value; the arms agree (the `Z` arm returns the accumulator `z : Int64`), so `f`'s
+           result — hence its whole arrow `(-> Int64 Int64)` — is inferred with no annotation on `f`. This
+           is the general recursive-fold shape (fold right, applying the callback to the sub-fold), the
+           companion of applying the callback to a payload element. `f = (+ x 1)` applied twice to z = 0
+           → 2. (The accumulator `z` is annotated: a pure pass-through parameter has no INTERNAL constraint
+           to infer from, so it is annotated, exactly as a non-callback accumulator is.)")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N Z (S N))
+            (def (foldn f (: z Int64) (: n N))
+              (match n ((N.Z) z) ((N.S m) (f (foldn f z m)))))
+            (def (main) (foldn (fn ((: x Int64)) (+ x 1)) 0 (N.S (N.S (N.Z)))))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing

@@ -578,9 +578,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Prim(Prim::FloatNan) => Core::ConstFloatNan,
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
-        Resolved::Prim(_) => Core::Poison(Reject::decline(
-            "a built-in operation used as a value needs runtime closures (not yet built)",
-        )),
+        Resolved::Prim(_) => Core::Poison(Reject::decline(crate::diag::PRIM_AS_VALUE_DECLINE)),
         // Application — the ONE path, dispatched by the head value's `(meta apply)` primitive. An
         // arithmetic prim folds (below); a type-constructor prim reduces via the evaluator to a built
         // value (a module / type-value), which is then lowered — a member projection off it folds, a
@@ -918,6 +916,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::QtyPow) if args.len() == 2 => {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.pow repeated multiply");
                     lower_qty_pow(db, args[0], args[1])
+                }
+                // `Type.eq a b` — compile-time type equality FOLDS to a constant `Bool`. Reduce each
+                // argument to its `Ty` (a type-value — a `(Type.of e)` result or a written type) and
+                // compare with `Ty`'s exact structural `==`. A constant result means `(if (Type.eq …) …)`
+                // selects its branch at compile time. A non-type argument declines (an ill-formed
+                // operand). A compile-time COMPARISON producing a runtime `Bool`; no `Type` value survives.
+                Some(Prim::TypeEq) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Type.eq compile-time type equality");
+                    match (
+                        crate::eval::typeval_of(db, args[0]),
+                        crate::eval::typeval_of(db, args[1]),
+                    ) {
+                        (Some(a), Some(b)) => Core::ConstBool(a == b),
+                        _ => Core::Poison(Reject::decline(
+                            "Type.eq requires two type-values (each a Type.of result or a type)",
+                        )),
+                    }
                 }
                 // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
                 // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
@@ -1344,7 +1359,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Param { binder } => Core::Param { binder },
         // A TYPE VALUE is compile-time-only — no runtime core form (the erasure fence forbids one
         // reaching runtime), so lowering it as a runtime value declines.
-        Resolved::TypeVal(_) => Core::Poison(Reject::decline("a type value has no runtime form")),
+        Resolved::TypeVal(_) => {
+            Core::Poison(Reject::decline(crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE))
+        }
         // A LAMBDA that survives to lowering as a RUNTIME value (it could not be β-reduced away — it is
         // passed to a recursive callee, or stored in a runtime cell). LIFT it to a standalone function
         // and produce a `Core::Closure` naming its table slot. Only a NO-CAPTURE (combinator) lambda
@@ -3680,7 +3697,7 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // multi-param closure (runtime currying) still declines at the application site, not here.
     if params.is_empty() {
         return Core::Poison(Reject::decline(
-            "a nullary lambda has no runtime closure form",
+            crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE,
         ));
     }
     let param_occs: Vec<StructId> = params
@@ -6684,6 +6701,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::QtyPow
         | Prim::QtyCtor
         | Prim::TypeOf
+        | Prim::TypeEq
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
         | Prim::Trap => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -7240,6 +7258,42 @@ fn fold_comparison_at_type_bound(
     }
 }
 
+/// Decide an ORDERING comparison `(op a b)` purely from the two operands' inclusive ranges `[alo, ahi]`
+/// and `[blo, bhi]` (`hi` is `None` when unbounded above — an unsigned-64 value). Returns `Some(true)`/
+/// `Some(false)` only when the ranges are DISJOINT enough that the operator's result is the same for
+/// every `(a, b)` in them; `None` when the ranges overlap so the result depends on the runtime values.
+/// The range-vs-range companion of the constant-vs-range fold, consumed by `refined_comparison_const` at
+/// emit time (where the flow-refinement stack lands two runtime vars in disjoint intervals) — e.g. under
+/// `a ∈ [101,…]`, `b ∈ […,49]` ⟹ `a > b` always, `a < b` never. `Eq` is intentionally NOT decided here (an
+/// ordering-only helper, mirroring the `Eq`-excludes structure of the constant folds). Reasoning
+/// (for `<`): TRUE for all iff even the largest `a` is below the smallest `b` (`ahi < blo`); FALSE for all
+/// iff even the smallest `a` is not below the largest `b` (`alo >= bhi`, needs both bounds). The other
+/// operators are the standard rewrites of `<`. A missing bound (`None`) simply fails the guard that needs
+/// it (leaving the comparison runtime), never fabricating a decision.
+fn compare_disjoint_ranges(
+    op: Prim,
+    (alo, ahi): (i64, Option<i64>),
+    (blo, bhi): (i64, Option<i64>),
+) -> Option<bool> {
+    // `a < b` for ALL pairs iff `max(a) < min(b)`; NEVER iff `min(a) >= max(b)`.
+    let lt_always = || ahi.is_some_and(|ah| ah < blo);
+    let lt_never = || bhi.is_some_and(|bh| alo >= bh);
+    // `a > b` for ALL pairs iff `min(a) > max(b)`; NEVER iff `max(a) <= min(b)`.
+    let gt_always = || bhi.is_some_and(|bh| alo > bh);
+    let gt_never = || ahi.is_some_and(|ah| ah <= blo);
+    match op {
+        Prim::Lt if lt_always() => Some(true),
+        Prim::Lt if lt_never() => Some(false),
+        Prim::Ge if lt_always() => Some(false), // `>=` is `!(<)`
+        Prim::Ge if lt_never() => Some(true),
+        Prim::Gt if gt_always() => Some(true),
+        Prim::Gt if gt_never() => Some(false),
+        Prim::Le if gt_always() => Some(false), // `<=` is `!(>)`
+        Prim::Le if gt_never() => Some(true),
+        _ => None,
+    }
+}
+
 /// EMIT-TIME comparison fold against the CURRENT flow-sensitive refinement (cycle 82's branch-range
 /// stack). When one operand is a compile-time constant `c` and the other a runtime value whose refined
 /// `value_range` lies ENTIRELY on one side of `c`, the comparison is decidable to a constant bool — a
@@ -7258,6 +7312,34 @@ pub(crate) fn refined_comparison_const(
     lhs: StructId,
     rhs: StructId,
 ) -> Option<bool> {
+    // Whether `id` is a variable currently carrying an active flow refinement — the emit-only fact that
+    // `lower` could not see. At least one operand must be refined for a fold here to add value beyond the
+    // const-fold tier's declared-type reasoning.
+    let is_refined = |db: &mut Db, id: StructId| {
+        matches!(
+            core_of(db, id),
+            Core::Param { binder } | Core::LocalRef { binder } if db.refined_range(binder).is_some()
+        )
+    };
+    // RANGE-VS-RANGE (both operands runtime): when NEITHER operand is constant but their refined ranges
+    // are disjoint enough to decide the ordering, fold to the constant — a flow-sensitive comparison
+    // elimination (`(if (> a 100) (if (< b 50) (< b a) …))` → the inner `(< b a)` is always true, since
+    // `a ∈ [101,…]` and `b ∈ […,49]`). This lives ONLY at emit time: at lower time, a disjoint positive
+    // range needs either a constant operand (handled by the const-vs-range fold) or a checked arith op
+    // (not trap-free, so the discarding fold declines) — the refinement stack is what makes two runtime
+    // variables land in disjoint intervals. Only fires when at least one operand is genuinely REFINED and
+    // BOTH are trap-free (the fold discards both). `Eq` is not handled here (an ordering-only helper,
+    // matching the const-fold structure). Attempted BEFORE the const-operand path so a `(< a b)` where
+    // both are refined vars is decided; a const operand has no refinement and falls through below.
+    if !matches!(op, Prim::Eq)
+        && let (Some(ra), Some(rb)) = (value_range(db, lhs), value_range(db, rhs))
+        && let Some(r) = compare_disjoint_ranges(op, ra, rb)
+        && (is_refined(db, lhs) || is_refined(db, rhs))
+        && is_trap_free(db, lhs)
+        && is_trap_free(db, rhs)
+    {
+        return Some(r);
+    }
     let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
@@ -10160,6 +10242,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::QtyPow => "qty-pow",
         Prim::QtyCtor => "Qty",
         Prim::TypeOf => "type-of",
+        Prim::TypeEq => "type-eq",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",
         Prim::SetContains => "set-contains",

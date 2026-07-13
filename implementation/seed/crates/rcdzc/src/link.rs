@@ -343,10 +343,27 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
     //# A set of modules whose import relationships form a cycle MUST be rejected at compile time.
     if let Some(cycle) = find_import_cycle(&scopes) {
         let names: Vec<&str> = cycle.iter().map(|&i| files[i].0.as_str()).collect();
-        return Err(Reject::coded(
+        // Anchor at the `(import …)` clause forming the cycle's FIRST edge (`cycle[0] → cycle[1]`) — the
+        // import whose `from_file` is the next file in the cycle. Its `occ` (a global node id) gives the
+        // error a `file:line:col` at a real import in the loop, instead of an unanchored `cdz:` prefix. A
+        // link is total (runs outside the Db node-walk that auto-stamps origins), so this must anchor
+        // explicitly. Fall back to unanchored only if the edge's import can't be located (defensive; the
+        // cycle came from these very import edges, so it is normally present).
+        let reject = Reject::coded(
             crate::diag::Code::Malformed,
             format!("cyclic module imports: {}", names.join(" → ")),
-        ));
+        );
+        let edge_occ = cycle.first().zip(cycle.get(1)).and_then(|(&from, &to)| {
+            scopes[from]
+                .imports
+                .iter()
+                .find(|imp| imp.from_file == to)
+                .map(|imp| imp.occ)
+        });
+        return Err(match edge_occ {
+            Some(occ) => reject.at(occ),
+            None => reject,
+        });
     }
 
     // Synthesize the `(do …)` root: a fresh `do` name leaf + its atom, then the list whose head is
@@ -947,12 +964,21 @@ mod tests {
             "a",
         );
         assert!(out.has_error(), "a two-file import cycle must be rejected");
+        let cyc = out
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("cyclic module imports"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a cyclic-import diagnostic; got {:?}",
+                    out.diagnostics
+                )
+            });
+        // It carries a NODE (the cycle's first import clause), so the error maps to `file:line:col`
+        // rather than printing an unanchored `cdz:` prefix.
         assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.message.contains("cyclic module imports")),
-            "expected a cyclic-import diagnostic; got {:?}",
-            out.diagnostics
+            cyc.node.is_some(),
+            "the cyclic-import diagnostic must anchor to a node, not be unanchored"
         );
     }
 

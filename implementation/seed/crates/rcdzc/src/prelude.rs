@@ -639,7 +639,16 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
 /// The `String` module record — a record with one field per string OPERATION (reached by member access
 /// `(. String scalar-len)`). Each operation is an operator record: its `(meta t)` is the operation's
 /// type (`String → Int64`), its `(meta apply)` the native prim. This increment realizes the two LENGTH
-/// queries; concat/at/slice arrive with the runtime byte-rope ops.
+/// queries; concat/at/slice arrive with the runtime byte-rope ops. The two lengths are SEPARATELY NAMED
+/// (`scalar-len` / `byte-len`) — there is NO unqualified `len` field, so a length query always names
+/// which count it means; and `byte-len` is a direct `str-byte-len` prim, not a count over a materialized
+/// UTF-8 byte value.
+//= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+//# A string MUST offer a length counted in Unicode scalar values and a length counted in the bytes of its UTF-8 encoding as two separately-named operations, so that neither meaning is the unqualified default an author could confuse for the other.
+//= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+//# A string MUST NOT offer an unqualified length operation, so that every length query names whether it counts scalar values or bytes.
+//= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
+//# The byte length MUST be obtainable without materializing the UTF-8 encoding as a separate value, so that a size query an author expects to be cheap is not defined only in terms of an intermediate byte sequence.
 fn string_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta t)` = the ground type-value `String` (`(intrinsic "String")` → `Ty::String`), so bare
@@ -713,6 +722,10 @@ fn string_module(ast: &mut Arenas) -> StructId {
 /// `Ty::Char` (`(intrinsic "Char")`), so bare `Char` in type position IS the type, while the operation
 /// fields still project. `to-int : Char → Int64` (total); `from-int : Int64 → (Option Char)` (fallible —
 /// `None` for a surrogate / out-of-range integer). Both FOLD on a constant operand.
+//= spec/capabilities/collections-and-text.md#a-char-converts-to-and-from-an-integer-totally
+//# Converting a char to its integer scalar value MUST be total, because every char is a scalar value that has an integer code point.
+//= spec/capabilities/collections-and-text.md#a-char-converts-to-and-from-an-integer-totally
+//# Converting an integer to a char MUST yield an optional char that is absent when the integer is not a Unicode scalar value — outside `U+0000..=U+10FFFF` or within the surrogate range — so that an out-of-range integer is handled as data rather than producing a char that is not a valid scalar.
 fn char_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let ty_val = intrinsic_node(ast, "Char");
@@ -999,18 +1012,22 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     push_list(ast, children)
 }
 
-/// The `Type` module record — carries one field, `of`, whose `(meta apply) = TypeOf`. `(Type.of e)`
-/// projects that channel and reduces (via `reduce_ctor`/`typeval_of`) to the type-VALUE of `e`'s
-/// inferred type, so a program can name a value's type and reuse it in a type position (`(: x (Type.of
-/// y))`). Unlike `Qty`, the module itself is NOT a type constructor (no top-level `(meta apply)`) — it
-/// is only a namespace for the `of` operation; `Type` in a bare type position is not a type (a value's
-/// type-of is `Ty::Type`, spelled only by reflection, not by a name).
+/// The `Type` module record — a namespace for the type-REFLECTION operations. `of` (`(meta apply) =
+/// TypeOf`) reduces `(Type.of e)` to the type-VALUE of `e`'s inferred type, so a program can name a
+/// value's type and reuse it in a type position (`(: x (Type.of y))`). `eq` (`(meta apply) = TypeEq`)
+/// folds `(Type.eq a b)` to the constant `Bool` of two type-values' exact structural equality, so a
+/// program can BRANCH on types at compile time (`(if (Type.eq (Type.of x) Int64) …)`). Unlike `Qty`, the
+/// module itself is NOT a type constructor (no top-level `(meta apply)`) — it is only a namespace; `Type`
+/// in a bare type position is not a type (a value's type-of is `Ty::Type`, spelled only by reflection).
 fn type_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let of_field = push_atom(ast, Leaf::Name("of".to_string()));
     let of_op = ctor_record(ast, "type-of");
     let of = push_list(ast, vec![of_field, of_op]);
-    push_list(ast, vec![head, of])
+    let eq_field = push_atom(ast, Leaf::Name("eq".to_string()));
+    let eq_op = ctor_record(ast, "type-eq");
+    let eq = push_list(ast, vec![eq_field, eq_op]);
+    push_list(ast, vec![head, of, eq])
 }
 
 /// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`

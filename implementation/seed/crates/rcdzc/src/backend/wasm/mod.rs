@@ -944,7 +944,11 @@ fn resource_escape_dwarf(
             &imports,
             export_abs,
             serialize::EscapeForm::RuntimeBytes(&form),
-            &[serialize::CoreMethod::Len, serialize::CoreMethod::ToBytes],
+            &[
+                serialize::CoreMethod::Len,
+                serialize::CoreMethod::IsEmpty,
+                serialize::CoreMethod::ToBytes,
+            ],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1639,11 +1643,10 @@ fn emit_mixed_closure_resource(
         .filter(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
         .all(|e| &e.result == first_sig)
     {
-        return Err(Reject::decline(
-            "a program exporting closures of DISTINCT signatures ALONGSIDE a non-closure export is not \
-             yet supported (the distinct-signature resource envelope has no plain-export slot) — a later \
-             widening (DESIGN-closure-host-resource-rcdzc.md)",
-        ));
+        // DISTINCT closure signatures alongside a plain export: the distinct-sig envelope now carries plain
+        // exports too (`assemble_distinct_sig_resource_mixed`), so route there — it groups the closures by
+        // signature into G resource types and publishes the plain exports as top-level funcs.
+        return emit_distinct_sig_resource(db, layout, _spans);
     }
 
     // Flatten the shared closure signature → arg types + result.
@@ -1873,15 +1876,24 @@ fn emit_distinct_sig_resource(
     _spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     use crate::backend::wasm::lir::{ValType, valtype_of};
-    // GROUP the exports by their result signature (preserving first-seen order). Each group is a distinct
-    // resource type. `sigs` holds the group signatures in order; `group_of[export-index]` its group.
+    // GROUP the CLOSURE exports (result `Ty::Fn`) by their signature (first-seen order). Each group is a
+    // distinct resource type. PLAIN (non-closure) exports are collected separately and published as ordinary
+    // top-level component funcs alongside the resource interface (the distinct-sig case of the mixed shape).
+    // `sigs` holds the group signatures in order; `export_group[i]` is closure export i's group.
     let mut sigs: Vec<crate::ty::Ty> = Vec::new();
+    let mut closure_exports: Vec<&crate::layout::ExportPlan> = Vec::new();
     let mut export_group: Vec<usize> = Vec::new();
+    let mut plain_exports: Vec<&crate::layout::ExportPlan> = Vec::new();
     for e in &layout.exports {
+        if !matches!(e.result, crate::ty::Ty::Fn(_, _)) {
+            plain_exports.push(e);
+            continue;
+        }
         let gi = sigs.iter().position(|s| s == &e.result).unwrap_or_else(|| {
             sigs.push(e.result.clone());
             sigs.len() - 1
         });
+        closure_exports.push(e);
         export_group.push(gi);
     }
     // Per group: flatten its signature → arg/ret types + validate scalar boundary bytes.
@@ -1948,7 +1960,7 @@ fn emit_distinct_sig_resource(
         param_bytes: Vec<u8>,
     }
     let mut make_specs: Vec<MakeSpec> = Vec::new();
-    for (ei, e) in layout.exports.iter().enumerate() {
+    for (ei, e) in closure_exports.iter().enumerate() {
         let param_vts: Vec<_> = e
             .params
             .iter()
@@ -1969,6 +1981,37 @@ fn emit_distinct_sig_resource(
             name: format!("make-{}", e.name),
             param_vts,
             param_bytes,
+        });
+    }
+    // Per PLAIN export: source name (core + kebab boundary name), param bytes, scalar result byte.
+    struct PlainSpec {
+        def: usize,
+        name: String,
+        param_bytes: Vec<u8>,
+        result_byte: u8,
+    }
+    let mut plain_specs: Vec<PlainSpec> = Vec::new();
+    for e in &plain_exports {
+        let param_bytes: Vec<u8> = e
+            .params
+            .iter()
+            .map(|(_, t)| {
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            })
+            .collect::<Result<_, _>>()?;
+        let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
+            Reject::decline(format!(
+                "a plain export `{}` returning {} has no scalar host-boundary representation — a \
+                 compound result alongside a closure export is a later widening",
+                e.name,
+                e.result.render_name()
+            ))
+        })?;
+        plain_specs.push(PlainSpec {
+            def: e.def,
+            name: e.name.clone(),
+            param_bytes,
+            result_byte,
         });
     }
 
@@ -2066,17 +2109,45 @@ fn emit_distinct_sig_resource(
         });
     }
 
-    let main_core =
-        serialize::distinct_sig_resource_core_module(&funcs, &imports, &ser_groups, &layout)
-            .map_err(Reject::decline)?;
+    // Plain-export specs: resolve each body's core-func index post-build.
+    let ser_plain: Vec<serialize::PlainExport> = plain_specs
+        .iter()
+        .map(|p| {
+            let body_abs = layout
+                .abs(p.def)
+                .ok_or_else(|| Reject::decline("a plain export is not in the emission order"))?;
+            Ok(serialize::PlainExport {
+                export_name: p.name.clone(),
+                body_abs,
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+    let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
+        .iter()
+        .map(|p| envelope::PlainExportAbi {
+            name: p.name.clone(),
+            core_name: p.name.clone(),
+            param_bytes: p.param_bytes.clone(),
+            result_byte: p.result_byte,
+        })
+        .collect();
+    let main_core = serialize::distinct_sig_resource_core_module(
+        &funcs,
+        &imports,
+        &ser_groups,
+        &ser_plain,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_distinct_sig_resource(
+    Ok(envelope::assemble_distinct_sig_resource_mixed(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
         &abi_groups,
+        &abi_plain,
     ))
 }
 
@@ -2742,10 +2813,14 @@ fn emit_runtime_bytes_resource(
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
 
     // VM-1/VM-3: a Bytes result crosses as a resource carrying make + encode + `len : borrow<t> -> u32`
-    // (= `bytes-len(rep)`) + `to-bytes : borrow<t> -> list<u8>` (the RAW payload). The core emits `t-len`
-    // + `t-to-bytes` (`bytes-len`/`bytes-get` are already imported for the encode walker), and the
-    // envelope lifts both extra methods (a scalar + a list result).
-    let core_methods = [serialize::CoreMethod::Len, serialize::CoreMethod::ToBytes];
+    // (= `bytes-len(rep)`) + `is-empty : borrow<t> -> bool` (= `bytes-len == 0`) + `to-bytes : borrow<t>
+    // -> list<u8>` (the RAW payload). The core emits `t-len`/`t-is-empty`/`t-to-bytes` (`bytes-len`/
+    // `bytes-get` already imported for the encode walker), and the envelope lifts the three extra methods.
+    let core_methods = [
+        serialize::CoreMethod::Len,
+        serialize::CoreMethod::IsEmpty,
+        serialize::CoreMethod::ToBytes,
+    ];
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
@@ -2770,6 +2845,11 @@ fn emit_runtime_bytes_resource(
                 boundary_name: "len",
                 core_export: "t-len",
                 result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_U32),
+            },
+            envelope::ScalarMethod {
+                boundary_name: "is-empty",
+                core_export: "t-is-empty",
+                result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_BOOL),
             },
             envelope::ScalarMethod {
                 boundary_name: "to-bytes",
