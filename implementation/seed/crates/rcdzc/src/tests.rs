@@ -5799,6 +5799,57 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_float_arithmetic_folds_at_round_to_nearest_even() {
+        // The float operators `+.`/`-.`/`*.`/`/.` fold two constant Float64 operands at round-to-nearest-
+        // even (the fixed deterministic mode), the result crossing as its canonical f64 (numeric-model.md
+        // §A Floating-Point Operation Uses A Floating-Point Operator; determinism contract). Read BY BITS
+        // so the exact IEEE value is pinned — `0.1 +. 0.2` is the famous NON-exact 0.30000000000000004,
+        // not 0.3, which a wrong (exact-decimal or f32) fold would miss.
+        for (prog, want) in [
+            ("(+. 0.1 0.2)", 0.1f64 + 0.2f64),
+            ("(*. 6.0 7.0)", 42.0f64),
+            ("(-. 5.5 2.0)", 3.5f64),
+            ("(/. 1.0 4.0)", 0.25f64),
+            ("(/. 1.0 3.0)", 1.0f64 / 3.0f64),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let got = run_returns::<f64>(&component(&src), "main");
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "float fold {prog} must round-trip its exact f64 (by bits)"
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_from_f64_round_trips_by_bits() {
+        // The float-fold's result representation: `Decimal::from_f64(f)` builds a decimal whose
+        // `to_f64_bits()` returns EXACTLY `f`'s bits (via shortest round-tripping formatting), so a
+        // computed float crosses the boundary unchanged. Covers the non-exact 0.1+0.2, a large whole
+        // float (no i64 saturation), a tiny value, and signed zero. A non-finite input yields `None`.
+        use crate::ast::Decimal;
+        for f in [
+            0.1f64 + 0.2f64,
+            42.0,
+            1e19,
+            1.0 / 3.0,
+            -0.0,
+            0.0,
+            5e-324, // smallest subnormal
+        ] {
+            let d = Decimal::from_f64(f).expect("finite float has a decimal form");
+            assert_eq!(
+                d.to_f64_bits(),
+                f.to_bits(),
+                "Decimal::from_f64({f}) must round-trip by bits"
+            );
+        }
+        assert!(Decimal::from_f64(f64::INFINITY).is_none());
+        assert!(Decimal::from_f64(f64::NAN).is_none());
+    }
+
+    #[test]
     fn a_recognized_string_escape_denotes_its_one_scalar_value() {
         // A string literal's escapes are expanded by the reader before the compiler sees the text, so
         // `"\t"` is the one-scalar string containing a tab — EQUAL to a literal tab in the source

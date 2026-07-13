@@ -661,6 +661,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
                 }
+                // A FLOAT arithmetic prim (`+.`/`-.`/`*.`/`/.`) — fold two constant floats, else decline
+                // (runtime float operands emit the machine op in F4).
+                Some(prim) if prim.is_float_arith() => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: float arithmetic prim");
+                    lower_float_arith(db, id, prim, &args)
+                }
                 // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
                 // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
                 // declines (as the comparison prims do).
@@ -3801,6 +3807,74 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 rhs: args[1],
             }
         }
+    }
+}
+
+/// Lower a FLOAT arithmetic application (`+.`/`-.`/`*.`/`/.`). FOLDS two constant floats at the solved
+/// float WIDTH (the `Decimal` operands round to the width's IEEE format, the op runs, the result rounds
+/// back — round-to-nearest-even, the fixed deterministic mode); a non-constant operand DECLINES (runtime
+/// float ops emit the machine `f64.add`/… in a later increment). Unlike integer arithmetic there is NO
+/// checked-trap: an IEEE overflow yields an infinity — but a NON-FINITE result has no written value form
+/// (the float-literal-overflow rule), so a fold to `±inf`/NaN DECLINES rather than producing a bad value.
+fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
+    if args.len() != 2 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            format!("{} takes exactly 2 operands", intrinsic_name(op)),
+        ));
+    }
+    let lhs = core_of(db, args[0]);
+    let rhs = core_of(db, args[1]);
+    match (lhs, rhs) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::ConstFloat(a), Core::ConstFloat(b)) => {
+            // The result WIDTH is the application's solved type (both operands unify to it). Fold at that
+            // width: round each operand to the width's format, compute, round the result back.
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            let fold_at = |x: f64, y: f64| -> f64 {
+                let r = match op {
+                    Prim::FAdd => x + y,
+                    Prim::FSub => x - y,
+                    Prim::FMul => x * y,
+                    Prim::FDiv => x / y,
+                    _ => f64::NAN,
+                };
+                // A `Float32` result rounds through binary32 (`as f32 as f64`), the fixed narrower mode;
+                // `Float64` computes directly. Both round-to-nearest-even (the IEEE default wasm uses).
+                if width == 32 { r as f32 as f64 } else { r }
+            };
+            let (x, y) = if width == 32 {
+                (
+                    f64::from_bits(a.to_f64_bits()) as f32 as f64,
+                    f64::from_bits(b.to_f64_bits()) as f32 as f64,
+                )
+            } else {
+                (
+                    f64::from_bits(a.to_f64_bits()),
+                    f64::from_bits(b.to_f64_bits()),
+                )
+            };
+            let result = fold_at(x, y);
+            match crate::ast::Decimal::from_f64(result) {
+                Some(d) => {
+                    trace!(target: "rcdzc::lower", op = intrinsic_name(op), width, "folded constant float op");
+                    Core::ConstFloat(d)
+                }
+                // A non-finite result (overflow → ±inf, 0.0/.0 → NaN) has no written value form — decline
+                // rather than emit an unrepresentable constant (the float-literal-overflow discipline).
+                None => Core::Poison(Reject::decline(
+                    "a floating-point operation whose result is not finite has no value form yet",
+                )),
+            }
+        }
+        // A runtime float operand — the machine `f64.add`/… emit is a later increment (needs the f64
+        // arithmetic opcodes via the codegen op-list). Decline cleanly.
+        _ => Core::Poison(Reject::decline(
+            "a runtime float arithmetic operand is not yet emitted (only a constant float folds)",
+        )),
     }
 }
 
