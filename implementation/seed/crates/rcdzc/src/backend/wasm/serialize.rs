@@ -1603,7 +1603,7 @@ pub fn distinct_sig_resource_core_module(
                 make_i += 1;
             }
             items.extend_from_slice(&export(
-                &format!("call-{gi}"),
+                &format!("call-g{gi}"),
                 call_abs_base + gi as u32,
             ));
         }

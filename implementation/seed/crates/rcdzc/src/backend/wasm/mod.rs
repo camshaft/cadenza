@@ -210,11 +210,9 @@ pub fn emit(
             let result = first.clone();
             return emit_multi_closure_resource(db, layout, &defs, &result, spans);
         }
-        return Err(Reject::decline(
-            "a program exporting closures of DIFFERENT signatures is not yet supported — it needs one \
-             resource type per signature (this increment handles several exports that share ONE closure \
-             signature); DESIGN-closure-host-resource-rcdzc.md, multi-export closures",
-        ));
+        // DISTINCT signatures — each becomes its own resource type. `emit_distinct_sig_resource` groups the
+        // exports by signature and publishes G resource types (the `distinct_signature_…` oracle proved it).
+        return emit_distinct_sig_resource(db, layout, spans);
     }
     // A closure export ALONGSIDE a non-closure export (a mixed multi-export) is also not yet supported —
     // the closure needs the resource envelope while the scalar export needs the plain boundary; composing
@@ -878,6 +876,23 @@ fn resource_escape_build(
     layout: &Layout,
     extra: impl FnOnce(&mut std::collections::BTreeSet<&'static str>),
 ) -> Result<(Vec<&'static runtime_abi::RtOp>, Vec<SelectedFunc>, Layout), Reject> {
+    // The default escape imports ONE resource type's 2 canon intrinsics (`resource.new`/`resource.rep`)
+    // beyond the runtime ops. The distinct-signature path (G resource types) uses `resource_escape_build_n`.
+    resource_escape_build_n(db, layout, 2, extra)
+}
+
+/// [`resource_escape_build`] parameterized by the number of RESOURCE-INTRINSIC core funcs the envelope
+/// prepends beyond the runtime ops (`resource.new`/`resource.rep` per resource type). This fixes
+/// `import_base` — the shift a defined func's index takes — BEFORE selection, so `abs`/`lifted_abs`/the
+/// element segment (and any embedded inter-def call index) are correct for a core with `imports.len() +
+/// intrinsics` imports. The single/multi-export/round-trip paths pass `intrinsics = 2` (one resource type);
+/// distinct-signature passes `2*G`.
+fn resource_escape_build_n(
+    db: &mut Db,
+    layout: &Layout,
+    intrinsics: u32,
+    extra: impl FnOnce(&mut std::collections::BTreeSet<&'static str>),
+) -> Result<(Vec<&'static runtime_abi::RtOp>, Vec<SelectedFunc>, Layout), Reject> {
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
@@ -893,7 +908,7 @@ fn resource_escape_build(
                 .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
         })
         .collect::<Result<_, _>>()?;
-    let layout = layout.with_import_base(imports.len() as u32 + 2);
+    let layout = layout.with_import_base(imports.len() as u32 + intrinsics);
     let mut funcs: Vec<SelectedFunc> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
@@ -1456,6 +1471,210 @@ fn emit_multi_closure_resource(
         &abi_makes,
         &arg_bytes,
         result_byte,
+    ))
+}
+
+/// Emit the DISTINCT-SIGNATURE multi-export component: several closure exports of DIFFERENT signatures
+/// cross as G resource types (one per distinct signature), each with its own `make-<name>`(s) + `call-<g>`.
+/// Generalizes `emit_multi_closure_resource` (which requires ONE shared signature). Exports are GROUPED by
+/// their solved closure signature; each group becomes a `SigGroup` (serializer) + `SigGroupAbi` (envelope).
+/// A group's representative `call_indirect` functype is the FIRST lifted lambda whose valtype shape matches
+/// that signature (all closures of one signature share the shape, so slot choice within a group is
+/// immaterial). The `distinct_signature_…` oracle + the distinct-sig serializer seam proved the pieces.
+fn emit_distinct_sig_resource(
+    db: &mut Db,
+    layout: &Layout,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::{valtype_of, ValType};
+    // GROUP the exports by their result signature (preserving first-seen order). Each group is a distinct
+    // resource type. `sigs` holds the group signatures in order; `group_of[export-index]` its group.
+    let mut sigs: Vec<crate::ty::Ty> = Vec::new();
+    let mut export_group: Vec<usize> = Vec::new();
+    for e in &layout.exports {
+        let gi = sigs.iter().position(|s| s == &e.result).unwrap_or_else(|| {
+            sigs.push(e.result.clone());
+            sigs.len() - 1
+        });
+        export_group.push(gi);
+    }
+    // Per group: flatten its signature → arg/ret types + validate scalar boundary bytes.
+    struct GroupInfo {
+        arg_vts: Vec<ValType>,
+        ret_vt: ValType,
+        arg_bytes: Vec<u8>,
+        result_byte: u8,
+    }
+    let mut ginfos: Vec<GroupInfo> = Vec::new();
+    for sig in &sigs {
+        let mut arg_tys = Vec::new();
+        let mut cur = sig.clone();
+        while let crate::ty::Ty::Fn(dom, rng) = cur {
+            arg_tys.push((*dom).clone());
+            cur = *rng;
+        }
+        let ret_ty = cur;
+        let arg_bytes: Vec<u8> = arg_tys
+            .iter()
+            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .collect::<Result<_, _>>()?;
+        let result_byte =
+            closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+        let arg_vts: Vec<ValType> = arg_tys
+            .iter()
+            .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+            .collect::<Result<_, _>>()?;
+        let ret_vt = valtype_of(&ret_ty)
+            .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+        ginfos.push(GroupInfo { arg_vts, ret_vt, arg_bytes, result_byte });
+    }
+    // Effect-escape fence: no lifted body may perform a host effect.
+    {
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it (closures escaping effects are \
+                     not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
+    // Per-export make spec (name + params), collected BEFORE the build moves the layout.
+    struct MakeSpec {
+        def: usize,
+        group: usize,
+        name: String,
+        param_vts: Vec<ValType>,
+        param_bytes: Vec<u8>,
+    }
+    let mut make_specs: Vec<MakeSpec> = Vec::new();
+    for (ei, e) in layout.exports.iter().enumerate() {
+        let param_vts: Vec<_> = e
+            .params
+            .iter()
+            .map(|(_, t)| valtype_of(t).ok_or_else(|| Reject::decline("closure export param has no valtype")))
+            .collect::<Result<_, _>>()?;
+        let param_bytes: Vec<u8> = e
+            .params
+            .iter()
+            .map(|(_, t)| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t)))
+            .collect::<Result<_, _>>()?;
+        make_specs.push(MakeSpec {
+            def: e.def,
+            group: export_group[ei],
+            name: format!("make-{}", e.name),
+            param_vts,
+            param_bytes,
+        });
+    }
+
+    // Collect lifted-body ops, build, append lifted bodies (same as the multi-export path).
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
+    // Snapshot each lifted lambda's valtype shape BEFORE the build moves the layout (to match a group's
+    // signature to a representative slot).
+    let lifted_shapes: Vec<(Vec<ValType>, Option<ValType>)> = layout
+        .lifted
+        .iter()
+        .map(|l| {
+            let ps: Vec<ValType> = l.params.iter().filter_map(|(_, t)| valtype_of(t)).collect();
+            (ps, valtype_of(&l.ret_ty))
+        })
+        .collect();
+    // G resource types → the envelope prepends 2*G resource intrinsics before the defined funcs, so fix
+    // `import_base` accordingly (else `abs`/`lifted_abs`/the element segment are off by 2*(G-1)).
+    let intrinsics = (2 * sigs.len()) as u32;
+    let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+        used.extend(lifted_ops.iter().copied());
+    })?;
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline("a distinct-signature closure program produced no lifted lambda"));
+    }
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    // For each group, find a representative lifted SLOT whose shape matches (arg_vts + ret_vt). The lifted
+    // lambda's env param (slot 0, an i32) is prepended at emission, so match the lambda's OWN params.
+    let group_slot = |gi: usize| -> Option<usize> {
+        let ginfo = &ginfos[gi];
+        lifted_shapes.iter().position(|(ps, rv)| {
+            ps.as_slice() == ginfo.arg_vts.as_slice() && *rv == Some(ginfo.ret_vt)
+        })
+    };
+
+    // Build the serializer SigGroups + envelope SigGroupAbis, in group order.
+    let mut ser_groups: Vec<serialize::SigGroup> = Vec::new();
+    let mut abi_groups: Vec<envelope::SigGroupAbi> = Vec::new();
+    #[allow(clippy::needless_range_loop)] // `gi` is a semantic GROUP id — indexes sigs/ginfos AND filters make_specs
+    for gi in 0..sigs.len() {
+        let slot = group_slot(gi)
+            .ok_or_else(|| Reject::decline("a closure signature group has no matching lifted lambda"))?;
+        let mut ser_makes = Vec::new();
+        let mut abi_makes = Vec::new();
+        for m in make_specs.iter().filter(|m| m.group == gi) {
+            let export_abs = layout
+                .abs(m.def)
+                .ok_or_else(|| Reject::decline("a closure export is not in the emission order"))?;
+            ser_makes.push(serialize::ClosureMake {
+                export_name: m.name.clone(),
+                export_abs,
+                param_vts: m.param_vts.clone(),
+            });
+            abi_makes.push(envelope::ClosureMakeAbi {
+                name: m.name.clone(),
+                make_param_bytes: m.param_bytes.clone(),
+            });
+        }
+        ser_groups.push(serialize::SigGroup {
+            makes: ser_makes,
+            arg_vts: ginfos[gi].arg_vts.clone(),
+            ret_vt: ginfos[gi].ret_vt,
+            lifted_slot: slot,
+        });
+        abi_groups.push(envelope::SigGroupAbi {
+            makes: abi_makes,
+            arg_bytes: ginfos[gi].arg_bytes.clone(),
+            result_byte: ginfos[gi].result_byte,
+        });
+    }
+
+    let main_core =
+        serialize::distinct_sig_resource_core_module(&funcs, &imports, &ser_groups, &layout)
+            .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_distinct_sig_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &abi_groups,
     ))
 }
 

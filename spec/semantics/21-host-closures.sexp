@@ -425,3 +425,43 @@
               (export mk) (export is-pos)))
   (call   is-pos (: 5 Int64))
   (output (: true Bool)))
+
+; DISTINCT-SIGNATURE multi-export — a program exporting closures of DIFFERENT signatures crosses as one
+; resource type PER signature. `inc : (-> Int64 Int64)` and `isz : (-> Int64 Bool)` become resources `t0`
+; and `t1`, each with its own `make-<name>` + `call-g<n>` (the group's shared call). The host picks a
+; closure export by name; the driver calls `make-<name>` → a handle, then the `call-g<n>` whose `self`
+; resource type matches. Each group gets its own `resource.new`/`resource.rep` intrinsics (a core
+; `resource.new` is typed to ONE resource); both closures still share the guest funcref table.
+
+(case "one of two DIFFERENT-signature closure exports is made and called"
+  (doc    "`(def (inc) (fn (x) (+ x 1)))` is `(-> Int64 Int64)` and `(def (isz) (fn (x) (= x 0)))` is
+           `(-> Int64 Bool)` — DIFFERENT signatures, so they cross as two resource types. Calling `inc`
+           drives `make-inc()` (resource t0) then its `call`(5) = 6. Pins that distinct signatures each get
+           their own resource type + make/call, published in one interface.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export inc) (export isz)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "the second distinct-signature closure export returns its own type"
+  (doc    "The SAME two-export program, now calling `isz` (resource t1, a `(-> Int64 Bool)` closure):
+           `make-isz()` then its `call`(0) = true. The `isz` group's `call` returns Bool, distinct from
+           `inc`'s Int64 — proving the two resource types carry independent signatures and results.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export inc) (export isz)))
+  (call   isz (: 0 Int64))
+  (output (: true Bool)))
+
+(case "three distinct closure signatures cross as three resource types"
+  (doc    "`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`, `dbl : (-> Int64 Int64)` — note `inc` and
+           `dbl` SHARE a signature (one resource type, two makes), while `isz` is distinct (its own).
+           Calling `dbl`(7) = 14 exercises the shared-signature group alongside the distinct one. Pins that
+           grouping-by-signature composes: same-signature exports share a resource, distinct ones don't.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (dbl) (fn ((: x Int64)) (* x 2)))
+              (export inc) (export isz) (export dbl)))
+  (call   dbl (: 7 Int64))
+  (output (: 14 Int64)))

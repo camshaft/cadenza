@@ -1465,6 +1465,229 @@ pub fn assemble_multi_closure_resource(
     out
 }
 
+/// One SIGNATURE GROUP's boundary shape for the distinct-signature envelope: its per-export `make`s + its
+/// `call` arg/result bytes. Each group becomes ONE resource type with its own make/call published under
+/// `make-<name>`/`call-<g>` (g = the group index).
+pub struct SigGroupAbi {
+    pub makes: Vec<ClosureMakeAbi>,
+    pub arg_bytes: Vec<u8>,
+    pub result_byte: u8,
+}
+
+/// Assemble a DISTINCT-SIGNATURE closure-resource component: closures of G DIFFERENT signatures cross as G
+/// resource types, published together under `cadenza:closure/exports`. The multi-export envelope
+/// generalized from ONE resource type to G — G dtors, G resource types, G `resource-new`/`resource-rep`
+/// canon pairs (each bound to its resource), and an inner component importing/re-exporting all G resources
+/// with each fn ascribed to its own. `main_core` is `serialize::distinct_sig_resource_core_module`'s output
+/// (exporting each group's `make-<name>` + `call-<g>`). The `distinct_signature_…` oracle is the byte
+/// reference this hand-emits.
+///
+/// Core-func index layout (k = imports.len()): lowered ops → 0..k; then per group g (in order): `t<g>-dtor`
+/// alias, then `resource.new-g`/`resource.rep-g`. Component types: 0 = import instance-type; then per group
+/// its resource type; then per fn its own<t> + functype.
+pub fn assemble_distinct_sig_resource(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    groups: &[SigGroupAbi],
+) -> Vec<u8> {
+    let k = imports.len();
+    let g = groups.len();
+    // Flat function count across all groups: each group contributes (its makes) + 1 call.
+    let total_fns: usize = groups.iter().map(|gr| gr.makes.len() + 1).sum();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: import instance-type (component type 0).
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
+    // sec 10: import the runtime interface (component instance 0).
+    out.extend_from_slice(&{
+        let mut item = extern_name(import_name);
+        item.push(0x05);
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    });
+    // sec 6: alias each op → comp funcs 0..k.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    });
+    // sec 8: canon-lower each aliased op → core funcs 0..k.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    });
+    // The `drop` op's core-func index (each group's dtor calls it).
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| i as u32)
+        .expect("the closure-resource escape imports `drop` for the dtor");
+    // Per group: a dtor instance + module + instantiate + alias, a resource type, and resource.new/rep. The
+    // dtor MODULE is shared (dtor_core), instantiated once per group (each resource needs its own dtor
+    // core-func). Track each resource type's component-type index + its new/rep core-func indices.
+    // Core funcs so far: 0..k lowered ops. Each group appends: t<g>-dtor alias (1) + resource.new (1) +
+    // resource.rep (1) = 3 core funcs. So group g's dtor = k + 3g, new = k + 3g + 1, rep = k + 3g + 2.
+    let mut res_type_idx: Vec<u32> = Vec::new(); // component-type index per group
+    let mut rnew_core: Vec<u32> = Vec::new();
+    let mut rrep_core: Vec<u32> = Vec::new();
+    // Component types: 0 = import instance-type. Each group's resource type is minted next: type 1, 2, ….
+    for gi in 0..g {
+        // sec 2: dtor instance exporting the lowered `drop` → a fresh core instance.
+        out.extend_from_slice(&section(
+            sec::CORE_INSTANCE,
+            &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+        ));
+        // sec 1: the (shared) dtor module.
+        out.extend_from_slice(&core_module_section(dtor_core));
+        // sec 2: instantiate the dtor module threading heap-dtor = the instance just made. The dtor
+        // instance for group g is core-instance `2*gi` (each group adds 2 core instances: the export
+        // instance + the module instantiation); the dtor MODULE for group g is module `gi` (each group
+        // adds one module here; the program core module comes after all groups).
+        out.extend_from_slice(&section(
+            sec::CORE_INSTANCE,
+            &wasm_vec(1, &core_instantiate_item(gi as u32, &[(HEAP_DTOR_MODULE, (2 * gi) as u32)])),
+        ));
+        // sec 6: alias `t-dtor` from the instantiation instance (core instance `2*gi + 1`) → a core func.
+        out.extend_from_slice(&section(
+            sec::ALIAS,
+            &wasm_vec(1, &core_alias_item((2 * gi + 1) as u32, DTOR_CORE_EXPORT)),
+        ));
+        let dtor_fn = (k + 3 * gi) as u32;
+        // sec 7: the resource type (rep i32, dtor = the aliased core func) → component type 1+gi.
+        out.extend_from_slice(&section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(1, &resource_type_item(dtor_fn)),
+        ));
+        let rty = (1 + gi) as u32;
+        res_type_idx.push(rty);
+        // sec 8: canon resource.new + resource.rep for THIS resource type.
+        out.extend_from_slice(&{
+            let mut items = resource_new_item(rty);
+            items.extend_from_slice(&resource_rep_item(rty));
+            section(sec::CANON, &wasm_vec(2, &items))
+        });
+        rnew_core.push(dtor_fn + 1);
+        rrep_core.push(dtor_fn + 2);
+    }
+    // sec 2: the `heap` core instance exporting the k ops + per group `resource-new-<g>`/`resource-rep-<g>`
+    // → the core instance the program core binds its `heap` import to.
+    let rnew_names: Vec<String> = (0..g).map(|gi| format!("resource-new-{gi}")).collect();
+    let rrep_names: Vec<String> = (0..g).map(|gi| format!("resource-rep-{gi}")).collect();
+    let heap_exports: Vec<(&str, u32)> = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, i as u32))
+            .collect();
+        for gi in 0..g {
+            ex.push((rnew_names[gi].as_str(), rnew_core[gi]));
+            ex.push((rrep_names[gi].as_str(), rrep_core[gi]));
+        }
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    let heap_inst = (2 * g) as u32; // core instances 0..2g are the g dtor pairs; the heap instance is next
+    // sec 1/2: the program core module (module g); instantiate threading `heap` = the heap instance.
+    out.extend_from_slice(&core_module_section(main_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(g as u32, &[(HEAP_MODULE, heap_inst)])),
+    ));
+    let prog_inst = heap_inst + 1;
+    // sec 6: alias each group's `make-<name>` + `call-<g>` off the program instance → core funcs (after the
+    // lowered ops + 3g resource funcs). Record each fn's core-func index in flat order.
+    let mut fn_core: Vec<u32> = Vec::new();
+    let mut next_fn = (k + 3 * g) as u32;
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for (gi, gr) in groups.iter().enumerate() {
+            for mk in &gr.makes {
+                items.extend_from_slice(&core_alias_item(prog_inst, &mk.name));
+                fn_core.push(next_fn);
+                next_fn += 1;
+            }
+            items.extend_from_slice(&core_alias_item(prog_inst, &format!("call-g{gi}")));
+            fn_core.push(next_fn);
+            next_fn += 1;
+        }
+        section(sec::ALIAS, &wasm_vec(total_fns, &items))
+    });
+    // sec 7: per fn, its `own<t>` + functype. Component types after the import-instance-type (0) + G
+    // resource types (1..1+g): the next defined type index is `1 + g`. Each fn adds own<t> (1) + functype
+    // (1). Record each fn's functype component-type index.
+    let mut fn_functype: Vec<u32> = Vec::new();
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        let mut ti = (1 + g) as u32;
+        for (gi, gr) in groups.iter().enumerate() {
+            let rty = res_type_idx[gi];
+            for mk in &gr.makes {
+                items.extend_from_slice(&own_item(rty));
+                let own_ty = ti;
+                items.extend_from_slice(&params_result_functype(
+                    &mk.make_param_bytes,
+                    &owned_valtype(own_ty),
+                ));
+                fn_functype.push(ti + 1);
+                ti += 2;
+            }
+            // call-<g>: own<t_g> + call functype.
+            items.extend_from_slice(&own_item(rty));
+            items.extend_from_slice(&closure_call_functype(ti, &gr.arg_bytes, gr.result_byte));
+            fn_functype.push(ti + 1);
+            ti += 2;
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * total_fns, &items))
+    });
+    // sec 8: lift each fn (its core func) against its functype → comp funcs k..k+total_fns.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for i in 0..total_fns {
+            items.extend_from_slice(&canon_lift_item(fn_core[i], fn_functype[i]));
+        }
+        section(sec::CANON, &wasm_vec(total_fns, &items))
+    });
+    // sec 4/5/11: nested re-export component; instantiate (G resources + total_fns comp funcs); export.
+    out.extend_from_slice(&component_section(&resource_inner_component_distinct_sig(groups)));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_distinct_sig_item(&res_type_idx, k as u32, groups),
+        ),
+    ));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
+    ));
+    out
+}
+
 /// One boundary parameter of a round-trip CONSUMER, in SOURCE ORDER: a closure the host hands back
 /// (crosses as `own<t>`) or a plain scalar (its component primitive byte). The consumer's component
 /// functype is its params in this exact order — a closure param need NOT be first, and a consumer may take
@@ -1910,6 +2133,141 @@ fn resource_inner_component_multi_closure(
         ),
     ));
     out
+}
+
+/// The DISTINCT-SIGNATURE inner re-export component: imports G abstract resources (`import-type-t<g>`) +
+/// each group's `make-<name>` (→ `own<t_g>`) and `call-<g>` (`(self: own<t_g>, args…) -> R`), then
+/// re-exports all G resources (`t0`,`t1`,…) + every fn ascribed against its group's exported resource.
+/// The only way to export G resources-with-methods together. Import-phase type layout: resources → types
+/// 0..g; then per fn (flat, group order — each group's makes then its call): `own<t_g>` at `g + 2f` +
+/// functype at `g + 2f + 1`, and the func imported → func f. Export phase: re-export G resources → exported
+/// types `E..E+g` (E = g + 2*total_fns); then per fn: `own<exp_t_g>` + re-ascribed functype.
+fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
+    let g = groups.len();
+    let total_fns: usize = groups.iter().map(|gr| gr.makes.len() + 1).sum();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import G abstract resources → types 0..g.
+    for gi in 0..g {
+        out.extend_from_slice(&section(
+            sec::COMPONENT_IMPORT,
+            &wasm_vec(1, &import_subresource_item(&format!("import-type-t{gi}"))),
+        ));
+    }
+    // IMPORT each fn (flat, group order): own<t_g> (type g+2f) + functype (type g+2f+1); import → func f.
+    let mut f = 0usize;
+    for (gi, gr) in groups.iter().enumerate() {
+        for mk in &gr.makes {
+            let own_ty = (g + 2 * f) as u32;
+            let ft_ty = (g + 2 * f + 1) as u32;
+            out.extend_from_slice(&{
+                let mut items = own_item(gi as u32);
+                items.extend_from_slice(&params_result_functype(
+                    &mk.make_param_bytes,
+                    &owned_valtype(own_ty),
+                ));
+                section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+            });
+            out.extend_from_slice(&section(
+                sec::COMPONENT_IMPORT,
+                &wasm_vec(1, &import_func_item(&format!("import-func-{}", mk.name), ft_ty)),
+            ));
+            f += 1;
+        }
+        // call-<gi> : (self: own<t_gi>, args…) -> R
+        let own_ty = (g + 2 * f) as u32;
+        let ft_ty = (g + 2 * f + 1) as u32;
+        out.extend_from_slice(&{
+            let mut items = own_item(gi as u32);
+            items.extend_from_slice(&closure_call_functype(own_ty, &gr.arg_bytes, gr.result_byte));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_IMPORT,
+            &wasm_vec(1, &import_func_item(&format!("import-func-call-g{gi}"), ft_ty)),
+        ));
+        f += 1;
+    }
+    // sec 11: RE-EXPORT each resource DIRECTLY as `t<g>` → exported types E..E+g (E = g + 2*total_fns).
+    let e = (g + 2 * total_fns) as u32;
+    for gi in 0..g {
+        out.extend_from_slice(&section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(1, &export_type_direct_item(&format!("t{gi}"), gi as u32)),
+        ));
+    }
+    // EXPORT each fn ascribed against its group's EXPORTED resource (exp type E + gi). Types after the
+    // re-exports continue at E + g; each fn adds own<exp_t_g> + functype.
+    let mut ti = e + g as u32;
+    let mut f = 0usize;
+    for (gi, gr) in groups.iter().enumerate() {
+        let exp_rty = e + gi as u32;
+        for mk in &gr.makes {
+            out.extend_from_slice(&{
+                let mut items = own_item(exp_rty);
+                items.extend_from_slice(&params_result_functype(
+                    &mk.make_param_bytes,
+                    &owned_valtype(ti),
+                ));
+                section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+            });
+            out.extend_from_slice(&section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(1, &export_func_ascribed_item(&mk.name, f as u32, ti + 1)),
+            ));
+            ti += 2;
+            f += 1;
+        }
+        out.extend_from_slice(&{
+            let mut items = own_item(exp_rty);
+            items.extend_from_slice(&closure_call_functype(ti, &gr.arg_bytes, gr.result_byte));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(1, &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 1)),
+        ));
+        ti += 2;
+        f += 1;
+    }
+    out
+}
+
+/// The distinct-signature instantiate item: supply each imported resource (`import-type-t<g>` → its outer
+/// resource type) + each fn (`import-func-<make>`/`import-func-call-<g>` → its lifted comp func, flat group
+/// order starting at `first_fn`).
+fn component_instantiate_distinct_sig_item(
+    res_type_idx: &[u32],
+    first_fn: u32,
+    groups: &[SigGroupAbi],
+) -> Vec<u8> {
+    let mut item = vec![0x00];
+    uleb128(0, &mut item);
+    let mut arg_items = Vec::new();
+    let push = |name: &str, sort: u8, idx: u32, out: &mut Vec<u8>| {
+        out.extend_from_slice(&uleb_bytes(name.len() as u64));
+        out.extend_from_slice(name.as_bytes());
+        out.push(sort);
+        uleb128(idx as u64, out);
+    };
+    let mut n_args = 0usize;
+    for (gi, &rty) in res_type_idx.iter().enumerate() {
+        push(&format!("import-type-t{gi}"), 0x03, rty, &mut arg_items);
+        n_args += 1;
+    }
+    let mut f = first_fn;
+    for (gi, gr) in groups.iter().enumerate() {
+        for mk in &gr.makes {
+            push(&format!("import-func-{}", mk.name), 0x01, f, &mut arg_items);
+            f += 1;
+            n_args += 1;
+        }
+        push(&format!("import-func-call-g{gi}"), 0x01, f, &mut arg_items);
+        f += 1;
+        n_args += 1;
+    }
+    item.extend_from_slice(&wasm_vec(n_args, &arg_items));
+    item
 }
 
 /// The MULTI-EXPORT-plus-CONSUMER (round-trip) inner re-export component: imports the abstract resource +

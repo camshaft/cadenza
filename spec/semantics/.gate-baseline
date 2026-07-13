@@ -1004,6 +1004,7 @@ pass	nested patterns with literals
 pass	nullary constructor patterns are uniform with unary
 pass	one generic sum instantiated at two different types in one program
 pass	one of several same-signature closure exports is made and called by the host
+pass	one of two DIFFERENT-signature closure exports is made and called
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
@@ -1132,6 +1133,7 @@ pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the same function called under two handlers is discharged by each in turn
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
+pass	the second distinct-signature closure export returns its own type
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders strings lexicographically
@@ -1144,6 +1146,7 @@ pass	the value-yielding remove reports the value it dropped
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
+pass	three distinct closure signatures cross as three resource types
 pass	true is greater than false
 pass	true is not less than false
 pass	tuple access on a non-tuple is a type error
