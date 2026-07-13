@@ -4767,6 +4767,57 @@ mod runtime_ops {
             1
         ); // 15>>3 = 1
     }
+
+    #[test]
+    fn a_provably_in_range_arith_computes_the_same_value_without_a_guard() {
+        // The guard-elided ops must compute EXACTLY what the guarded version would — the machine op
+        // already produces the exact result when it provably fits.
+        // (+ (& x 15) (& y 15)): sum of two [0,15] nibbles.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(+ (& x 15) (& y 15))",
+                &[Val::S64(255), Val::S64(255)]
+            ),
+            30 // (255&15)+(255&15) = 15+15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(+ (& x 15) (& y 15))",
+                &[Val::S64(-1), Val::S64(8)]
+            ),
+            23 // (-1&15)+(8&15) = 15+8
+        );
+        // (* (& x 15) 3): [0,45].
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 3)", &[Val::S64(255)]),
+            45
+        ); // 15*3
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 3)", &[Val::S64(4)]),
+            12
+        ); // 4*3
+        // NARROW: (+ (& x:UInt8 3) (& y:UInt8 3)) ∈ [0,6], fits UInt8.
+        assert_eq!(
+            run::<u8>(
+                "(: x UInt8) (: y UInt8)",
+                "(+ (& x 3) (& y 3))",
+                &[Val::U8(255), Val::U8(254)]
+            ),
+            5 // (255&3)+(254&3) = 3+2
+        );
+        // (- (& x 15) (& y 15)) ∈ [-15,15] — a subtract whose interval fits, guard elided, value exact
+        // (including a negative result).
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(- (& x 15) (& y 15))",
+                &[Val::S64(3), Val::S64(10)]
+            ),
+            -7 // 3 - 10
+        );
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
@@ -5816,6 +5867,36 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0203")
         );
+    }
+
+    #[test]
+    fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
+        // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
+        // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text
+        // operand (String/Bytes) against a SCALAR operand (a number, a Bool, a Char) is a CROSS-KIND
+        // clash — a malformed operation (CDZ0201), NOT the CDZ0203 a same-kind SHAPE mismatch gets. Mirrors
+        // the map-vs-record kind clash: there is no shared order/arithmetic across the text↔scalar boundary.
+        for src in [
+            "(module m (def (main) (+ 1 \"two\")) (export main))",
+            "(module m (def (main) (< 1 \"x\")) (export main))",
+            "(module m (def (main) (> \"x\" 1)) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0201"),
+                "a text/scalar operand clash must reject CDZ0201: {src}"
+            );
+        }
+        // Int-vs-Bool — TWO scalars, no text operand — stays the generic structural mismatch CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (main) (< 1 true)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        // String-vs-String is a VALID comparison — the guard fires only on a text↔scalar clash.
+        assert!(run_returns::<bool>(
+            &component("(module m (def (main) (= \"a\" \"a\")) (export main))"),
+            "main"
+        ));
     }
 
     #[test]
@@ -12658,6 +12739,18 @@ mod stage1 {
             "expected CDZ0405 (non-exhaustive handler), got: {}",
             err.message
         );
+        // The message NAMES the missing op AND spells the arm to add (the "route to a fix" — a
+        // structural fix is not attached because the desugared arms-list is span-less; see infer.rs).
+        assert!(
+            err.message.contains("missing: collect"),
+            "names the missing op: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("add (collect (v) s (resume v s))"),
+            "spells the arm to add: {}",
+            err.message
+        );
     }
 
     #[test]
@@ -12881,19 +12974,50 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_conditional_abortive_perform_declines_rather_than_miscompiles() {
-        // E4 soundness guard: an abortive perform under a NON-tail conditional cannot be realized by either
-        // sound shape — the unconditional collapse (whole handle → arm value) would abort the other path
-        // too, and the per-branch fold needs the `if` to BE the handle value. `(+ 1 (if true (Bail.bail 7)
-        // 0))` would have to abort OUT of the enclosing `+ 1`, which needs a real `block`/`br` control node
-        // (a later increment). `body_has_unsound_abortive_perform` flags it (`under_cond && !tail`) and
-        // `reduce_handle` DECLINES rather than miscompile. The guard is STRUCTURAL — a constant condition
-        // does not let the abort slip past as an unconditional one. Regression guard for the E4-a miscompile.
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+    fn a_non_tail_conditional_abortive_perform_hoists_and_folds() {
+        // E4 non-tail hoist: an abortive perform under a NON-tail conditional — `(+ 1 (if c (Bail.bail 7)
+        // 0))` — is lifted by distributing the enclosing strict op into both `if` branches:
+        // `(if c (+ 1 (Bail.bail 7)) (+ 1 0))`. The abort then sits in a branch tail (an unconditional
+        // abort inside the branch), which `thread_branch_local_abort` captures — the branch value IS the
+        // abort value. Sound because the abort ABANDONS the enclosing `+ 1` and the sibling operand `1` is
+        // pure (duplicated harmlessly). True branch → 7 (abort discards `+ 1`); false branch → 0+1 = 1.
+        // (Previously this DECLINED — the hoist is what makes it fold.)
+        let t = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(t)))
+                    .expect("a non-tail conditional abort hoists and compiles"),
+                "main"
+            ),
+            7
+        );
+        let f = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if false (Bail.bail 7) 0)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(f)))
+                    .expect("the non-aborting branch folds"),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_alongside_an_effectful_sibling_declines() {
+        // E4 hoist soundness LIMIT: the non-tail hoist distributes the enclosing op into both branches, so
+        // it requires the op's OTHER operands to be PURE (duplicating them is observably free). When a
+        // sibling operand is EFFECTFUL — here `(Get.get 0)` under a tail-resumptive `Get` handler, in
+        // `(+ (Get.get 0) (if c (Bail.bail 7) 50))` — the sibling runs (threads state) BEFORE the abort, so
+        // it can be neither duplicated nor dropped. The hoist declines to lift, and the guard flags the
+        // still-non-tail abort → `reduce_handle` DECLINES rather than miscompile. Regression guard.
+        let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) \
+                     (handle 0 ((Get.get (n) s (resume 5 s))) (+ (Get.get 0) (if true (Bail.bail 7) 50))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail conditional abortive perform must decline, not miscompile"
+            "an abort alongside an effectful sibling must decline, not miscompile"
         );
     }
 
@@ -20243,6 +20367,26 @@ mod closure_host_resource {
         assert_eq!(
             rt.closure_make_call(&[Val::S64(100)], &[Val::S64(7)]),
             Val::S64(107)
+        );
+    }
+
+    /// DIRECTION 2 (host hands a closure BACK) is NOT YET SUPPORTED — an export whose PARAMETER is a
+    /// closure declines cleanly (reject-don't-miscompile) with a message naming the feature, rather than
+    /// the internal "no matching function type" the select-time `Core::CallClosure` would otherwise
+    /// surface (a host-origin closure has no in-program lifted lambda to match). Pins the honest Todo
+    /// until the round-trip (C-HOST-4: signature-derived indirect-call type + `own<closure>` param ABI).
+    #[test]
+    fn a_closure_export_parameter_declines_with_a_clear_message() {
+        use crate::testkit::parse;
+        let src =
+            "(module m (def (invoke (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export invoke))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure-typed export parameter must DECLINE (Direction 2 not yet built)",
+        );
+        assert!(
+            err.message.contains("passed AS A PARAMETER"),
+            "expected the Direction-2 not-yet-supported message, got: {}",
+            err.message
         );
     }
 }

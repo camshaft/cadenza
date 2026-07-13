@@ -215,9 +215,15 @@ the component type. The new work:
   module was invalid. `cdz-run` SPLITS the flat `(call …)` arg list by `make`'s arity (first N →
   make's export params, rest → call's closure args). VERIFIED e2e: adder(10)+call(5)=15,
   adder(100)+call(7)=107. +2 corpus cases (→5 total) + 1 unit test. own<t> consumes per call.
-- **C-HOST-3 — multi-arg + multiple signatures.** A closure of `(-> Int64 (-> Int64
-  Int64))` → `call` with two args; two distinct signatures in one program mint two resource
-  types (dedup by the solved `Ty::Fn`).
+- **✅ C-HOST-3 (multi-arg) COMPLETE `@0c45f75a` — corpus-only.** A closure of `(-> Int64 (->
+  Int64 Int64))` → `call` with two args, 3-arg → three, a Bool-RESULT closure, and a
+  parameterized+capturing+multi-arg combo — ALL already work (the C-HOST-1/2 flatten + arg-list
+  plumbing was arity/type-agnostic; no compiler change). Witnessed as 4 corpus cases (→9 total),
+  all through the full gate. ⏳ REMAINING part of "multiple signatures": a program exporting
+  SEVERAL closures at once (`(export inc) (export add)`) still DECLINES — the escape dispatch
+  fires only for a SINGLE export (`[e]`); two closure exports fall to the multi-export path where
+  `Ty::Fn` has no boundary valtype. A MULTI-EXPORT closure envelope (N make/call pairs, or a
+  resource type per signature published together) is a distinct later increment.
 - **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
   `cdz-run` threads a handle returned by one export back into another; inside, the param is
   `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.
