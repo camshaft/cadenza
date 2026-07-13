@@ -703,6 +703,26 @@ fn a_recursive_sum_declines_the_whole_function() {
 }
 
 #[test]
+fn a_recursive_sum_constructed_as_a_discarded_intermediate_declines() {
+    // REGRESSION: a recursive sum's enum declines (needs Box), and the SIGNATURE guard catches a param/
+    // result of that type — but the fold can INLINE a helper that constructs the sum as a discarded
+    // intermediate (`mk` returns `(tuple (NLit 5) 9)`, `main` reads `.1` = the Int64 and drops the sum).
+    // `main`'s result is `Int64` (passes the signature guard), but its body still names `Node::NLit`,
+    // which was never declared → `cannot find type Node`. `sum_variant_path` must decline that construct.
+    let err = try_compile_rust(
+        "(module m (type Node (NLit Int64) (NAdd (Tuple Node Node))) \
+           (def (mk) (tuple (NLit 5) 9)) \
+           (def (main) (let ((l (mk))) (. l 1))) (export main))",
+    )
+    .expect_err("constructing a recursive sum, even as a discarded intermediate, must decline");
+    assert!(
+        err.iter()
+            .any(|d| d.contains("no emitted Rust enum") || d.contains("recursive")),
+        "decline reason should cite the unrepresentable sum: {err:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_user_sum_constructs_and_matches() {
     // area(Circle 5) = 25, area(Rect 4 3) = 12 — construction + match run through rustc and match the
     // wasm oracle. The driver constructs a variant and calls the export.
