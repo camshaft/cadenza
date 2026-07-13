@@ -166,7 +166,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Effects & handlers",
     blurb: "Perform an operation; a handler decides what it means.",
     section: "What makes Cadenza different",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Effects.tsx")),
   },
   {
