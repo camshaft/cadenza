@@ -9041,6 +9041,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_exhaustive_match_in_a_called_function_is_reported_once_not_duplicated() {
+        // A non-exhaustive match in a function that is also CALLED was reported TWICE: once at the def (the
+        // def-body check, with the insert-arms fix) and once re-anchored to the call site (the lowering walk
+        // inlines the callee and re-reaches the same poison; its fix targets a SYNTHESIZED node). An agent
+        // saw one defect as two errors, the second worse (points at the caller, its fix stripped). Now
+        // `dedup_faults` drops the copy whose fix targets a non-user node when the same (code, message) is
+        // reported with a fix editing a USER node. Exactly ONE CDZ0210 survives, at the match, with its fix.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type C R G B) (def (f (: c C)) (match c ((R) 1) ((G) 2))) \
+               (def (main) (f (R))) (export main))",
+        )));
+        let ne: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+            .collect();
+        assert_eq!(
+            ne.len(),
+            1,
+            "a called function's non-exhaustive match reports ONCE, not per call: {ne:?}"
+        );
+        assert!(
+            ne[0].fix.is_some(),
+            "the surviving copy is the authoritative one, with its insert-arms fix"
+        );
+        // SAFETY (the M7 concern): TWO GENUINELY-DISTINCT matches — same missing variant, different defs —
+        // must BOTH survive (each fix edits its own user node, so neither is the dropped "non-user" copy).
+        let two = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type C R G B) (def (f (: c C)) (match c ((R) 1) ((G) 2))) \
+               (def (g (: c C)) (match c ((R) 9) ((G) 8))) (export f) (export g))",
+        )));
+        assert_eq!(
+            two.iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+                .count(),
+            2,
+            "two distinct non-exhaustive matches are NOT merged: {two:?}"
+        );
+    }
+
+    #[test]
     fn an_annotation_mismatch_to_a_sum_offers_a_wrap_in_variant_fix() {
         // "try wrapping the expression in `Some`" (`spec/capabilities/diagnostics.md` §A Diagnostic
         // Carries A Route To A Fix): `(: n Option)` where `n : Int64` and `Option`'s `Some` carries an

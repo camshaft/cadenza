@@ -3188,7 +3188,30 @@ fn check_application(
                 // anchor.
                 let mut body_faults = Vec::new();
                 collect(g, reduced, &mut body_faults);
+                // A fault the callee's UNREDUCED body ALREADY has does NOT depend on this call's arguments —
+                // a non-exhaustive `(match c …)` or an unbound name in the body faults regardless of what is
+                // passed. The callee's OWN def-body check (`compile::collect_faults`) reports it once, at the
+                // definition, WITH its fix (e.g. the CDZ0210 insert-arms). Re-surfacing it here — re-anchored
+                // to the CALL SITE and stripped of its fix — is a DUPLICATE: the same defect reported twice,
+                // the second copy worse (no fix, points at the caller not the buggy match). So keep only the
+                // faults β-reduction INTRODUCED — the ones absent from the unreduced body, which are exactly
+                // the argument-induced faults this check exists to catch (`(if x …)` → `(if 5 …)`,
+                // `(+ x 1)` → `(+ true 1)`). Diff by (code, message): a renumbering-invariant identity, the
+                // same key `dedup_faults` uses. The unreduced collect is memoized (cache hit after the def's
+                // own check), so this costs nothing on the hot deep-call-chain path.
+                let baseline: std::collections::HashSet<(Option<crate::diag::Code>, String)> =
+                    match crate::eval::lambda_body(g, head) {
+                        Some(callee_body) => {
+                            let mut unreduced = Vec::new();
+                            collect(g, callee_body, &mut unreduced);
+                            unreduced.into_iter().map(|f| (f.code, f.message)).collect()
+                        }
+                        None => std::collections::HashSet::new(),
+                    };
                 for mut f in body_faults {
+                    if baseline.contains(&(f.code, f.message.clone())) {
+                        continue; // the callee's own defect — already reported at the definition, with its fix
+                    }
                     let on_user_node = f.at.is_some_and(|o| g.is_user_node(o));
                     if !on_user_node {
                         f.at = Some(app);
