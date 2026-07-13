@@ -21,7 +21,7 @@
 //! scope already realizes, now grouped under a record.
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
-use crate::db::ModuleDecl;
+use crate::db::{Def, ModuleDecl};
 use crate::fxhash::FxHashMap;
 use crate::prelude::{push_atom, push_list};
 
@@ -137,4 +137,66 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
     let params_list = push_list(ast, params);
     let lambda = push_list(ast, vec![fn_head, params_list, body]);
     Some(push_list(ast, vec![k, lambda]))
+}
+
+/// Register each module member FUNCTION (a `(def (f p…) body)` with parameters) — recursively, into
+/// nested modules — as an INTERNAL [`Def`] (`Def::internal`), so a RECURSIVE call to it lowers to a
+/// standalone `Core::Call` instead of declining ("needs runtime specialization"). Runs during `Db::load`
+/// AFTER `synthesize` (it reads the same `(module …)` declarations) and after accum/binding-params
+/// (which transform the TOP-LEVEL defs; a module member compiles as an ordinary recursive `Core::Call`,
+/// growing the stack exactly like a non-tail top-level recursive fn — the accumulator/loop transforms are
+/// a later optimization for module members).
+///
+/// The internal def reuses the member's ORIGINAL signature params + body occurrences — the SAME ones the
+/// synth field lambda `(fn (p…) body)` carries — so `def_by_body` maps the body back to this index (what
+/// `lower::callee_def_index` needs), `def_scheme` types it from those params, and a body param reference
+/// (resolved via the synth `(fn …)` scope) keys on the same occurrence. It is deliberately kept OUT of
+/// `def_name_index` (its NAME resolves by lexical scope — `resolve::module_sibling_binds` — never by a
+/// global name lookup; the no-keys-outside-the-prelude rule) and is not an export / unused-warning target.
+///
+/// A NULLARY member `(def (answer) v)` or a value member `(def v V)` is NOT registered: it has no
+/// recursive-call lowering need (a nullary `()→T` folds; a value is projected), and registering a nullary
+/// body as a def would make it an unused-def-warning candidate. Only a member with ≥1 parameter registers.
+pub fn register_callable(ast: &Arenas, decls: &[ModuleDecl], defs: &mut Vec<Def>) {
+    for decl in decls {
+        let members: Vec<StructId> = ast
+            .as_form(decl.occ, "module")
+            .and_then(|tail| tail.get(1..))
+            .map(<[StructId]>::to_vec)
+            .unwrap_or_default();
+        for member in members {
+            register_member_fn(ast, member, defs);
+        }
+    }
+}
+
+/// Register a single `(def (f p…) body)` member as an internal callable def, if it is a FUNCTION with
+/// parameters. A value/nullary/non-def member registers nothing. (A nested `(module …)` member is handled
+/// by its OWN `ModuleDecl` entry in `decls` — `register_callable` iterates every module — so it need not
+/// recurse here.)
+fn register_member_fn(ast: &Arenas, member: StructId, defs: &mut Vec<Def>) {
+    let Some(tail) = ast.as_form(member, "def") else {
+        return;
+    };
+    let (Some(&sig), Some(&body)) = (tail.first(), tail.get(1)) else {
+        return;
+    };
+    // A LIST signature `(NAME p…)` with ≥1 param — a bare-name value def or a nullary `(x)` is skipped.
+    let Struct::List(children) = ast.get(sig) else {
+        return;
+    };
+    if children.len() < 2 {
+        return; // nullary `(x)` — no recursive-call lowering need
+    }
+    let Some(name) = children.first().and_then(|&c| ast.as_name(c)) else {
+        return;
+    };
+    let params: Vec<StructId> = children[1..].to_vec();
+    defs.push(Def {
+        name: name.to_string(),
+        sig_occ: sig,
+        params,
+        body: Some(body),
+        internal: true,
+    });
 }

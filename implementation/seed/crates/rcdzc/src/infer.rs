@@ -840,7 +840,19 @@ fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
     } else {
         parent
     };
-    db.defs.iter().position(|d| d.sig_occ == sig)
+    if let Some(i) = db.defs.iter().position(|d| d.sig_occ == sig) {
+        return Some(i);
+    }
+    // A MODULE-MEMBER internal def (`Def::internal`, `modules::register_callable`) reuses the member's
+    // signature params, but `modules::synthesize` wraps the member body in a synth `(fn params body)`
+    // that RE-PARENTS those very param occurrences under the synth `fn`'s params-list — so the parent
+    // walk above lands on the synth `fn`, not the member's `(NAME param…)` sig, and no def's `sig_occ`
+    // matches. Fall back to a param-MEMBERSHIP scan: the internal def's `params` hold those same
+    // occurrences, so match the def whose param list contains `binder`. Scoped to internal defs (the
+    // re-parenting only affects a synth-wrapped member); a tiny linear scan (few internal defs).
+    db.defs
+        .iter()
+        .position(|d| d.internal && d.params.contains(&binder))
 }
 
 /// Solve the parameter types of a RECURSIVE def by a single connected, threaded-`Subst` unification
@@ -884,6 +896,13 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
 
     let mut subst = Subst::new();
     if let Some(body) = db.defs[def].body {
+        // PRE-PASS: give every FN-TYPED parameter its arrow shape BEFORE the main constraint walk. A
+        // parameter applied as a function (`(f h)`) must be an arrow when any enclosing operator reads
+        // `(f h)`'s type — otherwise the operator (`(+ (f h) …)`) unifies `f`'s bare var directly with the
+        // operand type (Int64), collapsing `f` to a scalar instead of a function. This walk unifies each
+        // env-param head with `(-> a0 … aN result)` of fresh vars (arity = the application's argument
+        // count), so `f`'s var is `Ty::Fn(…)` by the time its result flows back from `(+ (f h) …)`.
+        shape_fn_typed_params(db, body, &env, &mut subst, &mut fresh);
         collect_param_constraints(db, body, &env, def, &mut subst, &mut fresh);
     }
 
@@ -897,6 +916,44 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     }
 
     db.solving_params.remove(&def);
+}
+
+/// Walk the resolved body and, for every application whose HEAD is a parameter in `env` (a fn-typed
+/// parameter applied as a function, `(f h)`), unify that parameter's variable with a curried arrow of
+/// FRESH vars — one arrow level per argument, a fresh result var. Runs BEFORE `collect_param_constraints`
+/// so a fn-typed parameter already has its `Ty::Fn` shape when the main walk reads an application of it
+/// (otherwise an enclosing operator collapses the bare param var to a scalar). Idempotent per param: a
+/// second application at the same arity re-unifies the same shape; a genuine arity mismatch is a fault
+/// reported elsewhere. Descends every sub-expression that runs (mirrors `collect_param_constraints`'
+/// structural coverage via the generic child walk).
+fn shape_fn_typed_params(
+    db: &mut Db,
+    node: StructId,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
+    subst: &mut Subst,
+    fresh: &mut Fresh,
+) {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && let Some(hvar) = binder_var_of(db, head, env)
+        // Only shape a head that is NOT a known callable (a def/op has its own scheme path) — a bare
+        // fn-typed parameter. `binder_var_of` already restricts to an env param, so this holds.
+        && crate::eval::scheme_of(db, head, fresh).is_none()
+        && callee_def_index_for_infer(db, head).is_none()
+    {
+        let result = Ty::Var(fresh.var());
+        let mut arrow = result;
+        for _ in 0..args.len() {
+            arrow = Ty::Fn(Box::new(Ty::Var(fresh.var())), Box::new(arrow));
+        }
+        let _ = crate::unify::unify(subst, &hvar, &arrow);
+    }
+    // Descend into every child (the head and args of an apply, and all structural children of any form)
+    // so a fn-typed-param application nested anywhere in the body is shaped.
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
+        for c in children.clone() {
+            shape_fn_typed_params(db, c, env, subst, fresh);
+        }
+    }
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the
@@ -989,6 +1046,29 @@ fn collect_param_constraints(
                     }
                 }
             }
+            // A PARAMETER APPLIED AS A FUNCTION — `(f h)` where `f` is a fn-typed parameter being solved.
+            // Its use as a call head constrains it to a function type: unify `f`'s var with `(-> arg0 ->
+            // arg1 -> … -> result)`, where each `argᵢ` is the applied argument's type and `result` is a
+            // fresh var. Without this, a recursive HOF's callback param (`(def (map-f f (: l L)) … (f h)
+            // …)`) stayed a free `Var` → grounded `Any` → the recursive-def guard declined "annotate its
+            // parameters". A fn-typed param used ONLY as a head is the function analogue of the "param used
+            // only as a call argument" case handled above. `binder_var_of` finds the param's var when the
+            // head resolves (through a `Ref`) to a binder in `env`; a non-param head (a def/op) took a
+            // branch above, and an already-scheme'd head is not a bare param, so this only fires for a
+            // genuine fn-typed parameter.
+            if crate::eval::scheme_of(db, head, fresh).is_none()
+                && callee_def_index_for_infer(db, head).is_none()
+                && let Some(hvar) = binder_var_of(db, head, env)
+            {
+                // Build `(-> a0 (-> a1 … (-> aN result)))` from the applied arguments, then unify.
+                let result = Ty::Var(fresh.var());
+                let mut arrow = result;
+                for &arg in args.iter().rev() {
+                    let at = arg_ty_in_env(db, arg, env, subst);
+                    arrow = Ty::Fn(Box::new(at), Box::new(arrow));
+                }
+                let _ = crate::unify::unify(subst, &hvar, &arrow);
+            }
             // Descend into the head (a computed head) and every argument for THEIR own constraints.
             if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
                 collect_param_constraints(db, head, env, def, subst, fresh);
@@ -1036,10 +1116,22 @@ fn collect_param_constraints(
                 resolved_of(db, scrutinee),
                 Resolved::Param { binder } if env.contains_key(&binder)
             );
+            // A scrutinee that is an APPLICATION OF A FN-TYPED PARAMETER — `(match (f h) …)` — has type
+            // `f`'s RESULT VAR (a fresh, uncommitted var `arg_ty_in_env` peels from `f`'s arrow). The arm
+            // patterns pin that result: a `C.A`/`C.B` pattern means `f : (-> _ C)`, so unifying `st` with
+            // the pattern-implied sum solves `f`'s result. Safe for this shape (the result is a fresh var,
+            // not a determined instantiation), unlike a general call-result scrutinee (a `List.at` whose
+            // element instantiation the shape-unify would corrupt) — so gate on the head being an env param.
+            let scrut_is_fn_param_app = matches!(
+                resolved_of(db, scrutinee),
+                Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some()
+            );
             for (pat, _) in &arms {
                 if let Some(pt) = literal_pattern_ty(db, *pat) {
                     let _ = crate::unify::unify(subst, &st, &pt);
-                } else if scrut_is_param && let Some(pt) = pattern_implied_ty(db, *pat, fresh) {
+                } else if (scrut_is_param || scrut_is_fn_param_app)
+                    && let Some(pt) = pattern_implied_ty(db, *pat, fresh)
+                {
                     let _ = crate::unify::unify(subst, &st, &pt);
                 }
             }
@@ -1218,11 +1310,44 @@ fn arg_ty_in_env(
                 return subst.apply(var);
             }
         }
+        // An APPLICATION OF A FN-TYPED PARAMETER being solved — `(f h)` where `f` is in `env`. Its type is
+        // `f`'s var peeled by one arrow per argument, read from the LOCAL `subst` (where the arrow was
+        // unified in `collect_param_constraints`), NOT from `type_of` — `db.param_types` is still empty
+        // mid-solve, so `type_of((f h))` would be `Any` and the result would never link to `f`'s arrow.
+        // This is what lets `(+ (f h) …)` flow Int64 back to `f`'s result var, solving the fn param.
+        Resolved::Apply { head, args } => {
+            if let Some(var) = binder_var_of(db, head, env) {
+                let mut cur = subst.apply(&var);
+                for _ in 0..args.len() {
+                    match cur {
+                        Ty::Fn(_, result) => cur = subst.apply(&result),
+                        _ => break,
+                    }
+                }
+                return cur;
+            }
+        }
         _ => {}
     }
     // Not a parameter reference — its ordinary type. (Reads the type column; a nested op over a param
     // returns the op's result type, which the enclosing unify relates to the param var separately.)
     type_of(db, arg)
+}
+
+/// The type VARIABLE of the parameter a call HEAD names, if the head resolves (through a `Ref`) to a
+/// binder in `env` — i.e. the head IS a fn-typed parameter being solved (`(f h)`). Returns the var
+/// (freshly cloned so the caller can unify a function type into it); `None` for a non-parameter head (a
+/// def, an operator, a literal). The head analogue of `arg_ty_in_env`'s param-reference lookup.
+fn binder_var_of(
+    db: &mut Db,
+    head: StructId,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
+) -> Option<Ty> {
+    match resolved_of(db, head) {
+        Resolved::Ref { value } => env.get(&value).cloned(),
+        Resolved::Param { binder } => env.get(&binder).cloned(),
+        _ => None,
+    }
 }
 
 /// The parameter NAME occurrences of def `def` in signature order (the order arguments match). Mirrors
@@ -1257,6 +1382,16 @@ fn ordered_param_binders(db: &Db, def: usize) -> Vec<StructId> {
 pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     if let Some(cached) = db.def_schemes.get(&def) {
         return cached.clone();
+    }
+    // If this def's PARAMETERS are still being solved (`solve_recursive_params` is on the stack — the A2
+    // connected solve is demanded BEFORE `def_scheme` for a module-member internal def, whose external
+    // call and self-call both route through the param-solve first), computing the scheme now would read
+    // an as-yet-`Any` parameter type and cache a spurious `None` that POISONS every later call. Return
+    // `None` WITHOUT caching, so once the solve completes and stores the parameter types, a subsequent
+    // `def_scheme` recomputes the real scheme. (A top-level recursive def reaches `def_scheme` first, so
+    // its own `type_of`→solve completes inline and this guard never fires — byte-identical there.)
+    if db.solving_params.contains(&def) {
+        return None;
     }
     // RE-ENTRY GUARD. Computing a recursive def's scheme demands `type_of` of its body, whose self-call
     // demands this def's scheme AGAIN before the memo is filled. Seed a `None` sentinel FIRST, so the
@@ -1427,6 +1562,16 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                 unit,
             };
         }
+    }
+    // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
+    // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
+    // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type
+    // position (an annotation, further type-level computation). A `Type` value is erased before the
+    // boundary, so exporting one is rejected downstream ("a type value has no runtime form").
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TypeOf)
+        && args.len() == 1
+    {
+        return Ty::Type;
     }
     // `Qty.value q` — recover the underlying numeric value, DISCARDING the unit. Its result is the
     // quantity's INNER type; a non-quantity argument yields `Any` (faulted elsewhere).
@@ -2000,12 +2145,24 @@ fn decode_payload_template(db: &mut Db, occ: StructId, params: &[String]) -> Opt
 /// call by its scheme. Follows a `Ref` to a `Lambda` whose body matches a def's body occurrence. (The
 /// infer-side sibling of `lower::callee_def_index`; kept here so infer does not depend on lower.)
 fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
-    let body = match crate::resolve::resolved_of(db, head) {
-        crate::resolved::Resolved::Lambda { body, .. } => body,
-        crate::resolved::Resolved::Ref { value } => return callee_def_index_for_infer(db, value),
-        _ => return None,
-    };
-    db.def_index_by_body(body)
+    // The head resolves to a `Lambda { body }` for a named function (top-level, or a module member via
+    // Case R) or a `Ref` chain to one; match its BODY back to the def index. A `Member` projection `(. m
+    // f)` reduces to the field lambda's body — reached WITHOUT the general `lambda_of` β-reduction
+    // machinery (which would inline a deep non-recursive call chain, an exponential cost on the hot infer
+    // path): read the field VALUE via `member_value` and recurse on it. So a recursive MODULE MEMBER
+    // called through the projection chain is typed by its registered internal def's scheme
+    // (`modules::register_callable`), matching `lower::callee_def_index`, at no cost to ordinary calls.
+    match crate::resolve::resolved_of(db, head) {
+        crate::resolved::Resolved::Lambda { body, .. } => db.def_index_by_body(body),
+        crate::resolved::Resolved::Ref { value } => callee_def_index_for_infer(db, value),
+        crate::resolved::Resolved::Member { operand, key } => {
+            match crate::eval::member_value(db, operand, &key) {
+                crate::eval::Member::Field(v) => callee_def_index_for_infer(db, v),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// The CDZ0405 non-exhaustive-HANDLER rejection, enriched with an "add the missing arm" fix (the effect
@@ -2367,6 +2524,39 @@ fn check_application(
             out.push(Reject::coded(
                 Code::NominalMismatch,
                 "a Symbol and a String are not comparable across the nominal boundary",
+            ));
+            return;
+        }
+        // Comparing a NEWTYPE (a nominal single-field sum, erased at runtime) to its UNDERLYING type —
+        // `(= (Age 1) 1)` for `(type Age (Age Int64))` — is the SAME nominal-boundary violation as the
+        // Symbol-vs-String case, generalized: a nominal value never silently compares equal to the
+        // untagged representation it was declared distinct from (`type-system.md` §Nominal Types Are Not
+        // Comparable Across Their Boundary). Without this it fell to the generic CDZ0203 "type mismatch",
+        // which reads as "unrelated types" and hides that the fix is to WRAP/UNWRAP the nominal. Detect
+        // it: one operand is a nominal/sum whose erased inner AGREES WITH the other operand's type. Fires
+        // on either order; a nominal-vs-nominal or nominal-vs-unrelated clash is left to the generic path
+        // (this is specifically the nominal-vs-its-own-inner boundary).
+        // Fires ONLY when the OTHER operand is NOT itself a nominal/sum: this is the nominal-vs-its-own-
+        // -UNTAGGED-representation boundary. When both sides are nominal (two instantiations of one
+        // generic newtype — `Box Int64` vs `Box Bool` — or two different nominals), the erased inner may
+        // be a `Ty::Var` (a generic template) that `agrees_with` ANYTHING, which would wrongly fire here;
+        // those distinct-nominal comparisons stay the generic CDZ0203 (a genuinely different type), left
+        // to the path below.
+        let nominal_inner_vs = |db: &Db, nom: &Ty, other: &Ty| -> bool {
+            nominal_or_sum_decl(other).is_none()
+                && matches!(nominal_or_sum_decl(nom), Some(decl)
+                    if db.newtype_inner.get(&decl).is_some_and(|inner| inner.agrees_with(other)))
+        };
+        if nominal_inner_vs(db, &a, &b) || nominal_inner_vs(db, &b, &a) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a newtype to its underlying type across the nominal boundary (CDZ0202)");
+            out.push(Reject::coded(
+                Code::NominalMismatch,
+                format!(
+                    "{} and {} are not comparable across the nominal boundary (unwrap the nominal to \
+                     compare the underlying value)",
+                    a.render_name(),
+                    b.render_name()
+                ),
             ));
             return;
         }
@@ -3272,6 +3462,58 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     out.extend(sub);
 }
 
+/// Walk the RAW AST subtree at `id` (a `quote`/`quasiquote`/`unquote`/`unquote-splicing` form) and report
+/// the coded SYNTAX rejection of every `(unquote …)`/`(unquote-splicing …)` occurrence inside it — the
+/// CDZ0003 (outside-a-quasiquote) / CDZ0201 (wrong-arity) checks `resolve::resolve_unquote` produces. The
+/// enclosing quote/quasiquote itself declines (its `Ast` value is not built), so these inner defects are
+/// invisible to the ordinary type walk; surfacing them here is the "check descends to leaves" discipline
+/// (a syntax defect is unconditional well-formedness, like an unbound name in an untaken branch). Walks
+/// the AST children directly (the resolved form is a decline, carrying no child structure). The `unquote`'s
+/// own OPERANDS are ordinary expressions (`,(+ x 1)`) but they too are inert data until the `Ast` vertical,
+/// so only the quoting-form structure is inspected here, not the operand values.
+fn collect_quote_body_syntax(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // An `(unquote e)` / `(unquote-splicing e)` node: either a SYNTAX/arity defect (report its coded
+    // reject), or a WELL-FORMED escape genuinely inside a quasiquote — which MUST evaluate its operand
+    // (`metaprogramming.md` §Quasiquote Constructs AST With Selective Evaluation), so the operand's own
+    // faults (an unbound name in `` `(a ,(+ b 1)) `` → CDZ0101) are collected NORMALLY. `resolved_of`
+    // decides which: a `Poison` with the syntax/arity code is the defect; anything else means it is a
+    // well-formed unquote whose operand should be type-checked.
+    if matches!(db.ast.head_name(id), Some("unquote" | "unquote-splicing")) {
+        match resolved_of(db, id) {
+            Resolved::Poison(r)
+                if matches!(
+                    r.code,
+                    Some(Code::UnquoteOutsideQuasiquote) | Some(Code::Malformed)
+                ) =>
+            {
+                let mut r = r;
+                r.set_origin_if_absent(id);
+                out.push(r);
+                return; // a malformed unquote — do not also type-check its (dropped) operands
+            }
+            // A well-formed unquote inside a quasiquote — its operand IS evaluated, so collect its faults.
+            _ => {
+                if let Some(&operand) = db
+                    .ast
+                    .as_form(id, db.ast.head_name(id).unwrap())
+                    .and_then(|t| t.first())
+                {
+                    collect(db, operand, out);
+                }
+                return;
+            }
+        }
+    }
+    // Descend into every child list — a nested `(unquote …)` / a `(quasiquote …)` deeper in the template.
+    if let crate::ast::Struct::List(children) = db.ast.get(id) {
+        for child in children.clone() {
+            if matches!(db.ast.get(child), crate::ast::Struct::List(_)) {
+                collect_quote_body_syntax(db, child, out);
+            }
+        }
+    }
+}
+
 fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form (its value), so the `Resolved::Ref`
     // arm below descends only into that. But the INTERMEDIATE forms are still evaluated (their value
@@ -3309,6 +3551,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             collect(db, f, out);
         }
+        return;
+    }
+    // A `quote`/`quasiquote`/`unquote`/`unquote-splicing` form resolves to a DECLINE (its `Ast` value is
+    // not yet built), so the ordinary `Resolved` arms below stop at that decline and never see the body.
+    // But a SYNTAX defect inside the quoted structure is UNCONDITIONAL well-formedness (like an unbound
+    // name in an untaken branch): an `unquote`/`,@` OUTSIDE a quasiquote (CDZ0003) or a wrong-arity one
+    // (CDZ0201) must be reported even though the enclosing quote/quasiquote itself declines. So descend
+    // into the RAW body subtree here, collecting each nested `(unquote …)`/`(unquote-splicing …)`'s coded
+    // reject (its own `collect` → the `Poison` arm reports the coded syntax/arity rejection). Walk the raw
+    // AST children (the resolved form collapsed to a decline, carrying no children).
+    if matches!(
+        db.ast.head_name(id),
+        Some("quote" | "quasiquote" | "unquote" | "unquote-splicing")
+    ) {
+        collect_quote_body_syntax(db, id, out);
         return;
     }
     match resolved_of(db, id) {

@@ -164,6 +164,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // Checked Then Erased), so `Qty.of`/`Qty.value` erase to their value argument's lowering.
     names.insert("Qty".to_string(), qty_module(ast));
 
+    // `Type` — the module of TYPE-REFLECTION operations. `of` reduces `(Type.of e)` to the type-VALUE of
+    // `e`'s inferred type, so `(: x (Type.of y))` gives `x` the same type as `y`. Reached by member
+    // access `(. Type of)`. A `Type` value is compile-time-only (erased before the boundary), so
+    // `Type.of` is a type-level operation, not a runtime one.
+    names.insert("Type".to_string(), type_module(ast));
+
     // `Char` — the module of char OPERATIONS (`to-int`/`from-int`), a NULLARY type like `String`. Its
     // `(meta t)` is the ground `Ty::Char`, so bare `Char` in type position IS the type; the operation
     // fields project via member access `(. Char to-int)`.
@@ -991,6 +997,20 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     let pow_op = ctor_record(ast, "qty-pow");
     children.push(push_list(ast, vec![pow_field, pow_op]));
     push_list(ast, children)
+}
+
+/// The `Type` module record — carries one field, `of`, whose `(meta apply) = TypeOf`. `(Type.of e)`
+/// projects that channel and reduces (via `reduce_ctor`/`typeval_of`) to the type-VALUE of `e`'s
+/// inferred type, so a program can name a value's type and reuse it in a type position (`(: x (Type.of
+/// y))`). Unlike `Qty`, the module itself is NOT a type constructor (no top-level `(meta apply)`) — it
+/// is only a namespace for the `of` operation; `Type` in a bare type position is not a type (a value's
+/// type-of is `Ty::Type`, spelled only by reflection, not by a name).
+fn type_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let of_field = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_op = ctor_record(ast, "type-of");
+    let of = push_list(ast, vec![of_field, of_op]);
+    push_list(ast, vec![head, of])
 }
 
 /// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`

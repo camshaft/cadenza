@@ -1016,31 +1016,31 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
-    /// `effect Name { op : Type  … }`  ->  `(effect Name (op op Type) …)`. An effect declaration: a
-    /// name then a brace-delimited block of operation signatures, each `op : Type` (the operation name
-    /// and its type). Mirrors `module Name { … }` — the members are juxtaposed (a type self-delimits at
-    /// the next op name, since a `->` type never continues into a bare name), with an optional comma
-    /// tolerated between ops. Each op lowers to `(op <name> <type>)`, the shape the s-expr surface uses.
+    /// `effect Name = | op : Type | …`  ->  `(effect Name (op op Type) …)`. An effect declaration: a
+    /// name, then an `=` and one-or-more `|`-led operation signatures, each `op : Type` (the operation
+    /// name and its type). Mirrors `type Name = | A | B` — the operations are the effect's "variants",
+    /// each led by a `|` (the leading `|` before the first is always printed but tolerated absent).
+    /// Each op lowers to `(op <name> <type>)`, the shape the s-expr surface uses.
     fn effect_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("effect", start);
         self.bump(); // `effect`
         let name = self.binder();
         let mut items = vec![head, name];
-        self.expect(Kind::LBrace, "`{`");
-        while !self.at(Kind::RBrace) && !self.at_end() {
-            let before = self.pos;
+        self.expect(Kind::Eq, "`=`");
+        // Operations are `|`-led, with an (always-printed) leading `|` before the first — tolerate its
+        // absence for robustness. Each `|` introduces an operation signature.
+        if self.at(Kind::Pipe) {
+            self.bump(); // optional leading `|`
+        }
+        loop {
             items.push(self.effect_op());
-            if self.at(Kind::Comma) {
-                self.bump(); // tolerate a `,` between operation signatures
-            }
-            // Forward-progress guard: a stray token that begins no op signature is skipped so the loop
-            // cannot spin.
-            if self.pos == before {
-                self.bump();
+            if self.at(Kind::Pipe) {
+                self.bump(); // `|`
+            } else {
+                break;
             }
         }
-        self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
     }
@@ -1900,10 +1900,10 @@ mod tests {
 
     #[test]
     fn effect_decl_builds_op_signatures() {
-        // `effect Diag { emit : Int64 -> Unit, collect : -> List(Int64) }` ->
+        // `effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)` ->
         // `(effect Diag (op emit (-> Int64 Unit)) (op collect (-> (List Int64))))`. The leading-arrow
         // op type is the nullary-elided one-element `(-> R)`.
-        let a = parse_ok("effect Diag { emit : Int64 -> Unit, collect : -> List(Int64) }");
+        let a = parse_ok("effect Diag = | emit : Int64 -> Unit | collect : -> List(Int64)");
         let tail = a.as_form(a.root, "effect").unwrap();
         assert_eq!(a.as_name(tail[0]), Some("Diag"));
         let emit = a.as_form(tail[1], "op").unwrap();

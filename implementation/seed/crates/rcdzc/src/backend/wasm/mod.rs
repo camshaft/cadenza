@@ -219,6 +219,19 @@ pub fn emit(
         // CONSTANT-value path above is type-agnostic, so this matters only for a RUNTIME newtype value —
         // which used to DECLINE "a sum crosses the boundary only as a single nullary export's result".)
         let result = e.result.strip_nominal().clone();
+        // A NOMINAL result whose erased underlying type is a RECURSIVE sum (a recursive newtype, `(type
+        // Lst (Mk (Option (Tuple Int64 Lst))))`) escapes via the recursive-sum WALKER — but routed on the
+        // UN-STRIPPED nominal, so the shape descriptor's top-level `Named` carries the nominal's OWN name
+        // (`Lst`), not the inner sum's (`Option`). `sum_shape_descriptor` builds a `Named`-rooted shape for
+        // a nominal directly (the erased-tag frame), closing the recursion on the newtype's decl. Tried
+        // before the stripped-sum routing so the name is preserved; a non-recursive nominal (a flat
+        // `sum_form_template` exists) still takes the stripped path below.
+        if matches!(&e.result, crate::ty::Ty::Nominal { .. })
+            && crate::lower::sum_form_template(db, &result).is_none()
+            && let Some(desc) = crate::lower::sum_shape_descriptor(db, &e.result)
+        {
+            return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
+        }
         // A SUM result crosses through the resource shape but its `encode()` SWITCHES on the runtime
         // discriminant (`sum-disc`) and renders the matching variant — a per-variant template, not a
         // single flat one. Route through the sum escape when the sum has a value-form (`None` — a
@@ -2940,6 +2953,9 @@ fn emit_recursive_sum_resource(
 ///
 //= spec/contracts/component-abi.md#the-emitted-component-records-its-required-runtime
 //# A compiler MUST be built against a fixed runtime interface and a fixed runtime content address, so that which runtime a generation targets is a property of the compiler rather than a per-invocation choice, and the compiler and its runtime are one versioned pair.
+///
+//= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
+//# The compiler MUST emit a component that names the exact host-interface version it targets.
 fn runtime_import_name() -> String {
     format!(
         "{}@0.0.0+{}",

@@ -273,12 +273,41 @@
 (case "a module function is recursive"
   (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports with a
            self-reference: an exported function is in scope in its own body, so it may recurse.
-           `fac` calls itself; fac(5) = 120. A recursive export is the same lexical resolution as a
-           top-level recursive def, which already works.")
+           `fac` calls itself; fac(5) = 120. A recursive export resolves by the same lexical scope a
+           top-level recursive def does AND lowers the same way — the member is registered as a standalone
+           emittable function, so the self-call is a runtime `Core::Call`, not an unbounded inline. A
+           compiler that resolves the recursion but cannot emit a non-top-level recursive callee declines
+           (a Todo); one that models it runs `fac` to 120.")
   (input  (do
             (module lib
               (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))))
             ((. lib fac) 5)))
+  (output (: 120 Int64)))
+
+(case "two module functions are mutually recursive"
+  (doc    "Mutual recursion between two module members: `ev` calls `od`, `od` calls `ev` — neither reaches
+           a normal form by inlining, so BOTH lower to standalone runtime functions calling each other
+           (core-semantics.md #A Module Evaluates To A Record Of Its Exports: the members are mutually
+           visible, so each names the other, and each is emittable). ev(10) is true → 1. Pins that the
+           member-registration reaches an EACH-OTHER call group, not only a single self-recursive member.")
+  (input  (do
+            (module m
+              (def (ev n) (if (= n 0) true (od (- n 1))))
+              (def (od n) (if (= n 0) false (ev (- n 1)))))
+            (if ((. m ev) 10) 1 0)))
+  (output (: 1 Int64)))
+
+(case "a recursive function in a nested module runs through the projection chain"
+  (doc    "A recursive function in a NESTED module is reached AND lowered through the member-access chain:
+           `(. (. outer inner) fac)` projects the inner module's `fac`, whose self-call lowers to a runtime
+           `Core::Call` to the same registered member (its `Member`-headed call site reduces to the field
+           lambda's body, the def identity the recursion emits against). fac(5) = 120. Composes the
+           module-in-module nesting with the recursive-member lowering.")
+  (input  (do
+            (module outer
+              (module inner
+                (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))))
+            ((. (. outer inner) fac) 5)))
   (output (: 120 Int64)))
 
 ; ── MODULE-IN-MODULE (nested modules) ──────────────────────────────────────────────────────────────────

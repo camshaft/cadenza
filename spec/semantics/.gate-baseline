@@ -5,6 +5,9 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of reflects a runtime parameter's type at compile time
+pass	Type.of reflects a value's type for use as an annotation
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
@@ -497,6 +500,7 @@ pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
@@ -505,6 +509,8 @@ pass	a recursive def with a match base case computes over its argument
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive fold of a cons-list to bytes is the whole program result
+pass	a recursive fold over a sum list infers its unannotated callback parameter
+pass	a recursive fold with an unannotated two-argument callback parameter
 pass	a recursive function counts down through a stateful effect and bails at zero
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
@@ -514,6 +520,7 @@ pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
+pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
@@ -527,6 +534,7 @@ pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
 pass	a reference to an unbound name is rejected before running
+pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a returned capturing closure bound with let and applied folds like the inline form
@@ -779,6 +787,7 @@ pass	an annotated let binder that contradicts the value is rejected
 pass	an annotated tuple-pattern parameter binds its pattern's names
 pass	an annotated tuple-pattern parameter still checks its annotation against the argument
 pass	an annotated value takes a narrower integer width
+pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash

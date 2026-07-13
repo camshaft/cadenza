@@ -20,7 +20,7 @@
 ; quasiquote is quoted, not evaluated). So the `,x` MUST NOT be evaluated: the quoted structure
 ; mentions the NAME `x`, not x's value. This is the EVALUATION-side dual of "an unquote nested
 ; inside a plain quote is a syntax error, not an active unquote" (a bare `(quote (g ,x))` rejects
-; CDZ0401): here the unquote is one level deeper — under a quasiquote under the quote — so it is
+; CDZ0003): here the unquote is one level deeper — under a quasiquote under the quote — so it is
 ; inert data rather than a stray unquote, but the same principle holds: a plain quote evaluates
 ; NOTHING in its body. Discriminator that does not depend on the inert node's exact spelling: bind
 ; two DISTINCT names to the SAME value and quote each — the quoted templates mention different
@@ -34,7 +34,7 @@
            the nested unquote (embedding x's value 1 and y's value 1) collapses both to the AST of
            `(+ 1)` and wrongly answers true — it treated the quoted quasiquote as an active one,
            evaluating inside a plain quote. Companion (rejection side) below: a bare stray unquote
-           under a plain quote is CDZ0401.")
+           under a plain quote is CDZ0003.")
   (input  (let ((x 1)) (let ((y 1)) (= (quote `(+ ,x)) (quote `(+ ,y))))))
   (output (: false Bool)))
 
@@ -335,10 +335,10 @@
 (case "unquote outside quasiquote is a syntax error"
   (doc    "Witnesses metaprogramming.md #Quasiquote Constructs AST With Selective Evaluation:
            , and ,@ are only valid inside quasiquote context. Bare ,x is a syntax error — there's
-           no quasiquote template to insert into — so the compiler rejects it at parse time (CDZ0401)
-           rather than running the program.")
+           no quasiquote template to insert into — so the compiler rejects it at parse time (CDZ0003,
+           the syntax-band unquote-outside-quasiquote code) rather than running the program.")
   (input  ,x)
-  (error  CDZ0401))
+  (error  CDZ0003))
 
 ; An `unquote` nested inside a PLAIN `quote` is still outside any quasiquote context — a `(quote …)`
 ; body is inert data, not a selective-evaluation template. metaprogramming.md #Quote Produces An AST
@@ -346,7 +346,7 @@
 ; evaluating <expr> itself"; #Quasiquote Constructs AST With Selective Evaluation: "Unquote and
 ; unquote-splicing OUTSIDE a quasiquote context MUST be a syntax error." So `(quote (g ,x))` must NOT
 ; evaluate `,x` — it is exactly the "unquote outside quasiquote" the bare `,x` case above pins, one
-; layer of quote deep, and MUST be rejected CDZ0401 (or preserved inert), NEVER evaluated. A compiler
+; layer of quote deep, and MUST be rejected CDZ0003 (or preserved inert), NEVER evaluated. A compiler
 ; that treats the plain-quote nesting level as an active quasiquote level silently EVALUATES `,x` under
 ; `quote`, making `(quote (g ,x))` behave identically to the quasiquote `` `(g ,x) `` — a `quote` that
 ; is not inert, contradicting #Quote Produces An AST Value. (The companion arity leak: `(quote (unquote
@@ -356,13 +356,13 @@
 (case "an unquote nested inside a plain quote is a syntax error, not an active unquote"
   (doc    "`(quote (g ,x))` places an unquote inside a PLAIN quote — still outside any quasiquote
            context (a quote body is inert data, not a selective-evaluation template), so it is the same
-           `,`-outside-quasiquote syntax error the bare `,x` case pins, rejected CDZ0401. metaprogramming.md
+           `,`-outside-quasiquote syntax error the bare `,x` case pins, rejected CDZ0003. metaprogramming.md
            #Quote Produces An AST Value forbids `quote` from evaluating its body; a compiler that treats
            plain quote as an active quasiquote level evaluates `,x` and makes `(quote (g ,x))` behave as
            the quasiquote `` `(g ,x) ``. The bug: the active-unquote test fires at quote's own nesting
            level rather than only inside a quasiquote (spec/learnings/2026-07-07-plain-quote-evaluated-a-nested-unquote-instead-of-treating-it-as-inert.md).")
   (input  (quote (g ,x)))
-  (error  CDZ0401))
+  (error  CDZ0003))
 
 ; `unquote` takes EXACTLY ONE operand — the expression to evaluate and embed. `(unquote 1 2)` supplies
 ; two, so it is malformed and the compiler MUST reject it (CDZ0201), never index just the first and
@@ -453,7 +453,7 @@
 ; the very sum patterns the un-tagged cases above already run). NOTE the `,`/`,@` marks are meaningful
 ; only INSIDE a `` ` `` template — a top-level catch-all arm is an ordinary bare-name or `_` pattern, as
 ; a bare `,other` outside a quasiquote is the existing syntax error (the "unquote outside quasiquote"
-; case above, CDZ0401), not a pattern.
+; case above, CDZ0003), not a pattern.
 ;
 ; The seed ALREADY destructures AST sums by the `Ast.*` constructors — the un-tagged
 ; `(match (quote (+ 1 2)) ((Ast.List elems) …))` cases above run on it. The one NEW piece is the

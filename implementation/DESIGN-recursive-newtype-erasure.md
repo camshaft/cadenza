@@ -82,9 +82,28 @@ No `Hash` to keep in sync. This is CLEANER than the doc's worst case (no map-key
 - GATE: `(: (Mk …) Lst)`, direct traversal, MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))`,
   recursive+generic all pass. No unify mismatch. Escape still declines cleanly (Phase 3).
 
-### Phase 3 — recursive-newtype HOST-ESCAPE walker (separate, hardest; defer until needed)
-- [ ] `sum_shape_descriptor`/`emit_recursive_sum_resource` build a descriptor THROUGH a `Ty::Nominal`
-  recursion point. Until then, escaping a recursive newtype declines cleanly (not a miscompile).
+### Phase 3 — recursive-newtype HOST-ESCAPE walker — ✅ DONE (`spec`@Phase3)
+- [x] `ShapeTableBuilder::shape_of` gains a `Ty::Nominal` arm: reserve an entry keyed by the nominal's
+  `decl` (a recursive newtype's inner re-references it → closes to a `Ref`), build the inner shape, fill
+  `Named(<type name>, inner)`. The inner's `Ty::Sum{decl}` back-edge resolves to the SAME reserved entry
+  (shared `decl` key), so the table is finite.
+- [x] `sum_shape_descriptor` accepts a `Ty::Nominal` (its `shape_of` already roots at `Named`, so encode
+  directly — no double-wrap).
+- [x] `wasm::emit` routes an un-stripped nominal-over-recursive-sum to the walker BEFORE the stripped-sum
+  path, so the top-level tag is the newtype's OWN name (`Lst`), not the inner sum's (`Option`).
+- [x] VERIFIED: `(type Lst (Mk (Option (Tuple Int64 Lst))))` escapes as `(: (Some (tuple 7 (: (None unit)
+  Lst))) Lst)`; a 3-cell chain nests correctly; MUTUAL recursion escapes with both names at their
+  positions; recursive-SUM + non-recursive-newtype escapes unregressed. Gate 1285/0.
+
+## Result: recursive newtype erasure COMPLETE
+All three phases landed. A recursive (and mutually-recursive) newtype now erases its per-cell box,
+constructs/matches/traverses, type-checks across folded/unfolded reps, AND returns to the host. The
+"needs μ-machinery / a new Ty variant" fear was wrong — the fix was `decl+args` nominal identity (Phase 1)
++ two backend arms + a cache-eviction (Phase 2) + a shape-builder nominal arm (Phase 3).
+⚠ FLAKE NOTE: the `rustc_roundtrip_*` rust-backend tests shell out to `rustc` and flake under a highly
+parallel `cargo test` (a different subset fails each run; each passes in isolation / with bounded
+threads). Not a regression — the gate (release) and `cargo test backend::rust::` alone are the true
+signals.
 
 ## Fallback
 If the repr refactor spiders too far (Phase 0), fall back to COINDUCTIVE comparison: thread an

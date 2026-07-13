@@ -183,6 +183,8 @@ pub struct Diagnostic {
     ///
     //= spec/capabilities/diagnostics.md#every-diagnostic-has-a-precise-span
     //# Every diagnostic the compiler emits MUST carry a source span identifying the construct it concerns.
+    //= constitution.md#xi-diagnostics-are-machine-actionable
+    //# Every diagnostic the compiler emits MUST carry a precise source span.
     pub node: Option<u32>,
     /// A proposed structural repair, if the producer knew one — the "route to a fix" an agent applies
     /// directly. `None` when the compiler has no actionable suggestion.

@@ -62,6 +62,16 @@ const GRAMMAR: &[&str] = &[
     // structurally. This increment only rejects the DEGENERATE zero-operand `(quote)` (malformed,
     // CDZ0201); real quotation (building an `Ast` value) is the metaprogramming vertical.
     "quote",
+    // `quasiquote` (`` ` ``) is the SELECTIVE-evaluation template + `unquote` (`,`) / `unquote-splicing`
+    // (`,@`) its escapes — reader-desugared to `(quasiquote …)` / `(unquote …)` / `(unquote-splicing …)`.
+    // Grammar (like `quote`), NOT prelude records: they SUPPRESS/select evaluation structurally. This
+    // increment recognizes them to REJECT the two syntax defects (an `unquote`/`,@` OUTSIDE any quasiquote
+    // → CDZ0003; a wrong-arity `unquote` → CDZ0201); a well-formed one inside a quasiquote DECLINES (the
+    // `Ast`-construction vertical). Kept here so `(unquote …)` is not read as an unbound name / unmodeled
+    // top-level form.
+    "quasiquote",
+    "unquote",
+    "unquote-splicing",
     // `and`/`or`/`not` are SHORT-CIRCUITING boolean connectives — CONTROL FLOW (like `if`), not strict
     // value operators, so they are grammar, NOT prelude records (a strict `(meta apply)` record would
     // evaluate both operands, breaking the shield core-semantics.md §Boolean Connectives Short-Circuit
@@ -297,6 +307,8 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
                 Some("quote") => resolve_quote(db, id),
+                Some(h @ ("unquote" | "unquote-splicing")) => resolve_unquote(db, id, h),
+                Some("quasiquote") => resolve_quasiquote(db, id),
                 Some("bin") => resolve_bin(db, id),
                 Some("|>") => resolve_pipeline(db, id),
                 // The DESUGARED handle (`effects::desugar_handles` re-spells the canonical 5-child
@@ -1940,6 +1952,75 @@ fn resolve_quote(db: &Db, id: StructId) -> Resolved {
     Resolved::Poison(Reject::decline(
         "quote produces an AST value (not yet built)",
     ))
+}
+
+/// Resolve `(unquote e)` / `(unquote-splicing e)` — the quasiquote escapes (reader-desugared from `,e` /
+/// `,@e`). Two well-formedness checks (`metaprogramming.md` §Quasiquote Constructs AST With Selective
+/// Evaluation):
+///  - ARITY: `unquote`/`unquote-splicing` take EXACTLY ONE operand — the expression to evaluate and
+///    embed. Any other count (`(unquote 1 2)`, `(unquote)`) is MALFORMED (CDZ0201), never silently
+///    truncated to the first operand. Checked FIRST, so a wrong-arity form inside a quasiquote is the
+///    arity error, not the context error.
+///  - CONTEXT: an escape is meaningful ONLY inside a `` ` `` template. One OUTSIDE any quasiquote — a bare
+///    `,x`, or one nested only under a PLAIN `(quote …)` (a quote body is inert data, NOT a
+///    selective-evaluation template) — has no template to insert into → a SYNTAX error (CDZ0003).
+///
+/// A well-formed escape genuinely INSIDE a quasiquote DECLINES (its meaning is realized by the
+/// `Ast`-construction vertical, not yet built) — a Todo, never a miscompile.
+fn resolve_unquote(db: &Db, id: StructId, head: &str) -> Resolved {
+    let tail = db.ast.as_form(id, head).unwrap_or(&[]);
+    if tail.len() != 1 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("{head} takes exactly one operand — the expression to evaluate and embed"),
+        ));
+    }
+    if !inside_quasiquote(db, id) {
+        return Resolved::Poison(Reject::coded(
+            Code::UnquoteOutsideQuasiquote,
+            format!(
+                "{head} is only valid inside a quasiquote template (a `,`/`,@` outside a `` ` `` has no \
+                 template to insert into; a plain `(quote …)` body is inert data, not a template)"
+            ),
+        ));
+    }
+    Resolved::Poison(Reject::decline(
+        "an unquote inside a quasiquote builds an AST value (not yet built)",
+    ))
+}
+
+/// Resolve `(quasiquote FORM)` — the selective-evaluation template (reader-desugared from `` `FORM ``).
+/// Requires exactly one operand (a zero/multi-operand quasiquote is malformed, like `quote`). A
+/// well-formed quasiquote DECLINES — building the `Ast` value (expanding its `unquote`/`unquote-splicing`
+/// escapes) is the metaprogramming vertical, not yet realized.
+fn resolve_quasiquote(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "quasiquote").unwrap_or(&[]);
+    if tail.len() != 1 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "quasiquote takes exactly one operand — the template it denotes",
+        ));
+    }
+    Resolved::Poison(Reject::decline(
+        "quasiquote produces an AST value (not yet built)",
+    ))
+}
+
+/// Whether the form at `id` is lexically ENCLOSED by a `(quasiquote …)` — the context in which an
+/// `unquote`/`unquote-splicing` is meaningful. Walks parents to the root; a `(quasiquote …)` ancestor
+/// answers yes. A plain `(quote …)` ancestor does NOT count — quote suppresses evaluation, it does not
+/// open a selective-evaluation template (`metaprogramming.md` §Quote Produces An AST Value: a quote body
+/// is inert data). This is the whether-inside test, not the nesting-LEVEL count a full quasiquote
+/// expander tracks (nested `` ` ``/`,` levels) — sufficient for the syntax rejection this increment makes.
+fn inside_quasiquote(db: &Db, id: StructId) -> bool {
+    let mut cursor = db.parent_of(id);
+    while let Some(form) = cursor {
+        if db.ast.head_name(form) == Some("quasiquote") {
+            return true;
+        }
+        cursor = db.parent_of(form);
+    }
+    false
 }
 
 /// Resolve `(match SCRUTINEE (PATTERN BODY)…)` into its resolved form. The scrutinee and each arm's

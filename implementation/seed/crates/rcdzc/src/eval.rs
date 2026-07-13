@@ -1736,6 +1736,20 @@ pub fn reduce_ctor(
             trace!(target: "rcdzc::eval", ty = %qty.render_name(), "ctor (Qty): built quantity type-value");
             Ok(encode_typeval(db, &qty))
         }
+        // `Type.of e` — COMPILE-TIME TYPE REFLECTION. Reduce to the type-VALUE of `e`'s inferred type: run
+        // `type_of` on the argument (the value→`Ty` half) and `encode_typeval` the result (the `Ty`→value
+        // half). So `(: x (Type.of y))` reduces `(Type.of y)` to `y`'s type-value, which the annotation
+        // then checks `x` against. The eval→infer call is the same established direction the operator/
+        // width arms already use; `type_of` is memoized + depth-guarded. A value that types as `Any`
+        // (unresolved) reflects as `Any`, faulted where it is used, not here.
+        Prim::TypeOf => {
+            if args.len() != 1 {
+                return Err("Type.of takes one value argument".to_string());
+            }
+            let ty = crate::infer::type_of(db, args[0]);
+            trace!(target: "rcdzc::eval", ty = %ty.render_name(), "ctor (Type.of): reflected value type");
+            Ok(encode_typeval(db, &ty))
+        }
         // `Tuple` — VARIADIC over its element TYPES: reduce each arg to a `Ty`, build `Ty::Tuple`. Its
         // arity + element types ARE the type, so `(: e (Tuple T…))` checks the value's shape against it
         // (a wrong arity/element is CDZ0203 at the annotation, via `agrees_with`).
