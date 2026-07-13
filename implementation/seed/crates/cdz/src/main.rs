@@ -224,12 +224,13 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
         return compiler_cli::run(args, PROG);
     }
 
-    // A debug target draws source positions from the `spans` artifact — so when one is requested, a
-    // parsed source input contributes BOTH `ast` and `spans`. (An explicit `spans:` input still works
-    // and takes precedence for its own program.)
+    // A source-file compile ALWAYS contributes a `spans` input alongside its `ast`, not only when a
+    // debug target wants one: a debug target CONSUMES spans to build DWARF, but the CLI's DIAGNOSTIC
+    // reporter also uses them to locate an error as `path:line:col` (so `cdz compile foo.cdz` gives the
+    // same located errors as `cdz check`, not a raw `(node N)`). Spans are output-neutral for a plain
+    // wasm compile (verified byte-identical), so attaching them unconditionally is free. (An explicit
+    // `spans:` input still works and takes precedence for its own program.)
     let targets = args.targets();
-    let want_spans = targets.iter().any(|t| t.needs_spans());
-
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
     for spec in &specs {
         if is_source_file(spec) {
@@ -248,7 +249,7 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
                 name.clone(),
                 cadenza_syntax::codec::encode(&arenas),
             ));
-            if want_spans {
+            {
                 let span_data = span_data_of(spec, &source, &spantable);
                 inputs.push(rcdzc::Artifact::new(
                     rcdzc::spans::KIND_SPANS,

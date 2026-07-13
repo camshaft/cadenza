@@ -229,21 +229,43 @@ pub fn run_prepared(
     let cli_out = &out_dest;
     let out = crate::run_with_compiler_stack(|| compile(&inputs, &targets));
 
-    // Report diagnostics (stderr).
+    // Report diagnostics (stderr). When the inputs carry a `spans` side-table (present whenever the run
+    // compiled a SOURCE file — `cdz compile foo.cdz`), map each diagnostic's node to a source
+    // `path:line:col` prefix, so `compile` gives the SAME located errors as `check` rather than leaking a
+    // raw internal `(node N)` id. Without spans (a bare artifacts-in compile) the node id still rides
+    // along for a caller that holds its own table — the historical behavior, unchanged.
+    let span_tables: Vec<crate::spans::SpanData> = inputs
+        .iter()
+        .filter(|a| a.kind == crate::spans::KIND_SPANS)
+        .filter_map(|a| crate::spans::decode(&a.bytes))
+        .collect();
     for d in &out.diagnostics {
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
-        // The node index (if any) rides along so a caller holding the source's span table can map the
-        // diagnostic to a text region — the compiler reports node IDENTITY, never a source position.
-        let at = match d.node {
-            Some(n) => format!(" (node {n})"),
-            None => String::new(),
-        };
-        match &d.code {
-            Some(code) => eprintln!("{prog}: {sev} [{code}]{at}: {}", d.message),
-            None => eprintln!("{prog}: {sev}{at}: {}", d.message),
+        // Prefer a source location from the spans: find the table whose range covers this node (node ids
+        // are unique across the merged arena, so the first hit is right). Fall back to `(node N)` when no
+        // spans were supplied, or to nothing when the diagnostic carries no node.
+        let located = d.node.and_then(|n| {
+            span_tables.iter().find_map(|s| {
+                s.range(crate::ast::StructId(n)).map(|(start, _)| {
+                    format!("{}:{}:{}", s.module_path, s.line_at(start), s.col_at(start))
+                })
+            })
+        });
+        match (located, d.node) {
+            (Some(loc), _) => match &d.code {
+                Some(code) => eprintln!("{loc}: {sev} [{code}]: {}", d.message),
+                None => eprintln!("{loc}: {sev}: {}", d.message),
+            },
+            (None, node) => {
+                let at = node.map(|n| format!(" (node {n})")).unwrap_or_default();
+                match &d.code {
+                    Some(code) => eprintln!("{prog}: {sev} [{code}]{at}: {}", d.message),
+                    None => eprintln!("{prog}: {sev}{at}: {}", d.message),
+                }
+            }
         }
     }
 
