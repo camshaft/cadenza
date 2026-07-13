@@ -6751,6 +6751,18 @@ fn emit_machine_overflow_guard(
             out.push(Lir::IfUnreachableEnd);
         }
         Prim::Mul => {
+            // NARROW-PRODUCT-FITS-SLOT FAST PATH: when `2 * width <= slot bits`, the machine multiply in
+            // the slot CANNOT overflow the slot — the largest magnitude product of two N-bit values needs
+            // at most `2N` bits (`|a*b| < 2^(2N) <= 2^(slot bits)`). So the `div_s`/`div_u` round-trip
+            // machine-overflow guard is entirely DEAD; the exact product sits in `$r` and the narrow
+            // range-check (emitted after this guard) alone bounds it to `[min_N, max_N]`. Covers Int8/UInt8
+            // (16 <= 32) and Int16/UInt16 (32 <= 32) in the i32 slot — a hardware DIVISION removed from
+            // every such multiply. Int32×Int32 (64 > 32) and full-width still need the div check below.
+            // (This is the mul analogue of the narrow `+`/`-` machine-guard skip: a narrow operand pair is
+            // too small to overflow the slot; the range-check catches leaving the TYPE.)
+            if m.narrow() && m.width * 2 <= m.slot_bits() {
+                return;
+            }
             // CONSTANT-MULTIPLIER FAST PATH (full-width signed `(* a C)`, `C` a compile-time constant).
             // The general guard runs a `div_s` (the slowest integer op) on EVERY multiply; but for a
             // known `C` the product `a*C` overflows iff `a` leaves the interval of `a`-values whose
