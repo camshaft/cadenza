@@ -5104,6 +5104,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // A constant char bakes as its `#\c` leaf — the codec encodes it (KIND_CHAR), and the host reader
         // renders it `#\c`. This lets a constant `(Some #\a)` (a `Char.from-int` fold) cross the boundary.
         Core::ConstChar(c) => Some(b.atom_leaf(Leaf::Char(c))),
+        // The unit value bakes as the `unit` name leaf — ONE canonical byte form, distinct from every
+        // other value's form (no other value renders as the bare `unit` name), so a program that produces
+        // only its emitted events still has a serializable normal-termination value.
+        //= spec/contracts/deterministic-value-form.md#the-unit-value-has-a-canonical-byte-form
+        //# The unit value MUST have exactly one canonical byte encoding, so that a program that produces no value other than its emitted events has a serializable normal-termination value.
+        //= spec/contracts/deterministic-value-form.md#the-unit-value-has-a-canonical-byte-form
+        //# The canonical byte encoding of the unit value MUST be distinct from that of every other value, consistent with structural equality treating the unit value as equal only to itself.
         Core::Unit => Some(b.name("unit")),
         Core::Tuple { elems } => {
             let head = b.name("tuple");
@@ -5127,7 +5134,11 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // A CONSTANT list literal renders `(list e1 e2 …)` — its length is statically known (unlike a
         // grown/runtime list), so its bytes bake exactly like a constant tuple's. Each element is a
         // constant in turn (a non-constant element makes the whole value non-constant, so `core_of` would
-        // not be a `ListNew` of constants and this returns `None`, declining the escape).
+        // not be a `ListNew` of constants and this returns `None`, declining the escape). A list is an
+        // ORDERED aggregate — the render walks `elems` in order, so the canonical form preserves element
+        // order (unlike the map/set render, which sorts an unordered aggregate).
+        //= spec/contracts/deterministic-value-form.md#ordering-of-aggregate-members-is-fixed
+        //# The canonical encoding of an ordered aggregate MUST preserve its element order.
         Core::ListNew { elems } => {
             let head = b.name("list");
             let mut children = vec![head];
@@ -5136,14 +5147,19 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             }
             Some(b.list(children))
         }
-        // A CONSTANT map value — `(map (k1 v1) (k2 v2) …)` — its entries rendered in CANONICAL KEY ORDER
-        // (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order), independent of
-        // insertion order and DISTINGUISHABLE from a record (`map` head, `(key value)` pairs). The
-        // constant map already has each key at most once (the `Map.insert` fold replaced by key value);
-        // sort the entries by their canonical KEY order (`const_key_order`), then render each pair. A
-        // non-constant key/value makes an entry non-constant → `None`, declining the escape (a genuinely
-        // runtime map's escape is the deferred looping walker). This is the constant-escape (R1) companion
-        // of the map value — a fully-constant map crosses by baked bytes here.
+        // A CONSTANT map value — `(map (k1 v1) (k2 v2) …)` — its entries rendered in CANONICAL KEY ORDER,
+        // independent of insertion order and DISTINGUISHABLE from a record (`map` head, `(key value)`
+        // pairs). The constant map already has each key at most once (the `Map.insert` fold replaced by
+        // key value); sort the entries by their canonical KEY order (`const_key_order`), then render each
+        // pair. A non-constant key/value makes an entry non-constant → `None`, declining the escape (a
+        // genuinely runtime map's escape is the deferred looping walker). This is the constant-escape (R1)
+        // companion of the map value — a fully-constant map crosses by baked bytes here.
+        //= spec/contracts/deterministic-value-form.md#ordering-of-aggregate-members-is-fixed
+        //# The canonical encoding of an unordered aggregate MUST place its members in a fixed order derived from the members themselves, not from the order in which they were inserted or discovered.
+        //= spec/capabilities/collections-and-text.md#a-map-renders-as-its-entries-in-canonical-key-order
+        //# A map's canonical form MUST present its entries as key-value pairs in the deterministic order of *Map Iteration Is Deterministic*, so that two equal maps have identical canonical forms regardless of the order their entries were added.
+        //= spec/capabilities/collections-and-text.md#a-map-renders-as-its-entries-in-canonical-key-order
+        //# The canonical form MUST be distinguishable from a record's, so that a map and a record are never confused by their rendered form even when they carry the same keys and values (a map's keys are values of one key type; a record's field names are fixed compile-time labels).
         Core::MapNew { entries, .. } => {
             let mut sorted: Vec<(StructId, StructId)> = entries.clone();
             // Sort by canonical key order. A key that is not orderable-as-a-constant declines the whole
