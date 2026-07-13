@@ -990,6 +990,51 @@
             (export main)))
   (error  CDZ0201))
 
+; --- A recursive parameter used ONLY as a call argument infers from the callee -----------------------
+; A RECURSIVE def's parameter that no primitive operator ever touches — it is only PASSED AS AN ARGUMENT
+; to another def, threaded unchanged through the recursion — is still determined: its type is the
+; callee's parameter type at that position. `(def (f a n) (… (twice a) … (f a (- n 1))))` uses `a` only
+; in `(twice a)`, so `a`'s type is `twice`'s parameter type (Int64, pinned by `twice`'s own `(+ a a)`).
+; The recursive-parameter solver reads that argument-position constraint; without it `a` stayed
+; unconstrained and the def declined "a recursive function with an unannotated parameter is not yet
+; inferred", refusing a well-typed program (annotating `a` compiled the same program — inference, not
+; codegen, was the gap). The constraint is precise: a parameter passed to a POLYMORPHIC callee (whose
+; parameter is itself unconstrained) is NOT pinned, so a generic position stays generic. This is the last
+; inference piece the byte-walking reader family (a `Bytes` param threaded through a recursive walk via a
+; helper) needs — see the CBOR-reader cases in 10-bytes.sexp.
+
+(case "a recursive parameter used only as a call argument infers from the callee's parameter type"
+  (doc    "`f` is recursive; its parameter `a` is threaded unchanged through the recursion and used ONLY
+           as the argument of `(twice a)` — no primitive operator touches `a` directly. Its type is
+           `twice`'s parameter type: `twice`'s body `(+ a a)` pins that parameter to Int64, so `a` infers
+           Int64 without an annotation. Was declined ('a recursive function with an unannotated parameter
+           is not yet inferred') because the solver derived a constraint only from an operator applied to
+           the parameter or the self-call, never from an argument position. `f(5, 3)` sums `twice(5)` =
+           10 three times → 30. Inference, not codegen, was the only gap.")
+  (input  (do
+            (def (twice a) (+ a a))
+            (def (f a n) (if (< n 1) 0 (+ (twice a) (f a (- n 1)))))
+            (def (main) (f 5 3)) (export main)))
+  (call   main)
+  (output (: 30 Int64)))
+
+(case "a recursive byte walk threading a Bytes parameter through a helper infers without annotation"
+  (doc    "The motivating instance (the CBOR-reader family): `be` is recursive; its `Bytes` parameter `b`
+           is threaded unchanged and used only as the first argument of `(byte-at b i)`. `byte-at`'s body
+           `(match (Bytes.at b i) …)` pins its first parameter to `Bytes`, so `b` infers `Bytes` from that
+           argument position — no annotation needed. The non-recursive helper `byte-at` itself needs no
+           annotation. The bytes 1, 2, 3 are read and summed over three steps → 6. Was declined for want
+           of the argument-position constraint.")
+  (input  (do
+            (def (byte-at b i)
+              (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (be b i n)
+              (if (< n 1) 0 (+ (byte-at b i) (be b (+ i 1) (- n 1)))))
+            (def (main) (be (Bytes.of (list 1 2 3)) 0 3))
+            (export main)))
+  (call   main)
+  (output (: 6 Int64)))
+
 ; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
 ; NEAREST enclosing binding of that name — regardless of the name's capitalization. So a `def` whose name
 ; happens to start with an uppercase letter binds that name exactly as a lowercase one does, and a call to

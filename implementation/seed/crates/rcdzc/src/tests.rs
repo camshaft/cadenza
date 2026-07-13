@@ -3578,6 +3578,35 @@ mod recursion {
     }
 
     #[test]
+    fn a_recursive_param_used_only_as_a_call_argument_infers_from_the_callee() {
+        // A recursive def's parameter used ONLY as a call ARGUMENT — never touched by a primitive
+        // operator, never annotated — was left unconstrained (`Any`) and the def DECLINED. The
+        // recursive-param solver derived a constraint only from an operator applied to the parameter or
+        // the self-call, never from an argument position. Fixed by unifying such an argument against the
+        // CALLEE's k-th parameter type (`callee_param_ty`), which the callee's own body pins. `a`, passed
+        // only to `(twice a)` where `twice` adds it, infers Int64: `f(5,3)` = twice(5)*3 = 30.
+        let bytes = component(
+            "(module m (def (twice a) (+ a a)) \
+               (def (f a n) (if (< n 1) 0 (+ (twice a) (f a (- n 1))))) \
+               (def (main) (f 5 3)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
+    }
+
+    #[test]
+    fn a_param_passed_to_a_polymorphic_callee_is_not_over_constrained() {
+        // The argument-position constraint is PRECISE: it fires only when the callee's k-th parameter is
+        // DETERMINED (not `Any`/`Var`). A parameter passed to a POLYMORPHIC callee (`id`, whose param is
+        // unconstrained) gets NO spurious constraint, so `g` stays usable at any type. `(+ (g 3) (g 4))`
+        // = 7 — `g`'s param inlines from each concrete argument as before, not pinned by the `id` call.
+        let bytes = component(
+            "(module m (def (id x) x) (def (g v) (id v)) \
+               (def (main) (+ (g 3) (g 4))) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
     fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
         // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
         // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with

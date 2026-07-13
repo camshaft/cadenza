@@ -373,6 +373,54 @@ fn solved_param_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     db.param_types.get(&binder).cloned()
 }
 
+/// The type of the `k`-th parameter of def `callee`, for constraining an argument passed there from
+/// another def's recursive-param solve. Sources, in order: (a) an explicit ANNOTATION on the param; (b)
+/// a param whose type is already solved in `db.param_types` (a recursive callee, or one solved earlier);
+/// (c) otherwise, collect the callee's OWN body constraints (the same operator/if/self-call collection
+/// `solve_recursive_params` runs) over a fresh env and read the k-th param's solved type — this pins a
+/// NON-recursive unannotated helper's param (`byte-at`'s `b` ⇒ `Bytes` via `(Bytes.at b i)`) without
+/// requiring the helper to have a standalone scheme. Returns `None` (no constraint) if the param stays
+/// undetermined or `callee` has no such param. Guarded against re-entry (a cycle) by `db.solving_params`.
+fn callee_param_ty(db: &mut Db, callee: usize, k: usize) -> Option<Ty> {
+    let params = db.defs[callee].params.clone();
+    let p = *params.get(k)?;
+    let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+        Some(name_occ) => name_occ,
+        None => p,
+    };
+    if let Some(t) = param_annot_ty(db, binder) {
+        return Some(t);
+    }
+    if let Some(t) = db.param_types.get(&binder) {
+        return Some(t.clone());
+    }
+    if db.solving_params.contains(&callee) {
+        return None;
+    }
+    let body = db.defs[callee].body?;
+    db.solving_params.insert(callee);
+    let mut fresh = Fresh::new();
+    let mut env: crate::fxhash::FxHashMap<StructId, Ty> = crate::fxhash::FxHashMap::default();
+    let mut binders: Vec<(StructId, Ty)> = Vec::new();
+    for pp in &params {
+        let b = match db.ast.as_form(*pp, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => *pp,
+        };
+        let var = param_annot_ty(db, b).unwrap_or_else(|| Ty::Var(fresh.var()));
+        env.insert(b, var.clone());
+        binders.push((b, var));
+    }
+    let mut subst = Subst::new();
+    collect_param_constraints(db, body, &env, callee, &mut subst, &mut fresh);
+    db.solving_params.remove(&callee);
+    let solved = ground_param(subst.apply(&binders.get(k)?.1));
+    match solved {
+        Ty::Any | Ty::Var(_) => None,
+        other => Some(other),
+    }
+}
+
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
 /// `binder` is not a top-level def parameter (e.g. a `fn` lambda parameter). Walks up from the binder to
 /// the `(def (NAME param…) body)` it sits in.
@@ -494,8 +542,7 @@ fn collect_param_constraints(
                 }
             } else if let Some(callee) = callee_def_index_for_infer(db, head) {
                 // A call to a user def. If it is THIS def (self-recursion), unify each argument against
-                // this def's own parameter variable — the fixpoint. (A cross-def callee in a mutual
-                // group is handled by its own solve; here we still constrain the argument sub-terms.)
+                // this def's own parameter variable — the fixpoint.
                 if callee == def {
                     // The parameters in signature order (env is unordered) — arguments match positionally.
                     let ordered = ordered_param_binders(db, def);
@@ -505,6 +552,33 @@ fn collect_param_constraints(
                         {
                             let at = arg_ty_in_env(db, arg, env, subst);
                             let _ = crate::unify::unify(subst, pvar, &at);
+                        }
+                    }
+                } else {
+                    // A call to ANOTHER def: a parameter passed as the k-th argument is constrained by the
+                    // callee's k-th PARAMETER TYPE. Without this, a parameter used ONLY as a call argument
+                    // (`(byte-at b i)` — `b` never touched by an operator) stays a free `Var`, grounds to
+                    // `Any`, and the recursive-def guard declines a well-typed program. The callee's own
+                    // body pins its param type (`byte-at`'s `b` is `Bytes` via `(Bytes.at b i)`), so read
+                    // the callee's k-th param type and unify. Only a DETERMINED callee param (not
+                    // `Any`/`Var`) constrains — an undetermined one adds nothing, so a genuinely
+                    // polymorphic position is never over-constrained.
+                    for (i, &arg) in args.iter().enumerate() {
+                        let arg_is_param = matches!(
+                            resolved_of(db, arg),
+                            Resolved::Ref { value } if env.contains_key(&value)
+                        ) || matches!(
+                            resolved_of(db, arg),
+                            Resolved::Param { binder } if env.contains_key(&binder)
+                        );
+                        if !arg_is_param {
+                            continue;
+                        }
+                        if let Some(pt) = callee_param_ty(db, callee, i)
+                            && !matches!(pt, Ty::Any | Ty::Var(_))
+                        {
+                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let _ = crate::unify::unify(subst, &at, &pt);
                         }
                     }
                 }
