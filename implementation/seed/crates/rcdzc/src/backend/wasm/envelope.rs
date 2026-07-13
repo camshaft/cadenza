@@ -1728,7 +1728,10 @@ pub fn assemble_distinct_sig_roundtrip_resource(
 ) -> Vec<u8> {
     let k = imports.len();
     let g = groups.len();
-    let total_fns: usize = groups.iter().map(|gr| gr.makes.len() + gr.consumers.len()).sum();
+    let total_fns: usize = groups
+        .iter()
+        .map(|gr| gr.makes.len() + gr.consumers.len())
+        .sum();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -1785,7 +1788,10 @@ pub fn assemble_distinct_sig_roundtrip_resource(
         out.extend_from_slice(&core_module_section(dtor_core));
         out.extend_from_slice(&section(
             sec::CORE_INSTANCE,
-            &wasm_vec(1, &core_instantiate_item(gi as u32, &[(HEAP_DTOR_MODULE, (2 * gi) as u32)])),
+            &wasm_vec(
+                1,
+                &core_instantiate_item(gi as u32, &[(HEAP_DTOR_MODULE, (2 * gi) as u32)]),
+            ),
         ));
         out.extend_from_slice(&section(
             sec::ALIAS,
@@ -1827,7 +1833,10 @@ pub fn assemble_distinct_sig_roundtrip_resource(
     out.extend_from_slice(&core_module_section(main_core));
     out.extend_from_slice(&section(
         sec::CORE_INSTANCE,
-        &wasm_vec(1, &core_instantiate_item(g as u32, &[(HEAP_MODULE, heap_inst)])),
+        &wasm_vec(
+            1,
+            &core_instantiate_item(g as u32, &[(HEAP_MODULE, heap_inst)]),
+        ),
     ));
     let prog_inst = heap_inst + 1;
     // sec 6: alias each group's makes then consumers off the program instance (core order matches the
@@ -1859,7 +1868,10 @@ pub fn assemble_distinct_sig_roundtrip_resource(
             let rty = res_type_idx[gi];
             for mk in &gr.makes {
                 items.extend_from_slice(&own_item(rty));
-                items.extend_from_slice(&params_result_functype(&mk.make_param_bytes, &owned_valtype(ti)));
+                items.extend_from_slice(&params_result_functype(
+                    &mk.make_param_bytes,
+                    &owned_valtype(ti),
+                ));
                 fn_functype.push(ti + 1);
                 ti += 2;
             }
@@ -1879,10 +1891,15 @@ pub fn assemble_distinct_sig_roundtrip_resource(
         }
         section(sec::CANON, &wasm_vec(total_fns, &items))
     });
-    out.extend_from_slice(&component_section(&resource_inner_component_distinct_sig_rt(groups)));
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_distinct_sig_rt(groups),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
-        &wasm_vec(1, &component_instantiate_distinct_sig_rt_item(&res_type_idx, k as u32, groups)),
+        &wasm_vec(
+            1,
+            &component_instantiate_distinct_sig_rt_item(&res_type_idx, k as u32, groups),
+        ),
     ));
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
@@ -2496,7 +2513,10 @@ fn component_instantiate_distinct_sig_item(
 /// exported identity. Type-index layout identical to the distinct-sig one (own<t> + functype per fn, flat).
 fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8> {
     let g = groups.len();
-    let total_fns: usize = groups.iter().map(|gr| gr.makes.len() + gr.consumers.len()).sum();
+    let total_fns: usize = groups
+        .iter()
+        .map(|gr| gr.makes.len() + gr.consumers.len())
+        .sum();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     for gi in 0..g {
@@ -2513,12 +2533,18 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
             let ft_ty = (g + 2 * f + 1) as u32;
             out.extend_from_slice(&{
                 let mut items = own_item(gi as u32);
-                items.extend_from_slice(&params_result_functype(&mk.make_param_bytes, &owned_valtype(own_ty)));
+                items.extend_from_slice(&params_result_functype(
+                    &mk.make_param_bytes,
+                    &owned_valtype(own_ty),
+                ));
                 section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
             });
             out.extend_from_slice(&section(
                 sec::COMPONENT_IMPORT,
-                &wasm_vec(1, &import_func_item(&format!("import-func-{}", mk.name), ft_ty)),
+                &wasm_vec(
+                    1,
+                    &import_func_item(&format!("import-func-{}", mk.name), ft_ty),
+                ),
             ));
             f += 1;
         }
@@ -2532,7 +2558,10 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
             });
             out.extend_from_slice(&section(
                 sec::COMPONENT_IMPORT,
-                &wasm_vec(1, &import_func_item(&format!("import-func-{}", c.name), ft_ty)),
+                &wasm_vec(
+                    1,
+                    &import_func_item(&format!("import-func-{}", c.name), ft_ty),
+                ),
             ));
             f += 1;
         }
@@ -2552,7 +2581,10 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
         for mk in &gr.makes {
             out.extend_from_slice(&{
                 let mut items = own_item(exp_rty);
-                items.extend_from_slice(&params_result_functype(&mk.make_param_bytes, &owned_valtype(ti)));
+                items.extend_from_slice(&params_result_functype(
+                    &mk.make_param_bytes,
+                    &owned_valtype(ti),
+                ));
                 section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
             });
             out.extend_from_slice(&section(
@@ -2996,6 +3028,25 @@ fn self_borrow_to_list_functype(borrow_type_idx: u32, list_type_idx: u32) -> Vec
     item
 }
 
+/// A component functype `(self: borrow<t>) -> <scalar prim>`: `40 01 <"self"> <borrow-valtype> 00
+/// <prim-byte>` — like [`self_borrow_to_list_functype`] but the result is a PRIMITIVE valtype (its
+/// negative-space byte, e.g. `COMP_U32`), not a defined-type index. Used for a scalar-result value-resource
+/// method such as `len : borrow<t> -> u32` (`bytes-len`/`vec-len` over the borrow rep) — a method that
+/// needs NO Memory/Realloc canon options (nothing crosses through linear memory). `borrow_type_idx` is the
+/// component-type index of the `borrow<t>` defined type laid just before the functype.
+/// (`#[allow(dead_code)]`: wired into the value-resource envelope in the `len`-method increment; the
+/// byte-shape test below already exercises it, mirroring how `borrow_item` was staged before its use.)
+#[allow(dead_code)]
+fn self_borrow_to_scalar_functype(borrow_type_idx: u32, result_prim: u8) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM, 0x01];
+    item.extend_from_slice(&uleb_bytes("self".len() as u64));
+    item.extend_from_slice(b"self");
+    item.extend_from_slice(&owned_valtype(borrow_type_idx));
+    item.push(0x00); // result form: one result
+    item.push(result_prim); // a primitive valtype byte (not a type index)
+    item
+}
+
 /// A component functype for a CLOSURE-RESOURCE `call` method: `(self: <handle<t>>, p0: <vt>, …) -> <vt>`
 /// — form `0x40`, then the param vec `[self : own/borrow<self_type_idx>, p0.., …]`, then the result form.
 /// `self` is the receiver (an `own`/`borrow` handle to the closure resource — a DEFINED type by index);
@@ -3432,5 +3483,34 @@ mod closure_resource_tests {
             s64,
         ];
         assert_eq!(got2, want2, "two-arg call-method functype byte shape");
+    }
+
+    /// VM-1 (byte-neutral): a scalar-result value-resource method functype `(self: borrow<t>) -> u32`
+    /// encodes to the exact component-model bytes — form `0x40`, a one-param vec `[self : borrow<t>]`,
+    /// result `00 <u32-prim>`. `self` references the `borrow<t>` DEFINED type by index (a bare type-index
+    /// uleb, same encoding as an `own<t>` valtype); the result is a PRIMITIVE valtype byte (`COMP_U32`),
+    /// NOT a type index — the distinction that keeps a scalar method free of Memory/Realloc canon options.
+    /// Pins the item shape so the envelope-wiring increment (adding `len` to the value resource) builds on
+    /// a checked primitive, exactly as `closure_call_functype_encodes_the_call_method_shape` did for `call`.
+    #[test]
+    fn self_borrow_to_scalar_functype_encodes_a_scalar_method_shape() {
+        // A `len : borrow<t> -> u32` whose `borrow<t>` is component defined-type index 4.
+        let got = self_borrow_to_scalar_functype(4, wasm_abi::COMP_U32);
+        let want: Vec<u8> = vec![
+            wasm_abi::COMP_FUNCTYPE_FORM, // 0x40 functype form
+            0x01,                         // param count = 1 (self only)
+            0x04,
+            b's',
+            b'e',
+            b'l',
+            b'f',               // "self"
+            0x04, // borrow<t> defined type, index 4 (bare uleb — same as an own<t> valtype)
+            0x00, // result form: one result
+            wasm_abi::COMP_U32, // result valtype u32 (a PRIMITIVE byte, not a type index)
+        ];
+        assert_eq!(
+            got, want,
+            "scalar value-resource method functype byte shape"
+        );
     }
 }
