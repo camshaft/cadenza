@@ -299,7 +299,9 @@ fn run_export(
         .get_func(&mut *store, &export_name)
         .or_else(|| {
             let kebab = cadenza_syntax::extern_name::kebab_extern_name(&export_name);
-            (kebab != export_name).then(|| instance.get_func(&mut *store, &kebab)).flatten()
+            (kebab != export_name)
+                .then(|| instance.get_func(&mut *store, &kebab))
+                .flatten()
         })
         .ok_or_else(|| anyhow!("component exports no function `{export_name}`"))?;
 
@@ -638,7 +640,9 @@ fn run_roundtrip_closure(
     let get = |store: &mut Store<()>, name: &str| -> Result<wasmtime::component::Func> {
         let idx = instance
             .get_export_index(&mut *store, Some(iface), name)
-            .ok_or_else(|| anyhow!("round-trip closure: `{CLOSURE_INTERFACE}` exports no `{name}`"))?;
+            .ok_or_else(|| {
+                anyhow!("round-trip closure: `{CLOSURE_INTERFACE}` exports no `{name}`")
+            })?;
         instance
             .get_func(&mut *store, idx)
             .ok_or_else(|| anyhow!("round-trip closure: `{name}` is not a function"))
@@ -649,13 +653,20 @@ fn run_roundtrip_closure(
     // may sit anywhere and there may be several; each gets its OWN fresh handle from the PRODUCER whose
     // RESULT resource type MATCHES that param (a distinct-sig round trip has several producers, one per
     // resource type — the first non-consumer func with a matching own<t> result).
-    let cons_params: Vec<Type> = consumer.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let cons_params: Vec<Type> = consumer
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
     // The producer func matching a given resource type — a func (≠ the consumer) whose sole result is
     // `own<rt>`/`borrow<rt>`. Returns (func, its param types).
-    let find_producer = |store: &mut Store<()>, want: &wasmtime::component::ResourceType|
+    let find_producer = |store: &mut Store<()>,
+                         want: &wasmtime::component::ResourceType|
      -> Result<(wasmtime::component::Func, Vec<Type>)> {
         for name in iface_funcs {
-            if name == consumer_name { continue; }
+            if name == consumer_name {
+                continue;
+            }
             let f = get(&mut *store, name)?;
             let matches_res = matches!(
                 f.results(&*store).first(),
@@ -666,7 +677,9 @@ fn run_roundtrip_closure(
                 return Ok((f, params));
             }
         }
-        Err(anyhow!("round-trip closure: no producer mints the resource `{consumer_name}` expects"))
+        Err(anyhow!(
+            "round-trip closure: no producer mints the resource `{consumer_name}` expects"
+        ))
     };
     // The corpus supplies the producer args for EACH closure param (in param order), then the consumer's
     // scalar args. Walk the consumer params: a closure param consumes its producer's arity from the front;
@@ -715,7 +728,9 @@ fn run_roundtrip_closure(
             next_handle += 1;
         } else {
             let s = scalar_strs.get(next_scalar).ok_or_else(|| {
-                anyhow!("round-trip closure: consumer `{consumer_name}` needs more scalar arguments")
+                anyhow!(
+                    "round-trip closure: consumer `{consumer_name}` needs more scalar arguments"
+                )
             })?;
             cons_args.push(coerce_one(s, t)?);
             next_scalar += 1;
@@ -770,7 +785,14 @@ fn run_closure_resource(
         // sides agree — `iface_funcs` are the actual (kebab) export names, so the comparison inside
         // `run_roundtrip_closure` (a func ≠ the consumer is a producer) must see the kebab consumer name.
         let consumer = cadenza_syntax::extern_name::kebab_extern_name(consumer);
-        return run_roundtrip_closure(&mut *store, instance, &iface, &consumer, &iface_funcs, arg_strs);
+        return run_roundtrip_closure(
+            &mut *store,
+            instance,
+            &iface,
+            &consumer,
+            &iface_funcs,
+            arg_strs,
+        );
     }
     // DISTINCT-SIGNATURE multi-export: no bare `call`, but per-signature `call-g<n>` functions (each bound
     // to its own resource type). The corpus `(call <name> …)` names a closure export → `make-<name>`; the
@@ -793,20 +815,30 @@ fn run_closure_resource(
         let make_result = make.results(&*store).first().cloned();
         let want_res = match &make_result {
             Some(Type::Own(rt)) | Some(Type::Borrow(rt)) => *rt,
-            other => return Err(anyhow!("distinct-sig closure: `{make_name}` does not return a resource ({other:?})")),
+            other => {
+                return Err(anyhow!(
+                    "distinct-sig closure: `{make_name}` does not return a resource ({other:?})"
+                ));
+            }
         };
         // Find the matching call among `call-g<n>` funcs.
         let call_name = iface_funcs
             .iter()
             .filter(|f| f.starts_with("call-g"))
             .find(|cn| {
-                let Some(idx) = instance.get_export_index(&mut *store, Some(&iface), cn) else { return false; };
-                let Some(cf) = instance.get_func(&mut *store, idx) else { return false; };
+                let Some(idx) = instance.get_export_index(&mut *store, Some(&iface), cn) else {
+                    return false;
+                };
+                let Some(cf) = instance.get_func(&mut *store, idx) else {
+                    return false;
+                };
                 matches!(cf.params(&*store).first().map(|(_, t)| t.clone()),
                     Some(Type::Own(rt)) | Some(Type::Borrow(rt)) if rt == want_res)
             })
             .cloned()
-            .ok_or_else(|| anyhow!("distinct-sig closure: no `call-g<n>` matches `{make_name}`'s resource"))?;
+            .ok_or_else(|| {
+                anyhow!("distinct-sig closure: no `call-g<n>` matches `{make_name}`'s resource")
+            })?;
         let call_idx = instance
             .get_export_index(&mut *store, Some(&iface), &call_name)
             .ok_or_else(|| anyhow!("distinct-sig closure: no `{call_name}`"))?;
@@ -814,10 +846,16 @@ fn run_closure_resource(
             .get_func(&mut *store, call_idx)
             .ok_or_else(|| anyhow!("distinct-sig closure: `{call_name}` is not a function"))?;
         // Split args by make's arity (as the multi-export path does).
-        let make_param_types: Vec<Type> = make.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+        let make_param_types: Vec<Type> = make
+            .params(&*store)
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
         let n_make = make_param_types.len();
         if arg_strs.len() < n_make {
-            return Err(anyhow!("distinct-sig closure: `{make_name}` needs {n_make} arg(s)"));
+            return Err(anyhow!(
+                "distinct-sig closure: `{make_name}` needs {n_make} arg(s)"
+            ));
         }
         let make_args = coerce_args(&arg_strs[..n_make], &make_param_types)?;
         let mut handle = [Val::Bool(false)];
@@ -825,7 +863,11 @@ fn run_closure_resource(
             return Ok(Outcome::Trap(format!("{e}")));
         }
         let _ = make.post_return(&mut *store);
-        let param_types: Vec<Type> = call.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+        let param_types: Vec<Type> = call
+            .params(&*store)
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
         let coerced = coerce_args(&arg_strs[n_make..], param_types.get(1..).unwrap_or(&[]))?;
         let mut call_args = vec![handle[0].clone()];
         call_args.extend(coerced);
@@ -876,7 +918,11 @@ fn run_closure_resource(
 
     // SPLIT the flat arg list by `make`'s arity: the first `make.params().len()` go to `make` (the export
     // params), the rest to `call` (after its leading `self`).
-    let make_param_types: Vec<Type> = make.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let make_param_types: Vec<Type> = make
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
     let n_make = make_param_types.len();
     if arg_strs.len() < n_make {
         return Err(anyhow!(
@@ -892,7 +938,11 @@ fn run_closure_resource(
     let _ = make.post_return(&mut *store);
     // `call`'s params are `(self, args…)`; coerce the REMAINING arg strings to the DECLARED arg types
     // (skipping the leading `self` handle param).
-    let param_types: Vec<Type> = call.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let param_types: Vec<Type> = call
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
     let arg_types = param_types.get(1..).unwrap_or(&[]);
     let coerced = coerce_args(&arg_strs[n_make..], arg_types)?;
     let mut call_args = vec![handle[0].clone()];

@@ -1201,9 +1201,15 @@ fn run_fix(args: &FixArgs) -> ExitCode {
                 continue;
             };
             // Build the edited text structurally.
-            let Some(edited) =
-                apply_fix_to_source(&current, &current_arenas, &spans, fix_kind, target, fix_repl, surface)
-            else {
+            let Some(edited) = apply_fix_to_source(
+                &current,
+                &current_arenas,
+                &spans,
+                fix_kind,
+                target,
+                fix_repl,
+                surface,
+            ) else {
                 continue;
             };
             // Apply a compiler-verified fix always; a heuristic one only under `--all` AND only if it
@@ -1254,7 +1260,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     // the file is not written (a preview), otherwise the repaired text is written back — the report just
     // says what changed either way.
     if args.json {
-        if !args.diff && !args.dry_run && applied > 0
+        if !args.diff
+            && !args.dry_run
+            && applied > 0
             && let Err(e) = std::fs::write(&args.file, &repaired)
         {
             eprintln!("{PROG}: writing {}: {e}", args.file);

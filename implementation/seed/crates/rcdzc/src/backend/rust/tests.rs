@@ -116,8 +116,9 @@ fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     // i64 sub-expression into a narrow op (`(if … { 100i64 } …).checked_add(100i8)` → rustc E0308). The
     // operand must be WRAPPED DOWN to the op's width with an `as iN` cast, mirroring the wasm backend's
     // i64→iN normalization.
-    let rs =
-        compile_rust("(module m (def (go (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export go))");
+    let rs = compile_rust(
+        "(module m (def (go (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export go))",
+    );
     // The whole `if` sub-expression is wrapped down to i8 — `}) as i8)` closes the if-block then casts
     // it, so the narrow `+` adds an i8 (its other operand `100` grounds to `100u8 as i8`).
     assert!(
@@ -127,7 +128,10 @@ fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
     // End-to-end through rustc: n=9 selects the else 0, 0+100=100 fits Int8 → 100 (compiles + runs, was
     // E0308). The overflow direction (n=3 → 200 → panic) is exercised by the wasm gate + the corpus.
     if let Some(out) = rustc_run(&rs, "go(9)") {
-        assert_eq!(out, "100", "in-range narrow if-operand computes; was a compile error");
+        assert_eq!(
+            out, "100",
+            "in-range narrow if-operand computes; was a compile error"
+        );
     }
     // A `match`-operand takes the same wrap-down (the match block closes then casts to i8).
     let m = compile_rust(

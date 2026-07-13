@@ -118,12 +118,19 @@ pub fn locate_byte_in_message(msg: &str, src: &str) -> String {
     };
     let after = marker_at + MARKER.len();
     // The digit run immediately after the marker — may be followed by trailing text (` (expected …)`).
-    let digits_end = after + msg[after..].find(|c: char| !c.is_ascii_digit()).unwrap_or(msg.len() - after);
+    let digits_end = after
+        + msg[after..]
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(msg.len() - after);
     let Ok(byte) = msg[after..digits_end].parse::<usize>() else {
         return msg.to_string(); // no integer after the marker — leave untouched
     };
     let (line, col) = crate::query::driver::line_col(src, byte);
-    format!("{} at {line}:{col}{}", &msg[..marker_at], &msg[digits_end..])
+    format!(
+        "{} at {line}:{col}{}",
+        &msg[..marker_at],
+        &msg[digits_end..]
+    )
 }
 
 /// Read `input` (bytes) in `from` format into arenas.

@@ -1237,7 +1237,9 @@ fn collect_param_constraints(
                 // SOURCE for its siblings, not an open arm — so it must NOT be reported open (else two
                 // arms both look open and neither pins the other, and a callback result stays unsolved).
                 let t = match resolved_of(db, body) {
-                    Resolved::Ref { value } if env.contains_key(&value) => env.get(&value).cloned()?,
+                    Resolved::Ref { value } if env.contains_key(&value) => {
+                        env.get(&value).cloned()?
+                    }
                     Resolved::Param { binder } if env.contains_key(&binder) => {
                         env.get(&binder).cloned()?
                     }
@@ -3605,10 +3607,12 @@ fn check_application(
                         ),
                     );
                     if let Some(&surplus) = args.get(params.len()) {
-                        reject = reject.at(surplus).with_fix(crate::diag::Fix::delete_heuristic(
-                            surplus,
-                            "remove the extra argument",
-                        ));
+                        reject = reject
+                            .at(surplus)
+                            .with_fix(crate::diag::Fix::delete_heuristic(
+                                surplus,
+                                "remove the extra argument",
+                            ));
                     }
                     out.push(reject);
                 }
@@ -3855,10 +3859,12 @@ fn check_application(
                         ),
                     );
                     if let Some(&surplus) = args.get(arg_index) {
-                        reject = reject.at(surplus).with_fix(crate::diag::Fix::delete_heuristic(
-                            surplus,
-                            "remove the extra argument",
-                        ));
+                        reject = reject
+                            .at(surplus)
+                            .with_fix(crate::diag::Fix::delete_heuristic(
+                                surplus,
+                                "remove the extra argument",
+                            ));
                     }
                     out.push(reject);
                 } else {
@@ -4811,7 +4817,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 out.push(
                                     Reject::coded(
                                         Code::Malformed,
-                                        format!("record names field `{}` more than once", label.name),
+                                        format!(
+                                            "record names field `{}` more than once",
+                                            label.name
+                                        ),
                                     )
                                     .at(args[1]),
                                 );

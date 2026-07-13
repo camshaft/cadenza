@@ -4906,7 +4906,8 @@ fn emit_probe_chain(
         // A literal-probe arm reached as the unconditional tail (the last arm of an exhaustive
         // wildcard-less match) STILL knows `scrutinee == literal` — refine its body so a `(- n 1)` there
         // sheds its guard. (A `Wild` tail arm binds no constant → the frame is unchanged.)
-        let frame = refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
+        let frame =
+            refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
         db.push_range_refinements(frame);
         let r = emit_arm_body(
             db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, tail,
@@ -5228,7 +5229,8 @@ fn emit_arm_guarded_body(
     // `(5 …)` arm computes `4`, its guard dead). The GUARD is a boolean the arm gates on and is NOT
     // refined (a guard like `(> n 5)` reading the same variable must still be evaluated); only the body,
     // reached once the probe (and guard) held, sees the refinement. `Wild`/`Bool` probe → no refinement.
-    let body_frame = refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
+    let body_frame =
+        refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
     match arm.guard {
         None => {
             db.push_range_refinements(body_frame);
@@ -5355,7 +5357,9 @@ fn try_emit_disc_br_table(
     }
     // Push the discriminant at `path` — `sum-disc` for a boxed sum, the raw i32 / unboxed int for an
     // enum-disc value (see `push_discriminant`).
-    push_discriminant(db, scrutinee, path, slots, base, high, scratch_ty, layout, out)?;
+    push_discriminant(
+        db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
+    )?;
     if has_default_block {
         // Target k (arm index) → depth k (exits $a_k); table default → depth m (exits $default).
         let targets: Vec<u32> = (0..m).collect();
@@ -5443,7 +5447,9 @@ fn emit_sum_match_arms(
             let disc = arm.disc.expect("non-None handled above");
             // discriminant(<scrutinee walked down `path`>) == disc — `sum-disc` for a boxed sum, the raw
             // i32 / unboxed int for an enum-disc value (see `push_discriminant`).
-            push_discriminant(db, scrutinee, path, slots, base, high, scratch_ty, layout, out)?;
+            push_discriminant(
+                db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
+            )?;
             // `disc == 0` is `i32.eqz` (one instruction), not `const 0 ; i32.eq` (two) — the sum-disc
             // twin of the scalar/probe eqz special case (cycle 43). A `0` discriminant is the FIRST
             // declared variant (`Some`, `Ok`, …), so this fires on the common first-arm test.
@@ -6133,7 +6139,10 @@ fn refine_from_comparison(
         _ => return base, // Eq/Ne/compare — no interval bound
     };
     let mut frame = base;
-    let (mut lo, mut hi) = frame.get(&var).copied().unwrap_or((i64::MIN, Some(i64::MAX)));
+    let (mut lo, mut hi) = frame
+        .get(&var)
+        .copied()
+        .unwrap_or((i64::MIN, Some(i64::MAX)));
     if let Some(nl) = new_lo {
         lo = lo.max(nl);
     }

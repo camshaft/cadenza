@@ -1829,7 +1829,10 @@ mod tests {
         let src = format!("{}1{}", "(".repeat(n), ")".repeat(n));
         let p = read_ml(&src);
         assert!(
-            !p.ok() && p.errors.iter().any(|e| e.message.contains("nests too deeply")),
+            !p.ok()
+                && p.errors
+                    .iter()
+                    .any(|e| e.message.contains("nests too deeply")),
             "deep nesting must be a clean depth-limit error, not a crash/hang; got {:?}",
             p.errors
         );
@@ -1837,7 +1840,11 @@ mod tests {
         let ok = (crate::sexpr::MAX_NESTING_DEPTH as usize) - 1;
         let shallow = format!("{}1{}", "(".repeat(ok), ")".repeat(ok));
         let ps = read_ml(&shallow);
-        assert!(ps.ok(), "a nest just under the limit must parse: {:?}", ps.errors);
+        assert!(
+            ps.ok(),
+            "a nest just under the limit must parse: {:?}",
+            ps.errors
+        );
     }
 
     #[test]

@@ -1656,9 +1656,15 @@ fn fix_json_dry_run_reports_without_writing_and_empty_when_nothing_applies() {
     let f = dir.join("prog.sexp");
     let original = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n";
     std::fs::write(&f, original).unwrap();
-    let (ok, stdout, _) = run(&["fix", "--all", "--json", "--dry-run", f.to_str().unwrap()], "");
+    let (ok, stdout, _) = run(
+        &["fix", "--all", "--json", "--dry-run", f.to_str().unwrap()],
+        "",
+    );
     assert!(ok);
-    assert!(stdout.contains("\"code\":\"CDZ0101\""), "reports the fix: {stdout}");
+    assert!(
+        stdout.contains("\"code\":\"CDZ0101\""),
+        "reports the fix: {stdout}"
+    );
     assert_eq!(
         std::fs::read_to_string(&f).unwrap(),
         original,
@@ -1669,7 +1675,11 @@ fn fix_json_dry_run_reports_without_writing_and_empty_when_nothing_applies() {
     std::fs::write(&g, "(module m (def (main) 0) (export main))\n").unwrap();
     let (ok2, stdout2, _) = run(&["fix", "--all", "--json", g.to_str().unwrap()], "");
     assert!(ok2);
-    assert_eq!(stdout2.trim(), "[]", "nothing applied → empty report: {stdout2}");
+    assert_eq!(
+        stdout2.trim(),
+        "[]",
+        "nothing applied → empty report: {stdout2}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1725,7 +1735,10 @@ fn check_offers_no_fix_for_a_non_integer_float_in_an_int_context() {
     std::fs::write(&f, "(module m (def (main) (+ 2 2.5)) (export main))\n").unwrap();
     let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
     assert!(!ok, "still an error");
-    assert!(stdout.contains("CDZ0301"), "the mismatch is reported: {stdout}");
+    assert!(
+        stdout.contains("CDZ0301"),
+        "the mismatch is reported: {stdout}"
+    );
     assert!(
         !stdout.contains("help"),
         "no fix is offered for a fractional literal: {stdout}"
@@ -1909,7 +1922,10 @@ fn fix_all_renames_a_duplicate_parameter_and_clears_the_hard_error() {
     // unused-param warning too).
     let (ok2, stdout, _) = run(&["check", f.to_str().unwrap()], "");
     assert!(ok2, "no error remains: {stdout}");
-    assert!(!stdout.contains("CDZ0102"), "the non-linear error is cleared: {stdout}");
+    assert!(
+        !stdout.contains("CDZ0102"),
+        "the non-linear error is cleared: {stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1980,7 +1996,10 @@ fn fix_all_applies_one_wrap_when_a_second_independent_fault_survives() {
         "both effects delegated to a fixpoint: {repaired}"
     );
     let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
-    assert!(ok2, "the fully-delegated program re-checks clean: {repaired}");
+    assert!(
+        ok2,
+        "the fully-delegated program re-checks clean: {repaired}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

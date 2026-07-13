@@ -1781,7 +1781,11 @@ pub fn multi_closure_bytes_resource_core_module(
         ));
         // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, exported by index.
         for p in plain {
-            items.extend_from_slice(&export(&p.export_name, wasm_abi::EXPORT_KIND_FUNC, p.body_abs));
+            items.extend_from_slice(&export(
+                &p.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                p.body_abs,
+            ));
         }
         section(
             wasm_abi::CORE_SEC_EXPORT,

@@ -685,18 +685,40 @@ mod tests {
         // `#"…"` is a quoted symbol; `#name` is the unquoted symbol sugar (one `SymLit` spanning
         // `#` through the identifier, kebab included). `#{`/`#[`/bare `#` stay the sigil (`{`/`[`
         // are not ident-starts); a `#` before a non-ident (`#1`, `#+`) is a bare `Hash`.
-        assert_eq!(spanned_text("#\"metre\""), vec![("#\"metre\"", Kind::SymLit)]);
+        assert_eq!(
+            spanned_text("#\"metre\""),
+            vec![("#\"metre\"", Kind::SymLit)]
+        );
         assert_eq!(spanned_text("#metre"), vec![("#metre", Kind::SymLit)]);
-        assert_eq!(spanned_text("#map-insert"), vec![("#map-insert", Kind::SymLit)]);
-        assert_eq!(spanned_text("#{"), vec![("#", Kind::Hash), ("{", Kind::LBrace)]);
+        assert_eq!(
+            spanned_text("#map-insert"),
+            vec![("#map-insert", Kind::SymLit)]
+        );
+        assert_eq!(
+            spanned_text("#{"),
+            vec![("#", Kind::Hash), ("{", Kind::LBrace)]
+        );
         assert_eq!(
             spanned_text("#[]"),
-            vec![("#", Kind::Hash), ("[", Kind::LBracket), ("]", Kind::RBracket)]
+            vec![
+                ("#", Kind::Hash),
+                ("[", Kind::LBracket),
+                ("]", Kind::RBracket)
+            ]
         );
-        assert_eq!(spanned_text("#1"), vec![("#", Kind::Hash), ("1", Kind::Int)]);
-        assert_eq!(spanned_text("#+"), vec![("#", Kind::Hash), ("+", Kind::Plus)]);
+        assert_eq!(
+            spanned_text("#1"),
+            vec![("#", Kind::Hash), ("1", Kind::Int)]
+        );
+        assert_eq!(
+            spanned_text("#+"),
+            vec![("#", Kind::Hash), ("+", Kind::Plus)]
+        );
         // The sugar does NOT cross whitespace — `# x` is a bare `Hash` then the ident.
-        assert_eq!(spanned_text("# x"), vec![("#", Kind::Hash), ("x", Kind::Ident)]);
+        assert_eq!(
+            spanned_text("# x"),
+            vec![("#", Kind::Hash), ("x", Kind::Ident)]
+        );
     }
 
     #[test]

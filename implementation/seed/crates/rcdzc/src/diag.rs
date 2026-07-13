@@ -656,9 +656,12 @@ pub const TYPE_EXPORT_MARKER: &str = "is a TYPE, not a runtime value";
 /// copy (the one carrying the fix). NOTE the trailing space before the backticked key.
 pub const NO_FIELD_PREFIX: &str = "record has no field ";
 
-pub const CLOSURE_PARAM_NO_REPR_DECLINE: &str = "a closure's parameter type has no machine representation";
-pub const CLOSURE_RESULT_NO_REPR_DECLINE: &str = "a closure's result type has no machine representation";
-pub const CLOSURE_CAPTURE_NO_REPR_DECLINE: &str = "a closure captures a value with no machine representation";
+pub const CLOSURE_PARAM_NO_REPR_DECLINE: &str =
+    "a closure's parameter type has no machine representation";
+pub const CLOSURE_RESULT_NO_REPR_DECLINE: &str =
+    "a closure's result type has no machine representation";
+pub const CLOSURE_CAPTURE_NO_REPR_DECLINE: &str =
+    "a closure captures a value with no machine representation";
 
 /// A stable SUBSTRING of the coded CDZ0201 closure-boundary reject (`export <name> returns a closure that
 /// cannot cross the component boundary …`). `dedup_faults` matches this to recognize the reject that makes

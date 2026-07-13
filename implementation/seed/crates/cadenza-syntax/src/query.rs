@@ -2231,7 +2231,11 @@ pub mod textedit {
     /// `new` with `original` swapped for a HOLE placeholder, then splitting the rendered text on the hole:
     /// everything before is the prefix, everything after the suffix. The placeholder is a name that cannot
     /// occur in real source, so the split is unambiguous.
-    fn wrap_around_original(new: &Tree, original: &Tree, surface: Format) -> Option<(String, String)> {
+    fn wrap_around_original(
+        new: &Tree,
+        original: &Tree,
+        surface: Format,
+    ) -> Option<(String, String)> {
         let target = original.origin()?;
         // Require `original` to be a PROPER DESCENDANT of `new` — not `new` itself. When `new` merely
         // REPLACES `original` at the same position (a did-you-mean swaps one atom for another; both keep

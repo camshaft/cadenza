@@ -617,7 +617,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // kept comparison still evaluates `v` (its trap, if any, is preserved) — no operand is
                 // dropped, only the redundant second bound. `subsuming_comparison` returns the occurrence to
                 // keep (`lhs` or `rhs`).
-                _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => core_of(db, keep),
+                _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
+                    core_of(db, keep)
+                }
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -6908,7 +6910,8 @@ fn complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId
         else {
             return false;
         };
-        let is_neg1 = |c: &Core| matches!(c, Core::ConstInt(v) if v.eq_value(&IntValue::from_i64(-1)));
+        let is_neg1 =
+            |c: &Core| matches!(c, Core::ConstInt(v) if v.eq_value(&IntValue::from_i64(-1)));
         // `(^ v -1)` — the `-1` on the right (`v` = il) or left (`v` = ir), and `v` matches `other`.
         (is_neg1(&core_of(db, ir)) && core_equiv(db, il, other))
             || (is_neg1(&core_of(db, il)) && core_equiv(db, ir, other))
@@ -6960,10 +6963,7 @@ fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool 
     // Exact ordering complements: `<` ↔ `>=`, `<=` ↔ `>` (either assignment to lhs/rhs).
     let complement = matches!(
         (lop, rop),
-        (Prim::Lt, Prim::Ge)
-            | (Prim::Ge, Prim::Lt)
-            | (Prim::Le, Prim::Gt)
-            | (Prim::Gt, Prim::Le)
+        (Prim::Lt, Prim::Ge) | (Prim::Ge, Prim::Lt) | (Prim::Le, Prim::Gt) | (Prim::Gt, Prim::Le)
     );
     // Same operand pair in the SAME order (the operators already encode the direction).
     complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
@@ -6977,9 +6977,28 @@ fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool 
 /// `> c` is stronger iff `c >= d` (larger lower bound); `<=`/`>=` compare the same way. The runtime operand
 /// `v` must be `core_equiv` on both sides and on the SAME side (both `(cmp v const)` or both `(cmp const v)`
 /// — a mirrored pair would flip the direction). The kept comparison still evaluates `v`, so no trap drops.
-fn subsuming_comparison(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Option<StructId> {
-    let Core::Compare { op: lop, lhs: la, rhs: lb } = core_of(db, lhs) else { return None };
-    let Core::Compare { op: rop, lhs: ra, rhs: rb } = core_of(db, rhs) else { return None };
+fn subsuming_comparison(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<StructId> {
+    let Core::Compare {
+        op: lop,
+        lhs: la,
+        rhs: lb,
+    } = core_of(db, lhs)
+    else {
+        return None;
+    };
+    let Core::Compare {
+        op: rop,
+        lhs: ra,
+        rhs: rb,
+    } = core_of(db, rhs)
+    else {
+        return None;
+    };
     if lop != rop {
         return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
     }
@@ -7006,7 +7025,10 @@ fn subsuming_comparison(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool)
     // With `v` on the left: `< `/`<=` are UPPER bounds (stronger = smaller c), `>`/`>=` LOWER bounds
     // (stronger = larger c). With `v` on the RIGHT (`c < v` ≡ `v > c`), the sense flips. Compute whether
     // the LHS comparison is the stronger (tighter) one.
-    let upper_bound_on_v = matches!((lop, l_v_left), (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false));
+    let upper_bound_on_v = matches!(
+        (lop, l_v_left),
+        (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false)
+    );
     // For an upper bound on `v`, smaller constant ⇒ stronger; for a lower bound, larger ⇒ stronger.
     let lhs_stronger = if upper_bound_on_v { lc <= rc } else { lc >= rc };
     // `and` keeps the stronger; `or` keeps the weaker.
@@ -7161,7 +7183,12 @@ fn idempotent_bitwise_collapse(
 /// `(x, y)` where `y` is the inner op's OTHER operand (the one absorbed away), so the caller can trap-check
 /// `y` (it is DISCARDED). Both outer orders and both inner-operand positions are tried. `None` when the
 /// shape does not match.
-fn absorption_operand(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId)> {
+fn absorption_operand(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<(StructId, StructId)> {
     let dual = match op {
         Prim::BitAnd => Prim::BitOr,
         Prim::BitOr => Prim::BitAnd,

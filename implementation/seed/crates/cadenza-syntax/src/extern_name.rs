@@ -77,14 +77,21 @@ mod tests {
         assert_eq!(kebab_extern_name("Foo"), "foo");
         assert_eq!(kebab_extern_name("my_func"), "my-func");
         // A camelCase run of several words.
-        assert_eq!(kebab_extern_name("parseHTTPResponse"), "parse-h-t-t-p-response");
+        assert_eq!(
+            kebab_extern_name("parseHTTPResponse"),
+            "parse-h-t-t-p-response"
+        );
         // Trailing digits stay attached to their word.
         assert_eq!(kebab_extern_name("fooBar2"), "foo-bar2");
         for n in ["fA", "myFunc", "Foo", "my_func"] {
             assert!(!is_kebab_extern_name(n), "{n} is not already kebab");
             // The normalized form is itself kebab (idempotent).
             let k = kebab_extern_name(n);
-            assert_eq!(kebab_extern_name(&k), k, "normalization is idempotent for {n}");
+            assert_eq!(
+                kebab_extern_name(&k),
+                k,
+                "normalization is idempotent for {n}"
+            );
         }
     }
 

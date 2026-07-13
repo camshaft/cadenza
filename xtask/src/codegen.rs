@@ -774,7 +774,11 @@ mod wasm_abi {
             prim("COMP_U64", "component `u64`.", PrimitiveValType::U64),
             prim("COMP_F32", "component `f32`.", PrimitiveValType::F32),
             prim("COMP_F64", "component `f64`.", PrimitiveValType::F64),
-            prim("COMP_STRING", "component `string`.", PrimitiveValType::String),
+            prim(
+                "COMP_STRING",
+                "component `string`.",
+                PrimitiveValType::String,
+            ),
             core_sec("CORE_SEC_TYPE", "core TYPE section id.", SectionId::Type),
             core_sec(
                 "CORE_SEC_FUNCTION",

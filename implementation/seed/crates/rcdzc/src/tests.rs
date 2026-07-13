@@ -7978,22 +7978,86 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let bitops = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or | Lir::I64And)).count();
+        let bitops = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Or | Lir::I64And))
+                .count()
+        };
         // Both laws, both outer orders, both inner-operand positions — all absorb (no or/and remains).
-        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& (: (| x y) Int64) x) Int64)")), 0, "x & (x|y) → x");
-        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (| (: (& x y) Int64) x) Int64)")), 0, "x | (x&y) → x");
-        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& x (: (| x y) Int64)) Int64)")), 0, "outer order");
-        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& (: (| y x) Int64) x) Int64)")), 0, "inner order");
+        assert_eq!(
+            bitops(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (| x y) Int64) x) Int64)"
+            )),
+            0,
+            "x & (x|y) → x"
+        );
+        assert_eq!(
+            bitops(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (& x y) Int64) x) Int64)"
+            )),
+            0,
+            "x | (x&y) → x"
+        );
+        assert_eq!(
+            bitops(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (& x (: (| x y) Int64)) Int64)"
+            )),
+            0,
+            "outer order"
+        );
+        assert_eq!(
+            bitops(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (| y x) Int64) x) Int64)"
+            )),
+            0,
+            "inner order"
+        );
         // A DISTINCT third operand does NOT absorb — both ops stay.
-        assert_eq!(bitops(&lir("(: a Int64) (: b Int64) (: c Int64)", "(: (& (: (| a b) Int64) c) Int64)")), 2, "distinct c kept");
+        assert_eq!(
+            bitops(&lir(
+                "(: a Int64) (: b Int64) (: c Int64)",
+                "(: (& (: (| a b) Int64) c) Int64)"
+            )),
+            2,
+            "distinct c kept"
+        );
 
         // VALUE PARITY.
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (& (: (| x y) Int64) x) Int64)", &[Val::S64(12), Val::S64(10)]), 12);
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (| (: (& x y) Int64) x) Int64)", &[Val::S64(12), Val::S64(10)]), 12);
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (& x (: (| x y) Int64)) Int64)", &[Val::S64(-9), Val::S64(4)]), -9);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (| x y) Int64) x) Int64)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            12
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (& x y) Int64) x) Int64)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            12
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (& x (: (| x y) Int64)) Int64)",
+                &[Val::S64(-9), Val::S64(4)]
+            ),
+            -9
+        );
         // TRAP SAFETY: the absorbed-away `y = (/ 100 z)` is discarded — must NOT be dropped, still ÷0.
         assert!(
-            traps("(: x Int64) (: z Int64)", "(& (: (| x (: (/ 100 z) Int64)) Int64) x)", &[Val::S64(5), Val::S64(0)]),
+            traps(
+                "(: x Int64) (: z Int64)",
+                "(& (: (| x (: (/ 100 z) Int64)) Int64) x)",
+                &[Val::S64(5), Val::S64(0)]
+            ),
             "a trapping absorbed operand must keep its trap"
         );
     }
@@ -8038,22 +8102,76 @@ mod runtime_ops {
                 .count()
         };
         // `x & ~x` → 0, `x | ~x` → -1 — no and/or/xor remains (the `~x`'s xor also folds away).
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (& x (: (^ x -1) Int64)) Int64)")), 0, "x & ~x → 0");
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (| x (: (^ x -1) Int64)) Int64)")), 0, "x | ~x → -1");
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& x (: (^ x -1) Int64)) Int64)")),
+            0,
+            "x & ~x → 0"
+        );
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (| x (: (^ x -1) Int64)) Int64)")),
+            0,
+            "x | ~x → -1"
+        );
         // Both operand orders and the inner `-1` on the left.
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (^ x -1) Int64) x) Int64)")), 0, "~x & x → 0");
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (| x (: (^ -1 x) Int64)) Int64)")), 0, "inner -1 on left");
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (^ x -1) Int64) x) Int64)")),
+            0,
+            "~x & x → 0"
+        );
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (| x (: (^ -1 x) Int64)) Int64)")),
+            0,
+            "inner -1 on left"
+        );
         // A DISTINCT operand (`~y`) does NOT fold — the ops stay.
-        assert!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& x (: (^ y -1) Int64)) Int64)")) >= 1, "x & ~y not folded");
+        assert!(
+            bitops(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (& x (: (^ y -1) Int64)) Int64)"
+            )) >= 1,
+            "x & ~y not folded"
+        );
 
         // VALUE PARITY (signed, incl. narrow Int8 where all-ones = -1).
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& x (: (^ x -1) Int64)) Int64)", &[Val::S64(12345)]), 0);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (| x (: (^ x -1) Int64)) Int64)", &[Val::S64(12345)]), -1);
-        assert_eq!(run::<i8>("(: x Int8)", "(: (& x (: (^ x -1) Int8)) Int8)", &[Val::S8(50)]), 0);
-        assert_eq!(run::<i8>("(: x Int8)", "(: (| x (: (^ x -1) Int8)) Int8)", &[Val::S8(50)]), -1);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& x (: (^ x -1) Int64)) Int64)",
+                &[Val::S64(12345)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (| x (: (^ x -1) Int64)) Int64)",
+                &[Val::S64(12345)]
+            ),
+            -1
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (& x (: (^ x -1) Int8)) Int8)",
+                &[Val::S8(50)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (| x (: (^ x -1) Int8)) Int8)",
+                &[Val::S8(50)]
+            ),
+            -1
+        );
         // TRAP SAFETY: `x` is discarded, so a trapping `(/ 100 z)` must still ÷0-trap.
         assert!(
-            traps("(: z Int64)", "(& (: (/ 100 z) Int64) (: (^ (: (/ 100 z) Int64) -1) Int64))", &[Val::S64(0)]),
+            traps(
+                "(: z Int64)",
+                "(& (: (/ 100 z) Int64) (: (^ (: (/ 100 z) Int64) -1) Int64))",
+                &[Val::S64(0)]
+            ),
             "a trapping operand in a complement-law fold must keep its trap"
         );
     }
@@ -14948,34 +15066,66 @@ mod match_engine {
                 .expect("select")
                 .code
         };
-        let connectives = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I32And | Lir::I32Or)).count();
+        let connectives = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or))
+                .count()
+        };
         // `(and a a)` / `(or a a)` → just `a` (no connective op).
-        assert_eq!(connectives(&lir("(: a Bool)", "(: (and a a) Bool)")), 0, "and a a → a");
-        assert_eq!(connectives(&lir("(: a Bool)", "(: (or a a) Bool)")), 0, "or a a → a");
+        assert_eq!(
+            connectives(&lir("(: a Bool)", "(: (and a a) Bool)")),
+            0,
+            "and a a → a"
+        );
+        assert_eq!(
+            connectives(&lir("(: a Bool)", "(: (or a a) Bool)")),
+            0,
+            "or a a → a"
+        );
         // A repeated COMPARISON operand also folds: `(and (< x 5) (< x 5))` → `(< x 5)`.
-        assert_eq!(connectives(&lir("(: x Int64)", "(: (and (< x 5) (< x 5)) Bool)")), 0, "and (<x5)(<x5) → (<x5)");
+        assert_eq!(
+            connectives(&lir("(: x Int64)", "(: (and (< x 5) (< x 5)) Bool)")),
+            0,
+            "and (<x5)(<x5) → (<x5)"
+        );
         // DISTINCT operands do NOT fold — the connective (an `i32.and` or a short-circuit `if`) stays.
         let distinct = lir("(: a Bool) (: b Bool)", "(: (and a b) Bool)");
         assert!(
-            distinct.iter().any(|i| matches!(i, Lir::I32And | Lir::If(_))),
+            distinct
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::If(_))),
             "distinct (and a b) is not folded, got: {distinct:?}"
         );
 
         // VALUE PARITY.
         use wasmtime::component::Val;
-        let fb = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-            "(module m (def (f (: a Bool)) {body}) (export f))"
-        )))).expect("compile");
+        let fb = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
         for (body, wt, wf) in [("(and a a)", true, false), ("(or a a)", true, false)] {
             let b = fb(body);
-            assert_eq!(run_returns_with::<bool>(&b, "f", &[Val::Bool(true)]), wt, "{body} @true");
-            assert_eq!(run_returns_with::<bool>(&b, "f", &[Val::Bool(false)]), wf, "{body} @false");
+            assert_eq!(
+                run_returns_with::<bool>(&b, "f", &[Val::Bool(true)]),
+                wt,
+                "{body} @true"
+            );
+            assert_eq!(
+                run_returns_with::<bool>(&b, "f", &[Val::Bool(false)]),
+                wf,
+                "{body} @false"
+            );
         }
         // TRAP SAFETY: a repeated trapping operand is still evaluated once (as the condition), so it traps.
         let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (> (/ 10 n) 0)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&gb, "f", &[Val::S64(0)]), "(and <traps> <traps>) keeps the div-by-zero trap");
+        assert!(
+            call_traps(&gb, "f", &[Val::S64(0)]),
+            "(and <traps> <traps>) keeps the div-by-zero trap"
+        );
         assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 1);
     }
 
@@ -15018,32 +15168,62 @@ mod match_engine {
                 .count()
         };
         // `(and a (not a))` / `(or a (not a))` fold to a constant — no connective/eqz/if.
-        assert_eq!(ops(&lir("(: a Bool)", "(: (and a (not a)) Bool)")), 0, "and a !a → false");
-        assert_eq!(ops(&lir("(: a Bool)", "(: (or a (not a)) Bool)")), 0, "or a !a → true");
+        assert_eq!(
+            ops(&lir("(: a Bool)", "(: (and a (not a)) Bool)")),
+            0,
+            "and a !a → false"
+        );
+        assert_eq!(
+            ops(&lir("(: a Bool)", "(: (or a (not a)) Bool)")),
+            0,
+            "or a !a → true"
+        );
         // Reverse operand order and a comparison operand.
-        assert_eq!(ops(&lir("(: a Bool)", "(: (and (not a) a) Bool)")), 0, "and !a a → false");
-        assert_eq!(ops(&lir("(: x Int64)", "(: (and (< x 5) (not (< x 5))) Bool)")), 0, "and (<x5) !(<x5) → false");
+        assert_eq!(
+            ops(&lir("(: a Bool)", "(: (and (not a) a) Bool)")),
+            0,
+            "and !a a → false"
+        );
+        assert_eq!(
+            ops(&lir("(: x Int64)", "(: (and (< x 5) (not (< x 5))) Bool)")),
+            0,
+            "and (<x5) !(<x5) → false"
+        );
         // A DISTINCT negated operand does NOT fold.
         let distinct = lir("(: a Bool) (: b Bool)", "(: (and a (not b)) Bool)");
         assert!(
-            distinct.iter().any(|i| matches!(i, Lir::I32And | Lir::I32Eqz | Lir::If(_))),
+            distinct
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I32Eqz | Lir::If(_))),
             "(and a (not b)) is not folded, got: {distinct:?}"
         );
 
         // VALUE PARITY over both truth values: `and a !a` is always false, `or a !a` always true.
         use wasmtime::component::Val;
-        let fb = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-            "(module m (def (f (: a Bool)) {body}) (export f))"
-        )))).expect("compile");
+        let fb = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
         for a in [true, false] {
-            assert!(!run_returns_with::<bool>(&fb("(and a (not a))"), "f", &[Val::Bool(a)]), "and a !a @{a}");
-            assert!(run_returns_with::<bool>(&fb("(or a (not a))"), "f", &[Val::Bool(a)]), "or a !a @{a}");
+            assert!(
+                !run_returns_with::<bool>(&fb("(and a (not a))"), "f", &[Val::Bool(a)]),
+                "and a !a @{a}"
+            );
+            assert!(
+                run_returns_with::<bool>(&fb("(or a (not a))"), "f", &[Val::Bool(a)]),
+                "or a !a @{a}"
+            );
         }
         // TRAP SAFETY: a trapping operand in `(and a (not a))` — the fold discards it, so it must still trap.
         let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (not (> (/ 10 n) 0))) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&gb, "f", &[Val::S64(0)]), "a trapping operand in the complement-law fold keeps its trap");
+        assert!(
+            call_traps(&gb, "f", &[Val::S64(0)]),
+            "a trapping operand in the complement-law fold keeps its trap"
+        );
         assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 0);
     }
 
@@ -15087,40 +15267,85 @@ mod match_engine {
                 .count()
         };
         // `<`/`>=` and `<=`/`>` complements fold (both connectives). No comparison remains.
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (>= x 5)) Bool)")), 0, "or (<5)(>=5) → true");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (>= x 5)) Bool)")), 0, "and (<5)(>=5) → false");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (<= x 5) (> x 5)) Bool)")), 0, "or (<=5)(>5) → true");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (>= x 5)) Bool)")),
+            0,
+            "or (<5)(>=5) → true"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (>= x 5)) Bool)")),
+            0,
+            "and (<5)(>=5) → false"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (<= x 5) (> x 5)) Bool)")),
+            0,
+            "or (<=5)(>5) → true"
+        );
         // Two-variable operands fold too.
-        assert_eq!(cmps(&lir("(: a Int64) (: b Int64)", "(: (or (< a b) (>= a b)) Bool)")), 0, "or (<ab)(>=ab) → true");
+        assert_eq!(
+            cmps(&lir(
+                "(: a Int64) (: b Int64)",
+                "(: (or (< a b) (>= a b)) Bool)"
+            )),
+            0,
+            "or (<ab)(>=ab) → true"
+        );
         // A NON-complement pair (`<`/`<=`) does NOT fold — both compares stay.
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (<= x 5)) Bool)")), 2, "non-complement kept");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (<= x 5)) Bool)")),
+            2,
+            "non-complement kept"
+        );
         // A SWAPPED operand pair (`(< a b)` vs `(>= b a)`) is NOT a complement — kept (and NOT a tautology).
-        assert_eq!(cmps(&lir("(: a Int64) (: b Int64)", "(: (or (< a b) (>= b a)) Bool)")), 2, "swapped operands kept");
+        assert_eq!(
+            cmps(&lir(
+                "(: a Int64) (: b Int64)",
+                "(: (or (< a b) (>= b a)) Bool)"
+            )),
+            2,
+            "swapped operands kept"
+        );
 
         // VALUE PARITY: the tautology holds across the boundary; the false-law never fires; the swapped
         // non-fold computes its real (non-tautology) result.
         use wasmtime::component::Val;
         let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (or (< x 5) (>= x 5))) (export f))"
-        ))).expect("compile");
+            "(module m (def (f (: x Int64)) (or (< x 5) (>= x 5))) (export f))",
+        )))
+        .expect("compile");
         for v in [3, 5, 10, -1] {
-            assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(v)]), "or complement @{v}");
+            assert!(
+                run_returns_with::<bool>(&orfn, "f", &[Val::S64(v)]),
+                "or complement @{v}"
+            );
         }
         let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (and (< x 5) (>= x 5))) (export f))"
-        ))).expect("compile");
+            "(module m (def (f (: x Int64)) (and (< x 5) (>= x 5))) (export f))",
+        )))
+        .expect("compile");
         for v in [3, 5, 10] {
-            assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(v)]), "and complement @{v}");
+            assert!(
+                !run_returns_with::<bool>(&andfn, "f", &[Val::S64(v)]),
+                "and complement @{v}"
+            );
         }
         let swfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: a Int64) (: b Int64)) (or (< a b) (>= b a))) (export f))"
-        ))).expect("compile");
-        assert!(!run_returns_with::<bool>(&swfn, "f", &[Val::S64(5), Val::S64(3)]), "swapped a=5 b=3 is false, not a tautology");
+            "(module m (def (f (: a Int64) (: b Int64)) (or (< a b) (>= b a))) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            !run_returns_with::<bool>(&swfn, "f", &[Val::S64(5), Val::S64(3)]),
+            "swapped a=5 b=3 is false, not a tautology"
+        );
         // TRAP SAFETY: a trapping comparison operand keeps the runtime form and traps.
         let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: z Int64)) (if (or (< (/ 100 z) 5) (>= (/ 100 z) 5)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "a trapping comparison operand keeps its trap");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping comparison operand keeps its trap"
+        );
     }
 
     #[test]
@@ -15162,34 +15387,70 @@ mod match_engine {
                 .count()
         };
         // Same-op pairs subsume to ONE comparison (and/or, `<`/`>`, mirrored operand).
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (< x 10)) Bool)")), 1, "and (<5)(<10) → (<5)");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (< x 10)) Bool)")), 1, "or (<5)(<10) → (<10)");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (> x 5) (> x 10)) Bool)")), 1, "and (>5)(>10) → (>10)");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< 5 x) (< 10 x)) Bool)")), 1, "mirrored operand");
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (< x 10)) Bool)")),
+            1,
+            "and (<5)(<10) → (<5)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (< x 10)) Bool)")),
+            1,
+            "or (<5)(<10) → (<10)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (> x 5) (> x 10)) Bool)")),
+            1,
+            "and (>5)(>10) → (>10)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< 5 x) (< 10 x)) Bool)")),
+            1,
+            "mirrored operand"
+        );
         // NON-subsumable: distinct variable, different operator, different side — all kept (2 compares).
-        assert_eq!(cmps(&lir("(: x Int64) (: y Int64)", "(: (and (< x 5) (< y 10)) Bool)")), 2, "distinct var kept");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (<= x 4)) Bool)")), 2, "different op kept");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (< 10 x)) Bool)")), 2, "different side kept");
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (< x 5) (< y 10)) Bool)"
+            )),
+            2,
+            "distinct var kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (<= x 4)) Bool)")),
+            2,
+            "different op kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (< 10 x)) Bool)")),
+            2,
+            "different side kept"
+        );
 
         // VALUE PARITY: `and` keeps the tighter, `or` the looser — verified across the two bounds.
         use wasmtime::component::Val;
         let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (and (< x 5) (< x 10))) (export f))"
-        ))).expect("compile");
-        assert!(run_returns_with::<bool>(&andfn, "f", &[Val::S64(3)]));   // < 5 & < 10
-        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(7)]));  // 7 not < 5
+            "(module m (def (f (: x Int64)) (and (< x 5) (< x 10))) (export f))",
+        )))
+        .expect("compile");
+        assert!(run_returns_with::<bool>(&andfn, "f", &[Val::S64(3)])); // < 5 & < 10
+        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(7)])); // 7 not < 5
         assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(12)]));
         let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (or (< x 5) (< x 10))) (export f))"
-        ))).expect("compile");
+            "(module m (def (f (: x Int64)) (or (< x 5) (< x 10))) (export f))",
+        )))
+        .expect("compile");
         assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(3)]));
-        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(7)]));    // 7 < 10
+        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(7)])); // 7 < 10
         assert!(!run_returns_with::<bool>(&orfn, "f", &[Val::S64(12)]));
         // TRAP SAFETY: the kept comparison still evaluates the operand, so a trapping `(/ 100 z)` traps.
         let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (< (/ 100 z) 10)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "the kept comparison preserves the operand's trap");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "the kept comparison preserves the operand's trap"
+        );
     }
 
     #[test]
@@ -15840,10 +16101,8 @@ mod match_engine {
         // BigInt arm's own comment says it "falls to mismatch … CDZ0301"). This is the 15-rows/BigInt
         // corpus case `(+ (BigInt.of 1) 1)` → CDZ0301.
         assert_eq!(
-            reject_code(
-                "(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))"
-            )
-            .as_deref(),
+            reject_code("(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))")
+                .as_deref(),
             Some("CDZ0301"),
             "a BigInt/fixed-int mix is the numeric no-promotion error"
         );
