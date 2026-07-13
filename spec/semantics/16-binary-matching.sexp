@@ -499,3 +499,68 @@
   (needs  binary-matching)
   (input  (bin (bits 2 1)))
   (error  CDZ0220))
+
+; ============================================================================================
+; Runtime segments — a `bin` whose segment value / scrutinee is a RUNTIME value (a def parameter,
+; not a compile-time constant). Construction builds on the byte heap and range-checks at run time;
+; matching decodes the scrutinee's bytes at run time. Each threads its value through `main`'s
+; parameter (via `(call …)`) so the `bin` cannot fold to a constant.
+; ============================================================================================
+
+(case "a runtime value is constructed into a fixed-width segment and its length read"
+  (doc    "`(bin (u16 n))` with `n` a RUNTIME parameter (not a constant) builds a two-byte sequence on the
+           byte heap at run time — the construction does not fold. Reading its length back yields 2, the
+           segment's width. Pins that a `bin` construction whose value is only known at run time still
+           produces a well-formed Bytes.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u16 n)))) (export main)))
+  (call   main (: 258 Int64))
+  (output (: 2 Int64)))
+
+(case "a runtime fixed-width segment is emitted big-endian and read back by index"
+  (doc    "`(bin (u16 258))` built at run time encodes 258 = 0x0102 BIG-ENDIAN, so byte 0 is the
+           most-significant `0x01` = 1. Reads it back with `Bytes.at`. Pins that a runtime construction
+           lays its bytes most-significant-first, the same order the constant fold and the pattern decode
+           agree on.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64))
+                (match (Bytes.at (bin (u16 n)) 0) ((Some b) b) ((None _) -1)))
+              (export main)))
+  (call   main (: 258 Int64))
+  (output (: 1 Int64)))
+
+(case "constructing a runtime value that does not fit its segment traps"
+  (doc    "`(bin (u8 n))` with a RUNTIME `n = 256` has no 8-bit encoding, so construction TRAPS with reason
+           \"binary value does not fit segment\" rather than truncating to 0 — the runtime companion of the
+           constant out-of-range rejection (which fails the build). Pins that the segment range-check is
+           enforced at run time for a value not known at compile time.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u8 n)))) (export main)))
+  (call   main (: 256 Int64))
+  (trap   "binary value does not fit segment"))
+
+(case "a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee"
+  (doc    "A `(bin …)` pattern matches a RUNTIME Bytes scrutinee: `(bin (u16 n))` is built from a runtime
+           parameter, then matched back with `(bin (u16 m))`, binding `m = n = 258`. The decode reads the
+           scrutinee's bytes at run time (a length probe + a big-endian assemble), round-tripping the
+           construction. Pins that construction and matching are inverse over a runtime value, not just a
+           constant.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -1))) (export main)))
+  (call   main (: 258 Int64))
+  (output (: 258 Int64)))
+
+(case "a runtime bin match dispatches on a literal tag across arms"
+  (doc    "A multi-arm `bin` match over a RUNTIME scrutinee: a leading LITERAL tag segment selects the arm
+           (tag 1 vs tag 2), and a runtime `u16` field fills the payload. Built with tag 2, so the second
+           arm fires: `y = 300`, `y + 1000 = 1300`. Pins tag-then-field dispatch across arms at run time —
+           the shape a tagged binary format's parser takes.")
+  (needs  binary-matching)
+  (input  (do (def (main (: t Int64) (: v Int64))
+                (match (bin (u8 t) (u16 v))
+                  ((bin (u8 1) (u16 x)) x)
+                  ((bin (u8 2) (u16 y)) (+ y 1000))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 2 Int64) (: 300 Int64))
+  (output (: 1300 Int64)))

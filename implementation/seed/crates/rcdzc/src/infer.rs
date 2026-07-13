@@ -702,14 +702,61 @@ fn collect_param_constraints(
             collect_param_constraints(db, operand, env, def, subst, fresh);
         }
         Resolved::Match { scrutinee, arms } => {
-            // Each LITERAL pattern constrains the scrutinee's type: matching `n` against the integer
-            // literal `0` (or `true`) means `n` has that literal's type. So unify the scrutinee's type
-            // with each non-wildcard pattern's type — this is what pins a `match`-based recursive
-            // parameter (`(match n (0 …) (_ …))` → `n : Int64`). Then descend into scrutinee + bodies.
+            // Each pattern constrains the scrutinee's type. A LITERAL pattern pins it to the literal's
+            // type (`(match n (0 …) (_ …))` → `n : Int64`). When the scrutinee is DIRECTLY A PARAMETER
+            // being solved, a STRUCTURAL pattern pins its SHAPE: `(match xs ((Cons (tuple h t)) …))` means
+            // `xs` is that sum, so a recursive tree-walker's parameter (`xs : Code`, `node : Core`) is
+            // inferred rather than left a free var (which would ground to `Any` and decline). Restricted
+            // to a scrutinee that IS a parameter — a scrutinee that is a CALL RESULT (`(List.at xs i)`)
+            // carries its own instantiation that this shape-unify would corrupt, so it is left to the
+            // ordinary application constraints.
             let st = arg_ty_in_env(db, scrutinee, env, subst);
+            let scrut_is_param = matches!(
+                resolved_of(db, scrutinee),
+                Resolved::Ref { value } if env.contains_key(&value)
+            ) || matches!(
+                resolved_of(db, scrutinee),
+                Resolved::Param { binder } if env.contains_key(&binder)
+            );
             for (pat, _) in &arms {
                 if let Some(pt) = literal_pattern_ty(db, *pat) {
                     let _ = crate::unify::unify(subst, &st, &pt);
+                } else if scrut_is_param && let Some(pt) = pattern_implied_ty(db, *pat, fresh) {
+                    let _ = crate::unify::unify(subst, &st, &pt);
+                }
+            }
+            // A parameter RETURNED DIRECTLY by one arm is constrained by the OTHER arms' result type (the
+            // arm bodies agree in type). `(match xs (Nil ys) ((Cons …) (Cons …)))` → the `Nil` arm returns
+            // the parameter `ys` and the `Cons` arm returns a `Code`, so `ys : Code` — a pass-through /
+            // accumulator parameter otherwise only echoed out is inferred rather than left a free var.
+            // NARROW on purpose: only an arm body that IS a bare parameter reference is constrained, and
+            // only against a SIBLING arm's DETERMINED (non-var, non-`Any`) result. Unifying arbitrary arm
+            // types against each other over-constrains (a sibling's own unsolved var spuriously conflicts);
+            // this pins exactly the echoed-parameter case without touching well-typed programs.
+            let arm_param = |db: &mut Db, body: StructId| -> Option<StructId> {
+                match resolved_of(db, body) {
+                    Resolved::Ref { value } if env.contains_key(&value) => Some(value),
+                    Resolved::Param { binder } if env.contains_key(&binder) => Some(binder),
+                    _ => None,
+                }
+            };
+            let arm_list: Vec<StructId> = arms.iter().map(|(_, b)| *b).collect();
+            for &body in &arm_list {
+                let Some(pbinder) = arm_param(db, body) else {
+                    continue;
+                };
+                let Some(pvar) = env.get(&pbinder).cloned() else {
+                    continue;
+                };
+                for &other in &arm_list {
+                    if other == body || arm_param(db, other).is_some() {
+                        continue; // self, or another echoed param — no determined type to borrow
+                    }
+                    let ot = arg_ty_in_env(db, other, env, subst);
+                    let applied = subst.apply(&ot);
+                    if !matches!(applied, Ty::Any | Ty::Var(_)) {
+                        let _ = crate::unify::unify(subst, &pvar, &applied);
+                    }
                 }
             }
             collect_param_constraints(db, scrutinee, env, def, subst, fresh);
@@ -756,6 +803,79 @@ fn literal_pattern_ty(db: &mut Db, pat: StructId) -> Option<Ty> {
         Resolved::Bool(_) => Some(Ty::Bool),
         _ => None,
     }
+}
+
+/// The type a STRUCTURAL match pattern requires of the value it matches — the pattern's implied
+/// scrutinee type, with a fresh variable for every binder/wildcard sub-position. Used by
+/// `collect_param_constraints` (only when the scrutinee IS a parameter) to thread a pattern's SHAPE onto
+/// that parameter, so a recursive tree-walker's parameter type is inferred rather than left a free var.
+/// Returns `None` for a pattern whose shape does not further constrain the scrutinee (a bare binder or a
+/// wildcard — matches anything — or a non-constructor head).
+///
+/// A `(tuple p0 … pn)` implies `Ty::Tuple([implied(p0) …])` (a var where a sub-position is a bare
+/// binder). A variant pattern `(V p)` / bare `V` implies the variant's owning SUM at the instantiation
+/// its payload sub-pattern implies — instantiate `V`'s ctor scheme `payload… → Sum`, unify the payload
+/// against the inner pattern's implied type, and return the partly-solved `Sum` (a nullary variant is the
+/// bare `Sum`). A literal / bare-name pattern implies `None`.
+///
+/// The ctor scheme is instantiated with the CALLER's `fresh` so its variables never collide with the
+/// solver's own variables (a collision would bind the wrong variable in the shared `subst`).
+fn pattern_implied_ty(db: &mut Db, pat: StructId, fresh: &mut Fresh) -> Option<Ty> {
+    if let Some(elems) = db
+        .ast
+        .as_form(pat, "tuple")
+        .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+        .map(<[StructId]>::to_vec)
+    {
+        let tys: Vec<Ty> = elems
+            .iter()
+            .map(|&e| pattern_implied_ty(db, e, fresh).unwrap_or_else(|| Ty::Var(fresh.var())))
+            .collect();
+        return Some(Ty::Tuple(tys.into()));
+    }
+    if let Some(g) = db.ast.as_form(pat, "guard").map(<[StructId]>::to_vec)
+        && g.len() == 2
+    {
+        return pattern_implied_ty(db, g[0], fresh);
+    }
+    let (head, args): (StructId, Vec<StructId>) = match db.ast.get(pat) {
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            Some(first) if db.ast.as_name(first) == Some(".") => (pat, Vec::new()),
+            Some(first) => (first, children[1..].to_vec()),
+            None => return None,
+        },
+        crate::ast::Struct::Atom(_) => (pat, Vec::new()),
+    };
+    let scheme = crate::eval::scheme_of(db, head, fresh)?;
+    let inst = crate::unify::instantiate(&scheme, fresh);
+    let mut payloads = Vec::new();
+    let mut cur = inst;
+    let result = loop {
+        match cur {
+            Ty::Fn(p, r) => {
+                payloads.push(*p);
+                cur = *r;
+            }
+            other => break other,
+        }
+    };
+    // Only a SUM result is a variant constructor; anything else (an ordinary function) is not a pattern.
+    if !matches!(result, Ty::Sum { .. }) {
+        return None;
+    }
+    let mut subst = Subst::new();
+    if !payloads.is_empty()
+        && let Some(&arg) = args.first()
+        && let Some(implied) = pattern_implied_ty(db, arg, fresh)
+    {
+        let payload_ty = if payloads.len() == 1 {
+            payloads[0].clone()
+        } else {
+            Ty::Tuple(payloads.clone().into())
+        };
+        let _ = crate::unify::unify(&mut subst, &payload_ty, &implied);
+    }
+    Some(subst.apply(&result))
 }
 
 /// The type of an argument occurrence within the parameter-solve env: a reference to a parameter being
@@ -1170,6 +1290,38 @@ pub(crate) fn payload_ty_at_instantiation(
         Ty::Tuple(payloads.into())
     };
     Some(subst.apply(&payload))
+}
+
+/// If `expected` is a SUM type with a SINGLE-payload variant whose payload type (at `expected`'s
+/// instantiation) agrees with `actual`, the variant's constructor NAME — the "try wrapping the
+/// expression in `Some`" suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+/// A Fix). Derives the name GENERICALLY from the sum's declaration (which variant's payload fits),
+/// never a hard-coded `Some`/`Ok` (the no-keys-outside-the-prelude rule). `None` when `expected` is not
+/// a sum, or no variant's single payload matches — so a wrap is offered only when it would actually
+/// resolve the mismatch. Variants are scanned in declaration order → deterministic.
+fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
+    let Ty::Sum { decl, .. } = expected else {
+        return None;
+    };
+    // Snapshot (name, ctor) pairs first — `payload_ty_at_instantiation` borrows `db` mutably, so we
+    // cannot hold a `&TypeDecl` across the calls.
+    let variants: Vec<(String, StructId)> = db
+        .type_decl_by_occ(*decl)?
+        .variants
+        .iter()
+        .filter_map(|v| v.ctor.map(|c| (v.name.clone(), c)))
+        .collect();
+    for (name, ctor) in variants {
+        // A single-payload variant whose payload agrees with `actual` → wrapping the value in it yields
+        // the expected sum. (A multi-payload variant's payload is a tuple, which a bare value never
+        // matches, so it is naturally excluded.)
+        if let Some(payload) = payload_ty_at_instantiation(db, ctor, expected)
+            && payload.agrees_with(actual)
+        {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive
@@ -2241,14 +2393,37 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        out.push(Reject::coded(
-                            Code::TypeMismatch,
-                            format!(
-                                "annotation type {} does not match value type {}",
-                                annot_ty.render_name(),
-                                expr_ty.render_name()
+                        // "try wrapping the expression in `Some`": if the expected sum has a single-payload
+                        // variant whose payload IS the value's type, wrapping the value in that ctor makes
+                        // it type-check. Derived generically from the sum's declaration.
+                        let wrap = wrap_variant_for(db, &annot_ty, &expr_ty);
+                        let mut reject = match &wrap {
+                            Some(ctor) => Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "annotation type {} does not match value type {} — wrap the value in `{ctor}`",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name()
+                                ),
                             ),
-                        ));
+                            None => Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "annotation type {} does not match value type {}",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name()
+                                ),
+                            ),
+                        };
+                        if let Some(ctor) = wrap {
+                            reject = reject.with_fix(Fix::wrap_heuristic(
+                                expr,
+                                format!("({ctor} "),
+                                ")",
+                                format!("wrap in `({ctor} …)`"),
+                            ));
+                        }
+                        out.push(reject);
                     }
                 }
             } else if !runtime_width {

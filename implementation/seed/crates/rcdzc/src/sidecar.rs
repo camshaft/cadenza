@@ -336,6 +336,7 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                         match f.kind {
                             crate::FixKind::Replace => "replace",
                             crate::FixKind::InsertInto => "insert",
+                            crate::FixKind::Wrap => "wrap",
                         }
                         .to_string(),
                         f.node.to_string(),

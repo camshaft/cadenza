@@ -1933,6 +1933,28 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             });
             db.push_list(vec![ctor, width])
         }
+        // A quantity type-value: `(Qty <inner-ty> (unit (base <name> <exp>)…))` — the inner numeric type
+        // then the unit encoded as a canonical `(unit …)` node listing each base's `(base NAME EXP)` pair
+        // in sorted order (the dimensionless unit is the empty `(unit)`). Round-trips with
+        // `resolve::decode_ty`'s `"Qty"` arm. ⚠ WITHOUT this arm the catch-all below would encode a
+        // quantity as `Unit`, so a `(-> T (Qty T u))` scheme (Qty.of) would round-trip to `(-> T Unit)`
+        // and mis-type — the same round-trip hole the `Bytes`/`String` arms fixed for those leaves.
+        Ty::Qty { inner, unit } => {
+            let head = db.push_name("Qty");
+            let inner_node = encode_ty(db, inner);
+            let mut unit_items = vec![db.push_name("unit")];
+            for (name, exp) in unit.entries() {
+                let base = db.push_name("base");
+                let nm = db.push_name(name);
+                let e = db.push_atom(Leaf::Int {
+                    value: IntValue::from_i64(*exp),
+                    radix: crate::ast::Radix::Dec,
+                });
+                unit_items.push(db.push_list(vec![base, nm, e]));
+            }
+            let unit_node = db.push_list(unit_items);
+            db.push_list(vec![head, inner_node, unit_node])
+        }
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

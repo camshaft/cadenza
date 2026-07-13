@@ -328,6 +328,11 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // `Ty::Fn`-typed parameter / local / argument lives here. (A lambda that FOLDS away at compile
         // time never reaches a slot; only one that survives as a runtime value does — via `call_indirect`.)
         Ty::Fn(_, _) => Some(ValType::I32),
+        // A quantity ERASES to its inner numeric type before emission (`lower` strips the `Qty`), so its
+        // machine slot IS the inner type's — a `(Qty Float64 metre)` occupies an f64 slot, byte-identical
+        // to a bare `Float64`. A `Ty::Qty` should not survive to selection, but classify it by its inner
+        // type defensively (never inventing a slot the erased value would not have).
+        Ty::Qty { inner, .. } => valtype_of(inner),
         // A type value is compile-time-only (erased before runtime) — no machine representation.
         Ty::Type => None,
         // An unresolved variable has no machine representation — an undetermined type never reaches a
@@ -418,6 +423,10 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
+        // A quantity ERASES to its inner numeric type — it crosses the boundary as that inner type
+        // (`units-of-measure.md` §A quantity crossing a signature crosses as its underlying `T`). A
+        // `(Qty Float64 metre)` export crosses as `f64`, byte-identical to a bare `Float64`.
+        Ty::Qty { inner, .. } => comp_valtype_of(inner),
         // A type value is compile-time-only — it never crosses the boundary.
         Ty::Type => None,
         // An unresolved variable has no boundary representation (an undetermined type is rejected).

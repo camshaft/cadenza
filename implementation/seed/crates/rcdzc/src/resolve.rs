@@ -2194,6 +2194,39 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             let v = decode_ty(db, tail[1])?;
             Some(Ty::Map(Box::new(k), Box::new(v)))
         }
+        // A quantity type-value: `(Qty <inner-ty> (unit (base NAME EXP)…))` — the dual of
+        // `eval::encode_ty`'s `Qty` arm. The inner numeric type then the unit as a `(unit …)` node whose
+        // tail is `(base NAME EXP)` triples in canonical (sorted) order (the dimensionless unit is the
+        // empty `(unit)`). Rebuilds the canonical `Unit` from the triples via `Unit::mul` of each base
+        // raised to its exponent, so the drop-zeros invariant is re-established on decode.
+        "Qty" => {
+            let tail = db.ast.as_form(node, "Qty")?;
+            if tail.len() != 2 {
+                return None;
+            }
+            let inner = decode_ty(db, tail[0])?;
+            let unit_items = db.ast.as_form(tail[1], "unit")?;
+            let mut unit = crate::ty::Unit::one();
+            for &pair in unit_items {
+                let items = db.ast.as_form(pair, "base")?;
+                if items.len() != 2 {
+                    return None;
+                }
+                let name = db.ast.as_name(items[0])?.to_string();
+                let exp = match db.ast.get(items[1]) {
+                    Struct::Atom(l) => match db.ast.leaf(*l) {
+                        Leaf::Int { value, .. } => value.to_i64()?,
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                unit = unit.mul(&crate::ty::Unit::base(name).pow(exp));
+            }
+            Some(Ty::Qty {
+                inner: Box::new(inner),
+                unit,
+            })
+        }
         // A record type-value: `(Record (name T)…)` — each `(name T)` a field pair. The head is
         // capitalized `Record` (the TYPE; the VALUE head is lowercase `record`), matching `encode_ty`
         // and the corpus type surface. The field-name SET + per-field types ARE the type.

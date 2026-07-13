@@ -70,6 +70,12 @@ impl Subst {
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
             },
+            // A quantity substitutes into its INNER numeric type (a deferred inner width — `(Qty ?0 u)` —
+            // solves); the unit is a concrete compile-time value, carried unchanged.
+            Ty::Qty { inner, unit } => Ty::Qty {
+                inner: Box::new(self.apply(inner)),
+                unit: unit.clone(),
+            },
             Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => {
                 ty.clone()
             }
@@ -206,6 +212,30 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // a deferred/variable float width solves. A float does NOT unify with `Ty::Int` (it falls to the
         // `mismatch` below, coded CDZ0301 as two-different-numeric), so `(+ 2 2.0)` is rejected.
         (Ty::Float(fa), Ty::Float(fb)) => unify_width(subst, fa.width, fb.width),
+        // Two quantities unify iff their UNITS are EQUAL and their INNER numeric types unify. A unit is a
+        // concrete compile-time value (never a variable), so it is not solved by unification — it is a
+        // side condition, exactly like a sum's `decl`. Unequal units are a DIMENSIONAL mismatch, but the
+        // dimensional diagnostic (CDZ0501) is raised by the units post-check (`units.rs`) which has the
+        // operator context; here (the plain HM seam — e.g. an annotation `(: e (Qty T u))` unifying its
+        // declared unit against the derived one) an unequal unit is the general `mismatch`. Unifying the
+        // inner types keeps the numeric core's no-promotion rule (an `Int64`-quantity vs a `Float64`-
+        // quantity conflicts CDZ0301 through the inner `unify`). A quantity never unifies with a
+        // non-quantity (a metre vs a bare number) — that falls to the `mismatch` below.
+        (
+            Ty::Qty {
+                inner: ia,
+                unit: ua,
+            },
+            Ty::Qty {
+                inner: ib,
+                unit: ub,
+            },
+        ) => {
+            if ua != ub {
+                return Err(mismatch(&a, &b));
+            }
+            unify(subst, ia, ib)
+        }
         _ => Err(mismatch(&a, &b)),
     }
 }
@@ -320,6 +350,8 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::List(elem) => occurs(subst, v, elem),
         // A map's key or value type may hold the variable (`Map ?0 ?1` — the empty map).
         Ty::Map(k, val) => occurs(subst, v, k) || occurs(subst, v, val),
+        // A quantity's INNER numeric type may hold the variable (`Qty ?0 u`); the unit never does.
+        Ty::Qty { inner, .. } => occurs(subst, v, inner),
         Ty::Int(_)
         | Ty::Float(_)
         | Ty::Bool
@@ -485,6 +517,12 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
+        // A quantity scheme's INNER type may hold a bound variable (a `(fn (T) … (Qty T u))` op scheme) —
+        // rename it; the unit is a concrete value, carried unchanged.
+        Ty::Qty { inner, unit } => Ty::Qty {
+            inner: Box::new(rename(inner, m)),
+            unit: unit.clone(),
+        },
         Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => ty.clone(),
     }
 }
@@ -581,6 +619,12 @@ fn freshen_free_go(
                 .iter()
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
+        },
+        // A quantity's free INNER variables are freshened (a generic `(Qty T u)` op scheme instantiates a
+        // fresh inner per use); the unit is a concrete value, unchanged.
+        Ty::Qty { inner, unit } => Ty::Qty {
+            inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
+            unit: unit.clone(),
         },
         Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => ty.clone(),
     }
