@@ -59,12 +59,19 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     let t = compute(db, id);
     db.descent_depth -= 1;
     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
-    // Do NOT memoize a provisional `Any`: a node typed `Any` here may be a recursive-def parameter (or
-    // a reference to one) whose CONNECTED solve (A2) has not run yet — caching `Any` would freeze that
-    // stale answer even after the solve fills the real type. `Any` is compatible with everything and
-    // costs only a recompute, so leaving it unmemoized is safe and lets the solved type win on a later
-    // demand. Every DEFINITE type is memoized as before (the solve-once discipline holds for real types).
-    if !matches!(t, Ty::Any) {
+    // Do NOT memoize a provisional `Any`, OR a type that still CONTAINS A FREE VARIABLE: a node typed
+    // here may depend on a recursive-def parameter (or a reference to one) whose CONNECTED solve (A2) has
+    // not run yet — caching the stale answer would freeze it even after the solve fills the real type. For
+    // a bare `Any` this is obvious; the subtler case is a PARTIALLY-solved type like `(Box ?0)` — a
+    // generic sum read off a param whose instantiation the A2 solve pins LATER. A payload read
+    // `(match acc ((Box.Full m) …))` computes `m`'s type by walking `acc`'s type down the payload path; if
+    // `acc` is still `(Box ?0)` when first demanded, the walk yields `?0` (a `Ty::Var`) — NOT `Any`, so the
+    // old guard memoized it, and the later-solved `acc = (Box Int64)` never reached `m` (the value-heap
+    // layout then declined "projecting an element of type ?0"). A type with a free var is likewise cheap to
+    // recompute, so leave it unmemoized and let the solved type win. Every FULLY-GROUND type is memoized as
+    // before (the solve-once discipline holds for real types; `has_free_var` treats a deferred int
+    // width/sign as ground — those default, they are not undetermined).
+    if !matches!(t, Ty::Any) && !t.has_free_var() {
         db.types.fill(id, t.clone());
     }
     t
