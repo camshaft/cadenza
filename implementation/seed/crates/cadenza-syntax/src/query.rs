@@ -2416,6 +2416,8 @@ pub mod hash {
     const TAG_NAME: u8 = 0x05;
     const TAG_BYTES: u8 = 0x06;
     const TAG_BAD_ESCAPE: u8 = 0x07;
+    const TAG_CHAR: u8 = 0x08;
+    const TAG_BAD_CHAR: u8 = 0x09;
 
     /// The 64-bit content hash of `t` (first 8 bytes of the SHA-256 Merkle digest, big-endian).
     pub fn hash_tree(t: &Tree) -> u64 {
@@ -2463,6 +2465,11 @@ pub mod hash {
                 let mut buf = [0u8; 4];
                 update_bytes(h, TAG_BAD_ESCAPE, c.encode_utf8(&mut buf).as_bytes());
             }
+            Leaf::Char(c) => {
+                let mut buf = [0u8; 4];
+                update_bytes(h, TAG_CHAR, c.encode_utf8(&mut buf).as_bytes());
+            }
+            Leaf::BadChar(s) => update_bytes(h, TAG_BAD_CHAR, s.as_bytes()),
         }
     }
 

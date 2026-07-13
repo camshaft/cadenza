@@ -23,6 +23,7 @@ pub enum Kind {
     Float,
     Str,
     ByteStr, // `b"…"` — a byte-string literal (arbitrary bytes), the surface form of a `Bytes` value
+    CharLit, // `#\a` / `#\newline` / `#\u+00E9` — a char literal (one Unicode scalar)
 
     // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
     Ident, // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident

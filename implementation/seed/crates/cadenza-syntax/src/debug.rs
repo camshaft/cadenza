@@ -101,6 +101,8 @@ fn leaf(l: &Leaf) -> String {
         Leaf::Bool(b) => format!("Bool {b}"),
         Leaf::Name(n) => format!("Name {n}"),
         Leaf::BadEscape(c) => format!("BadEscape {c:?}"),
+        Leaf::Char(c) => format!("Char {c:?}"),
+        Leaf::BadChar(s) => format!("BadChar {s:?}"),
     }
 }
 

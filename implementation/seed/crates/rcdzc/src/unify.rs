@@ -70,7 +70,9 @@ impl Subst {
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
             },
-            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
+            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => {
+                ty.clone()
+            }
         }
     }
 
@@ -197,6 +199,8 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         }
         // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
         (Ty::String, Ty::String) => Ok(()),
+        // `Char` is monomorphic — it unifies only with itself.
+        (Ty::Char, Ty::Char) => Ok(()),
         // Two floats unify iff their WIDTHS unify — reusing the integer `unify_width` (a width variable is
         // a width variable). So `Float32`/`Float64` are distinct (two fixed widths conflict → CDZ0301),
         // a deferred/variable float width solves. A float does NOT unify with `Ty::Int` (it falls to the
@@ -322,6 +326,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         | Ty::Unit
         | Ty::Bytes
         | Ty::String
+        | Ty::Char
         | Ty::Type
         | Ty::Any => false,
     }
@@ -480,7 +485,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 
@@ -577,7 +582,7 @@ fn freshen_free_go(
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 

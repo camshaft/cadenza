@@ -26,6 +26,12 @@ pub enum Code {
     /// that marker into this coded rejection, so a lexically-malformed literal fails the build with a
     /// stable code rather than silently reading `\q` as the bare `q`.
     BadEscape,
+    /// A char literal that names a NON-scalar code point — a surrogate (`#\u+D800`) or a value outside
+    /// `U+0000..=U+10FFFF` — or is otherwise malformed. Like `BadEscape`, a LEXICAL defect the READER
+    /// detected (emitting a `Leaf::BadChar` marker) but cannot itself report; the COMPILER turns the
+    /// marker into this coded rejection (`collections-and-text.md` §A Char Is A Single Unicode Scalar
+    /// Value). The static companion of the dynamic `(Char.from-int 55296)` → None.
+    BadChar,
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
     /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
     Unbound,
@@ -98,6 +104,7 @@ impl Code {
     pub fn code(self) -> &'static str {
         match self {
             Code::BadEscape => "CDZ0001",
+            Code::BadChar => "CDZ0002",
             Code::Unbound => "CDZ0101",
             Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",
@@ -182,6 +189,27 @@ impl Fix {
             label: format!("replace with `{replacement}`"),
             edit: Edit::ReplaceNode { at, replacement },
             applicability: Applicability::Heuristic,
+        }
+    }
+
+    /// A VERIFIED node-replacement fix — one the producer knows is behaviour-preserving and clears the
+    /// diagnostic by construction, so an agent applies it WITHOUT review (`spec/capabilities/
+    /// diagnostics.md` §A Confirmed Fix Is Marked Verified). `label` states the concrete action (e.g.
+    /// "prefix with `_`"). Use ONLY when the edit's correctness follows from a rule, not a guess — the
+    /// caller vouches for it (there is no free lunch: an UNPROVEN edit must stay
+    /// [`replace_heuristic`]).
+    pub fn replace_verified(
+        at: crate::ast::StructId,
+        replacement: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Fix {
+        Fix {
+            label: label.into(),
+            edit: Edit::ReplaceNode {
+                at,
+                replacement: replacement.into(),
+            },
+            applicability: Applicability::Verified,
         }
     }
 }

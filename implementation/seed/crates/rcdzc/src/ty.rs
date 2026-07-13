@@ -246,6 +246,12 @@ pub enum Ty {
     /// `Bytes` renders `\xNN`). This increment realizes the CONSTANT string (a literal folds + equality);
     /// runtime string ops (`concat`/`len`/`at`) + string escape arrive later.
     String,
+    /// A CHAR: a single Unicode scalar value (`collections-and-text.md` §A Char Is A Single Unicode
+    /// Scalar Value) — the element type of a string's scalar sequence. One monomorphic LEAF type (no
+    /// parameter). Its value is its scalar, so equality is scalar equality and its order is the numeric
+    /// order of its scalar value. A `#\a` literal is a `Char` constant; `Char.to-int`/`from-int` convert
+    /// to/from `Int64` totally. This increment realizes the CONSTANT char (literal + equality/ordering).
+    Char,
     /// A FLOATING-POINT number, indexed by its bit WIDTH (`numeric-model.md` §A Floating-Point Type Is
     /// Indexed By A Compile-Time Width) — the float analogue of [`Ty::Int`], carrying a [`FloatTy`]
     /// (a possibly-deferred [`FloatWidth`]) rather than a fixed name. `Float64` is the signed 64-bit
@@ -348,7 +354,7 @@ impl Ty {
             Ty::Map(k, v) => k.has_free_var() || v.has_free_var(),
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
-            // Bytes and String are leaves — no inner type, so no free variable.
+            // Bytes, String, and Char are leaves — no inner type, so no free variable.
             Ty::Int(_)
             | Ty::Bool
             | Ty::Unit
@@ -356,6 +362,7 @@ impl Ty {
             | Ty::Any
             | Ty::Bytes
             | Ty::String
+            | Ty::Char
             | Ty::Float(_) => false,
         }
     }
@@ -432,6 +439,8 @@ impl Ty {
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
+            // `Char` is monomorphic — the one char type agrees only with itself.
+            (Ty::Char, Ty::Char) => true,
             // Two floats agree iff their WIDTHS agree — `Float32` ≠ `Float64` (no silent promotion), a
             // deferred/variable width is compatible (not yet fixed). A float never agrees with an integer
             // (numeric-model.md §Numeric Types Do Not Silently Promote). Mirrors the `Ty::Int` width check.
@@ -530,6 +539,8 @@ impl Ty {
             Ty::Unit => "Unit".to_string(),
             // A string renders as `String` — one monomorphic type, no parameters.
             Ty::String => "String".to_string(),
+            // A char renders as `Char` — one monomorphic type (its VALUES render `#\c`).
+            Ty::Char => "Char".to_string(),
             // A float renders as its aliased width name — `Float32`/`Float64`. Every admitted float
             // width ({32, 64}) has an alias, so an observed float type is always a concrete `FloatN`
             // (an unresolved width grounds to `Float64`), mirroring the integer `IntN`/`UIntN` render.

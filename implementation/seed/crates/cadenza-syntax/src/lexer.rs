@@ -70,6 +70,8 @@ impl<'a> Lexer<'a> {
             '}' => Kind::RBrace,
             '[' => Kind::LBracket,
             ']' => Kind::RBracket,
+            // `#\…` is a char literal (one Unicode scalar); a bare `#` is the map/raw-list sigil.
+            '#' if self.peek() == Some('\\') => return Some(self.char_lit(a)),
             '#' => Kind::Hash,
             '.' => Kind::Dot,
             ':' => Kind::Colon,
@@ -250,6 +252,39 @@ impl<'a> Lexer<'a> {
                 kind: Kind::Minus,
                 span: a.span,
             },
+        }
+    }
+
+    /// A char literal `#\…`. `a` is the `#` (already consumed); the next char is `\` (confirmed by the
+    /// caller). The FIRST char after `\` is taken verbatim — even a delimiter (`#\(`, `#\ `) — then any
+    /// further non-delimiter chars complete a NAMED (`newline`) or code-point (`u+00E9`) spelling. The
+    /// parser turns the token text into a `Leaf::Char` / `Leaf::BadChar` via `literal::char_leaf`.
+    fn char_lit(&mut self, a: Char) -> Token {
+        let bs = self.bump().unwrap(); // the `\`
+        let mut end = bs.span;
+        // The mandatory first scalar (any char, delimiter or not).
+        match self.bump() {
+            Some(c) => {
+                end = c.span;
+                // Trailing word chars (letters/digits/`+`) complete `newline` / `u+00E9`; a delimiter or
+                // any punctuation stops the literal so `#\a` is exactly one scalar.
+                while let Some(nc) = self
+                    .chars
+                    .next_if(|c| c.value.is_alphanumeric() || c.value == '+')
+                {
+                    end = nc.span;
+                }
+            }
+            None => {
+                return Token {
+                    kind: Kind::Error,
+                    span: a.span.merge(end),
+                };
+            }
+        }
+        Token {
+            kind: Kind::CharLit,
+            span: a.span.merge(end),
         }
     }
 

@@ -38,6 +38,11 @@ pub enum Leaf {
     },
     Float(Decimal),
     Str(String),
+    /// A CHAR literal (`#\a`, `#\u+00E9`) — a single Unicode scalar value, the element type of a string's
+    /// scalar sequence (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). A `char` is a
+    /// scalar by construction, so this only ever holds a valid scalar; a literal spelling a NON-scalar
+    /// (`#\u+D800`) is the `BadChar` marker instead.
+    Char(char),
     /// A BYTE SEQUENCE literal — the value form of a `Bytes` (`b"…"`). Holds the raw bytes (arbitrary,
     /// NOT necessarily UTF-8, so distinct from `Str`); rendered `b"…"` (printable ASCII raw, `\n \r \t
     /// \\ \"` named, else `\xNN`). This is how a constant `Bytes` value crosses the boundary and reads
@@ -51,6 +56,10 @@ pub enum Leaf {
     /// Resolving it is a `CDZ0001` rejection (`collections-and-text.md` §A String Literal's Escapes Are A
     /// Closed Set): the compiler is the diagnostic surface, not the reader. Holds the offending escape char.
     BadEscape(char),
+    /// A CHAR literal naming a NON-scalar code point (`#\u+D800`, a surrogate) — a reader-detected lexical
+    /// defect riding the binary AST as a MARKER. Resolving it is a `CDZ0002` rejection
+    /// (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). Holds the literal's text.
+    BadChar(String),
 }
 
 /// An arbitrary-precision integer value: a sign plus a big-endian magnitude. This is the whole of
