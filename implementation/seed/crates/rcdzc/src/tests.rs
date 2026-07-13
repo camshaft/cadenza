@@ -6613,6 +6613,58 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_logical_shift_of_an_unbounded_value_bounds_the_result_by_the_type_width() {
+        // A `>>ᵤ k` of an UNBOUNDED-above nonneg value (a bare UInt32/UInt64, whose max is not
+        // i64-representable so `value_range` gives `[0, None]`) is still bounded by the TYPE WIDTH: an
+        // unsigned width-W value is < 2^W, so `x >>ᵤ k < 2^(W-k)`. That lets a covering mask drop —
+        // `(& (>> x 56) 255)` on a UInt64 (top byte only) needs no `& 255`. Before, the unbounded upper
+        // made the shift range unknown, so the mask stayed.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let has_and = |c: &[Lir]| c.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And));
+        // UInt64 >> 56 ∈ [0,255] → `& 255` elided; >> 60 ∈ [0,15] → `& 15` elided.
+        assert!(!has_and(&lir("(: x UInt64)", "(& (>> x 56) 255)")), "x>>56 ∈ [0,255], mask dropped");
+        assert!(!has_and(&lir("(: x UInt64)", "(& (>> x 60) 15)")), "x>>60 ∈ [0,15], mask dropped");
+        // UInt32 >> 28 ∈ [0,15] → `& 15` elided.
+        assert!(!has_and(&lir("(: x UInt32)", "(& (>> x 28) 15)")), "u32 x>>28 ∈ [0,15], mask dropped");
+        // But `>> 8` on a UInt64 (∈ [0, 2^56-1]) does NOT fit `& 255` → mask KEPT.
+        assert!(has_and(&lir("(: x UInt64)", "(& (>> x 8) 255)")), "x>>8 exceeds 255, mask kept");
+        // A mask NARROWER than the shifted range is kept (`x>>56 ∈ [0,255]` vs `& 15`).
+        assert!(has_and(&lir("(: x UInt64)", "(& (>> x 56) 15)")), "mask narrower than range, kept");
+
+        // VALUE PARITY. Top byte 0xFF → 255; top byte 0x05 → 5. And the kept-mask control.
+        assert_eq!(run::<u64>("(: x UInt64)", "(& (>> x 56) 255)", &[Val::U64(0xFF00_0000_0000_0000)]), 255);
+        assert_eq!(run::<u64>("(: x UInt64)", "(& (>> x 56) 255)", &[Val::U64(0x0500_0000_0000_0000)]), 5);
+        assert_eq!(run::<u32>("(: x UInt32)", "(& (>> x 28) 15)", &[Val::U32(0xA000_0000)]), 10);
+        assert_eq!(run::<u64>("(: x UInt64)", "(& (>> x 8) 255)", &[Val::U64(0x1234)]), 0x12);
+    }
+
+    #[test]
     fn a_logical_shift_dropping_all_significant_bits_folds_to_zero() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;

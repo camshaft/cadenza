@@ -7243,18 +7243,42 @@ fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i
             let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
             Some(clamp(0, (hi as i128) << k))
         }
-        // `v >>ᵤ k` (constant `k`, LOGICAL — an unsigned/nonneg operand): a nonneg `v ∈ [0,hi]` → `[0, hi
-        // >> k]`. Only for a value proven nonnegative (`value_range` gives `[0, …]`); a signed `>>ₛ`
-        // sign-extends and is excluded because a negative operand's range would not start at 0.
+        // `v >>ᵤ k` (constant `k`, LOGICAL — an unsigned/nonneg operand): a nonneg `v` shifted right by
+        // `k` loses its low `k` bits. Two cases, both requiring `v` proven NONNEGATIVE (`value_range` lo
+        // == 0; a signed `>>ₛ` sign-extends and is excluded):
+        //   • a KNOWN finite `v ∈ [0, hi]` → `[0, hi >> k]`;
+        //   • an UNBOUNDED-above nonneg `v` (a bare `UInt64`, whose max `2^64-1` is not i64-representable)
+        //     → still bounded by the TYPE WIDTH: an unsigned width-`W` value is `< 2^W`, so `v >>ᵤ k <
+        //     2^(W−k)` → `[0, 2^(W−k) − 1]`. This is what makes `(& (>> x 56) 255)` on a UInt64 drop its
+        //     redundant mask (`x >>ᵤ 56 ∈ [0,255]` already fits the mask). `W − k` may be ≥ 64 for small
+        //     `k` at width 64 → the bound is not i64-representable, so leave it unbounded (`None`).
         Prim::Shr => {
-            let (0, Some(hi)) = value_range(db, lhs)? else {
+            let (0, hi_opt) = value_range(db, lhs)? else {
                 return None;
             };
             let Core::ConstInt(k) = core_of(db, rhs) else {
                 return None;
             };
             let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
-            Some((0, Some(hi >> k)))
+            match hi_opt {
+                Some(hi) => Some((0, Some(hi >> k))),
+                None => {
+                    // Unbounded-above nonneg: bound by the type width. `W − k` significant bits remain.
+                    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, lhs) else {
+                        return None;
+                    };
+                    let crate::ty::Width::Fixed(w) = it.width else {
+                        return None;
+                    };
+                    let bits = (w as i64) - k;
+                    // `bits` in `1..=63` → `2^bits − 1` fits i64; `bits ≥ 64` (or ≤ 0) → not representable.
+                    if (1..=63).contains(&bits) {
+                        Some((0, Some((1i64 << bits) - 1)))
+                    } else {
+                        Some((0, None)) // still nonneg, but no finite i64 upper bound
+                    }
+                }
+            }
         }
         // `v % C` (constant divisor `C`): the truncated-toward-zero remainder has magnitude `< |C|`, so
         // its range is `[-(|C|-1), |C|-1]` in general, tightened to `[0, |C|-1]` when the DIVIDEND is
