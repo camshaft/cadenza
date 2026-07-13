@@ -163,6 +163,18 @@ pub enum Prim {
     /// String)` reduces `String` (the record) to `Ty::String` via `typeval_of`. (A NULLARY type, like
     /// `Bool`/`Unit`; the `String` module ALSO carries operation fields, but its type role is this.)
     StringTy,
+    /// The ground `Char` type-value — held in the `Char` module record's `(meta t)`, so bare `Char` in
+    /// type position reduces to `Ty::Char` (a NULLARY type, like `String`; the `Char` module also carries
+    /// `to-int`/`from-int` operation fields, but its type role is this).
+    CharTy,
+    /// `Char.to-int` — the TOTAL conversion of a char to its integer scalar value (`Char → Int64`,
+    /// `collections-and-text.md` §A Char Converts To And From An Integer Totally). Folds a constant char
+    /// to a `Core::ConstInt` of its code point.
+    CharToInt,
+    /// `Char.from-int` — the FALLIBLE conversion of an integer to a char (`Int64 → (Option Char)`): `Some`
+    /// for a value that is a Unicode scalar, `None` for a surrogate / out-of-range integer. Folds a
+    /// constant integer to `Some`/`None`.
+    CharFromInt,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -398,6 +410,9 @@ impl Prim {
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             "String" => Some(Prim::StringTy),
+            "Char" => Some(Prim::CharTy),
+            "char-to-int" => Some(Prim::CharToInt),
+            "char-from-int" => Some(Prim::CharFromInt),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
@@ -500,6 +515,7 @@ impl Prim {
             Prim::UnitTy => Some(crate::ty::Ty::Unit),
             Prim::BytesTy => Some(crate::ty::Ty::Bytes),
             Prim::StringTy => Some(crate::ty::Ty::String),
+            Prim::CharTy => Some(crate::ty::Ty::Char),
             _ => None,
         }
     }

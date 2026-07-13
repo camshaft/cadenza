@@ -100,6 +100,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // directly (`resolve::decode_ty`), and this record only carries the operation fields.
     names.insert("String".to_string(), string_module(ast));
 
+    // `Char` — the module of char OPERATIONS (`to-int`/`from-int`), a NULLARY type like `String`. Its
+    // `(meta t)` is the ground `Ty::Char`, so bare `Char` in type position IS the type; the operation
+    // fields project via member access `(. Char to-int)`.
+    names.insert("Char".to_string(), char_module(ast));
+
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
@@ -464,6 +469,57 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".to_string()));
     children.push(push_list(ast, vec![from_bytes_key, from_bytes_op]));
     push_list(ast, children)
+}
+
+/// The `Char` module record — a record with one field per char OPERATION (`to-int`/`from-int`), reached
+/// by member access `(. Char to-int)`. A NULLARY type like `String`: its `(meta t)` is the ground
+/// `Ty::Char` (`(intrinsic "Char")`), so bare `Char` in type position IS the type, while the operation
+/// fields still project. `to-int : Char → Int64` (total); `from-int : Int64 → (Option Char)` (fallible —
+/// `None` for a surrogate / out-of-range integer). Both FOLD on a constant operand.
+fn char_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let ty_val = intrinsic_node(ast, "Char");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
+    // `to-int : Char → Int64` — the total scalar-value read.
+    let to_int_ty = char_to_int_type(ast);
+    let to_int_op = list_op_record(ast, "char-to-int", to_int_ty);
+    let to_int_key = push_atom(ast, Leaf::Name("to-int".to_string()));
+    children.push(push_list(ast, vec![to_int_key, to_int_op]));
+    // `from-int : Int64 → (Option Char)` — the fallible integer→char conversion.
+    let from_int_ty = char_from_int_type(ast);
+    let from_int_op = list_op_record(ast, "char-from-int", from_int_ty);
+    let from_int_key = push_atom(ast, Leaf::Name("from-int".to_string()));
+    children.push(push_list(ast, vec![from_int_key, from_int_op]));
+    push_list(ast, children)
+}
+
+/// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`
+/// wrapper (monomorphic, but needed so `scheme_of` reads a SCHEME not a bare type-value — see
+/// [`string_to_int64_type`]). The `Char` param is `(intrinsic "Char")` (→ `Ty::Char`).
+fn char_to_int_type(ast: &mut Arenas) -> StructId {
+    let char_ty = intrinsic_node(ast, "Char");
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, char_ty, int64); // (-> Char Int64)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> Int64 (Option Char)))` for `Char.from-int` — the fallible integer→char
+/// conversion. A ZERO-PARAM `fn` wrapper. The result `(Option Char)` — `Option` an ordinary prelude
+/// name applied to the `(intrinsic "Char")` type node, reducing to `Ty::Sum{Option, [Char]}`.
+fn char_from_int_type(ast: &mut Arenas) -> StructId {
+    let option_char = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let char_ty = intrinsic_node(ast, "Char");
+        push_list(ast, vec![option, char_ty])
+    };
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, int64, option_char); // (-> Int64 (Option Char))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type `(fn () (-> String Bytes))` for `String.to-bytes` — the UTF-8 encoding. A zero-param `fn`

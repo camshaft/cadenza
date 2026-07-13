@@ -4789,6 +4789,38 @@ mod match_engine {
     }
 
     #[test]
+    fn char_converts_to_and_from_an_integer_scalar_totally() {
+        // 13-strings CHAR increment 2 (`collections-and-text.md` §A Char Converts To And From An Integer
+        // Totally): `Char.to-int` is TOTAL (every char has an integer code point); `Char.from-int` is
+        // FALLIBLE — `Some` for a Unicode scalar, `None` for a surrogate / out-of-range integer. Both
+        // FOLD on a constant operand. `to-int` returns an Int64; the round-trip through a `Some` arm
+        // returns a Bool — both observable as scalars.
+        let run_i = |src: &str| run_returns::<i64>(&component(src), "main");
+        let run_b = |src: &str| run_returns::<bool>(&component(src), "main");
+        // to-int: the scalar value of `a` is 97.
+        assert_eq!(
+            run_i("(module m (def (main) ((. Char to-int) #\\a)) (export main))"),
+            97
+        );
+        // round-trip: from-int 97 → Some #\a, and to-int of that char is 97 again.
+        assert!(run_b(
+            "(module m (def (main) (match ((. Char from-int) 97) ((Some c) (= ((. Char to-int) c) 97)) ((None _) false))) (export main))"
+        ));
+        // from-int of a SURROGATE (55296 = U+D800) → None → the match takes the None arm.
+        assert!(!run_b(
+            "(module m (def (main) (match ((. Char from-int) 55296) ((Some c) true) ((None _) false))) (export main))"
+        ));
+        // from-int of an OUT-OF-RANGE integer (1114112 = U+10FFFF+1) → None.
+        assert!(!run_b(
+            "(module m (def (main) (match ((. Char from-int) 1114112) ((Some c) true) ((None _) false))) (export main))"
+        ));
+        // from-int of the LAST scalar (U+10FFFF = 1114111) → Some (the boundary is inclusive).
+        assert!(run_b(
+            "(module m (def (main) (match ((. Char from-int) 1114111) ((Some c) true) ((None _) false))) (export main))"
+        ));
+    }
+
+    #[test]
     fn a_string_match_is_well_formed_or_rejected() {
         // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
         // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
@@ -6106,6 +6138,33 @@ mod match_engine {
         assert_eq!(
             out, "(: (list 1 2 3) (List Int64))",
             "folded-arg list escape"
+        );
+    }
+
+    #[test]
+    fn a_char_from_int_option_escapes_and_renders() {
+        // `Char.from-int` folds to a constant `(Option Char)` sum whose `Some` payload is a `ConstChar`;
+        // it crosses the host boundary through the resource-escape path (the sum bakes, its char payload
+        // as a `Leaf::Char`), and the host renders it `(Some #\a)` with the `(Option Char)` type node —
+        // the char value form is `#\c`. `None` renders `(None unit)`.
+        let Some(out) =
+            escape_render("(module m (def (main) ((. Char from-int) 97)) (export main))")
+        else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (Some #\\a) (Option Char))",
+            "Char.from-int Some escape"
+        );
+        let Some(out) =
+            escape_render("(module m (def (main) ((. Char from-int) 55296)) (export main))")
+        else {
+            return;
+        };
+        assert_eq!(
+            out, "(: (None unit) (Option Char))",
+            "Char.from-int None escape"
         );
     }
 

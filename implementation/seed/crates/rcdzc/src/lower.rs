@@ -926,6 +926,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         )),
                     }
                 }
+                // `Char.to-int` — the TOTAL scalar-value read `Char → Int64`. FOLD a constant char to a
+                // `Core::ConstInt` of its Unicode scalar value (`c as u32`). A runtime char has no machine
+                // rep this increment, so a non-constant operand declines.
+                Some(Prim::CharToInt) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstChar(c) => {
+                        trace!(target: "rcdzc::fold", node = id.0, "Char.to-int folds to the scalar value");
+                        Core::ConstInt(IntValue::from_i64(c as u32 as i64))
+                    }
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Char.to-int on a runtime char is not yet computed (constant chars only)",
+                    )),
+                },
+                // `Char.from-int` — the FALLIBLE conversion `Int64 → (Option Char)`. FOLD a constant int
+                // to `(Some #\c)` when it is a Unicode scalar value, `(None unit)` for a surrogate /
+                // out-of-range integer (`collections-and-text.md` §A Char Converts To And From An Integer
+                // Totally). Never traps.
+                Some(Prim::CharFromInt) if args.len() == 1 => lower_char_from_int(db, id, args[0]),
                 // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
@@ -1017,7 +1035,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `Map.lookup` — the FALLIBLE keyed read `(Map k v) → k → (Option v)`. Emit the runtime
                 // `Core::MapLookup` (a NULL-or-handle test → `Some`/`None`). The result Option's discs are
                 // read off the result type; the value type off the map operand.
-                Some(Prim::MapLookup) if args.len() == 2 => lower_map_lookup(db, id, args[0], args[1]),
+                Some(Prim::MapLookup) if args.len() == 2 => {
+                    lower_map_lookup(db, id, args[0], args[1])
+                }
                 // `Map.remove` — drop a key's association, returning the new map. Emit `Core::MapRemove`.
                 Some(Prim::MapRemove) if args.len() == 2 => lower_map_remove(db, args[0], args[1]),
                 // `Map.size` — the count of distinct keys, an `Int64`. Emit the runtime `Core::MapSize`.
@@ -3706,6 +3726,9 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
         Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s))),
+        // A constant char bakes as its `#\c` leaf — the codec encodes it (KIND_CHAR), and the host reader
+        // renders it `#\c`. This lets a constant `(Some #\a)` (a `Char.from-int` fold) cross the boundary.
+        Core::ConstChar(c) => Some(b.atom_leaf(Leaf::Char(c))),
         Core::Unit => Some(b.name("unit")),
         Core::Tuple { elems } => {
             let head = b.name("tuple");
@@ -4508,7 +4531,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapRemove
         | Prim::MapSize
         | Prim::MapSwap
-        | Prim::MapTake => {
+        | Prim::MapTake
+        | Prim::CharTy
+        | Prim::CharToInt
+        | Prim::CharFromInt => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -5159,6 +5185,53 @@ fn lower_map_remove(db: &mut Db, map: StructId, key: StructId) -> Core {
 /// result Option's Some/None discriminants, so it rides the ordinary sum fold/escape/match — no string
 /// heap. A runtime string declines (the byte-rope indexed read is a later increment). A poison
 /// operand propagates.
+/// Lower `(Char.from-int n)` — the FALLIBLE integer→char conversion `Int64 → (Option Char)`. FOLD a
+/// constant integer: a value that IS a Unicode scalar (in `0..=0x10FFFF`, not a surrogate `0xD800..=
+/// 0xDFFF`) → `(Some #\c)` (a fresh `Leaf::Char` payload, the shape `String.at` uses for its scalar);
+/// a surrogate / out-of-range integer → `(None unit)`. Never traps (`collections-and-text.md` §A Char
+/// Converts To And From An Integer Totally). A runtime operand declines (no runtime char rep yet); a
+/// poison propagates. `char::from_u32` performs the exact scalar-validity test.
+fn lower_char_from_int(db: &mut Db, id: StructId, n: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, n) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Char.from-int result is not the built-in Option sum",
+        ));
+    };
+    match core_of(db, n) {
+        Core::ConstInt(v) => {
+            // A scalar iff the value fits u32 AND `char::from_u32` accepts it (excludes surrogates and
+            // > U+10FFFF). A negative or > u32 value is trivially not a scalar → None.
+            let scalar = v
+                .to_i64()
+                .and_then(|i| u32::try_from(i).ok())
+                .and_then(char::from_u32);
+            match scalar {
+                Some(c) => {
+                    trace!(target: "rcdzc::fold", node = id.0, "Char.from-int folds to Some (a valid scalar)");
+                    let payload = db.push_atom(crate::ast::Leaf::Char(c));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "Char.from-int folds to None (surrogate / out-of-range)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        _ => Core::Poison(Reject::decline(
+            "Char.from-int on a runtime integer is not yet computed (constant integers only)",
+        )),
+    }
+}
+
 fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, string) {
         return Core::Poison(r);
@@ -6194,6 +6267,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
         Prim::StringTy => "String",
+        Prim::CharTy => "Char",
+        Prim::CharToInt => "char-to-int",
+        Prim::CharFromInt => "char-from-int",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
