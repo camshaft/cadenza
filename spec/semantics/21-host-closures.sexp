@@ -621,3 +621,57 @@
               (export a) (export b)))
   (call   b (: 3 Int64))
   (output (: 21 UInt64)))
+
+; ROUND-TRIP CONSUMER BODY RICHNESS — a consumer's body is ordinary Cadenza code, and the handed-back
+; closure is a first-class value in it that may be applied CONDITIONALLY (an `if`/`match` branch that does
+; NOT apply it on every path) or bound through a `let`. This exercises a correctness property: the consumer
+; wrapper `resource.rep`s the handle → cell and DROPs the cell (own<t> release) around the body call —
+; sound even when the body never dispatches the closure on the taken path (the cell is still reclaimed).
+
+(case "a round-trip consumer applies the closure only in the taken if-branch"
+  (doc    "`(def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))` — applies `g` only when x
+           ≥ 0. `mk()` + `app(handle, 5)` = (g 5) = 6. Pins that a consumer applies the handed-back closure
+           inside control flow.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a round-trip consumer that does NOT apply the closure on the taken branch"
+  (doc    "The same consumer, `app(handle, -3)` = 0 — the guarded branch is taken and `g` is NEVER applied.
+           Pins the release soundness: the wrapper still `resource.rep`s + DROPs the handed-back cell even
+           though the body did not dispatch it (own<t> is consumed at the boundary regardless).")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))
+              (export mk) (export app)))
+  (call   app (: -3 Int64))
+  (output (: 0 Int64)))
+
+(case "a round-trip consumer binds the applied closure through a let"
+  (doc    "`(def (app (: g (-> Int64 Int64)) (: x Int64)) (let ((y (g x))) (+ y 1)))` — `mk` multiplies by
+           10, so `app(handle, 4)` = (g 4) + 1 = 40 + 1 = 41. Pins a `let`-bound application in a consumer.")
+  (input  (do (def (mk) (fn ((: x Int64)) (* x 10)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (let ((y (g x))) (+ y 1)))
+              (export mk) (export app)))
+  (call   app (: 4 Int64))
+  (output (: 41 Int64)))
+
+(case "a round-trip consumer applies the closure in a match wildcard arm"
+  (doc    "`(def (app (: g (-> Int64 Int64)) (: x Int64)) (match x (0 999) (_ (g x))))` — `mk` adds 100.
+           `app(handle, 5)` takes the wildcard → (g 5) = 105; `app(handle, 0)` takes the literal arm → 999,
+           NOT applying `g`. Pins a `match`-dispatched consumer, applying the closure only in one arm.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 100)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (match x (0 999) (_ (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 105 Int64)))
+
+(case "a round-trip consumer takes the non-applying match arm"
+  (doc    "The same match-bodied consumer, `app(handle, 0)` = 999 — the literal arm, `g` NOT applied.
+           Confirms the handed-back cell is still released when the body's taken path skips the closure.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 100)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (match x (0 999) (_ (g x))))
+              (export mk) (export app)))
+  (call   app (: 0 Int64))
+  (output (: 999 Int64)))

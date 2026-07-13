@@ -508,6 +508,11 @@ pass	a returned runtime string with a non-printable scalar renders it verbatim, 
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a round-trip at a widened scalar width (UInt32)
+pass	a round-trip consumer applies the closure in a match wildcard arm
+pass	a round-trip consumer applies the closure only in the taken if-branch
+pass	a round-trip consumer binds the applied closure through a let
+pass	a round-trip consumer takes the non-applying match arm
+pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Unit.in conversion emits the scale multiply (Int)

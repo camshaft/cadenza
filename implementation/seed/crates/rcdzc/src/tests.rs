@@ -25325,6 +25325,41 @@ mod closure_host_resource {
         );
     }
 
+    /// C-HOST-5 release soundness when the consumer NEVER APPLIES the handed-back closure on the taken
+    /// path. A consumer whose body is `(if (< x 0) 0 (g x))` called with x < 0 takes the guarded branch and
+    /// does NOT dispatch `g` — yet the wrapper still `resource.rep`s the boundary handle and DROPs the cell
+    /// (the `own<t>` was consumed at the boundary regardless of whether the body used it). So no leak: the
+    /// handed-back cell is reclaimed even on a path that ignores the closure. `#[ignore]` — needs the
+    /// debug-counters runtime.
+    #[test]
+    #[ignore]
+    fn a_round_trip_that_ignores_the_closure_still_releases_it() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_debug_runtime_wasm() else {
+            eprintln!("[C-HOST-5] debug-counters runtime not in the store; skipping ignore-path leak probe");
+            return;
+        };
+        let src = "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+                   (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x))) \
+                   (export mk) (export app))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // app(handle, -3) takes the guarded branch → 0, WITHOUT applying g.
+        assert_eq!(
+            rt.closure_produce_consume("mk", &[], "app", &[Val::S64(-3)]),
+            Val::S64(0),
+            "the guarded branch returns 0 without applying the closure"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "release soundness: the handed-back cell must be dropped even though the consumer body never \
+             dispatched the closure on this path (own<t> is consumed at the boundary)"
+        );
+    }
+
     /// A CONSUMER-ONLY program (a closure export PARAMETER with no producer that mints one) stays out of
     /// scope — the host would have to FABRICATE a Cadenza closure (a host-implemented function of a
     /// Cadenza signature), which needs an import-side resource + a second dispatch path. Declines cleanly
