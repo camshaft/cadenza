@@ -1124,6 +1124,32 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Any; // recursive with an undetermined signature — fault reported elsewhere.
     }
+    // `Qty.of x u` — attach a compile-time unit to a numeric value. Its result type is `(Qty T u)` where
+    // `T` is the VALUE argument's type and `u` is the VALUE of the second argument (a compile-time unit,
+    // read by `eval::unit_of` — NOT an HM-unified variable, exactly as `Prim::Wrap` reads its target
+    // width off the solved type rather than the scheme). Checked before the scheme-peeling loop because
+    // the unit is not expressible as a static `(meta t)` arrow. If the unit does not reduce (a malformed
+    // unit expression), fall through to the generic path (which yields `Any`, faulted elsewhere).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyOf) && args.len() == 2
+    {
+        let inner = type_of(db, args[0]);
+        if let Some(unit) = crate::eval::unit_of(db, args[1]) {
+            return Ty::Qty {
+                inner: Box::new(inner),
+                unit,
+            };
+        }
+    }
+    // `Qty.value q` — recover the underlying numeric value, DISCARDING the unit. Its result is the
+    // quantity's INNER type; a non-quantity argument yields `Any` (faulted elsewhere).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyValue)
+        && args.len() == 1
+    {
+        return match type_of(db, args[0]) {
+            Ty::Qty { inner, .. } => *inner,
+            _ => Ty::Any,
+        };
+    }
     // A compound-VALUE constructor (the `tuple`/`record`/`list` alias) applied — its type is the compound
     // of the argument types, even at ZERO arguments (an empty `(list)` / `(tuple)` is a valid empty
     // compound, NOT the ctor record). This is checked BEFORE the zero-arg identity short-circuit below so

@@ -8582,6 +8582,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_quantity_erases_to_its_inner_numeric_value() {
+        // L1-1b: `Qty.value (Qty.of 5.0 metre)` recovers the erased inner `5.0` — a quantity is CHECKED
+        // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
+        // Float64 (byte-identical to the bare `5.0`). Compiles + runs to the recovered value.
+        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"metre\")))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a quantity erases and its value is recoverable"),
+                "main"
+            ),
+            5.0
+        );
+    }
+
+    #[test]
+    fn a_quantity_over_a_wrong_inner_numeric_type_is_rejected_not_miscompiled() {
+        // L1-1b: the unit layer sits OVER the numeric core and does not relax it — adding an Int64
+        // quantity to a Float64 quantity (SAME dimension `metre`, DIFFERENT inner type) must be REFUSED,
+        // never miscompiled to a running value (the honest decline-don't-miscompile signal). It rejects
+        // via the inner-type conflict; the code is CDZ0203 today and ALIGNS to the numeric no-promotion
+        // CDZ0301 when the operator unit rules land (L1-2 — the `+`/`-`/comparison dimensional check that
+        // reads the operands' units and dispatches the numeric mismatch as CDZ0301). Either way the
+        // ill-typed program is a compile-time REJECTION, not a run.
+        let src = "(do (def (main) (+ ((. Qty of) 2 ((. Unit base) #\"metre\")) \
+                   ((. Qty of) 3.0 ((. Unit base) #\"metre\")))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an Int64 quantity + a Float64 quantity must be REJECTED (a numeric mismatch under a unit), not compiled"
+        );
+    }
+
+    #[test]
     fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
         // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
         // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must

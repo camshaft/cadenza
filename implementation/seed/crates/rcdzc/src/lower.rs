@@ -793,6 +793,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: conversion prim");
                     lower_conversion(db, id, prim, &args)
                 }
+                // `Qty.of x u` — attach a compile-time unit. The unit is CHECKED THEN ERASED
+                // (units-of-measure.md §Dimensions Are Checked Then Erased), so lowering is the value
+                // argument's lowering UNCHANGED — `(Qty.of 5.0 metre)` and the bare `5.0` produce the
+                // identical core (byte-identical emitted value). The unit lives only in the solved type.
+                Some(Prim::QtyOf) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.of erases to its value argument");
+                    core_of(db, args[0])
+                }
+                // `Qty.value q` — recover the numeric value, discarding the unit. Since a quantity ALREADY
+                // erases to its inner value, this is likewise the argument's lowering unchanged (the
+                // explicit exit from the dimensional layer is a no-op at runtime).
+                Some(Prim::QtyValue) if args.len() == 1 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.value erases to its argument");
+                    core_of(db, args[0])
+                }
                 // A sum VARIANT CONSTRUCTOR applied — `(Option.Some 5)`. The discriminant is read off
                 // the head's `(meta variant)` channel (the value the shared `sum-new` prim needs); the
                 // args are the payloads. Build `Core::SumNew{disc, payloads}` the backend lowers to
@@ -4420,11 +4435,32 @@ fn variant_head_ast(
 /// order. `None` if the node is not a constant the escape path can bake.
 fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Option<StructId> {
     use crate::ast::{Leaf, Radix};
+    // A QUANTITY value renders its CONSTRUCTION form `(Qty.of <inner-value> <unit>)` — the unit is a
+    // compile-time value that erased from the core (a `Qty.of` node lowers to its inner value's core),
+    // so it is recovered from the SOLVED TYPE `Ty::Qty` and re-materialized as source structure. This is
+    // checked FIRST (before the core match) because the erased core is a bare scalar (`ConstFloat`),
+    // which would otherwise render as the bare number, losing the quantity the corpus records.
+    if let crate::ty::Ty::Qty { inner, unit } = crate::infer::type_of(db, id) {
+        // The inner VALUE: the erased core IS the inner value (Qty.of erases to it), so render it at the
+        // inner type by recursing on the SAME node with the quantity peeled — build a synthetic inner
+        // render by matching the core directly (the node's core is the inner numeric's core).
+        let inner_val = const_value_ast_at(db, b, id, &inner)?;
+        let unit_ast = unit_value_ast(b, &unit);
+        // `((. Qty of) <value> <unit>)` — the member-access form the reader normalizes `(Qty.of …)` to
+        // (a dotted name `Qty.of` desugars to `(. Qty of)`), so the baked value re-reads/re-prints to
+        // the SAME canonical shape the corpus records.
+        let qty_of = member_access(b, "Qty", "of");
+        return Some(b.list(vec![qty_of, inner_val, unit_ast]));
+    }
     match core_of(db, id) {
         Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
             value: v,
             radix: Radix::Dec,
         })),
+        // A constant float bakes as its exact decimal leaf — the codec encodes it (KIND_FLOAT), and the
+        // host reader renders it back. A quantity over a Float64 magnitude reaches here through
+        // `const_value_ast_at` (the inner-value render of `Qty.of`).
+        Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
@@ -4543,6 +4579,86 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
     }
 }
 
+/// Render the constant value at `id` treating it AS having type `expect` — the quantity-inner helper.
+/// A `Qty.of` node erases (in `core_of`) to its inner value's core, so rendering the INNER value means
+/// rendering that same core, but WITHOUT re-triggering the `Ty::Qty` branch of `const_value_ast` (which
+/// reads `type_of(id)` = the whole quantity type). `expect` is the inner numeric type; for a scalar
+/// (int/float/bool) the value form is the same as `const_value_ast`'s scalar arms, so match the core
+/// directly here. (A quantity over a COMPOUND inner type is not a Layer-1 case — the numeric core is
+/// scalar — so a non-scalar inner declines the escape by `None`.)
+fn const_value_ast_at(
+    db: &mut Db,
+    b: &mut crate::ast::Builder,
+    id: StructId,
+    expect: &crate::ty::Ty,
+) -> Option<StructId> {
+    use crate::ast::{Leaf, Radix};
+    let _ = expect; // the inner is a scalar in Layer 1; the core discriminates directly
+    match core_of(db, id) {
+        Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
+            value: v,
+            radix: Radix::Dec,
+        })),
+        Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
+        Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
+        // A non-scalar inner value is not a Layer-1 quantity magnitude — decline the escape.
+        _ => None,
+    }
+}
+
+/// Materialize a compile-time `Unit` value as SOURCE structure — the `<unit>` position of a rendered
+/// `(Qty.of <value> <unit>)` and of a `(Qty T <unit>)` type. The dimensionless unit renders `Unit.one`;
+/// a single base to the first power renders `(Unit.base #"name")`; a base to a power renders `(Unit.^
+/// (Unit.base #"name") k)`; a product of several renders a left-nested `(Unit.* …)`. Uses the `#"name"`
+/// SYMBOL leaf for each base dimension, so the rendered unit re-reads to the same `Unit` (the corpus
+/// surface `(Unit.base #"metre")`). Mirrors `ty::Unit::render` but builds real arena nodes.
+fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
+    use crate::ast::Leaf;
+    let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
+    if entries.is_empty() {
+        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)` the reader
+        // normalizes `Unit.one` to.
+        return member_access(b, "Unit", "one");
+    }
+    // Build each base factor: `((. Unit base) #"name")` or `(Unit.^ ((. Unit base) #"name") k)`. The
+    // `Unit.base` head is member access (an alphabetic segment desugars); `Unit.^`/`Unit.*` stay BARE
+    // names (the `^`/`*` segment is not alphabetic, so the reader does NOT desugar them).
+    let factor = |b: &mut crate::ast::Builder, name: &str, exp: i64| -> StructId {
+        let base_head = member_access(b, "Unit", "base");
+        let sym = b.atom_leaf(Leaf::Sym(name.to_string()));
+        let base = b.list(vec![base_head, sym]);
+        if exp == 1 {
+            base
+        } else {
+            let pow_head = b.name("Unit.^");
+            let n = b.atom_leaf(Leaf::Int {
+                value: crate::ast::IntValue::from_i64(exp),
+                radix: crate::ast::Radix::Dec,
+            });
+            b.list(vec![pow_head, base, n])
+        }
+    };
+    let mut it = entries.into_iter();
+    let (n0, e0) = it.next().unwrap();
+    let mut acc = factor(b, &n0, e0);
+    for (name, exp) in it {
+        let f = factor(b, &name, exp);
+        let mul_head = b.name("Unit.*");
+        acc = b.list(vec![mul_head, acc, f]);
+    }
+    acc
+}
+
+/// Build a member-access form `(. <operand-name> <key>)` — the canonical shape the reader normalizes a
+/// dotted name `Operand.key` to (an alphabetic-segment postfix desugar). Used to bake a unit/quantity
+/// value form so it re-reads to the same tree the corpus records (`(. Qty of)`, `(. Unit base)`).
+fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> StructId {
+    let dot = b.name(".");
+    let op = b.name(operand.to_string());
+    let k = b.name(key.to_string());
+    b.list(vec![dot, op, k])
+}
+
 /// Reconstruct a TYPE s-expression into `b`, matching `Ty::render_name`'s surface exactly so the host
 /// prints the recorded type: `Int64`/`UInt8`/… as a name atom, `Bool`/`Unit` likewise, a tuple as
 /// `(Tuple T…)`, a record as `(record (name T)…)`. `None` for a type with no value-form surface (a
@@ -4617,15 +4733,14 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // a compound value form (`(tuple 1.0 2.0)`) whose type annotation the escape bakes.
         Ty::Float(ft) => Some(b.name(format!("Float{}", ft.ground_width()))),
         // A quantity's type surface is `(Qty <inner> <unit>)` — matches `render_name`. The inner type is
-        // built recursively; the unit is built as its canonical written form (`Unit.one`, `(Unit.base
-        // #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), reusing `Unit::render` via a
-        // parse-free reconstruction: since the unit renders to a literal s-expression, build it as a name
-        // atom carrying that rendered text (the host re-reads it; a quantity value never crosses as a
-        // machine value, its inner erased value does — this surface is the recorded static type only).
+        // built recursively; the unit is built as REAL structure by `unit_value_ast` (`Unit.one`,
+        // `(Unit.base #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), so the rendered
+        // type re-reads to the same unit (a name atom carrying parens would not round-trip). The corpus
+        // surface `(Qty Float64 (Unit.base #"metre"))`.
         Ty::Qty { inner, unit } => {
             let head = b.name("Qty");
             let ity = type_ast(b, inner)?;
-            let uty = b.name(unit.render());
+            let uty = unit_value_ast(b, unit);
             Some(b.list(vec![head, ity, uty]))
         }
         // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
@@ -5321,7 +5436,17 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapTake
         | Prim::CharTy
         | Prim::CharToInt
-        | Prim::CharFromInt => {
+        | Prim::CharFromInt
+        // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
+        // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
+        // is reduced away by `eval`), so they never reach this integer fold.
+        | Prim::UnitOne
+        | Prim::UnitBase
+        | Prim::UnitMul
+        | Prim::UnitDiv
+        | Prim::UnitPow
+        | Prim::QtyOf
+        | Prim::QtyValue => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -7773,6 +7898,13 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::MapSize => "map-size",
         Prim::MapSwap => "map-swap",
         Prim::MapTake => "map-take",
+        Prim::UnitOne => "unit-one",
+        Prim::UnitBase => "unit-base",
+        Prim::UnitMul => "unit-mul",
+        Prim::UnitDiv => "unit-div",
+        Prim::UnitPow => "unit-pow",
+        Prim::QtyOf => "qty-of",
+        Prim::QtyValue => "qty-value",
     }
 }
 

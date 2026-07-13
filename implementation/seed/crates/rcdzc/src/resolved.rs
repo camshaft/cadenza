@@ -382,6 +382,36 @@ pub enum Prim {
     /// pairing the removed value (present when the key was associated) with the new map. Lowers as a
     /// borrow-`map-lookup` paired with a consuming `map-remove`. The remove companion of `Map.swap`.
     MapTake,
+
+    // ---- Units of measure (the optional, compile-time-only dimensional-analysis layer) ----
+    // A UNIT is a compile-time value (an element of the free abelian group over base dimensions); these
+    // prims BUILD one and are reduced away by `eval` before emission. A unit indexes `Ty::Qty` and
+    // never reaches the backend (`units-of-measure.md` §Dimensions Are Checked Then Erased).
+    /// `Unit.one` — the dimensionless unit, the group identity (the empty exponent map). Reduces to a
+    /// canonical `(unit)` node. Applying it is a no-op (it takes no arguments).
+    UnitOne,
+    /// `Unit.base` — a base dimension named by a symbol: `(Unit.base #"metre")` reduces to the unit
+    /// `{metre: 1}`. The one-unit-per-dimension case (Layer 1); the symbol's TEXT is read directly off
+    /// its `Leaf::Sym` (resolved to a `Str`).
+    UnitBase,
+    /// `Unit.*` — the product of two units (pointwise exponent add, dropping zeros): `(Unit.* metre
+    /// metre)` = `{metre: 2}`. The `*` dimensional rule's builder.
+    UnitMul,
+    /// `Unit./` — the quotient of two units (pointwise exponent subtract, dropping zeros): `(Unit./
+    /// metre second)` = `{metre: 1, second: -1}` (a velocity). The `/` dimensional rule's builder.
+    UnitDiv,
+    /// `Unit.^` — a unit raised to a compile-time integer power (each exponent scaled, dropping zeros):
+    /// `(Unit.^ metre 2)` = `{metre: 2}` (area). May be negative (`(Unit.^ second -1)` = frequency).
+    UnitPow,
+    /// `Qty.of` — attach a unit to a numeric value: `∀(T,u). T → u → (Qty T u)`. The result's inner type
+    /// is the value argument's type; the result's UNIT is the VALUE of the second argument (a
+    /// compile-time unit read by `unit_of`). Erases to the value argument's lowering (the unit is
+    /// compile-time-only). The one quantity CONSTRUCTOR.
+    QtyOf,
+    /// `Qty.value` — recover the underlying numeric value, DISCARDING the unit: `∀(T,u). (Qty T u) → T`.
+    /// The explicit exit from the dimensional layer (the widening that requires no check). Erases to its
+    /// argument's lowering (the quantity's inner value IS its erased value).
+    QtyValue,
 }
 
 impl Prim {
@@ -466,6 +496,13 @@ impl Prim {
             "map-size" => Some(Prim::MapSize),
             "map-swap" => Some(Prim::MapSwap),
             "map-take" => Some(Prim::MapTake),
+            "unit-one" => Some(Prim::UnitOne),
+            "unit-base" => Some(Prim::UnitBase),
+            "unit-mul" => Some(Prim::UnitMul),
+            "unit-div" => Some(Prim::UnitDiv),
+            "unit-pow" => Some(Prim::UnitPow),
+            "qty-of" => Some(Prim::QtyOf),
+            "qty-value" => Some(Prim::QtyValue),
             _ => None,
         }
     }
