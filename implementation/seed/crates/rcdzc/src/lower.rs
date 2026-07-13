@@ -3329,6 +3329,16 @@ fn arith_identity(
         // `x * 0` / `0 * x` → 0 — DISCARDS x, so only when x cannot trap.
         Prim::Mul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
         Prim::Mul if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
+        // WRAPPING arithmetic has the SAME algebraic identities as checked `+`/`*` — the wrap is total,
+        // so it never traps and the fold is value-identical (`a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`).
+        // The keeping folds preserve the surviving operand's traps; the annihilator `*% 0` DISCARDS the
+        // other operand, so it too is guarded on trap-freedom (`(/ x 0) *% 0` must still trap).
+        Prim::WrappingAdd if is(rc, 0) => Some(lc.clone()),
+        Prim::WrappingAdd if is(lc, 0) => Some(rc.clone()),
+        Prim::WrappingMul if is(rc, 1) => Some(lc.clone()),
+        Prim::WrappingMul if is(lc, 1) => Some(rc.clone()),
+        Prim::WrappingMul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
+        Prim::WrappingMul if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
         // `x | 0` / `0 | x` / `x ^ 0` / `0 ^ x` → x.
         Prim::BitOr | Prim::BitXor if is(rc, 0) => Some(lc.clone()),
         Prim::BitOr | Prim::BitXor if is(lc, 0) => Some(rc.clone()),
@@ -4411,8 +4421,17 @@ fn lower_wrapping_arith(db: &mut Db, prim: Prim, lhs: StructId, rhs: StructId) -
             Core::ConstInt(IntValue::from_i64(n))
         }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        // A runtime operand — the RAW (non-trapping) machine op, selected in the backend from this prim.
-        _ => Core::Arith { op: prim, lhs, rhs },
+        // ALGEBRAIC IDENTITY: one operand is a constant making the wrapping op a no-op (`a +% 0`,
+        // `a *% 1`) or a constant (`a *% 0 → 0`) — elide the op. Shares the checked-arith `arith_identity`
+        // helper (which now handles the wrapping prims), so the two families stay in lockstep.
+        (lc, rc) => {
+            if let Some(simplified) = arith_identity(db, prim, lhs, &lc, rhs, &rc) {
+                trace!(target: "rcdzc::lower", ?prim, "wrapping-arithmetic identity simplified (op elided)");
+                return simplified;
+            }
+            // A runtime operand — the RAW (non-trapping) machine op, selected in the backend from this prim.
+            Core::Arith { op: prim, lhs, rhs }
+        }
     }
 }
 

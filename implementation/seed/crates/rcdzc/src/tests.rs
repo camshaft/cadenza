@@ -5441,6 +5441,74 @@ mod match_engine {
     }
 
     #[test]
+    fn wrapping_arithmetic_identities_elide_the_op() {
+        // Wrapping ops have the SAME algebraic identities as checked `+`/`*` (the wrap is total, so the
+        // fold is value-identical): `a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`. Over a RUNTIME operand the
+        // whole op is elided — `(Int64.wrapping-add a 0)` becomes just a local read, no `i64.add`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f (: a Int64)) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `a +% 0` and `a *% 1` → just the operand; no arithmetic op survives.
+        assert_eq!(
+            lir("(Int64.wrapping-add a 0)"),
+            vec![Lir::LocalGet(0)],
+            "a +% 0 elides to a"
+        );
+        assert_eq!(
+            lir("(Int64.wrapping-mul a 1)"),
+            vec![Lir::LocalGet(0)],
+            "a *% 1 elides to a"
+        );
+        // `a *% 0` → the constant 0 (the operand `a` is trap-free, so it is dropped).
+        assert_eq!(
+            lir("(Int64.wrapping-mul a 0)"),
+            vec![Lir::ConstI64(0)],
+            "a *% 0 elides to 0"
+        );
+        // A non-identity constant keeps the raw wrapping op.
+        assert!(
+            lir("(Int64.wrapping-add a 5)").contains(&Lir::I64Add),
+            "a non-identity wrapping-add keeps the raw i64.add"
+        );
+
+        // The annihilator DISCARDS the other operand, so a TRAPPING operand blocks it: `(/ 10 b) *% 0`
+        // must keep the division (and trap on b = 0), NOT fold to 0.
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: b Int64)) (Int64.wrapping-mul (/ 10 b) 0)) (export f))";
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(2)]), 0);
+        assert!(
+            call_traps(&bytes, "f", &[Val::S64(0)]),
+            "`(/ 10 b) *% 0` must still trap on b = 0 — the annihilator must not drop a trapping operand"
+        );
+    }
+
+    #[test]
     fn option_expect_unwraps_a_runtime_optional_through_the_disc_probe() {
         // The RUNTIME `Option.expect` path: unwrap an optional a runtime op PRODUCED (not a constant), the
         // compiler's `List.at`+`Option.expect` idiom the spec cites. `build 0 3 (list)` = `[0 1 2]`;
