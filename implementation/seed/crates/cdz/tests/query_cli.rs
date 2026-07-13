@@ -1448,6 +1448,59 @@ fn fix_all_deletes_a_latent_authority_effect_and_recompiles_clean() {
 }
 
 #[test]
+fn fix_all_wraps_a_no_home_effect_in_a_host_delegation_and_recompiles_clean() {
+    // CDZ0401's `Edit::Wrap` end-to-end: an ungranted effect gets `(host (E) <body>)` wrapped around the
+    // entrypoint body, and the repaired file re-checks clean. The wrap verifies (recompile, no regression),
+    // so `fix --all` applies it.
+    let dir = scratch_dir("fix_nohome");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(do (effect E (op get (-> Unit Int64))) (def (main) (+ 1 (E.get unit))) (export main))\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(host (E) (+ 1 (E.get unit)))"),
+        "the entrypoint body is wrapped in a host delegation: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_all_applies_one_wrap_when_a_second_independent_fault_survives() {
+    // The message-keyed no-regression baseline: with TWO ungranted effects, applying `(host (A) …)` clears
+    // A's CDZ0401 and leaves B's — a PRE-EXISTING fault, not a regression. A node-id-keyed baseline would
+    // see B's surviving error at a shifted id (the wrap renumbers nodes) and wrongly call it "new",
+    // declining the valid fix. Keyed by (code, message), B's is recognized as the same fault, so one wrap
+    // applies (the second overlaps the same body and is left for a follow-up pass).
+    let dir = scratch_dir("fix_two_nohome");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
+         (def (main) (+ (A.ga unit) (B.gb unit))) (export main))\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    assert!(
+        stderr.contains("applied 1 fix"),
+        "one wrap applied despite the second surviving fault: {stderr}"
+    );
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(host (A)") || repaired.contains("(host (B)"),
+        "a host delegation was inserted: {repaired}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ml_type_at_resolves_a_nested_node_to_the_right_type() {
     // Regression for the ML span↔node mismatch: `read_ml` builds nodes non-canonically, so without the
     // load-time canonicalize+remap a `type-at` on a nested node returned the WRONG node's type (the body

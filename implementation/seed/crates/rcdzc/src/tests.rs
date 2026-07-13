@@ -13669,6 +13669,48 @@ mod stage1 {
     }
 
     #[test]
+    fn a_no_home_effect_carries_a_host_delegation_wrap_fix() {
+        // CDZ0401 now carries the mechanical repair the message names: WRAP the entrypoint body in
+        // `(host (E) <body>)`, the host-delegation route (`spec/capabilities/diagnostics.md` §A
+        // Diagnostic Carries A Route To A Fix). The effect NAME is derived from its declaration, not
+        // hard-coded. Heuristic — delegating is one of the two routes (the other, adding a real `handle`,
+        // is the author's semantic choice.)
+        let src = "(do (effect Ask (op ask (-> Unit Int64))) \
+                   (def (main) (+ ((. Ask ask)) 1)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("an ungranted effect must be rejected");
+        assert_eq!(err.code.as_deref(), Some("CDZ0401"));
+        let fix = err.fix.expect("CDZ0401 carries a host-delegation fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(host (Ask) {})", crate::abi::WRAP_HOLE),
+            "wraps the body in a host delegation of the named effect"
+        );
+        assert!(!fix.verified, "delegating vs. handling is the author's choice → heuristic");
+    }
+
+    #[test]
+    fn a_cross_function_no_home_effect_wraps_the_entrypoint_not_the_callee() {
+        // A perform in a CALLED function still delegates at the ENTRYPOINT — the wrap must target the
+        // exported body, not the callee where the perform (and the error anchor) live.
+        let src = "(do (effect Ask (op ask (-> Unit Int64))) \
+                   (def (helper) ((. Ask ask))) \
+                   (def (main) (+ (helper) 1)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("cross-function ungranted effect must be rejected");
+        assert_eq!(err.code.as_deref(), Some("CDZ0401"));
+        let fix = err.fix.expect("carries the wrap fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        // The wrap node is main's body — a DIFFERENT node than the error's anchor (the perform in helper).
+        assert_ne!(
+            Some(fix.node),
+            err.node,
+            "the wrap targets the entrypoint body, the error anchors at the perform site"
+        );
+    }
+
+    #[test]
     fn a_no_home_effect_reports_one_error_not_a_shadowing_decline() {
         // One ungranted effect must yield ONE primary `error:` — the coded CDZ0401 — NOT the coded
         // rejection PLUS the emit path's uncoded "performed with no enclosing handler here" DECLINE for
