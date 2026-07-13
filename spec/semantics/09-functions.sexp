@@ -74,6 +74,37 @@
   (input  (let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (+ (g 5) (g 6)))))
   (output (: 31 Int64)))
 
+; A closure factory — a function RETURNING a capturing closure — whose result is applied at the call
+; site. `(mk k)` returns `(fn (x) (+ x k))` closing over `k`; `((mk 10) 5)` applies that returned
+; closure. core-semantics.md §A Function Is A First-Class Value ("returned as a result") composed with
+; capture: the returned closure carries `mk`'s parameter `k`. The whole chain folds — `mk` inlines,
+; the returned lambda β-reduces — so no runtime closure survives.
+
+(case "a closure factory's returned capturing closure is applied at the call site"
+  (doc    "`(def (mk k) (fn (x) (+ x k)))` returns a closure over `k`; `((mk 10) 5)` = (+ 5 10) = 15. The
+           returned closure captures the factory's parameter and applies correctly — a returned closure
+           composed with a capture, both folded away.")
+  (input  (do
+            (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
+            (def (main) ((mk 10) 5)) (export main)))
+  (output (: 15 Int64)))
+
+(case "a capturing closure stored in a tuple is extracted and applied"
+  (doc    "A capturing closure `(fn (x) (+ x k))` (over an enclosing `k = 7`) stored as a tuple element,
+           projected out, and applied: `((. (tuple (fn (x) (+ x k)) 9) 0) 5)` = (+ 5 7) = 12. Storing a
+           capturing closure in a data structure and reading it back preserves its capture — the whole
+           thing folds (the tuple projection reaches the closure, which β-reduces).")
+  (input  (let ((k 7))
+            ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5)))
+  (output (: 12 Int64)))
+
+(case "a closure capturing two enclosing bindings folds through nested arithmetic"
+  (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
+           a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
+           `let`s are each preserved and folded through a nested arithmetic body.")
+  (input  (let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5)))
+  (output (: 13 Int64)))
+
 (case "a function is passed as an argument (higher-order)"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: apply-twice takes a function
            f and a value v and applies f to the result of applying f to v.")

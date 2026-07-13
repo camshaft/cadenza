@@ -52,9 +52,12 @@ pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure captures the binding in scope where it was created
+pass	a closure capturing two enclosing bindings folds through nested arithmetic
+pass	a closure factory's returned capturing closure is applied at the call site
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name

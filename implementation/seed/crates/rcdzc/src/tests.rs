@@ -4351,7 +4351,9 @@ mod match_engine {
             runtime_cache_dir: None,
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "5", "the runtime-stored byte reads back as 5"),
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "5", "the runtime-stored byte reads back as 5")
+            }
             cdz_run::Outcome::Trap(t) => panic!("runtime-element bytes-at run trapped: {t}"),
         }
     }
@@ -10505,6 +10507,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_capturing_closure_composes_with_return_storage_and_multi_capture() {
+        // A closure FACTORY: `(def (mk k) (fn (x) (+ x k)))` returns a closure over `k`; `((mk 10) 5)`
+        // applies the returned closure = 15. A returned closure composed with a capture, both folded.
+        let factory = "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+            (def (main) ((mk 10) 5)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(factory))).expect("compile"),
+                "main"
+            ),
+            15
+        );
+        // A capturing closure STORED in a tuple, projected, applied — capture survives the storage.
+        assert_eq!(
+            run_main("(let ((k 7)) ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5))"),
+            12
+        );
+        // MULTIPLE distinct captures from different enclosing `let`s, through a nested-arith body.
+        assert_eq!(
+            run_main("(let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5))"),
+            13
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
@@ -13929,4 +13956,3 @@ mod debug_info {
         );
     }
 }
-
