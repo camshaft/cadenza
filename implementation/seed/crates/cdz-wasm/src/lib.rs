@@ -291,7 +291,7 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
             fix_from: 0,
             fix_to: 0,
             fix_verified: false,
-            fix_insert: false,
+            fix_kind: String::new(),
         }],
     };
 
@@ -329,7 +329,11 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
     }
     // Collect the buffer's kept top-level items (defs/types), unwrapping the module shell if present.
     let buf_items: Vec<StructId> = match buf_arenas.get(buf_arenas.root) {
-        Struct::List(kids) if kids.first().is_some_and(|&h| buf_arenas.as_name(h) == Some("module")) => {
+        Struct::List(kids)
+            if kids
+                .first()
+                .is_some_and(|&h| buf_arenas.as_name(h) == Some("module")) =>
+        {
             // Skip `module` head + the module name; keep the item forms except exports.
             kids.iter()
                 .skip(2)
@@ -379,10 +383,18 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
     // the SYNTHESIZED module's nodes, so no span table is passed (the REPL surfaces the message text,
     // not an editor squiggle).
     let out = rcdzc::compile(
-        &[rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes)],
+        &[rcdzc::Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        )],
         &[rcdzc::Target::Wasm],
     );
-    let diagnostics = out.diagnostics.iter().map(|d| to_js_diag(d, None)).collect();
+    let diagnostics = out
+        .diagnostics
+        .iter()
+        .map(|d| to_js_diag(d, None))
+        .collect();
     let component = out
         .artifact(rcdzc::Target::Wasm.artifact_kind())
         .map(|b| b.to_vec());

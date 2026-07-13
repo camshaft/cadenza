@@ -8575,6 +8575,36 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
+        // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+        // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
+        // corpus-blessed `(Float64.of-int x)` — a WRAP fix converting the integer operand. Applying it
+        // makes the program type-check.
+        let d = first_error("(module m (def (f (: x Int64)) (+. x 2.0)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        let fix = d.fix.expect("a coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Float64.of-int {})", crate::abi::WRAP_HOLE),
+            "wraps the integer operand in Float64.of-int"
+        );
+        assert!(!fix.verified, "a coercion is a heuristic (intent guess)");
+    }
+
+    #[test]
+    fn a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix() {
+        // The coercion fix fires ONLY for an Int→Float mismatch — a Bool operand to `+.` is a plain
+        // CDZ0203/CDZ0301 with no `of-int` repair (converting a Bool to a float is not the fix).
+        let d = first_error("(module m (def (f (: x Bool)) (+. x 2.0)) (export f))");
+        assert!(
+            d.fix.is_none(),
+            "no coercion fix for a non-integer operand: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
