@@ -6241,18 +6241,17 @@ mod tests {
                 b.list(&children)
             }
             S::List(elem) => {
-                let (elem, n) = (*elem, op_arr_len(h));
+                // A Cadenza `List` is an RRB `vec` — read with `vec-len`/`vec-get` (NOT `arr-len`/
+                // `arr-get`, which read a vec's root-node arity, not the logical element count). Mirrors
+                // the production `Shape::List` arm; the earlier list tests build `Cons(tuple …)` recursive
+                // SUMS (arr-based), so this arm was previously unexercised — the Framed(list) test reaches
+                // it on a real `vec`.
+                let (elem, n) = (*elem, op_vec_len(h));
                 let head = b.name_leaf("list");
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for i in 0..n {
-                    children.push(encode_value_recursive(
-                        desc,
-                        b,
-                        op_arr_get(h, i),
-                        elem,
-                        depth + 1,
-                    )?);
+                    children.push(encode_value_recursive(desc, b, op_vec_get(h, i), elem, depth + 1)?);
                 }
                 b.list(&children)
             }
@@ -7037,6 +7036,107 @@ mod tests {
              its value (key*10) — NOT the CHAMP hash order the keys were inserted in"
         );
         op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// `value-encode` renders a `Shape::Framed` (descriptor tag 15) as the `(: value (head arg…))`
+    /// parametric-type frame — the shape a RUNTIME `List` result escapes as `(: (list …) (List <elem>))`
+    /// (landed @72d5d80a). That production walk arm had NO dedicated value-encode test (only the
+    /// differential oracle arm); an encoding bug (wrong tag, arg order, or frame nesting) would be a
+    /// silent miscompile on a real escape path. Verifies iterative==recursive byte-identity AND the
+    /// concrete rendered structure.
+    #[test]
+    fn value_encode_renders_a_framed_parametric_type() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: [0]=Int, [1]=List(→0), [2]=Framed("List", ["Int64"], inner→1). root=2.
+        // Bytes: table_len=3; [0]=Int(tag0); [1]=List(tag7, elem 0); [2]=Framed(tag15, "List", 1 arg
+        // "Int64", inner 1); root=2.
+        let mut d: Vec<u8> = Vec::new();
+        let leb = |out: &mut Vec<u8>, v: u64| {
+            let mut v = v;
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        };
+        let name = |out: &mut Vec<u8>, s: &str| {
+            let mut n = s.len() as u64;
+            loop {
+                let mut b = (n & 0x7f) as u8;
+                n >>= 7;
+                if n != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if n == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(s.as_bytes());
+        };
+        leb(&mut d, 3); // table_len
+        d.push(0); // [0] Int
+        d.push(7); // [1] List
+        leb(&mut d, 0); // elem → 0
+        d.push(15); // [2] Framed
+        name(&mut d, "List"); // head
+        leb(&mut d, 1); // n_args
+        name(&mut d, "Int64"); // arg[0]
+        leb(&mut d, 1); // inner → 1
+        leb(&mut d, 2); // root
+
+        // A real RUNTIME list value (RRB vec, NOT an arr — the Shape::List arm reads via vec-len/vec-get).
+        let mut v = op_vec_empty();
+        for i in 1..=3i64 {
+            v = op_vec_push(v, op_box_int(i));
+        }
+        let doc = op_value_encode_form(v, &d).expect("encode a Framed(list)");
+
+        // Differential: the recursive oracle must produce byte-identical output.
+        let descriptor = decode_descriptor(&d).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
+        assert_eq!(doc, b.finish(root), "iterative and recursive Framed encode must agree");
+
+        // The document's NAME leaves — the `(: (list 1 2 3) (List Int64))` frame emits, in walk order,
+        // the names `:`, `list`, then the type head/args `List`, `Int64` (ints are KIND_INT leaves, not
+        // names). Collect the name-leaf strings in emission order and check the frame's names are present.
+        let mut names: Vec<String> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            match kind {
+                0 => {
+                    // KIND_INT_POS_DEC: LEB len + magnitude
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                10 => {
+                    // KIND_NAME: LEB len + utf8
+                    let len = doc[i] as usize;
+                    i += 1;
+                    names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
+                    i += len;
+                }
+                k => panic!("unexpected leaf kind {k} in a Framed(list) document"),
+            }
+        }
+        // The frame's names, in walk order: `:` (the outer frame head, emitted first), `list` (the value's
+        // list head), then `List` + `Int64` (the type node, emitted AFTER the value — the Framed assembler).
+        let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        assert_eq!(names_ref, alloc::vec![":", "list", "List", "Int64"],
+            "Framed frame emits `:`, `list`, then the type head `List` + arg `Int64` in order");
+        op_drop(v);
         assert_eq!(live_nodes(), before, "no leak");
     }
 
