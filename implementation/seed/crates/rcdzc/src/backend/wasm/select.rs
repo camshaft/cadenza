@@ -6556,7 +6556,14 @@ fn emit_checked_arith_to(
         }
         return Ok(());
     }
-    // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot).
+    // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot). This is
+    // the DEFINED outcome of the trapping default — an overflowing `+`/`-`/`*` traps rather than yielding
+    // an undefined value; the guard is emitted (or provably elided) at EVERY reachable overflow, so no
+    // integer op with undefined overflow behavior is ever emitted:
+    //= spec/capabilities/numeric-model.md#overflow-is-defined
+    //# An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
+    //= spec/capabilities/numeric-model.md#overflow-is-defined
+    //# The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
     emit_machine_overflow_guard(op, m, sa, sb, sr, out);
     // Step 2: the narrow-width range-check on the exact result in `$r`. For a narrow signed `± const`
     // the exact result moves in ONE direction from an in-range operand, so only that bound is reachable

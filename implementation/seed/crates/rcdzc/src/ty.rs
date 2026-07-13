@@ -156,6 +156,16 @@ pub const ALIASED_INT_WIDTHS: [u32; 4] = [8, 16, 32, 64];
 /// width variable is a width variable regardless of whether it ends up bound in a float or integer
 /// context, and a float only ever unifies with a float so the two never cross. Only the admitted SET
 /// differs ({32,64} vs 1..=64), enforced at the constructor, not here.
+///
+/// A float type IS its width (there is no other axis), so two float types of different width are
+/// distinct types that never silently unify; and the width is a compile-time [`Width`] (a literal or a
+/// resolved variable), never a runtime value:
+///
+//= spec/capabilities/numeric-model.md#a-floating-point-type-is-indexed-by-a-compile-time-width
+//# A floating-point type MUST be identified by a bit width drawn from the set of IEEE-754 binary formats the numeric model admits, so that two floating-point types of different width are distinct types that do not silently convert to one another.
+///
+//= spec/capabilities/numeric-model.md#a-floating-point-type-is-indexed-by-a-compile-time-width
+//# The bit width of a floating-point type MUST be resolved from a compile-time value and MUST NOT be determined by runtime data, so that a floating-point type's width is fixed before the program runs rather than dependent on a value computed at runtime.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FloatTy {
     pub width: Width,
