@@ -7744,10 +7744,13 @@ mod tests {
             op_drop(op_set_union(sa, sc));
         });
         println!("ALLOC set_union x{N}: {union}");
-        // NOTE (inline-handles, step 2): the set ops rose slightly (union 373→376, ∩ 356→389, ∖ 362→395)
-        // because a set data-node that grows 2→3 entries spills inline→heap once (the cost of inlining a
-        // node that grows). Accepted as a small trade for the big wins (sum_new/tuple2/`[k,v]` −1000 each,
-        // vec push/update shared −1000); TODO next iteration: born-heap for growing CHAMP set nodes.
+        // NOTE (RESOLVED): inline-handles step 2 briefly raised the set ops (union 373→376, ∩ 356→389,
+        // ∖ 362→395) — a set data-node growing 2→3 entries spilled inline→heap once. `merge_entry_pair`
+        // then built the 2-entry SET split node + fresh CHAMP entry INLINE, recovering set-algebra to
+        // 270/263/266 (BELOW the pre-inline figures). The once-considered "born-heap for growing CHAMP set
+        // nodes" follow-up was investigated and DECLINED: cap=3 only partially recovers and costs +8 bytes
+        // on every Node; born-heap needs a will-grow flag threaded through the FBIP insert core (the
+        // crown-jewel path). The ~few-alloc residual is inherent to inline storage and not worth that risk.
         assert!(
             union <= 320,
             "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 320 (was 376 → 270 after merge_entry_pair inlines the 2-handle SET split node)"
@@ -8070,6 +8073,45 @@ mod tests {
         });
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
+
+        // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to
+        // `arr-alloc(n)` + n×`arr-set` then ONE `vec-of-arr` (NOT `vec-empty` + n×`vec-push`), so this op is
+        // on the hot path of every list construction yet was previously un-benched. Two shapes:
+        //   • SMALL (≤32): the arr node IS a valid single strict leaf — `vec-of-arr` MOVES it in as the root
+        //     (no per-element copy), so the only allocation beyond the caller's arr is the vec HEADER node.
+        //   • LARGE (>32): the elements are repacked into ≤32-element strict leaves + a bottom-up radix trie.
+        // Build the arr INSIDE the loop (its construction is the caller's cost, same as a real literal) and
+        // drop the resulting vec each iteration. A regression to a `vec-push` chain would be ~n allocs/list
+        // (trie churn per element) instead of the near-constant bulk build.
+        let voa_small = measure(&mut || {
+            for _ in 0..N {
+                let a = arr_of_ints(0, 8); // an 8-element list literal — fits one leaf
+                op_drop(op_vec_of_arr(a));
+            }
+        });
+        println!("ALLOC vec_of_arr_small x{N}: {voa_small}");
+        // MEASURED ~4/list: the arr (node Box + its 8-element heap handles Vec = 2) is the CALLER's cost (the
+        // 8 elements are immediate ints → no boxes); `vec-of-arr` adds the vec-header node + the header's raw
+        // (2) since the ≤32 arr is MOVED in as the leaf root — no per-element copy. A `vec-push`-chain
+        // regression would add ~8 trie-churn allocs/list (push down to N=8000+ here).
+        assert!(
+            voa_small <= 5000,
+            "vec_of_arr_small x{N} allocs {voa_small} exceeds ceiling 5000 (~4/list: caller's arr node+handles + vec-of-arr's zero-copy leaf move + header; a vec-push-chain regression would be ~8/list)"
+        );
+        const VOA_BIG: i64 = 100; // >32 → the bottom-up strict-trie repack path
+        let voa_big = measure(&mut || {
+            let a = arr_of_ints(0, VOA_BIG);
+            op_drop(op_vec_of_arr(a));
+        });
+        println!("ALLOC vec_of_arr_big len={VOA_BIG}: {voa_big}");
+        // MEASURED 18: 100 elements → ⌈100/32⌉=4 strict leaves (Box+Vec each) + 1 interior root (Box+Vec) +
+        // header (node+raw) + the moved `elems` buffer — all N-INDEPENDENT beyond ⌈n/32⌉. The element handles
+        // are MOVED out of the arr (`into_vec` on the Heap arm), not re-copied. Guards the bottom-up trie
+        // build against an O(n)-alloc regression (a push-chain or per-element node would be ~{VOA_BIG}).
+        assert!(
+            voa_big <= 40,
+            "vec_of_arr_big len={VOA_BIG} allocs {voa_big} exceeds ceiling 40 (⌈n/32⌉ strict leaves + interior spine + header, element handles MOVED not copied; a per-element regression would be ~{VOA_BIG})"
+        );
 
         // (L) value-encode a recursive value (the op-62 escape walker): encode a FIXED 50-element IntList
         // repeatedly. Each encode builds a fresh value-form document — a leaf pool Vec + struct table Vec

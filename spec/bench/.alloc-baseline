@@ -4,6 +4,7 @@
 1000	bytes_concat x1000
 132	bytes_flatten x64
 1000	bytes_slice x1000
+1	free_cascade_deep DEPTH=4000
 766	map_insert x1000
 6143	map_insert_shared x1000
 6418	map_insert_shared_newkey x1000
@@ -24,6 +25,8 @@
 0	value_eq_nested x1000
 1200	vec_concat x100
 0	vec_get x1000
+18	vec_of_arr_big len=100
+4000	vec_of_arr_small x1000
 196	vec_push x1000
 7000	vec_push_shared x1000
 1500	vec_split x100
