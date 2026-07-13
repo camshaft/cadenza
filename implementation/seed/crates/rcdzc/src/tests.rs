@@ -11040,11 +11040,12 @@ mod match_engine {
     }
 
     #[test]
-    fn checked_integer_conversion_folds_in_range_and_traps_out_of_range() {
-        // `T.of` — the CHECKED (range-checked, TRAPPING) integer conversion (numeric-model.md §A
-        // Conversion Between Integer Types Is Explicit): a constant IN RANGE folds to the value at the
-        // target type, a constant OUT OF RANGE compiles to a `Core::Trap` that fires at run time.
-        // Distinct from `T.wrap` (which truncates totally, never traps).
+    fn checked_integer_conversion_folds_in_range_and_rejects_out_of_range_constants() {
+        // `T.of` — the CHECKED (range-checked) integer conversion (numeric-model.md §A Conversion Between
+        // Integer Types Is Explicit): a constant IN RANGE folds to the value at the target type; a
+        // constant OUT OF RANGE is a statically-ill-formed conversion, REJECTED at compile time (CDZ0302),
+        // consistent with `(: 128 Int8)` and the const-overflow arithmetic — NOT a runtime trap for a
+        // provably-impossible conversion. Distinct from `T.wrap` (which truncates totally, never rejects).
         // In range: `(UInt8.of 200)` = 200 : UInt8 (unchanged, not truncated).
         assert_eq!(
             run_returns::<u8>(
@@ -11063,25 +11064,22 @@ mod match_engine {
             127,
             "the boundary value fits and converts unchanged"
         );
-        // Out of range (magnitude): `(UInt8.of 256)` is one past UInt8.max → the compiled program TRAPS
-        // (it must not silently truncate to 0 the way `wrap` would).
-        assert!(
-            call_traps(
-                &component("(module m (def (main) ((. UInt8 of) (: 256 Int32))) (export main))"),
-                "main",
-                &[]
-            ),
-            "a checked conversion out of the target range traps at run time"
+        // Out of range (magnitude): `(UInt8.of 256)` is one past UInt8.max → a compile-time CDZ0302 reject
+        // (the compiler already knows 256 does not fit at const-fold), NOT a runtime trap, and never a
+        // silent truncation to 0 the way `wrap` would.
+        assert_eq!(
+            reject_code("(module m (def (main) ((. UInt8 of) (: 256 Int32))) (export main))")
+                .as_deref(),
+            Some("CDZ0302"),
+            "an out-of-range checked conversion of a constant is rejected at compile time"
         );
-        // Out of range (sign): `(UInt8.of -1)` — UInt8 has no negatives → trap (where `(UInt8.wrap -1)`
+        // Out of range (sign): `(UInt8.of -1)` — UInt8 has no negatives → CDZ0302 (where `(UInt8.wrap -1)`
         // would give 255). Pins that `of` checks the sign boundary, not only the magnitude boundary.
-        assert!(
-            call_traps(
-                &component("(module m (def (main) ((. UInt8 of) (: -1 Int32))) (export main))"),
-                "main",
-                &[]
-            ),
-            "a checked conversion of a negative into an unsigned type traps"
+        assert_eq!(
+            reject_code("(module m (def (main) ((. UInt8 of) (: -1 Int32))) (export main))")
+                .as_deref(),
+            Some("CDZ0302"),
+            "a checked conversion of a negative constant into an unsigned type is rejected"
         );
     }
 
