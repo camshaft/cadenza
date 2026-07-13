@@ -170,6 +170,40 @@
   (input  (: (Some (Some 5)) (Option (Option Bool))))
   (error  CDZ0203))
 
+; Type-checking a DEEPLY-nested generic-sum VALUE must not blow up superlinearly. Each enclosing `(Some x)`
+; unifies its payload variable against the (growing) `Option^k Int64` type below it, and the HM occurs-check
+; run on that unification used to re-apply the whole substitution at every node — O(size²) per check,
+; O(N³) over the N-deep chain (depth 400 = 2.5s, extrapolating to a compile hang around depth ~1500). Walking
+; the type through the substitution in place (the standard union-find resolve) makes the occurs-check O(size),
+; so the whole nested value is ~quadratic and a linear-size program compiles in linear-ish time. This case
+; pins the VALUE compiles to the right answer at a depth (60) that the cubic version already handled but that
+; anchors the shape; the pathology it guards is the GROWTH RATE, not this one point. A deep type ANNOTATION
+; and a deep nested TUPLE value were already linear — the blowup was specific to the generic-sum constructor.
+
+(case "a deeply-nested generic-sum value type-checks and matches its outermost variant"
+  (doc    "A `(Some (Some … (Some 5)))` chain nested 60 deep, matched on its outermost `Some` (returning 1).
+           The emitted program is tiny, but type-checking the nested generic-sum constructor applications was
+           O(N³) (the HM occurs-check re-applied the full substitution at every node, O(size²) per check, over
+           N levels), so a deeper chain hung the compiler. Walking variables through the substitution in place
+           makes the occurs-check O(size) and the whole value ~quadratic. A deep type annotation alone and a
+           deep nested tuple value were already linear, so the blowup was specific to the generic-sum value.
+           The outer match returns 1; the point is that PRODUCING the deep value must not be superlinear.")
+  (input  (do
+            (def (main)
+              (match
+                (Some (Some (Some (Some (Some (Some (Some (Some (Some (Some
+                (Some (Some (Some (Some (Some (Some (Some (Some (Some (Some
+                (Some (Some (Some (Some (Some (Some (Some (Some (Some (Some
+                (Some (Some (Some (Some (Some (Some (Some (Some (Some (Some
+                (Some (Some (Some (Some (Some (Some (Some (Some (Some (Some
+                (Some (Some (Some (Some (Some (Some (Some (Some (Some (Some 5))))))))))
+                )))))))))) )))))))))) )))))))))) )))))))))) ))))))))))
+                ((Some inner) 1)
+                ((None)       0)))
+            (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 ; The parameter check applies to a LIST's element type too, not only a sum's payload. `(list 1 2)` has
 ; type `List Int64`; annotated `List Bool`, the head `List` agrees but the element type `Int64` cannot
 ; unify with `Bool` — a contradiction (CDZ0203), the list analogue of the `Option` payload case. A checker

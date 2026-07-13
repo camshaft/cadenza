@@ -68,6 +68,7 @@ pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
+pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a function value and applies it through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
@@ -119,6 +120,7 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
+pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
