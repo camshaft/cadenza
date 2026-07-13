@@ -2993,10 +2993,19 @@ fn list_u8_defined_type() -> Vec<u8> {
 
 /// A sec-11 component-export item: `00 <namelen><name> 01 <func-idx> 00` — name, sort component
 /// func:0x01, the func index, no declared type ascription.
+///
+/// The extern name is NORMALIZED to kebab-case (`kebab_extern_name`): a source export name may be a
+/// valid Cadenza identifier that is NOT a valid component extern name (an uppercase letter or underscore
+/// — `fA`, `my_func`), which would make the component fail to validate. An already-kebab name (the
+/// common case — every corpus export) normalizes to itself, so this is byte-identical for existing
+/// programs. A collision (two source names → one extern name) is rejected at export planning, before
+/// emit, so this site never silently merges two exports. The CORE module export + its alias keep the
+/// verbatim source name (a valid core wasm name); only this component-boundary extern is kebab.
 fn comp_export_item(name: &str, func_idx: u32) -> Vec<u8> {
+    let extern_name = crate::backend::wasm::kebab_extern_name(name);
     let mut item = vec![0x00];
-    item.extend_from_slice(&uleb_bytes(name.len() as u64));
-    item.extend_from_slice(name.as_bytes());
+    item.extend_from_slice(&uleb_bytes(extern_name.len() as u64));
+    item.extend_from_slice(extern_name.as_bytes());
     item.push(0x01); // sort: component func
     uleb128(func_idx as u64, &mut item);
     item.push(0x00); // no declared type ascription

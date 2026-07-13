@@ -271,8 +271,17 @@ fn run_export(
             anyhow!("no --call given and the component has no single function export to default to")
         })?,
     };
+    // The component's extern name is KEBAB-CASE, but a caller names the export by its SOURCE identifier
+    // (`--call fA`), which may not be kebab (`fA`, `my_func`). The compiler normalized the extern name at
+    // emit (`kebab_extern_name`); resolve the SOURCE name through the SAME deterministic rule so a caller
+    // still uses the source name. Try the verbatim name first (already-kebab / core-level exports match
+    // it unchanged), then the normalized form.
     let func = instance
         .get_func(&mut *store, &export_name)
+        .or_else(|| {
+            let kebab = cadenza_syntax::extern_name::kebab_extern_name(&export_name);
+            (kebab != export_name).then(|| instance.get_func(&mut *store, &kebab)).flatten()
+        })
         .ok_or_else(|| anyhow!("component exports no function `{export_name}`"))?;
 
     // Coerce the raw argument strings to the export's declared parameter types.
