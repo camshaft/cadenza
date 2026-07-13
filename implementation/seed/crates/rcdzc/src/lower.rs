@@ -299,11 +299,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         // A record value — kept as a compound; folds away only when a member reads a field of it.
-        // (Materialize the shared `Arc` map into the `Core::Record` owned map — a single O(fields)
-        // copy per record NODE, not per access, so it does not reintroduce the O(N²) the Arc removed.)
-        Resolved::Record { fields } => Core::Record {
-            fields: (*fields).clone(),
-        },
+        // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Arc<BTreeMap<…>>`, so SHARE the
+        // map by an Arc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
+        // per-read clone is likewise O(1).
+        Resolved::Record { fields } => Core::Record { fields },
         // Member access FOLDS: reduce the operand to a record (following refs, reducing a ctor
         // application) and lower the field's value directly, so `(. (record (x 1)) x)` and `(. (Int
         // 64) max)` both fold to the field's value with no record built. The one projection, via the
@@ -5059,7 +5058,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             let head = b.name("record");
             let mut children = vec![head];
             // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
-            for (name, &v) in &fields {
+            for (name, &v) in fields.iter() {
                 let fname = b.name(name.name.clone());
                 let fval = const_value_ast(db, b, v)?;
                 children.push(b.list(vec![fname, fval]));

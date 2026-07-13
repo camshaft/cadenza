@@ -1084,7 +1084,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // record used only to read a field folds away before reaching here; one that survives is a
         // runtime value whose fields are all reached.)
         Core::Record { fields } => {
-            for (_, value) in fields {
+            for (_, &value) in fields.iter() {
                 collect_reached_poisons(db, value, out);
             }
         }

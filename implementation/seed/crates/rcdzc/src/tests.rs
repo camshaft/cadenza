@@ -1291,6 +1291,44 @@ fn each_parameter_of_a_wide_signature_resolves_to_its_own_binder() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
 }
 
+/// A WIDE record read field-by-field compiles correctly AND cheaply — the correctness guard for
+/// `Core::Record`'s `Arc<BTreeMap>` field map (cloning a `Core::Record` is a refcount bump, not a deep
+/// map copy). `core_of` clones the record's `Core` on every memo read, and the recursive Core-tree walks
+/// (`collect_host_arg_strings`, layout, select) re-read it per node, so an owned map made a record read
+/// field-by-field O(N²) (32 fields here; at 3200 it was ~2.8s, ~50% in `BTreeMap::clone`). The value must
+/// still be exact: build a 32-field record and sum every field — `f_i = i`, so the total is
+/// `0+1+…+31 = 496`. A dropped/misindexed field (or a shared-Arc aliasing bug) would compute a wrong sum.
+#[test]
+fn a_wide_record_read_field_by_field_sums_correctly() {
+    use crate::testkit::parse;
+    let n = 32;
+    let fields: String = (0..n).map(|i| format!(" (f{i} {i})")).collect();
+    // A balanced `+` tree over all field reads (avoids a deep linear nest hitting the descent cap).
+    let mut terms: Vec<String> = (0..n).map(|i| format!("(. r f{i})")).collect();
+    while terms.len() > 1 {
+        let mut next = Vec::new();
+        let mut it = terms.chunks_exact(2);
+        for pair in it.by_ref() {
+            next.push(format!("(+ {} {})", pair[0], pair[1]));
+        }
+        if let [last] = it.remainder() {
+            next.push(last.clone());
+        }
+        terms = next;
+    }
+    let src = format!(
+        "(module m (def (main) (let ((r (record{fields}))) {})) (export main))",
+        terms[0]
+    );
+    let bytes =
+        compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide record");
+    assert_eq!(
+        run_returns::<i64>(&bytes, "main"),
+        (0..n as i64).sum::<i64>(),
+        "sum of fields f0..f31 = 0+1+…+31 = 496"
+    );
+}
+
 /// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
 /// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
 /// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find
