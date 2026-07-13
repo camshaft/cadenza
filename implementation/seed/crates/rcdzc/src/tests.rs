@@ -6412,6 +6412,44 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_symbol_of_equality_and_to_string_fold() {
+        // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
+        // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying
+        // `Core::ConstStr` rep, so `=`/`to-string` fold with no new machinery.
+        let run_b = |src: &str| {
+            run_returns::<bool>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        let run_i = |src: &str| {
+            run_returns::<i64>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        // Idempotent: interning the same string twice is equal.
+        assert!(run_b(
+            "(= (Symbol.of \"map-insert\") (Symbol.of \"map-insert\"))"
+        ));
+        // Distinct strings → distinct symbols.
+        assert!(!run_b(
+            "(= (Symbol.of \"map-insert\") (Symbol.of \"map-lookup\"))"
+        ));
+        // Identity is content, not derivation: a concat-built symbol equals the literal-built one.
+        assert!(run_b(
+            "(= (Symbol.of (String.concat \"map\" \"-insert\")) (Symbol.of \"map-insert\"))"
+        ));
+        // The empty symbol equals itself.
+        assert!(run_b("(= (Symbol.of \"\") (Symbol.of \"\"))"));
+        // `to-string` recovers the content String — measurable via String.scalar-len (folds to Int64).
+        assert_eq!(
+            run_i("((. String scalar-len) (Symbol.to-string (Symbol.of \"abc\")))"),
+            3
+        );
+    }
+
+    #[test]
     fn an_empty_quote_is_cdz0201_not_an_unbound_name() {
         // 07-type-system "an empty quote is rejected, not a crash": `(quote)` with no operand is
         // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
@@ -13663,6 +13701,51 @@ mod stage1 {
             Some("CDZ0401"),
             "expected CDZ0401 (no home for a reached effect), got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_no_home_effect_carries_a_host_delegation_wrap_fix() {
+        // CDZ0401 now carries the mechanical repair the message names: WRAP the entrypoint body in
+        // `(host (E) <body>)`, the host-delegation route (`spec/capabilities/diagnostics.md` §A
+        // Diagnostic Carries A Route To A Fix). The effect NAME is derived from its declaration, not
+        // hard-coded. Heuristic — delegating is one of the two routes (the other, adding a real `handle`,
+        // is the author's semantic choice.)
+        let src = "(do (effect Ask (op ask (-> Unit Int64))) \
+                   (def (main) (+ ((. Ask ask)) 1)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("an ungranted effect must be rejected");
+        assert_eq!(err.code.as_deref(), Some("CDZ0401"));
+        let fix = err.fix.expect("CDZ0401 carries a host-delegation fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(host (Ask) {})", crate::abi::WRAP_HOLE),
+            "wraps the body in a host delegation of the named effect"
+        );
+        assert!(
+            !fix.verified,
+            "delegating vs. handling is the author's choice → heuristic"
+        );
+    }
+
+    #[test]
+    fn a_cross_function_no_home_effect_wraps_the_entrypoint_not_the_callee() {
+        // A perform in a CALLED function still delegates at the ENTRYPOINT — the wrap must target the
+        // exported body, not the callee where the perform (and the error anchor) live.
+        let src = "(do (effect Ask (op ask (-> Unit Int64))) \
+                   (def (helper) ((. Ask ask))) \
+                   (def (main) (+ (helper) 1)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("cross-function ungranted effect must be rejected");
+        assert_eq!(err.code.as_deref(), Some("CDZ0401"));
+        let fix = err.fix.expect("carries the wrap fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        // The wrap node is main's body — a DIFFERENT node than the error's anchor (the perform in helper).
+        assert_ne!(
+            Some(fix.node),
+            err.node,
+            "the wrap targets the entrypoint body, the error anchors at the perform site"
         );
     }
 

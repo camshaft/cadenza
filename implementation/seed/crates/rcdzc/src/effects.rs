@@ -839,12 +839,16 @@ fn op_result_type(db: &mut Db, head: StructId) -> Option<crate::ty::Ty> {
 /// perform may be cross-function). A perform whose effect is not in that set is ungranted → CDZ0401.
 pub fn check_no_home(db: &mut Db, node: StructId, out: &mut Vec<crate::diag::Reject>) {
     let mut handled: Vec<u32> = Vec::new();
-    check_no_home_walk(db, node, &mut handled, out, 0);
+    // `node` is the ENTRYPOINT body — the node a host-delegation fix wraps (`(host (E) <body>)`), which is
+    // constant across the walk (a perform deep in the body, or in a called function, still delegates at
+    // the entrypoint). Thread it through unchanged so the CDZ0401 fix can anchor its wrap there.
+    check_no_home_walk(db, node, node, &mut handled, out, 0);
 }
 
 fn check_no_home_walk(
     db: &mut Db,
     node: StructId,
+    entrypoint: StructId,
     handled: &mut Vec<u32>,
     out: &mut Vec<crate::diag::Reject>,
     depth: u32,
@@ -857,19 +861,36 @@ fn check_no_home_walk(
         Resolved::Apply { head, args } => {
             if let Some((decl, _idx)) = crate::eval::effect_op_of(db, head) {
                 if !handled.contains(&decl.0) {
-                    out.push(
-                        crate::diag::Reject::coded(
-                            crate::diag::Code::EffectNoHome,
-                            "this effect operation is reached with neither an enclosing handler nor a \
-                             host delegation, so it has no home (add a handler or delegate it at the \
-                             entrypoint)",
-                        )
-                        .at(node),
-                    );
+                    // The mechanical repair is the host-delegation route the message names: WRAP the
+                    // entrypoint body in `(host (E) <body>)`, which grants the effect at the boundary and
+                    // clears the fault (verified in one shot). The effect's name comes from its
+                    // declaration (`decl`), derived not hard-coded (`spec/capabilities/diagnostics.md` §A
+                    // Diagnostic Carries A Route To A Fix). Heuristic: delegating at the entrypoint is ONE
+                    // of the two routes (the other is adding a `handle` with real arms — a semantic choice
+                    // the compiler must not make for the author); the wrap resolves the fault but whether
+                    // the author meant to delegate vs. handle is theirs to decide. The reject anchors at
+                    // the PERFORM site (where the fault is), while the wrap targets the entrypoint body.
+                    let mut reject = crate::diag::Reject::coded(
+                        crate::diag::Code::EffectNoHome,
+                        "this effect operation is reached with neither an enclosing handler nor a \
+                         host delegation, so it has no home (add a handler or delegate it at the \
+                         entrypoint)",
+                    )
+                    .at(node);
+                    if let Some(eff) = db.effect_decl_by_occ(decl) {
+                        let name = eff.name.clone();
+                        reject = reject.with_fix(crate::diag::Fix::wrap_heuristic(
+                            entrypoint,
+                            format!("(host ({name}) "),
+                            ")",
+                            format!("delegate `{name}` at the entrypoint with `(host ({name}) …)`"),
+                        ));
+                    }
+                    out.push(reject);
                 }
                 // Still walk the args (they may perform other effects).
                 for &a in args.iter() {
-                    check_no_home_walk(db, a, handled, out, depth);
+                    check_no_home_walk(db, a, entrypoint, handled, out, depth);
                 }
                 return;
             }
@@ -882,10 +903,10 @@ fn check_no_home_walk(
                 .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
                 && !crate::eval::is_recursive(db, callee)
             {
-                check_no_home_walk(db, callee, handled, out, depth + 1);
+                check_no_home_walk(db, callee, entrypoint, handled, out, depth + 1);
             }
             for &a in args.iter() {
-                check_no_home_walk(db, a, handled, out, depth);
+                check_no_home_walk(db, a, entrypoint, handled, out, depth);
             }
         }
         // A `handle` — its arms DISCHARGE their effects for the BODY (dynamic extent). Push each arm's
@@ -895,10 +916,10 @@ fn check_no_home_walk(
         // under the OUTER handled set (without this handle's effects added), matching forwarding. The
         // init is evaluated in the outer context too.
         Resolved::Handle { init, arms, body } => {
-            check_no_home_walk(db, init, handled, out, depth);
+            check_no_home_walk(db, init, entrypoint, handled, out, depth);
             // Arm bodies: outer context (a re-performed op forwards to the next-outer handler).
             for arm in &arms {
-                check_no_home_walk(db, arm.body, handled, out, depth);
+                check_no_home_walk(db, arm.body, entrypoint, handled, out, depth);
             }
             // Body: this handle's effects are now handled.
             let added: Vec<u32> = arms
@@ -907,7 +928,7 @@ fn check_no_home_walk(
                 .collect();
             let before = handled.len();
             handled.extend(&added);
-            check_no_home_walk(db, body, handled, out, depth);
+            check_no_home_walk(db, body, entrypoint, handled, out, depth);
             handled.truncate(before);
         }
         // A `host` — its listed effects are DELEGATED for the body. Push each delegated effect's decl.
@@ -951,14 +972,14 @@ fn check_no_home_walk(
             }
             let before = handled.len();
             handled.extend(added.iter().map(|&(_, d)| d));
-            check_no_home_walk(db, body, handled, out, depth);
+            check_no_home_walk(db, body, entrypoint, handled, out, depth);
             handled.truncate(before);
         }
         // A resume's value/next-state, and every other structural form: descend into children.
         _ => {
             if let Struct::List(children) = db.ast.get(node).clone() {
                 for c in children {
-                    check_no_home_walk(db, c, handled, out, depth);
+                    check_no_home_walk(db, c, entrypoint, handled, out, depth);
                 }
             }
         }

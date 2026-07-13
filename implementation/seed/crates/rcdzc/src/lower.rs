@@ -1076,6 +1076,29 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // out-of-range integer (`collections-and-text.md` §A Char Converts To And From An Integer
                 // Totally). Never traps.
                 Some(Prim::CharFromInt) if args.len() == 1 => lower_char_from_int(db, id, args[0]),
+                // `Symbol.of` — intern a String into a Symbol (`String → Symbol`). A CONSTANT string folds
+                // to a constant symbol, which shares the underlying `Core::ConstStr` REP (identity is
+                // content-derived); only the static TYPE differs (`Ty::Symbol`, off this node's solved
+                // type). So the fold is the identity on the `ConstStr` — `(= (Symbol.of "a") (Symbol.of
+                // "a"))` then folds via `const_compound_eq(ConstStr, ConstStr)`. A runtime string interns
+                // at run time (a later increment) — declines here.
+                Some(Prim::SymbolOf) if args.len() == 1 => match core_of(db, args[0]) {
+                    c @ Core::ConstStr(_) => c,
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Symbol.of on a runtime string is not yet interned (constant strings only)",
+                    )),
+                },
+                // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
+                // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
+                // retyped `String` (the node's solved type); the rep is unchanged.
+                Some(Prim::SymbolToString) if args.len() == 1 => match core_of(db, args[0]) {
+                    c @ Core::ConstStr(_) => c,
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Symbol.to-string on a runtime symbol is not yet computed (constant symbols only)",
+                    )),
+                },
                 // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.
@@ -4959,9 +4982,11 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom. `String`/`Char` are monomorphic named types too, so
-        // their surface is the bare `String`/`Char` atom (`render_name`).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char => Some(b.name(ty.render_name())),
+        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol` are monomorphic named types
+        // too, so their surface is the bare `String`/`Char`/`Symbol` atom (`render_name`).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char | Ty::Symbol => {
+            Some(b.name(ty.render_name()))
+        }
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
@@ -6136,6 +6161,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::CharTy
         | Prim::CharToInt
         | Prim::CharFromInt
+        | Prim::SymbolTy
+        | Prim::SymbolOf
+        | Prim::SymbolToString
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -7106,6 +7134,11 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // `Bytes.concat` DOES emit a non-canonical rope (`bytes-concat`), whose byte form is canonical only
         // after a `bytes-compact` the compiler would first have to emit — so a runtime Bytes still declines.
         Ty::String => true,
+        // A SYMBOL is a nominal over a flat UTF-8 String leaf — canonical by construction (its identity
+        // is content-derived), so two symbols compare correctly by the raw-byte walk, exactly like the
+        // `String` it wraps. (This increment folds constant symbol equality; a runtime symbol reaching
+        // `=` compares by the same walk.)
+        Ty::Symbol => true,
         // A nominal — walkable iff its underlying value is (the tag is erased at run time, so the walk
         // compares the underlying values directly). A recursive nominal is impossible here (a recursive
         // single-variant sum is never erased — it stays a `Ty::Sum`, handled above).
@@ -9110,6 +9143,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",
+        Prim::SymbolTy => "Symbol",
+        Prim::SymbolOf => "symbol-of",
+        Prim::SymbolToString => "symbol-to-string",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
