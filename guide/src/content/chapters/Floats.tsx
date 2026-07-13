@@ -85,11 +85,27 @@ export default function Floats() {
 (def (main) (area 2.0))`}
       />
 
+      <H2>Two widths, never mixed silently</H2>
+      <P>
+        There's a 32-bit float too — <C>Float32</C> — with its own <C>Float32.of-int</C>. It's a real,
+        runnable value:
+      </P>
+      <Runnable source={`(Float32.of-int 5)`} />
+      <P>
+        And the two widths follow the same rule as everything else: they don't blend on their own. Try
+        to <C>+.</C> a <C>Float32</C> with a <C>Float64</C> and the compiler stops you — a <C>Float32</C>
+        and a <C>Float64</C> have different precision, so combining them is a conversion you must write,
+        not one the language guesses:
+      </P>
       <Note>
-        There's a 32-bit float too, <C>Float32</C>, with its own <C>Float32.of-int</C>. The two widths
-        mirror the integer story: one family of operators, an explicit conversion between sizes, and
-        never a silent one.
+        This one is <strong>meant to be refused</strong>. Run it — the diagnostic is <C>CDZ0301</C>,{" "}
+        "floating-point precisions differ", the same no-silent-widening rule that keeps <C>Int64</C> and{" "}
+        <C>Float64</C> apart, now between the two float sizes.
       </Note>
+      <Runnable
+        source={`(+. (Float32.of-int 1) (Float64.of-int 2))`}
+        expect="error"
+      />
 
       <H2>Your turn</H2>
       <Exercise
@@ -103,11 +119,21 @@ export default function Floats() {
 
       <Exercise
         id="floats:2"
-        prompt={<>Convert the integer <C>10</C> to a float and add <C>0.5</C> to it — the result should be <C>10.5</C>.</>}
-        starter={`(+. (Float64.of-int 10) ?)`}
-        solution={`(+. (Float64.of-int 10) 0.5)`}
-        expected="10.5"
-        hint={<>The blank is a float literal. Adding uses <C>+.</C>, and <C>Float64.of-int 10</C> is already the float <C>10.0</C>.</>}
+        prompt={
+          <>
+            You want to add the integer <C>5</C> to the float <C>2.5</C>, but they can't mix directly.
+            Convert the <C>5</C> to a float so the sum works — the result should be <C>7.5</C>.
+          </>
+        }
+        starter={`(+. (Float64.of-int ?) 2.5)`}
+        solution={`(+. (Float64.of-int 5) 2.5)`}
+        expected="7.5"
+        hint={
+          <>
+            <C>Float64.of-int</C> turns the integer into a float; feed it the <C>5</C>, and <C>+.</C> adds
+            the two floats to <C>7.5</C>.
+          </>
+        }
       />
     </article>
   );
