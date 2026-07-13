@@ -14816,6 +14816,66 @@ mod debug_info {
     }
 
     #[test]
+    fn single_line_constructs_get_distinct_columns() {
+        // COLUMN granularity: an `if` whose condition, then-branch, and else-branch all sit on ONE
+        // source line still produces DISTINCT line-table rows — each carrying the sub-expression's
+        // COLUMN — so a debugger highlights the exact construct within the line (the payoff for
+        // s-expression Cadenza, where a whole `(if c a b)` is one line). Line-only granularity would
+        // collapse these to a single row. Skips if llvm-dwarfdump is absent.
+        use std::io::Write;
+        use std::process::Command;
+        // Everything on line 2 (line 1 is the module header) — distinct columns, same line.
+        let src = "(module m\n(def (f (: a Int64)) (if (< a 0) (- a 1) (+ a 1)))\n(export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-cols-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-line")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        // Line-table rows begin with `0x…`; columns are [Address, Line, Column, …]. Collect the
+        // (line, column) of the rows on line 2 (the single source line the code lives on).
+        let cols: Vec<u32> = stdout
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                if !l.starts_with("0x") {
+                    return None;
+                }
+                let mut it = l.split_whitespace();
+                let _addr = it.next()?;
+                let line: u32 = it.next()?.parse().ok()?;
+                let col: u32 = it.next()?.parse().ok()?;
+                (line == 2).then_some(col)
+            })
+            .collect();
+        // Several DISTINCT non-zero columns on the one source line — the condition, then, and else each
+        // get their own row (line-only granularity would give a single row / a single column).
+        let mut distinct: Vec<u32> = cols.iter().copied().filter(|&c| c != 0).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 3,
+            "expected ≥3 distinct source columns on line 2 (condition/then/else), got {distinct:?}\n{stdout}"
+        );
+    }
+
+    #[test]
     fn a_runtime_bytes_returning_program_carries_dwarf() {
         // A program returning a RUNTIME `Bytes` (a recursion + `Bytes.concat` result) crosses via the
         // looping-walker escape path (`emit_runtime_bytes_resource`) — a THIRD resource core beyond the
