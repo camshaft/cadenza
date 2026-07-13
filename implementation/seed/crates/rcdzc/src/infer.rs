@@ -2797,7 +2797,7 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
     };
     let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
     let mut subst = Subst::new();
-    for &arg in args {
+    for (arg_index, &arg) in args.iter().enumerate() {
         let applied = subst.apply(&cur);
         match applied {
             Ty::Fn(param, result) => {
@@ -2936,17 +2936,42 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                 }
                 cur = *result;
             }
-            // Applying a non-function (too many args) — a shape fault reported as a type mismatch.
+            // The head's arrow ran out but there are still arguments — the applied value is not a
+            // function. TWO distinct situations, distinguished by how many arguments were already
+            // consumed:
+            //   • `arg_index > 0` — the head DID accept its parameters (each earlier arg unified against
+            //     an `Ty::Fn` param), then a further argument is applied to the fully-consumed result. That
+            //     is OVER-APPLICATION — e.g. `(+ 1 2 3)`, where `+` consumes 2 then `3` over-applies the
+            //     `Int64` sum. Report it with the over-application taxonomy (the same phrasing as an
+            //     over-applied lambda/constructor), carrying `OVER_APPLICATION_MARKER` so `dedup_faults`
+            //     drops the emit-path decline. Naming the arity turns the opaque "cannot apply a value of
+            //     type Int64" into "applied 3 arguments to a function of arity 2".
+            //   • `arg_index == 0` — the head is a scheme-typed value that was NEVER a function, applied to
+            //     an argument (`(x 3)` for `x : Int`). That is the genuine not-a-function case; keep the
+            //     `NOT_A_FUNCTION_PREFIX` message.
             other => {
-                trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
-                out.push(Reject::coded(
-                    Code::TypeMismatch,
-                    format!(
-                        "{} {}",
-                        crate::diag::NOT_A_FUNCTION_PREFIX,
-                        other.render_name()
-                    ),
-                ));
+                if arg_index > 0 {
+                    trace!(target: "rcdzc::infer", head = head.0, arity = arg_index, args = args.len(), "apply: over-applied a scheme-typed head (CDZ0203)");
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "applied {} arguments to a function of arity {} — it is not a function after \
+                             its arguments are consumed",
+                            args.len(),
+                            arg_index
+                        ),
+                    ));
+                } else {
+                    trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "{} {}",
+                            crate::diag::NOT_A_FUNCTION_PREFIX,
+                            other.render_name()
+                        ),
+                    ));
+                }
                 return;
             }
         }
