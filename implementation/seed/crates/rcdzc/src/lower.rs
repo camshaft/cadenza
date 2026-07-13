@@ -1597,9 +1597,83 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
     // A CONSTANT scrutinee → select the first matching arm at compile time.
     let Some(raw) = bin_const_scrutinee(db, scrutinee) else {
-        return Core::Poison(Reject::decline(
-            "a bin match over a runtime Bytes scrutinee is not yet lowered (constant scrutinee only)",
-        ));
+        // RUNTIME scrutinee → build a runtime decision: an if-chain over per-arm predicates. Only for arms
+        // whose `(bin …)` is ALL fixed-width int segments (a runtime bits/bytes/dependent segment is a
+        // later slice); such an arm's predicate is `bytes-len == total_width & (each literal segment read
+        // == its literal)`, and its binders read via `BinIntRead` (resolve Case B → decode_bin_field
+        // runtime). The arms are processed in order into a nested `if`, tail = the catch-all body.
+        //
+        // Build from the LAST arm backward: `acc` starts at the catch-all body's occurrence, and each
+        // preceding `(bin …)` arm wraps it as `(if <predicate> <arm-body> <acc>)`. A synthesized `if`
+        // node's core is pre-filled so it lowers directly (no re-resolution).
+        // This slice handles ONE `(bin …)` arm + a catch-all (the common shape: parse one format, else
+        // fall back). Two or more bin arms would chain nested `if`s whose per-arm predicate scratch does
+        // not yet compose cleanly (a slot-typing collision across arms) — decline that until the next
+        // slice, rather than emit an invalid module.
+        let bin_arm_count = classified
+            .iter()
+            .filter(|a| matches!(a, BinArm::Bin(..)))
+            .count();
+        if bin_arm_count > 1 {
+            return Core::Poison(Reject::decline(
+                "a runtime bin match with more than one bin arm is not yet lowered (one bin arm + catch-all)",
+            ));
+        }
+        // MATERIALIZE the scrutinee ONCE: it is read many times (the arm's length probe + literal probes
+        // + the matched arm's binder reads), so recomputing the `BinBuild` per read would both re-run the
+        // construction AND clash scratch slots. Mark it a KEPT binding and read it through a `LocalRef`, so
+        // it evaluates once into a slot and every read is a `local.get`. The whole match is wrapped in a
+        // `Core::Let { (scrutinee, scrutinee), if-chain }` below.
+        db.kept_bindings.insert(scrutinee);
+        let scrut_ref = synth_core(
+            db,
+            Core::LocalRef { binder: scrutinee },
+            crate::ty::Ty::Bytes,
+        );
+        let mut acc: Option<StructId> = None; // the else-tail so far (an occurrence)
+        // Walk arms in REVERSE so the first arm ends up outermost (first-match order).
+        for arm in classified.iter().rev() {
+            match arm {
+                BinArm::CatchAll(body) => {
+                    // A catch-all resets the tail to its body (a later bin arm before it is unreachable in
+                    // first-match order, but we keep the structure simple — the catch-all is normally last).
+                    acc = Some(*body);
+                }
+                BinArm::Bin(segs, body) => {
+                    // Only ALL-int, fixed-width segments are handled at runtime for now.
+                    if !segs
+                        .iter()
+                        .all(|s| matches!(&s.kind, crate::resolved::SegKind::Int { .. }))
+                    {
+                        return Core::Poison(Reject::decline(
+                            "a runtime bin match with a bit-field / bytes segment is not yet lowered",
+                        ));
+                    }
+                    let Some(else_body) = acc else {
+                        // A bin arm with no following catch-all: exhaustiveness already required a
+                        // catch-all, so this is unreachable — decline defensively.
+                        return Core::Poison(Reject::decline(
+                            "a runtime bin match arm has no fallthrough (unreachable)",
+                        ));
+                    };
+                    // The predicate reads the scrutinee through the materialized `scrut_ref`.
+                    let pred = match build_bin_arm_predicate(db, scrut_ref, segs) {
+                        Ok(p) => p,
+                        Err(r) => return Core::Poison(r),
+                    };
+                    acc = Some(synth_if(db, pred, *body, else_body));
+                }
+            }
+        }
+        let Some(root) = acc else {
+            return Core::Poison(Reject::decline("a runtime bin match has no arms"));
+        };
+        // Wrap in a `let` that materializes the scrutinee once (keyed by its own occurrence — the same
+        // occurrence the `scrut_ref` + each arm body's `BinField` read resolve their `LocalRef` to).
+        return Core::Let {
+            bindings: vec![(scrutinee, scrutinee)],
+            body: root,
+        };
     };
     for arm in &classified {
         match arm {
@@ -6324,9 +6398,11 @@ fn decode_bin_field(
     seg_index: usize,
 ) -> Core {
     let Some(raw) = bin_const_scrutinee(db, scrutinee) else {
-        return Core::Poison(Reject::decline(
-            "a bin pattern over a runtime Bytes scrutinee is not yet decoded (constant scrutinee only)",
-        ));
+        // RUNTIME scrutinee — decode the segment directly from the runtime `Bytes` (the arm was already
+        // selected by `lower_match_bin`'s runtime predicate, which guarded the length). Only a fixed-width
+        // INTEGER segment at a STATIC offset is read this way; a bit-field or a (dependent) bytes segment
+        // in a runtime match is a later slice.
+        return decode_bin_field_runtime(db, scrutinee, segs, seg_index);
     };
     let Some(decoded) = bin_match_decode(db, &raw, segs) else {
         return Core::Poison(Reject::decline(
@@ -6356,6 +6432,189 @@ fn decode_bin_field(
             "a bin pattern segment index is out of range",
         )),
     }
+}
+
+/// The STATIC byte offset of segment `seg_index`, plus a flag for whether ALL preceding segments are
+/// fixed-offset (byte-aligned int/`bits`). `None` if a preceding segment makes the offset dynamic (a
+/// dependent-size `(bytes b n)`) or the pattern has a bit-field the runtime path does not handle yet.
+/// The runtime matcher (fixed-offset int segments) uses this to place a `BinIntRead`.
+fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Option<u32> {
+    use crate::resolved::SegKind;
+    let mut off: u32 = 0;
+    for seg in segs.iter().take(seg_index) {
+        match &seg.kind {
+            SegKind::Int { width, .. } => off += *width as u32,
+            // A bit-field / bytes segment before the target makes the runtime read's offset non-trivial
+            // (sub-byte cursor, or dynamic length) — not built yet.
+            SegKind::Bits { .. } | SegKind::Bytes { .. } => return None,
+        }
+    }
+    Some(off)
+}
+
+/// Decode a `bin`-pattern INTEGER segment binder out of a RUNTIME `Bytes` scrutinee (a `BinIntRead` at
+/// the segment's static offset). Only a fixed-width int segment at a fixed offset is supported; anything
+/// else (a bit-field or bytes binder, or an offset made dynamic by a preceding dependent size) declines —
+/// a later runtime-matching slice.
+fn decode_bin_field_runtime(
+    db: &mut Db,
+    scrutinee: StructId,
+    segs: &[crate::resolved::Segment],
+    seg_index: usize,
+) -> Core {
+    use crate::resolved::SegKind;
+    let Some(seg) = segs.get(seg_index) else {
+        return Core::Poison(Reject::decline(
+            "a bin pattern segment index is out of range",
+        ));
+    };
+    match &seg.kind {
+        SegKind::Int { width, signed } => match bin_static_offset(segs, seg_index) {
+            Some(byte_offset) => {
+                // `lower_match_bin` materialized the scrutinee as a KEPT binding, so read it through a
+                // `LocalRef` (its own occurrence is the binding key) — NOT the raw scrutinee occurrence,
+                // which would re-emit the `BinBuild` construction per binder read.
+                let scrut_ref = synth_core(
+                    db,
+                    Core::LocalRef { binder: scrutinee },
+                    crate::ty::Ty::Bytes,
+                );
+                Core::BinIntRead {
+                    bytes: scrut_ref,
+                    byte_offset,
+                    width: *width,
+                    signed: *signed,
+                    little_endian: seg.little_endian,
+                }
+            }
+            None => Core::Poison(Reject::decline(
+                "a runtime bin segment after a variable-length segment is not yet decoded",
+            )),
+        },
+        SegKind::Bits { .. } | SegKind::Bytes { .. } => Core::Poison(Reject::decline(
+            "a runtime bin bit-field / bytes binder is not yet decoded (integer segments only)",
+        )),
+    }
+}
+
+/// Synthesize a fresh node carrying `core` with solved type `ty` (its `core`/`ty` columns pre-filled, so
+/// it lowers/types directly without re-resolution — the same trick `Bytes.slice`'s fold payload uses).
+/// Used by the runtime bin matcher to build the `if`-chain + per-arm predicate out of `Core` directly.
+fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId {
+    let id = db.push_atom(crate::ast::Leaf::Bytes(Vec::new())); // placeholder leaf; core/ty are authoritative
+    db.core.fill(id, core);
+    db.types.fill(id, ty);
+    id
+}
+
+/// A synthesized `(if cond then_ else_)` occurrence (its `Core::If` + result type pre-filled). The result
+/// type is the arm bodies' type (they agree — a well-typed match). Used to chain runtime bin-match arms.
+fn synth_if(db: &mut Db, cond: StructId, then_: StructId, else_: StructId) -> StructId {
+    let ty = crate::infer::type_of(db, then_);
+    synth_core(db, Core::If { cond, then_, else_ }, ty)
+}
+
+/// Build the runtime PREDICATE for a `(bin …)` arm over a runtime `Bytes` `scrutinee`: a boolean `Core`
+/// occurrence that holds exactly when the arm matches — `bytes-len(scrutinee) == total_width` AND, for
+/// each LITERAL segment, `BinIntRead(that segment) == literal`. All segments are fixed-width ints (the
+/// caller guarded that), so the total width is static and each segment's offset is static. A binder
+/// segment adds no probe (it binds); a literal segment must be a constant int. Returns the predicate
+/// occurrence, or a `Reject` if a literal slot is not a constant integer.
+fn build_bin_arm_predicate(
+    db: &mut Db,
+    scrutinee: StructId,
+    segs: &[crate::resolved::Segment],
+) -> Result<StructId, Reject> {
+    use crate::resolved::SegKind;
+    let total: u32 = segs
+        .iter()
+        .map(|s| match &s.kind {
+            SegKind::Int { width, .. } => *width as u32,
+            _ => 0,
+        })
+        .sum();
+    // Length probe: `bytes-len(scrutinee) == total` (whole-scrutinee accounting — a `bin` pattern with no
+    // trailing unsized bytes matches only the exact length). `BytesLen` yields Int64; compare to a const.
+    // `Bytes.len : Int64` emits an i64; type both compare operands FIXED Int64 so the literal grounds to
+    // i64 (an i32-vs-i64 compare is an invalid module).
+    let len_node = synth_core(
+        db,
+        Core::BytesLen { operand: scrutinee },
+        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+    );
+    let total_node = synth_core(
+        db,
+        Core::ConstInt(IntValue::from_i64(total as i64)),
+        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+    );
+    let mut pred = synth_core(
+        db,
+        Core::Compare {
+            op: Prim::Eq,
+            lhs: len_node,
+            rhs: total_node,
+        },
+        crate::ty::Ty::Bool,
+    );
+    // Per LITERAL segment: `BinIntRead(seg) == literal`. A binder slot (a bare name) adds no probe.
+    let mut off: u32 = 0;
+    for (i, seg) in segs.iter().enumerate() {
+        let SegKind::Int { width, signed } = &seg.kind else {
+            continue;
+        };
+        let w = *width as u32;
+        if db.ast.as_name(seg.slot).is_none() {
+            // A literal segment — its slot must be a constant integer.
+            let lit = match core_of(db, seg.slot) {
+                Core::ConstInt(v) => v,
+                Core::Poison(r) => return Err(r),
+                _ => {
+                    return Err(Reject::decline(
+                        "a runtime bin pattern literal segment is not a constant integer",
+                    ));
+                }
+            };
+            let _ = i;
+            // `BinIntRead` always emits an i64; type it FIXED Int64 so the compare's `operand_int_ty`
+            // picks width 64 and grounds the literal operand to i64 (not a default-narrow i32).
+            let read = synth_core(
+                db,
+                Core::BinIntRead {
+                    bytes: scrutinee,
+                    byte_offset: off,
+                    width: *width,
+                    signed: *signed,
+                    little_endian: seg.little_endian,
+                },
+                crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+            );
+            let lit_node = synth_core(
+                db,
+                Core::ConstInt(lit),
+                crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+            );
+            let eq = synth_core(
+                db,
+                Core::Compare {
+                    op: Prim::Eq,
+                    lhs: read,
+                    rhs: lit_node,
+                },
+                crate::ty::Ty::Bool,
+            );
+            pred = synth_core(
+                db,
+                Core::And {
+                    lhs: pred,
+                    rhs: eq,
+                    is_and: true,
+                },
+                crate::ty::Ty::Bool,
+            );
+        }
+        off += w;
+    }
+    Ok(pred)
 }
 
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {

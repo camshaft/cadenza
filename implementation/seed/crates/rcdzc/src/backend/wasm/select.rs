@@ -275,6 +275,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BinBuild { segs } => segs
             .iter()
             .any(|s| binding_escapes(db, s.value, binder, false)),
+        // A `BinIntRead` reads (borrows) its bytes operand to decode a segment — a binding used as the
+        // scrutinee flows in; treat like a projection operand (does not consume-escape).
+        Core::BinIntRead { bytes, .. } => binding_escapes(db, bytes, binder, false),
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
         Core::ListPush { list, elem } => {
@@ -656,6 +659,11 @@ pub fn collect_used_ops(
             for s in &segs {
                 collect_used_ops(db, s.value, out);
             }
+        }
+        // A `BinIntRead` reads its segment bytes with `bytes-get`.
+        Core::BinIntRead { bytes, .. } => {
+            out.insert(OP_BYTES_GET);
+            collect_used_ops(db, bytes, out);
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
@@ -1736,7 +1744,13 @@ fn emit_tail(
                     out.binding_local(slot, name.to_string(), ty.clone());
                 }
                 extended.insert(*binder, slot);
-                floor = slot + 1;
+                // The body emits ABOVE both this binding slot AND any scratch the INITIALIZER used (its
+                // transient slots are recorded in `scratch_ty` at a fixed TYPE; a body reusing one at a
+                // different type would re-type a wasm local → invalid module — e.g. a runtime-`(bin …)`
+                // scrutinee initializer uses an i64 `val` slot, and the match body reuses it as an i32).
+                // `*high` tracks the top slot touched so far. For a scalar/handle initializer with no
+                // scratch, `*high == slot+1`, so this is byte-identical to before.
+                floor = (slot + 1).max(*high);
             }
             // A `let` adds no wasm block (its bindings are plain `local.set`s), so the loop-branch depth
             // is unchanged — the body's tail position is at the same nesting as the `let`.
@@ -2350,6 +2364,56 @@ fn emit(
                 offset += w;
             }
             Ok(()) // leaves [buf] — the bytes handle
+        }
+        // Read a fixed-width int segment out of a runtime `Bytes` scrutinee (a `bin`-pattern binder). The
+        // scrutinee handle is stashed in a slot, then the `w` bytes at `byte_offset` are `bytes-get`'d and
+        // assembled into an i64 accumulator MSB-first (`le` reversed), and sign/zero-extended per `signed`.
+        // The caller's length probe guarantees the read is in bounds. Result: [value:i64].
+        Core::BinIntRead {
+            bytes,
+            byte_offset,
+            width,
+            signed,
+            little_endian,
+        } => {
+            let w = width as u32;
+            let bytes_slot = base;
+            if base + 1 > *high {
+                *high = base + 1;
+            }
+            scratch_ty.insert(bytes_slot, ValType::I32);
+            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalSet(bytes_slot));
+            // Assemble the value: for MSB-first position p (0=MSB), the byte at buffer position `pos` is
+            // shifted left by (w-1-p)*8 and OR'd in. `le` reverses which buffer byte is the MSB.
+            out.push(Lir::ConstI64(0)); // [acc:i64]
+            for p in 0..w {
+                let shift = (w - 1 - p) * 8; // MSB-first bit position
+                let pos = if little_endian {
+                    byte_offset + (w - 1 - p)
+                } else {
+                    byte_offset + p
+                };
+                out.push(Lir::LocalGet(bytes_slot)); // [acc, bytes]
+                out.push(Lir::ConstI32(pos as i32)); // [acc, bytes, pos]
+                out.push(Lir::CallImport(OP_BYTES_GET)); // [acc, byte:i32]
+                out.push(Lir::I64ExtendI32U); // [acc, byte:i64] (0..=255)
+                if shift > 0 {
+                    out.push(Lir::ConstI64(shift as i64));
+                    out.push(Lir::I64Shl); // [acc, byte << shift]
+                }
+                out.push(Lir::I64Or); // [acc']
+            }
+            // Sign-extend a SIGNED segment narrower than 64 bits from its top bit; an unsigned segment is
+            // already zero-extended (each byte was zero-extended). Shift left then arithmetic-shift right.
+            if signed && w < 8 {
+                let sh = ((8 - w) * 8) as i64; // bits above the value
+                out.push(Lir::ConstI64(sh));
+                out.push(Lir::I64Shl);
+                out.push(Lir::ConstI64(sh));
+                out.push(Lir::I64ShrS); // arithmetic → sign-extended
+            }
+            Ok(()) // leaves [value:i64]
         }
         // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
         // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.
@@ -3230,7 +3294,13 @@ fn emit(
                     out.binding_local(slot, name.to_string(), ty.clone());
                 }
                 extended.insert(*binder, slot);
-                floor = slot + 1;
+                // The body emits ABOVE both this binding slot AND any scratch the INITIALIZER used (its
+                // transient slots are recorded in `scratch_ty` at a fixed TYPE; a body reusing one at a
+                // different type would re-type a wasm local → invalid module — e.g. a runtime-`(bin …)`
+                // scrutinee initializer uses an i64 `val` slot, and the match body reuses it as an i32).
+                // `*high` tracks the top slot touched so far. For a scalar/handle initializer with no
+                // scratch, `*high == slot+1`, so this is byte-identical to before.
+                floor = (slot + 1).max(*high);
             }
             // The body computes its value (left on the stack). A heap binding is RECLAIMED
             // (`local.get <slot>; drop`) only if it is DEAD after the body — used solely in BORROWING

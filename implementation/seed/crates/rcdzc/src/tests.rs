@@ -5766,6 +5766,85 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_bin_match_decodes_a_runtime_bytes_scrutinee_under_wasmtime() {
+        // A `(bin …)` PATTERN over a RUNTIME `Bytes` scrutinee (built from a boundary param, so it cannot
+        // fold): the matcher probes `bytes-len == total & (each literal segment == its literal)` and, on a
+        // match, binds each segment via `BinIntRead`. One bin arm + a catch-all (the supported shape). The
+        // scrutinee here is `(bin (uNN n))` built from the param, then matched back — a runtime round-trip.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime bin match run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // u16 round-trip: build (u16 n) at runtime, match it back → n.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
+                &["258"]
+            ),
+            "258",
+            "runtime u16 match round-trip"
+        );
+        // Signed i8: byte 0xFF decodes to -1 (two's complement).
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (i8 n)) ((bin (i8 m)) m) (_ -9))) (export main))",
+                &["-1"]
+            ),
+            "-1",
+            "runtime signed i8 match"
+        );
+        // Little-endian read matches the little-endian build.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u16 n le)) ((bin (u16 m le)) m) (_ -9))) (export main))",
+                &["258"]
+            ),
+            "258",
+            "runtime le match round-trip"
+        );
+        // A leading LITERAL tag dispatches: tag 1 matches → decode the u16; else the catch-all.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u8 1) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
+                &["300"]
+            ),
+            "300",
+            "runtime literal-tag match"
+        );
+        // A mismatched literal tag (built 2, pattern wants 1) → the catch-all (-9), NOT a wrong decode.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u8 2) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main))",
+                &["300"]
+            ),
+            "-9",
+            "runtime literal-tag mismatch → catch-all"
+        );
+        // Whole-scrutinee: a length mismatch (built 1 byte, pattern wants 2) → the catch-all.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) (match (bin (u8 n)) ((bin (u16 m)) m) (_ -9))) (export main))",
+                &["5"]
+            ),
+            "-9",
+            "runtime length mismatch → catch-all"
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
