@@ -15164,6 +15164,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_record_field_carries_a_delete_the_duplicate_fix() {
+        // A record naming a field twice (CDZ0201) now carries the mechanical repair: DELETE the redundant
+        // `(key value)` entry — the SECOND occurrence, since the first already binds the name. Read a field
+        // so the record is reached (a bare record value declines for the heap first).
+        let d = first_error("(module m (def (f) (. (record (a 1) (a 2) (b 3)) b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("more than once"),
+            "names the fault: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a delete-the-duplicate fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(
+            !fix.verified,
+            "removing vs renaming is the author's call → heuristic"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_export_carries_a_delete_the_duplicate_fix() {
+        // Exporting a name twice (CDZ0201) now carries a DELETE fix on the redundant later `(export …)`
+        // clause — the earlier one already makes the name public, so removing the duplicate is the direct
+        // resolution (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+        let d = first_error("(module m (def (a) 1) (export a) (export a))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("exported more than once"),
+            "names the fault: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a delete-the-duplicate-export fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+    }
+
+    #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
         // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the

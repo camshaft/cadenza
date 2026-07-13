@@ -2861,12 +2861,22 @@ pub(crate) fn read_record_fields(
                 ));
             }
         };
-        // A duplicate field name — anywhere in the list — is ill-formed.
+        // A duplicate field name — anywhere in the list — is ill-formed. `field` is the SECOND
+        // `(key value)` entry (the first `insert` of this label already succeeded), so the mechanical
+        // repair is to DELETE this redundant entry: a record has a fixed field SET, and the earlier entry
+        // already binds the name. Anchor at the offending entry and carry a `delete` fix (heuristic — the
+        // author might instead have meant to RENAME one field, but removing the duplicate is the direct
+        // resolution of "named more than once"; `--verify-fixes` confirms it recompiles).
         if fields.insert(label.clone(), kv[1]).is_some() {
             return Err(Reject::coded(
                 Code::Malformed,
                 format!("record names field `{}` more than once", label.name),
-            ));
+            )
+            .at(field)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                field,
+                format!("remove the duplicate `{}` field", label.name),
+            )));
         }
     }
     Ok(fields)
