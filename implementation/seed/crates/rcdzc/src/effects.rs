@@ -283,6 +283,159 @@ impl HandlerCtx {
     }
 }
 
+/// If an INNER handle with arms `inner_arms`, nested inside the OUTER context `outer`, must be MERGED with
+/// the outer context to fold — build the merged context (`Some`), else `None` (use the inside-out path).
+///
+/// The merge is needed exactly when the inner handle's body reaches a RECURSIVE callee that performs BOTH
+/// the inner effect AND an outer effect: neither handler alone can specialize such a callee (specializing
+/// on the inner effect only would leave the outer performs unresolved inside the specialized body). The
+/// merged context is the UNION of the outer arms and the inner arms, with the inner handler's slot
+/// APPENDED after the outer slots (so the recursive fn threads `s_outer…, s_inner`, outermost-first). The
+/// inner slot's state type is derived from the inner handle's own arms via `state_ty_of_arms` — but the
+/// caller supplies `inner_init` when threading (the type is only for the specialized param annotation).
+///
+/// `None` (fall back to inside-out) when: the inner arms span more than one effect (a single `handle`
+/// discharges one effect, so this should not happen — defensive), the inner effect is already an outer
+/// slot (re-entrant same-effect nesting — the inside-out shadow path handles it), or the inner body does
+/// not reach a recursive callee performing an outer effect (an ordinary nested handler — inside-out).
+fn merged_nested_ctx(
+    db: &mut Db,
+    inner_arms: &[HandleArm],
+    inner_body: StructId,
+    outer: &HandlerCtx,
+) -> Option<HandlerCtx> {
+    // The single effect the inner handle discharges (all its arms share a decl).
+    let inner_decl = inner_arms
+        .first()
+        .and_then(|a| crate::eval::effect_op_of(db, a.op))
+        .map(|(d, _)| d.0)?;
+    // Re-entrant same-effect nesting (the inner effect is already an outer slot) is the inside-out shadow
+    // case — not a merge.
+    if outer.slot_of(inner_decl).is_some() {
+        return None;
+    }
+    // Build the candidate merged arm map (outer arms ∪ inner arms) and slots (outer slots ++ inner slot).
+    let mut arms = outer.arms.clone();
+    for arm in inner_arms {
+        let (decl, idx) = crate::eval::effect_op_of(db, arm.op)?;
+        // A malformed resume-vs-result type declines, as in `reduce_handle`.
+        if !resume_result_type_ok(db, arm) {
+            return None;
+        }
+        arms.insert((decl.0, idx), arm.clone());
+    }
+    let mut slots: Vec<StateSlot> = outer
+        .slots
+        .iter()
+        .map(|s| StateSlot {
+            decl: s.decl,
+            state_ty: s.state_ty.clone(),
+        })
+        .collect();
+    // The inner slot's state type — from the inner handle's arms' resume next-states.
+    let inner_state_ty = inner_state_ty_from_arms(db, inner_arms);
+    slots.push(StateSlot {
+        decl: inner_decl,
+        state_ty: inner_state_ty,
+    });
+    let merged = HandlerCtx::new(arms, slots);
+    // Only MERGE if the inner body reaches a RECURSIVE callee that (under the merged context) performs an
+    // OUTER effect too — the two-nested-states signature. When it does, the inside-out path can't fold it
+    // (specializing on the inner effect alone leaves the outer performs unresolved); merging lets the
+    // callee specialize ONCE against both. When it doesn't (an ordinary non-recursive nested handler like
+    // `(+ (A.a) (B.b))`), the inside-out path is correct and cheaper — return `None`.
+    if inner_body_needs_merge(db, inner_body, inner_decl, &merged) {
+        Some(merged)
+    } else {
+        None
+    }
+}
+
+/// Whether the inner handle's body needs the MERGE (vs the inside-out path): it reaches a RECURSIVE callee
+/// (specializable under the merged context) whose body performs an effect the inner handler does NOT
+/// discharge — an outer effect. That is exactly the shape the inside-out path cannot fold.
+fn inner_body_needs_merge(
+    db: &mut Db,
+    node: StructId,
+    inner_decl: u32,
+    merged: &HandlerCtx,
+) -> bool {
+    // A syntactic call to a recursive callee the merged context discharges: does that callee's body reach
+    // an OUTER (non-inner) discharged effect?
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && recursive_call_reaches_discharged(db, &head, merged)
+        && let Some(callee_def) = callee_def_index_of(db, head)
+        && let Some(body) = db.defs[callee_def].body
+        && callee_reaches_outer_effect(db, body, inner_decl, merged, 0)
+    {
+        return true;
+    }
+    // Otherwise descend structurally (the recursive callee may be nested in an `if`/`do`/etc.).
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| inner_body_needs_merge(db, c, inner_decl, merged)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `node` (a recursive callee's body) performs an effect the merged context discharges OTHER than
+/// the inner effect `inner_decl` — i.e. an outer effect. Bounded structural walk following non-recursive
+/// calls (mirrors `body_reaches_discharged`).
+fn callee_reaches_outer_effect(
+    db: &mut Db,
+    node: StructId,
+    inner_decl: u32,
+    merged: &HandlerCtx,
+    depth: u32,
+) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((decl, idx)) = is_perform(db, head, merged)
+        && decl != inner_decl
+    {
+        let _ = idx;
+        return true;
+    }
+    // Follow a non-recursive call into its body.
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        && !crate::eval::is_recursive(db, callee)
+        && callee_reaches_outer_effect(db, callee, inner_decl, merged, depth + 1)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| callee_reaches_outer_effect(db, c, inner_decl, merged, depth)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// The inner handler's state type from its arms alone (the join of its tail arms' next-state types). Used
+/// to annotate the merged context's inner slot. `None` if undetermined (blocks a recursive specialization
+/// on that slot, a clean decline).
+fn inner_state_ty_from_arms(db: &mut Db, arms: &[HandleArm]) -> Option<crate::ty::Ty> {
+    let mut t: Option<crate::ty::Ty> = None;
+    for arm in arms {
+        if let Some(next) = tail_resume_next_state_of(db, arm.body) {
+            let nt = crate::infer::type_of(db, next);
+            t = Some(match t {
+                Some(prev) => prev.join(&nt),
+                None => nt,
+            });
+        }
+    }
+    match t {
+        Some(ty) if !matches!(ty, crate::ty::Ty::Any) => Some(ty),
+        _ => None,
+    }
+}
+
 /// Reduce a `(handle init arms body)` to a rewritten BODY occurrence with every perform of a discharged
 /// operation resolved to its arm and rewritten tail-resumptively, or `None` to DECLINE (the case is not
 /// in the tail-resumptive shipping surface — `lower` then declines cleanly, a Todo). `init`/`arms`/`body`
@@ -528,7 +681,10 @@ pub fn reduce_handle(
     // so the context has ONE state slot. `state_ty_of_arms` derives the slot's state type from the init
     // seed joined with the arms' next-states. A NESTED handler whose shared recursive callee performs both
     // effects is MERGED into a multi-slot context by `thread_bounded`'s nested-`Handle` arm.
-    let decl = arms.first().and_then(|a| crate::eval::effect_op_of(db, a.op)).map(|(d, _)| d.0)?;
+    let decl = arms
+        .first()
+        .and_then(|a| crate::eval::effect_op_of(db, a.op))
+        .map(|(d, _)| d.0)?;
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
     let ctx = HandlerCtx::new(map, vec![slot]);
@@ -881,22 +1037,43 @@ fn thread_bounded(
             let rbindings = db.push_list(rpairs);
             Some((db.push_list(vec![let_head, rbindings, rbody]), cur))
         }
-        // A NESTED `handle` in the handled body — handlers COMPOSE inside-out. Reduce the inner handle
-        // recursively (`reduce_handle`), which discharges ITS OWN effect and rewrites its performs to
-        // plain code; the result may still perform the OUTER effect (an effect the inner handler does not
-        // discharge), which we then thread under the OUTER context. So `(handle_B … (handle_A … body))`
-        // folds `A` away first, leaving `B` performs for `B`'s fold. The inner reduction is
-        // self-contained (it threads its OWN init/state); its result is a value in the OUTER context, so
-        // the outer state passes THROUGH unchanged at this node (the inner handle's own state is not the
-        // outer's). This is what makes two nested intra-program handlers work.
+        // A NESTED `handle` in the handled body. TWO ways it composes:
+        //
+        // (1) MERGED context (the two-nested-states case): the inner handle's body reaches a RECURSIVE
+        //     callee that performs BOTH the inner AND an outer effect — so neither handler alone can fold
+        //     it (the inside-out path below would leave the outer performs inside a specialization keyed on
+        //     the inner effect only). Instead MERGE the inner handler's slot into the outer context (the
+        //     union of arms, the inner slot APPENDED after the outer slots), push the inner `init` as the
+        //     new slot's incoming state, and thread the inner body under the merged context. The recursive
+        //     callee then specializes ONCE against the combined context — `f#ctx(args…, s_outer…, s_inner)`
+        //     — threading each effect's state as its own trailing param (`DESIGN-effects-rcdzc.md` §4.3).
+        //     After threading, the outer slots' states are the merged vector's PREFIX (the inner slot's
+        //     final state is discarded — the handle's value is its body's value).
+        // (2) INSIDE-OUT (the existing non-merged path): reduce the inner handle in isolation
+        //     (`reduce_handle` discharges ITS effect, rewriting its performs to plain code), then thread the
+        //     reduced result — which may still perform an outer effect — under the OUTER context. So
+        //     `(handle_B … (handle_A … body))` folds `A` away first, leaving `B` performs for `B`'s fold.
+        //     Used when the inner body does NOT reach a recursive callee performing an outer effect.
         Resolved::Handle {
             init: inner_init,
             arms: inner_arms,
             body: inner_body,
         } => {
-            let reduced = reduce_handle(db, inner_init, &inner_arms, inner_body)?;
-            // Thread the reduced result (which may still perform the outer effect) under the outer ctx.
-            thread_bounded(db, reduced, states, ctx, inline_depth)
+            if let Some(merged) = merged_nested_ctx(db, &inner_arms, inner_body, ctx) {
+                // Thread the inner body under the merged context, with the inner slot seeded by its init
+                // (appended after the outer states). The merged vector = outer states ++ [inner init].
+                let mut merged_states = states.clone();
+                merged_states.push(inner_init);
+                let (rbody, out) =
+                    thread_bounded(db, inner_body, merged_states, &merged, inline_depth)?;
+                // Drop the inner slot's final state; return the OUTER slots' states (the prefix).
+                let outer_states = out[..states.len()].to_vec();
+                Some((rbody, outer_states))
+            } else {
+                let reduced = reduce_handle(db, inner_init, &inner_arms, inner_body)?;
+                // Thread the reduced result (which may still perform an outer effect) under the outer ctx.
+                thread_bounded(db, reduced, states, ctx, inline_depth)
+            }
         }
         // An ordinary application / arithmetic / comparison / connective / `not` over sub-expressions:
         // thread state through the operands in left-to-right order, rebuilding the same head. This

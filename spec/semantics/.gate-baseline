@@ -323,6 +323,7 @@ pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive function sums a range it walks by performing a fresh-index effect
 pass	a recursive function that threads a tuple accumulator returns it
+pass	a recursive function threads two nested handlers' states at once
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
@@ -942,7 +943,6 @@ todo	a rational-magnitude quantity erases to its exact rational value
 todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
-todo	a recursive function threads two nested handlers' states at once
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a recursive sum consumer whose arguments are recursive sum producers compiles

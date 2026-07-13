@@ -8941,6 +8941,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
+        // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
+        // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)
+        // folds across the steps. The ticks read 3,2,1,0 (three non-zero), the bumps read 0,10,20, so the
+        // sum is 0+10+20+0 = 30. Both states are live simultaneously — neither handler alone can specialize
+        // `loop` (it performs BOTH effects), so the fold MERGES the two contexts into one 2-slot context
+        // and specializes `loop#ctx(s_B, s_A)` once, threading each effect's state as its own trailing
+        // param (`DESIGN-effects-rcdzc.md` §4.3: "two nested handlers → two trailing params").
+        let src = "(do (effect A (op tick (-> Unit Int64))) (effect B (op bump (-> Unit Int64))) \
+                   (def (loop) (if (= (A.tick) 0) 0 (+ (B.bump) (loop)))) \
+                   (def (main) (handle 0 ((B.bump (u) s (resume s (+ s 10)))) \
+                     (handle 3 ((A.tick (u) s (resume s (- s 1)))) (loop)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("two nested handler states specialize"),
+                "main"
+            ),
+            30
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_walk_accumulates_into_a_list_state_handler() {
         // E3 list-state: a recursive effectful walk over a 2-arm handler whose state is an empty-list
         // seed `(list)`. `walk` performs `(Diag.emit n)` at each descent step and reads the accumulator
