@@ -1089,9 +1089,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::SymbolOf) if args.len() == 1 => match core_of(db, args[0]) {
                     c @ Core::ConstStr(_) => c,
                     Core::Poison(r) => Core::Poison(r),
-                    _ => Core::Poison(Reject::decline(
+                    _ => runtime_string_op_decline(
+                        db,
+                        args[0],
                         "Symbol.of on a runtime string is not yet interned (constant strings only)",
-                    )),
+                    ),
                 },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
@@ -6051,6 +6053,25 @@ fn core_equiv(db: &mut Db, a: StructId, b: StructId) -> bool {
             },
         ) => ix == iy && core_equiv(db, px, py),
         _ => false,
+    }
+}
+
+/// The "not-yet-computed on a runtime string" DECLINE for a string operation whose `arg` did not fold
+/// to a constant — BUT only when `arg` is actually a `String`. When `arg` is NOT a string (`(Symbol.of
+/// 5)` — a type error `infer` already reports as CDZ0203), the "runtime string" wording is a lie that
+/// shadows the real type error; emit a NEUTRAL decline instead so the coded CDZ0203 is the story the
+/// reader sees. (A genuine runtime string keeps the precise `msg`, the honest "constant strings only"
+/// increment note.)
+fn runtime_string_op_decline(db: &mut Db, arg: crate::ast::StructId, msg: &str) -> Core {
+    if matches!(crate::infer::type_of(db, arg), crate::ty::Ty::String) {
+        Core::Poison(Reject::decline(msg.to_string()))
+    } else {
+        // Not a string — the type mismatch (CDZ0203) is the authoritative report; do not claim a
+        // "runtime string" it is not. This decline is generic (a lowering can't proceed on an
+        // ill-typed operand) and defers to the coded type error.
+        Core::Poison(Reject::decline(
+            "this operation's operand is not a string (see the type error above)",
+        ))
     }
 }
 
