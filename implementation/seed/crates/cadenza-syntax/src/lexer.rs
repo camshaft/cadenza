@@ -118,6 +118,21 @@ impl<'a> Lexer<'a> {
             '/' => return Some(self.slash(a)),
             '-' => return Some(self.minus(a)),
             c if c.is_ascii_digit() => return Some(self.number(a)),
+            // `b"…"` is a byte-string literal (the surface form of a `Bytes`), NOT the identifier `b`
+            // followed by a string. Must precede the ident arm since `b` is an ident-start. The parser
+            // builds `Leaf::Bytes` from it, mirroring the sexpr reader's `read_byte_string`.
+            'b' if self.peek() == Some('"') => {
+                let quote = self.bump().unwrap(); // the opening `"`
+                let str_tok = self.read_string(quote);
+                return Some(Token {
+                    kind: if str_tok.kind == Kind::Str {
+                        Kind::ByteStr
+                    } else {
+                        Kind::Error // unterminated
+                    },
+                    span: a.span.merge(str_tok.span),
+                });
+            }
             c if is_ident_start(c) => return Some(self.ident(a)),
             _ => Kind::Error,
         };
