@@ -5449,6 +5449,89 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_refinement_folds_a_comparison_of_two_disjoint_refined_ranges() {
+        // FLOW-SENSITIVE RANGE-VS-RANGE FOLD: when two DIFFERENT variables are each refined by an enclosing
+        // branch so their ranges are DISJOINT, a comparison BETWEEN them is decided — no runtime compare.
+        // `(if (> a 100) (if (< b 50) (< b a) …))`: under `a ∈ [101,…]` and `b ∈ […,49]`, `b < a` is always
+        // true, so the innermost `if` collapses to its taken branch. This generalizes the const-vs-range
+        // fold (one operand constant) to two runtime intervals. Pins the elimination at the Lir level (the
+        // inner `b < a` compare is gone — only the two guard compares remain) AND value parity, including
+        // an OVERLAPPING refinement that must NOT fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                    )
+                })
+                .count()
+        };
+        // DISJOINT: `a > 100` and `b < 50` make `b < a` always true → the inner `if` folds, leaving only the
+        // two guard compares (`> 100`, `< 50`), NOT three.
+        let disjoint = select(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&disjoint),
+            2,
+            "the disjoint inner `b < a` should fold away, leaving two guards, got: {disjoint:?}"
+        );
+        assert!(
+            !disjoint.iter().any(|i| matches!(i, Lir::Select)),
+            "the decided inner `if` collapses to its taken branch, no select, got: {disjoint:?}"
+        );
+        // OVERLAP: widen `b`'s guard to `< 500` so `b ∈ […,499]` and `a ∈ [101,…]` OVERLAP — `b < a` is NOT
+        // decided and all THREE compares remain (guards against over-folding).
+        let overlap = select(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&overlap),
+            3,
+            "an overlapping inner comparison must NOT be folded, got: {overlap:?}"
+        );
+
+        // VALUE PARITY. Disjoint: b<a always true when the guards pass; guards failing → 0.
+        let dj = "(if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)";
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(200), Val::S64(10)]), 1);
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(200), Val::S64(49)]), 1);
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(200), Val::S64(60)]), 0); // b<50 fails
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(50), Val::S64(10)]), 0); // a>100 fails
+        // Overlap: the real `b < a` decides — both outcomes must be correct.
+        let ov = "(if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0)";
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", ov, &[Val::S64(400), Val::S64(300)]), 1); // b<a
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", ov, &[Val::S64(200), Val::S64(300)]), 0); // b>a
+    }
+
+    #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
         // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
