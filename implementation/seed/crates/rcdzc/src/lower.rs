@@ -661,6 +661,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
                 }
+                // A FLOAT arithmetic prim (`+.`/`-.`/`*.`/`/.`) — fold two constant floats, else decline
+                // (runtime float operands emit the machine op in F4).
+                Some(prim) if prim.is_float_arith() => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: float arithmetic prim");
+                    lower_float_arith(db, id, prim, &args)
+                }
                 // `compare` — the three-way comparison, yielding an `Ordering` sum (Less/Equal/Greater).
                 // FOLD a constant scalar/string pair to the matching variant; a compound/runtime operand
                 // declines (as the comparison prims do).
@@ -1417,19 +1423,11 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             BinArm::Bin(segs, body) => {
                 // A segment BN3 can't decide (a dependent-size `(bytes b n)`) → we cannot know whether
                 // this arm matches, so we must NOT silently skip it to a later arm (that would MISCOMPILE
-                // a case whose dependent arm should match). Decline the whole match instead (BN4 decides
-                // it). `bin_match_decode` returns `None` for BOTH a genuine non-match AND an undecidable
-                // dependent segment — distinguish: if any segment is a dependent `(bytes _ Some)`, decline.
-                if segs
-                    .iter()
-                    .any(|s| matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(_) }))
-                {
-                    return Core::Poison(Reject::decline(
-                        "a bin pattern with a dependent-size segment is not yet matched (BN4)",
-                    ));
-                }
-                let Some(decoded) = bin_match_decode(&raw, segs) else {
-                    continue; // a genuine non-match (overrun / leftover) → next arm
+                // a case whose dependent arm should match). `bin_match_decode` handles dependent-size
+                // `(bytes body n)` now (BN4), decoding `n` from an earlier segment; a genuine non-match
+                // (overrun / leftover / dependent-size overrun) returns `None` → fall to the next arm.
+                let Some(decoded) = bin_match_decode(db, &raw, segs) else {
+                    continue;
                 };
                 // Every LITERAL-slot segment must equal its decoded value (a magic-number / tag probe).
                 // A binder slot (a bare name) is bound, not tested.
@@ -2659,6 +2657,19 @@ fn collect_captures(
             if params.contains(&binder) {
                 return true;
             }
+            // DEGENERATE SELF-CAPTURE — the reference occurrence IS its own binder (`binder == node`).
+            // A legitimate capture reference and its binder are DISTINCT occurrences (the binder sits in a
+            // param list / `let`; the use sits in the body). They coincide only as a copy artifact: when a
+            // lambda ARGUMENT is `resolve_subtree`-pinned at a call site and that lambda is later itself
+            // copied (its enclosing def inlined), a pinned OWN-param body reference is shared into the copy
+            // while the param LIST is copied fresh — leaving a body occurrence that resolves to the
+            // ORIGINAL param binder, now orphaned (no slot at the build site). Emitting it produced an
+            // invalid module (a bare env-read / `local.get` with no backing local). A sound α-renaming fix
+            // to the copy machinery is a separate, larger change; until then DECLINE rather than miscompile
+            // (reject-don't-miscompile). This does NOT hit a genuine capture (distinct binder/use nodes).
+            if binder == node {
+                return false;
+            }
             record_capture(binder, node, captures, capture_refs);
             return true;
         }
@@ -3788,6 +3799,74 @@ fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 rhs: args[1],
             }
         }
+    }
+}
+
+/// Lower a FLOAT arithmetic application (`+.`/`-.`/`*.`/`/.`). FOLDS two constant floats at the solved
+/// float WIDTH (the `Decimal` operands round to the width's IEEE format, the op runs, the result rounds
+/// back — round-to-nearest-even, the fixed deterministic mode); a non-constant operand DECLINES (runtime
+/// float ops emit the machine `f64.add`/… in a later increment). Unlike integer arithmetic there is NO
+/// checked-trap: an IEEE overflow yields an infinity — but a NON-FINITE result has no written value form
+/// (the float-literal-overflow rule), so a fold to `±inf`/NaN DECLINES rather than producing a bad value.
+fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
+    if args.len() != 2 {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            format!("{} takes exactly 2 operands", intrinsic_name(op)),
+        ));
+    }
+    let lhs = core_of(db, args[0]);
+    let rhs = core_of(db, args[1]);
+    match (lhs, rhs) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::ConstFloat(a), Core::ConstFloat(b)) => {
+            // The result WIDTH is the application's solved type (both operands unify to it). Fold at that
+            // width: round each operand to the width's format, compute, round the result back.
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            let fold_at = |x: f64, y: f64| -> f64 {
+                let r = match op {
+                    Prim::FAdd => x + y,
+                    Prim::FSub => x - y,
+                    Prim::FMul => x * y,
+                    Prim::FDiv => x / y,
+                    _ => f64::NAN,
+                };
+                // A `Float32` result rounds through binary32 (`as f32 as f64`), the fixed narrower mode;
+                // `Float64` computes directly. Both round-to-nearest-even (the IEEE default wasm uses).
+                if width == 32 { r as f32 as f64 } else { r }
+            };
+            let (x, y) = if width == 32 {
+                (
+                    f64::from_bits(a.to_f64_bits()) as f32 as f64,
+                    f64::from_bits(b.to_f64_bits()) as f32 as f64,
+                )
+            } else {
+                (
+                    f64::from_bits(a.to_f64_bits()),
+                    f64::from_bits(b.to_f64_bits()),
+                )
+            };
+            let result = fold_at(x, y);
+            match crate::ast::Decimal::from_f64(result) {
+                Some(d) => {
+                    trace!(target: "rcdzc::lower", op = intrinsic_name(op), width, "folded constant float op");
+                    Core::ConstFloat(d)
+                }
+                // A non-finite result (overflow → ±inf, 0.0/.0 → NaN) has no written value form — decline
+                // rather than emit an unrepresentable constant (the float-literal-overflow discipline).
+                None => Core::Poison(Reject::decline(
+                    "a floating-point operation whose result is not finite has no value form yet",
+                )),
+            }
+        }
+        // A runtime float operand — the machine `f64.add`/… emit is a later increment (needs the f64
+        // arithmetic opcodes via the codegen op-list). Decline cleanly.
+        _ => Core::Poison(Reject::decline(
+            "a runtime float arithmetic operand is not yet emitted (only a constant float folds)",
+        )),
     }
 }
 
@@ -5246,9 +5325,42 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     }
                 }
             }
-            // Bytes splices are not folded yet (BN4).
-            SegKind::Bytes { .. } => {
-                return Core::Poison(Reject::decline("a bin bytes segment is not yet built"));
+            // A `(bytes b [n])` splice — append all of the constant byte sequence `b`. A dependent size
+            // `n` (`(bytes b n)`) is a LENGTH CONSTRAINT on construction: `|b|` must equal `n`, else the
+            // value does not fit its segment → trap (CDZ0304 for a constant). The whole `bin` is
+            // byte-aligned (CDZ0220), so the accumulator is empty here.
+            SegKind::Bytes { size } => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a bytes segment"
+                );
+                let Some(bytes) = bin_const_scrutinee(db, seg.slot) else {
+                    if let Core::Poison(r) = core_of(db, seg.slot) {
+                        return Core::Poison(r);
+                    }
+                    return Core::Poison(Reject::decline(
+                        "a bin bytes segment with a runtime value is not yet built (constant only)",
+                    ));
+                };
+                if let Some(n_occ) = size {
+                    match core_of(db, *n_occ) {
+                        Core::ConstInt(v) => {
+                            if v.to_i64().filter(|n| *n >= 0) != Some(bytes.len() as i64) {
+                                return Core::Poison(Reject::coded(
+                                    Code::ConstTrap,
+                                    "binary value does not fit segment",
+                                ));
+                            }
+                        }
+                        Core::Poison(r) => return Core::Poison(r),
+                        _ => {
+                            return Core::Poison(Reject::decline(
+                                "a bin bytes segment size is not a compile-time constant (not yet built)",
+                            ));
+                        }
+                    }
+                }
+                raw.extend(bytes);
             }
         }
     }
@@ -5303,14 +5415,19 @@ enum BinDecoded {
 
 /// Run a `bin` PATTERN's segment automaton over the concrete bytes `raw`, left-to-right. Returns each
 /// segment's decoded value if the pattern MATCHES the WHOLE sequence, else `None` (a non-match: a
-/// fixed-width segment overruns the input, a bit-field run does not close, or bytes are left unconsumed
-/// with no trailing unsized `(bytes …)`). BN3 handles fixed-width ints, bit-fields, and a FINAL unsized
-/// `(bytes rest)`; a dependent-size `(bytes b n)` is BN4 (returns `None`-with-a-flag via the caller). The
-/// literal-vs-binder distinction is the CALLER's (a literal slot must equal the decoded int); here we
-/// just decode every segment's raw value + enforce widths/consumption.
-fn bin_match_decode(raw: &[u8], segs: &[crate::resolved::Segment]) -> Option<Vec<BinDecoded>> {
+/// fixed-width segment overruns the input, a bit-field run does not close, a dependent size overruns the
+/// remainder, or bytes are left unconsumed with no trailing unsized `(bytes …)`). Handles fixed-width
+/// ints, bit-fields, a FINAL unsized `(bytes rest)`, and a DEPENDENT-size `(bytes body n)` (`n` names an
+/// earlier INT segment binder — resolved to that segment's already-decoded value). The literal-vs-binder
+/// distinction is the CALLER's (a literal slot must equal the decoded int); here we decode every
+/// segment's raw value + enforce widths/consumption.
+fn bin_match_decode(
+    db: &Db,
+    raw: &[u8],
+    segs: &[crate::resolved::Segment],
+) -> Option<Vec<BinDecoded>> {
     use crate::resolved::SegKind;
-    let mut out = Vec::with_capacity(segs.len());
+    let mut out: Vec<BinDecoded> = Vec::with_capacity(segs.len());
     let mut off: usize = 0; // byte offset
     let mut acc: u64 = 0; // open bit-accumulator (MSB-first) between bit-fields
     let mut nbits: u32 = 0;
@@ -5375,8 +5492,34 @@ fn bin_match_decode(raw: &[u8], segs: &[crate::resolved::Segment]) -> Option<Vec
                 out.push(BinDecoded::ByteRange(off, raw.len()));
                 off = raw.len();
             }
-            // A dependent-size `(bytes b n)` is BN4 — signal "can't decide here" to the caller.
-            SegKind::Bytes { size: Some(_) } => return None,
+            // A DEPENDENT-size `(bytes body n)`: `n` names an EARLIER integer segment binder — resolve it
+            // to that segment's already-decoded value, then bind exactly `n` bytes at the cursor. `n == 0`
+            // is a valid empty bind; `n` overrunning the remainder is a NON-MATCH (fall through). The
+            // whole `bin` is byte-aligned here (CDZ0220), so the cursor is on a byte boundary.
+            SegKind::Bytes { size: Some(n_occ) } => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a bytes segment"
+                );
+                // `n_occ` is a name referencing an earlier segment's binder. Find that segment by name and
+                // read its decoded Int. (A non-name / forward / non-int size reference can't be resolved
+                // here → non-match, conservatively.)
+                let size_name = db.ast.as_name(*n_occ)?;
+                let bound = segs
+                    .iter()
+                    .take(i)
+                    .position(|s| db.ast.as_name(s.slot) == Some(size_name))
+                    .and_then(|idx| match out.get(idx) {
+                        Some(BinDecoded::Int(v)) => Some(*v),
+                        _ => None,
+                    });
+                let n = bound.filter(|v| *v >= 0)? as usize;
+                if off + n > raw.len() {
+                    return None; // the named size overruns the remaining bytes → non-match
+                }
+                out.push(BinDecoded::ByteRange(off, off + n));
+                off += n;
+            }
         }
     }
     // Whole-scrutinee accounting: after the last segment, any open bits or leftover bytes are a non-match
@@ -5405,7 +5548,7 @@ fn decode_bin_field(
             "a bin pattern over a runtime Bytes scrutinee is not yet decoded (constant scrutinee only)",
         ));
     };
-    let Some(decoded) = bin_match_decode(&raw, segs) else {
+    let Some(decoded) = bin_match_decode(db, &raw, segs) else {
         return Core::Poison(Reject::decline(
             "a bin pattern segment could not be decoded at compile time (dependent size / non-match)",
         ));

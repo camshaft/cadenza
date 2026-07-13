@@ -2458,6 +2458,35 @@ mod runtime_ops {
     }
 
     #[test]
+    fn signed_negation_traps_only_at_min() {
+        // `(- 0 a)` is integer negation; the specialized guard is `a == MIN → trap` (the sole overflow),
+        // replacing the general two-`xor` sub guard. The Lir shape is checked in select.rs; here we
+        // confirm the VALUE is `-a` for every in-range input and that ONLY `MIN` traps.
+        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(5)]), -5);
+        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(-5)]), 5);
+        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(0)]), 0);
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MAX)]),
+            -i64::MAX
+        );
+        // MIN+1 is fine (its negation is MAX); MIN itself traps (−MIN is not representable).
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MIN + 1)]),
+            i64::MAX
+        );
+        assert!(
+            traps("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MIN)]),
+            "negating MIN must trap"
+        );
+        // A NARROW negation keeps the range-check path — same value/trap behavior at its own width.
+        assert_eq!(run::<i32>("(: a Int32)", "(- 0 a)", &[Val::S32(7)]), -7);
+        assert!(
+            traps("(: a Int32)", "(- 0 a)", &[Val::S32(i32::MIN)]),
+            "negating Int32 MIN must trap"
+        );
+    }
+
+    #[test]
     fn not_over_a_comparison_folds_to_the_complement() {
         // `(not (CMP a b))` is the single complement comparison — no `i32.eqz`. The Lir shape is checked
         // in select.rs; here we confirm the VALUE matches the branchy negation across every comparison,
@@ -5240,6 +5269,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bin_dependent_size_segment_binds_exactly_n_bytes() {
+        // `(bytes body n)` binds exactly the `n` bytes an earlier INT segment named; a trailing `(bytes
+        // rest)` takes the remainder. Construction: `(bytes b)` splices `b`; `(bytes b n)` checks `|b|==n`.
+        // Round-trip: construct a length-prefixed frame, match it back, rebuild. All constant → fold.
+        for (body, want) in [
+            // dependent body: n=2 → body=[10,20]
+            (
+                "(module m (def (main) (match (Bytes.of (list 2 10 20 99)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= body (Bytes.of (list 10 20))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // the trailing rest = [99]
+            (
+                "(module m (def (main) (match (Bytes.of (list 2 10 20 99)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= rest (Bytes.of (list 99))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // dependent size 0 → empty body, rest untouched
+            (
+                "(module m (def (main) (match (Bytes.of (list 0 42)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= body (Bytes.of (list))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // a dependent size overrunning the remainder → non-match → catch-all
+            (
+                "(module m (def (main) (match (Bytes.of (list 5 1 2)) ((bin (u8 n) (bytes body n) (bytes rest)) 1) (_ 0))) (export main))",
+                0,
+            ),
+            // TLV round-trip: build (tag,len,payload), match it back, compare the payload
+            (
+                "(module m (def (main) (match (bin (u8 7) (u16 3) (bytes (Bytes.of (list 100 101 102)))) ((bin (u8 7) (u16 n) (bytes body n)) (if (= body (Bytes.of (list 100 101 102))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // length-prefixed construction: (u16 len) then the bytes → [0,3,10,20,30]
+            (
+                "(module m (def (main) (if (= (bin (u16 3) (bytes (Bytes.of (list 10 20 30)))) (Bytes.of (list 0 3 10 20 30))) 1 0)) (export main))",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "bin dependent-size: {body}"
+            );
+        }
+        // A sized `(bytes b n)` construction whose value length differs from `n` → provable trap.
+        assert_eq!(
+            reject_code("(module m (def (main) (Bytes.len (bin (bytes (Bytes.of (list 1 2 3)) 2)))) (export main))")
+                .as_deref(),
+            Some("CDZ0304"),
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
@@ -5796,6 +5879,57 @@ mod match_engine {
                 "float literal {prog} crosses as its canonical f64 (by bits)"
             );
         }
+    }
+
+    #[test]
+    fn constant_float_arithmetic_folds_at_round_to_nearest_even() {
+        // The float operators `+.`/`-.`/`*.`/`/.` fold two constant Float64 operands at round-to-nearest-
+        // even (the fixed deterministic mode), the result crossing as its canonical f64 (numeric-model.md
+        // §A Floating-Point Operation Uses A Floating-Point Operator; determinism contract). Read BY BITS
+        // so the exact IEEE value is pinned — `0.1 +. 0.2` is the famous NON-exact 0.30000000000000004,
+        // not 0.3, which a wrong (exact-decimal or f32) fold would miss.
+        for (prog, want) in [
+            ("(+. 0.1 0.2)", 0.1f64 + 0.2f64),
+            ("(*. 6.0 7.0)", 42.0f64),
+            ("(-. 5.5 2.0)", 3.5f64),
+            ("(/. 1.0 4.0)", 0.25f64),
+            ("(/. 1.0 3.0)", 1.0f64 / 3.0f64),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let got = run_returns::<f64>(&component(&src), "main");
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "float fold {prog} must round-trip its exact f64 (by bits)"
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_from_f64_round_trips_by_bits() {
+        // The float-fold's result representation: `Decimal::from_f64(f)` builds a decimal whose
+        // `to_f64_bits()` returns EXACTLY `f`'s bits (via shortest round-tripping formatting), so a
+        // computed float crosses the boundary unchanged. Covers the non-exact 0.1+0.2, a large whole
+        // float (no i64 saturation), a tiny value, and signed zero. A non-finite input yields `None`.
+        use crate::ast::Decimal;
+        for f in [
+            0.1f64 + 0.2f64,
+            42.0,
+            1e19,
+            1.0 / 3.0,
+            -0.0,
+            0.0,
+            5e-324, // smallest subnormal
+        ] {
+            let d = Decimal::from_f64(f).expect("finite float has a decimal form");
+            assert_eq!(
+                d.to_f64_bits(),
+                f.to_bits(),
+                "Decimal::from_f64({f}) must round-trip by bits"
+            );
+        }
+        assert!(Decimal::from_f64(f64::INFINITY).is_none());
+        assert!(Decimal::from_f64(f64::NAN).is_none());
     }
 
     #[test]
@@ -9810,6 +9944,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_delegated_effect_performed_inside_an_intra_program_handler_compiles() {
+        // E2h: a host-delegated `ask.ask` performed INSIDE an intra-program `handle` (over a DIFFERENT
+        // effect `Scale`). The fold reduces the `Scale` handler away (its arm doubles the perform value),
+        // leaving `(ask.ask)` — a host call — in the SYNTHESIZED rewritten body. That synthesized node has
+        // no `host` ANCESTOR, so `perform_host_target` falls back to the program-wide delegation set (the
+        // manifest is the union of the entrypoints' `host` clauses) to recognize it as host-bound. It
+        // compiles to a component importing `ask` (verified via the gate → 42 with `ask.ask=21`). The host
+        // import is unbound in-process, so this asserts it COMPILES; the corpus gate runs the value.
+        let src = "(do (effect ask (op ask (-> Unit Int64))) (effect Scale (op by (-> Int64 Int64))) \
+                   (def (main) (host (ask) (handle unit ((Scale.by (n) s (resume (* n 2) s))) \
+                     (Scale.by (ask.ask))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a host-delegated perform inside an intra-program handler must compile"
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
         // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
         // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)
@@ -11928,6 +12080,44 @@ mod stage1 {
               (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
             (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
         assert_eq!(run_closure(src2, 3).unwrap(), "27");
+    }
+
+    #[test]
+    fn a_fn_capture_of_an_inlined_lambda_declines_rather_than_miscompiling() {
+        // REJECT-DON'T-MISCOMPILE. The companion of the case above, but the outer HOF `twice` is
+        // NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by the concrete lambda.
+        // The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it must survive as a
+        // runtime closure — but the inline+capture interaction leaves a degenerate SELF-CAPTURE: the
+        // argument-lambda was `resolve_subtree`-pinned at the `sumapply` call site, and when `twice` is
+        // inlined a pinned own-param body reference is shared into the copy while the param list is copied
+        // fresh, so a body occurrence resolves to the ORIGINAL param binder (`binder == the reference
+        // node` — a self-loop). Emitting that produced an INVALID MODULE (`local.get 0` in a no-env
+        // context). `collect_captures` now detects the self-capture and DECLINES; a sound α-renaming fix
+        // to the copy machinery is a separate, larger change. This test PINS that the program declines
+        // cleanly (a Todo) rather than emitting a broken component.
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g b)) 3)) \
+            (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a degenerate self-capture must DECLINE, not miscompile");
+        assert!(
+            err.message
+                .contains("captures a value with no runtime representation"),
+            "expected a capture decline, got: {}",
+            err.message
+        );
+        // The `(g (g b))` double-apply form triggers the same artifact and must likewise decline.
+        let src2 = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3)) \
+            (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src2))).is_err(),
+            "the double-apply self-capture must also decline"
+        );
     }
 
     #[test]
