@@ -70,6 +70,7 @@ pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a bound name in a map key is used by its value, not the literal name
+pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a built map renders its entries in canonical key order
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
@@ -233,6 +234,7 @@ pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
+pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler folds a counter across the operations it discharges
 pass	a handler resumes its continuation at most once by default
 pass	a handler that does not discharge every operation of its effect is rejected
@@ -331,6 +333,7 @@ pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
+pass	a module declaration binds its name in the enclosing scope
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a multi-export set of parameterized capturing closures is driven per export
@@ -427,6 +430,8 @@ pass	a partially-applied function escapes as a value and runs through a recursiv
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a perform in a taken if-branch threads its state to the continuation after the if
+pass	a perform in a taken match-arm threads its state to the continuation after the match
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a pipeline chain applies its stages left to right
@@ -586,6 +591,7 @@ pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
+pass	a short-circuit connective threads a branch perform to the continuation
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
@@ -814,6 +820,7 @@ pass	bitwise OR of an integer and a float does not silently promote
 pass	bitwise XOR is its own inverse
 pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
+pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -885,6 +892,7 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
@@ -1075,6 +1083,7 @@ pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the difference contains the elements not in the second set
+pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set
@@ -1215,7 +1224,6 @@ todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
 todo	a module function is recursive
 todo	a module's delegated capability is reachable as metadata, not as an export
@@ -1289,7 +1297,6 @@ todo	decoding bytes that are not a canonical AST yields the error case, not a tr
 todo	decoding canonical bytes followed by a trailing byte yields the error case
 todo	dropping an absent field from a record is rejected
 todo	dropping fields from a record leaves the remaining fields
-todo	each definition in a module registers a reachable export field
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
 todo	eval is optional for macros and interactive use

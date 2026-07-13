@@ -3723,6 +3723,91 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_signed_pow2_div_of_a_nonneg_dividend_drops_the_round_toward_zero_bias() {
+        // A signed `/`/`%` by a power of two normally emits the round-toward-zero BIAS sequence (needed
+        // only to correct NEGATIVE dividends). When the dividend is provably NON-NEGATIVE — a mask
+        // (`(& x 255)` ∈ [0,255]), or a flow-refined `x` under `(> x 0)` — the bias is DEAD: `x / 2^k`
+        // = `x >>ₛ k` and `x % 2^k` = `x & (2^k−1)`, exactly the unsigned case. Pins the elision at the
+        // Lir level (the bias's second shift + the `add` are gone) AND the value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The bias sequence's tell is a `ShrU` (`>>ᵤ (W−k)` to build `2^k−1`) plus an `Add`. A
+        // non-negative masked dividend divide drops BOTH — just `and 255 ; const 1 ; shr_s`.
+        let masked_div = lir("(: x Int64)", "(: (/ (& x 255) 2) Int64)");
+        assert!(
+            !masked_div.contains(&Lir::I64ShrU) && !masked_div.contains(&Lir::I64Add),
+            "a nonneg dividend needs no toward-zero bias — no ShrU/Add; got: {masked_div:?}"
+        );
+        assert!(
+            masked_div.contains(&Lir::I64ShrS),
+            "the quotient is a single arithmetic shift; got: {masked_div:?}"
+        );
+        // The masked REM is a pure mask, no bias.
+        let masked_rem = lir("(: x Int64)", "(: (% (& x 255) 4) Int64)");
+        assert!(
+            !masked_rem.contains(&Lir::I64ShrU) && !masked_rem.contains(&Lir::I64ShrS),
+            "a nonneg dividend rem is a pure and-mask, no shifts; got: {masked_rem:?}"
+        );
+        // CONTRAST: a bare signed dividend (unknown sign) KEEPS the bias — a `ShrU` is present.
+        let bare_div = lir("(: x Int64)", "(/ x 2)");
+        assert!(
+            bare_div.contains(&Lir::I64ShrU),
+            "an unknown-sign dividend keeps the round-toward-zero bias; got: {bare_div:?}"
+        );
+        // VALUE parity — the fast path agrees with the divide for nonneg, and the bias path still
+        // truncates toward zero for negatives. Masked (always nonneg, even for a negative source):
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(255)]),
+            127
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(-1)]),
+            127
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (% (& x 255) 4) Int64)", &[Val::S64(255)]),
+            3
+        );
+        // Flow-refined nonneg dividend inside `(> x 0)`:
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(7)]),
+            3
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(8)]),
+            4
+        );
+        // Bare signed divide (bias kept) still rounds toward zero for negatives — soundness.
+        assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-7)]), -3);
+        assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-1)]), 0);
+    }
+
+    #[test]
     fn a_narrow_signed_division_by_a_non_neg_one_divisor_elides_its_range_check() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
@@ -7029,6 +7114,36 @@ mod match_engine {
                 .iter()
                 .any(|d| d.message.contains("runtime string")),
             "the misleading 'runtime string' decline must not accompany the type error"
+        );
+    }
+
+    #[test]
+    fn an_export_naming_no_definition_is_reported_by_check() {
+        // `(export nope)` with no `(def nope …)` is ill-formed — the public surface must name real
+        // definitions. It used to be caught only in the emit-path LAYOUT (so `compile` failed but
+        // `cdz check`'s Diagnostics query MISSED it). Now it is a coded CDZ0101 in `collect_faults`, so
+        // BOTH surfaces report it, anchored at the `(export …)` clause and (for a typo) with a suggestion.
+        // Use the DIAGNOSTICS query — the path `cdz check` runs (`collect_faults`) — where the fault is
+        // the coded CDZ0101 (the full `compile` pipeline ALSO surfaces the emit-path layout decline for
+        // the same issue, uncoded; `check` is the surface this fix is about).
+        let mut db = crate::db::Db::load(parse("(module m (def (main) 1) (export mian))"));
+        let diags = crate::compile::diagnostics(&mut db);
+        let d = diags
+            .iter()
+            .find(|d| {
+                d.severity == crate::abi::Severity::Error
+                    && d.message.contains("names no definition")
+            })
+            .expect("check reports an export naming no definition");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0101"),
+            "coded as an unbound export"
+        );
+        assert!(
+            d.message.contains("`mian`") && d.message.contains("did you mean `main`?"),
+            "names the bad export + suggests the nearest def: {}",
+            d.message
         );
     }
 
@@ -14728,6 +14843,40 @@ mod stage1 {
     }
 
     #[test]
+    fn a_branch_perform_threads_its_state_to_the_continuation() {
+        // A `perform` in an `if`/`match` BRANCH must thread its state advance OUT to the continuation
+        // after the conditional — the branch-out-state is a runtime phi realized by distributing the
+        // continuation into each branch. Here the then-branch reads 0 (threads 0->1); the continuation
+        // `(Fresh.next)` reads 1. Before the fix the continuation ran against the pre-branch state (0).
+        let if_src = "(do (effect Fresh (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (do (if true ((. Fresh next)) 99) ((. Fresh next))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(if_src)))
+                    .expect("a branch-perform if threads to its continuation"),
+                "main"
+            ),
+            1,
+            "the then-branch perform's state advance must reach the continuation"
+        );
+        // The short-circuit connective is the same shape via its if-desugar, and its CONDITION performs
+        // too: `(and (= (next) 0) (= (next) 1))` reads 0 then 1 (threads 0->2); the continuation reads 2.
+        let and_src = "(do (effect Fresh (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (do (and (= ((. Fresh next)) 0) (= ((. Fresh next)) 1)) ((. Fresh next))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(and_src)))
+                    .expect("a short-circuit branch perform threads to its continuation"),
+                "main"
+            ),
+            2,
+            "both connective reads plus the continuation must thread through the desugared branch"
+        );
+    }
+
+    #[test]
     fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
         // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
         // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces
@@ -15245,6 +15394,49 @@ mod stage1 {
             run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
             42,
             "x=1 → the wildcard arm yields 42"
+        );
+    }
+
+    #[test]
+    fn an_e5_identity_continuation_non_tail_resume_folds() {
+        // E5 identity-continuation slice: a NON-tail resume where the perform IS the whole handle body, so
+        // its continuation is the IDENTITY (nothing runs after). `(resume v s)` = `v` in place, so the arm
+        // body with resume→value is the handle value — no frame capture needed. `(handle 0 ((Amb.flip (u)
+        // s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a MULTI-shot arm folds here (each
+        // `resume v` is `v`, no continuation to duplicate): `(+ (resume 1 s) (resume 2 s))` → 3.
+        let single = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(single)))
+                    .expect("an identity-continuation non-tail resume folds"),
+                "main"
+            ),
+            11
+        );
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Amb.flip (u) s (+ (resume 1 s) (resume 2 s)))) (Amb.flip))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot identity-continuation resume folds"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_with_a_real_continuation_declines() {
+        // The E5 BOUNDARY: a non-tail resume whose perform is NOT in tail position — `(+ 100 (Amb.flip))`
+        // — has a non-identity continuation `(+ 100 [])` that `resume` must return into. Realizing it needs
+        // the captured-continuation machinery (defunctionalized frames), a later increment; `reduce_handle`
+        // declines rather than mis-fold. Contrast the identity-continuation case above, which folds.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail resume with a real continuation must decline (needs E5 frame capture)"
         );
     }
 
@@ -23772,6 +23964,150 @@ mod closure_host_resource {
         validator
             .validate_all(&core)
             .expect("round-trip closure-resource core module validates");
+    }
+
+    /// DISTINCT-SIGNATURE compiler serializer: `serialize::distinct_sig_resource_core_module` — the core a
+    /// program with TWO signature groups emits — is structurally valid. Group 0 = `inc : (-> Int64 Int64)`
+    /// (lifted `(i64)->i64`), group 1 = `isz : (-> Int64 Bool)` (lifted `(i64)->i32`). Each group gets its
+    /// own `resource-new-<g>`/`resource-rep-<g>` intrinsics + its own make + call. Pins the N-resource-type
+    /// core index layout the distinct-signature oracle proved runnable.
+    #[test]
+    fn distinct_sig_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{ClosureMake, SigGroup};
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let boolt = Ty::Bool;
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let fn_ii = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone())); // (-> Int64 Int64)
+        let fn_ib = Ty::Fn(Box::new(s64.clone()), Box::new(boolt.clone())); // (-> Int64 Bool)
+        // Two export bodies, each `() -> own<closure>`: build a 1-slot cell holding box-int(slot).
+        let export_body = |slot: i64, ret: Ty| SelectedFunc {
+            params: vec![],
+            ret,
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(slot),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // lifted-inc `(env, x) -> i64` = x + 1; lifted-isz `(env, x) -> i32` = (x == 0).
+        let lifted_inc = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_isz = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: boolt.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(0), Lir::I64Eq],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![
+            export_body(0, fn_ii.clone()),
+            export_body(1, fn_ib.clone()),
+            lifted_inc,
+            lifted_isz,
+        ];
+
+        let import_base = imports.len() as u32 + 2 * 2; // k + 2 intrinsics per group × 2 groups
+        let layout = Layout::with_lifted(
+            vec![
+                ExportPlan {
+                    name: "inc".into(),
+                    def: 0,
+                    body: crate::ast::StructId(0),
+                    params: vec![],
+                    result: fn_ii.clone(),
+                },
+                ExportPlan {
+                    name: "isz".into(),
+                    def: 1,
+                    body: crate::ast::StructId(0),
+                    params: vec![],
+                    result: fn_ib.clone(),
+                },
+            ],
+            vec![0, 1],
+            import_base,
+            vec![
+                LiftedLambda {
+                    body: crate::ast::StructId(0),
+                    params: vec![(crate::ast::StructId(0), s64.clone())],
+                    ret_ty: s64.clone(),
+                    captures: vec![],
+                },
+                LiftedLambda {
+                    body: crate::ast::StructId(0),
+                    params: vec![(crate::ast::StructId(0), s64.clone())],
+                    ret_ty: boolt.clone(),
+                    captures: vec![],
+                },
+            ],
+            vec![true, true],
+        );
+        let groups = vec![
+            SigGroup {
+                makes: vec![ClosureMake {
+                    export_name: "make-inc".into(),
+                    export_abs: import_base,
+                    param_vts: vec![],
+                }],
+                arg_vts: vec![ValType::I64],
+                ret_vt: ValType::I64,
+                lifted_slot: 0, // lifted-inc is table slot 0
+            },
+            SigGroup {
+                makes: vec![ClosureMake {
+                    export_name: "make-isz".into(),
+                    export_abs: import_base + 1,
+                    param_vts: vec![],
+                }],
+                arg_vts: vec![ValType::I64],
+                ret_vt: ValType::I32, // Bool → i32
+                lifted_slot: 1,       // lifted-isz is table slot 1
+            },
+        ];
+
+        let core = crate::backend::wasm::serialize::distinct_sig_resource_core_module(
+            &funcs, &imports, &groups, &layout,
+        )
+        .expect("distinct-signature closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("distinct-signature closure-resource core module validates");
     }
 
     /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program

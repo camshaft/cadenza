@@ -6936,6 +6936,23 @@ fn emit_div_rem(
         && (d & (d - 1)) == 0
     {
         let k = d.trailing_zeros() as i64;
+        // NON-NEGATIVE DIVIDEND fast path: the bias sequence exists ONLY to make an arithmetic shift
+        // truncate toward zero for NEGATIVE dividends (`-1 / 2 = 0` but `-1 >>ₛ 1 = -1`). When the dividend
+        // is provably `≥ 0` (a mask `(& x 255)`, an unsigned-typed value, or a flow-refined `x` under
+        // `(> x 0)`), truncation toward zero equals floor equals a plain shift/mask — the whole bias is
+        // DEAD. Emit `x >>ₛ k` (div) / `x & (2^k−1)` (rem), exactly the unsigned case, 1 op instead of 6.
+        // Verified: for `x ≥ 0`, `x / 2^k == x >> k` and `x % 2^k == x & (2^k−1)` (toward-zero = floor).
+        if crate::lower::value_provably_nonneg(db, lhs) {
+            emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
+            if matches!(op, Prim::Div) {
+                out.push(m.konst(k));
+                out.push(m.shr_s_forced()); // x ≥ 0 → arithmetic shift = floor = toward-zero quotient
+            } else {
+                out.push(m.konst(d - 1));
+                out.push(m.and());
+            }
+            return Ok(());
+        }
         let w = m.slot_bits() as i64;
         let sa = base;
         if sa + 1 > *high {

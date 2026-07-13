@@ -349,10 +349,19 @@ the component type. The new work:
   boundary); both lifteds still share the ONE guest funcref table. Host drives each: make-inc+call-inc(5)=6,
   make-isz+call-isz(0)=true. Test fns `distinct_sig_core`, `distinct_sig_inner_component` (2 imported +
   re-exported resources + 4 ascribed funcs), `oracle_distinct_sig_component`.
-- **NEXT: DISTINCT-SIGNATURE HAND-EMIT** — the compiler still declines "closures of DIFFERENT signatures"
-  (mod.rs). The N-resource-type envelope (N dtors, N resource types, N resource-new/rep pairs, an inner
-  component importing/re-exporting N resources + each fn ascribed to its own) is the last large envelope
-  refactor; then only the compound-closure-arg and the wasmtime-blocked borrow<t> remain.
+- **✅ DISTINCT-SIGNATURE SERIALIZER SEAM LANDED `@4154a745`.** `serialize::distinct_sig_resource_core_module`
+  emits G signature GROUPS (`SigGroup { makes, arg_vts, ret_vt, lifted_slot }`), each its own resource type:
+  per group its own `resource-new-<g>`/`resource-rep-<g>` imports, its `make-<name>`s, one shared `call-<g>`.
+  🔑 the group's `call_indirect` functype index = `defined_type_base + order.len() + lifted_slot` (the
+  distinct-sig core's TYPE layout differs from multi-export's — only ONE shared `(i32)->i32` rintr functype
+  regardless of G — so `layout.lifted_type_index` is NOT reusable). +1 serializer unit test (2 groups, valid).
+- **NEXT: DISTINCT-SIGNATURE ENVELOPE + EMIT + HOST** — the compiler still declines "closures of DIFFERENT
+  signatures" (mod.rs). Remaining: (a) `envelope::assemble_distinct_sig_resource` — N dtors, N resource
+  types, N resource-new/rep canon pairs (bound to each resource), an inner component importing/re-exporting
+  N resources + each fn ascribed to its own (model = oracle `distinct_sig_inner_component`); (b) `emit`
+  groups exports by signature → builds `SigGroup`s → routes to `emit_distinct_sig_resource`; (c) `cdz-run`
+  drives `make-<name>` + `call-<g>` (the group's call is named `call-<g>`, not a bare `call`). Then only the
+  compound-closure-arg and the wasmtime-blocked borrow<t> remain.
 
 ## Risks / open questions
 
