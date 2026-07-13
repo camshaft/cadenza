@@ -411,6 +411,26 @@
             (def (main) (find 0)) (export main)))
   (output (: 300 Int64)))
 
+(case "a value-eq guard on a SUM-match arm drives a tail-recursive loop"
+  (doc    "The sum-match-decision-tree companion: the scrutinee is a genuine heap SUM (`(bump n)`, a call so
+           it does not fold), matched by a variant pattern `(N.I x)` with a runtime `value-eq` GUARD, and a
+           fall-through arm that iterates. `find(0)` climbs until `x == 3`. The decision tree emits `if
+           (sum-disc == I) { if <guard> body else <fall> } else <fall>`; the guard's i32 handle scratch (in
+           the disc-matched THEN) types a slot the disc-switch's ELSE fall-through i64 iteration arithmetic
+           must not reuse. Pins the branch-scratch discipline at the SUM-match seam (`emit_sum_cont`'s
+           guarded-arm + disc-switch), distinct from the scalar-match probe chain: the fall-through of BOTH
+           the guard `if` and the disc-switch `if` must clear the arm's heap-handle high-water.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (bump n) (if (< n 0) (N.J n) (N.I n)))
+            (def (mk n) (N.I n))
+            (def (find n) (match (bump n)
+                            ((guard (N.I x) (= (mk x) (mk 3))) x)
+                            (_ (find (+ n 1)))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
 (case "two constant sums with the same payload but different variants are not equal"
   (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and
            structural equality compares the VARIANT before the payload: `(= (Ok 1) (Err 1))` is FALSE even

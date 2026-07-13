@@ -9530,6 +9530,16 @@ mod stage1 {
                      (match n ((guard 3 (= (mk n) (mk 3))) 300) (_ (find (+ n 1))))) (export find))",
                 "300",
             ),
+            (
+                "value-eq guard on SUM-match arm, call scrutinee (sum-cont scratch)",
+                "(module m (type N (I Int64) (J Int64)) \
+                   (def (bump (: n Int64)) (if (< n 0) (N.J n) (N.I n))) \
+                   (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match (bump n) ((guard (N.I x) (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) \
+                   (export find))",
+                "3",
+            ),
         ] {
             let bytes = compile_component(&crate::codec::encode(&parse(src)))
                 .unwrap_or_else(|e| panic!("compile guarded-wildcard-loop ({label}): {e:?}"));

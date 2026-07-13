@@ -3720,9 +3720,17 @@ fn emit_sum_match_arms(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out,
             )?;
+            // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
+            // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the
+            // `Core::If` / guard sites. The THEN's continuation may contain a guard that stashes an i32
+            // HEAP HANDLE (`value-eq`/`MatchSum`) in a low slot, typing it i32 for the whole function; the
+            // ELSE's fall-through loop-iteration i64 arithmetic reusing that slot fails validation (the two
+            // `if` branches share one function-global local declaration). A THEN that touches no heap
+            // handle leaves `*high` where it was, so this is byte-identical for the common case.
+            let else_base = *high;
             out.push(Lir::Else);
             emit_sum_match_arms(
-                db, scrutinee, path, rest, result_it, block_ty, slots, base, high, scratch_ty,
+                db, scrutinee, path, rest, result_it, block_ty, slots, else_base, high, scratch_ty,
                 layout, out,
             )?;
             out.push(Lir::End);
@@ -3763,15 +3771,23 @@ fn emit_sum_cont(
         // recurses — it is the rest of the sub-matrix (a later arm of the same variant, or the default).
         crate::core::SumCont::Guarded { cond, body, els } => {
             emit(db, *cond, slots, base, high, scratch_ty, layout, out)?;
+            // The body and fall-through start scratch ABOVE the high-water the GUARD reached, NOT at
+            // `base` — the same discipline as the `Core::If` / scalar-match-guard / probe-else sites. A
+            // guard that stashes an i32 HEAP HANDLE (a runtime `value-eq`/`MatchSum` — `(guard (N.I x)
+            // (= (mk x) (mk 3)))`) types a low slot i32 for the whole function; the fall-through's
+            // loop-iteration i64 arithmetic reusing that slot fails validation. A scalar guard leaves
+            // `*high == base`, so this is byte-identical for the common case.
+            let body_base = *high;
             out.push(Lir::If(block_ty));
             if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out)?;
+                emit_operand(db, *body, rit, slots, body_base, high, scratch_ty, layout, out)?;
             } else {
-                emit(db, *body, slots, base, high, scratch_ty, layout, out)?;
+                emit(db, *body, slots, body_base, high, scratch_ty, layout, out)?;
             }
             out.push(Lir::Else);
             emit_sum_cont(
-                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+                db, scrutinee, els, result_it, block_ty, slots, body_base, high, scratch_ty, layout,
+                out,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -3829,9 +3845,14 @@ fn emit_sum_cont(
                 db, scrutinee, then_, result_it, block_ty, slots, base, high, scratch_ty, layout,
                 out,
             )?;
+            // The `els` continuation starts scratch above the `then_`'s high-water — same discipline as
+            // the disc-switch/guard sites: a `then_` that stashes an i32 heap handle must not have its
+            // slot reused by `els`'s i64 loop arithmetic (byte-identical when `then_` touches no handle).
+            let els_base = *high;
             out.push(Lir::Else);
             emit_sum_cont(
-                db, scrutinee, els, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+                db, scrutinee, els, result_it, block_ty, slots, els_base, high, scratch_ty, layout,
+                out,
             )?;
             out.push(Lir::End);
             Ok(())

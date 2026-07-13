@@ -408,6 +408,7 @@ pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
+pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
