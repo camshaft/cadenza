@@ -4739,39 +4739,49 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        // The annotation mismatch has a MECHANICAL REPAIR in three cases, each making the
+                        // The annotation mismatch has a MECHANICAL REPAIR in several cases, each making the
                         // value type-check in ONE shot (the annotation position mirrors the argument
-                        // position's coercion fixes):
+                        // position's coercion fixes). The two LITERAL-RETYPE repairs (a `replace`, not a
+                        // wrap) are checked first:
                         //  • an INTEGER-VALUED FLOAT LITERAL annotated an INTEGER — `(: 3.0 Int64)` → DROP
                         //    the fractional form, REPLACE `3.0` with `3` (a non-integer / out-of-range float
-                        //    yields no `int_text` → no fix; truncating is the author's choice);
-                        //  • the annotation is a SUM with a single-payload variant whose payload is the
-                        //    value's type — "wrap in `Some`" (`(: n Option)` for `n : Int64`); and
-                        //  • both types are INTEGERS and the annotation is an aliased width — wrap in the
-                        //    annotation type's checked `(<AnnotInt>.of value)` (`(: n Int64)` for `n : Int8`).
-                        // The float-drop is a REPLACE (not a wrap), so it is handled first; the other two
-                        // compute a `wrap (prefix, suffix, verb, msg_tail)`.
-                        let float_drop: Option<String> = if let Ty::Int(expected_int) = &annot_ty
-                            && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
-                            && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
-                        {
-                            integer_text_of_float_literal(&dec, *expected_int)
-                        } else {
-                            None
-                        };
-                        if let Some(int_text) = float_drop {
+                        //    → no `int_text` → no fix; truncating is the author's choice); and
+                        //  • an INTEGER LITERAL annotated a FLOAT — `(: 3 Float64)` → ADD the fractional
+                        //    form, REPLACE `3` with `3.0` (the exact mirror; a bignum past i128 → no fix).
+                        // Then the two WRAP repairs: sum single-payload ctor ("wrap in `Some`"), and the
+                        // `(<AnnotInt>.of value)` int-width coercion.
+                        let literal_retype: Option<(String, &'static str)> =
+                            if let Ty::Int(expected_int) = &annot_ty
+                                && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
+                                && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+                            {
+                                // integer-valued float annotated Int → drop the `.0`.
+                                integer_text_of_float_literal(&dec, *expected_int)
+                                    .map(|t| (t, "drop the fractional form"))
+                            } else if matches!(&annot_ty, Ty::Float(_))
+                                && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
+                                && let crate::ast::Leaf::Int { value, .. } =
+                                    db.ast.leaf(*lid).clone()
+                                && let Some(n) = value.to_i128()
+                            {
+                                // integer literal annotated Float → add the `.0` (make it a float literal).
+                                Some((format!("{n}.0"), "make it a float literal"))
+                            } else {
+                                None
+                            };
+                        if let Some((text, verb)) = literal_retype {
                             out.push(
                                 Reject::coded(
                                     Code::TypeMismatch,
                                     format!(
-                                        "annotation type {} does not match value type {} — drop the \
-                                         fractional form (`{int_text}`)",
+                                        "annotation type {} does not match value type {} — {verb} \
+                                         (`{text}`)",
                                         annot_ty.render_name(),
                                         expr_ty.render_name()
                                     ),
                                 )
                                 .at(id)
-                                .with_fix(Fix::replace_heuristic(expr, int_text)),
+                                .with_fix(Fix::replace_heuristic(expr, text)),
                             );
                         } else {
                             // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.

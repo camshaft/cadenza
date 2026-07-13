@@ -15865,6 +15865,34 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_literal_annotated_a_float_offers_an_add_the_fraction_fix() {
+        // The MIRROR of the drop-fraction fix: an INTEGER literal annotated a FLOAT type — `(: 3 Float64)`,
+        // `(: 5 Float32)` — is CDZ0203, repaired by ADDING the fractional form: REPLACE `3` with `3.0` (a
+        // valid float literal). One-shot; the annotation-position mirror of the arg-position `of-int` coercion.
+        for (src, want) in [
+            ("(module m (def (f) (: 3 Float64)) (export f))", "3.0"),
+            ("(module m (def (f) (: 5 Float32)) (export f))", "5.0"),
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("an add-the-fraction fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(fix.replacement, want, "adds the `.0`: {}", d.message);
+            assert!(
+                !fix.verified,
+                "int-vs-float intent is the author's call → heuristic"
+            );
+        }
+        // NO fix for a non-literal (a Bool value annotated Float) — only a bare int LITERAL retypes.
+        let d = first_error("(module m (def (f) (: true Float64)) (export f))");
+        assert!(
+            d.fix.is_none(),
+            "no add-fraction fix for a Bool: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
