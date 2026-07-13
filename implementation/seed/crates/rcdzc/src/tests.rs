@@ -1617,17 +1617,25 @@ impl ComposedRuntime {
             .program
             .get_export_index(&mut self.store, Some(&iface), "call")
             .expect("closure `call` exported");
-        let make = self.program.get_func(&mut self.store, make_idx).expect("make func");
-        let call = self.program.get_func(&mut self.store, call_idx).expect("call func");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
         // make(make_args…) → the closure handle. A PARAMETERIZED export (C-HOST-2) passes its params here
         // (e.g. `adder(10)`); a nullary export passes none.
         let mut handle = [Val::Bool(false)];
-        make.call(&mut self.store, make_args, &mut handle).expect("make call");
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
         make.post_return(&mut self.store).expect("make post_return");
         let mut full_call_args = vec![handle[0].clone()];
         full_call_args.extend_from_slice(call_args);
         let mut out = [Val::Bool(false)];
-        call.call(&mut self.store, &full_call_args, &mut out).expect("call");
+        call.call(&mut self.store, &full_call_args, &mut out)
+            .expect("call");
         call.post_return(&mut self.store).expect("call post_return");
         out[0].clone()
     }
@@ -4758,6 +4766,57 @@ mod runtime_ops {
             run::<u8>("(: x UInt8)", "(>> (& x 15) 3)", &[Val::U8(255)]),
             1
         ); // 15>>3 = 1
+    }
+
+    #[test]
+    fn a_provably_in_range_arith_computes_the_same_value_without_a_guard() {
+        // The guard-elided ops must compute EXACTLY what the guarded version would — the machine op
+        // already produces the exact result when it provably fits.
+        // (+ (& x 15) (& y 15)): sum of two [0,15] nibbles.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(+ (& x 15) (& y 15))",
+                &[Val::S64(255), Val::S64(255)]
+            ),
+            30 // (255&15)+(255&15) = 15+15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(+ (& x 15) (& y 15))",
+                &[Val::S64(-1), Val::S64(8)]
+            ),
+            23 // (-1&15)+(8&15) = 15+8
+        );
+        // (* (& x 15) 3): [0,45].
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 3)", &[Val::S64(255)]),
+            45
+        ); // 15*3
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 3)", &[Val::S64(4)]),
+            12
+        ); // 4*3
+        // NARROW: (+ (& x:UInt8 3) (& y:UInt8 3)) ∈ [0,6], fits UInt8.
+        assert_eq!(
+            run::<u8>(
+                "(: x UInt8) (: y UInt8)",
+                "(+ (& x 3) (& y 3))",
+                &[Val::U8(255), Val::U8(254)]
+            ),
+            5 // (255&3)+(254&3) = 3+2
+        );
+        // (- (& x 15) (& y 15)) ∈ [-15,15] — a subtract whose interval fits, guard elided, value exact
+        // (including a negative result).
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(- (& x 15) (& y 15))",
+                &[Val::S64(3), Val::S64(10)]
+            ),
+            -7 // 3 - 10
+        );
     }
 }
 
@@ -20219,7 +20278,9 @@ mod closure_host_resource {
         let program =
             crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         assert!(
-            cdz_run::required_runtime(&program).expect("valid").is_some(),
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
             "a capturing closure export imports the value-heap runtime"
         );
         let mut rt = super::ComposedRuntime::new(&program, &runtime);
