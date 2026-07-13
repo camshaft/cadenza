@@ -6469,6 +6469,22 @@ mod tests {
     /// deep value would overflow the recursive oracle (the exact bug the iterative walk fixes).
     #[test]
     fn value_encode_iterative_matches_recursive_reference() {
+        // The N=500 differential drives the RECURSIVE oracle 500 levels deep. That oracle exists only as
+        // the simple recursive mirror of the iterative production walk, so it must STAY recursive — but as
+        // Set/Map/Spread/Framed arms were added to it its debug-build frame grew (Rust sizes a frame to its
+        // largest arm), and 500 frames now exceed the 2 MB default test-thread stack. Run the body on a
+        // thread with a generous stack so the byte-identity coverage at N=500 is preserved. The heap and
+        // its counters are thread-local, so `reset()`/`live_nodes()` all belong INSIDE the spawned thread.
+        // (The production walk is iterative and proven safe to N=50 000 by the sibling deep test.)
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(differential_body)
+            .expect("spawn oracle-differential thread")
+            .join()
+            .expect("oracle-differential thread panicked");
+    }
+
+    fn differential_body() {
         reset();
         let desc = intlist_descriptor();
         for &n in &[0usize, 1, 2, 5, 50, 500] {
@@ -7357,9 +7373,14 @@ mod tests {
         d.push(7); // [1] List
         leb(&mut d, 0); // elem → 0
         d.push(15); // [2] Framed
+        // The type node is now a RECURSIVE `TypeNode` (`08d4a99a`): every node — INCLUDING a leaf — declares
+        // its own child count, so a nested type like `(List Int64)` is `List{ Int64{} }`. `Int64` therefore
+        // needs an explicit `n_children = 0` before the `inner` index (the old flat `[head][n_args](arg)*n`
+        // wire had no per-arg child count — that stale layout desynced the recursive decoder).
         name(&mut d, "List"); // head
-        leb(&mut d, 1); // n_args
-        name(&mut d, "Int64"); // arg[0]
+        leb(&mut d, 1); // List n_children = 1
+        name(&mut d, "Int64"); // child[0] head
+        leb(&mut d, 0); // Int64 n_children = 0 (a leaf type node)
         leb(&mut d, 1); // inner → 1
         leb(&mut d, 2); // root
 
@@ -8067,6 +8088,39 @@ mod tests {
             }
         });
         println!("ALLOC value_encode x{VE_REPS}: {venc}");
+        // (M) FREE CASCADE — `op_drop` of a DEEP unique structure. This is the single hottest RC path (the
+        // compiler emits `drop` at every dead heap binding and the resource destructor), yet every OTHER
+        // row above bundles the drop with O(N) CONSTRUCTION, so a regression in the cascade's own
+        // allocation behavior is masked. Here construction is OUTSIDE the measured closure — ONLY the
+        // teardown is timed. The invariant under guard: reclaiming an N-deep spine costs O(1) allocations,
+        // NOT O(N). The cascade seeds an inline root's ≤2 children into a fixed `[Handle; 2]` buffer and,
+        // on reaching the first HEAP child, ADOPTS that dying node's own handle Vec (`core::mem::take`) as
+        // the worklist backing — so it never allocates a fresh worklist per level. A regression that
+        // materializes a fresh Vec per node (O(N) allocs) or reverts to a recursive free (stack overflow at
+        // this depth) trips this. Build a `(arr2 leaf spine)` cons-spine identical to the overflow test.
+        const DROP_DEPTH: i64 = 4000;
+        let build_spine = || {
+            let mut acc = op_arr_alloc(0); // inline unit terminator — no node
+            for _ in 0..DROP_DEPTH {
+                let node = op_arr_alloc(2);
+                op_arr_set(node, 0, op_box_int(1)); // immediate leaf — no element box
+                op_arr_set(node, 1, acc);
+                acc = node;
+            }
+            acc
+        };
+        let spine = build_spine();
+        let drop_allocs = measure(&mut || op_drop(spine));
+        println!("ALLOC free_cascade_deep DEPTH={DROP_DEPTH}: {drop_allocs}");
+        // MEASURED near-ZERO: the root donates seed_buf, the first heap child's Vec is adopted as the sole
+        // worklist, and every deeper level's ≤2 children refill the fixed buffer or the adopted Vec (which
+        // may realloc a small O(log DEPTH) number of times as it grows — NOT O(DEPTH)). The ceiling is a
+        // tiny constant, DEPTH-INDEPENDENT: a per-node-Vec regression at DEPTH=4000 would blow past it by
+        // three orders of magnitude.
+        assert!(
+            drop_allocs <= 40,
+            "free_cascade_deep DEPTH={DROP_DEPTH} allocs {drop_allocs} exceeds ceiling 40 (O(1) teardown: fixed seed buffer + adopt-by-move worklist; a fresh-Vec-per-node regression would be ~O(DEPTH), a recursive-free regression would stack-overflow)"
+        );
         // MEASURED ~100 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.67 allocs/node after
         // the flat `child_pool` arena replaced the per-compound-node children Vec (was ~195/encode = ~1.3/
         // node). The remaining allocs are the grow-once `leaves`/`structs`/`child_pool` Vecs + the output
