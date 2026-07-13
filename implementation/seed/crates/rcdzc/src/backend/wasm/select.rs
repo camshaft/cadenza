@@ -2684,15 +2684,16 @@ fn emit(
         // requires): `and` → `if lhs then rhs else 0`; `or` → `if lhs then 1 else rhs`. The `if` yields an
         // i32 Bool. (A constant `lhs` folded in `lower`, so here `lhs` is a runtime bool.)
         Core::And { lhs, rhs, is_and } => {
-            // BRANCHLESS BOOLEAN: when `rhs` is a cheap trap-free LEAF (param/local/const), the
-            // short-circuit is unnecessary — `and`/`or` become a bitwise `i32.and`/`i32.or`. Booleans are
-            // canonical i32 `0`/`1`, so `p & q` IS the boolean AND and `p | q` IS the boolean OR; and the
-            // only observable effect short-circuit preserves is NOT evaluating `rhs` when `lhs` decides
-            // the result — a leaf has no effect or trap to skip, so evaluating it unconditionally is
-            // identical. One bitwise op, no branch (mirrors the `if`→`select` rewrite for leaf branches).
-            // A NON-leaf `rhs` (a call, a nested op that could trap, an effecting expression) KEEPS the
-            // short-circuit `if` so `rhs` runs only when reached.
-            if is_select_leaf(db, rhs) {
+            // BRANCHLESS BOOLEAN: when `rhs` can neither TRAP nor EFFECT, the short-circuit is unnecessary
+            // — `and`/`or` become a bitwise `i32.and`/`i32.or`. Booleans are canonical i32 `0`/`1`, so
+            // `p & q` IS the boolean AND and `p | q` IS the boolean OR; the only thing short-circuit
+            // preserves is NOT evaluating `rhs` when `lhs` decides the result — and a trap-free,
+            // effect-free `rhs` has nothing to skip, so evaluating it unconditionally is identical. This
+            // covers a bare LEAF and — the common case — a COMPARISON `(and (< a b) (< c d))` or a
+            // bitwise/`not`/`wrap` combination of leaves, all total (`is_branchless_bool_rhs`). A `rhs`
+            // that could trap (a checked op, `/`), call, allocate, or effect KEEPS the short-circuit `if`
+            // so it runs only when reached.
+            if is_branchless_bool_rhs(db, rhs) {
                 emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
                 emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
                 out.push(if is_and { Lir::I32And } else { Lir::I32Or });
@@ -3895,6 +3896,43 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
         core_of(db, id),
         Core::Param { .. } | Core::LocalRef { .. } | Core::ConstInt(_) | Core::ConstBool(_)
     )
+}
+
+/// Whether `id` is safe to evaluate UNCONDITIONALLY as the right operand of a BRANCHLESS boolean
+/// connective (`(and lhs rhs)` / `(or lhs rhs)` → `i32.and`/`i32.or`, no short-circuit `if`). The
+/// short-circuit exists ONLY to skip a `rhs` that could TRAP or has an EFFECT when `lhs` already decides
+/// the result; a `rhs` that can neither trap nor effect is identical evaluated always. This is broader
+/// than `is_select_leaf` (which also bounds COST for the `if`→`select` branch rewrite): a boolean `rhs`
+/// is only ever a few instructions, so cost is not the concern — only trap/effect-freedom is. Accepts a
+/// leaf, plus the TOTAL boolean-producing forms over recursively-safe operands: a comparison
+/// (`i64.lt_s` etc. never trap), a bitwise `&`/`|`/`^` (total), a `not` (`i32.eqz`), and a `wrap`
+/// (truncation, total). A checked `+`/`-`/`*`/`/`/`%`, a call, a heap op, or an effecting form is NOT
+/// safe — it keeps the short-circuit `if`.
+fn is_branchless_bool_rhs(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Param { .. } | Core::LocalRef { .. } | Core::ConstInt(_) | Core::ConstBool(_) => true,
+        // A comparison never traps — safe if its operands are (they are always trap-free scalars, but
+        // recurse for uniformity: a comparison operand is a leaf/arith, and only a trap-free one qualifies).
+        Core::Compare { lhs, rhs, .. } => {
+            is_branchless_bool_rhs(db, lhs) && is_branchless_bool_rhs(db, rhs)
+        }
+        // Bitwise `&`/`|`/`^` are total; `not` is `i32.eqz`; `wrap` truncates — all trap-free.
+        Core::Arith {
+            op: Prim::BitAnd | Prim::BitOr | Prim::BitXor,
+            lhs,
+            rhs,
+        } => is_branchless_bool_rhs(db, lhs) && is_branchless_bool_rhs(db, rhs),
+        Core::Not { operand }
+        | Core::Convert {
+            op: Prim::Wrap,
+            operand,
+        } => is_branchless_bool_rhs(db, operand),
+        // A nested `and`/`or` whose OWN rhs is branchless-safe is itself safe (it emits branchlessly too).
+        Core::And { lhs, rhs, .. } => {
+            is_branchless_bool_rhs(db, lhs) && is_branchless_bool_rhs(db, rhs)
+        }
+        _ => false,
+    }
 }
 
 /// How a checked-arith operand is pushed onto the stack at each of its use sites (the machine op AND

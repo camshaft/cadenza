@@ -5314,6 +5314,69 @@ mod match_engine {
     }
 
     #[test]
+    fn a_comparison_operand_boolean_connective_is_branchless() {
+        // `(and (< a b) (< c d))` — the rhs is a COMPARISON, not a bare leaf, but a comparison can neither
+        // trap nor effect, so evaluating it unconditionally is identical to the short-circuit `if`. It
+        // emits a branchless `i32.and` (two `lt_s`, one `and`, no `if`), the comparison companion of the
+        // leaf-operand branchless connective. (A rhs that could TRAP — e.g. containing a `/` — keeps the
+        // short-circuit; that's `a_conjunction_short_circuits_shielding_a_trapping_right_operand`.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        use wasmtime::component::Val;
+        let lir = |body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let dd = db.def_by_name("f").expect("def f");
+            let params: Vec<_> = db.defs[dd]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[dd].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let and_code = lir("(and (< a b) (< c d))");
+        assert!(
+            and_code.contains(&Lir::I32And) && !and_code.iter().any(|i| matches!(i, Lir::If(_))),
+            "(and cmp cmp) is a branchless i32.and (no short-circuit if), got: {and_code:?}"
+        );
+        let or_code = lir("(or (< a b) (< c d))");
+        assert!(
+            or_code.contains(&Lir::I32Or) && !or_code.iter().any(|i| matches!(i, Lir::If(_))),
+            "(or cmp cmp) is a branchless i32.or, got: {or_code:?}"
+        );
+        // Truth-table value parity: (a<b) && (c<d) over the four cases.
+        let and_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) (and (< a b) (< c d))) (export f))",
+        )))
+        .expect("compile");
+        let ck = |a: i64, b: i64, c: i64, d: i64| {
+            run_returns_with::<bool>(
+                &and_b,
+                "f",
+                &[Val::S64(a), Val::S64(b), Val::S64(c), Val::S64(d)],
+            )
+        };
+        assert!(ck(1, 2, 3, 4), "T&&T");
+        assert!(!ck(1, 2, 4, 3), "T&&F");
+        assert!(!ck(2, 1, 3, 4), "F&&T");
+        assert!(!ck(2, 1, 4, 3), "F&&F");
+    }
+
+    #[test]
     fn a_nullary_variant_is_constructed_by_applying_it_to_unit() {
         // core-semantics.md §Construction MUST Be Via Application: "(None unit)". A NULLARY variant is
         // constructed by applying its ctor to the unit value — `(T.Nil ())` — not only used bare. The
