@@ -154,6 +154,8 @@ pass	a generic recursive sum with a bare self-reference nested in a list paramet
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
+pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
+pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
 pass	a guarded wildcard arm falls through to a tail-recursive call
@@ -903,6 +905,7 @@ todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a generic recursive sum references itself bare and carries its own type parameter
 todo	a generic sum with TWO type parameters instantiates each independently
+todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 todo	a guard over a variant pattern gates on the payload
 todo	a guarded variant arm falls through when the guard fails
 todo	a handler accumulates into a list and a read-out operation reads it back

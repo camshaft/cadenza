@@ -1752,3 +1752,14 @@
   (input  (do (def (main (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export main)))
   (call   main (: 9 Int8))
   (output (: 100 Int8)))
+
+(case "a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value"
+  (doc    "The `match` analogue of the if-operand wrap-down: `(: (+ (match n (0 5) (_ 1)) 2) Int8)` — the
+           `match` arm bodies are deferred-width (Int64-defaulting) literals, so the whole `match` is Int64;
+           the enclosing narrow `+` must WRAP IT DOWN to Int8 before adding. With n=9 the wildcard arm gives
+           1, 1 + 2 = 3 fits Int8 → 3. Pins that a `match`-operand takes the same narrow wrap-down an
+           if-operand does — on every backend (the Rust backend omitted it, emitting an i64 `match` into an
+           i8 add → rustc E0308; the wrap-down `as i8` on the match sub-expression fixes it, matching wasm).")
+  (input  (do (def (main (: n Int8)) (: (+ (match n (0 5) (_ 1)) 2) Int8)) (export main)))
+  (call   main (: 9 Int8))
+  (output (: 3 Int8)))
