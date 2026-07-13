@@ -4843,16 +4843,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bin_bit_field_packs_msb_first() {
+        // `(bits v k)` packs the low `k` bits of `v` MSB-first; a byte-closing run of bit-fields folds to
+        // the packed bytes. `(bits 1 1)(bits 2 3)(bits 5 4)` = 1·010·0101 = 0b1010_0101 = 165. A wider
+        // multi-byte field splits big-endian; a byte-aligned field composes with an int segment.
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of (list 165))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (bin (bits 4660 16)) (Bytes.of (list 18 52))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= (bin (bits 255 8) (u8 1)) (Bytes.of (list 255 1))) 1 0)) (export main))",
+                1,
+            ),
+            // a wrong expected packing → false
+            (
+                "(module m (def (main) (if (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of (list 164))) 1 0)) (export main))",
+                0,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant bin bit-field packs: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
         // A constant segment value that does not fit its width has no encoding → the build fails
         // (CDZ0304, the compile-provable companion of the runtime "binary value does not fit segment"
-        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned.
+        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned. A
+        // bit-field value wider than its width (`(bits 2 1)` — 2 needs 2 bits) is the sub-byte companion,
+        // also a provable rejection (CDZ0220 mis-alignment or CDZ0304 fit — both refuse, never truncate).
         for src in [
             "(module m (def (main) (Bytes.len (bin (u8 256)))) (export main))",
             "(module m (def (main) (Bytes.len (bin (u8 -1)))) (export main))",
         ] {
             assert_eq!(reject_code(src).as_deref(), Some("CDZ0304"), "src: {src}");
         }
+        // A byte-aligned bit-field whose value overflows its width is the CDZ0304 fit-trap (aligned, so
+        // the well-formedness check passes and the value-fit check fires): `(bits 256 8)` needs 9 bits.
+        assert_eq!(
+            reject_code("(module m (def (main) (Bytes.len (bin (bits 256 8)))) (export main))")
+                .as_deref(),
+            Some("CDZ0304"),
+        );
     }
 
     #[test]
