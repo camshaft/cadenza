@@ -313,6 +313,30 @@
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+(case "two runtime Ok values of a multi-parameter sum compare equal by a heap walk"
+  (doc    "The MULTI-PARAMETER-sum companion: `Result` has TWO type parameters (`Ok a`, `Err b`), and
+           `(Ok (sumto 3))` fixes only `a = Int64` — the `Err` parameter `b` is a PHANTOM no value here
+           instantiates. `(= (Ok (sumto 3)) (Ok 6))` builds both operands from recursion (unfoldable), so
+           the runtime `value-eq` heap walk runs; the two `Ok` values carry equal Int64 payloads → 1. Pins
+           that an UNCONSTRAINED type parameter of a SIBLING variant (`Err b`) does not block the walk: a
+           phantom parameter carries no runtime structure, so it is scalar-safe. A generation that walked
+           every variant's payload type and rejected the free `b` declined this though the compared `Ok`
+           values are exactly walkable — the walkability check must admit a bare unconstrained variable.")
+  (input  (do
+            (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
+            (def (main) (if (= (Ok (sumto 3)) (Ok 6)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk"
+  (doc    "The unequal companion: `(sumto 3)` = 6, so `(Ok (sumto 3))` carries 6 while `(Ok 7)` carries 7
+           — the heap walk finds the payloads differ and the comparison is false → 0. Confirms the
+           phantom-`Err`-parameter `Result` comparison is a genuine content test, not a fold that
+           happened to say true.")
+  (input  (do
+            (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
+            (def (main) (if (= (Ok (sumto 3)) (Ok 7)) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
 (case "a runtime sum equality drives a tail-recursive loop"
   (doc    "The runtime heap walk `=` used as the CONDITION of a tail-recursive function that compiles to a
            wasm LOOP: `find` searches upward from 0 for the `n` whose `(N.I n)` equals `(N.I 3)`, so the

@@ -7277,6 +7277,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_eq_of_a_multiparam_sum_with_a_phantom_parameter_walks() {
+        // A `Result` value has TWO type parameters (`Ok a`, `Err b`); `(Ok n)` fixes only `a`, leaving
+        // `b` a PHANTOM no value instantiates. A runtime `(= (Ok x) (Ok 6))` (both operands built from
+        // recursion, so unfoldable) must emit the `value-eq` heap walk — the free `Err` parameter `b`
+        // does NOT make the sum non-walkable (a phantom parameter carries no runtime structure). Before
+        // the fix `ty_heap_walkable` walked every variant's payload type, hit the free `b` (a `Ty::Var`),
+        // and declined "comparison of a compound value needs a heap walk" though the compared `Ok` values
+        // are exactly walkable. Run through the composed runtime to pin the value (equal → 1).
+        use crate::testkit::parse;
+        let src = "(module m (def (sumto (: n Int64)) (if (< n 1) 0 (+ n (sumto (- n 1))))) \
+                     (def (eq3) (if (= (Ok (sumto 3)) (Ok 6)) 1 0)) (export eq3))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a phantom-parameter multi-param sum equality compiles to a value-eq heap walk");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping phantom-param value-eq run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("eq3".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run phantom-param value-eq") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "1", "(Ok (sumto 3)) equals (Ok 6)"),
+            cdz_run::Outcome::Trap(t) => panic!("phantom-param value-eq trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_comparison_of_mismatched_operand_types_rejects_via_unification() {
         // (< 1 true) — `<` types at ∀a. a → a → Bool; unifying the second operand `true` (Bool) against
         // the first operand's `a` (fixed to Int by `1`) FAILS. The one generic rule catches it.

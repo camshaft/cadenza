@@ -734,6 +734,7 @@ pass	two constant records with the same fields in different written order are eq
 pass	two constant sums with the same payload but different variants are not equal
 pass	two definitions imported under the same name are rejected
 pass	two different variants of the SAME sum compare unequal
+pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 pass	two differing runtime sum values compare unequal by a heap walk
 pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
@@ -746,6 +747,7 @@ pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
+pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
 pass	two runtime records compare equal by a heap walk
 pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk

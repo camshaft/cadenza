@@ -3857,6 +3857,16 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
     match ty {
         // Scalar leaves — the base case the walk compares directly (equal canonical raw bytes).
         Ty::Int(_) | Ty::Bool | Ty::Unit => true,
+        // An UNCONSTRAINED type variable — a PHANTOM parameter no value in this comparison instantiates.
+        // It arises for a SIBLING variant of a multi-parameter sum whose param the compared values do not
+        // use: `(= (Ok 6) (Ok 6))` types the operand `Result Int64 ?b` (the `Err` parameter `b` is free —
+        // no `Err` value exists here), so walking `Result`'s variants reaches `Err`'s payload `?b`. A bare
+        // unconstrained var is SCALAR-SAFE for the walk: it can only ground to a phantom (unit-like) type,
+        // NEVER to a concrete non-canonical leaf — a `List`/`Bytes`/`String` is a concrete `Ty` (it reaches
+        // the arm below), and a var CONSTRAINED to a collection is substituted to that concrete `Ty` before
+        // reaching here. Treating it as walkable admits only the genuinely-phantom case; rejecting it was
+        // over-conservative and declined `(= (Ok x) (Ok 6))` though the compared `Ok` values ARE walkable.
+        Ty::Var(_) => true,
         // A tuple/record — walkable iff every element/field is. (An empty tuple is unit, trivially so.)
         Ty::Tuple(elems) => {
             let elems: Vec<Ty> = elems.to_vec();
@@ -3904,7 +3914,6 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         | Ty::String
         | Ty::Float
         | Ty::Fn(_, _)
-        | Ty::Var(_)
         | Ty::Type
         | Ty::Any => false,
     }
