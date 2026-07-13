@@ -28179,7 +28179,11 @@ mod closure_host_resource {
         ];
 
         let core = crate::backend::wasm::serialize::distinct_sig_resource_core_module(
-            &funcs, &imports, &groups, &layout,
+            &funcs,
+            &imports,
+            &groups,
+            &[],
+            &layout,
         )
         .expect("distinct-signature closure-resource core serializes");
 
@@ -28813,14 +28817,13 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures now COMPILE for the same-signature (one resource type, shared `call`), the
-    /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (a same-signature
-    /// closure ALONGSIDE a plain non-closure export — the closure via the resource envelope, the plain export
-    /// as an ordinary top-level func). The only REMAINING declining shape is DISTINCT closure signatures
-    /// alongside a plain export (the distinct-sig envelope has no plain-export slot). Pins the three working
-    /// cases + the honest Todo.
+    /// MULTI-EXPORT closures COMPILE for the same-signature (one resource type, shared `call`), the
+    /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (closures ALONGSIDE
+    /// a plain non-closure export — the closures via the resource envelope, the plain export as an ordinary
+    /// top-level func) for BOTH same-signature and DISTINCT-signature closure sets. Pins the four working
+    /// cases (same-sig, distinct-sig, same-sig+plain, distinct-sig+plain).
     #[test]
-    fn multi_export_closures_compile_same_or_distinct_signature_else_decline() {
+    fn multi_export_closures_compile_same_or_distinct_signature() {
         use crate::testkit::parse;
         // Same signature → COMPILES (shared call).
         let same = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
@@ -28842,18 +28845,13 @@ mod closure_host_resource {
             "a same-signature closure alongside a plain export compiles (mixed-export path)",
         );
 
-        // DISTINCT closure signatures ALONGSIDE a non-closure export → still declines (the distinct-sig
-        // resource envelope has no plain-export slot; that composition is a later widening).
+        // DISTINCT closure signatures ALONGSIDE a non-closure export → now COMPILES too (the distinct-sig
+        // envelope carries plain exports: N resource types + the plain export as a top-level func).
         let mixed_distinct = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                               (def (isz) (fn ((: x Int64)) (= x 0))) \
                               (def (two) 2) (export inc) (export isz) (export two))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct)))
-            .expect_err("distinct-signature closures alongside a plain export must DECLINE");
-        assert!(
-            err.message.contains("DISTINCT signatures ALONGSIDE") && err.code.is_none(),
-            "expected the distinct-sig-plus-plain decline, got: {:?} / {}",
-            err.code,
-            err.message
+        crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct))).expect(
+            "distinct-signature closures alongside a plain export compile (distinct-sig mixed path)",
         );
     }
 

@@ -1583,6 +1583,7 @@ pub fn distinct_sig_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     groups: &[SigGroup],
+    plain: &[PlainExport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
@@ -1727,9 +1728,14 @@ pub fn distinct_sig_resource_core_module(
             }
             items.extend_from_slice(&export(&format!("call-g{gi}"), call_abs_base + gi as u32));
         }
+        // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, so just name each
+        // by its core-func index (the envelope aliases + lifts them as ordinary top-level component funcs).
+        for p in plain {
+            items.extend_from_slice(&export(&p.export_name, p.body_abs));
+        }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(total_makes + g, &items),
+            &wasm_vec(total_makes + g + plain.len(), &items),
         )
     };
 

@@ -1830,8 +1830,30 @@ pub fn assemble_distinct_sig_resource(
     import_name: &str,
     groups: &[SigGroupAbi],
 ) -> Vec<u8> {
+    assemble_distinct_sig_resource_mixed(main_core, dtor_core, imports, import_name, groups, &[])
+}
+
+/// The distinct-signature envelope with P PLAIN (non-closure) exports riding alongside the G resource
+/// types. Generalizes [`assemble_distinct_sig_resource`] (P=0): each plain body is aliased off the SAME
+/// program instance (after all the closure fns), lifted as an ORDINARY top-level component func, and
+/// exported directly under its kebab name — the same plain-export composition the same-signature mixed
+/// envelope uses ([`assemble_mixed_closure_resource`]), applied to the G-resource shape.
+///
+/// Index deltas over P=0: plain bodies are aliased AFTER the `total_fns` closure fns (core funcs
+/// `k+3g+total_fns+j`), their functypes laid AFTER the fn functypes (comp types `1+g+2*total_fns+j`),
+/// lifted AFTER the closure lifts (comp funcs `k+total_fns+j`), and exported at the TOP level.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_distinct_sig_resource_mixed(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    groups: &[SigGroupAbi],
+    plain: &[PlainExportAbi],
+) -> Vec<u8> {
     let k = imports.len();
     let g = groups.len();
+    let np = plain.len();
     // Flat function count across all groups: each group contributes (its makes) + 1 call.
     let total_fns: usize = groups.iter().map(|gr| gr.makes.len() + 1).sum();
     let mut out = Vec::new();
@@ -1966,6 +1988,7 @@ pub fn assemble_distinct_sig_resource(
     // sec 6: alias each group's `make-<name>` + `call-<g>` off the program instance → core funcs (after the
     // lowered ops + 3g resource funcs). Record each fn's core-func index in flat order.
     let mut fn_core: Vec<u32> = Vec::new();
+    let mut plain_core: Vec<u32> = Vec::new();
     let mut next_fn = (k + 3 * g) as u32;
     out.extend_from_slice(&{
         let mut items = Vec::new();
@@ -1979,12 +2002,19 @@ pub fn assemble_distinct_sig_resource(
             fn_core.push(next_fn);
             next_fn += 1;
         }
-        section(sec::ALIAS, &wasm_vec(total_fns, &items))
+        // each PLAIN export's body, aliased AFTER all the closure fns → core funcs k+3g+total_fns+j.
+        for p in plain {
+            items.extend_from_slice(&core_alias_item(prog_inst, &p.core_name));
+            plain_core.push(next_fn);
+            next_fn += 1;
+        }
+        section(sec::ALIAS, &wasm_vec(total_fns + np, &items))
     });
     // sec 7: per fn, its `own<t>` + functype. Component types after the import-instance-type (0) + G
     // resource types (1..1+g): the next defined type index is `1 + g`. Each fn adds own<t> (1) + functype
     // (1). Record each fn's functype component-type index.
     let mut fn_functype: Vec<u32> = Vec::new();
+    let mut plain_functype: Vec<u32> = Vec::new();
     out.extend_from_slice(&{
         let mut items = Vec::new();
         let mut ti = (1 + g) as u32;
@@ -2006,15 +2036,25 @@ pub fn assemble_distinct_sig_resource(
             fn_functype.push(ti + 1);
             ti += 2;
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * total_fns, &items))
+        // each PLAIN export's functype (scalar result, inline primitive byte — NO own<t> wrapper).
+        for p in plain {
+            items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
+            plain_functype.push(ti);
+            ti += 1;
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * total_fns + np, &items))
     });
-    // sec 8: lift each fn (its core func) against its functype → comp funcs k..k+total_fns.
+    // sec 8: lift each fn (its core func) against its functype → comp funcs k..k+total_fns; then lift each
+    // PLAIN export (core func k+3g+total_fns+j) against its functype → comp func k+total_fns+j.
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for i in 0..total_fns {
             items.extend_from_slice(&canon_lift_item(fn_core[i], fn_functype[i]));
         }
-        section(sec::CANON, &wasm_vec(total_fns, &items))
+        for j in 0..np {
+            items.extend_from_slice(&canon_lift_item(plain_core[j], plain_functype[j]));
+        }
+        section(sec::CANON, &wasm_vec(total_fns + np, &items))
     });
     // sec 4/5/11: nested re-export component; instantiate (G resources + total_fns comp funcs); export.
     out.extend_from_slice(&component_section(&resource_inner_component_distinct_sig(
@@ -2027,10 +2067,16 @@ pub fn assemble_distinct_sig_resource(
             &component_instantiate_distinct_sig_item(&res_type_idx, k as u32, groups),
         ),
     ));
-    out.extend_from_slice(&section(
-        sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
-    ));
+    // sec 11: export the closure interface instance, then each PLAIN export as an ORDINARY top-level
+    // component func (comp func k+total_fns+j), under its kebab-normalized name.
+    out.extend_from_slice(&{
+        let mut items = export_instance_item(CLOSURE_INTERFACE, 1);
+        for (j, p) in plain.iter().enumerate() {
+            let comp_fn = (k + total_fns + j) as u32;
+            items.extend_from_slice(&comp_export_item(&p.name, comp_fn));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(1 + np, &items))
+    });
     out
 }
 

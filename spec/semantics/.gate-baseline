@@ -977,7 +977,12 @@ pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
+pass	distinct-signature capturing closures alongside a parameterized plain export
+pass	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
 pass	distinct-signature capturing producers
+pass	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
+pass	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
+pass	distinct-signature closures alongside a plain export — the plain export runs
 pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
