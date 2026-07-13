@@ -553,6 +553,57 @@
   (call   main (: true Bool))
   (output (: 11 Int64)))
 
+; The COMMUTING CONVERSION also applies to a `match` head, not only an `if`: `((match c (p0 f0) (p1 f1)…)
+; args…)` pushes the application into each ARM body → `(match c (p0 (f0 args…)) (p1 (f1 args…))…)` (a
+; "case-of-match", the sum analogue of case-of-case). A match whose arms return CLOSURES — the dispatch-
+; table idiom `(match c ((C.A n) (fn (x) …)) …)` — then folds each arm's lambda in place, INCLUDING one
+; that CAPTURES the arm's payload binder (`(fn (x) (+ x n))`), because the arm's pattern is reused so `n`
+; stays in scope for the rewritten body. Sound: only the taken arm runs, so applying in that arm is what
+; the original did.
+
+(case "applying the result of a match whose arms return payload-capturing closures"
+  (doc    "A `match` selects a closure per variant and the result is applied: `((mk (C.A 10)) 5)` where
+           `mk` returns `(fn (x) (+ x n))` from the `C.A n` arm — the closure CAPTURES the arm's payload
+           `n`. The application pushes into each arm (case-of-match), and the `C.A` arm's lambda folds
+           against `5` with `n` = 10 → 15. Was 'value is not applyable' (a match result was not recognized
+           as an applyable head — only an `if` head commuted); now the match head commutes like an `if`.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (mk (: c C)) (match c ((C.A n) (fn ((: x Int64)) (+ x n))) ((C.B) (fn ((: x Int64)) x))))
+            (def (main) ((mk (C.A 10)) 5))
+            (export main)))
+  (output (: 15 Int64)))
+
+(case "a match-of-closures on a runtime-selected variant is applied per arm"
+  (doc    "The runtime companion: the scrutinee is a runtime-selected variant `(if b (C.A 10) (C.B))`, so
+           WHICH closure `mk` returns is decided at run time; applying `((mk …) 5)` dispatches to the taken
+           arm's closure. b=true → the `C.A 10` arm → `(+ 5 10)` = 15; b=false → the `C.B` identity arm → 5.
+           Pins the case-of-match commuting conversion over a runtime scrutinee, not only a constant one.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (mk (: c C)) (match c ((C.A n) (fn ((: x Int64)) (+ x n))) ((C.B) (fn ((: x Int64)) x))))
+            (def (main (: b Bool)) ((mk (if b (C.A 10) (C.B))) 5))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 15 Int64))
+  (call   main (: false Bool))
+  (output (: 5 Int64)))
+
+(case "a match returning multi-argument closures applies at full arity"
+  (doc    "The arms return TWO-argument closures — `(fn (x y) (+ (+ x y) n))` — and the result is applied
+           to both args at once: `((mk (C.A 100)) 3 4)`. Case-of-match pushes the full multi-argument
+           application into each arm, so the taken arm's lambda folds against `[3, 4]` with `n` = 100 →
+           107. Pins the commuting conversion carries ALL arguments, not just one.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (mk (: c C)) (match c ((C.A n) (fn ((: x Int64) (: y Int64)) (+ (+ x y) n))) ((C.B) (fn ((: x Int64) (: y Int64)) (+ x y)))))
+            (def (main) ((mk (C.A 100)) 3 4))
+            (export main)))
+  (output (: 107 Int64)))
+
 ; The runtime-condition selection above FOLDS because the chosen function is applied AT the selection
 ; site — `((if b f g) 5)` commutes the application into each branch, so no function value survives. But
 ; when the runtime-selected function is instead THREADED THROUGH A RECURSIVE HOF — chosen by `if`, then

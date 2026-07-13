@@ -145,7 +145,11 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         };
     }
 
-    // Compute the boundary layout once (target-neutral). A program with no export declines.
+    // Compute the boundary layout once (target-neutral). A program with no export declines. Layout also
+    // gates emission on properties `collect_faults` does not model (e.g. a boundary shape it cannot lay
+    // out), so it must run — a well-formed program can still fail to lay out. (Its coarser declines that
+    // DUPLICATE a `collect_faults` coded fault — the ambiguous-param case — are handled by reporting the
+    // coded fault too, below, so the sidecar `check` surfaces it; the emit path keeps layout's decline.)
     let layout = match layout::compute(&mut db) {
         Ok(l) => l,
         Err(r) => {
@@ -451,18 +455,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             // Carries A Route To A Fix). The candidate pool is the registry itself, so a suggestion can
             // never name a key the validator would then reject.
             Some(other) => {
+                // Name a near-miss registry key IN THE MESSAGE too (not only as a fix) — the same "did
+                // you mean?" phrasing an unbound name / absent field / undeclared handler op carries, so
+                // the human report is consistent and the suggestion is visible without `--json`.
+                let candidate =
+                    crate::diag::suggest::nearest(other, PRAGMA_REGISTRY.iter().copied());
+                let hint = match &candidate {
+                    Some(near) => format!(" — did you mean `{near}`?"),
+                    None => String::new(),
+                };
                 let mut reject = Reject::coded(
                     Code::UnknownDirective,
                     format!(
                         "`{other}` is not a module directive this specification defines (the pragma \
-                         registry is a fixed set; an unknown key is rejected, not ignored)"
+                         registry is a fixed set; an unknown key is rejected, not ignored){hint}"
                     ),
                 )
                 .at(form);
-                if let Some(candidate) =
-                    crate::diag::suggest::nearest(other, PRAGMA_REGISTRY.iter().copied())
-                    && let Some(&key_occ) = ptail.first()
-                {
+                if let (Some(candidate), Some(&key_occ)) = (candidate, ptail.first()) {
                     reject =
                         reject.with_fix(crate::diag::Fix::replace_heuristic(key_occ, candidate));
                 }
@@ -802,6 +812,49 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
         }
     }
+    // AN EXPORTED DEFINITION WITH AN UNANNOTATED (AMBIGUOUS-TYPE) PARAMETER — `(def (f x) …)` exported.
+    // An exported parameter must have a concrete machine type to cross the boundary; an unannotated one
+    // whose inference never fixed a scalar (`Any`, no `valtype`) has none. The EMIT path declines this in
+    // `layout::export_params` (an uncoded decline `cdz check` never runs, so `check` used to accept it
+    // while `compile` failed — the check-vs-emit gap). Detect it HERE so BOTH surfaces report it, coded
+    // CDZ0201 anchored at the parameter, WITH the rustc-gold "add a type annotation" fix: WRAP the bare
+    // param `x` in `(: x Int64)` (`Int64` = the numeric-model default; heuristic — the annotation resolves
+    // the ambiguity but the concrete type is the author's to confirm). Only a BARE param binder is
+    // flagged/fixed; an already-annotated `(: x T)` whose T is non-representable is a different fault.
+    let export_param_defs: Vec<(usize, String)> = db
+        .exports
+        .iter()
+        .filter_map(|e| e.def.map(|d| (d, e.name.clone())))
+        .collect();
+    for (def, name) in export_param_defs {
+        let params = db.defs[def].params.clone();
+        for p in params {
+            // Skip an already-annotated binder `(: a T)` — this fault is the BARE, unannotated param.
+            if db.ast.as_form(p, ":").is_some() {
+                continue;
+            }
+            let ty = crate::infer::type_of(db, p);
+            if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
+                let mut reject = Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}`: parameter type is ambiguous — annotate it (a boundary \
+                         parameter needs a concrete type; inference never fixed one)"
+                    ),
+                )
+                .at(p);
+                if let Some(nm) = db.ast.as_name(p) {
+                    reject = reject.with_fix(crate::diag::Fix::wrap_heuristic(
+                        p,
+                        "(: ",
+                        " Int64)",
+                        format!("annotate `{nm}` with a type, e.g. `(: {nm} Int64)`"),
+                    ));
+                }
+                faults.push(reject);
+            }
+        }
+    }
     // SANITIZE ORIGINS BEFORE DEDUP. A fault anchored at a SYNTHESIZED/non-user node has its origin
     // stripped to `None` (the front-end span table only covers user nodes). This must run BEFORE
     // `dedup_faults` so the SAME fault reported once at a user node and once at a synthesized node — e.g.
@@ -1084,7 +1137,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // record used only to read a field folds away before reaching here; one that survives is a
         // runtime value whose fields are all reached.)
         Core::Record { fields } => {
-            for (_, value) in fields {
+            for (_, &value) in fields.iter() {
                 collect_reached_poisons(db, value, out);
             }
         }

@@ -908,3 +908,85 @@
               (export adder) (export gte) (export dbl)))
   (call   dbl (: 21 Int64))
   (output (: 42 Int64)))
+
+; A ROUND-TRIP (produce + consume) ALONGSIDE a plain non-closure export. The producer mints a closure, the
+; consumer takes it back and applies it, and a plain export rides alongside as an ordinary top-level func —
+; all in ONE component. Before this, the round-trip path SILENTLY DROPPED a plain export (a valid component
+; missing the name), a miscompile; now the plain body is aliased off the same program instance, lifted, and
+; exported at the top level. `cdz-run` routes `(call <plain>)` to the bare func and `(call <consumer>)` to
+; the round-trip (produce-then-consume).
+
+(case "a round-trip alongside a plain export — the plain export runs"
+  (doc    "`mk : () -> (-> Int64 Int64)` produces, `app : ((-> Int64 Int64), Int64) -> Int64` consumes, and
+           a plain `two : () -> 2` rides alongside. `(call two)` reaches the ORDINARY top-level `two` func →
+           2. Pins that a plain export is REACHABLE in a round-trip program (was silently dropped).")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (two) 2)
+              (export mk) (export app) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "a round-trip alongside a plain export — the round-trip still works"
+  (doc    "The SAME program, driving the ROUND-TRIP consumer `app`: the host produces a closure from `mk()`
+           → a handle → `app(handle, 5)` = 6. Pins that the round-trip (produce-then-consume) is intact when
+           a plain export shares the component.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (two) 2)
+              (export mk) (export app) (export two)))
+  (call   app (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a round-trip alongside a parameterized plain export applies its argument"
+  (doc    "A capturing round trip — `adder : (Int64) -> (-> Int64 Int64)` produces, `app` consumes — beside a
+           parameterized plain `dbl : (Int64) -> Int64`. `(call dbl 21)` = 42 reaches the top-level `dbl`.
+           Pins a non-nullary plain export beside a capturing round trip.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (dbl (: n Int64)) (* n 2))
+              (export adder) (export app) (export dbl)))
+  (call   dbl (: 21 Int64))
+  (output (: 42 Int64)))
+
+; A DISTINCT-SIGNATURE ROUND-TRIP alongside a plain export. Producers + consumers of DIFFERENT signatures
+; cross as N resource types, and a plain export rides alongside. Before this the distinct-sig round-trip
+; DECLINED any non-producer/non-consumer export; now it carries plain exports as top-level funcs.
+
+(case "a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs"
+  (doc    "`adder`+`appa` on `(-> Int64 Int64)` (t0) and `isz`+`appb` on `(-> Int64 Bool)` (t1), beside a
+           plain `two : () -> 2`. Driving `appa`: produce from `adder(10)` → a handle → `appa(handle, 5)` =
+           15. Pins that distinct-sig round-trip grouping is intact with a plain export present.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (appb (: h (-> Int64 Bool)) (: x Int64)) (h x))
+              (def (two) 2)
+              (export adder) (export appa) (export isz) (export appb) (export two)))
+  (call   appa (: 10 Int64) (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs"
+  (doc    "The SAME five-export program, driving `appb` (the `(-> Int64 Bool)` side, t1): produce from
+           `isz()` → a handle → `appb(handle, 0)` = true. Confirms both resource types round-trip with a
+           plain export present.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (appb (: h (-> Int64 Bool)) (: x Int64)) (h x))
+              (def (two) 2)
+              (export adder) (export appa) (export isz) (export appb) (export two)))
+  (call   appb (: 0 Int64))
+  (output (: true Bool)))
+
+(case "a distinct-signature round-trip alongside a plain export — the plain export runs"
+  (doc    "The SAME five-export program, calling the plain `two` → 2. Pins that the top-level plain export is
+           reachable when TWO distinct round-trip resource types share the component.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (appb (: h (-> Int64 Bool)) (: x Int64)) (h x))
+              (def (two) 2)
+              (export adder) (export appa) (export isz) (export appb) (export two)))
+  (call   two)
+  (output (: 2 Int64)))

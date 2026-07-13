@@ -20,5 +20,10 @@ edition = "2024"
 unicode-normalization = "0.1.25" # NFC on string/name leaves
 sha2 = "0.10"                    # schema-hash header over the arena type term
 num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand
+# The CommonMark event source for the `markdown` surface (blocks + inline + GFM tables). A
+# REFERENCE-only convenience: like the rest of this crate, the markdown surface is destined to be
+# rewritten in Cadenza, at which point the block/inline scanner is hand-rolled. The durable artifact
+# is the `document` node vocabulary + round-trip, not this parser.
+pulldown-cmark = { version = "0.13", default-features = false }
 # Used ONLY by the `cdz-syntax` bin for arg parsing; the library itself takes no CLI dependency.
 clap = { version = "4", features = ["derive"] }

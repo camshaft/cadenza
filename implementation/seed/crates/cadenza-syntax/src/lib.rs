@@ -23,6 +23,10 @@ pub mod iter;
 pub mod leb128;
 pub mod lexer;
 pub mod literal;
+/// The markdown surface: a literate document (`(document …)`) is a projection of the same arena the
+/// code surfaces use, and an embedded `cdz`/`ml`/`sexp` code block carries its program as a real
+/// arena SUBTREE — homoiconic markdown.
+pub mod markdown;
 pub mod parser;
 pub mod printer;
 pub mod query;

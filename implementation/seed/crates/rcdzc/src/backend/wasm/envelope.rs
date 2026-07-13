@@ -2093,8 +2093,35 @@ pub fn assemble_distinct_sig_roundtrip_resource(
     import_name: &str,
     groups: &[RtSigGroupAbi],
 ) -> Vec<u8> {
+    assemble_distinct_sig_roundtrip_resource_mixed(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        groups,
+        &[],
+    )
+}
+
+/// The distinct-signature round-trip envelope with P PLAIN (non-closure) exports riding alongside the G
+/// resource groups. Generalizes [`assemble_distinct_sig_roundtrip_resource`] (P=0): each plain body is
+/// aliased off the SAME program instance (after the `total_fns` closure funcs), lifted as an ORDINARY
+/// top-level component func, and exported directly under its kebab name. Index deltas over P=0: plain
+/// bodies aliased AFTER the closure funcs (core `k+3g+total_fns+j`), functypes AFTER the fn functypes
+/// (comp types `1+g+2*total_fns+j`), lifted AFTER the closure lifts (comp funcs `k+total_fns+j`), exported
+/// at the TOP level.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_distinct_sig_roundtrip_resource_mixed(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    groups: &[RtSigGroupAbi],
+    plain: &[PlainExportAbi],
+) -> Vec<u8> {
     let k = imports.len();
     let g = groups.len();
+    let np = plain.len();
     let total_fns: usize = groups
         .iter()
         .map(|gr| gr.makes.len() + gr.consumers.len())
@@ -2209,6 +2236,7 @@ pub fn assemble_distinct_sig_roundtrip_resource(
     // sec 6: alias each group's makes then consumers off the program instance (core order matches the
     // core module's export order: per group, makes then consumers).
     let mut fn_core: Vec<u32> = Vec::new();
+    let mut plain_core: Vec<u32> = Vec::new();
     let mut next_fn = (k + 3 * g) as u32;
     out.extend_from_slice(&{
         let mut items = Vec::new();
@@ -2224,10 +2252,18 @@ pub fn assemble_distinct_sig_roundtrip_resource(
                 next_fn += 1;
             }
         }
-        section(sec::ALIAS, &wasm_vec(total_fns, &items))
+        // each PLAIN export's body, aliased AFTER all the closure fns → core funcs k+3g+total_fns+j.
+        for p in plain {
+            items.extend_from_slice(&core_alias_item(prog_inst, &p.core_name));
+            plain_core.push(next_fn);
+            next_fn += 1;
+        }
+        section(sec::ALIAS, &wasm_vec(total_fns + np, &items))
     });
-    // sec 7: per fn its `own<t_g>` + functype (make: `(params…)->own<t>`; consumer: source-ordered params).
+    // sec 7: per fn its `own<t_g>` + functype (make: `(params…)->own<t>`; consumer: source-ordered params);
+    // then one PLAIN functype per plain export (scalar `(params…)->R`, NO own<t> wrapper).
     let mut fn_functype: Vec<u32> = Vec::new();
+    let mut plain_functype: Vec<u32> = Vec::new();
     out.extend_from_slice(&{
         let mut items = Vec::new();
         let mut ti = (1 + g) as u32;
@@ -2249,14 +2285,22 @@ pub fn assemble_distinct_sig_roundtrip_resource(
                 ti += 2;
             }
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * total_fns, &items))
+        for p in plain {
+            items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
+            plain_functype.push(ti);
+            ti += 1;
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * total_fns + np, &items))
     });
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for i in 0..total_fns {
             items.extend_from_slice(&canon_lift_item(fn_core[i], fn_functype[i]));
         }
-        section(sec::CANON, &wasm_vec(total_fns, &items))
+        for j in 0..np {
+            items.extend_from_slice(&canon_lift_item(plain_core[j], plain_functype[j]));
+        }
+        section(sec::CANON, &wasm_vec(total_fns + np, &items))
     });
     out.extend_from_slice(&component_section(
         &resource_inner_component_distinct_sig_rt(groups),
@@ -2268,10 +2312,16 @@ pub fn assemble_distinct_sig_roundtrip_resource(
             &component_instantiate_distinct_sig_rt_item(&res_type_idx, k as u32, groups),
         ),
     ));
-    out.extend_from_slice(&section(
-        sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
-    ));
+    // sec 11: export the closure interface, then each PLAIN export as an ordinary top-level comp func
+    // (comp func k+total_fns+j).
+    out.extend_from_slice(&{
+        let mut items = export_instance_item(CLOSURE_INTERFACE, 1);
+        for (j, p) in plain.iter().enumerate() {
+            let comp_fn = (k + total_fns + j) as u32;
+            items.extend_from_slice(&comp_export_item(&p.name, comp_fn));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(1 + np, &items))
+    });
     out
 }
 
@@ -2319,10 +2369,42 @@ pub fn assemble_roundtrip_resource(
     consumers: &[ClosureConsumeAbi],
     _spans: Option<()>,
 ) -> Vec<u8> {
+    assemble_roundtrip_resource_mixed(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        makes,
+        consumers,
+        &[],
+    )
+}
+
+/// The round-trip envelope with P PLAIN (non-closure) exports riding alongside the producers + consumers.
+/// Generalizes [`assemble_roundtrip_resource`] (P=0): each plain body is aliased off the SAME program
+/// instance (after the nfns closure funcs), lifted as an ORDINARY top-level component func, and exported
+/// directly under its kebab name — the same plain-export composition the multi-export mixed envelope uses.
+/// Without this, a plain export in a round-trip program was SILENTLY DROPPED (a valid component missing the
+/// name), a miscompile.
+///
+/// Index deltas over P=0: plain bodies aliased AFTER the nfns closure funcs (core funcs `k+3+nfns+j`),
+/// their functypes laid AFTER the fn functypes (comp types `2+2*nfns+j`), lifted AFTER the closure lifts
+/// (comp funcs `k+nfns+j`), and exported at the TOP level.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_roundtrip_resource_mixed(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    makes: &[ClosureMakeAbi],
+    consumers: &[ClosureConsumeAbi],
+    plain: &[PlainExportAbi],
+) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
     let ncons = consumers.len();
     let nfns = nmk + ncons;
+    let np = plain.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -2417,7 +2499,8 @@ pub fn assemble_roundtrip_resource(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
     ));
-    // sec 6: alias each make + each consumer off the program instance → core funcs k+3..k+3+nfns.
+    // sec 6: alias each make + each consumer off the program instance → core funcs k+3..k+3+nfns; then each
+    // PLAIN export's body → core funcs k+3+nfns..
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for mk in makes {
@@ -2426,7 +2509,10 @@ pub fn assemble_roundtrip_resource(
         for c in consumers {
             items.extend_from_slice(&core_alias_item(3, &c.name));
         }
-        section(sec::ALIAS, &wasm_vec(nfns, &items))
+        for p in plain {
+            items.extend_from_slice(&core_alias_item(3, &p.core_name));
+        }
+        section(sec::ALIAS, &wasm_vec(nfns + np, &items))
     });
     // sec 7: per make, `own<t>` + make functype; per consumer, `own<t>` + consume functype (`(g: own<t>,
     // args…) -> R`, the `call` shape). Resource is comp type 1.
@@ -2446,9 +2532,14 @@ pub fn assemble_roundtrip_resource(
             items.extend_from_slice(&consumer_functype(ti, &c.params, c.result_byte));
             ti += 2;
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * nfns, &items))
+        // each PLAIN export's functype (scalar result, inline primitive byte — NO own<t> wrapper).
+        for p in plain {
+            items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * nfns + np, &items))
     });
-    // sec 8: lift each make + each consumer against its functype → comp funcs k..k+nfns.
+    // sec 8: lift each make + each consumer against its functype → comp funcs k..k+nfns; then lift each
+    // PLAIN export (core func k+3+nfns+j) against its functype (comp type 2+2*nfns+j) → comp func k+nfns+j.
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for i in 0..nfns {
@@ -2456,9 +2547,15 @@ pub fn assemble_roundtrip_resource(
             let functype = (3 + 2 * i) as u32;
             items.extend_from_slice(&canon_lift_item(core_fn, functype));
         }
-        section(sec::CANON, &wasm_vec(nfns, &items))
+        for j in 0..np {
+            let core_fn = (k + 3 + nfns + j) as u32;
+            let functype = (2 + 2 * nfns + j) as u32;
+            items.extend_from_slice(&canon_lift_item(core_fn, functype));
+        }
+        section(sec::CANON, &wasm_vec(nfns + np, &items))
     });
-    // sec 4/5/11: nested re-export component; instantiate (resource + comp funcs k..k+nfns); export.
+    // sec 4/5/11: nested re-export component; instantiate (resource + comp funcs k..k+nfns); export the
+    // closure interface, then each PLAIN export as an ordinary top-level comp func (comp func k+nfns+j).
     out.extend_from_slice(&component_section(&resource_inner_component_roundtrip(
         makes, consumers,
     )));
@@ -2469,10 +2566,14 @@ pub fn assemble_roundtrip_resource(
             &component_instantiate_roundtrip_item(1, k as u32, makes, consumers),
         ),
     ));
-    out.extend_from_slice(&section(
-        sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
-    ));
+    out.extend_from_slice(&{
+        let mut items = export_instance_item(CLOSURE_INTERFACE, 1);
+        for (j, p) in plain.iter().enumerate() {
+            let comp_fn = (k + nfns + j) as u32;
+            items.extend_from_slice(&comp_export_item(&p.name, comp_fn));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(1 + np, &items))
+    });
     out
 }
 

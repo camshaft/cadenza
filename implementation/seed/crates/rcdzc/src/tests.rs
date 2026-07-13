@@ -1291,6 +1291,44 @@ fn each_parameter_of_a_wide_signature_resolves_to_its_own_binder() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
 }
 
+/// A WIDE record read field-by-field compiles correctly AND cheaply — the correctness guard for
+/// `Core::Record`'s `Arc<BTreeMap>` field map (cloning a `Core::Record` is a refcount bump, not a deep
+/// map copy). `core_of` clones the record's `Core` on every memo read, and the recursive Core-tree walks
+/// (`collect_host_arg_strings`, layout, select) re-read it per node, so an owned map made a record read
+/// field-by-field O(N²) (32 fields here; at 3200 it was ~2.8s, ~50% in `BTreeMap::clone`). The value must
+/// still be exact: build a 32-field record and sum every field — `f_i = i`, so the total is
+/// `0+1+…+31 = 496`. A dropped/misindexed field (or a shared-Arc aliasing bug) would compute a wrong sum.
+#[test]
+fn a_wide_record_read_field_by_field_sums_correctly() {
+    use crate::testkit::parse;
+    let n = 32;
+    let fields: String = (0..n).map(|i| format!(" (f{i} {i})")).collect();
+    // A balanced `+` tree over all field reads (avoids a deep linear nest hitting the descent cap).
+    let mut terms: Vec<String> = (0..n).map(|i| format!("(. r f{i})")).collect();
+    while terms.len() > 1 {
+        let mut next = Vec::new();
+        let mut it = terms.chunks_exact(2);
+        for pair in it.by_ref() {
+            next.push(format!("(+ {} {})", pair[0], pair[1]));
+        }
+        if let [last] = it.remainder() {
+            next.push(last.clone());
+        }
+        terms = next;
+    }
+    let src = format!(
+        "(module m (def (main) (let ((r (record{fields}))) {})) (export main))",
+        terms[0]
+    );
+    let bytes =
+        compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide record");
+    assert_eq!(
+        run_returns::<i64>(&bytes, "main"),
+        (0..n as i64).sum::<i64>(),
+        "sum of fields f0..f31 = 0+1+…+31 = 496"
+    );
+}
+
 /// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
 /// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
 /// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find
@@ -8577,6 +8615,45 @@ mod match_engine {
     }
 
     #[test]
+    fn an_exported_unannotated_param_surfaces_in_check_with_an_annotate_fix() {
+        // An exported def with an unannotated param `(def (f x) …)` has an ambiguous boundary parameter —
+        // it MUST be reported by the always-run `Diagnostics` set (`cdz check`), not only the emit path
+        // (where `layout::export_params` declined it, invisible to `check` — the check-vs-emit gap). It
+        // now carries the rustc-gold "add a type annotation" fix: WRAP `x` → `(: x Int64)`.
+        // Read the always-run `Diagnostics` set (what `cdz check` runs) — this fault is surfaced there
+        // (collect_faults), whereas the EMIT path reports layout's coarser decline first, so use the check
+        // path to see the coded CDZ0201.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f x) (+ x 1)) (export f))",
+        )));
+        let d = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("an exported unannotated param must be reported in check");
+        assert!(
+            d.message.contains("parameter type is ambiguous"),
+            "names the ambiguity: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries an annotate fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(: {} Int64)", crate::abi::WRAP_HOLE),
+            "wraps the bare param in a type annotation"
+        );
+        assert!(!fix.verified, "the concrete type is a heuristic guess");
+        // NO OVER-REPORT: a NON-exported unannotated param (it inlines at call sites) is NOT flagged.
+        let clean = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (helper x) (+ x 1)) (def (main) (helper 5)) (export main))",
+        )));
+        assert!(
+            !clean.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
+            "a non-exported unannotated param inlines — not a boundary ambiguity: {clean:?}"
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
@@ -9538,13 +9615,25 @@ mod match_engine {
         assert_eq!(fix.kind, crate::abi::FixKind::Replace);
         assert_eq!(fix.replacement, "default-integer");
         assert!(!fix.verified, "a nearest-key guess is heuristic");
-        // A FAR key gets no misleading suggestion (the plain reject).
+        // The suggestion is ALSO named in the human message (not only in the structured fix), matching
+        // every other did-you-mean site — visible without `--json`.
+        assert!(
+            d.message.contains("did you mean `default-integer`?"),
+            "the message must name the suggestion; got: {}",
+            d.message
+        );
+        // A FAR key gets no misleading suggestion (the plain reject, no message hint).
         let far =
             reject_full("(do (pragma frobnicate 3) (def (main) 1) (export main))").expect("reject");
         assert!(
             far.fix.is_none(),
             "no suggestion for an unrelated key: {:?}",
             far.fix
+        );
+        assert!(
+            !far.message.contains("did you mean"),
+            "no message hint for an unrelated key: {}",
+            far.message
         );
     }
 
@@ -14008,6 +14097,89 @@ mod match_engine {
     }
 
     #[test]
+    fn a_match_arm_the_scrutinees_range_excludes_is_dropped() {
+        // RANGE-BASED DEAD-ARM ELIMINATION: an `Int` probe the scrutinee's provable range excludes can
+        // never match, so the arm (probe + body) is dropped. `(match (& x 7) (100 …) (0 …) (_ …))`: the
+        // masked scrutinee ∈ [0,7], so the `100` arm is dead. Pins the elimination at the Lir level (no
+        // `const 100` probe, no dead body) AND value parity; a LIVE in-range arm and a wide-unsigned probe
+        // that only LOOKS out of range must be kept.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(& x 7) ∈ [0,7]` → the `100` arm is dead: no `const 100` probe, no dead body `const 111`.
+        let dead = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !dead.contains(&Lir::ConstI64(100)),
+            "the dead `100` probe is dropped, got: {dead:?}"
+        );
+        assert!(
+            !dead.contains(&Lir::ConstI64(111)),
+            "the dead arm body is dropped, got: {dead:?}"
+        );
+        // A LIVE in-range arm (`7`, since [0,7] includes 7) is KEPT even beside a dead one (`100`).
+        let live = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            live.contains(&Lir::ConstI64(7)),
+            "the live `7` probe stays, got: {live:?}"
+        );
+        assert!(
+            !live.contains(&Lir::ConstI64(100)),
+            "the dead `100` probe is dropped, got: {live:?}"
+        );
+
+        // VALUE PARITY: dispatch unchanged after dropping the dead arm.
+        use wasmtime::component::Val;
+        let b1 = component(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(8)]), 222); // 8&7=0 → arm 0
+        assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(5)]), 333); // 5&7=5 → wildcard
+        let b2 = component(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(15)]), 111); // 15&7=7 → live arm 7
+        assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(8)]), 333); // 8&7=0 → wildcard
+
+        // WIDE-UNSIGNED SOUNDNESS: a `UInt64` probe of `2^63` has a negative i64 BIT pattern but a value
+        // OUTSIDE i64 — it must NOT be treated as out of range and dropped. The arm is kept and fires. (The
+        // scrutinee is UInt64 but the bodies are Int64 literals, so the RESULT reads back as i64.)
+        let b3 = component(
+            "(module m (def (f (: x UInt64)) (match x (9223372036854775808 111) (0 222) (_ 333))) (export f))",
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&b3, "f", &[Val::U64(9223372036854775808)]),
+            111
+        );
+        assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(0)]), 222);
+    }
+
+    #[test]
     fn a_computed_match_scrutinee_is_evaluated_once() {
         use wasmtime::component::Val;
         // `(match (+ a b) (0 10) (1 20) (_ 30))` — the scrutinee is a CHECKED add. It is evaluated ONCE
@@ -15710,6 +15882,25 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_bytes_renders_via_the_value_encode_walker() {
+        // A recursive sum whose payload carries BYTES (a `BytesList` — a parse tree, a binary structure)
+        // now COMPILES its value-encode escape. Previously `shape_of` DECLINED on `Ty::Bytes`; it now emits
+        // `ShapeNode::Bytes` (descriptor tag 4) and the runtime `value-encode` flattens the rope + renders
+        // a KIND_BYTES leaf (guarded byte-exact in cdz-runtime's `value_encode_renders_a_bytes_leaf`).
+        use crate::testkit::parse;
+        let src = "(module m (type BytesList (Cons (Tuple Bytes BytesList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (BytesList.Nil ()) \
+                        (BytesList.Cons (tuple (Bytes.of (list 1 2)) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying Bytes compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the bytes-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
@@ -16430,6 +16621,32 @@ mod stage1 {
         }
         // A valid width is unaffected — `(Int 64)` still builds and `5` fits (crosses as s64).
         assert_eq!(run_main("(: 5 (Int 64))"), 5);
+    }
+
+    #[test]
+    fn an_integer_width_above_the_64_bit_ceiling_is_rejected_cdz0302() {
+        // 06-numeric-model "an integer width above the 64-bit ceiling is rejected" / "a wide fixed-size
+        // integer width is reserved": `(UInt 65)`/`(UInt 128)` name widths one (or more) past the 1..=64
+        // register-width ceiling — a fixed-size integer wider than 64 bits is RESERVED to the opt-in
+        // big-integer layer, not the width-indexed constructor (options/numeric-model/ #Widths above 64
+        // are reserved). The `IntCtor`/`UIntCtor` reduction now clamps a resolved width outside 1..=64 to
+        // the sentinel width 0 (the integer analogue of the `FloatCtor` admitted-SET gate), so the
+        // annotation is REJECTED at compile time (CDZ0302) rather than building `Ty::Int(Fixed(65))` and
+        // carrying a "no machine representation" decline to emit. Pins the upper boundary of the width
+        // constraint — a compile-time reject, not a parse error and not a run.
+        for body in [
+            "(: 5 (UInt 65))",
+            "(: 5 (UInt 128))",
+            "(: 5 (Int 65))",
+            "(: 5 (Int 200))",
+        ] {
+            assert!(
+                expect_decline(body).contains("does not fit"),
+                "an over-ceiling width must be rejected CDZ0302: {body}"
+            );
+        }
+        // The boundary itself (64) is still valid — `(UInt 64)` builds and 5 fits (crosses as u64).
+        assert_eq!(run_main_as::<u64>("(: 5 (UInt 64))"), 5);
     }
 
     #[test]
@@ -28598,6 +28815,7 @@ mod closure_host_resource {
             &imports,
             &makes,
             &consumers,
+            &[],
             lifted_type_idx,
             &layout,
         )
@@ -28913,7 +29131,11 @@ mod closure_host_resource {
             },
         ];
         let core = crate::backend::wasm::serialize::distinct_sig_roundtrip_core_module(
-            &funcs, &imports, &groups, &layout,
+            &funcs,
+            &imports,
+            &groups,
+            &[],
+            &layout,
         )
         .expect("distinct-sig round-trip core serializes");
         let mut validator =

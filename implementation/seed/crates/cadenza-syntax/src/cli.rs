@@ -257,6 +257,7 @@ pub enum Fmt {
     Binary,
     Sexpr,
     Ml,
+    Markdown,
     Debug,
     Flat,
 }
@@ -267,6 +268,7 @@ impl From<Fmt> for Format {
             Fmt::Binary => Format::Binary,
             Fmt::Sexpr => Format::Sexpr,
             Fmt::Ml => Format::Ml,
+            Fmt::Markdown => Format::Markdown,
             Fmt::Debug => Format::Debug,
             Fmt::Flat => Format::Flat,
         }
@@ -403,9 +405,10 @@ fn load_target(
     }
 }
 
-/// Recurse `dir`, adding every file with a RECOGNIZED surface extension (`.cdz`/`.ml`/`.sexp`/
+/// Recurse `dir`, adding every file with a RECOGNIZED CODE surface extension (`.cdz`/`.ml`/`.sexp`/
 /// `.sexpr`/`.bin`/`.cdzb`). A directory walk always filters by extension — non-source files (README,
-/// `.gitignore`, …) are skipped. `--from` overrides only the FORMAT the matched files are read as
+/// `.gitignore`, …) are skipped, and markdown (`.md`) is skipped too: a `.md` is a literate document,
+/// not code to sweep. `--from` overrides only the FORMAT the matched files are read as
 /// (e.g. treat every `.cdz` as sexpr), NOT which files are included — so pointing at a dir can never
 /// try to parse a README. (An explicitly-NAMED file always honors `--from`, since the user asked for
 /// it; that path is in `collect_targets`, not here.) Unreadable entries warn and are skipped.
@@ -429,8 +432,14 @@ fn collect_dir(
             collect_dir(&path, from, out)?;
         } else {
             let path_str = path.to_string_lossy().into_owned();
-            // Only recognized source files. `--from` picks the format; the extension gates inclusion.
-            if let Some(inferred) = Format::from_extension(&path_str) {
+            // Only recognized CODE surfaces. `--from` picks the format; the extension gates inclusion.
+            // Markdown is excluded from a directory SWEEP on purpose: a `.md` is a literate DOCUMENT
+            // (READMEs, docs), not code to query/rewrite in bulk, so pointing a codemod at a tree must
+            // not slurp in every README. An explicitly-NAMED `.md` still works — that path is in
+            // `collect_targets`, which honors any recognized extension.
+            if let Some(inferred) = Format::from_extension(&path_str)
+                && inferred != Format::Markdown
+            {
                 out.push(TargetSpec {
                     path: Some(path_str),
                     format: from.map(Format::from).unwrap_or(inferred),

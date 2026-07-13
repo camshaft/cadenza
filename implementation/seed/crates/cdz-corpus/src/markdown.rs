@@ -1,17 +1,19 @@
-//! Corpus ↔ markdown migration: turn a `spec/semantics/*.sexp` file into a literate markdown
-//! document, and verify the migration is behaviour-preserving.
+//! Corpus ↔ markdown migration, built ON the first-class markdown surface.
 //!
-//! The corpus is fundamentally *literate*: 918 of its cases carry prose `(doc …)`, and the files are
+//! The corpus is fundamentally *literate*: most of its cases carry prose `(doc …)`, and the files are
 //! threaded with `;`-comment narrative. Markdown is its natural home — prose becomes prose, and each
 //! program payload becomes a fenced `cdz` code block an editor can highlight and a tool can extract.
 //!
-//! ## The format
+//! This module is now a THIN layer over [`cadenza_syntax::markdown`], the generic markdown surface:
+//! there is ONE markdown parser/printer (the surface), not a second bespoke one here. Migration builds
+//! a `(document …)` ARENA — case descriptions become `(heading 3 …)`, `(doc …)` and `;`-narrative
+//! become `(paragraph …)`, a `; --- Title --- ` banner becomes `(heading 2 …)`, and each DSL clause
+//! becomes a `(code-block <info> <raw>)` — and prints it with the surface printer. Reconstruction reads
+//! the `.md` back to a document arena with the surface parser and walks it: each `(heading 3 …)` opens
+//! a case; each following `(code-block <info> <raw> …)` is a clause whose ROLE is the last token of the
+//! info string (`cdz input` → `input`) and whose body is the verbatim `raw`.
 //!
-//! The document opens with a `#` title (the file's name). Inter-case `;` narrative becomes markdown
-//! prose, and a `; --- Title --- ` banner in the source becomes a `## Section` heading. One case is a
-//! `###` heading (its description), optional prose (its `doc`), then one **tagged code fence per DSL
-//! clause**. The fence's role is the LAST token of its info string; a leading `cdz` marks the
-//! ML-bearing blocks (for highlighting) and is ignored by dispatch:
+//! ## The clause fences
 //!
 //! | clause                     | fence tag            | body                         |
 //! |----------------------------|----------------------|------------------------------|
@@ -26,8 +28,10 @@
 //! | `(host-responses r…)`      | `` ```cdz host-responses `` | one respond/line, ML  |
 //!
 //! Every fence body is the ML rendering of the clause's tail; reconstruction parses each body with
-//! `read_ml` and prepends the head named by the tag. One render path, one parse path — so the whole
-//! migration rests on the ML surface round-tripping (which the corpus round-trip gate proves).
+//! `read_ml` and prepends the head named by the tag. Because the surface parser ALSO embeds the parsed
+//! program as a subtree inside a `cdz` code block, reading a migrated corpus with `cdz convert … --to
+//! sexpr` shows the real program trees — but reconstruction re-derives from the verbatim `raw`, which
+//! keeps this byte-for-byte identical to the record stream the s-expr source produces.
 //!
 //! ## Losslessness
 //!
@@ -36,8 +40,9 @@
 //! Case `doc` prose and inter-case `;` narrative are NOT part of that stream; they are carried into
 //! markdown for faithfulness (doc whitespace is normalized to clean prose).
 
-use cadenza_syntax::ast::{Arenas, Builder, Leaf, Struct, StructId};
-use cadenza_syntax::{parser, printer, sexpr};
+use cadenza_syntax::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
+use cadenza_syntax::{markdown, parser, printer, sexpr};
+use num_bigint::BigInt;
 
 /// Target width for ML rendered inside a fence.
 const ML_WIDTH: usize = 90;
@@ -50,25 +55,19 @@ const ML_WIDTH: usize = 90;
 /// heading emitted at the top — typically the file's name). Passing `None` omits the title, which
 /// keeps the output stable for tests and for re-migrating reconstructed text.
 pub fn migrate_titled(sexpr_text: &str, title: Option<&str>) -> Result<String, String> {
-    let mut out = String::new();
-    let mut first = true;
+    let mut b = Builder::new();
+    let mut blocks: Vec<StructId> = Vec::new();
     if let Some(title) = title {
-        out.push_str("# ");
-        out.push_str(title);
-        out.push('\n');
-        first = false;
+        blocks.push(md_heading(&mut b, 1, title));
     }
     for seg in segment(sexpr_text) {
         match seg {
             Segment::Prose(text) => {
-                let prose = prose_from_comments(&text);
-                if !prose.is_empty() {
-                    if !first {
-                        out.push('\n');
+                for pb in prose_blocks(&text) {
+                    match pb {
+                        ProseBlock::Heading(t) => blocks.push(md_heading(&mut b, 2, &t)),
+                        ProseBlock::Paragraph(t) => blocks.push(md_paragraph(&mut b, &t)),
                     }
-                    out.push_str(&prose);
-                    out.push('\n');
-                    first = false;
                 }
             }
             Segment::Form(form) => {
@@ -76,24 +75,17 @@ pub fn migrate_titled(sexpr_text: &str, title: Option<&str>) -> Result<String, S
                 if a.head_name(a.root) != Some("case") {
                     // A non-case top-level form (unusual). Preserve it verbatim in a `cdz` fence so
                     // nothing is dropped.
-                    if !first {
-                        out.push('\n');
-                    }
-                    out.push_str("```cdz\n");
-                    out.push_str(&ml_of(&a, a.root));
-                    out.push_str("\n```\n");
-                    first = false;
+                    let ml = ml_of(&a, a.root);
+                    blocks.push(md_code_block(&mut b, "cdz", &ml));
                     continue;
                 }
-                if !first {
-                    out.push('\n');
-                }
-                render_case(&a, &mut out)?;
-                first = false;
+                render_case_blocks(&a, &mut b, &mut blocks)?;
             }
         }
     }
-    Ok(out)
+    let doc = md_list(&mut b, "document", blocks);
+    let arenas = b.finish(doc);
+    Ok(markdown::print(&arenas, ML_WIDTH))
 }
 
 /// Migrate a corpus `.sexp` file's text to markdown, without a document title.
@@ -143,11 +135,16 @@ pub fn to_sexpr(md_text: &str) -> Result<String, String> {
 }
 
 // ============================================================================
-// Rendering: sexpr case -> markdown
+// Rendering: sexpr case -> document blocks
 // ============================================================================
 
-/// Render one `(case …)` arena to markdown, appending to `out`.
-fn render_case(a: &Arenas, out: &mut String) -> Result<(), String> {
+/// Append one `(case …)` arena's document blocks (a `### desc` heading, doc paragraphs, and one
+/// `(code-block …)` per clause) to `blocks`, building into document builder `b`.
+fn render_case_blocks(
+    a: &Arenas,
+    b: &mut Builder,
+    blocks: &mut Vec<StructId>,
+) -> Result<(), String> {
     let items = match a.get(a.root) {
         Struct::List(items) => items,
         _ => return Err("case is not a list".into()),
@@ -156,9 +153,7 @@ fn render_case(a: &Arenas, out: &mut String) -> Result<(), String> {
         .get(1)
         .and_then(|&id| str_leaf(a, id))
         .ok_or("case has no description string")?;
-    out.push_str("### ");
-    out.push_str(&description);
-    out.push('\n');
+    blocks.push(md_heading(b, 3, &description));
 
     for &clause in &items[2..] {
         match a.head_name(clause) {
@@ -168,18 +163,12 @@ fn render_case(a: &Arenas, out: &mut String) -> Result<(), String> {
                     .and_then(|t| t.first().copied())
                     .and_then(|id| str_leaf(a, id))
                 {
-                    out.push('\n');
-                    out.push_str(&normalize_prose(&text));
-                    out.push('\n');
+                    blocks.push(md_paragraph(b, &normalize_prose(&text)));
                 }
             }
             Some(head) => {
                 let (tag, body) = fence_for(a, clause, head)?;
-                out.push_str("\n```");
-                out.push_str(&tag);
-                out.push('\n');
-                out.push_str(&body);
-                out.push_str("\n```\n");
+                blocks.push(md_code_block(b, &tag, &body));
             }
             None => return Err("case clause has no head".into()),
         }
@@ -260,8 +249,53 @@ fn clone_into(a: &Arenas, id: StructId, b: &mut Builder) -> StructId {
     }
 }
 
+// ---- document-arena builder helpers (build `(document …)` nodes for the markdown surface) ----
+
+/// `(text "s")`.
+fn md_text(b: &mut Builder, s: &str) -> StructId {
+    let head = b.name("text");
+    let leaf = b.atom_leaf(Leaf::Str(s.to_string()));
+    b.list(vec![head, leaf])
+}
+
+/// `(heading <level> (text "s"))`.
+fn md_heading(b: &mut Builder, level: i64, s: &str) -> StructId {
+    let head = b.name("heading");
+    let lvl = b.atom_leaf(Leaf::Int {
+        value: BigInt::from(level),
+        radix: Radix::Dec,
+    });
+    let text = md_text(b, s);
+    b.list(vec![head, lvl, text])
+}
+
+/// `(paragraph (text "s"))`.
+fn md_paragraph(b: &mut Builder, s: &str) -> StructId {
+    let head = b.name("paragraph");
+    let text = md_text(b, s);
+    b.list(vec![head, text])
+}
+
+/// `(code-block "info" "raw")` — the surface printer emits the `raw` verbatim inside a fence tagged
+/// by `info`, so the code body round-trips byte-exact.
+fn md_code_block(b: &mut Builder, info: &str, raw: &str) -> StructId {
+    let head = b.name("code-block");
+    let i = b.atom_leaf(Leaf::Str(info.to_string()));
+    let r = b.atom_leaf(Leaf::Str(raw.to_string()));
+    b.list(vec![head, i, r])
+}
+
+/// `(head child…)`.
+fn md_list(b: &mut Builder, head: &str, children: Vec<StructId>) -> StructId {
+    let h = b.name(head);
+    let mut items = Vec::with_capacity(1 + children.len());
+    items.push(h);
+    items.extend(children);
+    b.list(items)
+}
+
 // ============================================================================
-// Parsing: markdown -> case model
+// Parsing: markdown -> case model, via the markdown surface
 // ============================================================================
 
 /// A case parsed back from markdown, carrying only what the record stream needs: the description and
@@ -278,59 +312,79 @@ struct MdFence {
     body: String,
 }
 
-/// Parse a migrated markdown document into its cases.
+/// Parse a migrated markdown document into its cases, by reading it with the generic markdown surface
+/// and walking the resulting `(document …)` arena. Each `(heading 3 …)` opens a case; each following
+/// `(code-block <info> <raw> …)` is a clause. A `# title` / `## section` heading and any `(paragraph
+/// …)` prose are not part of the record stream and are ignored.
 fn parse_md(md: &str) -> Result<Vec<MdCase>, String> {
+    let doc = markdown::read(md);
+    let blocks = match doc.get(doc.root) {
+        Struct::List(items) => &items[1..], // skip the `document` head
+        _ => return Ok(Vec::new()),
+    };
     let mut cases: Vec<MdCase> = Vec::new();
-    let mut lines = md.lines().peekable();
-    while let Some(line) = lines.next() {
-        if let Some(desc) = line.strip_prefix("### ") {
-            let mut fences = Vec::new();
-            // Consume lines until the next heading, collecting fences.
-            while let Some(&peek) = lines.peek() {
-                if peek.starts_with("### ") {
-                    break;
-                }
-                let line = lines.next().unwrap();
-                if let Some(info) = fence_open(line) {
-                    // A fence: gather its body until the closing ```.
-                    let role = info.split_whitespace().last().unwrap_or("").to_string();
-                    let mut body_lines = Vec::new();
-                    let mut closed = false;
-                    for inner in lines.by_ref() {
-                        if inner.trim_end() == "```" {
-                            closed = true;
-                            break;
-                        }
-                        body_lines.push(inner);
-                    }
-                    if !closed {
-                        return Err(format!("unterminated fence ```{info} in case {desc:?}"));
-                    }
-                    fences.push(MdFence {
-                        role,
-                        body: body_lines.join("\n"),
+    for &block in blocks {
+        match doc.head_name(block) {
+            Some("heading") => {
+                if let Some((level, desc)) = heading_level_text(&doc, block)
+                    && level == 3
+                {
+                    cases.push(MdCase {
+                        description: desc,
+                        fences: Vec::new(),
                     });
                 }
-                // Non-fence lines between the heading and fences are prose (doc) — ignored here.
+                // A level-1 title or level-2 section heading is not a case — ignored.
             }
-            cases.push(MdCase {
-                description: desc.to_string(),
-                fences,
-            });
+            Some("code-block") => {
+                // A code block before any case heading is file-level and ignored; otherwise it is a
+                // clause of the current case. The ROLE is the last token of the info string.
+                if let Some(case) = cases.last_mut() {
+                    let items = list_items(&doc, block);
+                    let info = items
+                        .get(1)
+                        .and_then(|&s| str_leaf(&doc, s))
+                        .unwrap_or_default();
+                    let raw = items
+                        .get(2)
+                        .and_then(|&s| str_leaf(&doc, s))
+                        .unwrap_or_default();
+                    let role = info.split_whitespace().last().unwrap_or("").to_string();
+                    case.fences.push(MdFence { role, body: raw });
+                }
+            }
+            // Prose paragraphs (doc / narrative) and anything else are ignored.
+            _ => {}
         }
-        // Lines before the first heading are file-level prose — ignored for reconstruction.
     }
     Ok(cases)
 }
 
-/// If `line` opens a code fence (three backticks + optional info string), return the info string.
-fn fence_open(line: &str) -> Option<&str> {
-    let rest = line.strip_prefix("```")?;
-    // A closing fence is bare ```; an opening fence carries an info string.
-    if rest.trim().is_empty() {
-        None
-    } else {
-        Some(rest.trim())
+/// A heading block's `(level, flattened-inline-text)`, if `id` is a `(heading <Int> <inline>…)`.
+fn heading_level_text(a: &Arenas, id: StructId) -> Option<(i64, String)> {
+    let items = list_items(a, id);
+    let level = items.get(1).and_then(|&n| int_leaf(a, n))?;
+    let mut text = String::new();
+    flatten_inline_text(a, &items[2.min(items.len())..], &mut text);
+    Some((level, text))
+}
+
+/// Concatenate the literal text carried by a run of inline nodes — the inverse of building a heading
+/// from a single `(text …)`. `text`/`code`/`html` contribute their string leaf; a styled wrapper
+/// (`emph`/`strong`/`link`/…) contributes its inline children. This recovers a case description
+/// verbatim even when it contains markdown metacharacters (the surface printer escaped them, and the
+/// reader stripped the escapes, so the text node again holds the original string).
+fn flatten_inline_text(a: &Arenas, nodes: &[StructId], out: &mut String) {
+    for &n in nodes {
+        match a.head_name(n) {
+            Some("text") | Some("code") | Some("html") => {
+                if let Some(t) = list_items(a, n).get(1).and_then(|&s| str_leaf(a, s)) {
+                    out.push_str(&t);
+                }
+            }
+            Some(_) => flatten_inline_text(a, &child_tail(a, n), out),
+            None => {}
+        }
     }
 }
 
@@ -413,6 +467,33 @@ fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
     }
 }
 
+/// The value of a small `Int` leaf as `i64` (a heading level), if `id` is one.
+fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
+    match a.get(id) {
+        Struct::Atom(l) => match a.leaf(*l) {
+            Leaf::Int { value, .. } => i64::try_from(value).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The children of a `List` (including the head), or empty.
+fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
+    match a.get(id) {
+        Struct::List(items) => items.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// The tail of a `List` (children after the head).
+fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
+    match a.get(id) {
+        Struct::List(items) => items[1.min(items.len())..].to_vec(),
+        _ => Vec::new(),
+    }
+}
+
 /// Normalize a `doc` string to clean prose: collapse each run of whitespace (including the source
 /// literal's newlines + indentation) to a single space. Prose is not part of the record stream, so
 /// this reflow is faithful enough and keeps the migration idempotent.
@@ -420,20 +501,28 @@ fn normalize_prose(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Extract markdown prose from a run of `;` comment lines (an inter-case gap). Consecutive comment
-/// lines join into one paragraph; a blank line separates paragraphs. A **banner** line — a comment
-/// whose content is a title fenced by `---` dash-runs (`--- The number / identifier boundary ---`) —
-/// becomes a `## Section` heading instead of prose, and a bare divider (dashes with no title) is
-/// dropped. Non-comment content is ignored.
-fn prose_from_comments(gap: &str) -> String {
-    let mut blocks: Vec<String> = Vec::new();
+/// A block of prose recovered from a run of `;` comment lines.
+enum ProseBlock {
+    /// A `; --- Title --- ` section banner → a `## Title` heading.
+    Heading(String),
+    /// A run of consecutive comment lines → one paragraph.
+    Paragraph(String),
+}
+
+/// Extract prose blocks from a run of `;` comment lines (an inter-case gap). Consecutive comment lines
+/// join into one paragraph; a blank line separates paragraphs. A **banner** line — a comment whose
+/// content is a title fenced by `---` dash-runs (`--- The number / identifier boundary ---`) — becomes
+/// a section heading instead of prose, and a bare divider (dashes with no title) is dropped.
+/// Non-comment content is ignored.
+fn prose_blocks(gap: &str) -> Vec<ProseBlock> {
+    let mut blocks: Vec<ProseBlock> = Vec::new();
     let mut current: Vec<String> = Vec::new();
-    let flush = |current: &mut Vec<String>, blocks: &mut Vec<String>| {
+    let flush = |current: &mut Vec<String>, blocks: &mut Vec<ProseBlock>| {
         if !current.is_empty() {
             let para = current.join(" ");
             let para = para.split_whitespace().collect::<Vec<_>>().join(" ");
             if !para.is_empty() {
-                blocks.push(para);
+                blocks.push(ProseBlock::Paragraph(para));
             }
             current.clear();
         }
@@ -447,7 +536,7 @@ fn prose_from_comments(gap: &str) -> String {
                 // no title, is dropped as a bare divider).
                 flush(&mut current, &mut blocks);
                 if !banner.is_empty() {
-                    blocks.push(format!("## {banner}"));
+                    blocks.push(ProseBlock::Heading(banner.to_string()));
                 }
             } else {
                 current.push(content.to_string());
@@ -457,7 +546,7 @@ fn prose_from_comments(gap: &str) -> String {
         }
     }
     flush(&mut current, &mut blocks);
-    blocks.join("\n\n")
+    blocks
 }
 
 /// If `content` is a section banner — its text stripped of leading/trailing `-`/space runs, and it
@@ -742,6 +831,19 @@ mod tests {
         let section_headings = md.lines().filter(|l| l.starts_with("## ")).count();
         assert_eq!(section_headings, 1, "md:\n{md}");
         // and the title/headings don't disturb the record stream
+        let from_sexpr = crate::render(&crate::read(sexpr).unwrap());
+        let from_md = crate::render(&crate::read_markdown(&md).unwrap());
+        assert_eq!(from_sexpr, from_md, "md:\n{md}");
+    }
+
+    #[test]
+    fn description_with_markdown_metacharacters() {
+        // A case description containing markdown-special chars (the corpus has `Ast.*` and
+        // `make-<name>`) must survive migration + reconstruction verbatim — the surface printer
+        // escapes them, and reading strips the escapes, so the record's `case\t<desc>` is unchanged.
+        let sexpr = r#"(case "a quote pattern equals the Ast.* constructor for make-<name>"
+          (input (+ 1 1)) (output (: 2 Int64)))"#;
+        let md = migrate(sexpr).unwrap();
         let from_sexpr = crate::render(&crate::read(sexpr).unwrap());
         let from_md = crate::render(&crate::read_markdown(&md).unwrap());
         assert_eq!(from_sexpr, from_md, "md:\n{md}");
