@@ -175,10 +175,12 @@ fn normalize_decimal(negative: bool, mut significand: BigInt, mut exponent: i64)
     }
 }
 
-/// Unescape a string literal's INNER content (between the quotes) and NFC-normalize it — the
-/// shared escape table both surfaces use, so a string leaf is identical however it was written. The
-/// escape set is `\n \t \r \\ \"`; any other `\x` passes the following char through verbatim.
-pub fn unescape_string(inner: &str) -> String {
+/// Unescape a string literal's INNER content (between the quotes) and NFC-normalize it — the shared
+/// escape table both surfaces use, so a string leaf is identical however it was written. The escape set
+/// is CLOSED (`\n \t \r \\ \"`); an unrecognized `\x` is a lexical defect — `Err(x)` names the first
+/// offending escape char (the caller turns it into a `Leaf::BadEscape` marker the compiler rejects
+/// CDZ0001). `Ok(s)` is the normalized text when every escape is valid.
+pub fn unescape_string(inner: &str) -> Result<String, char> {
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
@@ -189,24 +191,30 @@ pub fn unescape_string(inner: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
-                Some(other) => out.push(other),
+                // An UNRECOGNIZED escape — the set is closed. Report the offending char (first one wins).
+                Some(other) => return Err(other),
                 None => {} // trailing backslash: drop
             }
         } else {
             out.push(c);
         }
     }
-    out.nfc().collect()
+    Ok(out.nfc().collect())
 }
 
-/// Unescape a `"…"` string TOKEN (quotes included, as the lexer spans it). Strips the surrounding
-/// quotes then delegates to [`unescape_string`]. Returns `""` if the token is not quote-delimited.
-pub fn unescape_string_token(token: &str) -> String {
+/// Unescape a `"…"` string TOKEN (quotes included, as the lexer spans it) into its `Leaf` — a
+/// [`Leaf::Str`] on a valid escape set, or a [`Leaf::BadEscape`] MARKER carrying the offending char when
+/// an escape is not in the closed set (`\q`). Both surfaces produce the SAME leaf so the round-trip and
+/// the s-expr↔ML agreement hold. Returns an empty `Str` if the token is not quote-delimited.
+pub fn unescape_string_token(token: &str) -> Leaf {
     let inner = token
         .strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or("");
-    unescape_string(inner)
+    match unescape_string(inner) {
+        Ok(s) => Leaf::Str(s),
+        Err(c) => Leaf::BadEscape(c),
+    }
 }
 
 /// Unescape a byte-string TOKEN (`b"…"`, the `b` + quotes included, as the ml lexer spans it) into
@@ -541,7 +549,7 @@ mod tests {
             "back\\slash",
             "",
         ] {
-            assert_eq!(unescape_string(&escape_string(s)), s);
+            assert_eq!(unescape_string(&escape_string(s)).as_deref(), Ok(s));
         }
     }
 }

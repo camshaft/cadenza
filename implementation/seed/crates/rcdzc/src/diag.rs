@@ -19,6 +19,13 @@
 //# Every diagnostic the compiler emits MUST carry a machine-readable code that is stable across changes to unrelated diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Code {
+    /// A LEXICAL well-formedness defect the READER detected but cannot itself report through the
+    /// artifact channel (the front-end's stderr is not the diagnostic surface) — an unrecognized string
+    /// escape `\q` (`collections-and-text.md` §A String Literal's Escapes Are A Closed Set). The reader
+    /// emits a marker leaf (`Leaf::BadEscape`) that survives the binary AST codec; the COMPILER turns
+    /// that marker into this coded rejection, so a lexically-malformed literal fails the build with a
+    /// stable code rather than silently reading `\q` as the bare `q`.
+    BadEscape,
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
     /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
     Unbound,
@@ -77,6 +84,7 @@ impl Code {
     /// they change only by the coordinated act a code taxonomy change is.
     pub fn code(self) -> &'static str {
         match self {
+            Code::BadEscape => "CDZ0001",
             Code::Unbound => "CDZ0101",
             Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",

@@ -4122,6 +4122,54 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unrecognized_string_escape_is_rejected_cdz0001() {
+        // 01-literals "an unrecognized string escape is rejected": `"\q"` uses a backslash before `q`,
+        // which begins none of the closed escape set (`\n \t \r \\ \"`), so the reader emits a
+        // `Leaf::BadEscape` MARKER (it cannot report through its own stderr) that survives the
+        // cadenza-syntax→rcdzc codec, and the COMPILER rejects it CDZ0001 — not silently reading `q`.
+        assert_eq!(
+            reject_code("(module m (def (main) \"\\q\") (export main))").as_deref(),
+            Some("CDZ0001")
+        );
+        // A VALID escape is unaffected — `"\n"` reads to a newline `Str`, no marker, no rejection (it
+        // compiles; the const-string escape renders it). Pin that only the CLOSED set is rejected.
+        assert_eq!(
+            reject_code("(module m (def (main) \"\\n\") (export main))"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_bare_constant_string_escapes_across_the_boundary() {
+        // Once the reader's strict-escape marker is in place, a bare/matched CONSTANT string may cross
+        // the host boundary via the resource escape (its bytes baked, the value form `(: "…" String)`) —
+        // the same path a `(Some "hi")` payload uses, just for a top-level String export. Verified via a
+        // composed run: the rendered value is the quoted text.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping const-string escape run"
+            );
+            return;
+        };
+        let bytes = component("(module m (def (main) \"hello\") (export main))");
+        let opts = cdz_run::RunOpts {
+            export: None, // a String escape is a RESOURCE component, auto-detected by cdz-run
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "(: \"hello\" String)",
+                    "a bare constant string escapes + renders"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("const-string escape run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn applying_a_non_function_is_a_coded_type_error() {
         // 09-functions "applying a non-function/boolean/float is a type error": a value that is NOT a
         // function has no defined result when applied (`core-semantics.md` §Applying A Function Binds Its

@@ -2939,6 +2939,9 @@ fn resolve_leaf_offsets(
                 off += 1 + leb_len(bs.len() as u64) + bs.len();
             }
             crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
+            // A bad-escape marker is a POISON — it never reaches a constant value form (resolving it
+            // rejects CDZ0001 before any escape emission), so a runtime template over it is meaningless.
+            crate::ast::Leaf::BadEscape(_) => return None,
         }
     }
     let _ = bytes;

@@ -75,6 +75,13 @@ pub fn emit(
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
                 | crate::ty::Ty::Bytes
+                // A bare `String` export has no scalar boundary valtype (a string is a heap value, not an
+                // i32/i64/f64), so it crosses via the resource escape like any other heap value — its
+                // CONSTANT bytes baked into the resource module (the value form `(: "…" String)`, the same
+                // bytes a `(Some "hi")` payload already bakes). A RUNTIME string (a byte-rope built at run
+                // time) has no constant form; `constant_value_form` returns None and it falls through to
+                // the decline below (the looping string-escape walker is a later increment, like a list).
+                | crate::ty::Ty::String
         )
     {
         let body = def_body(db, e.def)?;
@@ -412,6 +419,9 @@ pub fn emit_dwarf(
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
                 | crate::ty::Ty::Bytes
+                // A bare `String` export also takes the resource-escape core (its constant bytes baked),
+                // so the sidecar-DWARF path declines it here alongside the other compounds.
+                | crate::ty::Ty::String
         )
     {
         return Err(Reject::decline(

@@ -20,7 +20,8 @@
 
 use num_bigint::BigInt;
 
-/// A leaf primitive value. Frozen at 5 variants.
+/// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
+/// lexically-malformed literal it cannot itself report.
 ///
 /// `Int` is arbitrary-precision and `Float` is an exact width-free decimal: a literal's magnitude
 /// or precision is never a well-formedness ceiling, and the concrete machine width (`Int64`,
@@ -44,6 +45,12 @@ pub enum Leaf {
     Bool(bool),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
     Name(String),
+    /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a lexical well-formedness defect the
+    /// reader detected but does not itself report (its stderr is not the diagnostic surface). The reader
+    /// emits this MARKER instead of silently reading `\q` as the bare `q`; it survives the binary codec so
+    /// the COMPILER rejects it (CDZ0001, `collections-and-text.md` §A String Literal's Escapes Are A Closed
+    /// Set). Holds the offending escape character (for the diagnostic message).
+    BadEscape(char),
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.

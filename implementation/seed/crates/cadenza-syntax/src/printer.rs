@@ -221,6 +221,9 @@ impl<'a> Printer<'a> {
             Leaf::Str(s) => self.doc.word(format!("\"{}\"", literal::escape_string(s))),
             Leaf::Bytes(b) => self.doc.word(format!("b\"{}\"", literal::escape_bytes(b))),
             Leaf::Name(n) => self.doc.word(emit_name(n)),
+            // A bad-escape MARKER round-trips back to `"\<c>"` so the printed form re-reads to the same
+            // marker (the defect survives the round-trip rather than being silently lost).
+            Leaf::BadEscape(c) => self.doc.word(format!("\"\\{c}\"")),
         }
     }
 
