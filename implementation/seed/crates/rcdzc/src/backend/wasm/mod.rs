@@ -126,6 +126,15 @@ pub fn emit(
             if let Some(sum_tpl) = crate::lower::sum_form_template(db, &e.result) {
                 return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl, spans);
             }
+            // A RECURSIVE sum (a self-referential payload — a linked list, a tree) has no fixed
+            // per-variant template (`sum_form_template` returned `None`), so its `encode()` walks the heap
+            // spine to a runtime-determined depth. Build the SHAPE DESCRIPTOR and route through the
+            // runtime `value-encode` op: the encode body bakes the descriptor as a heap Bytes, calls
+            // `value-encode(rep, desc)` to get the value-form document, and copies it out
+            // (`DESIGN-recursive-sum-escape-walker.md`, approach C).
+            if let Some(desc) = crate::lower::sum_shape_descriptor(db, &e.result) {
+                return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
+            }
         } else if matches!(e.result, crate::ty::Ty::Bytes) {
             // A RUNTIME `Bytes` result (a `concat`/recursion-built sequence — not a compile-time constant)
             // crosses through the resource shape, but its value form is VARIABLE-length: `encode()` LOOPS,
@@ -141,6 +150,18 @@ pub fn emit(
             // result type; if it has one, route through `assemble_runtime_resource`.
             return emit_runtime_resource(db, layout, e.def, &tpl, spans);
         }
+    }
+
+    // CLOSURE-RESOURCE escape (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a SINGLE export whose
+    // RESULT is a closure type `(-> A… R)` crosses as a component-model resource with a `call` method the
+    // host invokes. UNLIKE the value-escape above (a nullary-COMPOUND trigger), this fires on a `Ty::Fn`
+    // RESULT — the export MAY take parameters (the closure is computed from the host's inputs), and its
+    // body lowers NORMALLY (the `Core::Closure` builds the cell); the `resource.new` is spliced at the
+    // boundary-return by the closure-resource core module. First cut: scalar-aliased closure args/result.
+    if let [e] = &layout.exports[..]
+        && let crate::ty::Ty::Fn(_, _) = &e.result
+    {
+        return emit_closure_resource(db, layout, e.def, &e.result, spans);
     }
 
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
@@ -980,6 +1001,113 @@ fn emit_runtime_resource(
     ))
 }
 
+/// Emit the CLOSURE-RESOURCE component (C-HOST-1): an export whose RESULT is a closure `(-> A… R)` crosses
+/// as a component resource with a `call` method the host invokes. The export body lowers NORMALLY (its
+/// `Core::Closure` builds the cell + lifts the lambda into `layout.lifted`); the core's `make` calls the
+/// export then `resource.new`s the cell, and `call` recovers it (`resource.rep`) + `call_indirect`s the
+/// lifted body. Reuses the value-heap runtime (the cell is a heap allocation) via
+/// `assemble_closure_resource`. First cut: the closure's args + result are the aliased scalar widths
+/// (`abi_val_type`); a compound/closure arg or an un-representable result declines.
+fn emit_closure_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    result: &crate::ty::Ty,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    // Flatten the curried closure type `(-> A (-> B R))` into its argument types `[A, B]` + the final
+    // result `R`. Each must have a scalar boundary ABI type (this increment); else decline.
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = result.clone();
+    while let crate::ty::Ty::Fn(dom, rng) = cur {
+        arg_tys.push((*dom).clone());
+        cur = *rng;
+    }
+    let ret_ty = cur;
+    // Boundary bytes (component valtypes) for the `call` method's args + result — aliased scalar widths.
+    let arg_bytes: Vec<u8> = arg_tys
+        .iter()
+        .map(|t| {
+            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                Reject::decline(format!(
+                    "a closure argument of type {} has no scalar host-boundary representation \
+                         (only aliased widths cross the closure `call` boundary yet)",
+                    t.render_name()
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let result_byte = host::abi_val_type(&ret_ty)
+        .map(|a| a.comp_byte())
+        .ok_or_else(|| {
+            Reject::decline(format!(
+                "a closure result of type {} has no scalar host-boundary representation",
+                ret_ty.render_name()
+            ))
+        })?;
+    // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
+    // the `call_indirect` lifted functype shape).
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
+        .iter()
+        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+        .collect::<Result<_, _>>()?;
+    let ret_vt = valtype_of(&ret_ty)
+        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+
+    // Ops: the reachable bodies' ops (cell build: arr-alloc/arr-set/box-int), PLUS the `call` method's
+    // ops (arr-get + get-int to read the code slot) + `drop` for the dtor.
+    let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+    })?;
+    let export_abs = layout
+        .abs(export_def)
+        .ok_or_else(|| Reject::decline("the closure export is not in the emission order"))?;
+    // The lifted closure the export built occupies table slot 0; its functype index in the core.
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline(
+            "a closure export produced no lifted lambda (the closure did not survive as a runtime value)",
+        ));
+    }
+    // APPEND the lambda-lifted closure bodies AFTER the `order` defs (the funcref table's element section
+    // points at `import_base + order.len() + slot`, so the lifted bodies must be the trailing funcs).
+    // Each is `(env, param…) -> result`: prepend a fresh env param (an i32 handle, keyed by a synthesized
+    // atom nothing resolves to). Mirrors the ordinary `emit` path's lifted-body selection.
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+    let main_core = serialize::closure_resource_core_module(
+        &funcs,
+        &imports,
+        export_abs,
+        &arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_closure_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &arg_bytes,
+        result_byte,
+    ))
+}
+
 /// Emit the runtime-import + resource escape component for a single nullary export returning a RUNTIME
 /// `Bytes` (a `concat`/recursion-built sequence, not a compile-time constant). Mirrors
 /// [`emit_runtime_resource`], but the escape form is [`serialize::EscapeForm::RuntimeBytes`] — its
@@ -1131,6 +1259,83 @@ fn emit_runtime_sum_resource(
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
     // sections attribute correctly; the synthesized sum walker funcs have no `src_body` and get no row.
+    append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_runtime_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+    ))
+}
+
+/// Emit the runtime-import + resource escape component for a single nullary export returning a RUNTIME
+/// RECURSIVE sum (a linked list, a tree — a self-referential payload, so no fixed per-variant template).
+/// Its `encode()` (`encode_recursive_sum_walk_body`) bakes the compiler-built shape `descriptor` as a
+/// heap `Bytes`, calls the runtime `value-encode(rep, desc)` to render the value-form document, and
+/// copies it out — the runtime owns the recursion + document assembly
+/// (`DESIGN-recursive-sum-escape-walker.md`). The walker's ops (`value-encode`, `bytes-alloc`/`-set`
+/// to build the descriptor, `bytes-len`/`-get` to copy the doc out, `drop` for the releases) appear only
+/// in the synthesized encode body, so they are added here.
+fn emit_recursive_sum_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    descriptor: &[u8],
+    spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    // The recursive-sum walker's ops: render via `value-encode`, build the descriptor Bytes
+    // (`bytes-alloc`/`bytes-set`), copy the document out (`bytes-len`/`bytes-get`), release the handles.
+    for op in [
+        "value-encode",
+        "bytes-alloc",
+        "bytes-set",
+        "bytes-len",
+        "bytes-get",
+        "drop",
+    ] {
+        used.insert(op);
+    }
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let k = imports.len() as u32;
+    let layout = layout.with_import_base(k + 2);
+    let layout = &layout;
+
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.export_plan(def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
+    }
+    let export_abs = layout.abs(export_def).ok_or_else(|| {
+        Reject::decline("the escaping recursive-sum export is not in the emission order")
+    })?;
+
+    let mut main_core = serialize::runtime_resource_core_module_form(
+        &funcs,
+        &imports,
+        export_abs,
+        serialize::EscapeForm::RecursiveSum(descriptor),
+    )
+    .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();

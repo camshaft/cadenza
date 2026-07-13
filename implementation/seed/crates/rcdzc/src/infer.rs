@@ -1570,6 +1570,52 @@ fn is_definite_non_function(ty: &Ty) -> bool {
     }
 }
 
+/// Whether the lambda `head` REFERENCES its parameter whose name occurrence is `param_occ` anywhere in
+/// its body — i.e. the parameter is USED, so its argument appears (substituted) in the reduced body and
+/// need not be re-descended for faults. A body reference to a parameter resolves (via resolve's
+/// `binder_in`) to a `Resolved::Ref` whose transitive target is the parameter's binder, or to a
+/// `Resolved::Param { binder }`; the walk is a purely structural scan of the body's raw children (no
+/// reduction, no lowering), bounded by the body size. A `false` result means the parameter is DEAD (the
+/// body ignores it), so its argument's own faults are not otherwise collected and it must be descended.
+fn param_is_referenced(db: &mut Db, head: StructId, param_occ: StructId) -> bool {
+    let Some(body) = crate::eval::lambda_body(db, head) else {
+        return false;
+    };
+    references_binder(db, body, param_occ)
+}
+
+/// Structural scan: does the resolved subtree at `node` contain a reference that resolves to the binder
+/// `target` (a parameter's name occurrence)? Follows a `Resolved::Ref`/`Param` to its binder identity;
+/// recurses the raw AST children otherwise. Bounded by the subtree size (no reduction).
+fn references_binder(db: &mut Db, node: StructId, target: StructId) -> bool {
+    match resolved_of(db, node) {
+        Resolved::Param { binder } => binder == target,
+        Resolved::Ref { mut value } => {
+            // Follow the ref chain to a binder; a parameter reference's chain ends at the param binder.
+            loop {
+                if value == target {
+                    return true;
+                }
+                match resolved_of(db, value) {
+                    Resolved::Ref { value: next } => value = next,
+                    Resolved::Param { binder } => return binder == target,
+                    _ => break,
+                }
+            }
+            false
+        }
+        _ => {
+            // Not a direct reference — recurse the raw children (a name in binder position, a literal, an
+            // operator head all simply do not match). This visits every value position of the body.
+            if let crate::ast::Struct::List(children) = db.ast.get(node) {
+                let children = children.clone();
+                return children.iter().any(|&c| references_binder(db, c, target));
+            }
+            false
+        }
+    }
+}
+
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
     // A COMPARISON between a MAP and a RECORD is a type error — they are DISTINCT KINDS (a record's field
     // set is fixed by its form; a map's key set is a runtime collection), so `(= (map …) (record …))` is
@@ -1809,16 +1855,37 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
         //     `(if x 1 2)` (x : Any) did not. This is what turns the case-B/C MISCOMPILE (invalid
         //     wasm) into a reported rejection. Runs under the reduction guard; a recursive callee
         //     declines the reduction (no reduced body) and is checked by its own def collection.
+        let mut reduced_ok = false;
         if let Some(mut guard) = db.enter_reduction() {
             let g = guard.db();
             if let Ok(Some(reduced)) = crate::eval::apply_lambda(g, head, args) {
                 collect(g, reduced, out);
+                reduced_ok = true;
             }
         } else {
             // The reduction depth limit was hit — the reduced body was NOT collected here, so this
             // application's fault set is INCOMPLETE. Mark the walk limited so it is not memoized (a
             // shallower entry would reduce and collect the body). See `collect_cache`.
             db.collect_limited = true;
+        }
+        // (3) Descend the ARGUMENTS for their OWN faults (an unbound name / malformed application in an
+        //     argument, whether or not the body uses it). When the reduction SUCCEEDED (`reduced_ok`), a
+        //     USED argument's faults are already in the reduced body (step 2), so descend only the DEAD
+        //     arguments — the ones the body does not reference, hence absent from the reduced body. This
+        //     is what keeps a deep call chain `(f (f … (f 0)))` LINEAR: `f` uses its parameter, so no
+        //     argument is dead and no argument is re-descended (the O(N³) came from re-walking every
+        //     argument here AND in the reduced body, compounded per level). When the reduction did NOT
+        //     produce a body (a recursive callee, the depth limit), NOTHING covered the arguments, so
+        //     descend them ALL — matching the pre-change behavior for that case.
+        let params = crate::eval::lambda_params_of(db, head).unwrap_or_default();
+        for (i, &arg) in args.iter().enumerate() {
+            let covered = reduced_ok
+                && params
+                    .get(i)
+                    .is_some_and(|&p| param_is_referenced(db, head, p));
+            if !covered {
+                collect(db, arg, out);
+            }
         }
         return;
     }
@@ -2572,6 +2639,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         ));
                     }
                 }
+            } else if crate::eval::lambda_body(db, head).is_some() {
+                // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which
+                // contains each argument substituted at its use sites, so the used arguments' faults are
+                // ALREADY gathered. Re-descending the raw arguments here would DOUBLE the walk of every
+                // argument subtree — and on a deep call chain `(f (f … (f 0)))` (where each argument is
+                // itself the next call) that doubling, compounded per level, is what made the fault walk
+                // O(N³) (each of the N `collect(arg)` frames restarts a full O(N) descent, whose own
+                // `type_of` adds another factor). Skip it. A DEAD argument (one the body never uses, so it
+                // is NOT in the reduced body) still needs checking — `check_application` descends those
+                // (only the un-substituted args) so their faults are not lost.
             } else {
                 for &arg in args.iter() {
                     collect(db, arg, out);

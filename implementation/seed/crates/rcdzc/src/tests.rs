@@ -1593,6 +1593,47 @@ impl ComposedRuntime {
         results[0].clone()
     }
 
+    /// Drive a CLOSURE-RESOURCE export (C-HOST-1): call `make()` on the `cadenza:closure/exports`
+    /// instance to get the closure resource handle, then `call(handle, args…)` to invoke it — returning
+    /// the `call` result. This is the host acting as the closure's custodian: it holds an opaque handle
+    /// and invokes the guest's `call` method (which dispatches the closure via the guest's own
+    /// `call_indirect`). `own<t>` consumes the handle per call, so each `closure_make_call` mints a fresh
+    /// handle (C-HOST-1 own/no-drop; the `borrow<t>` repeated-call form is C-HOST-5).
+    fn closure_make_call(&mut self, args: &[wasmtime::component::Val]) -> wasmtime::component::Val {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, &[], &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut call_args = vec![handle[0].clone()];
+        call_args.extend_from_slice(args);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut self.store, &call_args, &mut out)
+            .expect("call");
+        call.post_return(&mut self.store).expect("call post_return");
+        out[0].clone()
+    }
+
     /// Call a runtime HEAP op by name (e.g. `arr-get`, `get-int`, `arr-len`, `drop`) on the shared
     /// runtime instance — how a test reads back a handle the program returned (the "display function"),
     /// or releases it. Returns the op's single result, or `Val::Bool(false)` for a no-result op like
@@ -5462,6 +5503,39 @@ mod match_engine {
         );
         assert_eq!(
             reject_code("(module m (def (f a) (+ a 1)) (def (main) (f 41)) (export main))"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_argument_fault_is_reported_whether_or_not_the_parameter_is_used() {
+        // The fault walk over a call `(f arg)` must catch a fault IN `arg` — an unbound name, a malformed
+        // application — for BOTH a USED parameter (the argument is substituted into the reduced body, so
+        // the body walk sees it) AND a DEAD parameter the body ignores (the argument is absent from the
+        // reduced body, so it must be descended on its own). The redundant-descent elimination that made a
+        // deep call chain's fault walk LINEAR (drop the raw-argument descent for a USED parameter, since
+        // its argument is already in the reduced body) must NOT lose a DEAD argument's faults — those are
+        // still descended (`param_is_referenced` is false → the argument is checked).
+        // USED parameter — the fault surfaces via the reduced body.
+        assert_eq!(
+            reject_code("(module m (def (f a) (+ a 1)) (def (main) (f frobnicate)) (export main))")
+                .as_deref(),
+            Some("CDZ0101")
+        );
+        // DEAD parameter — the body ignores `a`, so the argument's fault is caught by descending the
+        // (un-substituted) argument, not the reduced body. An unbound name and a malformed application.
+        assert_eq!(
+            reject_code("(module m (def (f a) 0) (def (main) (f frobnicate)) (export main))")
+                .as_deref(),
+            Some("CDZ0101")
+        );
+        assert_eq!(
+            reject_code("(module m (def (f a) 0) (def (main) (f (5 3))) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // A well-formed argument to a dead parameter still compiles (no over-rejection).
+        assert_eq!(
+            reject_code("(module m (def (f a) 0) (def (main) (f 99)) (export main))"),
             None
         );
     }
@@ -10264,33 +10338,25 @@ mod stage1 {
     }
 
     #[test]
-    fn a_nullary_recursive_sum_return_declines_with_an_honest_reason() {
+    fn a_nullary_recursive_sum_return_renders_via_the_value_encode_walker() {
         // A NULLARY `main` returning a RECURSIVE sum built at runtime (`count 3` → an `IntList` whose
-        // spine length is decided at run time) declines: rendering an unbounded-depth recursive-sum value
-        // as the host result needs an `encode()` walker that LOOPS to a runtime-determined depth (the
-        // analogue of the runtime-`Bytes` looping walker), a later increment. The DECLINE is correct
-        // (folding such a value to a scalar works; only rendering it as the boundary result is deferred).
-        // REGRESSION: the message must NOT claim "this export takes a parameter" — `main` is NULLARY. The
-        // resource-escape path tried and its value-form template was `None` (a self-referential sum has no
-        // bounded static shape), falling through to the multi-export diagnosis, which previously
-        // misdiagnosed a nullary fall-through as parameterized. The honest reason names the missing walker.
+        // spine length is decided at run time) now COMPILES: its `encode()` bakes the shape descriptor and
+        // calls the runtime `value-encode` op to render the unbounded-depth value form
+        // (DESIGN-recursive-sum-escape-walker.md). Previously this declined "needs a value-form walker
+        // that loops to a runtime-determined depth". The escaping component IMPORTS the runtime (the
+        // walker calls `value-encode`/`bytes-*`); the end-to-end render is corpus-gated
+        // (05-compound-types "renders its full runtime spine"). Here we pin that it compiles + imports the
+        // runtime rather than declining.
         use crate::testkit::parse;
         let src = "(module m (type IntList (Cons (Tuple Int64 IntList)) Nil) \
                      (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) \
                         (IntList.Cons (tuple n (count (- n 1)))))) \
                      (def (main) (count 3)) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a nullary recursive-sum return declines (no looping value-form walker yet)",
-        );
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a nullary recursive-sum return compiles via the value-encode walker");
         assert!(
-            !err.message.contains("takes a parameter"),
-            "a NULLARY recursive-sum return must NOT be misdiagnosed as parameterized, got: {}",
-            err.message
-        );
-        assert!(
-            err.message.contains("runtime-determined depth") || err.message.contains("walker"),
-            "the decline names the missing looping value-form walker, got: {}",
-            err.message
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the recursive-sum escape imports the runtime (its encode() calls value-encode)"
         );
     }
 
@@ -19580,12 +19646,50 @@ mod closure_host_resource {
         .expect("closure-resource core serializes");
 
         // The emitted CORE MODULE must be structurally valid wasm (funcref table + call_indirect + the
-        // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; wiring it into
-        // a runnable component (production envelope + composed runtime) is the next increment.
+        // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; the runnable
+        // end-to-end path (below) wires the WHOLE pipeline through the composed runtime.
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");
+    }
+
+    /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
+    /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
+    /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
+    /// → 6 — dispatched through the guest's own `call_indirect`, composing the real value-heap runtime (the
+    /// closure cell is a heap allocation). The production analog of the C-HOST-1 oracle. `#[ignore]` — needs
+    /// `xtask build` to have populated the store with the runtime wasm.
+    #[test]
+    fn a_compiled_closure_export_is_called_by_the_host() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // A nullary export returning a closure `(-> Int64 Int64)`. The compiler routes it through the
+        // closure-resource escape; the host holds the resource and calls it.
+        let src = "(module m (def (main) (fn ((: x Int64)) (+ x 1))) (export main))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // It must import the value-heap runtime (the closure cell is a heap allocation) and export the
+        // closure interface — not a bare function.
+        assert!(
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
+            "a closure-resource export imports the value-heap runtime (the cell is a heap value)"
+        );
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make() → closure handle; call(handle, 5) → 6.
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(5)]),
+            Val::S64(6),
+            "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
+        );
+        // A fresh handle called with 41 → 42 (own<t> consumed the first; each call mints a new handle).
+        assert_eq!(rt.closure_make_call(&[Val::S64(41)]), Val::S64(42));
     }
 }

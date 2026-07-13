@@ -916,6 +916,11 @@ pub enum EscapeForm<'a> {
     /// non-unrolled `encode()`): write the static prefix, the runtime `bytes-len` as a LEB, a
     /// `bytes-get` copy loop, then the static suffix. `DESIGN-runtime-bytes-escape-walker.md`.
     RuntimeBytes(&'a crate::lower::RuntimeBytesForm),
+    /// A RUNTIME RECURSIVE sum (a linked list, a tree) — the walker bakes the shape DESCRIPTOR
+    /// (compiler-built bytes) as a heap `Bytes`, calls the runtime `value-encode(rep, desc)` to render
+    /// the value-form document (the runtime owns the recursion + document assembly), and copies the
+    /// result Bytes out. `DESIGN-recursive-sum-escape-walker.md` (approach C).
+    RecursiveSum(&'a [u8]),
 }
 
 /// The escape core module for either a flat compound or a sum result (see [`EscapeForm`]). Everything
@@ -1042,6 +1047,9 @@ pub fn runtime_resource_core_module_form(
         // RuntimeBytes writes its entire output at run time (variable length) — no preloaded template,
         // no data section. The walker uses a fixed retarea at offset 0 and writes the value form after it.
         EscapeForm::RuntimeBytes(_) => Vec::new(),
+        // RecursiveSum bakes its descriptor into the data section (below, as a constant blob the walker
+        // reads to build the heap descriptor Bytes); no value-form template.
+        EscapeForm::RecursiveSum(_) => Vec::new(),
     };
     for t in &templates {
         // 4-align the start of this template's bytes.
@@ -1055,6 +1063,9 @@ pub fn runtime_resource_core_module_form(
         data_bytes.extend_from_slice(&(t.bytes.len() as u32).to_le_bytes());
         placed.push(Placed { byte_off, ret_off });
     }
+    // RecursiveSum needs no data-section blob: its `encode()` builds the descriptor heap Bytes with
+    // literal `i32.const` stores (the descriptor bytes are compile-time constants) and delegates the
+    // walk to the runtime `value-encode` op.
     let data_sec = {
         let mut item = vec![0x00]; // active, memory 0
         item.push(op::I32_CONST);
@@ -1097,6 +1108,9 @@ pub fn runtime_resource_core_module_form(
             encode_sum_walk_body(&s.variants, &placed_pairs(&placed), f_rrep, &import_index)
         }
         EscapeForm::RuntimeBytes(form) => encode_bytes_walk_body(form, f_rrep, &import_index),
+        EscapeForm::RecursiveSum(desc) => {
+            encode_recursive_sum_walk_body(desc, f_rrep, &import_index)
+        }
     };
     code_items.extend_from_slice(&encode_body);
     // cabi_realloc: stub (never called for a nullary-input list result).
@@ -1587,6 +1601,139 @@ fn encode_bytes_walk_body(
     body.push(0x02);
     body.push(0x00);
     // return the retarea pointer (0).
+    const_i32(0, &mut body);
+    body.push(op::END);
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
+/// The `t-encode(handle) -> i32` walker for a RUNTIME RECURSIVE sum (a linked list, a tree). Unlike the
+/// fixed-template walkers, it delegates the recursion + document assembly to the runtime `value-encode`
+/// op: recover the heap `rep`, build the compiler-baked shape DESCRIPTOR as a heap `Bytes` (reading its
+/// constant bytes from the data section at `desc_off`, `bytes-set`ting them into a fresh buffer), call
+/// `value-encode(rep, desc)` to render the value-form document (another heap `Bytes`), then COPY that
+/// document into linear memory and return `(ptr, len)`. Releases all three handles (`rep`/`desc`/`doc`).
+/// `DESIGN-recursive-sum-escape-walker.md` (approach C). Reuses the copy-loop shape of the bytes walker.
+/// The descriptor bytes are COMPILE-TIME CONSTANTS, so they are `bytes-set` with literal `i32.const`
+/// values (no data-section blob / memory load needed).
+fn encode_recursive_sum_walk_body(
+    descriptor: &[u8],
+    f_rrep: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    let store8 = |out: &mut Vec<u8>| {
+        out.push(op::I32_STORE8);
+        out.push(0x00);
+        out.push(0x00);
+    };
+    // Output region begins after the 8-byte retarea (ptr,len), exactly as the bytes walker.
+    const OUT: i64 = 8;
+    let mut body = Vec::new();
+    // Locals after param 0 = handle: rep, desc(handle), doc(handle), n(i32 doc len), i(i32 loop). 5 i32.
+    uleb128(1, &mut body);
+    uleb128(5, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let (rep, desc, doc, n, i) = (1u32, 2u32, 3u32, 4u32, 5u32);
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+
+    // rep = resource.rep(handle).
+    get(0, &mut body);
+    body.push(op::CALL);
+    uleb128(f_rrep as u64, &mut body);
+    set(rep, &mut body);
+
+    // desc = bytes-alloc(len); then for each descriptor byte, desc = bytes-set(desc, j, <const byte>).
+    // The descriptor bytes are compile-time constants, so each is a literal `i32.const` (no data-section
+    // blob / memory load). `bytes-set` returns the buffer handle — re-`set` the local each time.
+    const_i32(descriptor.len() as i64, &mut body);
+    call_op("bytes-alloc", &mut body);
+    set(desc, &mut body);
+    for (j, &byte) in descriptor.iter().enumerate() {
+        get(desc, &mut body);
+        const_i32(j as i64, &mut body); // index
+        const_i32(byte as i64, &mut body); // the constant descriptor byte
+        call_op("bytes-set", &mut body);
+        set(desc, &mut body);
+    }
+
+    // doc = value-encode(rep, desc)  (BORROWS both; returns a fresh owned Bytes document).
+    get(rep, &mut body);
+    get(desc, &mut body);
+    call_op("value-encode", &mut body);
+    set(doc, &mut body);
+    // n = bytes-len(doc).
+    get(doc, &mut body);
+    call_op("bytes-len", &mut body);
+    set(n, &mut body);
+
+    // COPY LOOP: i = 0; block { loop { if i>=n br 1; store8(OUT+i, bytes-get(doc, i)); i++; br 0 } }.
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, &mut body);
+        get(n, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body);
+        // store8(OUT + i, bytes-get(doc, i))
+        const_i32(OUT, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD);
+        get(doc, &mut body);
+        get(i, &mut body);
+        call_op("bytes-get", &mut body);
+        store8(&mut body);
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END); // end loop
+    body.push(op::END); // end block
+
+    // Release the three handles: rep (encode owns `own<t>`, balances make's alloc), desc + doc
+    // (temporaries this body built). The value heap is acyclic; each drop cascades to its children.
+    get(rep, &mut body);
+    call_op("drop", &mut body);
+    get(desc, &mut body);
+    call_op("drop", &mut body);
+    get(doc, &mut body);
+    call_op("drop", &mut body);
+
+    // Store the retarea at [0..8]: ptr = OUT, len = n. Return 0 (the retptr).
+    const_i32(0, &mut body);
+    const_i32(OUT, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    const_i32(4, &mut body);
+    get(n, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
     const_i32(0, &mut body);
     body.push(op::END);
     let mut e = uleb_bytes(body.len() as u64);
