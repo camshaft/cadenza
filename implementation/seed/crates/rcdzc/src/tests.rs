@@ -13757,6 +13757,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_effectful_def_with_an_annotated_parameter_specializes() {
+        // E3/E4 annotated-param specialization: `specialize_recursive` previously handled only a BARE-name
+        // recursive parameter — an ANNOTATED `(: n T)` param declined. Now it extracts the name from either
+        // form (re-annotating the synthesized copy with the solved type regardless). `walk` counts down
+        // through a tail self-call and bails at zero; under the abortive `Bail` handler `(walk 3)` folds to
+        // the arm value 99 (the base abort propagates up the tail calls). Exercises the annotated-param path
+        // for the abortive case; the same relaxation enables an annotated-param tail-resumptive recursion.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (walk (- n 1)))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (walk 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a recursive effectful def with an annotated parameter specializes"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
@@ -21298,6 +21319,131 @@ mod closure_host_resource {
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");
+    }
+
+    /// MULTI-EXPORT compiler serializer: `serialize::multi_closure_resource_core_module` — the production
+    /// core a program with TWO same-signature closure exports emits — is structurally valid. Two export
+    /// bodies each build a 1-slot cell (its own funcref slot), two lifted bodies, and the serializer emits
+    /// TWO `make-<name>` functions (each calling its export body + `resource.new`) sharing ONE `call`.
+    /// Mirrors the single-export serializer test but with N=2 makes, pinning the index layout the
+    /// multi-export oracle proved runnable.
+    #[test]
+    fn multi_closure_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::ClosureMake;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.get_int,
+        ];
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        // Two export bodies, each `() -> own<closure>`: build a 1-slot cell holding box-int(slot). Def 0's
+        // cell points at table slot 0, def 1's at slot 1 (a distinct lifted body).
+        let export_body = |slot: i64| SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(slot),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Two lifted bodies `(env: i32, x: i64) -> i64`: inc = x+1, triple = x*3.
+        let lifted_inc = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_triple = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(3), Lir::I64Mul],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // funcs = [export0, export1, lifted_inc, lifted_triple] — the two export bodies at emission
+        // positions 0,1 (in `order`), the two lifted bodies appended after.
+        let funcs = vec![export_body(0), export_body(1), lifted_inc, lifted_triple];
+
+        let mk_export = |name: &str, def: usize| ExportPlan {
+            name: name.to_string(),
+            def,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let mk_lifted = || LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2;
+        // order = [0, 1] (two export defs); two lifted appended after → their abs/type idx = import_base +
+        // order.len() + slot.
+        let layout = Layout::with_lifted(
+            vec![mk_export("inc", 0), mk_export("triple", 1)],
+            vec![0, 1],
+            import_base,
+            vec![mk_lifted(), mk_lifted()],
+            vec![true, true],
+        );
+        // Both closures share the signature → one shared call functype = slot 0's lifted type index.
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+        let makes = vec![
+            ClosureMake {
+                export_name: "make-inc".to_string(),
+                export_abs: import_base, // def 0 at emission position 0
+                param_vts: vec![],
+            },
+            ClosureMake {
+                export_name: "make-triple".to_string(),
+                export_abs: import_base + 1, // def 1 at emission position 1
+                param_vts: vec![],
+            },
+        ];
+
+        let core = crate::backend::wasm::serialize::multi_closure_resource_core_module(
+            &funcs,
+            &imports,
+            &makes,
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("multi-export closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("multi-export closure-resource core module validates");
     }
 
     /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
