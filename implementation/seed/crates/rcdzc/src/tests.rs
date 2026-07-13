@@ -15529,6 +15529,31 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
+        // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
+        // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
+        // `n : Int8` — is CDZ0203, repaired by wrapping the INIT in `(Int64.of n)`. Shares `int_coercion_wrap`
+        // with the other two sites (the D33 lesson: the same repair fires wherever the same mismatch surfaces).
+        let d = first_error("(module m (def (f (: n Int8)) (let (((: x Int64) n)) x)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        let fix = d.fix.expect("a let-binder coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Int64.of {})", crate::abi::WRAP_HOLE),
+            "wraps the INIT value in the annotation type's `.of`"
+        );
+        assert!(!fix.verified, "`.of` is checked → heuristic");
+        // NO over-reach: a Bool init annotated Int64 has no coercion.
+        let d = first_error("(module m (def (f) (let (((: x Int64) true)) x)) (export f))");
+        assert!(
+            d.fix.is_none(),
+            "no coercion fix Bool→Int64 let-binder: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
