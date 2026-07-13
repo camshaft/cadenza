@@ -513,6 +513,73 @@ pub fn emit_rust(text: &str, from: &str, is_async: bool) -> Result<String, JsErr
     }
 }
 
+/// The program's embedded CORE MODULE bytes — for the playground's "WAT" view. Compiles `text` to a
+/// PLAIN `Target::Wasm` component (NO `spans` artifact, so NO DWARF `.debug_*` sections at all — the
+/// debug info is only wanted in the browser debugger, not the human-readable WAT), then unwraps the
+/// component down to the core wasm module it embeds. The caller prints THOSE bytes with `wasm-tools
+/// print`, so the WAT view shows just the executed module (`(module …)`) rather than the component-
+/// model wrapper (`(component (core module …) …)`) — the shape a reader actually wants to read.
+///
+/// Returns `None` if the program declines (no component to unwrap) or if the component carries no core
+/// module (it never doesn't, but the extraction is total). A parse error surfaces as a `JsError`.
+#[wasm_bindgen]
+pub fn core_module(text: &str, from: &str) -> Result<Option<Vec<u8>>, JsError> {
+    let from = parse_format(from)?;
+    // No span table here on purpose: plain `Target::Wasm`, so the emitted component embeds a lean core
+    // module with none of the DWARF custom sections `compile()` adds for the debugger.
+    let (ast_bytes, _spans) = parse_spanned(text, from).map_err(|m| JsError::new(&m))?;
+    let out = rcdzc::compile(
+        &[rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes)],
+        &[rcdzc::Target::Wasm],
+    );
+    let Some(component) = out.artifact(rcdzc::Target::Wasm.artifact_kind()) else {
+        return Ok(None); // the program declined — nothing to unwrap
+    };
+    Ok(program_core_module(component))
+}
+
+/// Unwrap a WebAssembly component to the PROGRAM's embedded core module bytes. Walks the component's
+/// top-level sections and returns the LAST core-module section's (`COMP_SEC_CORE_MODULE`) payload — the
+/// last, because the resource-escape shape emits the standalone `t-dtor` module FIRST (it must
+/// instantiate before the resource type) and the program's own module last; a scalar/plain component
+/// embeds exactly one, so "last" is right for both. The nested re-export component (a distinct section
+/// id, `COMP_SEC_COMPONENT`) is skipped by id, so its inner core modules never leak out. Returns `None`
+/// if the bytes are too short or carry no core module.
+///
+/// A component section is `<id:u8> <size:uleb128> <payload:size>`, after the 8-byte component preamble
+/// (magic + layer version) — the same framing rcdzc's `envelope` emits. Section ids are read from the
+/// GENERATED `wasm_abi` table, not hand-typed.
+fn program_core_module(component: &[u8]) -> Option<Vec<u8>> {
+    use rcdzc::backend::wasm::wasm_abi;
+    let mut p = 8usize; // skip the component preamble (magic + layer version)
+    let mut last_core: Option<Vec<u8>> = None;
+    while p < component.len() {
+        let id = component[p];
+        p += 1;
+        // Read the uleb128 section length.
+        let mut len: usize = 0;
+        let mut shift: u32 = 0;
+        loop {
+            let byte = *component.get(p)?;
+            p += 1;
+            len |= ((byte & 0x7f) as usize) << shift;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        let end = p.checked_add(len)?;
+        if end > component.len() {
+            return None; // truncated section — bail rather than read past the end
+        }
+        if id == wasm_abi::COMP_SEC_CORE_MODULE {
+            last_core = Some(component[p..end].to_vec());
+        }
+        p = end;
+    }
+    last_core
+}
+
 /// The content-address (SHA-256, hex) of the value-heap runtime this compiler emits imports against.
 ///
 /// A compound-returning program imports `cadenza:runtime/heap@0.0.0+<hash>`; the guide must compose

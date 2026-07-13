@@ -568,6 +568,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // A runtime arithmetic op.
         Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, ctx),
+        // A float CONSTANT → a Rust float literal at the node's width. Emitted via `f64::from_bits`/
+        // `f32::from_bits` of the canonical bit pattern so the EXACT value (incl. `-0.0`, a subnormal)
+        // round-trips — a decimal spelling could lose a bit. The width is the node's solved type.
+        Core::ConstFloat(d) => {
+            let width = match type_of(db, id) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            if width == 32 {
+                let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
+                Ok(format!("f32::from_bits({bits}u32)"))
+            } else {
+                Ok(format!("f64::from_bits({}u64)", d.to_f64_bits()))
+            }
+        }
         // A runtime `.wrap` conversion → an `as` cast to the target Rust type. Rust's `as` between
         // integers keeps the low bits and reinterprets at the target sign — bit-identical to
         // `IntValue::wrap_to`, and total (never panics), as `.wrap` requires.
@@ -576,6 +591,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let dst = int_ty_of(db, id);
                 let rty = types::rust_type(&Ty::Int(dst)).ok_or_else(|| {
                     Reject::decline("wrap target width has no native Rust representation")
+                })?;
+                let operand_s = emit(db, operand, env, ctx)?;
+                Ok(format!("({operand_s} as {rty})"))
+            }
+            // A runtime int→float conversion `Float N.of-int` → an `as f64`/`as f32` cast (total,
+            // round-to-nearest, matches the wasm `convert_i64_s`). The target width is the node's type.
+            Prim::FloatOfInt => {
+                let rty = types::rust_type(&type_of(db, id)).ok_or_else(|| {
+                    Reject::decline("of-int target has no native Rust representation")
                 })?;
                 let operand_s = emit(db, operand, env, ctx)?;
                 Ok(format!("({operand_s} as {rty})"))
@@ -717,7 +741,6 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::ListUpdate { .. }
         | Core::ListAt { .. }
         | Core::ConstStr(_)
-        | Core::ConstFloat(_)
         | Core::BytesOf { .. }
         | Core::BytesLen { .. }
         | Core::BytesAt { .. }
@@ -798,6 +821,21 @@ fn emit_arith(
     env: &Env,
     ctx: &Ctx,
 ) -> Result<String, Reject> {
+    // A FLOAT arithmetic op (`+.`/`-.`/`*.`/`/.`) → the native Rust `+`/`-`/`*`/`/` on `f64`/`f32`. IEEE,
+    // never traps (no `checked_*`/overflow panic, unlike the integer arith below) — matches the wasm
+    // machine op. Both operands share the op's float type, so they emit as-is (no width grounding).
+    if op.is_float_arith() {
+        let sym = match op {
+            Prim::FAdd => "+",
+            Prim::FSub => "-",
+            Prim::FMul => "*",
+            Prim::FDiv => "/",
+            _ => unreachable!("guarded by is_float_arith"),
+        };
+        let l = emit(db, lhs, env, ctx)?;
+        let r = emit(db, rhs, env, ctx)?;
+        return Ok(format!("({l} {sym} {r})"));
+    }
     // Both operands share the OP's integer type (its result width == operand width). Ground a bare
     // literal operand to it so `(+ a 1)` over a narrow `a` emits `<narrow>::checked_add(1<narrow>)`,
     // not `checked_add((1u64 as i64))` (Rust E0308) — the analogue of the wasm backend's `emit_operand`.

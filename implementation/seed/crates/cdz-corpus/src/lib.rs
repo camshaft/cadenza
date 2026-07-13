@@ -52,6 +52,11 @@ pub struct Record {
     /// consumes these when it performs an operation; the gate driver passes each to `cdz-run
     /// --host-response`. Empty for a case that makes no host call.
     pub host_responses: Vec<(String, String)>,
+    /// The recorded HOST-CALL sequence (E2h) — the dotted `E.op` names from a `(host-calls (call E.op
+    /// arg…) …)` clause, in call order. The gate verifies the run's OBSERVED host calls against this, so
+    /// a dropped/extra/reordered call is a Fail (not a false Pass on a matching return value). Empty for a
+    /// case with no `(host-calls …)`.
+    pub host_calls: Vec<String>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -190,6 +195,13 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(value);
             out.push('\n');
         }
+        // HOST-CALL sequence (E2h): one `host-call\t<op>` line each, in call order — the ordered host
+        // operations the run must make. The gate verifies the run's observed calls against these.
+        for op in &r.host_calls {
+            out.push_str("host-call\t");
+            out.push_str(op);
+            out.push('\n');
+        }
         out.push_str("---\n");
     }
     out
@@ -216,6 +228,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut needs: Vec<String> = Vec::new();
     let mut modules: Vec<Module> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
+    let mut host_calls: Vec<String> = Vec::new();
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -346,14 +359,28 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                             && let Some(&op_id) = rtail.first()
                             && let Some(&val_id) = rtail.get(1)
                         {
-                            let op = sexpr::print_from(a, op_id);
+                            let op = dotted_op(a, op_id);
                             let value = value_of(a, val_id);
                             host_responses.push((op, value));
                         }
                     }
                 }
             }
-            // `doc`, `host-calls` — not needed to run + compare a scalar case yet.
+            // `(host-calls (call E.op arg…) …)` — the ordered host-call sequence the run must make. Each
+            // `call` names its operation (`E.op`, rendered dotted); the args are for documentation (the
+            // gate verifies the op sequence). The gate compares the run's observed host calls against this.
+            Some("host-calls") => {
+                if let Some(tail) = a.as_form(clause, "host-calls") {
+                    for &c in tail {
+                        if let Some(ctail) = a.as_form(c, "call")
+                            && let Some(&op_id) = ctail.first()
+                        {
+                            host_calls.push(dotted_op(a, op_id));
+                        }
+                    }
+                }
+            }
+            // `doc` — not needed to run + compare a case.
             _ => {}
         }
     }
@@ -372,6 +399,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         trials,
         needs,
         host_responses,
+        host_calls,
     })
 }
 
@@ -480,6 +508,19 @@ fn value_of(a: &Arenas, form: StructId) -> String {
         return sexpr::print_from(a, value);
     }
     sexpr::print_from(a, form)
+}
+
+/// Render a host operation reference in DOTTED form `E.op` — the form the runner observes and matches. An
+/// operation is written `(. E op)` (member access) in the corpus; render its `E.op`. A bare name (or any
+/// other shape) passes through via `sexpr::print_from`, so this only rewrites the member-access spelling.
+fn dotted_op(a: &Arenas, id: StructId) -> String {
+    if let Some(tail) = a.as_form(id, ".")
+        && tail.len() == 2
+        && let (Some(e), Some(op)) = (a.as_name(tail[0]), a.as_name(tail[1]))
+    {
+        return format!("{e}.{op}");
+    }
+    sexpr::print_from(a, id)
 }
 
 /// The string a `Str` leaf carries, if `id` is one.

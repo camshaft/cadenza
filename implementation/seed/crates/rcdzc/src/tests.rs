@@ -1908,6 +1908,25 @@ fn an_exported_float_op_runs_over_runtime_args() {
     }
 }
 
+/// The explicit INT→FLOAT conversion `Float64.of-int` over a RUNTIME integer emits
+/// `f64.convert_i64_s` (a constant folds instead). `(def (f (: n Int64)) (Float64.of-int n))` run with
+/// 42 returns 42.0; a large Int64 rounds to the nearest f64 — total, never trapping.
+#[test]
+fn float_of_int_converts_a_runtime_integer() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: n Int64)) (Float64.of-int n)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::S64(42)]);
+    assert_eq!(got.to_bits(), 42.0f64.to_bits(), "of-int 42 = 42.0");
+    let big: f64 = run_returns_with(&bytes, "f", &[Val::S64(9223372036854775807)]);
+    assert_eq!(
+        big.to_bits(),
+        (9223372036854775807i64 as f64).to_bits(),
+        "of-int Int64.max rounds to the nearest f64"
+    );
+}
+
 /// `(= n 0)` selects to `eqz` (one instruction), and it must still compute the correct boolean under
 /// wasmtime: true at zero, false otherwise, for both operand orders — a wrong `eqz` (say, ignoring the
 /// operand) would return a constant. `is-zero`/`is-zero2` (commuted) both return 1 at 0, 0 elsewhere.
@@ -2238,6 +2257,36 @@ fn runtime_addition_traps_on_overflow() {
         "add",
         &[Val::S64(i64::MAX), Val::S64(1)]
     ));
+}
+
+/// A doubling add `(+ a a)` uses the collapsed single-xor overflow guard (`(r^a)<0`); its VALUE and TRAP
+/// behavior must match the general two-operand add exactly.
+#[test]
+fn doubling_add_value_and_trap_parity() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (dbl (: a Int64)) (+ a a)) (export dbl))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // In range, both signs and zero.
+    assert_eq!(run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(21)]), 42);
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(-21)]),
+        -42
+    );
+    assert_eq!(run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(0)]), 0);
+    // The largest value that still doubles in range, and the smallest.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(i64::MAX / 2)]),
+        (i64::MAX / 2) * 2
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "dbl", &[Val::S64(i64::MIN / 2)]),
+        (i64::MIN / 2) * 2
+    );
+    // Overflow: doubling past the boundary TRAPS (the single-xor guard fires exactly like the general one).
+    assert!(call_traps(&bytes, "dbl", &[Val::S64((i64::MAX / 2) + 1)]));
+    assert!(call_traps(&bytes, "dbl", &[Val::S64(i64::MAX)]));
+    assert!(call_traps(&bytes, "dbl", &[Val::S64(i64::MIN)]));
 }
 
 /// Runtime `-` traps on overflow (e.g. `Int64.min - 1`), computes in range.
