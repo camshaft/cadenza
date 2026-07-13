@@ -920,6 +920,22 @@ fn recursive_call_reaches_discharged(db: &mut Db, head: &StructId, ctx: &Handler
     rec && reaches
 }
 
+/// Whether a type contains an undetermined `Ty::Any` component (structurally). Used to reject a
+/// specialization whose state type is not fully determined — an `Any` most often an empty-list seed's
+/// element type — since a synthesized state-param annotation must be a definite type.
+fn ty_has_any(ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Any => true,
+        Ty::List(elem) => ty_has_any(elem),
+        Ty::Tuple(elems) => elems.iter().any(ty_has_any),
+        Ty::Record(fields) => fields.values().any(ty_has_any),
+        Ty::Sum { args, .. } => args.iter().any(ty_has_any),
+        Ty::Fn(p, r) => ty_has_any(p) || ty_has_any(r),
+        _ => false,
+    }
+}
+
 /// The `db.defs` index the application head `head` names — following a `Ref` to a lambda/def body. `None`
 /// for a head that is not a named top-level def. (A local copy of `lower::callee_def_index`, which is
 /// private there.)
@@ -944,6 +960,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let orig_body = db.defs[callee_def].body?;
     let _state_binder = ctx.single_state?;
     let state_ty = ctx.state_ty.clone()?;
+    // The state type must be FULLY DETERMINED to annotate the trailing state param. An UNDETERMINED
+    // component (an `Any` — most commonly an empty-list seed `(list)`, whose element type is `Ty::Any`
+    // until an operation pins it) would bake a wrong/loose annotation (`(: s (List Any))`) that mistypes
+    // the threaded body. Decline cleanly rather than emit it — a non-empty seed (`(list 0)`, whose element
+    // is `Int64`) specializes; an empty-list seed needs the state's type inferred from the arms'
+    // resume-next-states (`(List.push s v)` reveals `List Int64`), a later increment.
+    if ty_has_any(&state_ty) {
+        return None;
+    }
 
     // MEMO: the same recursive def under the same handler context specializes ONCE. Keyed by the def's
     // body occurrence + the context's resolved identity. A hit returns the existing synthesized name.
@@ -956,14 +981,24 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // PARAMETERIZED def (`walk n`) carries its param name occurrences, threaded through unchanged (the
     // self-call passes its own args). Each is copied fresh into the specialized signature so the threaded
     // body's references to it re-resolve against the new def's scope. Only BARE-name params are handled
-    // (an annotated `(: n T)` original param is a later increment); a non-bare param declines.
+    // (an annotated `(: n T)` original param is a later increment); a non-bare param declines. We capture
+    // each param's NAME and its SOLVED type (from the original def — `type_of` runs the connected
+    // recursive-param solve), so the synthesized param can be ANNOTATED: a bare synthesized param has no
+    // call site to flow a type from and no connected solve of its own reliably reaching it, so it would
+    // stay `Any` and mistype the body (`(Diag.emit n)` needs `n: Int64`). A param whose original type is
+    // undetermined (`Any`) declines — the specialization needs a definite param type to emit.
     let orig_params = db.defs[callee_def].params.clone();
-    let mut orig_param_names: Vec<String> = Vec::with_capacity(orig_params.len());
+    let mut orig_param_specs: Vec<(String, crate::ty::Ty)> = Vec::with_capacity(orig_params.len());
     for &p in &orig_params {
-        match db.ast.as_name(p) {
-            Some(n) => orig_param_names.push(n.to_string()),
+        let name = match db.ast.as_name(p) {
+            Some(n) => n.to_string(),
             None => return None,
+        };
+        let ty = crate::infer::type_of(db, p);
+        if matches!(ty, crate::ty::Ty::Any) {
+            return None; // an undetermined original param — cannot annotate the synthesized copy
         }
+        orig_param_specs.push((name, ty));
     }
 
     // The specialized NAME — unique per (def, context). The `#` makes it unspellable in source (no user
@@ -971,14 +1006,17 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let base = db.defs[callee_def].name.clone();
     let spec_name = format!("{base}#eff{}", db.defs.len());
 
-    // Build the specialized def as a REAL AST form `(def (spec orig-params… (: s T)) <body>)`, so its
-    // parameters resolve (via `is_param_occurrence`, which walks to a `def` form) and the state param
-    // types by its annotation. Original params are BARE name atoms (copied fresh); the state param is an
-    // ANNOTATED binder `(: s T)`, LAST in the signature (the self-call appends state last).
+    // Build the specialized def as a REAL AST form `(def (spec (: n Tn)… (: s Ts)) <body>)`, so its
+    // parameters resolve (via `is_param_occurrence`, which walks to a `def` form) and each types by its
+    // annotation. Every param — original AND the trailing state — is an ANNOTATED binder `(: name T)`
+    // (the state param LAST, since the self-call appends state last).
     let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone()));
     let mut sig_children = vec![spec_name_atom];
-    for n in &orig_param_names {
-        sig_children.push(db.push_atom(Leaf::Name(n.clone())));
+    for (n, ty) in &orig_param_specs {
+        let name_atom = db.push_atom(Leaf::Name(n.clone()));
+        let ty_expr = crate::eval::encode_typeval(db, ty);
+        let colon = db.push_atom(Leaf::Name(":".to_string()));
+        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
     }
     let state_name = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
     let state_type_expr = crate::eval::encode_typeval(db, &state_ty);

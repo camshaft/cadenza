@@ -8276,6 +8276,30 @@ mod stage1 {
     }
 
     #[test]
+    fn a_parameterized_recursive_walk_threads_a_list_state() {
+        // E3: a recursive PARAMETERIZED effectful walk `(walk n)` that accumulates into a LIST state,
+        // performing inside a nested `(do …)`. `walk` emits `n` at each step (threading `(List.push s n)`)
+        // and reads the list back at the base via `collect`. Specialized as `walk#ctx(n: Int64, s: List
+        // Int64)` — original param `n` threaded + annotated with its solved type, state a trailing list
+        // param, recursion via the memoized self-call. Seeded `(list 0)` (a DETERMINED element type — an
+        // empty `(list)` seed declines, its element type being `Any`), `(walk 3)` accumulates
+        // `(list 0 3 2 1)` whose length is 4. Exercises parameterized spec + list-state-through-recursion
+        // + do-intermediate perform + recursion-through-do all at once.
+        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+                   (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
+                   (def (main) (handle (list 0) \
+                     ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
+                     (List.len (walk 3)))) (export main))";
+        // COMPILES (the specialization + list-state threading succeed) — asserting compilation, not a run,
+        // because a list-returning body needs the value-heap runtime composed from the store (the
+        // `#[ignore]`d heap tests do that); the store-driven CLI run yields 4 (`(list 0 3 2 1)` length).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a parameterized recursive walk threading a determined list state must compile"
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
