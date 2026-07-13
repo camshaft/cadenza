@@ -8246,6 +8246,78 @@ mod match_engine {
     }
 
     #[test]
+    fn a_module_nested_in_a_module_projects_as_a_nested_record() {
+        // 11-modules "a module nested in a module …": a `(module inner …)` written as a MEMBER of
+        // `(module outer …)` registers `inner` as a field of the outer's record whose value is the inner
+        // module's OWN synthesized record (`modules::synthesize` builds inner-first, embeds it via
+        // `synth_by_occ`), so `(. (. outer inner) v)` is two ordinary member projections — the nested-record
+        // analogue of a flat export, nothing privileged by name. This is the core of "deeply nested modules".
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def v 7))) (. (. outer inner) v))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // Nesting is arbitrary-depth — three modules deep, projected through three member accesses.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module a (module b (module c (def v 42)))) (. (. (. a b) c) v))) (export main))"
+                ),
+                "main"
+            ),
+            42
+        );
+        // A nested module's FUNCTION export is reached + applied through the projection chain — the field
+        // value is the same `(fn (params) body)` lambda a flat export carries, β-reduced by the ordinary path.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def (f x) (* x 2)))) ((. (. outer inner) f) 21))) (export main))"
+                ),
+                "main"
+            ),
+            42
+        );
+        // An OUTER def references the nested module by BARE name (`inner` inside `f`) — mutual visibility
+        // (Case R / `module_sibling_binds`'s nested-module arm binds `inner` to its record). `f`'s body is
+        // β-copied at the call, so the reference to the synth record must be PINNED (`pin_free_vars` treats a
+        // module-synth-record binder as a capture) or the copy re-resolves it unbound.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def (dbl x) (* x 2))) (def (f y) ((. inner dbl) y))) ((. outer f) 21))) (export main))"
+                ),
+                "main"
+            ),
+            42
+        );
+        // A nested module and a sibling def coexist in one outer module — both reachable, neither displaces
+        // the other (the record carries a field per member, module or def alike).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def v 5)) (def w 9)) (+ (. (. outer inner) v) (. outer w)))) (export main))"
+                ),
+                "main"
+            ),
+            14
+        );
+        // An INNER function calling its inner SIBLING by bare name works through the nested scope too.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module outer (module inner (def (dbl x) (* x 2)) (def (g x) (+ (dbl x) 1)))) ((. (. outer inner) g) 20))) (export main))"
+                ),
+                "main"
+            ),
+            41
+        );
+    }
+    #[test]
     fn a_nested_module_value_def_projects_through_member_access() {
         // 11-modules "a module value definition registers a reachable export field": a do-local `(module m
         // (def v 7))` binds `m` to a synthesized record of its exports (`modules::synthesize`), so `(. m
