@@ -273,7 +273,6 @@
            preserving because the condition (and any earlier binding) is pure. Called with `x = 9` (not <
            5), the false branch binds `k = 0` and returns `1 + 0` = 1; with `x = 3` the abort fires,
            discarding the binding and the body, yielding the arm value (`DESIGN-effects-rcdzc.md` §4.2).")
-  (needs  effects)
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: x Int64))

@@ -391,7 +391,6 @@
            one dimension, two scales — so each converts to the reference `metre` (1 km = 1000 m) and they
            add: 1000 + 500 = 1500 m. Over Float64 the scale multiply is ordinary float arithmetic; the
            result is a `(Qty Float64 metre)` at the reference unit.")
-  (needs  units-of-measure)
   (input  (Qty.value (+ (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))
                         (Qty.of 500.0 (Unit.base #"metre")))))
   (output (: 1500.0 Float64)))
@@ -401,7 +400,6 @@
            DISTINCT units with distinct exact scales, so each converts to the reference `byte` and sums to
            1024 + 1000 = 2024 byte — NOT 2000, never silently equated (the classic KiB-vs-kB conflation
            caught). The conversion is exact integer arithmetic (both scales are whole).")
-  (needs  units-of-measure)
   (input  (Qty.value (+ (Qty.of 1 (Unit.prefix kibi (Unit.base #"byte")))
                         (Qty.of 1 (Unit.prefix kilo (Unit.base #"byte"))))))
   (output (: 2024 Int64)))
@@ -411,7 +409,6 @@
            dimension, two scales — so each converts to the reference and compares there: 500 m < 1000 m,
            so it is true. Comparison, like `+`/`-`, converts differing units of one dimension rather than
            rejecting them.")
-  (needs  units-of-measure)
   (input  (< (Qty.of 500.0 (Unit.base #"metre"))
              (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))))
   (output (: true Bool)))
@@ -420,7 +417,6 @@
   (doc    "`(+ (Qty 1.0 (Unit.prefix kilo metre)) (Qty 1.0 second))` mixes `length` and `time` — different
            dimensions — so it is CDZ0501, exactly as the unprefixed case is. A prefix scales WITHIN a
            dimension; it never bridges two, so the dimensional safety the layer exists for is untouched.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))
              (Qty.of 1.0 (Unit.base #"second"))))
   (error  CDZ0501))
