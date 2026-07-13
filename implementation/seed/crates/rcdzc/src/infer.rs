@@ -1071,7 +1071,7 @@ fn collect_param_constraints(
                 for &arg in args.iter() {
                     let applied = subst.apply(&cur);
                     if let Ty::Fn(param, result) = applied {
-                        let at = arg_ty_in_env(db, arg, env, subst);
+                        let at = arg_ty_in_env(db, arg, env, subst, fresh);
                         let _ = crate::unify::unify(subst, &param, &at);
                         cur = *result;
                     } else {
@@ -1088,7 +1088,7 @@ fn collect_param_constraints(
                         if let Some(&binder) = ordered.get(i)
                             && let Some(pvar) = env.get(&binder)
                         {
-                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let at = arg_ty_in_env(db, arg, env, subst, fresh);
                             let _ = crate::unify::unify(subst, pvar, &at);
                         }
                     }
@@ -1115,7 +1115,7 @@ fn collect_param_constraints(
                         if let Some(pt) = callee_param_ty(db, callee, i)
                             && !matches!(pt, Ty::Any | Ty::Var(_))
                         {
-                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let at = arg_ty_in_env(db, arg, env, subst, fresh);
                             let _ = crate::unify::unify(subst, &at, &pt);
                         }
                     }
@@ -1139,7 +1139,7 @@ fn collect_param_constraints(
                 let result = Ty::Var(fresh.var());
                 let mut arrow = result;
                 for &arg in args.iter().rev() {
-                    let at = arg_ty_in_env(db, arg, env, subst);
+                    let at = arg_ty_in_env(db, arg, env, subst, fresh);
                     arrow = Ty::Fn(Box::new(at), Box::new(arrow));
                 }
                 let _ = crate::unify::unify(subst, &hvar, &arrow);
@@ -1154,7 +1154,7 @@ fn collect_param_constraints(
         }
         Resolved::If { cond, then_, else_ } => {
             // The condition must be Bool — constrain it (a bare-param condition `(if n …)` pins n Bool).
-            let ct = arg_ty_in_env(db, cond, env, subst);
+            let ct = arg_ty_in_env(db, cond, env, subst, fresh);
             let _ = crate::unify::unify(subst, &ct, &Ty::Bool);
             collect_param_constraints(db, cond, env, def, subst, fresh);
             collect_param_constraints(db, then_, env, def, subst, fresh);
@@ -1164,13 +1164,13 @@ fn collect_param_constraints(
         // pins `p` Bool), then descend.
         Resolved::And { lhs, rhs, .. } => {
             for &op in &[lhs, rhs] {
-                let t = arg_ty_in_env(db, op, env, subst);
+                let t = arg_ty_in_env(db, op, env, subst, fresh);
                 let _ = crate::unify::unify(subst, &t, &Ty::Bool);
                 collect_param_constraints(db, op, env, def, subst, fresh);
             }
         }
         Resolved::Not { operand } => {
-            let t = arg_ty_in_env(db, operand, env, subst);
+            let t = arg_ty_in_env(db, operand, env, subst, fresh);
             let _ = crate::unify::unify(subst, &t, &Ty::Bool);
             collect_param_constraints(db, operand, env, def, subst, fresh);
         }
@@ -1183,7 +1183,7 @@ fn collect_param_constraints(
             // to a scrutinee that IS a parameter — a scrutinee that is a CALL RESULT (`(List.at xs i)`)
             // carries its own instantiation that this shape-unify would corrupt, so it is left to the
             // ordinary application constraints.
-            let st = arg_ty_in_env(db, scrutinee, env, subst);
+            let st = arg_ty_in_env(db, scrutinee, env, subst, fresh);
             let scrut_is_param = matches!(
                 resolved_of(db, scrutinee),
                 Resolved::Ref { value } if env.contains_key(&value)
@@ -1229,6 +1229,7 @@ fn collect_param_constraints(
                 body: StructId,
                 env: &crate::fxhash::FxHashMap<StructId, Ty>,
                 subst: &Subst,
+                fresh: &mut Fresh,
             ) -> Option<Ty> {
                 // The arm's type must be a STILL-OPEN var for it to be a constrainable pass-through: an
                 // echoed BARE param whose var is unsolved, or a fn-param application `(f n)` whose result
@@ -1243,7 +1244,7 @@ fn collect_param_constraints(
                     // `(f n)` — a fn-typed param applied. Its type is `f`'s result var (peeled by
                     // `arg_ty_in_env`).
                     Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some() => {
-                        arg_ty_in_env(db, body, env, subst)
+                        arg_ty_in_env(db, body, env, subst, fresh)
                     }
                     // A PAYLOAD BINDER of the scrutinee being solved — `n` in `(match t ((Tree.Leaf n) n)
                     // …)` returned directly by the arm. Its type is `t`'s local instantiation walked down
@@ -1260,7 +1261,7 @@ fn collect_param_constraints(
                             Resolved::Param { binder } if env.contains_key(&binder)
                         ) =>
                     {
-                        arg_ty_in_env(db, body, env, subst)
+                        arg_ty_in_env(db, body, env, subst, fresh)
                     }
                     _ => return None,
                 };
@@ -1269,14 +1270,14 @@ fn collect_param_constraints(
             }
             let arm_list: Vec<StructId> = arms.iter().map(|(_, b)| *b).collect();
             for &body in &arm_list {
-                let Some(pvar) = open_arm_var(db, body, env, subst) else {
+                let Some(pvar) = open_arm_var(db, body, env, subst, fresh) else {
                     continue;
                 };
                 for &other in &arm_list {
-                    if other == body || open_arm_var(db, other, env, subst).is_some() {
+                    if other == body || open_arm_var(db, other, env, subst, fresh).is_some() {
                         continue; // self, or another open arm — no determined type to borrow
                     }
-                    let ot = arg_ty_in_env(db, other, env, subst);
+                    let ot = arg_ty_in_env(db, other, env, subst, fresh);
                     let applied = subst.apply(&ot);
                     if !matches!(applied, Ty::Any | Ty::Var(_)) {
                         let _ = crate::unify::unify(subst, &pvar, &applied);
@@ -1410,6 +1411,7 @@ fn arg_ty_in_env(
     arg: StructId,
     env: &crate::fxhash::FxHashMap<StructId, Ty>,
     subst: &Subst,
+    fresh: &mut Fresh,
 ) -> Ty {
     // A reference to a parameter being solved → its variable. A body param reference resolves to
     // `Ref { value: <param binder> }` (or a bare `Param { binder }`).
@@ -1424,12 +1426,35 @@ fn arg_ty_in_env(
                 return subst.apply(var);
             }
         }
+        // A LIST built from parameter references — `(list i)` where `i` is a param being solved. Its
+        // element type must be read through the LOCAL `subst` (where `(+ i 1)` pinned `i` to `Int w`),
+        // NOT `type_of((list i))` — mid-solve `db.param_types` is empty, so `type_of` reads `i` as `Any`
+        // and the whole list types `List Any`. Building the element type via `arg_ty_in_env` recursively
+        // links the inner element's var into the subst, so pinning `i` pins the nested element (a runtime
+        // `(List (List Int64))` accumulator grounds instead of stranding the inner element at `Any`). The
+        // `list` NAME-alias form (`ListNew`) is the same shape reached through `Apply`, handled below.
+        Resolved::List { elems } => {
+            let mut elem_ty = Ty::Any;
+            for &e in elems.iter() {
+                elem_ty = elem_ty.join(&arg_ty_in_env(db, e, env, subst, fresh));
+            }
+            return Ty::List(Box::new(subst.apply(&elem_ty)));
+        }
         // An APPLICATION OF A FN-TYPED PARAMETER being solved — `(f h)` where `f` is in `env`. Its type is
         // `f`'s var peeled by one arrow per argument, read from the LOCAL `subst` (where the arrow was
         // unified in `collect_param_constraints`), NOT from `type_of` — `db.param_types` is still empty
         // mid-solve, so `type_of((f h))` would be `Any` and the result would never link to `f`'s arrow.
         // This is what lets `(+ (f h) …)` flow Int64 back to `f`'s result var, solving the fn param.
         Resolved::Apply { head, args } => {
+            // The `list` NAME alias (`(list i)` via `ListNew`) is a list built from its arguments — the
+            // element type read through the LOCAL subst, exactly as the `Resolved::List` arm above.
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::ListNew) {
+                let mut elem_ty = Ty::Any;
+                for &e in args.iter() {
+                    elem_ty = elem_ty.join(&arg_ty_in_env(db, e, env, subst, fresh));
+                }
+                return Ty::List(Box::new(subst.apply(&elem_ty)));
+            }
             if let Some(var) = binder_var_of(db, head, env) {
                 let mut cur = subst.apply(&var);
                 for _ in 0..args.len() {
@@ -1439,6 +1464,29 @@ fn arg_ty_in_env(
                     }
                 }
                 return cur;
+            }
+            // An OPERATOR/INTRINSIC application (`(List.push out (list i))`) whose result must carry the
+            // element type an argument built from a param being solved contributes — but `type_of` reads
+            // that arg's param as `Any` mid-solve, stranding the result's element (a runtime `(List (List
+            // Int64))` accumulator returned `(List (List Any))`). Instantiate the head's scheme HERE and
+            // unify each argument's LOCAL-subst type (`arg_ty_in_env`, so `(list i)`'s element links to
+            // `i`'s var) into the curried parameter positions; the applied result then carries the pinned
+            // element. A local `Fresh`/`Subst` seeded from the caller's keeps the caller's bindings visible
+            // without polluting them. Falls through to `type_of` when the head has no scheme.
+            if let Some(scheme) = crate::eval::scheme_of(db, head, fresh) {
+                let mut local = subst.clone();
+                let mut cur = crate::unify::instantiate(&scheme, fresh);
+                for &arg in args.iter() {
+                    let applied = local.apply(&cur);
+                    if let Ty::Fn(param, result) = applied {
+                        let at = arg_ty_in_env(db, arg, env, &local, fresh);
+                        let _ = crate::unify::unify(&mut local, &param, &at);
+                        cur = *result;
+                    } else {
+                        break;
+                    }
+                }
+                return local.apply(&cur);
             }
         }
         // A PAYLOAD BINDER of the parameter being solved — `n` in `(match t ((Tree.Leaf n) …))`, which

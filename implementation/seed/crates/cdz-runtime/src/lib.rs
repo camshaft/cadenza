@@ -1008,9 +1008,10 @@ fn op_sum_payload(h: Handle) -> Handle {
 //    10 Named  [ name_len ][ name_utf8 ] [ inner: idx ]   — the `(: <value> <name>)` frame (root only)
 //    11 Ref    [ idx ]                                    — an alias to another table entry (recursion)
 //    12 Set    [ elem: idx ]                              — 13 Map [ key: idx ][ val: idx ] — 14 Float32
-//    15 Framed [ head_len ][ head_utf8 ] [ n_args ]( [ arg_len ][ arg_utf8 ] )*n [ inner: idx ]
-//              — the `(: <value> (<head> <arg>…))` frame: a PARAMETRIC type node (e.g. `(List Int64)`),
-//                each `arg` a bare type name (root only). Used for a runtime List result.
+//    15 Framed <TypeNode> [ inner: idx ]   where TypeNode = [ head_len ][ head_utf8 ] [ n ]( TypeNode )*n
+//              — the `(: <value> <type-node>)` frame: an arbitrary (possibly NESTED) type node written
+//                RECURSIVELY, so a nested element type shows (e.g. `(List (List Int64))`, `(Map Int64
+//                (Set Int64))`). A leaf node has n=0 (a bare name). Used for a runtime collection result.
 // (Every child position is an INDEX into the table, not an inline shape — that is what lets a cycle
 // close: entry k's Sum names entry k as a payload, a finite 1-entry loop the value walk unfolds.)
 
@@ -1075,17 +1076,38 @@ enum Shape {
     /// NOT hash order. Only a SCALAR KEY shape is orderable-and-encodable; the VALUE may be any encodable
     /// shape (the walk recurses on it). `(key_shape, value_shape)` table indices.
     Map(u32, u32),
-    /// A `(: <value> (<head> <arg>…))` frame — like `Named` but the TYPE is a PARAMETRIC node
-    /// `(head arg…)` (each `arg` a bare type name), not a single name. Used for `(List <elem>)` (and any
-    /// parametric result type whose arguments are type names) so a runtime List renders `(: (list …)
-    /// (List Int64))` — the element type is OBSERVABLE, matching the constant-List value form.
-    Framed(String, Vec<String>, u32),
+    /// A `(: <value> <type-node>)` frame — like `Named` but the TYPE is an arbitrary (possibly NESTED)
+    /// type node, not a single name. Carries a recursive [`TypeNode`] so a nested collection renders its
+    /// full parametric type — e.g. `(List (List Int64))`, `(Map Int64 (List Bool))` — matching the
+    /// constant-value form. The `u32` is the inner value shape index.
+    Framed(TypeNode, u32),
     /// A MULTI-payload sum variant's payload — a tuple handle at run time (`arr` of the boxed payloads)
     /// whose elements render FLATTENED as the variant's children: `(Cons h t)`, NOT `(Cons (tuple h t))`.
     /// Read exactly like a `Tuple` (each element via `arr-get`) but the enclosing `Sum` walk splices the
     /// elements directly under the variant head instead of emitting a `tuple` form. Only a `Sum` variant's
     /// payload references a `Spread`; a genuine tuple VALUE stays a `Tuple`.
     Spread(Vec<u32>),
+}
+
+/// A compile-time-baked TYPE node for a `Framed` frame: `head` + child type nodes. A LEAF type
+/// (`Int64`/`Bool`/`String`/`Unit`/a nominal name) has no children and renders as the bare name atom; a
+/// PARAMETRIC type (`(List e)`, `(Map k v)`, `(Tuple …)`, `(Set e)`) renders `list([head, child…])`, each
+/// child rendered recursively. The whole thing is compile-time-known (the result type), so the runtime
+/// only re-emits it — it never inspects the runtime value to build the type.
+struct TypeNode {
+    head: String,
+    children: Vec<TypeNode>,
+}
+
+/// Decode a [`TypeNode`]: `[ head_len ][ head_utf8 ] [ n_children:LEB ]( TypeNode )*n`.
+fn decode_type_node(d: &[u8], pos: &mut usize) -> Option<TypeNode> {
+    let head = desc_name(d, pos)?;
+    let n = desc_leb(d, pos)?;
+    let mut children = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        children.push(decode_type_node(d, pos)?);
+    }
+    Some(TypeNode { head, children })
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -1169,14 +1191,9 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         }
         14 => Shape::Float32,
         15 => {
-            // Framed: [ head_len ][ head_utf8 ] [ n_args ]( [ arg_len ][ arg_utf8 ] )*n [ inner: idx ]
-            let head = desc_name(d, pos)?;
-            let n = desc_leb(d, pos)?;
-            let mut args = Vec::with_capacity(n as usize);
-            for _ in 0..n {
-                args.push(desc_name(d, pos)?);
-            }
-            Shape::Framed(head, args, desc_leb(d, pos)? as u32)
+            // Framed: <TypeNode> [ inner: idx ]  where TypeNode = [ head ][ n ]( TypeNode )*n (recursive).
+            let type_node = decode_type_node(d, pos)?;
+            Shape::Framed(type_node, desc_leb(d, pos)? as u32)
         }
         16 => {
             // Spread: [ n ]( idx )*n — same wire shape as Tuple (tag 6), a distinct tag so the Sum walk
@@ -1362,6 +1379,21 @@ impl DocBuilder {
         self.child_pool.extend_from_slice(tail);
         self.structs.push(DocStruct::List { start, len: 1 + tail.len() as u32 });
         (self.structs.len() - 1) as u32
+    }
+    /// Render a [`TypeNode`] to a struct index (recursive): a LEAF type (no children) → the bare name
+    /// atom; a PARAMETRIC type → `list([head-atom, child…])`, each child rendered recursively. Builds the
+    /// `(: value <type>)` frame's type position for a `Framed` — handles arbitrary nesting like
+    /// `(List (List Int64))` / `(Map Int64 (List Bool))`.
+    fn render_type_node(&mut self, tn: &TypeNode) -> u32 {
+        let head_leaf = self.name_leaf(&tn.head);
+        let head_atom = self.atom(head_leaf);
+        if tn.children.is_empty() {
+            head_atom
+        } else {
+            let child_structs: Vec<u32> =
+                tn.children.iter().map(|c| self.render_type_node(c)).collect();
+            self.list_head_tail(head_atom, &child_structs)
+        }
     }
     fn finish(&self, root: u32) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1563,13 +1595,12 @@ enum EncodeWork<'d> {
     /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
     /// (matching the recursive order), then `list([colon_s, value, tname_s])`.
     Named { colon_s: u32, name: &'d str },
-    /// Assemble a `(: value (head arg…))` frame — like `Named` but the type is a PARAMETRIC node. Pop the
-    /// inner value, build the type node `list([head_atom, arg_atoms…])`, then `list([colon_s, value,
+    /// Assemble a `(: value <type-node>)` frame — like `Named` but the type is an arbitrary (possibly
+    /// NESTED) type node. Pop the inner value, `render_type_node` the type, then `list([colon_s, value,
     /// type_node])`.
     Framed {
         colon_s: u32,
-        head: &'d str,
-        args: &'d [String],
+        type_node: &'d TypeNode,
     },
     /// Assemble one record pair: pop the field value, `list([katom, fval])`.
     Pair { katom: u32 },
@@ -1777,17 +1808,13 @@ fn encode_value(
                             refs: refs + 1,
                         });
                     }
-                    Shape::Framed(head, args, inner) => {
-                        // The `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node. Same `h`, no node
-                        // consumed → count toward the ref cap.
+                    Shape::Framed(type_node, inner) => {
+                        // The `(: <value> <type-node>)` frame — an arbitrary (possibly nested) type node.
+                        // Same `h`, no node consumed → count toward the ref cap.
                         let inner = *inner;
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Framed {
-                            colon_s,
-                            head,
-                            args,
-                        });
+                        work.push(EncodeWork::Framed { colon_s, type_node });
                         work.push(EncodeWork::Visit {
                             h,
                             shape_ix: inner,
@@ -1887,20 +1914,9 @@ fn encode_value(
                 let tname_s = b.atom(tname);
                 out.push(b.list(&[colon_s, value, tname_s]));
             }
-            EncodeWork::Framed {
-                colon_s,
-                head,
-                args,
-            } => {
+            EncodeWork::Framed { colon_s, type_node } => {
                 let value = out.pop()?;
-                // Build the parametric type node `(head arg…)` = list([head_atom, arg_atoms…]).
-                let head_leaf = b.name_leaf(head);
-                let mut type_children = vec![b.atom(head_leaf)];
-                for arg in args {
-                    let a = b.name_leaf(arg);
-                    type_children.push(b.atom(a));
-                }
-                let type_s = b.list(&type_children);
+                let type_s = b.render_type_node(type_node);
                 out.push(b.list(&[colon_s, value, type_s]));
             }
             EncodeWork::Pair { katom } => {
@@ -6369,20 +6385,15 @@ mod tests {
                 let tname_s = b.atom(tname);
                 b.list(&[colon_s, value, tname_s])
             }
-            S::Framed(head, args, inner) => {
-                // The `(: value (head arg…))` parametric-type frame — mirrors the iterative walk's
-                // `Framed` arm: colon eagerly, value, then the `(head arg…)` type node, then the outer list.
-                let (head, args, inner) = (head.clone(), args.clone(), *inner);
+            S::Framed(type_node, inner) => {
+                // The `(: value <type-node>)` frame — mirrors the iterative walk: colon, the value, then
+                // the (possibly nested) type node, then the outer list. The type node is rendered from the
+                // baked `TypeNode` (compile-time-known), so it handles arbitrary nesting.
+                let inner = *inner;
                 let colon = b.name_leaf(":");
                 let colon_s = b.atom(colon);
                 let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
-                let head_leaf = b.name_leaf(&head);
-                let mut type_children = vec![b.atom(head_leaf)];
-                for arg in &args {
-                    let a = b.name_leaf(arg);
-                    type_children.push(b.atom(a));
-                }
-                let type_s = b.list(&type_children);
+                let type_s = b.render_type_node(type_node);
                 b.list(&[colon_s, value, type_s])
             }
             S::Set(elem) => {

@@ -1011,6 +1011,20 @@
             (def (main) (build Map.empty 3)) (export main)))
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
 
+(case "a runtime list of lists escapes with its nested element type"
+  (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
+           the host boundary. The value-encode walker already recurses over the nested-list element
+           VALUES; the compiler's shape-descriptor `Framed` frame carries a RECURSIVE type node, so the
+           element type is rendered fully nested: the value form is `(: (list (list …) …) (List (List
+           Int64)))` — the inner `(List Int64)` observable, not flattened to a bare `List`. `build i n`
+           pushes the singleton `(list i)` for i in 0..n → `[[0] [1] [2]]`. Pins that nesting the element
+           type through the frame is not lost at the boundary.")
+  (input  (do
+            (def (build i n out)
+              (if (< i n) (build (+ i 1) n (List.push out (list i))) out))
+            (def (main) (build 0 3 (list))) (export main)))
+  (output (: (list (list 0) (list 1) (list 2)) (List (List Int64)))))
+
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
            list in order followed by those of the second (collections-and-text.md §A List Is Grown By

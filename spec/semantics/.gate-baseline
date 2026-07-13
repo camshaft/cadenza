@@ -642,6 +642,7 @@ pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
+pass	a runtime list of lists escapes with its nested element type
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps

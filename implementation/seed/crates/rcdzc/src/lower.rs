@@ -4649,65 +4649,99 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let root = builder.shape_of(db, ty)?;
             Some(builder.encode(root))
         }
-        // A LIST result: build the List shape, then wrap in a PARAMETRIC `Framed("List", [<elem>], …)`
-        // frame so the value form renders `(: (list …) (List <elem>))` — the element type OBSERVABLE,
-        // matching the constant-List value form. The element must be a scalar type-NAME (`Int64`/`Bool`/
-        // `String`/a nominal) so it splices as one type atom; a NESTED-element list (`(List (List Int64))`)
-        // would need a compound type-arg node — a later refinement, decline for now.
-        crate::ty::Ty::List(elem) => {
-            if !is_scalar_type_arg(elem) {
-                return None; // nested/compound-element list type node not yet built
-            }
+        // A LIST/SET/MAP result: build the value shape, then wrap in a PARAMETRIC `Framed(<type-node>, …)`
+        // frame so the value form renders `(: (list …) (List <elem>))` etc. — the element/key/value types
+        // OBSERVABLE, matching the constant-collection value form. The type node is built RECURSIVELY from
+        // the full type (`type_node_of`), so a nested element type crosses too: `(List (List Int64))`,
+        // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
+        // recurses over nested collections, so the walker renders them; only the type node needed lifting.
+        crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
+            let type_node = type_node_of(ty)?;
             let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "List".to_string(),
-                vec![elem.render_name()],
-                inner,
-            ));
-            Some(builder.encode(framed))
-        }
-        // A SET result: `(: ((. Set of) (list …)) (Set <elem>))`. Parametric `Framed("Set", [<elem>], …)`;
-        // the element must be a scalar type NAME (it splices as one type-arg atom).
-        crate::ty::Ty::Set(elem) => {
-            if !is_scalar_type_arg(elem) {
-                return None;
-            }
-            let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "Set".to_string(),
-                vec![elem.render_name()],
-                inner,
-            ));
-            Some(builder.encode(framed))
-        }
-        // A MAP result: `(: (map (k v) …) (Map <k> <v>))`. Parametric `Framed("Map", [<k>, <v>], …)`; BOTH
-        // the key AND value must be scalar type NAMES (each splices as one type-arg atom — a compound
-        // value or key type-node is a later refinement, decline).
-        crate::ty::Ty::Map(k, v) => {
-            if !is_scalar_type_arg(k) || !is_scalar_type_arg(v) {
-                return None;
-            }
-            let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "Map".to_string(),
-                vec![k.render_name(), v.render_name()],
-                inner,
-            ));
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
         }
         _ => None,
     }
 }
 
-/// Whether a type is a SCALAR whose name splices as a single bare type-arg atom in a parametric value-form
-/// type node (`(List <t>)`/`(Set <t>)`/`(Map <k> <v>)`). Int/Bool/String/Unit qualify; a compound
-/// (List/Map/Set/Tuple/Sum) `render_name` is a parenthesized NODE, not a bare atom — those need a compound
-/// type-arg node (a later refinement), so they decline here.
-fn is_scalar_type_arg(ty: &crate::ty::Ty) -> bool {
-    matches!(
-        ty,
-        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::String | crate::ty::Ty::Unit
-    )
+/// The RECURSIVE type node for a `Framed` frame's type position — mirrors `Ty::render_name` structurally
+/// so the runtime's `render_type_node` reproduces the same written type. A leaf (a scalar/nominal/nullary
+/// sum) is a bare-name node with no children; a parametric type (`List`/`Set`/`Map`/`Tuple`/`Record`/a
+/// generic sum) is a head plus child type nodes, nested to any depth. `None` for a type that never appears
+/// as an escaping collection element (Fn/Qty/Var/Any/Type) — the escape declines rather than misrender it.
+fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
+    use crate::ty::Ty;
+    let leaf = |s: String| TypeNode {
+        head: s,
+        children: vec![],
+    };
+    Some(match ty {
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Float(_)
+        | Ty::Bytes => leaf(ty.render_name()),
+        Ty::List(e) => TypeNode {
+            head: "List".to_string(),
+            children: vec![type_node_of(e)?],
+        },
+        Ty::Set(e) => TypeNode {
+            head: "Set".to_string(),
+            children: vec![type_node_of(e)?],
+        },
+        Ty::Map(k, v) => TypeNode {
+            head: "Map".to_string(),
+            children: vec![type_node_of(k)?, type_node_of(v)?],
+        },
+        Ty::Tuple(elems) => {
+            let mut children = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                children.push(type_node_of(e)?);
+            }
+            TypeNode {
+                head: "Tuple".to_string(),
+                children,
+            }
+        }
+        // A record renders as `(record (name Type) …)`: each field is itself a node `(name <type>)` — head
+        // = the field name, one child = the field's type node. `render_type_node` reproduces `(name Type)`.
+        Ty::Record(fields) => {
+            let mut children = Vec::with_capacity(fields.len());
+            for (k, t) in fields.iter() {
+                children.push(TypeNode {
+                    head: k.name.clone(),
+                    children: vec![type_node_of(t)?],
+                });
+            }
+            TypeNode {
+                head: "record".to_string(),
+                children,
+            }
+        }
+        // A monomorphic sum renders as its bare name; a generic sum as `(Name arg…)`.
+        Ty::Sum { name, args, .. } => {
+            if args.is_empty() {
+                leaf(name.clone())
+            } else {
+                let mut children = Vec::with_capacity(args.len());
+                for a in args {
+                    children.push(type_node_of(a)?);
+                }
+                TypeNode {
+                    head: name.clone(),
+                    children,
+                }
+            }
+        }
+        Ty::Nominal { name, .. } => leaf(name.clone()),
+        // Qty/Fn/Var/Any/Type: not an escaping collection element/arg — decline rather than misrender.
+        _ => return None,
+    })
 }
 
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
@@ -4727,16 +4761,24 @@ enum ShapeNode {
     Ref(u32),
     Set(u32),
     Map(u32, u32),
-    /// A `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node (e.g. `(List Int64)`), each `arg` a
-    /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
-    /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
-    Framed(String, Vec<String>, u32),
+    /// A `(: <value> <type-node>)` frame — an arbitrary (possibly NESTED) type node. The runtime
+    /// `value-encode` decodes this as descriptor tag 15 and renders the type node RECURSIVELY, so a runtime
+    /// collection crosses as `(: (list …) (List Int64))` — or, with nesting, `(: … (List (List Int64)))`.
+    Framed(TypeNode, u32),
     /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
     /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
     /// reads it exactly like a `Tuple` (each element via `arr-get`) but renders the elements DIRECTLY as
     /// the variant's children rather than wrapping them in a `tuple` form. Only a `Sum` variant references
     /// a `Spread` (it is the multi-payload variant payload); a genuine tuple VALUE stays a `Tuple`.
     Spread(Vec<u32>),
+}
+
+/// A compile-time-built TYPE node for a `Framed` frame's type position, written to the descriptor wire as
+/// `[ head ][ n_children ]( TypeNode )*n` and rebuilt+rendered by the runtime's `render_type_node`. A leaf
+/// (a scalar/nominal) has no children; `(List Int64)` = head `List`, one child `Int64`; nests arbitrarily.
+struct TypeNode {
+    head: String,
+    children: Vec<TypeNode>,
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4956,13 +4998,32 @@ impl ShapeTableBuilder {
                     leb(&mut d, *k as u64);
                     leb(&mut d, *v as u64);
                 }
-                ShapeNode::Framed(head, args, i) => {
-                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
-                    name(&mut d, head);
-                    leb(&mut d, args.len() as u64);
-                    for a in args {
-                        name(&mut d, a);
+                ShapeNode::Framed(type_node, i) => {
+                    // recursive TypeNode wire: [ head ][ n_children ]( TypeNode )*n — the runtime's
+                    // `decode_type_node` mirrors this depth-first walk.
+                    fn write_type_node(out: &mut Vec<u8>, tn: &TypeNode) {
+                        fn leb(out: &mut Vec<u8>, mut v: u64) {
+                            loop {
+                                let mut b = (v & 0x7f) as u8;
+                                v >>= 7;
+                                if v != 0 {
+                                    b |= 0x80;
+                                }
+                                out.push(b);
+                                if v == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        leb(out, tn.head.len() as u64);
+                        out.extend_from_slice(tn.head.as_bytes());
+                        leb(out, tn.children.len() as u64);
+                        for c in &tn.children {
+                            write_type_node(out, c);
+                        }
                     }
+                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
+                    write_type_node(&mut d, type_node);
                     leb(&mut d, *i as u64);
                 }
                 ShapeNode::Spread(idxs) => {

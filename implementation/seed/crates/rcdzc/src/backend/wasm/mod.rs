@@ -268,9 +268,10 @@ pub fn emit(
             // walker a recursive sum uses): the encode body bakes the compiler's shape descriptor as a heap
             // Bytes, calls `value-encode(rep, desc)` to render the value form (`(: (list …) (List <e>))` /
             // `(: (map (k v) …) (Map <k> <v>))` / `(: ((. Set of) (list …)) (Set <e>))`, entries in
-            // canonical key order), and copies it out. `sum_shape_descriptor`'s List/Map/Set arms build a
-            // parametric `Framed(<head>, [<type-args>], …)` frame so the element/key/value types are
-            // observable (scalar element/key/value only — a compound type-arg node is a later refinement).
+            // canonical key order), and copies it out. `sum_shape_descriptor`'s List/Map/Set arm builds a
+            // parametric `Framed(<type-node>, …)` frame so the element/key/value types are observable — the
+            // type node is RECURSIVE, so a nested element crosses too (`(List (List Int64))`, `(Map K (Set
+            // V))`), and the inner value shape already recurses to render the nested collection values.
             return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is

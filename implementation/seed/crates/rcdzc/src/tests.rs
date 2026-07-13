@@ -13769,6 +13769,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_list_of_lists_escapes_with_its_nested_element_type() {
+        // The `Framed` type node is now RECURSIVE, so a runtime `(List (List Int64))` — a list whose
+        // elements are themselves lists — crosses with the FULL nested element type rendered, not flattened
+        // to a bare `List`. The value-encode walker already recurses over the nested-list element VALUES
+        // (`shape_of` builds a nested `List` shape); the descriptor's `Framed` frame now carries the nested
+        // `TypeNode` too, so the annotation is `(List (List Int64))`. `build i n` pushes `(list i)` for i in
+        // 0..n → `[[0] [1] [2]]`.
+        let Some(out) = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (list i))) out)) \
+                       (def (main) (build 0 3 (list))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime nested-List escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (list (list 0) (list 1) (list 2)) (List (List Int64)))",
+            "runtime list-of-lists renders the nested element type"
+        );
+
+        // A runtime `(Map Int64 (List Int64))` — a map whose VALUES are lists — exercises a nested type node
+        // in the value position of a Map frame. Insert (k=n v=(list n)) for n in {2,1} → sorted entries.
+        let out = escape_render(
+            "(module m (def (build m n) (if (< n 1) m (build ((. Map insert) m n (list n)) (- n 1)))) \
+                       (def (main) (build (. Map empty) 2)) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(
+            out, "(: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64)))",
+            "runtime map-of-lists renders the nested value type"
+        );
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
