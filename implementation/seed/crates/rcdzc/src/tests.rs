@@ -12294,6 +12294,52 @@ mod stage1 {
     }
 
     #[test]
+    fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
+        // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
+        // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a
+        // tail-position `let` body folds per-branch exactly like a bare `if`. `(let ((k 5)) (if true
+        // (Bail.bail 7) k))` → 7 (abort); the `false`-branch sibling would yield `k`=5 (survives). The FOLD
+        // already threaded the let body correctly; this pins that the guard's `let` arm carries tail-ness
+        // into the body (a generic descent would have marked it non-tail and wrongly DECLINED).
+        let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (let ((k 5)) (if true (Bail.bail 7) k)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(aborts)))
+                    .expect("a let-body tail-if-branch abort compiles"),
+                "main"
+            ),
+            7
+        );
+        let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (let ((k 5)) (if false (Bail.bail 7) k)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(survives)))
+                    .expect("the non-aborting let-body branch survives"),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_in_a_conditional_let_init_declines() {
+        // E4 soundness guard, the `let`-init case: a `let` binding's INIT is a strict operand (NON-tail — its
+        // value feeds the binder), so an abortive perform in an init UNDER A CONDITIONAL cannot be realized
+        // by the per-branch fold (the branch value must become `k`, not abandon the whole handle). `(let ((k
+        // (if true (Bail.bail 7) 0))) (+ 1 k))` must DECLINE — the guard's `let` arm descends each init at
+        // `tail=false`, so the abort is flagged (`under_cond && !tail`). Contrast an UNCONDITIONAL init abort
+        // (`(let ((k (Bail.bail 7))) …)`) which is the sound E4-a collapse and still folds.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an abortive perform in a conditional let-init must decline, not miscompile"
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),

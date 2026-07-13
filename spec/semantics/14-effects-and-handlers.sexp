@@ -193,6 +193,23 @@
                 (if true (Bail.bail 7) 99))) (export main)))
   (output (: 7 Int64)))
 
+(case "an abortive perform in the tail of an if branch inside a let body abandons only that branch"
+  (doc    "The branch-tail abort composes through a `let`: a `let`'s VALUE is its BODY's value, so a `let`
+           body is in the same tail position as the `let` itself. `(let ((k 5)) (if true (Bail.bail 7) k))`
+           — the `if` is the let body's tail, which is the handle's value — so the abort in the true branch
+           is LOCAL to that branch (yields the arm value 7); the false branch, had it run, would yield the
+           bound `k` = 5 (the sibling survives). Pins that the abortive fold's tail-position reasoning
+           descends into a `let` body, not just a bare `if` (`DESIGN-effects-rcdzc.md` §4.2). Contrast an
+           abort in a NON-tail `let` INIT (`(let ((k (if c (Bail.bail 7) 0))) …)`), which must escape into
+           `k` and is not yet reducible.")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle 0 ((Bail.bail (n) s n))
+                (let ((k 5)) (if true (Bail.bail 7) k)))) (export main)))
+  (output (: 7 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
