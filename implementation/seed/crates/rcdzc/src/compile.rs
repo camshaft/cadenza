@@ -308,6 +308,16 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// compile (`core-semantics.md` §Binding Is Lexical — the unbound-name rule is not gated on
 /// reachability; an ill-formed uncalled sibling definition is still rejected). Emission stays
 /// reachability-driven (the `layout` decides what is emitted); only well-formedness is total.
+///
+/// Every reachable expression is typed by inference before emission, and any type fault this collects
+/// DENIES the component (`compile` returns the faults with no artifact) — so a program that is not
+/// well-typed is rejected at compile time rather than emitted carrying a deferred type error:
+///
+//= spec/capabilities/type-system.md#every-expression-has-a-static-type
+//# Every expression in a well-formed program MUST have a type determined before the program is compiled to a component.
+///
+//= spec/capabilities/type-system.md#every-expression-has-a-static-type
+//# A program that is not well-typed MUST be rejected at compile time rather than compiled to a component carrying a deferred type error.
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a

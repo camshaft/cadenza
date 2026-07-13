@@ -15,6 +15,13 @@
 //! parameters ([`solve_recursive_params`]), and an annotation constraint all solve through the one
 //! unify seam, not a per-node coarse rule.
 //!
+//! Because a node's type is solved from its structure and its uses, an UNANNOTATED program that has a
+//! valid typing is accepted with no author-written types — inference supplies what the structure
+//! already determines:
+//!
+//= spec/capabilities/type-system.md#an-unannotated-program-is-accepted-when-it-has-a-valid-typing
+//# An unannotated program that has a valid typing MUST be accepted without requiring the author to write that typing, so that inference relieves the author of restating what the structure already determines.
+//!
 //! [`type_errors`] is a SEPARATE query — a read over the (demand-filled) type column that reports
 //! type-agreement faults (an `if` whose condition is not `Bool`, or whose branches disagree). Keeping
 //! the fault check apart from the value fill is what lets filling a type never reject and a later
@@ -3828,7 +3835,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     ));
                 } else {
                     // A non-literal value has a real type that must AGREE with the annotation — unify,
-                    // and report a genuine conflict (`(: true Int64)`) as CDZ0203.
+                    // and report a genuine conflict (`(: true Int64)`) as CDZ0203. The annotation is an
+                    // ADDITIONAL CONSTRAINT unified with the inferred type, never an override: a conflict
+                    // is a rejection, not a silent replacement of the inferred type.
+                    //= spec/capabilities/type-system.md#annotations-constrain-never-contradict
+                    //# An explicit type annotation MUST participate in inference as an additional constraint unified with the type the system infers, rather than override it.
+                    //= spec/capabilities/type-system.md#annotations-constrain-never-contradict
+                    //# A program whose annotation cannot be unified with the type inference determines MUST be rejected rather than have the annotation silently replace the inferred type.
                     let expr_ty = type_of(db, expr);
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {

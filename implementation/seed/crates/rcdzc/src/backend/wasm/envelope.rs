@@ -81,6 +81,11 @@ const MAKE_CORE_EXPORT: &str = "make";
 const ENCODE_CORE_EXPORT: &str = "t-encode";
 const MEMORY_EXPORT: &str = "memory";
 const REALLOC_EXPORT: &str = "cabi_realloc";
+/// The core-module export name for the scalar `len` method body (VM-1) — a `bytes-len`/`vec-len` over the
+/// borrow rep, aliased off the program instance alongside `make`/`t-encode`.
+const LEN_CORE_EXPORT: &str = "t-len";
+/// The `len` method's boundary name (inside [`RUN_INTERFACE`]).
+const LEN_BOUNDARY_NAME: &str = "len";
 /// The dtor core module's single export — the resource destructor the component invokes on host-drop
 /// (its own module so it instantiates first, dissolving the resource↔dtor↔`resource.new` cycle without
 /// a shim; [[rcdzc-r1-resource-encode-linking-findings]]).
@@ -1095,6 +1100,188 @@ pub fn assemble_runtime_resource(
     // sec 11: export the instantiated inner component as the `cadenza:run/run` instance. The runtime
     // IMPORT is component instance 0, so the inner re-export instantiation is component instance 1 (in
     // the constant shape, with no import, it is instance 0).
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(RUN_INTERFACE, 1)),
+    ));
+    out
+}
+
+/// Assemble a runtime-resource component (VM-1) that carries `make` + `encode` PLUS a scalar
+/// `len : borrow<t> -> u32` method — the value-resource-with-methods shape for a String/Bytes/List whose
+/// length the host can query without decoding the whole value form. Identical to
+/// [`assemble_runtime_resource`] through the boundary aliases, then it lifts a THIRD method: the program
+/// core module exports `t-len` (a `bytes-len`/`vec-len` over the borrow rep, a scalar-result borrow method
+/// with NO Memory/Realloc canon options), aliased at core func `k+6` (after make `k+3`, t-encode `k+4`,
+/// cabi_realloc `k+5`), lifted against a fresh `borrow<t>` + `self_borrow_to_scalar_functype`. The inner
+/// re-export component is [`resource_inner_component_borrow_len`], which re-exports make/encode/len.
+/// BYTE-IDENTICAL to `tests::r2_runtime_resource::oracle_tuple_methods` (the proven ComponentBuilder
+/// reference). Index spaces (k = imports.len()): as `assemble_runtime_resource` plus — core func `t-len` =
+/// `k+6`; component types after encode-ft `6`: `borrow<t>` `7`, len-ft `8`; component funcs: make-lift `k`,
+/// encode-lift `k+1`, len-lift `k+2`.
+pub fn assemble_runtime_resource_with_len(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+) -> Vec<u8> {
+    let k = imports.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // Sections through the boundary aliases are IDENTICAL to `assemble_runtime_resource` (the shared
+    // prologue: import instance-type, runtime import, op aliases + lowers, dtor instance/module/instance,
+    // t-dtor alias, resource type, resource.new/rep canons, heap instance, program module/instance).
+    // Re-emitted here rather than factored to keep each hand-emit a single auditable byte stream.
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
+    let import_sec = {
+        let mut item = extern_name(import_name);
+        item.push(0x05);
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    };
+    out.extend_from_slice(&import_sec);
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    };
+    out.extend_from_slice(&op_alias_sec);
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    };
+    out.extend_from_slice(&lower_sec);
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| i as u32)
+        .expect("the runtime-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    out.extend_from_slice(&core_module_section(dtor_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 0)])),
+    ));
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(1, DTOR_CORE_EXPORT)),
+    ));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(k as u32)),
+    ));
+    let resource_canons = {
+        let mut items = resource_new_item(1);
+        items.extend_from_slice(&resource_rep_item(1));
+        section(sec::CANON, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&resource_canons);
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, i as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (k + 1) as u32));
+        ex.push((RESOURCE_REP, (k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    out.extend_from_slice(&core_module_section(main_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
+    ));
+    // sec 6: alias the boundary exports off the program instance (core instance 3) — now FIVE: make k+3,
+    // t-encode k+4, memory, cabi_realloc k+5, AND t-len (core func k+6).
+    let boundary_aliases = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(3, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, ENCODE_CORE_EXPORT));
+        items.extend_from_slice(&memory_alias_item(3, MEMORY_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, REALLOC_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, LEN_CORE_EXPORT));
+        section(sec::ALIAS, &wasm_vec(5, &items))
+    };
+    out.extend_from_slice(&boundary_aliases);
+    // sec 7 + 8: make (types 2,3 → comp func k) and encode (types 4,5,6 → comp func k+1) — IDENTICAL to
+    // `assemble_runtime_resource`.
+    let make_types = {
+        let mut items = own_item(1);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(2)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_types);
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
+    ));
+    let encode_types = {
+        let mut items = borrow_item(1);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(4, 5));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_types);
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
+        ),
+    ));
+    // sec 7: the `len` functype `(self: borrow<t>) -> u32` (type 7). REUSE the `borrow<t>` defined type 4
+    // laid for encode (a borrow<t> is identity-free — the same defined type serves both methods; the
+    // ComponentBuilder oracle reuses it, so the hand-emit must too for byte-identity). Only the functype is
+    // new here.
+    let len_types = {
+        let items = self_borrow_to_scalar_functype(4, wasm_abi::COMP_U32);
+        section(sec::COMPONENT_TYPE, &wasm_vec(1, &items))
+    };
+    out.extend_from_slice(&len_types);
+    // sec 8: lift `len` (core func k+6) against functype type 7 → component func k+2. A scalar result → NO
+    // Memory/Realloc canon options.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((k + 6) as u32, 7)),
+    ));
+    // sec 4: the nested re-export component with make/encode/len.
+    out.extend_from_slice(&component_section(&resource_inner_component_borrow_len()));
+    // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the three
+    // lifted funcs (comp funcs k, k+1, k+2) → component instance 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_len_item(1, k as u32, (k + 1) as u32, (k + 2) as u32),
+        ),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_instance_item(RUN_INTERFACE, 1)),
@@ -2864,6 +3051,97 @@ fn resource_inner_component_borrow() -> Vec<u8> {
     out
 }
 
+/// The VM-1 inner re-export component: [`resource_inner_component_borrow`] plus a scalar `len` method.
+/// Imports the abstract resource + make + encode + len, re-exports the resource directly and re-declares
+/// all THREE methods against it. BYTE-IDENTICAL to `tests::…::inner_reexport_component_methods` (the
+/// ComponentBuilder reference). Type-index progression (component defined types, in emission order):
+/// imports — own<0> 1, make-ft 2, borrow<0> 3, list 4, encode-ft 5, borrow<0> 6, len-ft 7; re-export t →
+/// type 8; make re-decl — own<8> 9, make-ft 10; encode re-decl — borrow<8> 11, list 12, encode-ft 13;
+/// len re-decl — borrow<8> 14, len-ft 15. Funcs: make 0, encode 1, len 2.
+fn resource_inner_component_borrow_len() -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import the abstract resource → type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_subresource_item("import-type-t")),
+    ));
+    // sec 7: own<0> (type 1) + make functype `() -> own<0>` (type 2).
+    out.extend_from_slice(&{
+        let mut items = own_item(0);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 10: import `import-func-make` : type 2 → func 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+    ));
+    // sec 7: borrow<0> (type 3), list u8 (type 4), encode functype (type 5).
+    out.extend_from_slice(&{
+        let mut items = borrow_item(0);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(3, 4));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    });
+    // sec 10: import `import-func-encode` : type 5 → func 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-encode", 5)),
+    ));
+    // sec 7: borrow<0> (type 6) + len functype `(self: borrow<0>) -> u32` (type 7).
+    out.extend_from_slice(&{
+        let mut items = borrow_item(0);
+        items.extend_from_slice(&self_borrow_to_scalar_functype(6, wasm_abi::COMP_U32));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 10: import `import-func-len` : type 7 → func 2.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-len", 7)),
+    ));
+    // sec 11: RE-EXPORT the resource directly as `t` → exported type 8.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
+    ));
+    // sec 7: own<8> (type 9) + make functype re-typed against the exported resource (type 10).
+    out.extend_from_slice(&{
+        let mut items = own_item(8);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(9)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 11: export `make` (func 0) ascribed to functype 10.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 10)),
+    ));
+    // sec 7: borrow<8> (type 11), list u8 (type 12), encode functype re-typed (type 13).
+    out.extend_from_slice(&{
+        let mut items = borrow_item(8);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(11, 12));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    });
+    // sec 11: export `encode` (func 1) ascribed to functype 13.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 13)),
+    ));
+    // sec 7: borrow<8> (type 14) + len functype re-typed (type 15).
+    out.extend_from_slice(&{
+        let mut items = borrow_item(8);
+        items.extend_from_slice(&self_borrow_to_scalar_functype(14, wasm_abi::COMP_U32));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 11: export `len` (func 2) ascribed to functype 15.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(LEN_BOUNDARY_NAME, 2, 15)),
+    ));
+    out
+}
+
 /// The sec-4 nested-component bytes: `<id> <byte-length> <component>` — like [`core_module_section`] but
 /// for a whole embedded component (its own magic + sections travel as a raw blob).
 fn component_section(component: &[u8]) -> Vec<u8> {
@@ -3169,6 +3447,34 @@ fn component_instantiate_item(res_ty: u32, make_fn: u32, encode_fn: u32) -> Vec<
         ("import-type-t", 0x03, res_ty), // Type → internal resource comp type
         ("import-func-make", 0x01, make_fn), // Func → lifted make comp func
         ("import-func-encode", 0x01, encode_fn), // Func → lifted encode comp func
+    ];
+    let mut arg_items = Vec::new();
+    for (name, sort, idx) in args {
+        arg_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        arg_items.extend_from_slice(name.as_bytes());
+        arg_items.push(sort);
+        uleb128(idx as u64, &mut arg_items);
+    }
+    item.extend_from_slice(&wasm_vec(args.len(), &arg_items));
+    item
+}
+
+/// Like [`component_instantiate_item`] but for the VM-1 value-resource-with-`len` inner component: a
+/// FOURTH arg `import-func-len` supplies the lifted `len` method (comp func `len_fn`). The inner component
+/// ([`resource_inner_component_borrow_len`]) imports under these same four names.
+fn component_instantiate_len_item(
+    res_ty: u32,
+    make_fn: u32,
+    encode_fn: u32,
+    len_fn: u32,
+) -> Vec<u8> {
+    let mut item = vec![0x00]; // instantiate form
+    uleb128(0, &mut item); // inner component index (component 0)
+    let args: [(&str, u8, u32); 4] = [
+        ("import-type-t", 0x03, res_ty),
+        ("import-func-make", 0x01, make_fn),
+        ("import-func-encode", 0x01, encode_fn),
+        ("import-func-len", 0x01, len_fn),
     ];
     let mut arg_items = Vec::new();
     for (name, sort, idx) in args {
