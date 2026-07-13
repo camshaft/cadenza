@@ -4655,20 +4655,41 @@ mod runtime_ops {
             "the wildcard arm's (- n 1) sees no refinement — guard MUST be kept, got: {wild:?}"
         );
         // VALUE + TRAP parity.
-        assert_eq!(run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(5)]), 4);
-        assert_eq!(run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(3)]), 0);
-        // Multiple literal arms each refine their own body.
         assert_eq!(
-            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))", &[Val::S64(5)]),
+            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(5)]),
             4
         );
         assert_eq!(
-            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))", &[Val::S64(10)]),
+            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(3)]),
+            0
+        );
+        // Multiple literal arms each refine their own body.
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))",
+                &[Val::S64(5)]
+            ),
+            4
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))",
+                &[Val::S64(10)]
+            ),
             11
         );
         // The un-refined wildcard body still TRAPS at the real underflow (n = MIN).
-        assert!(traps("(: n Int64)", "(match n (5 0) (_ (- n 1)))", &[Val::S64(i64::MIN)]));
-        assert_eq!(run::<i64>("(: n Int64)", "(match n (5 0) (_ (- n 1)))", &[Val::S64(3)]), 2);
+        assert!(traps(
+            "(: n Int64)",
+            "(match n (5 0) (_ (- n 1)))",
+            &[Val::S64(i64::MIN)]
+        ));
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(match n (5 0) (_ (- n 1)))", &[Val::S64(3)]),
+            2
+        );
     }
 
     #[test]
@@ -7431,6 +7452,38 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0203"),
             "a non-unit argument is rejected, not silently dropped"
+        );
+    }
+
+    #[test]
+    fn a_module_member_calls_a_sibling_export_by_name() {
+        // 11-modules "a module function calls a sibling export by name": a module's `(def …)` members are
+        // MUTUALLY visible in each other's bodies (not sequential like a do-block) — the synthesized record
+        // is the join point each member body's parent chain ascends through, and `resolve::binder_in`'s
+        // Case R resolves a bare sibling reference against ALL the module's members. `f` calls its sibling
+        // `dbl`; f(3) = dbl(3) + 1 = 7. The reference is a captured free var of `f`'s body (its binding is
+        // OUTSIDE the lambda), so `pin_free_vars`/`ref_binder` pin the sibling `Lambda` before β-reduction,
+        // else the copied body would re-resolve it against an orphan scope (a spurious CDZ0101).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module lib (def (dbl x) (* x 2)) (def (f x) (+ (dbl x) 1))) ((. lib f) 3))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // The DO-LOCAL analogue is the same free-var-capture fix (a do-local `def` function referenced by a
+        // sibling do-local `def` function): `dbl` binds lexically to a `Lambda`, so it must pin exactly as a
+        // module sibling does. (A do-local VALUE def already worked — it resolves to a `Ref`, always pinned.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (def (dbl x) (* x 2)) (def (f x) (+ (dbl x) 1)) (f 3))) (export main))"
+                ),
+                "main"
+            ),
+            7
         );
     }
 
@@ -23319,8 +23372,14 @@ mod closure_host_resource {
         use wasm_encoder::*;
         let mut c = ComponentBuilder::default();
         // Import the two abstract resources → types 0, 1.
-        let imp_t0 = c.import("import-type-t0", ComponentTypeRef::Type(TypeBounds::SubResource));
-        let imp_t1 = c.import("import-type-t1", ComponentTypeRef::Type(TypeBounds::SubResource));
+        let imp_t0 = c.import(
+            "import-type-t0",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let imp_t1 = c.import(
+            "import-type-t1",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
         // make-inc : () -> own<t0>
         let (own_mi, o) = c.type_defined();
         o.own(imp_t0);
@@ -23364,7 +23423,12 @@ mod closure_host_resource {
         let (t, mut f) = c.type_function();
         f.params::<[(&str, ComponentValType); 0], _>([])
             .result(Some(ComponentValType::Type(own)));
-        c.export("make-inc", ComponentExportKind::Func, mi_fn, Some(ComponentTypeRef::Func(t)));
+        c.export(
+            "make-inc",
+            ComponentExportKind::Func,
+            mi_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
         let (own, o) = c.type_defined();
         o.own(exp_t0);
         let (t, mut f) = c.type_function();
@@ -23373,13 +23437,23 @@ mod closure_host_resource {
             ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
         ])
         .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
-        c.export("call-inc", ComponentExportKind::Func, ci_fn, Some(ComponentTypeRef::Func(t)));
+        c.export(
+            "call-inc",
+            ComponentExportKind::Func,
+            ci_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
         let (own, o) = c.type_defined();
         o.own(exp_t1);
         let (t, mut f) = c.type_function();
         f.params::<[(&str, ComponentValType); 0], _>([])
             .result(Some(ComponentValType::Type(own)));
-        c.export("make-isz", ComponentExportKind::Func, mz_fn, Some(ComponentTypeRef::Func(t)));
+        c.export(
+            "make-isz",
+            ComponentExportKind::Func,
+            mz_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
         let (own, o) = c.type_defined();
         o.own(exp_t1);
         let (t, mut f) = c.type_function();
@@ -23388,7 +23462,12 @@ mod closure_host_resource {
             ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
         ])
         .result(Some(ComponentValType::Primitive(PrimitiveValType::Bool)));
-        c.export("call-isz", ComponentExportKind::Func, cz_fn, Some(ComponentTypeRef::Func(t)));
+        c.export(
+            "call-isz",
+            ComponentExportKind::Func,
+            cz_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
         c
     }
 
@@ -23423,7 +23502,8 @@ mod closure_host_resource {
         ]);
         let module_idx = c.core_module_raw(core);
         let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
-        let get = |c: &mut ComponentBuilder, n: &str| c.core_alias_export(prog_inst, n, ExportKind::Func);
+        let get =
+            |c: &mut ComponentBuilder, n: &str| c.core_alias_export(prog_inst, n, ExportKind::Func);
         let mi_core = get(&mut c, "make-inc");
         let ci_core = get(&mut c, "call-inc");
         let mz_core = get(&mut c, "make-isz");
@@ -23474,7 +23554,12 @@ mod closure_host_resource {
                 ("import-func-call-isz", ComponentExportKind::Func, cz_comp),
             ],
         );
-        c.export("cadenza:closure/exports", ComponentExportKind::Instance, inst, None);
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
         c.finish()
     }
 
@@ -23499,7 +23584,9 @@ mod closure_host_resource {
         let component = Component::from_binary(&engine, &comp).expect("valid component");
         let linker: Linker<()> = Linker::new(&engine);
         let mut store = Store::new(&engine, ());
-        let instance = linker.instantiate(&mut store, &component).expect("instantiate");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
         let iface = instance
             .get_export_index(&mut store, None, "cadenza:closure/exports")
             .expect("closure interface");
@@ -23525,7 +23612,11 @@ mod closure_host_resource {
             .call(&mut store, &[h[0].clone(), Val::S64(5)], &mut out)
             .expect("call-inc");
         call_inc.post_return(&mut store).expect("post_return");
-        assert_eq!(out[0], Val::S64(6), "make-inc → (+ x 1)(5) = 6 (resource t0)");
+        assert_eq!(
+            out[0],
+            Val::S64(6),
+            "make-inc → (+ x 1)(5) = 6 (resource t0)"
+        );
 
         // make-isz() → t1 handle; call-isz(_, 0) = true. A DIFFERENT resource type with a Bool result.
         let mut h2 = [Val::Bool(false)];

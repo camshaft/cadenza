@@ -840,6 +840,18 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(binder) = do_local_binds(db, form, from, name) {
         return Some(binder);
     }
+    // Case R: `form` is a nested module's SYNTHESIZED RECORD — the join point every member body's parent
+    // chain ascends through (a member's synth field lambda reuses the original body, so the body's
+    // ancestors lead up to this record). A module's `(def …)` members are MUTUALLY visible in each other's
+    // bodies (`core-semantics.md` §A Module Evaluates To A Record Of Its Exports: exported definitions are
+    // in scope in each other's bodies, like top-level defs — NOT sequentially like a do-block), so resolve
+    // `name` against ALL the module's members, including the one we ascended from (an exported function is
+    // in scope in its OWN body → recursion). The bound value is `do_def_binds`'s `Ref`/`Lambda` over the
+    // ORIGINAL member body, so a non-recursive call folds by β-reduction and a recursive one is caught by
+    // `is_recursive` (then emitted as a runtime call, or declined if its callee is not a top-level def).
+    if let Some(binder) = module_sibling_binds(db, form, name) {
+        return Some(binder);
+    }
     // Case B: `form` is a MATCH ARM `(pattern body)` whose pattern is a `(bin <seg>…)` binary pattern that
     // binds `name` at one of its segments — `(match b ((bin (u16 n)) n) …)`, the `n` in the body. The
     // binder decodes that segment from the scrutinee; it resolves to a `BinField` (the binary analogue of
@@ -995,6 +1007,23 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
         }
     }
     None
+}
+
+/// If `form` is a nested module's SYNTHESIZED RECORD, resolve `name` against the module's `(def …)`
+/// members — the value the sibling denotes (`do_def_binds`'s `Ref`/`Lambda` over the member's ORIGINAL
+/// body). `None` if `form` is not a module synth record or no member is named `name`. A module's members
+/// are MUTUALLY visible (unlike a do-block's sequential scope), so this scans ALL members with no
+/// stop-before — including the one the reference sits inside, which is what lets an exported function
+/// call itself (recursion) or a forward sibling.
+fn module_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved> {
+    // Recognize `form` as a module synth record and recover its `(module …)` declaration occurrence (the
+    // reverse of `modules::synthesize`); its members are the module form's tail after NAME.
+    let module_form = db.module_by_synth_record(form)?;
+    let members = db.ast.as_form(module_form, "module")?.get(1..)?;
+    // FIRST-wins across the members (a duplicate name is a separate concern; the sum/def indices resolve a
+    // shared name first-wins too). `do_def_binds` yields exactly the `Ref`/`Lambda` a top-level/do-local
+    // def of the same shape would — so the ordinary application/fold paths apply uniformly.
+    members.iter().find_map(|&m| do_def_binds(db, m, name))
 }
 
 /// If `form` is a handle arm `(op (params…) state body)` ascended from its `body`, and `name` matches
