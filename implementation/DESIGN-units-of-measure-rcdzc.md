@@ -17,7 +17,10 @@ are exactly the `Rational`-magnitude cases** — the one vertical the operator e
 - **Layer 2 — families, prefixes, conversion — over Int/Float.** `Unit.of #"inch"` (named family unit),
   `Unit.prefix kilo metre` (scaled unit), `Unit.in u q` (explicit conversion), SI decimal + IEC binary
   prefixes, automatic mixing conversion to the dimension's reference (const-folded when constant),
-  derived-dimension families (byte-per-second/mbps, hertz), and conflicting-registration `CDZ0502`.
+  derived-dimension families (byte-per-second/mbps, hertz), and unit-registration uniqueness `CDZ0502`
+  (BOTH halves pinned: a CONFLICTING redeclaration is rejected, and an AGREEING one — including an
+  equivalent unreduced ratio like 762/2500 == 381/1250, and a restated user declaration — is admitted,
+  the check comparing the NORMALIZED ratio not the literal num/den).
   Verified end-to-end: 3.0 km → 3000.0 m; 1 KiB + 1 kB = 2024 byte (Int64); 250000 byte/s + 1 mbps.
 - **ML quantity-literal surface** `5 feet` / `5 feet / 1 second` (§7.5, `@b246cc83`).
 

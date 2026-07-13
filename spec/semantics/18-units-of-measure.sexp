@@ -685,3 +685,41 @@
             (def (main) 0)
             (export main)))
   (error  CDZ0502))
+
+(case "redeclaring a built-in unit with its own conversion is admissible"
+  (doc    "`(Unit.define #\"foot\" (Unit.of #\"metre\") 381 1250)` redeclares the built-in `foot` at its
+           OWN scale (381/1250 m) — an AGREEING redeclaration — so it is admitted, not CDZ0502
+           (units-of-measure.md #A Named Unit's Conversion Is Unique: a redeclaration that agrees is
+           admissible; only a CONFLICTING one is rejected). `foot` still resolves, and 2 ft = 0.6096 m.
+           The admissible companion of the conflict case: the check rejects a DISAGREEMENT, not a restated
+           agreement.")
+  (input  (do
+            (Unit.define #"foot" (Unit.of #"metre") 381 1250)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"foot")))))
+            (export main)))
+  (output (: 0.6096 Float64)))
+
+(case "an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator"
+  (doc    "`(Unit.define #\"foot\" (Unit.of #\"metre\") 762 2500)` restates the built-in `foot` as 762/2500
+           m, which REDUCES to the built-in 381/1250 — the same conversion written unreduced — so it
+           agrees and is admitted (not CDZ0502). Pins that the uniqueness check compares the NORMALIZED
+           ratio (a conversion is a rational number, not a syntactic num/den pair): 762/2500 and 381/1250
+           are one conversion, so 2 ft = 0.6096 m as before.")
+  (input  (do
+            (Unit.define #"foot" (Unit.of #"metre") 762 2500)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"foot")))))
+            (export main)))
+  (output (: 0.6096 Float64)))
+
+(case "redeclaring a user-declared unit with the same conversion is admissible"
+  (doc    "`(Unit.define #\"span\" (Unit.of #\"metre\") 3 1)` twice declares `span` = 3 m identically — the
+           agreement clause applies to a program's OWN earlier declaration, not only the built-in table
+           (units-of-measure.md #A Named Unit's Conversion Is Unique) — so the second declaration is
+           admitted and `span` resolves to one conversion: 2 span = 6.0 m. A CONFLICTING second
+           declaration would be CDZ0502; a restated one is fine.")
+  (input  (do
+            (Unit.define #"span" (Unit.of #"metre") 3 1)
+            (Unit.define #"span" (Unit.of #"metre") 3 1)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"span")))))
+            (export main)))
+  (output (: 6.0 Float64)))
