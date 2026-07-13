@@ -523,11 +523,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
 /// are NOT duplicates and both survive. An UNANCHORED fault (`at == None`) dedups by code+message, so
 /// two different unanchored declines still both show.
 fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
+    // If any CDZ0401 (an ungranted effect reached with no home) was produced, the emit path's UNCODED
+    // "performed with no enclosing handler here" DECLINE is the same root cause reported more weakly —
+    // drop it so one ungranted effect yields ONE primary `error:` (the coded CDZ0401), not a coded
+    // rejection shadowed by an `error:` decline (`reference-compiler.md` §Outcomes Are Ordered By
+    // Safety). Only suppressed WHEN a CDZ0401 exists — a standalone perform with no entrypoint check
+    // covering it (should not happen for an exported body, but defensively) keeps its decline.
+    let has_no_home_reject = faults.iter().any(|r| r.code == Some(Code::EffectNoHome));
     let mut seen: std::collections::HashSet<(Option<Code>, Option<u32>, Option<String>)> =
         std::collections::HashSet::new();
     faults
         .into_iter()
         .filter(|r| {
+            if has_no_home_reject
+                && r.is_decline()
+                && r.message == crate::diag::NO_HOME_STANDALONE_DECLINE
+            {
+                return false;
+            }
             // An anchored fault is identified by (code, node); an unanchored one by (code, message)
             // so distinct declines with no node still both appear.
             let msg_key = r.at.is_none().then(|| r.message.clone());

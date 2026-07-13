@@ -268,6 +268,9 @@ pass	a list annotated with the wrong element type is rejected
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list mixing integer and boolean elements is a type error
+pass	a list mixing integer and float elements is a type error
+pass	a list of records with different field sets is a type error
+pass	a list of tuples with different arities is a type error
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
 pass	a literal in a let binder is refutable and rejected
@@ -1155,10 +1158,7 @@ todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never
 todo	a list built by a recursive push-loop is then iterated by index
-todo	a list mixing integer and float elements is a type error
 todo	a list of maps with different keys is homogeneous, not a type error
-todo	a list of records with different field sets is a type error
-todo	a list of tuples with different arities is a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early

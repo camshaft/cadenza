@@ -1816,6 +1816,27 @@ fn references_binder(db: &mut Db, node: StructId, target: StructId) -> bool {
     }
 }
 
+/// The diagnostic code for a LIST HOMOGENEITY violation between two element types that do not unify —
+/// the same taxonomy line the numeric operators and `if`-branches draw (05-compound-types §A List Is An
+/// Ordered Homogeneous Sequence). A HOMOGENEITY conflict is CDZ0201 (a MALFORMED list) in exactly two
+/// shapes: two DISTINCT NUMERIC types (`Int64` vs `Float64` — the no-silent-promotion rule), and two
+/// SAME-KIND compounds of DIFFERENT SHAPE (records of different field sets, or tuples of different arity
+/// — the field set / arity IS the type, so they are genuinely different types the list cannot hold
+/// together, which the equality path likewise rejects as incompatible shapes). Every OTHER disagreement
+/// (a cross-KIND scalar clash `Int64` vs `Bool`, or a scalar-vs-compound) keeps the generic structural
+/// mismatch CDZ0203 the unify produced. Mirrors the `if`-branch / connective taxonomy.
+fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
+    let both_numeric =
+        matches!(a, Ty::Int(_) | Ty::Float(_)) && matches!(b, Ty::Int(_) | Ty::Float(_));
+    let both_records = matches!(a, Ty::Record(_)) && matches!(b, Ty::Record(_));
+    let both_tuples = matches!(a, Ty::Tuple(_)) && matches!(b, Ty::Tuple(_));
+    if both_numeric || both_records || both_tuples {
+        Code::Malformed
+    } else {
+        Code::TypeMismatch
+    }
+}
+
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
     // A COMPARISON between a MAP and a RECORD is a type error — they are DISTINCT KINDS (a record's field
     // set is fixed by its form; a map's key set is a runtime collection), so `(= (map …) (record …))` is
@@ -2103,9 +2124,26 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             let first_ty = type_of(db, first);
             for &e in args.iter().skip(1) {
                 let et = type_of(db, e);
-                if let Err(reject) = crate::unify::unify(&mut subst, &first_ty, &et) {
-                    trace!(target: "rcdzc::infer", head = head.0, "fault: list elements differ in type (CDZ0203)");
-                    out.push(reject);
+                if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                    // The unify reports the generic CDZ0203. But list homogeneity draws the SAME taxonomy
+                    // line the numeric operators and `if`-branches do (05-compound-types): a HOMOGENEITY
+                    // violation between two DISTINCT NUMERIC types (`(list 1 2.5)` — Int64 vs Float64, the
+                    // no-silent-promotion rule) or two SAME-KIND-DIFFERENT-SHAPE compounds (`(list (record
+                    // (a 1)) (record (b 2)))` — records of different field sets; `(list (tuple 1 2) (tuple 1
+                    // 2 3))` — tuples of different arity, where the field set / arity IS the type) is a
+                    // MALFORMED list (CDZ0201), not the generic structural mismatch (CDZ0203) a cross-KIND
+                    // scalar clash (`(list 1 true)` — Int64 vs Bool) is. Reclassify exactly those two shapes;
+                    // every other element disagreement keeps the unify's CDZ0203.
+                    let code = list_homogeneity_code(&first_ty, &et);
+                    trace!(target: "rcdzc::infer", head = head.0, ?code, "fault: list elements differ in type");
+                    out.push(Reject::coded(
+                        code,
+                        format!(
+                            "list elements must share one type: {} and {}",
+                            first_ty.render_name(),
+                            et.render_name()
+                        ),
+                    ));
                 }
             }
         }

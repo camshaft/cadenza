@@ -431,6 +431,16 @@ impl Reject {
     }
 }
 
+/// The message the emit path (`lower`) attaches to the UNCODED decline it returns when it reaches an
+/// effect operation performed with no enclosing handler at STANDALONE lowering — the lowering-side
+/// consequence of the very condition the entrypoint `check_no_home` reports authoritatively as CDZ0401.
+/// Shared as a const so `compile::dedup_faults` can recognize (and drop) this decline whenever a CDZ0401
+/// is also present for the same ungranted effect, keeping ONE primary "no" for one root cause rather
+/// than an `error:` decline shadowing the coded rejection (`reference-compiler.md` §Outcomes Are Ordered
+/// By Safety: a coded rejection is the stronger, more actionable report).
+pub const NO_HOME_STANDALONE_DECLINE: &str = "this effect operation is performed with no enclosing handler here; its home is \
+     determined by the handler or delegation enclosing its callers";
+
 /// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
 /// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands
