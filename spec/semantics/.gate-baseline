@@ -327,6 +327,7 @@ pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named capturing closure applied directly folds through its capture
 pass	a named capturing closure applied more than once folds at each use
+pass	a named family unit combines across DIFFERENT dimensions is a compile-time error
 pass	a named float width alias and its width-indexed expansion name the same type
 pass	a named function is partially applied, bound, and used
 pass	a named higher-order function receives a lambda argument
@@ -649,6 +650,7 @@ pass	a zero-length slice is the empty byte sequence
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
@@ -921,6 +923,7 @@ pass	mixing signed and unsigned of the same width does not silently promote
 pass	mixing two float widths without a conversion does not silently promote
 pass	mixing two integer widths without a conversion does not silently promote
 pass	mixing two numeric types without an explicit conversion does not silently promote
+pass	mixing units of DIFFERENT dimensions is still a compile-time error
 pass	modulo by -1 is zero even at the minimum integer
 pass	modulo by zero traps
 pass	modulo gives the remainder
@@ -1255,7 +1258,6 @@ todo	extending a record with an already-present field is rejected
 todo	interning the same string twice yields equal symbols
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
-todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms
