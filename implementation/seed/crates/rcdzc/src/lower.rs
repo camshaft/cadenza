@@ -4578,6 +4578,29 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let root = builder.shape_of(db, ty)?;
             Some(builder.encode(root))
         }
+        // A LIST result: build the List shape, then wrap in a PARAMETRIC `Framed("List", [<elem>], …)`
+        // frame so the value form renders `(: (list …) (List <elem>))` — the element type OBSERVABLE,
+        // matching the constant-List value form. The element must be a scalar type-NAME (`Int64`/`Bool`/
+        // `String`/a nominal) so it splices as one type atom; a NESTED-element list (`(List (List Int64))`)
+        // would need a compound type-arg node — a later refinement, decline for now.
+        crate::ty::Ty::List(elem) => {
+            if !matches!(
+                **elem,
+                crate::ty::Ty::Int(_)
+                    | crate::ty::Ty::Bool
+                    | crate::ty::Ty::String
+                    | crate::ty::Ty::Unit
+            ) {
+                return None; // nested/compound-element list type node not yet built
+            }
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(
+                "List".to_string(),
+                vec![elem.render_name()],
+                inner,
+            ));
+            Some(builder.encode(framed))
+        }
         _ => None,
     }
 }
@@ -4599,6 +4622,10 @@ enum ShapeNode {
     Ref(u32),
     Set(u32),
     Map(u32, u32),
+    /// A `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node (e.g. `(List Int64)`), each `arg` a
+    /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
+    /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
+    Framed(String, Vec<String>, u32),
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4809,6 +4836,15 @@ impl ShapeTableBuilder {
                     d.push(13); // matches the runtime `decode_shape` tag 13 = Map
                     leb(&mut d, *k as u64);
                     leb(&mut d, *v as u64);
+                }
+                ShapeNode::Framed(head, args, i) => {
+                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
+                    name(&mut d, head);
+                    leb(&mut d, args.len() as u64);
+                    for a in args {
+                        name(&mut d, a);
+                    }
+                    leb(&mut d, *i as u64);
                 }
             }
         }

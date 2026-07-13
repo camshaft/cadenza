@@ -985,6 +985,20 @@
             (def (main) (f 1)) (export main)))
   (output (: (list 1 2 3) (List Int64))))
 
+(case "a list built at run time by a push-loop escapes to the host"
+  (doc    "A list whose LENGTH is decided at run time — built by a recursive push-loop, not a literal
+           spine — crosses the host boundary. Unlike a literal `(list …)` (which const-folds to baked
+           bytes), a push-loop-built list is a genuine RRB vector on the heap, so it escapes via the
+           runtime `value-encode` walker guided by a compiler-baked shape descriptor. The descriptor's
+           PARAMETRIC frame renders the element type, so the value form is `(: (list …) (List Int64))` —
+           the element type observable, matching the constant-list form. `build i n out` pushes `i` for
+           i in 0..n (List.push appends) → `[0 1 2]`. This declined before as `(List Int64)` having no
+           component boundary representation.")
+  (input  (do
+            (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main) (build 0 3 (list))) (export main)))
+  (output (: (list 0 1 2) (List Int64))))
+
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
            list in order followed by those of the second (collections-and-text.md §A List Is Grown By

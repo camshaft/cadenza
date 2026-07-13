@@ -4233,35 +4233,88 @@ mod runtime_ops {
         };
         let divrem = |c: &[Lir]| {
             c.iter()
-                .filter(|i| {
-                    matches!(
-                        i,
-                        Lir::I64DivS | Lir::I64DivU | Lir::I64RemS | Lir::I64RemU
-                    )
-                })
+                .filter(|i| matches!(i, Lir::I64DivS | Lir::I64DivU | Lir::I64RemS | Lir::I64RemU))
                 .count()
         };
         // `(& x 7) ∈ [0,7]`, divisor 100 → `% 100` folds to `x & 7` (no rem), `/ 100` folds to 0 (no div).
         let remf = lir("(: x Int64)", "(: (% (: (& x 7) Int64) 100) Int64)");
-        assert_eq!(divrem(&remf), 0, "rem of a small dividend folds away, got: {remf:?}");
-        assert!(remf.contains(&Lir::I64And), "the mask that bounds the dividend stays, got: {remf:?}");
+        assert_eq!(
+            divrem(&remf),
+            0,
+            "rem of a small dividend folds away, got: {remf:?}"
+        );
+        assert!(
+            remf.contains(&Lir::I64And),
+            "the mask that bounds the dividend stays, got: {remf:?}"
+        );
         let divf = lir("(: x Int64)", "(: (/ (: (& x 7) Int64) 100) Int64)");
-        assert_eq!(divrem(&divf), 0, "div of a small dividend folds to 0, got: {divf:?}");
+        assert_eq!(
+            divrem(&divf),
+            0,
+            "div of a small dividend folds to 0, got: {divf:?}"
+        );
         // Boundary: `(& x 15) ∈ [0,15]`, divisor 16 → hi=15 < 16 folds; divisor 15 → hi=15 NOT < 15, stays.
-        assert_eq!(divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 16) Int64)")), 0, "hi 15 < 16 → fold");
-        assert_eq!(divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)")), 1, "hi 15 !< 15 → keep rem");
+        assert_eq!(
+            divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 16) Int64)")),
+            0,
+            "hi 15 < 16 → fold"
+        );
+        assert_eq!(
+            divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)")),
+            1,
+            "hi 15 !< 15 → keep rem"
+        );
 
         // VALUE PARITY: folded cases + the un-folded case compute the real result.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 7) Int64) 100) Int64)", &[Val::S64(255)]), 7);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (/ (: (& x 7) Int64) 100) Int64)", &[Val::S64(255)]), 0);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 15) Int64) 16) Int64)", &[Val::S64(200)]), 8);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)", &[Val::S64(255)]), 0); // 15%15
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)", &[Val::S64(200)]), 8); // 8%15
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 7) Int64) 100) Int64)",
+                &[Val::S64(255)]
+            ),
+            7
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (/ (: (& x 7) Int64) 100) Int64)",
+                &[Val::S64(255)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 15) Int64) 16) Int64)",
+                &[Val::S64(200)]
+            ),
+            8
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 15) Int64) 15) Int64)",
+                &[Val::S64(255)]
+            ),
+            0
+        ); // 15%15
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 15) Int64) 15) Int64)",
+                &[Val::S64(200)]
+            ),
+            8
+        ); // 8%15
 
         // TRAP PRESERVATION: the `/` fold DISCARDS its dividend, so a trapping dividend keeps its trap —
         // `(& (/ 100 z) 7)` contains a ÷z that must still trap at z=0 (the fold declines, `x` not trap-free).
         assert!(
-            traps("(: z Int64)", "(: (/ (: (& (: (/ 100 z) Int64) 7) Int64) 100) Int64)", &[Val::S64(0)]),
+            traps(
+                "(: z Int64)",
+                "(: (/ (: (& (: (/ 100 z) Int64) 7) Int64) 100) Int64)",
+                &[Val::S64(0)]
+            ),
             "a trapping dividend keeps its trap (the discarding / fold declines)"
         );
     }
@@ -12839,6 +12892,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_built_list_escapes_via_value_encode() {
+        // A RUNTIME `(List Int64)` (a `List.push`/recursion-built vector — not a compile-time constant) now
+        // crosses the host boundary, where before it DECLINED "type `(List Int64)` has no component boundary
+        // representation". A list's length is dynamic, so it can't use a fixed value-form template; it
+        // escapes via the runtime `value-encode` op (the recursive-sum walker), guided by a compiler-baked
+        // shape descriptor whose PARAMETRIC frame (`Framed("List", ["Int64"], …)`) renders the element type
+        // — so the value form is `(: (list …) (List Int64))`, matching the constant-List form. `build i n
+        // out` pushes `i` for i in 0..n (List.push APPENDS) → `[0 1 2]`.
+        let Some(out) = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                       (def (main) (build 0 3 (list))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-List escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (list 0 1 2) (List Int64))",
+            "runtime List escape renders (list …) under (List Int64)"
+        );
+
+        // A list of Bool — the parametric type node carries the element type `Bool`. Push `(> i 0)` for i
+        // in 0..2 → [false, true].
+        let out = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (> i 0))) out)) \
+                       (def (main) (build 0 2 (list))) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(
+            out, "(: (list false true) (List Bool))",
+            "runtime List of Bool renders under (List Bool)"
+        );
+    }
+
+    #[test]
     fn a_runtime_bytes_resource_exposes_a_repeatable_len_method() {
         // VM-1: a runtime-Bytes result crosses as a resource carrying make + encode + `len : borrow<t> ->
         // u32` (= `bytes-len(rep)`). The host reaches `len` INSIDE the `cadenza:run/run` instance and calls
@@ -15113,29 +15200,50 @@ mod match_engine {
         let dead = code(
             "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (def (main) 0) (export main))",
         );
-        assert!(!dead.contains(&Lir::ConstI64(100)), "the dead `100` probe is dropped, got: {dead:?}");
-        assert!(!dead.contains(&Lir::ConstI64(111)), "the dead arm body is dropped, got: {dead:?}");
+        assert!(
+            !dead.contains(&Lir::ConstI64(100)),
+            "the dead `100` probe is dropped, got: {dead:?}"
+        );
+        assert!(
+            !dead.contains(&Lir::ConstI64(111)),
+            "the dead arm body is dropped, got: {dead:?}"
+        );
         // A LIVE in-range arm (`7`, since [0,7] includes 7) is KEPT even beside a dead one (`100`).
         let live = code(
             "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (def (main) 0) (export main))",
         );
-        assert!(live.contains(&Lir::ConstI64(7)), "the live `7` probe stays, got: {live:?}");
-        assert!(!live.contains(&Lir::ConstI64(100)), "the dead `100` probe is dropped, got: {live:?}");
+        assert!(
+            live.contains(&Lir::ConstI64(7)),
+            "the live `7` probe stays, got: {live:?}"
+        );
+        assert!(
+            !live.contains(&Lir::ConstI64(100)),
+            "the dead `100` probe is dropped, got: {live:?}"
+        );
 
         // VALUE PARITY: dispatch unchanged after dropping the dead arm.
         use wasmtime::component::Val;
-        let b1 = component("(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (export f))");
+        let b1 = component(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (export f))",
+        );
         assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(8)]), 222); // 8&7=0 → arm 0
         assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(5)]), 333); // 5&7=5 → wildcard
-        let b2 = component("(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (export f))");
+        let b2 = component(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (export f))",
+        );
         assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(15)]), 111); // 15&7=7 → live arm 7
         assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(8)]), 333); // 8&7=0 → wildcard
 
         // WIDE-UNSIGNED SOUNDNESS: a `UInt64` probe of `2^63` has a negative i64 BIT pattern but a value
         // OUTSIDE i64 — it must NOT be treated as out of range and dropped. The arm is kept and fires. (The
         // scrutinee is UInt64 but the bodies are Int64 literals, so the RESULT reads back as i64.)
-        let b3 = component("(module m (def (f (: x UInt64)) (match x (9223372036854775808 111) (0 222) (_ 333))) (export f))");
-        assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(9223372036854775808)]), 111);
+        let b3 = component(
+            "(module m (def (f (: x UInt64)) (match x (9223372036854775808 111) (0 222) (_ 333))) (export f))",
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&b3, "f", &[Val::U64(9223372036854775808)]),
+            111
+        );
         assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(0)]), 222);
     }
 
