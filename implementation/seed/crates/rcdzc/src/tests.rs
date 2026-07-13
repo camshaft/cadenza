@@ -14504,4 +14504,43 @@ mod debug_info {
             "expected rows for lines 3/4/5, got {lines:?}\n{stdout}"
         );
     }
+
+    #[test]
+    fn a_runtime_bytes_returning_program_carries_dwarf() {
+        // A program returning a RUNTIME `Bytes` (a recursion + `Bytes.concat` result) crosses via the
+        // looping-walker escape path (`emit_runtime_bytes_resource`) — a THIRD resource core beyond the
+        // flat/sum ones. Its user bodies lead the code section, so the `.debug_*` + `name` sections
+        // attribute correctly; a compound/bytes-returning program is debuggable too.
+        let src = "(module m \
+                     (def (uleb n) (if (< n 128) \
+                        ((. Bytes of) (list ((. UInt8 wrap) n))) \
+                        ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7))))) \
+                     (def (main) (uleb 624485)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let has = |needle: &[u8]| debug.windows(needle.len()).any(|w| w == needle);
+        for want in [
+            b".debug_info".as_slice(),
+            b".debug_line".as_slice(),
+            b"\x04name".as_slice(),
+        ] {
+            assert!(
+                has(want),
+                "a runtime-Bytes program must carry {:?}",
+                std::str::from_utf8(want).unwrap_or("<name>")
+            );
+        }
+        assert!(
+            has(b"uleb") && has(b"main"),
+            "DWARF must name the source functions"
+        );
+        // A plain build embeds no DWARF (debug-only sections).
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            !plain
+                .windows(b".debug_info".len())
+                .any(|w| w == b".debug_info"),
+            "a plain runtime-Bytes component must carry no DWARF"
+        );
+    }
 }

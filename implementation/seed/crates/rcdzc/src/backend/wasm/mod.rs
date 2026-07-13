@@ -109,7 +109,7 @@ pub fn emit(
             // writing the static prefix, the runtime `bytes-len` as a LEB, a `bytes-get` copy loop, then
             // the static suffix (`DESIGN-runtime-bytes-escape-walker.md`). The FIRST looping walker.
             if let Some(form) = crate::lower::runtime_bytes_form(db) {
-                return emit_runtime_bytes_resource(db, layout, e.def, &form);
+                return emit_runtime_bytes_resource(db, layout, e.def, &form, spans);
             }
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
@@ -603,6 +603,7 @@ fn emit_runtime_bytes_resource(
     layout: &Layout,
     export_def: usize,
     form: &crate::lower::RuntimeBytesForm,
+    spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     for &def in &layout.order {
@@ -640,13 +641,17 @@ fn emit_runtime_bytes_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
 
-    let main_core = serialize::runtime_resource_core_module_form(
+    let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
     )
     .map_err(Reject::decline)?;
+    // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
+    // so the `name` + `.debug_*` sections attribute correctly; the synthesized bytes walker has no
+    // `src_body` and gets no row.
+    append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
     Ok(envelope::assemble_runtime_resource(
