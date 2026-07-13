@@ -1089,8 +1089,15 @@ pub mod driver {
                 // fail — a malformed document is surfaced as an error.
                 let text =
                     std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
-                let (arena, spans) =
-                    crate::json::read_spanned(text).map_err(|e| format!("JSON parse: {}", e.0))?;
+                let (arena, spans) = crate::json::read_spanned(text).map_err(|e| {
+                    // Render the position as `line:col`, not a raw `at byte N` — the same mapping the
+                    // convert path applies, so `query`/`rewrite` over a malformed `.json` points at a
+                    // navigable place.
+                    format!(
+                        "JSON parse: {}",
+                        crate::convert::locate_byte_in_message(&e.0, text)
+                    )
+                })?;
                 Ok((
                     Target {
                         tree: Tree::of(&arena),
@@ -3180,6 +3187,17 @@ mod tests {
     fn subj(src: &str) -> Tree {
         let a = sexpr::read(src).unwrap_or_else(|e| panic!("subject parse {src:?}: {}", e.0));
         Tree::of(&a)
+    }
+
+    #[test]
+    fn a_malformed_json_load_reports_line_col_not_a_byte_offset() {
+        // `query`/`rewrite` over a `.json` renders a parse error as `line:col` (like the convert path),
+        // not a raw `at byte N` — a multi-line document points at a navigable place.
+        let err = driver::load(b"{\n  \"a\": ,\n}", crate::convert::Format::Json).unwrap_err();
+        assert!(
+            err.contains(" at 2:") && !err.contains("byte"),
+            "a malformed JSON query error must be line:col, not a byte offset; got {err}"
+        );
     }
 
     fn pat(src: &str) -> Pattern {
