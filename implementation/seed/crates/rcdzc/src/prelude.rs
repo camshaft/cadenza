@@ -774,39 +774,67 @@ fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
     push_list(ast, vec![head, scale_field])
 }
 
+/// A family unit's conversion: its DIMENSION (a `(base-name, exponent)` list — one entry atomic, several
+/// derived) and its exact scale `(num, den)` to that dimension's reference. The value in the family
+/// registry.
+pub type UnitConversion = (Vec<(String, i64)>, i128, i128);
+
+/// One family-registration ROW: `(name, dimension, scale-num, scale-den)`, where dimension is a borrowed
+/// `(base, exponent)` slice. The input shape [`register_families`] consumes (a built-in table row or a
+/// future user declaration).
+pub type FamilyRow<'a> = (&'a str, &'a [(&'a str, i64)], i128, i128);
+
 /// The FAMILY-OF-MEASURE registry — the ONE place the built-in family vocabulary lives (the analogue of
-/// `Prim::from_name` for prim spellings). Maps each named unit to `(reference-dimension, scale-num,
-/// scale-den)`: a unit's scale is its EXACT ratio to its dimension's reference (metre/second/byte), a
-/// machine-integer pair (`units-of-measure.md` §A Unit Carries An Exact Scale To Its Dimension's
-/// Reference). `(Unit.of #"foot")` looks its name up here and builds `Unit.base("metre").scaled(381,
-/// 1250)`. The reference unit of each dimension maps to scale 1/1 (`"metre"` → `("metre", 1, 1)`), so
-/// `(Unit.of #"metre")` is the length reference itself. Every scale fits a machine int (the largest, a
-/// mile's 201168/125), so a family unit auto-converts over Float/Int with NO bignum. A build MAY supply
-/// its own families; this is the SI + common imperial/information set.
-pub fn unit_families() -> BTreeMap<String, (String, i128, i128)> {
-    // The SI + common imperial/information families, as `(name, reference-dimension, num, den)` rows.
-    let rows: &[(&str, &str, i128, i128)] = &[
+/// `Prim::from_name` for prim spellings). Maps each named unit to its [`UnitConversion`] (dimension +
+/// exact machine-integer scale to that dimension's reference). `(Unit.of #"foot")` looks its name up
+/// here and builds `Unit.base("metre").scaled(381, 1250)`; `(Unit.of #"mbps")` builds the derived
+/// `byte/second` dimension scaled by 10⁶/8. Every scale fits a machine int, so a family unit
+/// auto-converts over Float/Int with NO bignum. A build MAY supply its own families; this is the SI +
+/// common imperial/information set plus common data-rate and frequency units.
+pub fn unit_families() -> BTreeMap<String, UnitConversion> {
+    // Each row: `(name, dimension, num, den)`. The DIMENSION is a `(base, exponent)` list — one entry for
+    // an ATOMIC dimension (length/time/information), several for a DERIVED one (a rate = information/time
+    // is `[("byte", 1), ("second", -1)]`). The scale `num/den` is the unit's exact ratio to that
+    // dimension's REFERENCE (metre/second/byte for the atomic ones; byte/second for a rate). A named unit
+    // can thus denote a DERIVED dimension — `mbps` is a unit of `information/time` you convert to/from
+    // `byte/second` — not only an atomic one (`units-of-measure.md` §A Dimension Groups Interconvertible
+    // Units). All scales fit a machine int, so conversion is bignum-free over Float/Int.
+    let rows: &[FamilyRow] = &[
         // length — reference `metre`.
-        ("metre", "metre", 1, 1),
-        ("millimetre", "metre", 1, 1000),
-        ("centimetre", "metre", 1, 100),
-        ("kilometre", "metre", 1000, 1),
-        ("inch", "metre", 127, 5000),
-        ("foot", "metre", 381, 1250),
-        ("mile", "metre", 201168, 125),
+        ("metre", &[("metre", 1)], 1, 1),
+        ("millimetre", &[("metre", 1)], 1, 1000),
+        ("centimetre", &[("metre", 1)], 1, 100),
+        ("kilometre", &[("metre", 1)], 1000, 1),
+        ("inch", &[("metre", 1)], 127, 5000),
+        ("foot", &[("metre", 1)], 381, 1250),
+        ("mile", &[("metre", 1)], 201168, 125),
         // time — reference `second`.
-        ("second", "second", 1, 1),
-        ("millisecond", "second", 1, 1000),
-        ("minute", "second", 60, 1),
-        ("hour", "second", 3600, 1),
+        ("second", &[("second", 1)], 1, 1),
+        ("millisecond", &[("second", 1)], 1, 1000),
+        ("minute", &[("second", 1)], 60, 1),
+        ("hour", &[("second", 1)], 3600, 1),
         // information — reference `byte`. Decimal (kB/MB/GB) and binary (KiB/MiB/GiB) are DISTINCT scales.
-        ("byte", "byte", 1, 1),
-        ("kilobyte", "byte", 1000, 1),
-        ("megabyte", "byte", 1_000_000, 1),
-        ("gigabyte", "byte", 1_000_000_000, 1),
-        ("kibibyte", "byte", 1024, 1),
-        ("mebibyte", "byte", 1_048_576, 1),
-        ("gibibyte", "byte", 1_073_741_824, 1),
+        ("byte", &[("byte", 1)], 1, 1),
+        ("bit", &[("byte", 1)], 1, 8), // a bit is 1/8 byte
+        ("kilobyte", &[("byte", 1)], 1000, 1),
+        ("megabyte", &[("byte", 1)], 1_000_000, 1),
+        ("gigabyte", &[("byte", 1)], 1_000_000_000, 1),
+        ("kibibyte", &[("byte", 1)], 1024, 1),
+        ("mebibyte", &[("byte", 1)], 1_048_576, 1),
+        ("gibibyte", &[("byte", 1)], 1_073_741_824, 1),
+        // DERIVED: DATA RATE = information / time, reference `byte/second`. `bps`/`kbps`/`mbps` are
+        // BIT-per-second (the networking convention), so their byte/second scale carries the 1/8. A named
+        // rate unit you convert to/from `byte/second` — the "bytes over time as its own family" case.
+        ("byte-per-second", &[("byte", 1), ("second", -1)], 1, 1),
+        ("bps", &[("byte", 1), ("second", -1)], 1, 8),
+        ("kbps", &[("byte", 1), ("second", -1)], 1000, 8),
+        ("mbps", &[("byte", 1), ("second", -1)], 1_000_000, 8),
+        ("gbps", &[("byte", 1), ("second", -1)], 1_000_000_000, 8),
+        // DERIVED: FREQUENCY = 1 / time, reference `hertz` (= second⁻¹). Its scale is 1/1 at the reference.
+        ("hertz", &[("second", -1)], 1, 1),
+        ("kilohertz", &[("second", -1)], 1000, 1),
+        ("megahertz", &[("second", -1)], 1_000_000, 1),
+        ("gigahertz", &[("second", -1)], 1_000_000_000, 1),
     ];
     match register_families(rows.iter().copied()) {
         Ok(m) => m,
@@ -820,19 +848,30 @@ pub fn unit_families() -> BTreeMap<String, (String, i128, i128)> {
     }
 }
 
-/// Register a set of family units into the name → `(reference-dimension, num, den)` map, ENFORCING that
-/// a name maps to ONE conversion: registering the same name TWICE with DIFFERENT `(dimension, scale)` is
-/// an error (returns the offending name), so a name's conversion is a well-defined function
-/// (`units-of-measure.md` §A Unit Carries An Exact Scale To Its Dimension's Reference — a unit HAS a
-/// scale, singular). A duplicate that AGREES is idempotent (harmless). This is the gate the built-in
-/// table is validated through, and the one a future user-declared family flows through — a conflicting
-/// user registration becomes the coded rejection `Code::UnitConflict` (CDZ0502).
+/// Register a set of family units into the name → `(dimension, num, den)` map, ENFORCING that a name
+/// maps to ONE conversion: registering the same name TWICE with a DIFFERENT dimension or scale is an
+/// error (returns the offending name), so a name's conversion is a well-defined function
+/// (`units-of-measure.md` §A Named Unit's Conversion Is Unique). A duplicate that AGREES is idempotent.
+/// This is the gate the built-in table is validated through, and the one a future user-declared family
+/// flows through — a conflicting user registration becomes the coded rejection `Code::UnitConflict`
+/// (CDZ0502). The dimension is normalized (a `BTreeMap`-backed comparison), so two spellings of one
+/// dimension agree.
 pub fn register_families<'a>(
-    rows: impl Iterator<Item = (&'a str, &'a str, i128, i128)>,
-) -> Result<BTreeMap<String, (String, i128, i128)>, String> {
-    let mut m: BTreeMap<String, (String, i128, i128)> = BTreeMap::new();
+    rows: impl Iterator<Item = FamilyRow<'a>>,
+) -> Result<BTreeMap<String, UnitConversion>, String> {
+    let mut m: BTreeMap<String, UnitConversion> = BTreeMap::new();
     for (name, dim, num, den) in rows {
-        let entry = (dim.to_string(), num, den);
+        // Canonicalize the dimension (sorted, zero-exponent bases dropped) so the conflict compare is by
+        // VALUE not spelling order.
+        let mut dim_map: std::collections::BTreeMap<String, i64> =
+            std::collections::BTreeMap::new();
+        for (base, exp) in dim {
+            if *exp != 0 {
+                dim_map.insert(base.to_string(), *exp);
+            }
+        }
+        let dim_vec: Vec<(String, i64)> = dim_map.into_iter().collect();
+        let entry = (dim_vec, num, den);
         match m.get(name) {
             // Already registered with a DIFFERENT dimension or scale — a genuine conflict.
             Some(existing) if *existing != entry => return Err(name.to_string()),

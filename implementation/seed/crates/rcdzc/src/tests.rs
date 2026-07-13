@@ -2103,6 +2103,57 @@ fn an_exported_float_op_runs_over_runtime_args() {
     }
 }
 
+/// ⚠ INVALID WASM regression: a Float32 arithmetic op with a bare float LITERAL operand mis-emitted
+/// the literal at its Float64 default (an `f64.const` beside an `f32.add`) — `wasm-tools` rejected the
+/// module ("expected f32, found f64"). This hit TRIVIAL, idiomatic code (`(+. x 1.0)` over a Float32
+/// `x`), the float analogue of the narrow-int operand miscompile. Fixed by grounding each float-arith
+/// operand to the OP width at the consuming site (`emit_float_operand`): a bare literal materializes at
+/// f32 directly, a control-flow operand whose slot disagrees demotes/promotes. Sound because a genuine
+/// Float32-vs-Float64 disagreement faults (CDZ0301) before emit. Values verified by IEEE bits at f32.
+#[test]
+fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Each op with a bare literal on the RIGHT (`x <op> C`) over a Float32 param — was invalid wasm.
+    for (op, x, c, want) in [
+        ("+.", 2.5f32, 1.0f32, 3.5f32),
+        ("-.", 5.5f32, 2.0f32, 3.5f32),
+        ("*.", 3.5f32, 2.0f32, 7.0f32),
+        ("/.", 7.0f32, 2.0f32, 3.5f32),
+    ] {
+        let src = format!(
+            "(module m (def (f (: x Float32)) ({op} x {c:?})) (export f))",
+            c = c as f64
+        );
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        let got: f32 = run_returns_with(&bytes, "f", &[Val::Float32(x)]);
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "Float32 {op} with a bare literal must compute at f32"
+        );
+    }
+    // Literal on the LEFT (`C <op> x`) — position-independent.
+    let left = "(module m (def (f (: x Float32)) (+. 1.0 x)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(left))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Float32(2.5f32)]);
+    assert_eq!(
+        got.to_bits(),
+        3.5f32.to_bits(),
+        "left literal grounds to f32"
+    );
+    // A CONTROL-FLOW operand (an `if` of two bare literals) also grounds to the op width.
+    let cf = "(module m (def (f (: c Bool) (: x Float32)) (+. x (if c 1.0 2.0))) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(cf))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Bool(true), Val::Float32(1.0f32)]);
+    assert_eq!(got.to_bits(), 2.0f32.to_bits(), "if-operand grounds to f32");
+    // The Float64 path is UNCHANGED (the literal was always f64 there).
+    let f64src = "(module m (def (f (: x Float64)) (+. x 1.0)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(f64src))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::Float64(2.5)]);
+    assert_eq!(got.to_bits(), 3.5f64.to_bits(), "Float64 unchanged");
+}
+
 /// The explicit INT→FLOAT conversion `Float64.of-int` over a RUNTIME integer emits
 /// `f64.convert_i64_s` (a constant folds instead). `(def (f (: n Int64)) (Float64.of-int n))` run with
 /// 42 returns 42.0; a large Int64 rounds to the nearest f64 — total, never trapping.
@@ -9955,6 +10006,47 @@ mod match_engine {
     }
 
     #[test]
+    fn a_named_rate_unit_of_a_derived_dimension_converts_and_mixes() {
+        // F2-5: `mbps` is a named unit of the DERIVED dimension `byte/second` (a rate = information/time),
+        // not an atomic base. A rate DERIVED by division (`bytes / seconds`) is the SAME free-abelian-
+        // group dimension `mbps` names, so a computed rate and an `mbps` quantity MIX and convert:
+        // (250000 byte / 1 s) + 1 mbps = 250000 + 125000 = 375000 byte/s (1 mbps = 10^6 bit / 8 = 125000
+        // byte/s). The "name what bytes-over-time means as its own convertible family" case, over Float,
+        // NO bignum. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Unit in) ((. Unit of) #\"byte-per-second\") \
+                     (+ (/ ((. Qty of) 250000.0 ((. Unit of) #\"byte\")) \
+                           ((. Qty of) 1.0 ((. Unit of) #\"second\"))) \
+                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\")))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a computed-rate + mbps sum compiles and runs"),
+                "main"
+            ),
+            375000.0
+        );
+    }
+
+    #[test]
+    fn a_named_rate_unit_combined_with_a_length_is_cdz0501() {
+        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 metre))` — a rate (`information/time`) plus a length —
+        // different dimensions → CDZ0501. A named DERIVED-dimension unit obeys the same dimensional
+        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{metre:1}`).
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit of) #\"mbps\")) \
+                   ((. Qty of) 1.0 ((. Unit of) #\"metre\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "a rate + a length must reject CDZ0501"
+        );
+    }
+
+    #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
         // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
         // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
@@ -10015,11 +10107,11 @@ mod match_engine {
         // family-declaration surface), while a duplicate that AGREES is idempotent. `register_families`
         // is the gate the built-in table and any user family flow through.
         use crate::prelude::register_families;
-        // A conflict: `foot` twice with different scales.
+        // A conflict: `foot` twice with different scales (dimension is the `(base, exponent)` list).
         let conflict = register_families(
             [
-                ("foot", "metre", 381i128, 1250i128),
-                ("foot", "metre", 1, 3), // a bogus, disagreeing scale
+                ("foot", &[("metre", 1i64)][..], 381i128, 1250i128),
+                ("foot", &[("metre", 1)][..], 1, 3), // a bogus, disagreeing scale
             ]
             .into_iter(),
         );
@@ -10028,27 +10120,54 @@ mod match_engine {
             Some("foot"),
             "a name registered with two different conversions is a conflict"
         );
-        // A conflict on the DIMENSION too (same name, different reference dimension).
+        // A conflict on the DIMENSION too (same name, different dimension).
         assert!(
-            register_families([("x", "metre", 1i128, 1i128), ("x", "second", 1, 1)].into_iter())
-                .is_err(),
+            register_families(
+                [
+                    ("x", &[("metre", 1i64)][..], 1i128, 1i128),
+                    ("x", &[("second", 1)][..], 1, 1)
+                ]
+                .into_iter()
+            )
+            .is_err(),
             "same name under two dimensions conflicts"
         );
         // An AGREEING duplicate is idempotent (harmless), not an error.
         let ok = register_families(
             [
-                ("inch", "metre", 127i128, 5000i128),
-                ("inch", "metre", 127, 5000),
+                ("inch", &[("metre", 1i64)][..], 127i128, 5000i128),
+                ("inch", &[("metre", 1)][..], 127, 5000),
             ]
             .into_iter(),
         );
         assert_eq!(
             ok.ok().and_then(|m| m.get("inch").cloned()),
-            Some(("metre".to_string(), 127, 5000)),
+            Some((vec![("metre".to_string(), 1)], 127, 5000)),
             "an agreeing re-registration is idempotent"
+        );
+        // A DERIVED-dimension unit (a rate) registers with a multi-entry dimension.
+        let rate = register_families(
+            [(
+                "mbps",
+                &[("byte", 1i64), ("second", -1)][..],
+                1_000_000i128,
+                8i128,
+            )]
+            .into_iter(),
+        );
+        assert_eq!(
+            rate.ok().and_then(|m| m.get("mbps").cloned()),
+            // Canonicalized (sorted by base): byte before second.
+            Some((
+                vec![("byte".to_string(), 1), ("second".to_string(), -1)],
+                1_000_000,
+                8
+            )),
+            "a derived-dimension rate unit registers with its full exponent map"
         );
         // The built-in table itself registers without conflict (it is validated through the same gate).
         assert!(crate::prelude::unit_families().contains_key("foot"));
+        assert!(crate::prelude::unit_families().contains_key("mbps"));
     }
 
     #[test]
