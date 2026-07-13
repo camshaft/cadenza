@@ -12,9 +12,9 @@ import type { Surface } from "../compiler/client.ts";
 
 export type { Surface };
 
-export const SURFACES: { id: Surface; label: string }[] = [
-  { id: "ml", label: "Conventional" },
-  { id: "sexpr", label: "S-expression" },
+export const SURFACES: { id: Surface; label: string; short: string }[] = [
+  { id: "ml", label: "Conventional", short: "ML" },
+  { id: "sexpr", label: "S-expression", short: "S-expr" },
 ];
 
 const STORAGE_KEY = "cadenza.syntax";
