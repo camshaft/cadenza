@@ -1185,6 +1185,8 @@ pass	slicing past the end of a byte sequence yields None
 pass	slicing with a negative start yields None
 pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
+pass	splicing a non-list value into a quasiquote is a type error
+pass	splicing an integer literal directly is a type error
 pass	splitting a tuple beyond its arity is rejected
 pass	string concatenation
 pass	string equality
@@ -1459,8 +1461,6 @@ todo	reading the text a printer produced round-trips to an equal value
 todo	record reshaping is subset comparison as explicit projection
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
-todo	splicing a non-list value into a quasiquote is a type error
-todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	the AST is a sum type deconstructible by pattern matching
