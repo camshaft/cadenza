@@ -1704,7 +1704,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // Descend into the new binding/aggregate forms for their own faults.
         Resolved::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (lhs, value) in bindings {
+                // A binding LHS may be an irrefutable PATTERN (`(tuple a b)`), not just a bare name. It is
+                // a BINDING POSITION — no alternative arm — so it must be irrefutable, and its shape must
+                // agree with the value's type. Validate it against the value's type (a refutable pattern →
+                // CDZ0210, a wrong-arity/non-tuple shape → CDZ0201, a non-linear pattern → CDZ0102, a
+                // not-yet-supported record/single-variant/list pattern → decline). A bare-name LHS is the
+                // trivial irrefutable pattern and validates cheaply. (The binder REFERENCES resolve to a
+                // `SumPayload` reading the element out of `value`; this only ensures the binding is
+                // well-formed so an ill-formed one faults instead of silently miscompiling.)
+                let value_ty = type_of(db, value);
+                if let Err(r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
+                    out.push(r);
+                }
                 collect(db, value, out);
             }
             collect(db, body, out);

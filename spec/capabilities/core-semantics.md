@@ -128,6 +128,12 @@ A composed pattern MUST bind the union of its sub-patterns' bindings, matched re
 
 A destructuring of a tagged value carrying a tuple of sub-values in a single arm — the shape every tree-walking pass over a recursive sum takes — MUST therefore be expressible directly as one nested pattern rather than requiring a bind-then-rematch.
 
+### A Binding Position Accepts An Irrefutable Pattern
+
+A binding position — a `let` binder, a function or `fn` parameter — MUST accept an irrefutable pattern in place of a bare name, binding the names the pattern introduces to the corresponding sub-values of the bound value, exactly as the same pattern would in a single match arm over that value. A bare name and a wildcard are the trivial irrefutable patterns; a tuple pattern whose every element is itself irrefutable is irrefutable, matched recursively to any depth in the sense of *Patterns Compose*. A destructuring parameter MUST NOT change the function's arity — the parameter occupies one argument position and names its parts, so `(def (f (tuple a b)) …)` remains a single-argument function.
+
+A binding position has no alternative arm, so its pattern MUST be irrefutable — it MUST match every value of the bound value's type. A refutable pattern in a binding position — a constructor pattern of a multi-variant sum, a literal, or a length-constrained list pattern, none of which matches every value of its type — MUST be a compile-time error (`CDZ0210`), the same non-exhaustiveness the equivalent single-arm match would raise under *Matching Is Exhaustive Or Rejected*. A pattern whose shape cannot match the bound value's type at all — a tuple pattern of the wrong arity, or a tuple pattern against a non-tuple value — MUST be a compile-time error (`CDZ0201`), and a non-linear binding pattern MUST be the same `CDZ0102` error as in any other pattern position.
+
 ### A List Is Deconstructed By Element Patterns With An Optional Rest
 
 A list MUST be matchable by an element pattern that names some number of leading elements positionally and MAY end in a rest binder for the remaining elements.

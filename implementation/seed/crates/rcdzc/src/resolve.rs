@@ -511,9 +511,9 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             let bindings_occ = tail.first().copied()?;
             let body_occ = tail.get(1).copied();
             if Some(from) == body_occ {
-                // The body sees EVERY binding — no `stop_before`.
-                return last_binder_named(db, bindings_occ, name, None)
-                    .map(|v| Resolved::Ref { value: v });
+                // The body sees EVERY binding — no `stop_before`. A bare-name binder resolves to a
+                // `Ref`, a destructuring tuple-pattern binder to a `SumPayload` (handled inside).
+                return last_binder_named(db, bindings_occ, name, None);
             }
             return None;
         }
@@ -559,7 +559,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // has NO head name (it is a bare list of pairs), so this is only reached for a headless/other-headed
     // form — its own parent-shape check (`let_of_bindings_list`) confirms it.
     if let_of_bindings_list(db, form).is_some() {
-        return last_binder_named(db, form, name, Some(from)).map(|v| Resolved::Ref { value: v });
+        return last_binder_named(db, form, name, Some(from));
     }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
@@ -1186,7 +1186,7 @@ fn last_binder_named(
     bindings_occ: StructId,
     name: &str,
     stop_before: Option<StructId>,
-) -> Option<StructId> {
+) -> Option<Resolved> {
     let Struct::List(pairs) = db.ast.get(bindings_occ) else {
         return None;
     };
@@ -1212,9 +1212,30 @@ fn last_binder_named(
     for &pair in pairs[..end].iter().rev() {
         if let Struct::List(kv) = db.ast.get(pair)
             && kv.len() == 2
-            && db.ast.as_name(kv[0]) == Some(name)
         {
-            return Some(kv[1]);
+            // A bare-name binding `(x V)` binds `name` directly to the value occurrence `V` — a `Ref`,
+            // the common case (an allocation-free early return, the hot path).
+            if db.ast.as_name(kv[0]) == Some(name) {
+                return Some(Resolved::Ref { value: kv[1] });
+            }
+            // A DESTRUCTURING binding `((tuple a b) V)` — the LHS is a tuple PATTERN. A reference to one
+            // of its element binders resolves to a `SumPayload` reading that element from the value `V`
+            // (path `[Elem(i)]`, possibly nested), EXACTLY as a `(match V ((tuple a b) …))` arm binder
+            // does (`match_arm_variant_binds` Case 6). The binding position IS a single-arm irrefutable
+            // match; reusing `find_binder_in_tuple` gives the desugar with zero new IR. (Refutability +
+            // linearity are enforced when the `let` is lowered, so an ill-formed binding still faults —
+            // this lookup only routes an in-scope binder to its value.)
+            if is_tuple_pattern(db, kv[0]) {
+                let mut path = Vec::new();
+                let mut heads = Vec::new();
+                if find_binder_in_tuple(db, kv[0], name, &mut path, &mut heads) {
+                    return Some(Resolved::SumPayload {
+                        scrutinee: kv[1],
+                        steps: path.into(),
+                        heads: heads.into(),
+                    });
+                }
+            }
         }
     }
     None

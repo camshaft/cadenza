@@ -9207,6 +9207,80 @@ mod stage1 {
         assert_eq!(run_main("(let ((inc (fn (x) (+ x 1)))) (inc 10))"), 11);
     }
 
+    // ── binding patterns: a `let` binder may be an irrefutable pattern ───────────────────────────
+
+    #[test]
+    fn a_let_binder_may_be_a_tuple_pattern() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `let` binder MAY be a
+        // tuple pattern that destructures the value, binding each element — the ergonomic form of the
+        // bind-then-`match` idiom. A binder reference resolves to a `SumPayload` reading the element out
+        // of the bound value (the same machinery a `(match v ((tuple a b) …))` arm uses), so this is a
+        // pure resolve-side lift with no new IR. Nested to any depth; a later binding sees an earlier
+        // pattern's binders (`let*` scoping).
+        assert_eq!(run_main("(let (((tuple a b) (tuple 3 4))) (+ a b))"), 7);
+        assert_eq!(
+            run_main("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"),
+            6
+        );
+        assert_eq!(
+            run_main("(let (((tuple a b) (tuple 3 4)) (c (+ a b))) c)"),
+            7
+        );
+    }
+
+    #[test]
+    fn an_ill_formed_let_binding_pattern_is_rejected_not_miscompiled() {
+        // A binding position has no alternative arm, so its pattern MUST be irrefutable and its shape MUST
+        // match the value's type (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
+        // Without the validation hook these silently MISCOMPILED (a wrong-arity / non-linear pattern
+        // resolved its binders and ran to a value); the hook faults them with the code the equivalent
+        // single-arm match would raise. `code` compiles a `main`-body and reports its rejection code (or
+        // None if it compiled) — the same shape the linearity test above uses.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None; // compiled — no rejection
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Refutable: a multi-variant constructor / a literal → CDZ0210 (non-exhaustive).
+        assert_eq!(
+            code("(let (((Some x) (Some 5))) x)").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(code("(let ((0 5)) 42)").as_deref(), Some("CDZ0210"));
+        // Shape-incompatible: a wrong-arity tuple / a tuple pattern vs a non-tuple value → CDZ0201.
+        assert_eq!(
+            code("(let (((tuple a b c) (tuple 1 2))) a)").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            code("(let (((tuple a b) 5)) a)").as_deref(),
+            Some("CDZ0201")
+        );
+        // Non-linear: a binder repeated across the pattern → CDZ0102.
+        assert_eq!(
+            code("(let (((tuple x x) (tuple 1 2))) x)").as_deref(),
+            Some("CDZ0102")
+        );
+        // NO OVER-REJECTION: a well-formed destructuring binding compiles.
+        assert_eq!(code("(let (((tuple a b) (tuple 3 4))) (+ a b))"), None);
+    }
+
     #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and

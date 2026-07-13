@@ -1,68 +1,108 @@
 # Design — irrefutable binding patterns for `param` / `let` (rcdzc)
 
-**Author:** design pass (compiler). **Audience:** the implementer picking up rcdzc task #153, + future me.
-**Status:** proposal / handoff — **nothing landed**. Revised after a 3-lens adversarial review (see §0).
+**Author:** design pass (compiler), then a currency rewrite against the shipped query resolver.
+**Audience:** the implementer of rcdzc task #153, + future me.
+**Status:** IN PROGRESS. The `let` happy path is SPIKED and works (see §0.1); the validation hooks
+(refutable / wrong-arity / non-linear) and the whole `param`/`fn` case are NOT landed. Corpus/spec are
+NOT yet extended (§10 step 0 still owed).
+
 This is the plan for letting a *binding position* (a function parameter, a `let` binder, a `fn` parameter,
 a `do`-block `def`) hold an **irrefutable pattern** — `(def (f (tuple a b)) …)`, `(let (((tuple a b) v)) …)`
-— instead of only a bare name. It is written ahead of implementation, in the spirit of
-`DESIGN-effects-rcdzc.md` and the ask-81 closures handoff: it states the target, the accept/decline
-boundary, the pass-by-pass edits with line anchors, and the subtleties an implementer must get right.
+— instead of only a bare name.
 
-The through-line: **a binding position that holds an irrefutable pattern is exactly a single-arm
-destructuring match — which rcdzc already compiles.** So this increment adds **zero IR nodes** and
-**zero infer/select/fold code for the tuple case**; it is a `resolve`-time desugar onto machinery that
-is already proven green.
-
----
-
-## 0. Review corrections (READ FIRST — supersede any stale phrasing below)
-
-An adversarial review (verification lens + design/edge lens + spec-fidelity lens) confirmed the two
-load-bearing claims — **"tuple binding pattern = single-arm tuple match with zero downstream change"**
-(traced end-to-end through infer/lower/fold/select) and the **β-reduction/α-rename + shadowing**
-subtleties (§9) — as **sound**. It also found defects that a literal implementer would hit. They are
-fixed inline in the sections below; this block is the load-bearing summary.
-
-- **C1 — spec-first is a PREREQUISITE, not optional.** No normative sentence or corpus case sanctions a
-  pattern in a *binding* position today — the spec only defines patterns in `match`-arm ("pattern")
-  position and sub-pattern ("binder") position (core-semantics.md §*A Tuple Is Deconstructible By Pattern
-  Matching* :165 says "in pattern position"). The constitution makes the corpus the source of truth
-  (compiler is a projection of the spec, not its source). **So the FIRST step is: add the normative
-  capability sentence to `core-semantics.md` + author the corpus witnesses — THEN the resolve desugar.**
-  This doc specs the mechanism; it does not license building ahead of the corpus. Added as step 0 in §10.
-- **C2 — refutable binding pattern → `CDZ0210`, NOT `CDZ0201`.** By this doc's own "it IS a single-arm
-  match" thesis, `(let (((Some x) o)) x)` = `(match o ((Some x) x))` = a *non-exhaustive* single-arm match,
-  which the corpus already codes **`CDZ0210`** (`02-binding-and-control.sexp` §"a sum match missing a
-  variant is non-exhaustive…", the Some-only match). `CDZ0201` is correct ONLY for a *shape-incompatible*
-  pattern (a wrong-arity tuple, a kind mismatch) that can NEVER match. Split the two (§4, §5.2, §7).
-- **C3 — the classifier MUST consult the prelude (variant count), not scan head strings.** As first
-  drafted, `check_irrefutable` rejected *every* constructor head with `CDZ0201` — which (a) wrongly
-  hard-rejects a single-variant-sum binder that §3/§7/§8 say should *decline* (Increment B), and (b)
-  routed an annotated binder `(: x T)` (a `List` head `":"`) into the ctor-reject, contradicting §6's
-  accept. Fixed in §5.2: peel `:` first; resolve a ctor head against the prelude exactly as
-  `collect_binders` (`resolve.rs:1073`) does; single-variant → decline, multi-variant/literal/list → the
-  non-total reject (`CDZ0210`), and a bare nullary ctor (`None`) is a ctor, not a binder.
-- **C4 — the linearity recipe as first written was DEAD.** `collect_binders` (`resolve.rs:1075`) already
-  dedupes (`if !out.contains`), so a "set-insert over its output" can NEVER observe a repeat → `CDZ0102`
-  would never fire and the ungated corpus cases would FAIL. Fixed in §5.5: use a NON-deduping collector
-  (or detect the collision inside the walk).
-- **C5 — `bind_irrefutable`'s `&Node` body can't carry a multi-binding `let`.** The continuation of a
-  `let` chain is `(&[Node] rest, &Node body)`, not one node, so "reuse `resolve_arm` unchanged" is false
-  for the common multi-binding case. Fixed in §5.1: the helper takes a resolve-*continuation* (a
-  `FnOnce(&mut Self, &Scope) -> Hir`) or a pre-resolved `Hir` for the arm body, not a raw `&Node`.
-- **C6 — accuracy nits.** `(cons h t)` is invented syntax → the spec's list-pattern surface is
-  `(list x .. rest)`; a *zero-leading rest binder* `(list .. rest)` IS irrefutable (so the blanket "list
-  patterns are refutable" rationale is right-outcome-wrong-reason — corrected in §3/§8). The empty-tuple
-  binder `(tuple)`/`()` rides an unresolved `Ty::Tuple([]) ≠ Ty::Unit` quirk in `unify` (`ty.rs`) — §3
-  now excludes arity-0 tuple patterns pending that reconciliation. Line anchors into
-  `05-compound-types.sexp` are the two `CDZ0102` cases at **:2561** (flat) and **:2581** (nested).
+The through-line, unchanged from the original design and now confirmed by a spike: **a binding position
+that holds an irrefutable pattern is exactly a single-arm destructuring match — which rcdzc already
+resolves.** So this adds **zero IR nodes**. But — and this is the correction the shipped architecture
+forces — the realization is NOT a "resolve-time desugar into an `Hir::Match`". rcdzc has no `Hir`/`Mir`,
+no `Scope::Bind`, no `let_chain`. It is a **demand-driven query resolver**: a reference resolves by
+walking *up* the AST to the nearest binder, and a tuple-pattern binder resolves to a `SumPayload` reading
+the element out of the bound value. The whole feature is: teach that upward walk to look inside a
+tuple-pattern binding position, and add a validation hook so an ill-formed binding pattern faults instead
+of silently miscompiling.
 
 ---
 
-## 1. TL;DR — the win, the insight, the pick
+## 0. Currency rewrite — READ FIRST (supersedes the original architecture framing)
 
-**The win.** Today every parameter and `let` binder is a bare name. To take a tuple apart you must bind
-it whole and project each element by hand:
+The original doc (written against an earlier `rcdzc` shape) described the mechanism as a `resolve`-time
+desugar of `(let (((tuple a b) v)) body)` into `Hir::Match { scrutinee, arms: [(Tuple([a,b]), body)] }`,
+with edits at `resolve.rs` line anchors into `let_chain` / `collect_binders` / `resolve_arm` / a
+`bind_irrefutable` continuation helper / `Scope::Bind` frames. **None of that machinery exists in the
+current compiler.** The rewrite:
+
+- **A1 — the resolver is DEMAND-DRIVEN, not scope-building.** There is no top-down scope chain and no
+  desugar step. `resolve::resolve_name` (`resolve.rs:301`) resolves a bare name by calling `binder_in`
+  (`resolve.rs:471`) on each enclosing form, ascending until one binds the name. A `let` body reference
+  ascends into the `let` (Case 1) and looks the name up in the bindings-list; a parameter reference
+  ascends into the `(fn …)`/`(def …)` (Cases 3/4) and resolves to a `Param` formal. There is nothing to
+  "desugar into a match" — the binder lookup itself *is* where a tuple pattern is taught.
+- **A2 — the tuple-match machinery to reuse is `find_binder_in_tuple` + `SumPayload`, already shipped for
+  MATCH ARMS.** A `(match V ((tuple a b) …))` arm binder resolves through `match_arm_variant_binds`
+  (`resolve.rs:807`) → `find_binder_in_tuple` (`resolve.rs:951`), which descends the pattern and returns
+  `(scrutinee, path=[Elem(i)…], heads)`; the reference becomes `Resolved::SumPayload { scrutinee, steps,
+  heads }` (`resolve.rs:557`). `SumPayload` is inferred (`infer.rs:156`: walk the scrutinee type down the
+  `Elem`/`Payload` path), lowered (`lower.rs:156`: fold to the stored element, else emit a runtime
+  `Core::SumPayload` read), and evaluated already. **A binding-position tuple pattern reuses this
+  verbatim** — the only difference is the "scrutinee" is a `let` value occurrence (or a parameter formal),
+  not a match scrutinee.
+- **A3 — CDZ0102 linearity ALREADY LANDED for match arms + parameters.** `Code::NonLinearBinder =>
+  "CDZ0102"` exists (`diag.rs:96`); `check_pattern_linear` / `collect_pattern_binders` (`lower.rs:1323`)
+  is the recursive, non-deduping walk the original doc's §5.5 called for, wired into match-arm lowering
+  (`lower.rs:1265`) and into duplicate-parameter checking. So §5.5's "CDZ0102 is the one new code" is
+  DONE for its existing sites; binding patterns need only to *reach* the same check (and the two gated
+  corpus cases can ungate — §0.2).
+- **A4 — refutable → CDZ0210, shape-incompatible → CDZ0201, contradicting annot → CDZ0203.** These codes
+  all exist (`diag.rs`: `NonExhaustive => CDZ0210`, `Malformed => CDZ0201`, `TypeMismatch => CDZ0203`).
+  The original §4's code-choice reasoning stands unchanged (a non-total binding IS the non-exhaustive
+  single-arm match the concept produces → CDZ0210; a can-never-match shape → CDZ0201). What changes is
+  *where* they are emitted: not from a desugared `Hir::Match`, but from a **validation hook** on the
+  `Resolved::Let` / parameter forms (§5, new).
+- **A5 — the arity-0 / annotation / β-reduction subtleties (original §6, §9) survive with new anchors.**
+  `Hir::Annot` is `Resolved::Annot` (`infer.rs:664`); the `(: pat T)` peel happens where the binding is
+  read; the empty-tuple `Ty::Tuple([]) ≠ Ty::Unit` quirk is still real (§8). The α-rename/β-reduce
+  discussion is moot — there is no β-reducing fold of an `Hir::Lambda`; a `fn` parameter resolves to a
+  `Param` formal and infers a fresh var, so the "capture" concern does not arise the same way.
+
+### 0.1 Spike results (VERIFIED — the `let` happy path works today)
+
+Implemented in this worktree (`resolve.rs`, `last_binder_named`): a bindings-list lookup, when a pair's
+LHS is a tuple pattern, descends it with `find_binder_in_tuple` and returns a `SumPayload` rooted at the
+pair's value occurrence. Cases 1 (body) and 2 (later initializer) both route through it. Confirmed by
+running the compiled component:
+
+| program | result |
+|---|---|
+| `(let (((tuple a b) (tuple 3 4))) (+ a b))` | **7** ✓ |
+| `(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))` | **6** ✓ (nested) |
+| `(let (((tuple a b) (tuple 3 4)) (c (+ a b))) c)` | **7** ✓ (a later binding sees the pattern's binders — `let*`) |
+| `(def (f p) (let (((tuple a b) p)) (+ a b)))` applied to `(tuple 10 20)` | **30** ✓ (RUNTIME scrutinee, not a literal) |
+
+So the core mechanism is proven: **zero new IR, reuse `SumPayload`, works compile-time and runtime.**
+
+### 0.2 Spike results (GAPS — an ill-formed binding pattern currently MISCOMPILES)
+
+The same spike exposed that binding-position patterns get **no validation** — they silently do the wrong
+thing where a match arm would fault. These are the work items §5 must close:
+
+| program | got today | want |
+|---|---|---|
+| `(let (((Some x) (Some 5))) x)` — refutable | **CDZ0101 unbound `x`** | CDZ0210 (non-total) |
+| `(let (((tuple a b c) (tuple 1 2))) a)` — wrong arity | **compiled, ran to a value** | CDZ0201 (shape) |
+| `(let (((tuple x x) (tuple 1 2))) x)` — non-linear | **compiled, ran to a value** | CDZ0102 (linearity) |
+| `(def (fst (tuple a b)) a)` — tuple PARAM | (not attempted — §5.2) | 7 |
+
+The `(Some x)` case resolves to CDZ0101 because `find_binder_in_tuple` only descends `tuple` heads, so a
+`Some` head binds nothing and `x` is unbound — a confusing message, not the intended coverage code. The
+wrong-arity and non-linear cases are silent miscompiles: the lazy binder lookup finds `a`/`x` at their
+`Elem` paths and never checks that the pattern is well-formed against the value's type or that it is
+linear. **A binding-position pattern needs the same up-front validation a match arm gets** — see §5.
+
+---
+
+## 1. TL;DR — the win, the mechanism, the pick
+
+**The win.** Today every parameter and `let` binder is a bare name. To take a tuple apart you must bind it
+whole and project each element by hand:
 
 ```lisp
 ; today — the self-host decoder's actual shape (implementation/compiler/cdzc/15-decode.cdz:139)
@@ -71,9 +111,7 @@ it whole and project each element by hand:
     (match r ((tuple ast pos) ast))))  ; one-arm match just to name the two halves
 ```
 
-Every tree-walking pass over a `(tuple <node> <offset>)` accumulator — the whole CBOR decoder, every
-`decode-*`, the parser's position threading — pays this bind-then-rematch tax. Binding patterns let the
-same code read:
+Binding patterns let the same code read:
 
 ```lisp
 (def (decode-node bytes i)
@@ -81,55 +119,51 @@ same code read:
     ast))
 ```
 
-and, at the parameter itself:
+and, at the parameter itself: `(def (fst (tuple a b)) a)` — `fst` still takes ONE argument (a pair) and
+names its parts.
 
-```lisp
-(def (fst (tuple a b)) a)     ; f still takes ONE argument — a pair — and names its parts
-```
+**The mechanism (corrected — see §0).** rcdzc resolves a reference by walking up to its binder; a
+tuple-pattern match-arm binder already resolves to a `SumPayload` reading the element out of the
+scrutinee. A binding-position tuple pattern is the same thing rooted at a `let` value / a parameter
+formal. So:
 
-**The insight.** rcdzc **already** compiles a single-arm tuple-scrutinee match:
-`(match t ((tuple a b) (+ a b)))` works today (`tests.rs:248`, `infer.rs:671`, `select.rs:561`). That
-path binds a tuple pattern's elements against a scrutinee handle by `arr-get`, with **exact-arity**
-inference and no discriminant. **An irrefutable binding pattern is that match, one arm, generated by
-`resolve` instead of written by hand.** So:
+- `(let (((tuple a b) v)) body)`: a body reference to `a` ascends into the `let`, finds the binding whose
+  LHS is `(tuple a b)`, descends it with `find_binder_in_tuple`, and resolves to `SumPayload { scrutinee:
+  v, steps: [Elem(0)] }`. (SPIKED — §0.1.)
+- `(def (f (tuple a b)) body)`: a body reference to `a` ascends into the `def`, finds that the parameter
+  is a tuple pattern, and resolves to `SumPayload` reading `Elem(0)` of the parameter formal. **Arity is
+  preserved** — `f` still takes one argument. (NOT landed — §5.2.)
 
-- `(let (((tuple a b) v)) body)` desugars to `(let ((g v)) (match g ((tuple a b) body)))` — or, since the
-  match path takes any scrutinee expression, directly to `(match v ((tuple a b) body))`.
-- `(def (f (tuple a b)) body)` gives the parameter its own fresh anonymous local `g` (**arity is
-  preserved** — `f` still takes one argument) and rewrites the body to `(match (Local g) ((tuple a b) body))`.
-
-**The pick (see §7).** Ship **Increment A** now: `name`, `_`, and **tuple** patterns (nested to any
-depth) in every binding position, plus the linearity check (`CDZ0102`) they finally make reachable — a
-pure `resolve` desugar, **no infer/lower/fold/select/serialize change**. Architect but **defer Increment
-B**: record patterns and single-variant-sum patterns in binding position (these need net-new *pattern*
-support in `infer_pattern`/`emit_match`, since rcdzc's match path only knows tuples and multi-variant
-sums today). Support **optional annotations** `(: <pat> <Type>)` on a binder as a thin `Annot` wrapper
-(§6). Increment A declines every B case honestly (reject-don't-miscompile), never miscompiles.
+**The pick (see §7).** Ship **Increment A**: `name`, `_`, and **tuple** patterns (nested to any depth) in
+every binding position, plus the validation that makes a refutable / wrong-arity / non-linear binding
+fault instead of miscompiling. Architect but **defer Increment B**: record patterns and
+single-variant-sum patterns in binding position (these need net-new *pattern* support — `find_binder_in_*`
+only knows tuples and multi-variant sums today). Support **optional annotations** `(: <pat> <Type>)` on a
+binder as a thin `Annot` wrapper (§6). Increment A declines every B case honestly, never miscompiles.
 
 ---
 
 ## 2. Target surface syntax
 
-All four binding positions accept the same pattern grammar. Grounded in the corpus vocabulary
-(`spec/semantics/`, `core-semantics.md`):
+All four binding positions accept the same pattern grammar:
 
 ```lisp
 ; 1. FUNCTION PARAMETER — arity preserved; the parameter is a pair, named apart
 (def (fst (tuple a b)) a)                 ; (fst (tuple 7 8)) => 7
 (def (add-pair (tuple a b)) (+ a b))      ; (add-pair (tuple 3 4)) => 7
 
-; 2. LET binder
+; 2. LET binder                                                    [SPIKED — works]
 (let (((tuple a b) (mk-pair)))  (+ a b))
 (let (((tuple a (tuple b c)) v)) (+ a (+ b c)))   ; nested, any depth
 
-; 3. FN (lambda) parameter — rides the same desugar as (def …) params
+; 3. FN (lambda) parameter — rides the same param mechanism as (def …) params
 ((fn ((tuple a b)) (+ a b)) (tuple 3 4))  ; => 7
 
 ; 4. DO-block declaration (a value-def whose LHS is a pattern) — nice-to-have, §5.4
 (do (def (tuple a b) (mk-pair)) (+ a b))
 
-; wildcard / name are just the degenerate patterns (already work; now uniform)
-(let ((_ (side-effect)))  42)             ; discard, explicitly
+; wildcard / name are the degenerate patterns (already work; now uniform)
+(let ((_ (side-effect)))  42)             ; discard, explicitly (works today)
 (def (f x) x)                             ; a name is the trivial irrefutable pattern
 
 ; OPTIONAL ANNOTATION on any binder (§6)
@@ -137,30 +171,27 @@ All four binding positions accept the same pattern grammar. Grounded in the corp
 (let (((: (tuple a b) (Tuple Int64 Int64)) v)) a)
 ```
 
-**What is NOT a binding pattern** (refutable → rejected in binding position, §4):
-`(Some x)`, `(Ok v)`, `0`, `true`, `"lit"`, and a length-constrained list-element pattern
-`(list a b)` / `(list x .. rest)`. These may only appear in a `match` arm, where a sibling arm covers the
-other cases. (The one *irrefutable* list pattern — a zero-leading rest binder `(list .. rest)`, which
-matches every list — is not excluded on refutability grounds; it is simply out of scope for this
-increment along with all list patterns, gated `(needs list-patterns)`. See §8. Note the spec's
-list-pattern surface is `(list x .. rest)` — there is no `(cons …)` form.)
+**What is NOT a binding pattern** (refutable → rejected in binding position, §4): `(Some x)`, `(Ok v)`,
+`0`, `true`, `"lit"`, and a length-constrained list pattern `(list a b)` / `(list x .. rest)`. These may
+only appear in a `match` arm where a sibling arm covers the other cases. (The one *irrefutable* list
+pattern — a zero-leading rest binder `(list .. rest)` — is out of scope with all list patterns, §8. There
+is no `(cons …)` form; the spec's list surface is `(list x .. rest)`.)
 
 ---
 
 ## 3. Why "irrefutable", and the accept set
 
-core-semantics.md §*Bindings Introduced By A Pattern* / §*Patterns Compose* / §*A Tuple Is Deconstructible
-By Pattern Matching* define patterns and their linearity. A binding position (`let`, a parameter) has **no
-alternative arm** — if the pattern failed to match there is nowhere to go. So a binding pattern must be
-**irrefutable**: it matches *every* value of its type. The accept set is exactly the patterns that cannot
-fail:
+`core-semantics.md` §*Patterns Compose* (line 125: "A pattern MUST admit any pattern in each of its binder
+positions … matched recursively to any depth") defines pattern composition and linearity. A binding
+position (`let`, a parameter) has **no alternative arm** — if the pattern failed there is nowhere to go —
+so a binding pattern must be **irrefutable**: it matches *every* value of its type.
 
 | pattern | irrefutable? | binding position |
 |---|---|---|
-| name `x` | yes (binds anything) | ✅ Increment A |
-| wildcard `_` | yes (matches anything) | ✅ Increment A |
-| `(tuple p₁ … pₙ)`, n≥1, each `pᵢ` irrefutable | yes — a tuple has ONE shape | ✅ Increment A |
-| `(tuple)` / `()` (arity 0) | yes in principle | ⚠ EXCLUDED — rides `Ty::Tuple([]) ≠ Ty::Unit` (§9 F5) |
+| name `x` | yes (binds anything) | ✅ Increment A (works today) |
+| wildcard `_` | yes (matches anything) | ✅ Increment A (works today) |
+| `(tuple p₁ … pₙ)`, n≥1, each `pᵢ` irrefutable | yes — a tuple has ONE shape | ✅ Increment A (`let` spiked; param owed) |
+| `(tuple)` / `()` (arity 0) | yes in principle | ⚠ EXCLUDED — rides `Ty::Tuple([]) ≠ Ty::Unit` (§8) |
 | `(record (k₁ p₁) …)`, each `pᵢ` irrefutable | yes — a record has ONE shape | ⏳ Increment B (decline) |
 | single-variant user sum `(V x)` | yes — one variant | ⏳ Increment B (**decline**, not reject) |
 | `(Some x)` / `(Ok v)` / any multi-variant ctor | **no** — the other variant exists | ❌ reject `CDZ0210` (§4) |
@@ -168,45 +199,36 @@ fail:
 | a length-constrained list pattern `(list x .. r)` | **no** — depends on length | ❌ reject `CDZ0210` (§4) |
 | a zero-leading rest binder `(list .. r)` | yes — matches every list | ⏳ out of scope (all list patterns, §8) |
 
-Increment A ships the top three (name, `_`, tuple of arity ≥ 1). They compose recursively — a tuple
-element MAY itself be a name, `_`, or a tuple pattern, to any depth (`core-semantics.md` §*Patterns
-Compose*) — and that recursion is **already handled** by `infer_pattern` (`infer.rs:793`, recurses tuple
-subs) and `bind_payload` (`select.rs:677`, recurses the `Mir::Tuple` arm via nested `arr-get`).
+Increment A ships the top three. They compose recursively (a tuple element MAY itself be a name, `_`, or a
+tuple pattern, to any depth) and that recursion is **already handled** by `find_binder_in_tuple`
+(`resolve.rs:951`, recurses into nested tuple elements) and by `SumPayload` infer/lower (which walk an
+arbitrary `Elem`/`Payload` path).
 
-**Note the two DIFFERENT non-accept outcomes** (the review's central correction, §0 C2/C3): a pattern that
-is irrefutable-in-principle but not-yet-supported (record, single-variant sum, any list pattern)
-**declines** (Increment B / later — reject-don't-miscompile); a pattern that is genuinely **refutable**
-(a multi-variant ctor, a literal, a length-constrained list pattern) is an **ill-formed** binding and is
-**rejected `CDZ0210`** (§4). Do not collapse these — a decline says "a later phase handles it," a reject
-says "no total match exists here." The classifier (§5.2) must tell them apart by consulting the prelude,
-not by scanning head strings.
+**Two DIFFERENT non-accept outcomes** (keep them apart): a pattern that is irrefutable-in-principle but
+not-yet-supported (record, single-variant sum, any list pattern) **declines** (Increment B / later —
+reject-don't-miscompile); a pattern that is genuinely **refutable** (a multi-variant ctor, a literal, a
+length-constrained list pattern) is an **ill-formed** binding and is **rejected `CDZ0210`** (§4). A
+decline says "a later phase handles it," a reject says "no total match exists here."
 
 ---
 
-## 4. Refutable-in-binding-position is a rejection — and the code is `CDZ0210`, not `CDZ0201`
+## 4. Refutable-in-binding-position is a rejection — code `CDZ0210`, not `CDZ0201`
 
 A refutable pattern where the language guarantees a total match is an **ill-formed program**, not a
-not-yet-supported construct. Reject it with a coded diagnostic + a message naming the offending
-constructor/literal — do **not** silently accept, and do **not** emit a generic "unsupported" decline
-(which would wrongly read as "a later phase will handle it").
+not-yet-supported construct. Reject it with a coded diagnostic naming the offending constructor/literal.
 
-**Which code?** This doc's own thesis is "a binding pattern IS a single-arm match" (§1, §5.3). Take that
-seriously and read the corpus for what a single-arm match that fails to cover its type yields — the corpus
-is unambiguous:
+**Which code?** The concept is "a binding pattern IS a single-arm match", so read the corpus for what a
+single-arm match that fails to cover its type yields:
 
 - `(match (Some 5) ((Some x) x))` — a Some-only arm, no None → **`CDZ0210`** (non-exhaustive)
-  (`02-binding-and-control.sexp` §"a sum match missing a variant is non-exhaustive even when the scrutinee
-  is the covered one").
-- `(match true (true 1))` / `(match 5 (5 1))` — a single literal arm → **`CDZ0210`**
-  (`02-binding-and-control.sexp` §"a bool match on a constant scrutinee is non-exhaustive…" / §"an int
-  match on a constant scrutinee is non-exhaustive…").
+  (`02-binding-and-control.sexp` §"a sum match missing a variant is non-exhaustive…").
+- `(match true (true 1))` / `(match 5 (5 1))` — a single literal arm → **`CDZ0210`**.
 
-So a **non-total** binding pattern (a multi-variant ctor, a literal, a length-constrained list pattern)
-is **`CDZ0210`** — the same code the desugared single-arm match would emit anyway. Reserve **`CDZ0201`**
-for a **shape-INCOMPATIBLE** pattern — one that can *never* match, regardless of coverage: a wrong-arity
-tuple `(tuple a b c)` vs a 2-tuple, or a kind mismatch (a tuple pattern vs a sum value). That distinction
-is exactly what the corpus draws (`02-binding-and-control.sexp` §"a tuple pattern of the wrong arity is a
-type error" = `CDZ0201`; the Some-only match = `CDZ0210`).
+So a **non-total** binding pattern (a multi-variant ctor, a literal, a length-constrained list pattern) is
+**`CDZ0210`**. Reserve **`CDZ0201`** for a **shape-INCOMPATIBLE** pattern — one that can *never* match: a
+wrong-arity tuple `(tuple a b c)` vs a 2-tuple, or a kind mismatch (a tuple pattern vs a sum value). That
+distinction is exactly what the corpus draws (a wrong-arity tuple match arm = CDZ0201; the Some-only arm =
+CDZ0210).
 
 ```lisp
 (let (((Some x) o)) x)     ; CDZ0210 — non-total: None is uncovered, no alternative arm
@@ -215,305 +237,154 @@ type error" = `CDZ0201`; the Some-only match = `CDZ0210`).
 (let (((tuple a b c) p)) …); CDZ0201 — SHAPE-incompatible if p is a 2-tuple (can never match)
 ```
 
-Rationale: the split is decidable at compile time (§3 table, resolved via the §5.2 classifier). A
-non-total binding is a *coverage* defect → `CDZ0210`; a shape-incompatible one is a *type/shape* defect →
-`CDZ0201`. A generation that cannot yet classify may decline; once the classifier exists, a refutable
-binding pattern is a reject with the coverage code.
-
-**Bonus — the existing exhaustiveness check gives `CDZ0210` for free.** Because the desugar already emits
-a single-arm `Hir::Match`, `infer`'s exhaustiveness pass (`infer.rs:712`, CDZ0210 over the sum's variant
-set) would reject a refutable ctor binding *even without* the §5.2 classifier. The classifier's only jobs
-are (a) a better message and a resolve-time (pre-infer) rejection, and (b) telling a *decline* (record /
-single-variant sum) apart from a *reject* — which the raw exhaustiveness check cannot do. Keep it minimal.
+**⚠ Unlike the original doc, exhaustiveness does NOT fall out for free here.** The original claimed the
+desugared `Hir::Match`'s exhaustiveness pass would emit CDZ0210 automatically. There is no such desugar —
+the binder is resolved lazily and the pattern is never handed to `lower_match`'s exhaustiveness/arity
+checks. §0.2 confirms this: a refutable `(Some x)` binding gives CDZ0101 (unbound), and a wrong-arity
+tuple binding silently compiles. **So the validation is NOT free — §5 must run it explicitly.**
 
 ---
 
-## 5. Pass-by-pass changes
+## 5. Pass-by-pass changes (against the SHIPPED architecture)
 
-**The headline: the only file that changes for Increment A is `resolve.rs`.** Everything downstream
-(infer/lower/fold/select/serialize) is untouched — the desugar targets the already-green single-arm
-tuple-match path. `diag.rs` gains one new code (`CDZ0102`) for linearity (§5.5).
+The feature is two parts: **(5.1) binder resolution** (route a tuple-pattern binder to a `SumPayload`) and
+**(5.3) validation** (fault a refutable / wrong-arity / non-linear binding). Resolution for the `let` case
+is spiked; the param case and all of validation are owed.
 
-### 5.1 The desugar (the core), in `resolve.rs`
+### 5.1 `let` binder resolution — `resolve.rs` (SPIKED, §0.1)
 
-There is already an anonymous-local generator (`fresh_local`, `resolve.rs:670`), a scope-frame chain
-(`Scope::Bind`, `resolve.rs:634`), a binder collector (`collect_binders`, `resolve.rs:1067`), and — the
-keystone — `resolve_arm` (`resolve.rs:1047`), which collects a pattern's binders, allocates a fresh local
-per binder, and resolves the pattern **and** an under-scope body into a `(pat-Hir, body-Hir)` pair. That
-is *exactly* the arm a binding pattern desugars to. Reuse it.
+`last_binder_named` (`resolve.rs:1003`) is the bindings-list lookup that both let cases (body / later
+initializer) call. Changed to return `Option<Resolved>` (was `Option<StructId>`): a bare-name LHS returns
+`Resolved::Ref { value }` (the hot path, unchanged); a `is_tuple_pattern` LHS descends with
+`find_binder_in_tuple` and returns `Resolved::SumPayload { scrutinee: value_occ, steps, heads }`. Callers
+in `binder_in` Case 1 (`resolve.rs:486`) and Case 2 (`resolve.rs:534`) drop their `.map(|v| Ref{value:v})`
+wrapper. This is the whole of `let` resolution — proven end-to-end (§0.1). **A binding's initializer does
+not see its own binders**: Case 2 passes `stop_before = Some(from)`, so the value's own references resolve
+in the outer scope (preserved by the existing window logic).
 
-Add one helper. **⚠ Two review corrections are baked in (§0 C3, C5):** (1) the body is a resolve
-*continuation*, not a raw `&Node` — because a `let`'s "rest" is `(&[Node] bindings, &Node body)`, which no
-single `&Node` denotes (see the `let` routing below); (2) an annotation `(: <pat> T)` is peeled *before*
-classification, or it would fall into the `List` arm and be misclassified as a refutable constructor.
+### 5.2 `def` / `fn` parameter resolution — `resolve.rs` (OWED, the harder half)
 
-```
-/// Resolve a BINDING-POSITION pattern + the continuation it scopes into a single-arm irrefutable match.
-/// `scrutinee` is the resolved value being bound (a `let` value, or `Local(g)` for a parameter).
-/// `cont(self, scope)` resolves whatever the binders scope over (the rest of a let-chain + body, or a
-///   function body) UNDER the passed scope — so a multi-binding let threads its remaining bindings here.
-/// Returns the continuation's Hir, wrapped so the pattern's binders are in scope in it.
-fn bind_irrefutable(&mut self, pat_node: &Node, scrutinee: Hir,
-                    cont: impl FnOnce(&mut Self, &Scope) -> Hir, scope: &Scope) -> Result<Hir, Reject> {
-    match pat_node {
-        // ── (: <pat> T) — peel the annotation, wrap the SCRUTINEE in Hir::Annot, recurse on <pat> (§6).
-        Node::List(items) if items.first().and_then(name_of) == Some(":") && items.len() == 3 => {
-            let ty = self.expr(&items[2], scope);                       // the type expression
-            let annotated = Hir::Annot(Box::new(scrutinee), Box::new(ty));
-            return self.bind_irrefutable(&items[1], annotated, cont, scope);
-        }
-        // ── bare name / wildcard: NOT a destructuring — bind directly (no match), so the trivial cases
-        //    stay byte-identical to today's let/param handling. (`_` = a throwaway drop, reuse do_seq idiom.)
-        Node::Name(n) if n == "_" => { /* fresh throwaway local, bind scrutinee, cont under `scope` */ }
-        Node::Name(n)             => { /* fresh local id, Scope::Bind {name:n}, cont under the new frame */ }
-        // ── a destructuring pattern → a single-arm match. The pattern's binders scope over `cont`.
-        Node::List(_) => {
-            self.check_irrefutable(pat_node)?;      // §5.2 — decline (Increment B) OR reject CDZ0210
-            self.check_linear(pat_node)?;           // §5.5 — reject a repeated binder (CDZ0102)
-            // Collect binders, alloc a fresh local each, resolve the pattern AND the continuation under
-            // them (this is `resolve_arm`'s body, generalized from `&Node` to a continuation — see C5).
-            let binders = self.pattern_binders(pat_node);
-            let ids: Vec<u32> = binders.iter().map(|_| self.fresh_local()).collect();
-            let named: Vec<(&str,u32)> = binders.iter().copied().zip(ids).collect();
-            let pat  = resolve_with_params(self, &named, pat_node, scope);
-            let body = /* run `cont` under the `named` frames chained onto `scope` */ ;
-            Ok(Hir::Match { scrutinee: Box::new(scrutinee), arms: vec![(pat, body)] })
-        }
-    }
-}
-```
+A parameter is a **formal**, not a value occurrence: a bare parameter reference resolves to `Resolved::Param
+{ binder }` (`resolve.rs:150`), and its type is a fresh variable solved at the call site (or by an
+annotation). Cases 3/4 of `binder_in` (`resolve.rs:497`/`515`) and the per-scope index `build_scope_binders`
+(`db.rs:1280`) both assume each parameter is a bare name (or `(: name T)`) — `param_binder` reads exactly
+one name per parameter slot.
 
-`resolve_arm` (`resolve.rs:1047`) is the *shape* to copy — it collects binders, allocs a fresh local each,
-and resolves pattern+body under them — but it hard-codes a `&Node` body, so `bind_irrefutable`
-**generalizes** it to a continuation rather than *calling* it. (A one-binding `let` or a function body,
-whose body IS a single node, can still delegate to `resolve_arm` directly; the continuation form is
-required only for the multi-binding-`let` case.)
+To support a tuple-pattern parameter, a body reference to one of its element binders (`a` in `(def (f
+(tuple a b)) …)`) must resolve to `SumPayload` reading `Elem(0)` **of the parameter formal**. Two viable
+shapes (pick during implementation — this is the open design decision of Increment A):
 
-Then route the four binding positions through it:
+- **(a) `SumPayload` rooted at the param formal.** Extend Cases 3/4 (and/or `build_scope_binders`) so a
+  parameter that is a tuple pattern is descended by `find_binder_in_tuple`, and an element reference
+  resolves to `SumPayload { scrutinee: <the param-formal occurrence>, steps, heads }`. The "scrutinee" is
+  the whole-pair formal; `SumPayload` infer already handles a `Param` scrutinee (it just reads
+  `type_of(scrutinee)` and walks the path). The whole-pair formal needs its own occurrence to root at —
+  the tuple-pattern node itself can serve, resolving to `Param` when referenced as a whole. This keeps
+  arity at 1 and needs no new IR. **Risk to verify:** that a `SumPayload` over a `Param` scrutinee infers
+  and lowers correctly when the param type is solved from the call site (the tuple type must be pinned —
+  the pattern's arity should pin it, exactly as a match tuple pattern pins the scrutinee's arity at
+  `infer.rs:182`).
+- **(b) synthesize a hidden `let`.** Give the parameter a fresh whole-pair name and treat the body as
+  `(let (((tuple a b) <fresh>)) body)` — reusing the spiked 5.1 path exactly. Cleaner reuse, but requires
+  synthesizing a binding node the resolver can see, which the demand-driven model has no precedent for
+  (there is no node-synthesis in resolve today). Likely more invasive than (a).
 
-- **`let`** (`let_chain`, `resolve.rs:1188`). Today the binding name is read by `name_of(&kv[0])` and a
-  non-name declines (`resolve.rs:1196`). Change: the LHS `kv[0]` may be any pattern. Resolve the value
-  `kv[1]` first (in the *outer* scope — a binding's initializer does not see its own binders), then call
-  `bind_irrefutable(kv[0], value, |r, inner| r.let_chain(rest, body, inner), scope)` — **the continuation
-  is the recursive `let_chain` over the remaining bindings** (this is the C5 fix: the "rest of the let" is
-  bindings-plus-body, which is why a raw `&Node` body cannot express it). `let*` sequencing
-  (`02-binding-and-control.sexp` §"a later let binding sees an earlier one") is preserved: each binding's
-  binders enter scope for the bindings that *follow* because the continuation resolves `rest` under the
-  binders' frame. (Verified against the review's multi-binding example — scoping flows correctly; the only
-  failure mode is an implementer who passes the *final* body node and silently drops the intervening
-  bindings, which the continuation shape prevents.)
+**Recommendation:** try (a) first (no node synthesis, matches the demand-driven grain); fall back to (b)
+only if rooting a `SumPayload` at a `Param` proves not to infer. Either way **arity is preserved** — the
+parameter occupies one argument slot; the destructure is in how references read it, not in the signature
+(the ABI is the signature, `ir.rs`; expanding a tuple param into N wasm params would break `fst`'s
+export/call signature).
 
-- **function parameter** (`resolve.rs:315`). Today `def.params` are collected as names (`collect_def`,
-  `resolve.rs:586`) and a non-name declines (`resolve.rs:590`). Change: a parameter may be a pattern.
-  **Arity is unchanged** — a destructuring parameter still occupies one argument slot. Give each parameter
-  its own fresh local `g` (as today), but if the parameter is a pattern, wrap the body:
-  `body = bind_irrefutable(param_pat, Hir::Local(g), original_body, scope)`, nesting one wrap per
-  destructuring parameter (outermost = first parameter). A plain-name parameter keeps today's zero-cost
-  `Scope::Bind` path.
+`fn` parameters (`resolve.rs:497`, `resolve_lambda` `resolve.rs:1679`) ride the identical mechanism —
+`build_scope_binders` already handles `fn` and `def` uniformly.
 
-- **`fn` lambda parameter** (`lambda`, `resolve.rs:1221`). Same rewrite as a `def` parameter: a
-  destructuring `fn` param binds an anonymous local and wraps the lambda body in the match. `Hir::Lambda`'s
-  `params` stay the anonymous locals — the lambda's arity is unchanged, so β-reduction (ask-81) and the
-  spine-collapse still see a fixed arity. (A lambda applied in place then β-reduces the match's scrutinee
-  to a concrete `Mir::Tuple`; see §8 "the fold reduces a constructed scrutinee".)
+### 5.3 Validation hook — the NEW work (OWED)
 
-- **`do`-block value-def** (`do_seq` + `is_value_def`, `resolve.rs:1134`/`1248`) — §5.4, a nice-to-have.
+§0.2 shows an ill-formed binding pattern miscompiles. A binding-position pattern must be validated exactly
+as a match arm is. The machinery all exists; it must be *reached* from the binding forms:
 
-### 5.2 Classifying refutability (`resolve.rs`, new scan — MUST consult the prelude)
+1. **Linearity (CDZ0102).** `check_pattern_linear` (`lower.rs:1323`) is the recursive, non-deduping walk
+   already used for match arms. Call it on each binding/parameter pattern.
+2. **Refutability (CDZ0210).** Classify the pattern head: `tuple`/name/`_` → OK; a literal or a
+   multi-variant ctor → CDZ0210; a single-variant ctor / record / list → **decline** (Increment B). The
+   classifier MUST consult the prelude to tell a single-variant sum (decline) from a multi-variant one
+   (reject) and a bare ctor name (`None`) from a binder — mirror `head_ctor` / the sum-variant lookup that
+   `find_binder_in_pattern` and lowering already use. Do NOT scan head strings (memory rule: no keys
+   outside the prelude).
+3. **Shape / arity (CDZ0201).** A wrong-arity tuple pattern against a known tuple type, or a tuple pattern
+   against a non-tuple value. `pattern_constraints` (`lower.rs:1268`) already computes tuple-arity
+   constraints for match arms and faults a mismatch; the binding path should invoke the same check against
+   the bound value's `type_of`.
 
-**⚠ This is the section the review most faulted (§0 C3).** The classifier CANNOT be a pure head-string
-scan, because it must (a) tell a bare *constructor* name apart from a *binder* name — `None` is a ctor,
-`x` is a binder — and (b) tell a *single-variant* sum (irrefutable → **decline**, Increment B) apart from
-a *multi-variant* one (refutable → **reject `CDZ0210`**). Both facts live in the prelude / `SumDef`, which
-`collect_binders` (`resolve.rs:1073`) already consults — so this function must consult it the SAME way, or
-the two drift (the review found the first draft classified `None` as an irrefutable binder and hard-rejected
-every ctor with `CDZ0201`).
+**Where the hook lives.** The natural site is `collect_node`'s `Resolved::Let` arm (`infer.rs:1691`) for
+`let`, and the def/fn parameter fault collector (`param_annotation_faults`, `infer.rs:324`, is the existing
+per-parameter fault site) for parameters. For each binding/parameter whose LHS is a pattern (not a bare
+name / `_`), run linearity + refutability + shape and push the coded `Reject`. (`collect_node` is where
+`Resolved::Match` already pushes its arms-agree faults — the parallel is exact.)
 
-```
-/// Classify a binding-position pattern. Ok(()) = irrefutable, Increment A (name / `_` / tuple-of-those).
-///   Reject::decline    = irrefutable-in-principle but a LATER increment (record; single-variant sum; any
-///                        list pattern) — reject-don't-miscompile, flips to accept when B lands.
-///   Reject::coded(0210) = genuinely REFUTABLE (multi-variant ctor / literal / length-constrained list) —
-///                        no total match exists; an ill-formed binding (§4).
-///   Reject::coded(0201) = shape-INCOMPATIBLE (a wrong-arity tuple) — caught downstream by infer's exact-
-///                        arity unify (§5.3); the classifier need not pre-empt it, but MAY for a message.
-fn check_irrefutable(&self, pat: &Node, scope: &Scope) -> Result<(), Reject> {
-    match pat {
-        // A bare name: a binder UNLESS it resolves to a ctor (mirror collect_binders, resolve.rs:1073).
-        Node::Name(n) if n == "_" => Ok(()),
-        Node::Name(n) => match self.prelude.get(n.as_str()) {
-            Some(Hir::Ctor { def, .. }) => self.classify_ctor(def),   // bare nullary ctor (`None`) — not a binder
-            _ => Ok(()),                                             // a genuine binder
-        },
-        Node::Int(_) | Node::Bool(_) | Node::Str(_) =>
-            Err(Reject::coded(Code::NonExhaustive,                    // a literal covers ONE value → CDZ0210
-                "a literal pattern is refutable — it cannot appear in a binding position")),
-        Node::List(items) => match items.first().and_then(name_of) {
-            // an annotation is peeled by bind_irrefutable BEFORE this runs, but be defensive:
-            Some(":") if items.len() == 3 => self.check_irrefutable(&items[1], scope),
-            Some("tuple") => items[1..].iter().try_for_each(|p| self.check_irrefutable(p, scope)),
-            Some("record") => Err(Reject::decline("a record binding pattern is a later increment (B)")),
-            Some("list")  => Err(Reject::decline("a list binding pattern is a later increment")),
-            // a ctor head: bare `(Some x)` (head resolves to a Ctor) or qualified `((. T V) x)`.
-            _ => match self.resolve_pattern_head_ctor(&items[0], scope) {
-                Some(def) => self.classify_ctor(def),                 // decline if 1 variant, else CDZ0210
-                None      => Err(Reject::coded(Code::TypeError,        // not a ctor at all → shape error 0201
-                    "a binding pattern head is not a tuple, record, or constructor")),
-            },
-        },
-    }
-}
-/// A sum ctor in binding position: single-variant → irrefutable-but-later (DECLINE); else REFUTABLE (0210).
-fn classify_ctor(&self, def: &SumRef) -> Result<(), Reject> {
-    if def.variants().len() == 1 { Err(Reject::decline("a single-variant-sum binding pattern is Increment B")) }
-    else { Err(Reject::coded(Code::NonExhaustive,
-        "a multi-variant constructor pattern is refutable — the other variants are uncovered")) }
-}
-```
-
-`resolve_pattern_head_ctor` is the same head resolution `collect_binders`/`resolve_arm` already perform (a
-bare name → `prelude.get`, a `(. T V)` → the qualified-ctor lookup that resolves to `Hir::Ctor`); factor
-it out so `collect_binders`, the classifier, and `resolve_arm` share ONE notion of "is this head a ctor,
-and of which sum" — the review's "keep them parallel or they drift" finding. `Code::NonExhaustive` is the
-existing `CDZ0210` (`diag.rs`); the classifier adds no new code for the refutable case (only `CDZ0102` for
-linearity, §5.5, is new).
-
-### 5.3 `infer.rs` / `lower.rs` / `fold.rs` / `select.rs` — NO CHANGE (tuple case)
-
-This is the payoff of the desugar. Trace `(def (fst (tuple a b)) a)` end-to-end:
-
-1. **resolve** → `HirFunc { arity: 1, body: Match { scrutinee: Local(g), arms: [(Tuple([Local a, Local b]), Local a)] } }`.
-2. **infer** (`infer_match`, `infer.rs:656`). The parameter's signature var is `v₀` (`infer.rs:39`). The
-   match infers the scrutinee `Local(g) : v₀`, then `infer_pattern(Tuple([a,b]), v₀)` (`infer.rs:793`)
-   unifies **`v₀ = Tuple([v₁, v₂])` at the pattern's exact arity** and binds `a:v₁`, `b:v₂`. By the
-   tuple-scrutinee guard at `infer.rs:677` the substitution now shows `Ty::Tuple(_)`, single arm, tuple
-   pattern → accepted. Body `Local a : v₁`; `fst : Fn([Tuple(v₁,v₂)], v₁)`. **Exact arity, no infer edit.**
-   The `TODO fix this!` under-constrained-arity hazard at `infer.rs:468` (tuple *projection* on a var pads
-   to *minimum* arity) is **avoided** — the desugar uses a tuple *pattern* (exact) not a projection (min).
-3. **lower** → `Mir::Match` (`lower.rs:98`), pattern tree preserved.
-4. **fold** (`fold.rs:656`) — folds the scrutinee and arm body; a `Local(g)` scrutinee is not const, so the
-   match survives to select unchanged. ✓
-5. **select** (`emit_match`, guard `select.rs:565`) — the `Ty::Tuple` single-arm path: the scrutinee handle
-   IS the tuple `arr`; `bind_payload` (`select.rs:656`) `arr-get`s each element into the binder's slot. ✓
-
-The only reason this works with zero downstream change is that **the tuple single-arm match is already a
-shipped, tested feature** (`tests.rs:248`; corpus §"resolving a name in a shadowing environment" and the
-whole decode idiom lean on it). The desugar just *emits* it.
-
-**One inherited (not new) limitation the review flagged:** a *never-called, polymorphic* destructuring def
-`(def (fst (tuple a b)) a)` with no call site declines at `finalize` ("unsolved type variable") because
-rcdzc has no let/def generalization — but this is IDENTICAL to today's `(def (id x) x)` uncalled, not a
-gap this feature introduces. The moment it is called (`(fst (tuple 7 8))`) the element vars solve and it
-grounds. The "zero downstream change" claim is about *code*, and it holds.
+**⚠ Do this as part of Increment A, not after.** The spike shows the resolution half alone is a
+*miscompile generator* — it happily resolves `a` inside `(tuple a b c)` against a 2-tuple. Resolution and
+validation must land together, or the feature regresses the gate.
 
 ### 5.4 `do`-block value-def with a pattern LHS (nice-to-have)
 
-`is_value_def` (`resolve.rs:1248`) currently requires `items[1]` to be a name. Extend it to return the raw
-LHS node; `do_seq` (`resolve.rs:1146`) then routes a pattern LHS through `bind_irrefutable` exactly like a
-`let`. Low value (the corpus uses `let` for destructuring, `do`-`def` for names/functions), so ship it
-only if free; otherwise a `(def (tuple a b) v)` in a `do` declines cleanly.
+`do_local_binds` / `do_def_binds` (`resolve.rs:604`/`1111`) resolve a do-local `(def …)` by name. Extend
+to a pattern LHS routing through the same tuple-pattern binder logic as a `let`. Low value (the corpus
+uses `let` for destructuring); ship only if free, else a `(def (tuple a b) v)` in a `do` declines cleanly.
 
-### 5.5 Linearity — the new diagnostic `CDZ0102`
+### 5.5 Linearity across the whole pattern — ALREADY DONE (was §5.5's ask)
 
-core-semantics.md §*Bindings Introduced By A Pattern* / §*Patterns Compose*: "a pattern MUST bind each
-name at most once … a name appearing in more than one sub-pattern is the same `CDZ0102` error as one
-appearing twice in a flat pattern." rcdzc has **no `CDZ0102`** today (`diag.rs` enum stops at `CDZ0305`)
-and no linearity check anywhere. Binding patterns are the first place it becomes reachable, and the corpus
-already pins both facets, gated `(needs linear-patterns)`:
-
-- flat: `(match (tuple 1 2) ((tuple x x) x) …)` → CDZ0102 (`05-compound-types.sexp`, the `(case …)` at
-  **:2561**, `(error CDZ0102)` at :2569)
-- nested: `(match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) …)` → CDZ0102 (`05-compound-types.sexp`,
-  `(case …)` at **:2581**; the learning
-  `2026-07-08-pattern-linearity-must-be-pinned-across-sub-patterns-not-only-flat.md` is explicitly the
-  tripwire: a shallow-only check FAILs the nested case). These are the ONLY two `CDZ0102` cases in the
-  whole corpus, and BOTH are `match` arms.
-
-**Do this right the first time — check across the WHOLE pattern, recursively.** Add
-`Code::PatternNonLinear => "CDZ0102"` to `diag.rs`. Then — **⚠ the review caught a dead-code trap here
-(§0 C4)** — you CANNOT reuse `collect_binders` (`resolve.rs:1067`) for the duplicate detection: it already
-dedupes (`resolve.rs:1075`, `if !out.contains(&n) { out.push(n) }`), so its output never holds a repeat
-and a "set-insert over its result" would NEVER fire `CDZ0102` (the ungated corpus cases would silently
-FAIL, not pass). Instead, either (a) add a NON-deduping sibling collector that pushes every binder
-occurrence, then scan for a duplicate; or (b) detect the collision *inside* the recursive walk — thread a
-`HashSet<&str> seen` and return `CDZ0102` the first time an insert finds the name already present. Both
-are recursive to any depth (the same traversal `collect_binders` does); the recursion is what the nested
-corpus case demands.
-
-Wire the check into `bind_irrefutable` (§5.1) **and** `resolve_arm` (`resolve.rs:1047`) so ordinary
-`match` arms get it too. ⚠ Note: the two *existing* corpus cases are `match` arms, so they are closed by
-the `resolve_arm` wiring ALONE — the `bind_irrefutable` wiring closes nothing currently pinned. So §10 MUST
-add a binding-position `CDZ0102` case (`(let (((tuple x x) v)) …)`) or the binding-position half of the
-wiring ships untested.
-
-⚠ The linearity check is **anticipatory-corpus-pinned** (see the learning): implement the recursive,
-non-deduping version — not the "immediate binders of one node" version, and not a set-insert over the
-deduping `collect_binders` — or the nested corpus case FAILs.
+The original §5.5 asked for a recursive, non-deduping CDZ0102 walk. It **landed** as `check_pattern_linear`
+(`lower.rs:1323`) for match arms + duplicate parameters. Binding patterns need only *call* it (§5.3 item
+1). The two anticipatory corpus cases (`05-compound-types.sexp` :3386, :3406) verify the recursive/nested
+behavior and now pass the current binary — they should **ungate** (§0.2 → §10). The binding-position
+CDZ0102 case (`(let (((tuple x x) v)) …)`) is what pins §5.3's wiring and must be authored.
 
 ---
 
 ## 6. Optional annotations on a binder — `(: <pat> <Type>)`
 
-type-system.md §*Annotations Constrain, Never Contradict*: an annotation participates in inference as an
-extra constraint (CDZ0203 on contradiction), and `(: e T)` is already `Hir::Annot` (`resolve.rs:826`,
-`infer.rs:578`). So an annotated binder is a **thin wrapper** — but **⚠ the peel MUST happen in
-`bind_irrefutable`'s dispatch (§5.1), NOT be assumed** (the review's §0 C3: as first drafted, `(: x T)`
-fell into the classifier's `List` arm and was rejected as a refutable ctor). The `:`-arm added to
-`bind_irrefutable` (§5.1) wraps the *scrutinee* in `Hir::Annot` and recurses on the inner pattern, so all
-three cases below are ONE code path:
+`type-system.md` §*Annotations Constrain, Never Contradict*: an annotation participates in inference as an
+extra constraint (CDZ0203 on contradiction). `(: e T)` is already `Resolved::Annot` (`infer.rs:664`), and
+a parameter annotation `(: name T)` already type-checks via `param_annot_ty` (`infer.rs:306`) /
+`param_annotation_faults` (`infer.rs:324`). So an annotated binder is a **thin wrapper**: when reading a
+binding position, peel a `(: <pat> T)` LHS to `<pat>`, and thread the annotation as a constraint on the
+bound value / formal.
 
-- **annotated value/let:** `(let (((: x Int64) v)) body)` → the `:`-arm wraps → `bind_irrefutable(x,
-  Annot(v, Int64), cont)` → `x` binds the annotated value. The `Annot` unifies `v`'s type with `Int64`
-  (CDZ0203 on mismatch).
-- **annotated destructuring:** `(: (tuple a b) (Tuple Int64 Int64))` → wrap → `bind_irrefutable((tuple a
-  b), Annot(value, (Tuple …)), cont)` — the annotation constrains the whole tuple *before* the pattern
-  takes it apart.
-- **annotated parameter:** `(def (f (: x Int64)) body)` — the parameter has no value node, so the
-  scrutinee is the param's own local: the `:`-arm wraps `Local(g)` → `bind_irrefutable(x, Annot(Local(g),
-  Int64), cont)`, and `x` binds it. **Coherence note (the review's "why both g and x?"):** `g` is the ABI
-  parameter slot (arity stays 1), `x` is the binder the body references — they are distinct `fresh_local`
-  ids, so there is NO double-bind. It is one redundant runtime copy (`x = Annot(Local g)` is a bare
-  `Local`, so it does NOT β-reduce away — `is_const`/`is_transient` reject a `Local`), leaving a live but
-  harmless `Mir::Let`. Acceptable (correct, one extra local); if the copy ever matters, annotate the
-  parameter's *signature var* directly instead (a small infer-side hook), but that is not needed for
-  correctness. It needs no infer change today (the `Annot` arm at `infer.rs:578` already does the unify).
+- **annotated let:** `(let (((: x Int64) v)) body)` — `x` binds `v` with `v`'s type unified to `Int64`.
+- **annotated destructuring:** `(: (tuple a b) (Tuple Int64 Int64))` — the annotation constrains the whole
+  tuple *before* the pattern takes it apart.
+- **annotated parameter:** `(def (f (: x Int64)) body)` — already works for a bare-name param via
+  `param_annot_ty`; a destructuring `(: (tuple a b) T)` param constrains the formal then destructures.
 
-**Scope note — type-valued / generic params: a NEW mode, NOT a reuse of this path.** type-system.md §*A
-Position That Binds A Type-Valued Parameter … MUST Be A Bidirectional-Checking Boundary* and §*Generics
-Are Type-Valued Parameters*: an annotated **type-valued** parameter (`(def (id (: x T) (: T Type)) x)`) is
-where generics plug in (#150). **⚠ The review (§0, F3) caught a trap in the earlier phrasing:** the spec
-says a type-valued-parameter position is a boundary at which a type is "synthesized by monomorphization …
-or checked against an explicit annotation, **rather than solved by unification**." The monomorphic path
-here IS `Annot`→unify — which is exactly what the spec forbids for the *type-valued* case. So #150 must
-NOT "inherit" this unify path; it plugs in a **distinct bidirectional-checking mode**. The monomorphic
-handling is valid *only because* its annotation is a concrete type over the term core (a value param, not
-a type param). Keep the two mechanisms separate; do not phrase this as "widen the `Annot`→unify path."
+Include the **monomorphic** `(: <pat> <ConcreteType>)` wrapper in A. Leave **type-valued / generic**
+annotated params (`(def (id (: x T) (: T Type)) x)`, #150) to a **distinct bidirectional-checking mode** —
+`type-system.md` says a type-valued-param position is checked, *not solved by unification*, so #150 must
+NOT reuse the `Annot`→unify path. Keep the two mechanisms separate.
 
 ---
 
 ## 7. Accept / decline / reject boundary (Increment A)
 
-**Accept** (desugars onto the green tuple-match path):
-- `name` / `_` in any binding position (unchanged behavior; now uniform).
-- `(tuple p₁ … pₙ)` nested to any depth, each `pᵢ` a name/`_`/tuple — in `let`, `def` param, `fn` param,
-  (and `do`-`def` if §5.4 shipped).
+**Accept** (resolves onto the `SumPayload` path):
+- `name` / `_` in any binding position (works today; now uniform).
+- `(tuple p₁ … pₙ)` nested to any depth, each `pᵢ` a name/`_`/tuple — in `let` (spiked), `def` param, `fn`
+  param, (and `do`-`def` if §5.4 shipped).
 - an optional monomorphic annotation `(: <pat> <ConcreteType>)` on any of the above.
 
-**Reject** (ill-formed — coded, never a silent accept):
-- a **non-total (refutable)** pattern — a *multi-variant* constructor `(Some x)`/`(Ok v)`, a literal, a
-  length-constrained list pattern → **CDZ0210** (non-exhaustive; §4 — this is the code the desugared
-  single-arm match itself emits, NOT CDZ0201).
-- a **shape-incompatible** pattern — a wrong-arity tuple `(tuple a b c)` vs a 2-tuple, or a pattern-kind
-  mismatch → **CDZ0201** (falls out of the exact-arity unify at `infer_pattern`; `02-…sexp` §"a tuple
-  pattern of the wrong arity is a type error").
-- a **non-linear** pattern (a binder repeated, flat or nested) → **CDZ0102** (§5.5, the one NEW code).
-- an annotation that contradicts the value/param type → **CDZ0203** (existing, §6).
+**Reject** (ill-formed — coded, never a silent accept; §5.3 enforces):
+- a **refutable** pattern — multi-variant ctor `(Some x)`/`(Ok v)`, a literal, a length-constrained list
+  pattern → **CDZ0210**.
+- a **shape-incompatible** pattern — a wrong-arity tuple `(tuple a b c)` vs a 2-tuple, or a kind mismatch →
+  **CDZ0201**.
+- a **non-linear** pattern (a binder repeated, flat or nested) → **CDZ0102** (`check_pattern_linear`).
+- an annotation that contradicts the value/param type → **CDZ0203**.
 
-**Decline** (irrefutable-in-principle but not-yet-supported — reject-don't-miscompile, flips to accept
-when B lands; NEVER a CDZ0201/0210 reject, §0 C3):
-- a **record** binding pattern `(record (k p) …)` → Increment B (net-new *pattern* support; §8).
-- a **single-variant-sum** binding pattern `(W x)` → Increment B (rare; §8) — `check_irrefutable`
-  distinguishes it from a refutable multi-variant ctor by the sum's variant count (§5.2 `classify_ctor`).
+**Decline** (irrefutable-in-principle but not-yet-supported — reject-don't-miscompile; NEVER a
+CDZ0201/0210 reject):
+- a **record** binding pattern `(record (k p) …)` → Increment B (§8).
+- a **single-variant-sum** binding pattern `(W x)` → Increment B (distinguished from a refutable
+  multi-variant ctor by the sum's variant count).
 - any **list** binding pattern (even the irrefutable zero-leading rest binder) → out of scope with all
   list patterns (`(needs list-patterns)`).
 
@@ -521,177 +392,123 @@ when B lands; NEVER a CDZ0201/0210 reject, §0 C3):
 
 ## 8. Increment B — records + single-variant sums in binding position (DEFERRED)
 
-Records and one-variant sums are irrefutable *in principle*, but rcdzc's match path does **not** know them
-as patterns: `infer_pattern` (`infer.rs:746`) has arms for `Wildcard`/`Local`/`Int`/`Bool`/ctor-`Apply`/
-`Tuple` only, and the single-arm-destructure guard (`infer.rs:677`) tests `Ty::Tuple(_)` only. So they are
-genuinely new pattern kinds, not just new binding sugar — hence B, not A.
+Records and one-variant sums are irrefutable *in principle*, but `find_binder_in_*` and the `SumPayload`
+path do **not** know them: `find_binder_in_tuple` handles only `tuple` heads; `find_binder_in_pattern`
+handles multi-payload variant ctors. So they are genuinely new pattern kinds, not just new binding sugar.
 
-**Record patterns.** A record is represented identically to a tuple — a name-sorted positional `arr`
-(`ty.rs:318`, `lower.rs:121` sorts fields) — so the runtime binding is the same `arr-get` walk. B adds:
-1. `infer_pattern`: a `Hir::Record` pattern arm — unify `expected` with `Ty::Record(fields)` at the
-   pattern's **exact field set** (each field a fresh var), infer each sub-pattern. (The precise-field-set
-   constraint is why this must be a *pattern*, not the record *projection* desugar: a bare
-   `Hir::RecordProj` on an unsolved var **declines** — "one field cannot pin the whole field set",
-   `infer.rs:434` — so `(def (f (record (a x))) …)` on an unannotated param could not solve its type via
-   projections. A record pattern pins the full field set at once, exactly as the tuple pattern pins arity.)
-2. the single-arm guard (`infer.rs:677`): also admit `Ty::Record`.
-3. `bind_payload`/`emit_match` (`select.rs:656`): a record pattern binds each field by `arr-get` at its
-   **name-sorted slot** — the same sort `lower.rs:121` applies to a record literal, so pattern and value
-   agree on slot order.
+**Record patterns.** A record is a name-sorted positional `arr` (like a tuple), so the runtime binding is
+the same element read. B adds a record-pattern descent (bind each field at its name-sorted slot, mirroring
+the record literal's sort) and pins the record's exact field set (a projection on an unsolved var
+declines — "one field cannot pin the whole field set" — so it must be a *pattern* that pins the full field
+set at once, exactly as the tuple pattern pins arity). A bounded, self-contained extension.
 
-This is a bounded, self-contained extension of the tuple path (a few dozen lines across three files) and a
-clean second increment. **A stopgap** — desugar a record binding pattern to `RecordProj`s *only when the
-record type is already known* (an annotated param, or a `let` whose value is a record literal / a typed
-expression) and decline on an unsolved var — is available if a record-destructuring case blocks self-host
-before B lands; but the pattern approach is the real fix (it types unannotated params).
+**Single-variant user sums.** `(type Wrap (W Int64))` makes `(W x)` irrefutable. In A the refutability
+classifier **declines** it (variant count == 1); B makes it *accept* by descending the sole variant's
+payload with no discriminant guard. Rare in the corpus; lowest priority.
 
-**Single-variant user sums.** `(type Wrap (W Int64))` makes `(W x)` irrefutable — its sole variant covers
-the type. In Increment A, `check_irrefutable`'s `classify_ctor` (§5.2) already **declines** it (variant
-count == 1 → `Reject::decline`, NOT a `CDZ0210` reject — the review's §0 C3 correction: rejecting it would
-wrongly reject a valid program a later increment intends to accept). B then makes it *accept* by extending
-`infer_pattern`/`emit_match` with a single-variant-sum pattern arm (the sum's one disc is unconditional, so
-it is a payload bind with no discriminant guard — structurally the tuple path over the payload). Rare in
-the corpus; lowest priority.
+**List patterns** are a separate feature (`(needs list-patterns)`), out of scope. The classifier
+**declines** all list patterns (rather than rejecting) so the irrefutable zero-leading rest binder is not
+mis-rejected when list patterns land.
 
-**List patterns are a separate feature entirely** — gated `(needs list-patterns)` /
-`(needs list-pattern-runtime-tail)`, out of scope here. Note the refutability nuance the review flagged
-(§0 C6): a *length-constrained* list pattern `(list x .. rest)` IS refutable (fails on the empty list), but
-the zero-leading rest binder `(list .. rest)` matches *every* list and is irrefutable. Neither is in scope
-regardless — but the classifier (§5.2) **declines** all list patterns rather than *rejecting* them, so the
-irrefutable one is not mis-rejected when list patterns land.
-
-**Empty tuple `(tuple)` / `()`.** Excluded from Increment A (§3 table). rcdzc resolves `()` to `Ty::Unit`
-but `(tuple)` to `Ty::Tuple([])`, and `unify` (`ty.rs`) treats these as **distinct** — so
-core-semantics.md's "the empty tuple IS the unit value" is not honored at the type layer, and a `(tuple)`
-binder mis-rejects against a unit-typed value. This is a pre-existing rcdzc `Ty` quirk this feature would
-merely ride; the binding-pattern increment excludes arity-0 tuple patterns until Unit/Tuple([]) identity is
-reconciled (a separate `ty.rs`/spec item). A wildcard `_` is the correct way to bind-and-ignore a unit.
+**Empty tuple `(tuple)` / `()`.** Excluded from A. rcdzc resolves `()` to `Ty::Unit` but `(tuple)` to
+`Ty::Tuple([])`, treated as distinct by `unify`, so a `(tuple)` binder would mis-reject against a
+unit-typed value. A pre-existing `Ty` quirk this feature would merely ride; a wildcard `_` is the correct
+way to bind-and-ignore a unit until `Unit`/`Tuple([])` identity is reconciled.
 
 ---
 
 ## 9. Subtleties an implementer must get right
 
 - **Arity is preserved for a destructuring parameter.** `(def (fst (tuple a b)) a)` is a **one-argument**
-  function whose argument is a pair — NOT a two-argument function. The parameter binds one anonymous local;
-  the destructure happens in the body. Do not expand a tuple param into N wasm params, or `fst`'s
-  export/call signature (`ir.rs:449`, ABI = the signature) and every call site break. (This is also why the
-  `fn`-param case keeps `Hir::Lambda.params` = the anonymous locals: β-reduction and spine-collapse rely on
-  a fixed arity — ask-81.)
-- **A binding's initializer does not see its own binders.** Resolve the `let` value in the *outer* scope
-  before introducing the pattern's binders (`let*` order is preserved because binders scope over *following*
-  bindings + the body, via the continuation, §5.1 C5 fix). Getting this backwards would let
-  `(let (((tuple a b) a)) …)` resolve the RHS `a` to the binder — an unbound-name bug. **Verified sound by
-  the review** for the shadowing case too: `(def (f x v) (let (((tuple x y) v)) x))` — the value `v`
-  resolves in the outer scope (cannot see the pattern's `x`), the pattern binders `x,y` get fresh ids via
-  `fresh_local`, and the body `x` resolves nearest-binding-first (`Scope::Bind`, `resolve.rs:641`) to the
-  pattern's `x`, not the param — correct shadowing, no fresh-id collision.
-- **The continuation, not `resolve_arm` verbatim (§5.1 C5).** `resolve_arm` (`resolve.rs:1047`) is the
-  right *shape* but hard-codes a single `&Node` body, which cannot express the "rest of a multi-binding
-  `let`" (that is bindings-plus-body). `bind_irrefutable` generalizes the body to a resolve continuation.
-  An implementer who copies `resolve_arm` literally and passes only the final body node **silently drops
-  the intervening bindings** — the one real footgun here; the continuation shape prevents it.
-- **The fold reduces a constructed scrutinee, so an in-place destructure of a literal still works.**
-  `(let (((tuple a b) (tuple 3 4))) (+ a b))` desugars to `(match (tuple 3 4) ((tuple a b) (+ a b)))`; the
-  fold keeps the `Mir::Tuple` scrutinee (`fold.rs:548`) and the select tuple path binds its elements — 7,
-  compile-time or runtime alike. No const-propagation of tuple elements is required (nice, not needed).
-- **fn-param β-reduction + α-rename — verified sound by the review.** `((fn ((tuple a b)) (+ a b)) (tuple
-  3 4))` desugars to `Apply(Lambda{[g], Match{scrut: Local(g), …}}, [Tuple(3,4)])`. The fold's β-reduce
-  α-renames the body's inner binders FIRST (`alpha_rename` recurses into `Match` arms) — so `a,b` get fresh
-  ids above every module id — THEN substitutes `g := Tuple(3,4)` into the scrutinee; the tuple match then
-  survives fold and select's tuple path destructures it. No capture. (A destructuring `fn` param that
-  *escapes* to a non-inlinable HOF declines as a runtime closure exactly as a plain one does — ask-81 — no
-  new miscompile.)
-- **Linearity must be recursive AND non-deduping (§5.5, C4)** — a shallow "immediate binders" check passes
-  the flat corpus case but FAILs the nested one; and a set-insert over the *deduping* `collect_binders`
-  never fires at all. Use a recursive, non-deduping walk.
-- **Refutable → CDZ0210 (coverage), not CDZ0201 (§4, C2).** A non-total binding pattern is the
-  non-exhaustive-single-arm-match the desugar produces, so its code is `CDZ0210` — emit the coded rejection
-  with the constructor/literal named. Reserve `CDZ0201` for a shape-incompatible pattern. Do NOT emit a
-  generic "unsupported" decline for a refutable pattern (that reads as "a later phase handles it").
-- **Wildcard-as-discard is a real drop.** `(let ((_ e)) body)` binds `e` to a throwaway local and drops it
-  — reuse the `do_seq` discard idiom (`resolve.rs:1168`) so a discarded value still type-checks (an unbound
-  name inside `e` is still CDZ0101). Do not elide `e` entirely.
-- **New corpus cases must land un-gated for the accept path.** The tuple binding-pattern cases are a new
-  capability with no `(needs …)` gate blocking them (the machinery ships in A) — add them as passing cases
-  (after the normative spec sentence lands, §10 step 0). The record/single-variant cases land gated
-  `(needs record-patterns)` / `(needs …)` so they skip until B. The linearity cases already exist gated
-  `(needs linear-patterns)`; A ungates them (or the gate is retired) once CDZ0102 lands.
+  function whose argument is a pair. The parameter occupies one slot; the destructure is in how references
+  read it. Do NOT expand a tuple param into N wasm params (breaks the export/call signature).
+- **A binding's initializer does not see its own binders.** Case 2 passes `stop_before = Some(from)`, so
+  the value resolves in the outer scope. `(let (((tuple a b) a)) …)` must resolve the RHS `a` outside the
+  pattern (an unbound-name / outer-binding, not the pattern's `a`). (Spiked: `let*` scoping — a later
+  binding seeing an earlier pattern's binder — works, §0.1.)
+- **Resolution WITHOUT validation is a miscompile generator (§0.2).** The lazy binder lookup resolves `a`
+  inside `(tuple a b c)` against a 2-tuple with no complaint. Land §5.1/5.2 (resolution) and §5.3
+  (validation) TOGETHER, or the gate regresses.
+- **`SumPayload` over a `Param` scrutinee is the param case's crux (§5.2).** Verify it infers when the
+  param type is solved from the call site — the tuple pattern must pin the tuple arity the way a match
+  tuple pattern does.
+- **Refutable → CDZ0210 (coverage), not CDZ0201 (§4).** A non-total binding pattern is the
+  non-exhaustive-single-arm-match the concept produces. Reserve CDZ0201 for a shape-incompatible pattern.
+  Do NOT emit a generic "unsupported" decline for a refutable pattern.
+- **The `(Some x)` binding today gives CDZ0101, not a clean decline (§0.2).** Because `find_binder_in_tuple`
+  only descends `tuple` heads, a `Some` head binds nothing and `x` reads as unbound. The §5.3 classifier
+  must intercept a ctor-head binding position BEFORE the binder lookup concludes "unbound", and emit
+  CDZ0210 (multi-variant) / decline (single-variant).
+- **Wildcard-as-discard is a real drop.** `(let ((_ e)) body)` binds `e` to a throwaway and drops it —
+  works today; keep it so `e`'s own faults (an unbound name inside it, CDZ0101) still surface.
+- **Linearity is recursive AND non-deduping** — already realized in `check_pattern_linear` (`lower.rs:1323`);
+  binding patterns must *call* it, not reinvent it.
 
 ---
 
 ## 10. Spec-first prerequisite, corpus payoff & what it unblocks
 
-**⚠ Step 0 — SPEC LEADS (the review's highest-priority finding, §0 C1).** No normative sentence or corpus
-case sanctions a pattern in a *binding* position today — the spec defines patterns only in `match`-arm
-("pattern") and sub-pattern ("binder") position, and the canonical "take a tuple from a parameter" idiom
-in the corpus is *projection* (`(def (fst t) (tuple.0 t))`, `05-compound-types.sexp`) or explicit
-bind-then-match. The constitution makes the executable corpus the source of truth (the compiler is a
-projection of the spec, not its source). So the FIRST unit of work is **not** the desugar — it is:
-1. add the normative capability sentence(s) to `core-semantics.md` (e.g. under a new §"A Binding Position
-   Accepts An Irrefutable Pattern" or an extension of §*A Tuple Is Deconstructible By Pattern Matching*),
-   defining that a `let` binder / parameter / `fn` param MAY hold an irrefutable pattern, desugaring to a
-   single-arm match, and that a refutable one is `CDZ0210`; and
+**⚠ Step 0 — SPEC LEADS (still owed).** `core-semantics.md` §*Patterns Compose* (line 125) sanctions
+patterns in binder positions *of a pattern*, and §137 sanctions list-element binder positions — but no
+normative sentence yet says a `let` binder / parameter / `fn` param position MAY hold an irrefutable
+pattern, nor that a refutable one is CDZ0210. The constitution makes the executable corpus the source of
+truth. So the FIRST unit of work is:
+1. add the normative capability sentence(s) to `core-semantics.md` (a new §"A Binding Position Accepts An
+   Irrefutable Pattern", defining that a `let` binder / parameter / `fn` param MAY hold an irrefutable
+   pattern binding a value of the matched type, that a refutable one is `CDZ0210` and a shape-incompatible
+   one `CDZ0201`); and
 2. author the corpus witnesses below.
-Only then does the resolve desugar (§5) implement a now-specified capability rather than invent surface.
+The spike (§0.1) proves the mechanism ahead of the spec, but the *landed* feature must implement a
+specified capability. (Ordering note: the spec sentence + corpus cases may land in the same increment as
+the code, but they must exist — a green run of a case the spec doesn't sanction is not conformance.)
 
-**New `02-binding-and-control.sexp` cases to author** (the desugar makes these pass in Increment A):
+**New `02-binding-and-control.sexp` cases to author** (the mechanism makes the accepts pass):
 - accept: a destructuring `let` `(let (((tuple a b) v)) …)`; a destructuring parameter `(def (fst (tuple a
   b)) a)`; a nested tuple binder `(let (((tuple a (tuple b c)) v)) …)`; a wildcard discard `(let ((_ e)) …)`;
   a multi-binding destructuring `let` where a later binding uses an earlier pattern's binder (the decoder
-  idiom, pins the C5 continuation-scoping);
+  idiom — pins `let*` scoping, spiked green);
 - an **annotated** binder — accept `(def (f (: x Int64)) x)`, and **reject** a *contradicting* annotation
-  `(let (((: (tuple a b) (Tuple Int64 Bool)) v)) …)` → `CDZ0203` (the review's F4 omission);
-- **reject** a refutable binding pattern — `(let (((Some x) o)) x)` → **`CDZ0210`** (the §4 rule needs a
-  witness); a literal binder `(def (f 0) …)` → `CDZ0210`;
-- **reject** a shape-incompatible binder — a wrong-arity tuple against a known 2-tuple → `CDZ0201`.
+  `(let (((: (tuple a b) (Tuple Int64 Bool)) v)) …)` → `CDZ0203`;
+- **reject** a refutable binding pattern — `(let (((Some x) o)) x)` → **`CDZ0210`**; a literal binder
+  `(def (f 0) …)` → `CDZ0210`;
+- **reject** a shape-incompatible binder — a wrong-arity tuple against a known 2-tuple → `CDZ0201`;
+- a binding-position **CDZ0102** case — `(let (((tuple x x) v)) …)` → `CDZ0102` (pins §5.3's linearity
+  wiring; the two existing linearity cases are `match` arms).
 
-**New binding-position `CDZ0102` case** (the review's F4/§5.5 gap): `(let (((tuple x x) v)) …)` →
-`CDZ0102`, gated `(needs linear-patterns)`. The two *existing* linearity cases are `match` arms, so they
-exercise the `resolve_arm` wiring ONLY — this case is what pins the `bind_irrefutable` half.
-
-**Two existing gated cases ungate:** the flat + nested linearity cases (`05-compound-types.sexp`, the
-`(case …)` at **:2561** and **:2581**) once `CDZ0102` lands (§5.5).
+**Two existing gated cases ungate NOW (independent of the rest — a quick landing).** The flat + nested
+linearity cases (`05-compound-types.sexp` :3386, :3406) still carry `(needs linear-patterns)` but the
+current binary already produces `CDZ0102` for both (verified). Remove the gate + the stale "the seed does
+not yet enforce" doc comments so they run as passing rejections.
 
 - **The self-host decoder.** `implementation/compiler/cdzc/15-decode.cdz` threads `(tuple <Ast> <offset>)`
-  through every `decode-*`; each currently pays the bind-then-`match` tax (a one-arm `(match … ((tuple ast
-  pos) …))`, e.g. `:139`). Binding patterns cut a match per decode step and read the way the spec's own
-  examples are written.
-- **Expected corpus delta:** small-to-moderate (ergonomic, not a new value domain), but **on the self-host
-  critical path** — the decoder/parser idiom — which is why #153 sits where it does.
+  through every `decode-*`, each paying a bind-then-`match` tax. Binding patterns cut a match per decode
+  step. On the self-host critical path — which is why #153 sits where it does.
 
 ---
 
 ## 11. Scope decisions (recommendations)
 
-0. **Spec first (§10 step 0).** Land the normative `core-semantics.md` sentence + corpus witnesses BEFORE
-   the desugar. Non-negotiable per the constitution (corpus = source of truth); the review flagged building
-   ahead of the spec as the top issue.
-1. **Increment split.** Ship **A** (name/`_`/tuple binding patterns + `CDZ0102` linearity) — a pure
-   `resolve` desugar + one diag code, zero downstream risk. **Defer B** (records, single-variant sums) as a
-   bounded follow-on that extends the match path itself. B *declines* (never rejects) in A.
-2. **Annotations.** Include the **monomorphic** `(: <pat> <ConcreteType>)` wrapper in A (thin, reuses
-   `Annot`; peeled in `bind_irrefutable`, §5.1). Leave **type-valued/generic** annotated params to #150's
-   bidirectional seam as a **distinct checking mode** — do NOT phrase it as "widen the `Annot`→unify path"
-   (the spec forbids solving a type-valued-param position by unification; §6 / §0 F3).
-3. **`do`-`def` pattern LHS (§5.4).** Ship only if free; else decline cleanly.
-4. **Linearity blast radius.** Wire the recursive, non-deduping `CDZ0102` check into BOTH
-   `bind_irrefutable` and `resolve_arm`, gated on a full-corpus green (target: 0 regressions from 360; the
-   two existing `match`-arm linearity cases + the new binding-position case move from skip→pass, nothing
-   else should move).
-5. **Diagnostic codes.** Refutable (non-total) binding → **CDZ0210** (not CDZ0201); shape-incompatible →
-   CDZ0201; non-linear → CDZ0102 (new); contradicting annotation → CDZ0203. See §4.
+0. **Quick win first — ungate the two linearity cases (§10).** Independent of everything else; verifies
+   currency and closes two anticipatory-pinned cases.
+1. **Spec sentence + corpus witnesses (§10 step 0)** for the binding-pattern capability.
+2. **Increment A, landed as sub-increments, gate-green each:** (a) `let` resolution (spiked) + validation
+   hook → land; (b) `def`/`fn` param resolution + validation → land; (c) monomorphic annotations → land.
+   **Resolution + validation ship together** (§5.3/§9) — resolution alone miscompiles.
+3. **Defer B** (records, single-variant sums); it *declines* (never rejects) in A.
+4. **`do`-`def` pattern LHS (§5.4)** only if free.
+5. **Diagnostic codes:** refutable → CDZ0210; shape-incompatible → CDZ0201; non-linear → CDZ0102 (existing);
+   contradicting annotation → CDZ0203.
 
 ## 12. Ladder placement & related
 
-Task **#153** (params/let as optionally-annotated patterns), NEXT after **#152** (L2+ int widths) per
-[[index-compiler-rewrite]]. It is a `resolve`-only lift that reuses the tuple single-arm match
-(`tests.rs:248`) and the `Annot` node (first-class-types L1, #150). Its linearity code (`CDZ0102`) is
-independent and closes two anticipatory-pinned corpus cases. It precedes effects (#148) and does not touch
-`Lir`/`serialize`/`Layout`/`heap`.
+Task **#153** (params/let as optionally-annotated patterns). A `resolve`-side lift that reuses the
+`SumPayload` tuple-binder path (`resolve.rs:557`, `find_binder_in_tuple` `resolve.rs:951`) shared with
+match arms, plus a validation hook mirroring `check_pattern_linear` (`lower.rs:1323`) and
+`pattern_constraints` (`lower.rs:1268`). Its linearity code (`CDZ0102`) already landed; ungating its two
+corpus cases is a free adjacent win.
 
-Related: `spec/capabilities/core-semantics.md` §§*Bindings Introduced By A Pattern* / *Patterns Compose* /
-*A Tuple Is Deconstructible By Pattern Matching*; `spec/semantics/02-binding-and-control.sexp` (the witness
-this extends) + `05-compound-types.sexp` (linearity cases); the ask-81 closures handoff (the desugar-onto-
-an-existing-reduction-tier pattern this mirrors); the learning
+Related: `spec/capabilities/core-semantics.md` §*Patterns Compose* (:125) / the tuple-pattern cases in
+`spec/semantics/02-binding-and-control.sexp`; `05-compound-types.sexp` (the two gated linearity cases,
+:3386 / :3406); the ask-81 closures handoff (the reuse-an-existing-tier pattern); the learning
 `2026-07-08-pattern-linearity-must-be-pinned-across-sub-patterns-not-only-flat.md` (the recursive-check
-tripwire); `DESIGN-effects-rcdzc.md` (house style).
+tripwire, now satisfied); `DESIGN-effects-rcdzc.md` (house style).

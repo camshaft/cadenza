@@ -1564,6 +1564,133 @@ fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
     collect_pattern_binders(db, pat, &mut seen)
 }
 
+/// Validate a pattern in a BINDING position — a `let` binder, a `def`/`fn` parameter — where there is NO
+/// alternative arm, so the pattern MUST be irrefutable (`core-semantics.md §A Binding Position Accepts An
+/// Irrefutable Pattern`). `value_ty` is the type of the value being bound (a `let` initializer's type, or
+/// a parameter's solved type), used for the shape/arity check; pass `Ty::Any` when it is not yet solved
+/// (the permissive treatment a projection of `Any` gets — no shape check, only classification+linearity).
+///
+/// A binding pattern IS a single-arm match, so an ill-formed one gets the code the desugared match would.
+/// A REFUTABLE pattern (a multi-variant constructor, a literal, a length-constrained list pattern) is
+/// CDZ0210 (non-exhaustive — the other cases are uncovered and there is no fall-through arm). A
+/// SHAPE-INCOMPATIBLE pattern (a wrong-arity tuple, a tuple pattern vs a non-tuple value) is CDZ0201. A
+/// NON-LINEAR pattern (a binder repeated, flat or nested) is CDZ0102 (via `check_pattern_linear`).
+///
+/// A pattern that is irrefutable in principle but not-yet-supported (a record pattern, a single-variant
+/// user sum, any list pattern) DECLINES (reject-don't-miscompile — a later increment accepts it), NOT a
+/// coded reject. The classifier consults the PRELUDE (a variant's owning sum + variant count), never a
+/// head-string scan, so `None` is a constructor (not a binder) and a single-variant sum is told from a
+/// multi-variant one.
+///
+/// A bare name / `_` is the trivial irrefutable pattern — Ok with no work (the common, hot binding).
+pub(crate) fn check_binding_pattern(
+    db: &mut Db,
+    pat: StructId,
+    value_ty: &crate::ty::Ty,
+) -> Result<(), Reject> {
+    // A bare name (a binder) or `_` (wildcard) — trivially irrefutable, the common case.
+    if let Some(name) = db.ast.as_name(pat) {
+        // A bare name that resolves to a NULLARY constructor (`None`) is a refutable ctor, not a binder.
+        if name != "_" && crate::eval::variant_disc_of(db, pat).is_some() {
+            return classify_binding_ctor(db, pat, value_ty);
+        }
+        return Ok(());
+    }
+    // A literal `0` / `true` / `"s"` matches ONE value of its type — refutable, CDZ0210.
+    if matches!(
+        crate::resolve::resolved_of(db, pat),
+        crate::resolved::Resolved::Int(_)
+            | crate::resolved::Resolved::Bool(_)
+            | crate::resolved::Resolved::Str(_)
+            | crate::resolved::Resolved::Float(_)
+            | crate::resolved::Resolved::Bytes(_)
+    ) {
+        return Err(Reject::coded(
+            Code::NonExhaustive,
+            "a literal pattern is refutable — it matches one value, not every value of its type, so it \
+             cannot appear in a binding position",
+        )
+        .at(pat));
+    }
+    // A compound pattern `(head arg…)`. A `tuple` head is the one accepted destructuring shape in
+    // Increment A; a constructor head is classified by variant count; a record/list head declines.
+    if is_tuple_pattern(db, pat) {
+        // Linearity across the WHOLE pattern (CDZ0102), then shape/arity against the value's type
+        // (CDZ0201) + recursion into element sub-patterns — reusing the match-arm machinery verbatim.
+        check_pattern_linear(db, pat)?;
+        let mut lit_tests = Vec::new();
+        pattern_constraints(db, pat, value_ty, Vec::new(), &mut lit_tests)?;
+        return Ok(());
+    }
+    // A `(record …)` binding pattern is irrefutable in principle but a later increment — DECLINE.
+    if db.ast.as_form(pat, "record").is_some() {
+        return Err(Reject::decline(
+            "a record binding pattern is not yet supported (Increment B)",
+        ));
+    }
+    // A `(list …)` binding pattern (length-constrained → refutable; rest-binder → irrefutable) is out of
+    // scope with all list patterns — DECLINE (not reject), so the irrefutable form is not mis-rejected.
+    if db.ast.as_form(pat, "list").is_some() {
+        return Err(Reject::decline(
+            "a list binding pattern is not yet supported",
+        ));
+    }
+    // Otherwise a constructor-headed pattern `(Some x)` / `((. Sum V) x)` — classify by variant count.
+    classify_binding_ctor(db, pat, value_ty)
+}
+
+/// Classify a CONSTRUCTOR-headed binding pattern (`(Some x)`, bare `None`, `((. Sum V) x)`): a
+/// SINGLE-variant sum is irrefutable but a later increment (DECLINE); a MULTI-variant sum is refutable
+/// (the other variants are uncovered) → CDZ0210. The head is resolved against the prelude
+/// (`variant_owner_decl` → the owning sum's declaration → its variant count), never a head-string scan.
+/// A head that is not a constructor at all is a shape error (CDZ0201).
+fn classify_binding_ctor(
+    db: &mut Db,
+    pat: StructId,
+    _value_ty: &crate::ty::Ty,
+) -> Result<(), Reject> {
+    // The constructor head: a bare name / member `(. Sum V)` used as a whole pattern, or a `(head arg…)`
+    // application's head.
+    let head = match db.ast.get(pat) {
+        crate::ast::Struct::Atom(_) => pat,
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            // A bare member `(. Sum V)` used as a whole pattern — the ctor is the pattern itself.
+            Some(first) if db.ast.as_name(first) == Some(".") => pat,
+            Some(first) => first,
+            None => {
+                return Err(Reject::coded(Code::Malformed, "an empty binding pattern").at(pat));
+            }
+        },
+    };
+    let Some(decl) = crate::eval::variant_owner_decl(db, head) else {
+        // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor).
+        return Err(Reject::coded(
+            Code::Malformed,
+            "a binding pattern head is not a tuple, record, or constructor",
+        )
+        .at(pat));
+    };
+    let variant_count = db
+        .type_decl_by_occ(decl)
+        .map(|d| d.variants.len())
+        .unwrap_or(0);
+    if variant_count == 1 {
+        // A single-variant sum's sole constructor covers the type — irrefutable, but binding-position
+        // support for it is Increment B. DECLINE (not reject) so a valid program flips to accept later.
+        return Err(Reject::decline(
+            "a single-variant-sum binding pattern is not yet supported (Increment B)",
+        ));
+    }
+    // A multi-variant constructor is refutable — the other variants are uncovered, and there is no
+    // alternative arm. CDZ0210, the non-exhaustive-single-arm-match code.
+    Err(Reject::coded(
+        Code::NonExhaustive,
+        "a multi-variant constructor pattern is refutable — the other variants are uncovered, so it \
+         cannot appear in a binding position (only in a `match` arm)",
+    )
+    .at(pat))
+}
+
 /// The recursive walk behind [`check_pattern_linear`]: insert each binder name into `seen`, faulting a
 /// repeat. See that function for the binder-vs-ctor-vs-literal classification.
 fn collect_pattern_binders(
