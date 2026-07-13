@@ -196,3 +196,33 @@
   (input  (do (def (dbl (: n Int64)) (* n 2)) (def (h (: k Int64)) (fn ((: x Int64)) (+ (dbl x) k))) (export h)))
   (call   h (: 5 Int64) (: 3 Int64))
   (output (: 11 Int64)))
+
+; The scope fence is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose result
+; the closure merely CAPTURES does NOT escape and must not be rejected. The distinction is where the
+; `ask.ask` runs: INSIDE the returned closure (above — escapes, run later outside the delegation) versus
+; in the export body PROPER (below — run at export-execution time, while the `(host (ask) …)` delegation
+; is still in dynamic scope, its result captured as a plain value). The escape check flags a
+; `Core::HostCall` only in the LIFTED closure bodies, not the whole export body — so the build-time case
+; is allowed, exactly as the intra-program analogue `(handle … (let ((v (E.get))) (fn (x) (+ x v))))`
+; compiles. (Running this needs the export-time host-call boundary — a later increment — so it declines
+; today; the point pinned here is that the COMPILE-TIME outcome is NOT the CDZ0406 over-rejection.)
+
+(case "a build-time delegated effect whose result a returned closure captures does not escape"
+  (doc    "`(def (main) (host (ask) (let ((v (ask.ask))) (fn (x) (+ x v)))))` performs `ask.ask` in the
+           `let` initializer — at export-execution time, inside the `(host (ask) …)` delegation's dynamic
+           extent, where the effect has a home — and returns a closure that captures only the plain result
+           `v`. The returned closure is effect-free; nothing crosses the host boundary performing `ask`, so
+           this is NOT an escaping effect and must not be rejected CDZ0406 (contrast the escaping case
+           above, where `ask.ask` is INSIDE the returned closure). The escape check scans the returned
+           closure's body, not the whole export body. With `ask.ask` responding 10 and the call argument 3,
+           the result is 3 + 10 = 13; running it needs the export-time host-call boundary (a later
+           increment), so a generation without it declines rather than over-rejecting CDZ0406.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (let ((v (ask.ask)))
+                  (fn ((: x Int64)) (+ x v))))) (export main)))
+  (call   main (: 3 Int64))
+  (host-responses (respond ask.ask (: 10 Int64)))
+  (output (: 13 Int64)))

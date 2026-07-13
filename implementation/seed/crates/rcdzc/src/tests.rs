@@ -20942,4 +20942,49 @@ mod closure_host_resource {
             err.code
         );
     }
+
+    /// The escape check is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose
+    /// result the closure merely CAPTURES does NOT escape and must not be rejected CDZ0406. Here `ask.ask`
+    /// runs in the `let` initializer, at export-execution time INSIDE the `(host (ask) …)` delegation's
+    /// dynamic extent (where it has a home); the returned `(fn (x) (+ x v))` captures the plain result `v`
+    /// and is effect-free. The over-rejection was scanning the WHOLE export body for a `Core::HostCall`
+    /// (catching the `make`-time one); the fix scans only the LIFTED closure bodies (the code that crosses
+    /// the boundary and runs later). This program does not yet RUN (the export-time host-call boundary is
+    /// E2-host WIP, so it declines codeless "not in the host-import set" — grades todo), but the point is
+    /// the COMPILE-TIME outcome must NOT be the CDZ0406 over-rejection. Mirrors the intra-program
+    /// `(handle … (let ((v (E.get))) (fn (x) (+ x v))))`, which compiles.
+    #[test]
+    fn a_build_time_delegated_effect_captured_by_a_closure_is_not_a_cdz0406_escape() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) \
+                   (export main))";
+        let r = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+        // Whether it compiles or declines on the E2-host boundary, it must NOT be the CDZ0406 escape
+        // over-rejection — the build-time effect is discharged in scope, not escaped.
+        if let Err(d) = &r {
+            assert_ne!(
+                d.code.as_deref(),
+                Some("CDZ0406"),
+                "a build-time delegated effect the closure only captures must NOT be a CDZ0406 escape; \
+                 got: {:?} / {}",
+                d.code,
+                d.message
+            );
+        }
+        // The genuine escape — the effect performed INSIDE a NESTED (curried) returned closure — is still
+        // caught, so the fix did not blind the check to a real escape reachable only through nesting.
+        let nested = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (fn ((: x Int64)) (fn ((: y Int64)) (+ (+ x y) (ask.ask)))))) \
+                   (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(nested)))
+            .expect_err("an effect inside a nested returned closure still escapes");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0406"),
+            "a nested escaping closure must still reject CDZ0406, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
 }
