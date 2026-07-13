@@ -1530,6 +1530,15 @@ fn load_program_spanned(
         let spans = parsed.spans.remap(&id_map, arenas.structure.len());
         Ok((source, arenas, spans))
     } else {
+        // An EMPTY (or whitespace-only) s-expr source has NO top-level form. Report it as an "empty
+        // program" error, matching the ML branch (whose `read_ml` surfaces "empty program"): otherwise
+        // the `read_all_spanned` fallback below builds a rootless synthetic `(do)` that silently compiles
+        // to nothing, so `cdz check emptyfile.sexp` exits CLEAN — misleading the user into thinking their
+        // file checked. (Scoped to the whitespace-only case, the common "I created the file but haven't
+        // written anything" mistake; a comment-only file is a rarer edge left to the fallback.)
+        if source.trim().is_empty() {
+            return Err(format!("{file}:1:1: error: empty program"));
+        }
         // Mirror the driver's root convention (`query::driver::load`): a SINGLE top-level form stays
         // BARE (so a lone `(module …)`/`(def …)` is the root the compiler scans), and only MULTIPLE
         // forms wrap in a synthetic `(do …)`. `read_spanned` succeeds iff there's exactly one form
@@ -1941,6 +1950,27 @@ mod tests {
         std::fs::write(dir.join("README.md"), "no source here").unwrap();
         let err = expand_input_specs(&[dir.to_string_lossy().into_owned()]).unwrap_err();
         assert!(err.contains("no source files"), "got {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_sexpr_program_is_an_error_not_a_silent_pass() {
+        // An empty (or whitespace-only) `.sexp` has no top-level form. It must report "empty program"
+        // like the ML surface does, NOT silently build a rootless `(do)` that checks clean (which once
+        // let `cdz check empty.sexp` exit 0 — misleading the author). A valid single-form file still
+        // loads. Exercised through `load_program_spanned`, the load boundary.
+        let dir = tmp("emptyprog");
+        let empty = dir.join("e.sexp");
+        std::fs::write(&empty, "   \n  ").unwrap();
+        let err = load_program_spanned(&empty.to_string_lossy())
+            .expect_err("an empty s-expr program must error");
+        assert!(err.contains("empty program"), "got {err}");
+        let ok = dir.join("v.sexp");
+        std::fs::write(&ok, "(module m (def (a) 1) (export a))").unwrap();
+        assert!(
+            load_program_spanned(&ok.to_string_lossy()).is_ok(),
+            "a valid single-form s-expr file still loads"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
