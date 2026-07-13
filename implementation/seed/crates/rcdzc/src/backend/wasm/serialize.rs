@@ -48,6 +48,36 @@ fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
     item
 }
 
+/// The CORE functype `0x60 <params-vec> <results-vec>` of a HOST-delegated op — its parameter and result
+/// CORE valtype bytes (`AbiValType::core_byte`). A `Unit` domain/result contributes no core slot (it is
+/// elided at the boundary), so `params`/`result` already hold only the scalar slots.
+fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
+    let mut item = vec![0x60];
+    let mut params = Vec::new();
+    for p in &f.params {
+        params.push(p.core_byte());
+    }
+    item.extend_from_slice(&wasm_vec(f.params.len(), &params));
+    match f.result {
+        Some(r) => item.extend_from_slice(&wasm_vec(1, &[r.core_byte()])),
+        None => item.extend_from_slice(&wasm_vec(0, &[])),
+    }
+    item
+}
+
+/// One core import item for a HOST op: `<mod-len>"host" <name-len><name> 00 <typeidx>` — imported from
+/// module `"host"` (the name the component's host-instance is bound under), the op resolved by its name.
+fn host_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
+    const HOST_MODULE: &str = "host";
+    let mut item = uleb_bytes(HOST_MODULE.len() as u64);
+    item.extend_from_slice(HOST_MODULE.as_bytes());
+    item.extend_from_slice(&uleb_bytes(op_name.len() as u64));
+    item.extend_from_slice(op_name.as_bytes());
+    item.push(0x00); // import desc: func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
 /// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
 /// name to its core function index (its position `0..k` in the import section), so a `CallImport`
 /// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
@@ -112,6 +142,13 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             let idx = import_index.get(name).copied().unwrap_or(u32::MAX);
             out.push(op::CALL);
             uleb128(idx as u64, out);
+        }
+        Lir::CallHostImport(index) => {
+            // A host import occupies core-func index `index` — the host-import set is laid FIRST in the
+            // core module's import section (this increment is host-ONLY, so no runtime ops precede it, and
+            // the index is exactly the op's position in the host-import set). `call <index>`.
+            out.push(op::CALL);
+            uleb128(*index as u64, out);
         }
         Lir::If(bt) => {
             out.push(op::IF);
@@ -396,14 +433,41 @@ pub fn core_module(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    let n = funcs.len();
-    let import_count = imports.len();
+    core_module_impl(funcs, imports, &[], layout)
+}
 
-    // Type section: the IMPORT functypes first (type indices `0..import_count`), then one functype per
-    // defined function (type indices `import_count..import_count+n`). The type index space is separate
-    // from the function index space, but numbering imports' types first keeps a defined func's type
-    // index equal to `import_count + its emission position`, which the function section references.
+/// [`core_module`] with a leading HOST-import set (E2h-2): `host_fns` are host-delegated ops imported
+/// from module `"host"`, occupying core-func indices `0..h` AHEAD of the runtime ops and defined funcs.
+/// The host-only scope (this increment) means `imports` is empty when `host_fns` is non-empty, but the
+/// layout is uniform (host first, then runtime, then defined). Kept a separate entry so the runtime path
+/// is byte-identical.
+pub fn core_module_with_host(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, imports, host_fns, layout)
+}
+
+fn core_module_impl(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    let n = funcs.len();
+    let h = host_fns.len();
+    let import_count = h + imports.len();
+
+    // Type section: HOST import functypes first (type indices `0..h`), then RUNTIME import functypes
+    // (`h..import_count`), then one functype per defined function (`import_count..import_count+n`).
+    // Numbering imports' types first keeps a defined func's type index equal to `import_count + its
+    // emission position`, which the function section references.
     let mut type_items = Vec::new();
+    for f in host_fns {
+        type_items.extend_from_slice(&host_import_functype(f));
+    }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
     }
@@ -415,18 +479,22 @@ pub fn core_module(
         &wasm_vec(import_count + n, &type_items),
     );
 
-    // Import section (id 2) — one func import per runtime op, in order, from module `"heap"`. Occupies
-    // core FUNCTION indices `0..import_count`. Omitted entirely when there are no imports. The same
-    // order fixes the `import_index` map a `CallImport` resolves against, so an op's call index equals
-    // its position here.
+    // Import section (id 2) — HOST func imports first (from module `"host"`, indices `0..h`), then one
+    // func import per runtime op (from module `"heap"`, `h..import_count`). Omitted entirely when there
+    // are no imports of either kind. The order fixes both the host-import index a `CallHostImport`
+    // resolves against and the `import_index` map a runtime `CallImport` resolves against.
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let import_sec = if import_count == 0 {
         Vec::new()
     } else {
         let mut import_items = Vec::new();
-        for (i, o) in imports.iter().enumerate() {
-            import_items.extend_from_slice(&import_item(o.name, i as u32));
-            import_index.insert(o.name, i as u32);
+        for (i, f) in host_fns.iter().enumerate() {
+            import_items.extend_from_slice(&host_import_item(&f.op, i as u32));
+        }
+        for (j, o) in imports.iter().enumerate() {
+            let ti = (h + j) as u32;
+            import_items.extend_from_slice(&import_item(o.name, ti));
+            import_index.insert(o.name, ti);
         }
         section(2, &wasm_vec(import_count, &import_items))
     };

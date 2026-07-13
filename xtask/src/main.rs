@@ -620,13 +620,17 @@ fn run_program(
     program: &str,
     modules: &[(String, String)],
     call: Option<&Call>,
+    host_responses: &[(String, String)],
     target: GateTarget,
 ) -> Ran {
     match target {
-        GateTarget::Wasm => run_program_wasm(tools, store, program, modules, call),
+        GateTarget::Wasm => run_program_wasm(tools, store, program, modules, call, host_responses),
         // The Rust backend has no package-linking path yet — a multi-file case declines there (Todo).
         GateTarget::Rust if !modules.is_empty() => Ran::Declined { code: None },
         GateTarget::RustAsync if !modules.is_empty() => Ran::Declined { code: None },
+        // The Rust backend has no host-boundary path — a host-delegating case declines there (Todo).
+        GateTarget::Rust if !host_responses.is_empty() => Ran::Declined { code: None },
+        GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
         GateTarget::Rust => run_program_rust(tools, program, call, false),
         GateTarget::RustAsync => run_program_rust(tools, program, call, true),
     }
@@ -642,6 +646,7 @@ fn run_program_wasm(
     program: &str,
     modules: &[(String, String)],
     call: Option<&Call>,
+    host_responses: &[(String, String)],
 ) -> Ran {
     use std::io::Write;
     use std::process::Stdio;
@@ -674,6 +679,12 @@ fn run_program_wasm(
         for arg in &call.args {
             run.arg("--arg").arg(arg);
         }
+    }
+    // HOST-CALL RESPONSES (E2h): a program that delegates an effect to the host consumes these in order.
+    // Each `(op, value)` becomes `--host-response op=value`; `cdz-run` binds the imported ops to return
+    // them. Empty for a non-host case (no flags added → byte-identical invocation to before).
+    for (op, value) in host_responses {
+        run.arg("--host-response").arg(format!("{op}={value}"));
     }
     let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
     child.stdin.take().unwrap().write_all(&component).ok();
@@ -1484,6 +1495,7 @@ fn gate_one_case(
                         &rec.program,
                         &rec.modules,
                         t.call.as_ref(),
+                        &rec.host_responses,
                         target,
                     )
                 })
@@ -1551,6 +1563,10 @@ struct CorpusRecord {
     /// blunt whole-feature skip that hid a case running to a WRONG value as a benign skip.)
     #[allow(dead_code)]
     needs: Vec<String>,
+    /// The HOST-CALL RESPONSES (E2h) — `(op, value)` pairs from the record stream's `host-response`
+    /// lines, in call order. A host-delegating case's program consumes these; the wasm gate driver
+    /// forwards each to `cdz-run --host-response`. Empty for a non-host case.
+    host_responses: Vec<(String, String)>,
 }
 
 /// One (call, expected-payload) trial of a case — a single run of the compiled program.
@@ -1596,6 +1612,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let (mut desc, mut prog, mut needs) = (String::new(), String::new(), Vec::new());
     let mut modules: Vec<(String, String)> = Vec::new();
     let mut trials: Vec<Trial> = Vec::new();
+    let mut host_responses: Vec<(String, String)> = Vec::new();
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
         if line == "---" {
@@ -1605,6 +1622,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 modules: std::mem::take(&mut modules),
                 trials: std::mem::take(&mut trials),
                 needs: std::mem::take(&mut needs),
+                host_responses: std::mem::take(&mut host_responses),
             });
             // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
             call_export = None;
@@ -1637,6 +1655,13 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                     });
                 }
                 "needs" => needs.push(val.to_string()),
+                // `host-response\t<op>\t<value>` — a recorded host-call response (two tab-separated
+                // values). Split the op off the value.
+                "host-response" => {
+                    if let Some((op, value)) = val.split_once('\t') {
+                        host_responses.push((op.to_string(), value.to_string()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -1660,6 +1685,7 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
                 &rec.program,
                 &rec.modules,
                 t.call.as_ref(),
+                &rec.host_responses,
                 target,
             )
         })

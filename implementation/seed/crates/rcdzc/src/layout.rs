@@ -77,6 +77,13 @@ pub struct Layout {
     /// inert STUB and gets NO funcref-table element (never called), so a dead lift is neither unsound nor
     /// referenced. `true` for every slot of a program whose closures are all live.
     pub lifted_reached: Vec<bool>,
+    /// The HOST-import order (E2h-2): `(effect, op)` name pairs, one per host-delegated operation the
+    /// program performs, in the order the backend lays them in the core module's import section. A
+    /// `Core::HostCall` resolves its `(effect, op)` to a core-func index by its position here. Empty for a
+    /// program that delegates no effect (byte-identical to before). Target-agnostic (plain names), so it
+    /// lives on the layout the backend fills — set by the backend's `with_host_order` once the set is
+    /// collected, mirroring how `import_base` is fixed once the runtime-op set is known.
+    pub host_order: Vec<(String, String)>,
 }
 
 impl Layout {
@@ -112,6 +119,7 @@ impl Layout {
             export_of_def,
             lifted,
             lifted_reached,
+            host_order: Vec::new(),
         }
     }
 
@@ -123,6 +131,25 @@ impl Layout {
             import_base,
             ..self.clone()
         }
+    }
+
+    /// A copy of this layout with the HOST-import order set (E2h-2) — the `(effect, op)` name pairs a
+    /// `Core::HostCall` resolves its call index against. Set by the backend once it has collected the
+    /// program's host-import set (like `with_import_base` for the runtime-op count).
+    pub fn with_host_order(&self, host_order: Vec<(String, String)>) -> Layout {
+        Layout {
+            host_order,
+            ..self.clone()
+        }
+    }
+
+    /// The core-func index of the host-delegated op `(effect, op)` — its position in `host_order`. `None`
+    /// if the program does not delegate it (a compiler bug — the order is collected from the same
+    /// `Core::HostCall` nodes selection emits).
+    pub fn host_index(&self, effect: &str, op: &str) -> Option<usize> {
+        self.host_order
+            .iter()
+            .position(|(e, o)| e == effect && o == op)
     }
 
     /// The absolute wasm-function index of definition `def`, or `None` if it is not emitted. Imports

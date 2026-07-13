@@ -967,7 +967,7 @@ todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a program that makes a host call has that call in its observable behavior
-todo	a program uses a response-returning delegated host function's return value
+pass	a program uses a response-returning delegated host function's return value
 todo	a projected tuple element IS observed, so its trap occurs (the anchor)
 todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
@@ -995,7 +995,7 @@ todo	a recursive sum consumer whose arguments are recursive sum producers compil
 todo	a recursive sum type works with pattern matching
 todo	a recursively-built binary tree renders its full runtime structure
 todo	a recursively-built linked list renders its full runtime spine
-todo	a run's result is a deterministic function of a host call's recorded response
+pass	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime symbol compared to an interned constant matches by content
@@ -1182,7 +1182,7 @@ todo	the value-yielding remove reports the value it dropped
 todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
 todo	two equal chars compare equal
-todo	two host calls consume their responses in order
+pass	two host calls consume their responses in order
 todo	two maps of different sizes are unequal, not a type error
 todo	two maps with different keys are unequal, not a type error
 todo	two rationals denoting the same number are equal regardless of how they were written

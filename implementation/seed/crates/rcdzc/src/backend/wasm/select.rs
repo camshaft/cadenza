@@ -3101,13 +3101,26 @@ fn emit(
             }
             Ok(())
         }
-        // A HOST CALL — a perform delegated to the component boundary. The scalar emit (args + a call to
-        // the imported function) arrives in the next increment (E2h-2), once the host-import set is laid
-        // out and the serializer can resolve the (effect, op) pair to a core-func index. For now the IR
-        // node exists (E2h-1) but declines to emit — a Todo, never a miscompile.
-        Core::HostCall { .. } => Err(Reject::decline(
-            "a host call's boundary import is not yet emitted (E2h-2)",
-        )),
+        // A HOST CALL — a perform delegated to the component boundary. Emit each scalar argument (in
+        // order), then `call <host-import-index>` (the imported op's core-func index, its position in the
+        // program's host-import set, resolved via `layout.host_index`). A `Unit` argument occupies no
+        // boundary slot, so it is skipped (a nullary op `(E.op)` pushes nothing). The op's scalar result
+        // is left on the stack by the imported call.
+        Core::HostCall {
+            effect, op, args, ..
+        } => {
+            let index = layout.host_index(&effect, &op).ok_or_else(|| {
+                Reject::decline("a host call's operation is not in the host-import set")
+            })?;
+            for &arg in &args {
+                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
+                    continue; // a unit argument carries no boundary value
+                }
+                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            }
+            out.push(Lir::CallHostImport(index));
+            Ok(())
+        }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),

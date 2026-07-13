@@ -863,6 +863,7 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
         args: vec!["100".to_string(), "50".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(s, "150", "narrow heap round-trip"),
@@ -908,6 +909,7 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
         args: vec!["41".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -951,6 +953,7 @@ fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
         args: vec!["41".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -1015,6 +1018,7 @@ fn a_recursive_runtime_tuple_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -1051,6 +1055,7 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1085,6 +1090,7 @@ fn a_nested_runtime_tuple_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1120,6 +1126,7 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1152,6 +1159,7 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -4030,6 +4038,7 @@ mod recursion {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "258"),
@@ -4066,6 +4075,7 @@ mod match_engine {
             args,
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -4205,6 +4215,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -4391,6 +4402,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4494,6 +4506,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4539,6 +4552,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "if-list-len b={arg}"),
@@ -4707,6 +4721,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "60", "runtime Bytes.at byte-sum"),
@@ -4736,6 +4751,7 @@ mod match_engine {
             args: vec!["5".to_string()],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4763,6 +4779,7 @@ mod match_engine {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&component(src), &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => s,
@@ -5131,6 +5148,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "if-bytes-len b={arg}"),
@@ -5155,6 +5173,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -5344,6 +5363,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -5421,6 +5441,7 @@ mod match_engine {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             cdz_run::run(&bytes, &opts).expect("run")
         };
@@ -5462,6 +5483,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -6213,6 +6235,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: None,
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "f {arg}"),
@@ -6454,6 +6477,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "15", "sm(count 5)"),
@@ -6511,6 +6535,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -6611,6 +6636,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: None,
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -6643,6 +6669,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "guarded variant f({arg})"),
@@ -6799,6 +6826,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "chained guards f({arg})"),
@@ -8436,6 +8464,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run phantom-param value-eq") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "1", "(Ok (sumto 3)) equals (Ok 6)"),
@@ -9890,6 +9919,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "generic pick {arg}"),
@@ -9921,6 +9951,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -9976,6 +10007,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
@@ -10035,6 +10067,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "prelude pick {arg}"),
@@ -10065,6 +10098,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => {
@@ -10103,6 +10137,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => {
@@ -10491,6 +10526,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -10530,6 +10566,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -10562,6 +10599,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -10801,6 +10839,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
@@ -10842,6 +10881,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
@@ -10886,6 +10926,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -10924,6 +10965,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "code {arg}"),
@@ -10960,6 +11002,7 @@ mod stage1 {
             args: vec!["0".to_string()],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run value-eq-in-loop") {
             cdz_run::Outcome::Value(s) => {
@@ -11035,6 +11078,7 @@ mod stage1 {
                 args: vec!["0".to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "find(0) = {want} ({label})"),
@@ -11565,6 +11609,7 @@ mod stage1 {
             args: vec![arg.to_string()],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -11736,6 +11781,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
@@ -13457,6 +13503,7 @@ mod r2_runtime_resource {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&comp, &opts).expect("run composed") {
             cdz_run::Outcome::Value(s) => Some(s),
