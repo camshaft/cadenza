@@ -948,8 +948,28 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
-        // No `(meta t)` (e.g. a bare type constructor whose result is a type value) → `Any`.
+        // No `(meta t)` scheme. A RUNTIME FUNCTION VALUE head whose type is directly a `Ty::Fn` — a
+        // closure bound out of a compound by a match binder (`(match t ((T.Mk f) (f 5)))`, where `f`
+        // reads the `T.Mk` payload arrow), or a function-typed parameter — has no prelude scheme (a
+        // `SumPayload`/`Proj`/`Param` binder is not a prelude entry), but its OWN type carries the arrow.
+        // Peel one arrow per argument to get the result: `f : (-> Int64 Int64)` applied to one arg is
+        // `Int64`. Without this the application typed `Any`, leaving the enclosing function's return type
+        // non-machine ("function return type has no machine representation"). A prelude sum like `Some`
+        // resolved WITHOUT this because its ctor scheme threads the payload type; a USER sum's
+        // payload-bound closure relies on this arm. (Applied to more args than the arrow takes stops at
+        // the non-function tail — a fault reported elsewhere.)
         None => {
+            let head_ty = type_of(db, head);
+            if matches!(head_ty, Ty::Fn(_, _)) {
+                let mut cur = head_ty;
+                for _ in args {
+                    match cur {
+                        Ty::Fn(_, result) => cur = *result,
+                        _ => break,
+                    }
+                }
+                return cur;
+            }
             trace!(target: "rcdzc::infer", head = head.0, "apply: head has no (meta t) scheme → Any");
             return Ty::Any;
         }

@@ -129,6 +129,22 @@
   (call   main (: 100 Int64))
   (output (: 105 Int64)))
 
+(case "a closure carried in a USER-declared sum's payload is extracted and applied"
+  (doc    "The USER-SUM companion of the built-in-payload closure case: `(type T (Mk (-> Int64 Int64)))`
+           declares a variant carrying a FUNCTION, and `(T.Mk (fn (n) (* n 2)))` stores a closure in it.
+           `(match … ((T.Mk f) (f 5)))` extracts and applies it → 10. Unlike a built-in `Some`/`Ok`
+           (whose ctor scheme threads the payload type so the extracted closure's application types
+           directly), a USER variant's payload is a declared arrow `(-> Int64 Int64)` reached through the
+           payload binder; applying it must peel that arrow to type the result. Pins that a closure
+           carried in a user-declared sum applies exactly as one in a built-in sum — the callback-in-a-
+           variant idiom a user's own event/AST types rely on. `needs sum-type-declaration`.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Mk (-> Int64 Int64)))
+            (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5))))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing

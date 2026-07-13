@@ -61,6 +61,7 @@ pass	a closure argument is another closure's result
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
+pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a comparison-predicate function returns its boolean result

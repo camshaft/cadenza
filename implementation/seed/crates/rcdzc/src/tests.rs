@@ -7045,6 +7045,7 @@ mod stage1 {
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
+
     /// Compile `(module m (def (main) BODY) (export main))` and run `main`, returning its result
     /// decoded to `T`. Generic over the boundary type: adding a new one is one more `impl FromVal`.
     fn run_main_as<T: FromVal>(body: &str) -> T {
@@ -11081,6 +11082,19 @@ mod stage1 {
                 "Some payload, TWO args (multi-param closure)",
                 "(module m (def (main) \
                    (match (Some (fn ((: a Int64) (: b Int64)) (+ a b))) ((Some f) (f 3 4)) ((None _) 0))) \
+                 (export main))",
+                "7",
+            ),
+            (
+                "USER-SUM payload, single arg",
+                "(module m (type T (Mk (-> Int64 Int64))) \
+                   (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5)))) (export main))",
+                "10",
+            ),
+            (
+                "USER-SUM payload, curried TWO args",
+                "(module m (type T (Mk (-> Int64 (-> Int64 Int64)))) \
+                   (def (main) (match (T.Mk (fn ((: a Int64) (: b Int64)) (+ a b))) ((T.Mk f) (f 3 4)))) \
                  (export main))",
                 "7",
             ),
