@@ -320,6 +320,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // reachability notwithstanding. So keep the `Core::If` when the untaken branch is a non-trap
         // poison, letting that fault surface; fold otherwise. A runtime condition stays a `Core::If`.
         Resolved::If { cond, then_, else_ } => {
+            // NEGATED-CONDITION BRANCH SWAP: `(if (not c) t e)` ≡ `(if c e t)` — drop the negation by
+            // swapping the branches. The `not` (an `i32.eqz`) is pure and `c` is evaluated either way (so
+            // its trap, if any, is preserved), and the two forms select the same branch for every `c`. If
+            // `c`'s core is `Core::Not { operand }`, re-drive the fold with `operand` as the condition and
+            // the branches swapped — reusing the EXISTING `operand`/branch occurrences (no synthesis). A
+            // `(not (not c))` unwinds one layer per swap and the inner `Not` fold cancels the rest.
+            let (cond, then_, else_) = match core_of(db, cond) {
+                Core::Not { operand } => (operand, else_, then_),
+                _ => (cond, then_, else_),
+            };
             // CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition (runtime `c` only). Within the
             // THEN-branch `c` is known TRUE, within the ELSE-branch FALSE — so a branch that is ITSELF
             // `(if c' A B)` with `c'` EQUIVALENT to `c` (a syntactically-equal PURE condition; with no
@@ -3920,13 +3930,9 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
         // canonical form needs machinery this increment does not emit, or it is not a runtime value that
         // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
-        Ty::List(_)
-        | Ty::Bytes
-        | Ty::String
-        | Ty::Float
-        | Ty::Fn(_, _)
-        | Ty::Type
-        | Ty::Any => false,
+        Ty::List(_) | Ty::Bytes | Ty::String | Ty::Float | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
+            false
+        }
     }
 }
 

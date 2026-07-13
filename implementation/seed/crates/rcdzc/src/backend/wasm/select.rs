@@ -5560,6 +5560,53 @@ mod tests {
     }
 
     #[test]
+    fn a_negated_if_condition_swaps_branches_and_drops_the_eqz() {
+        // `(if (not c) a b)` ≡ `(if c b a)`: the negation is absorbed by swapping the branches — no
+        // `i32.eqz`. It then selects branchlessly (leaf branches): `b ; a ; c ; select`, where the
+        // branch operands are swapped (else-then `a`, then-first `b`) vs the un-negated `(if c a b)`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) (if (not c) a b)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(2), // b (the else branch, now first — swapped)
+                Lir::LocalGet(1), // a (the then branch)
+                Lir::LocalGet(0), // c (the un-negated condition)
+                Lir::Select,
+            ],
+            "the negation is absorbed by the branch swap — no i32.eqz"
+        );
+        assert!(
+            !f.code.contains(&Lir::I32Eqz),
+            "the `not` must be gone (swapped into the branch order), got: {:?}",
+            f.code
+        );
+        // A double negation `(if (not (not c)) a b)` cancels back to the un-swapped order `a ; b ; c`.
+        let ast2 = crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) (if (not (not c)) a b)) (def (main) 0) (export main))",
+        );
+        let mut db2 = Db::load(ast2);
+        let layout2 = layout_of(&mut db2);
+        let (params2, body2) = function_of(&mut db2, "f");
+        let f2 = select_function(&mut db2, body2, &params2, &layout2).expect("select");
+        assert_eq!(
+            f2.code,
+            vec![
+                Lir::LocalGet(1),
+                Lir::LocalGet(2),
+                Lir::LocalGet(0),
+                Lir::Select
+            ],
+            "double negation cancels — branches back in original order, no eqz"
+        );
+    }
+
+    #[test]
     fn keeps_the_structured_if_when_a_branch_is_not_a_cheap_leaf() {
         // A branch that is NOT a cheap trap-free leaf (here `(+ a a)`, a checked add) must keep the
         // structured `if`/`else`/`end`: `select` evaluates BOTH branches unconditionally, so converting
