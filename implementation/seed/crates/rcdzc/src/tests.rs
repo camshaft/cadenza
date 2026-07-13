@@ -4247,6 +4247,128 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_control_flow_operand_of_a_narrow_op_is_width_normalized_to_the_op() {
+        // ⚠ INVALID WASM regression: when an `if`/`match`/`let` is an OPERAND of a NARROW arith/bitwise op
+        // and its branches are bare deferred-width literals, the control-flow node types as its own join
+        // (Int64 = an i64 slot) while the enclosing op emits at the narrow width (an i32 slot). The i64
+        // operand fed the i32 op and wasm REJECTED the module ("expected i32, found i64"). Unlike a DIRECT
+        // literal operand (grounded to the op width) or a BARE `if` RESULT (grounded via the if-branch
+        // path), this operand slipped through both. Fixed by normalizing at the CONSUMING site
+        // (`emit_operand`): an i64-slot operand feeding an i32 op is wrapped (`i32.wrap_i64`) — sound
+        // because a genuine Int64-vs-narrow disagreement is a CDZ0203 fault that aborts before emit, so an
+        // i64 operand reaching a narrow op is necessarily a deferred literal whose low bits ARE its value,
+        // and the op's own range-check still traps a true overflow. Values + trap parity across +/&/* and
+        // Int8/UInt8/Int16/Int32, both branch orders, plus a `let`- and a `match`-shaped operand:
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int8)",
+                &[Val::Bool(true)]
+            ),
+            13
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int8)",
+                &[Val::Bool(false)]
+            ),
+            23
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (& (if c 10 20) 7) Int8)",
+                &[Val::Bool(true)]
+            ),
+            2 // 10 & 7
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (* (if c 3 4) 5) Int8)",
+                &[Val::Bool(false)]
+            ),
+            20
+        );
+        // The narrow width can come purely from a PARAM (no annotation) — an ordinary well-typed program.
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(+ x (if (< x 0) 1 2))", &[Val::S8(5)]),
+            7
+        );
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(+ x (if (< x 0) 1 2))", &[Val::S8(-3)]),
+            -2
+        );
+        // UInt8 / Int16 / Int32 (all ≤32-bit i32 slots) normalize the same way.
+        assert_eq!(
+            run::<u8>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) UInt8)",
+                &[Val::Bool(true)]
+            ),
+            13
+        );
+        assert_eq!(
+            run::<i16>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int16)",
+                &[Val::Bool(false)]
+            ),
+            23
+        );
+        assert_eq!(
+            run::<i32>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int32)",
+                &[Val::Bool(true)]
+            ),
+            13
+        );
+        // A `let`- and a `match`-shaped operand reach the same consuming path.
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (let ((y (if c 10 20))) y) 3) Int8)",
+                &[Val::Bool(true)]
+            ),
+            13
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (& (match x (0 10) (_ 20)) 7) Int8)",
+                &[Val::S8(1)]
+            ),
+            4 // x≠0 → 20; 20 & 7
+        );
+        // TRAP PARITY: the enclosing op's range-check still fires — `(+ (if c 100 20) 100)` at Int8 gives
+        // 200 (> 127) on the true branch → trap, 120 on the false branch → fine.
+        assert!(traps(
+            "(: c Bool)",
+            "(: (+ (if c 100 20) 100) Int8)",
+            &[Val::Bool(true)]
+        ));
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (if c 100 20) 100) Int8)",
+                &[Val::Bool(false)]
+            ),
+            120
+        );
+        // A same-width (Int64) control-flow operand is UNCHANGED — no wrap, i64 throughout.
+        assert_eq!(
+            run::<i64>(
+                "(: c Bool)",
+                "(: (+ (if c 10 20) 3) Int64)",
+                &[Val::Bool(true)]
+            ),
+            13
+        );
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
@@ -10568,6 +10690,51 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_non_exhaustive_match_on_a_function_param_surfaces_in_the_diagnostics_query() {
+        // The `diagnostics()` query (what `cdz check`/`--json`/`fix` run) checks well-formedness over
+        // EVERY def body, but the reached-poison (lowering) walk runs only on nullary EXPORTED bodies — so
+        // a non-exhaustive match on a function PARAMETER (the common case) was silently missed by `check`.
+        // Now `collect_node`'s match arm surfaces the CDZ0210 (with its "add the missing arm" fix), whether
+        // the def is exported or not, so an agent using `check` sees the actionable fix.
+        let src_exported = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2))) (export f))";
+        let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src_exported)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+            .collect();
+        assert_eq!(d.len(), 1, "one non-exhaustive fault: {d:?}");
+        assert!(
+            d[0].message.contains("`D`") && d[0].message.contains("not covered"),
+            "names the missing variant: {}",
+            d[0].message
+        );
+        let fix = d[0].fix.as_ref().expect("carries the add-arm fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(fix.replacement, "(D unit)");
+
+        // A NON-exported function's non-exhaustive match is caught too — it escapes emission entirely
+        // (dead, never laid out), so this is the only place it is reported.
+        let src_unexported = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2))) (def (main) 0) (export main))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(src_unexported)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "a non-exhaustive match in an uncalled function is still flagged"
+        );
+
+        // An EXHAUSTIVE match stays clean — no false positive.
+        let src_ok = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2) ((D) 3))) (export f))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(src_ok)))
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0210")),
+            "an exhaustive match produces no non-exhaustive fault"
+        );
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.
@@ -13562,6 +13729,50 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_state_threading_handler_does_not_leak_the_internal_specialization_name() {
+        // A recursive effectful def under a STATE-THREADING handler whose arm resumes WITH THE STATE and
+        // threads a changed one — `(resume s (+ s 1))` — must compile without leaking the internal
+        // specialization state-param name (`walk#eff{n}$s{k}`) as a CDZ0101 unbound-name error. The
+        // specialization synthesizes a trailing `$s{k}` state param; the arm's resume VALUE (`s`,
+        // substituted with a reference to that param) was extracted straight off the discarded `resume`
+        // node, so its parent chain did not reach the synthesized def → the state-param reference resolved
+        // UNBOUND. Copying the extracted resume value/next-state re-parents them into the threaded body so
+        // the reference resolves. `walk 3` ticks state 0→1→2→3 but returns the base 0.
+        let src = "(do (effect Tick (op tick (-> Unit Int64))) \
+                   (def (walk (: n Int64)) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1))))) \
+                   (def (main) (handle 0 ((Tick.tick (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (export main))";
+        let r = compile_component(&crate::codec::encode(&parse(src)));
+        // Must COMPILE (not the CDZ0101 internal-name leak). If it declines for another reason it must
+        // still not surface a `$`-suffixed internal name.
+        match &r {
+            Ok(b) => assert_eq!(
+                run_returns::<i64>(b, "main"),
+                0,
+                "the state-threading recursive walk returns the base 0"
+            ),
+            Err(d) => panic!(
+                "must compile; got {:?} / {} (a `$`-suffixed internal name here is the leak bug)",
+                d.code, d.message
+            ),
+        }
+        // A BARE-name recursive parameter (no annotation) exhibits the same path — pin it too.
+        let bare = "(do (effect Tick (op tick (-> Unit Int64))) \
+                   (def (walk n) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1))))) \
+                   (def (main) (handle 0 ((Tick.tick (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(bare))).expect(
+                    "a bare-param recursive state-threading walk compiles without a name leak"
+                ),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_under_a_two_arm_single_effect_handler_specializes() {
         // E3-multi-arm: a handler with SEVERAL arms of ONE effect threads ONE logical state, so a
         // recursive fn under it specializes with a single trailing state param (each perform substitutes
@@ -13915,6 +14126,30 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail recursive abort must decline, not miscompile to 102"
+        );
+    }
+
+    #[test]
+    fn an_abort_in_a_compound_typed_body_declines_rather_than_miscompiles() {
+        // E4 abort-value / handle-body TYPE-CONSISTENCY (a MISCOMPILE regression). An abort makes its arm
+        // value the WHOLE handle's value, so the value must have the handle body's type. `(tuple 1
+        // (Bail.bail 7))` has a compound body `(Tuple Int64 Int64)` but the abort yields a scalar Int64 —
+        // they disagree. The two syntactic shapes even INFERRED different handle types (a bare tuple-operand
+        // abort typed the handle Int64 and collapsed to 7; the same via `(if true …)` typed it a tuple and
+        // MISCOMPILED to `(1,7)` — the abort value substituted into the tuple instead of abandoning it), and
+        // the hoist emitted an ill-typed `if` (invalid wasm). `reduce_handle` now declines when an abortive
+        // arm's value type differs from the handle body's type. Both shapes must decline.
+        let bare = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (tuple 1 (Bail.bail 7)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(bare))).is_err(),
+            "a scalar abort in a tuple-typed body must decline"
+        );
+        let cond = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (tuple 1 (if true (Bail.bail 7) 5)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(cond))).is_err(),
+            "a scalar abort in a conditional tuple operand must decline, not miscompile to (1,7)"
         );
     }
 

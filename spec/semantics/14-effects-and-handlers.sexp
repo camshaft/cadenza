@@ -352,6 +352,36 @@
               (handle Diag (list) ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
+; A RECURSIVE effectful walk whose handler arm resumes WITH THE STATE ITSELF and threads a CHANGED state
+; `(resume s (+ s 1))` — the exact combination (recursion × a state-threading arm whose resume VALUE is
+; the state) that leaked a compiler-internal specialization name. The recursive-def specialization
+; synthesizes a state-threading copy with a trailing `$s{k}` state param; the arm's resume value (`s`,
+; substituted with a reference to that state param) was extracted straight off the discarded `resume`
+; node, so its parent chain did not reach the specialized def — the reference resolved UNBOUND, surfacing
+; the internal `walk#eff2$s0` name as a CDZ0101. Copying the extracted resume value/next-state (a
+; re-parenting copy) attaches them to the threaded body, so the state-param reference resolves. Each
+; factor alone already worked (the list-accumulator case above threads `(resume unit …)`; a non-recursive
+; `(+ (Tick.tick) (Tick.tick))` threads fine; a recursive walk with a CONSTANT resume state compiles), so
+; this pins their intersection.
+
+(case "a recursive effectful walk under a state-threading handler compiles without leaking an internal name"
+  (doc    "`(def (walk (: n Int64)) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1)))))` performs `Tick.tick`
+           at each of n recursive steps, under a handler that resumes with the state and threads a changed
+           one `(resume s (+ s 1))`. The walk returns the base `0` (the ticks thread state but the value is
+           the base). This must compile and run to 0 — the recursive counterpart of the non-recursive
+           state-threading case and of the recursive constant-state case, which both work. The E3/E4
+           specialization must not leak its internal `walk#eff{n}$s{k}` state-param name as an unbound-name
+           error: the recursive self-call's threaded state, and the arm's resume value that references the
+           state param, must resolve against the synthesized specialization, not dangle.")
+  (input  (do
+            (effect Tick (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1)))))
+            (def (main)
+              (handle 0 ((Tick.tick (u) s (resume s (+ s 1))))
+                (walk 3))) (export main)))
+  (call   main)
+  (output (: 0 Int64)))
+
 (case "two effects each declaring a same-named operation do not collide"
   (doc    "Witnesses capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its
            Operations (2nd sentence): `Unify` and `Scope` each declare a `resolve` operation, reached as
