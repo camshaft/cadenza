@@ -2002,7 +2002,6 @@
            match binds `a`=3, `b`=4, so `(+ a b)` is 7. Pins that the curried-parens surface folds to the
            flat construction (the application spine is peeled and its payloads gathered), not a `not
            applyable` decline on the half-built constructor.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pair (Mk Int64 Int64))
             (def (main) (match ((Pair.Mk 3) 4) ((Pair.Mk a b) (+ a b))))
@@ -2016,7 +2015,6 @@
            completes to the same variant as the flat form — `(+ a b)` = 7. Pins that a partial constructor
            survives a binding (its head resolves THROUGH the `let` ref to the half-built application) and
            still flattens to the full construction when applied.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pair (Mk Int64 Int64))
             (def (main) (let ((g (Pair.Mk 3))) (match (g 4) ((Pair.Mk a b) (+ a b)))))
@@ -2030,7 +2028,6 @@
            result is the full variant, `(+ a b)` = 7. Pins that a partially-applied constructor is an
            ordinary first-class function argument (the single-arity constructor rule), completed wherever
            its last payload is supplied.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pair (Mk Int64 Int64))
             (def (ap f) (f 4))
@@ -2046,7 +2043,6 @@
            This is the single-arity-currying rule reaching through a helper — the over-applied helper builds
            the variant, `(+ a b)` = 7, rather than rejecting `4` as excess. The curried spelling `((mk1 3)
            4)` builds the identical value.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pair (Mk Int64 Int64))
             (def (mk1 x) (Pair.Mk x))
@@ -2060,7 +2056,6 @@
            application supplies the next payload; the fully-saturated spine builds the same variant as the
            flat `(Tri.Mk 1 2 3)`. The match sums the three payloads, `1 + 2 + 3` = 6. Pins the curried fold
            at arity 3 (the spine peels all three levels), not just the two-payload case.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Tri (Mk Int64 Int64 Int64))
             (def (main) (match (((Tri.Mk 1) 2) 3) ((Tri.Mk a b c) (+ a (+ b c)))))
