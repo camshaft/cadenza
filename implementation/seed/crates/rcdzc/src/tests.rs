@@ -3186,6 +3186,85 @@ mod runtime_ops {
         assert_eq!(run::<i32>("(: a Int32)", "(% a 8)", &[Val::S32(-100)]), -4);
     }
 
+    #[test]
+    fn divisibility_by_a_power_of_two_becomes_a_mask_test() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(= (% x 2) 0)` (the even test) → `x & 1 ; eqz` — NO div/rem, no bias sequence.
+        let even = lir("(: x Int64)", "(= (% x 2) 0)");
+        assert!(
+            even.contains(&Lir::I64And)
+                && even.contains(&Lir::I64Eqz)
+                && !even
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64RemS | Lir::I64DivS)),
+            "even test is a mask+eqz, no rem/div; got {even:?}"
+        );
+        // A non-power-of-two divisor keeps the `%` (rem_s).
+        let three = lir("(: x Int64)", "(= (% x 3) 0)");
+        assert!(
+            three.iter().any(|i| matches!(i, Lir::I64RemS)),
+            "(= (% x 3) 0) keeps rem_s; got {three:?}"
+        );
+
+        // VALUE PARITY — the mask test must agree with the true `%`-then-`==0`, ESPECIALLY for negatives
+        // (signed `%` is sign-of-dividend, but divisibility is sign-agnostic).
+        for (x, k, div) in [
+            (8i64, 2i64, true),
+            (7, 2, false),
+            (-8, 2, true),
+            (-7, 2, false),
+            (0, 2, true),
+            (-1, 2, false),
+            (16, 8, true),
+            (-16, 8, true),
+            (-12, 8, false),
+            (i64::MIN, 2, true), // MIN is even; the mask test must not choke where signed `%` bias would
+        ] {
+            assert_eq!(
+                run::<bool>("(: x Int64)", &format!("(= (% x {k}) 0)"), &[Val::S64(x)]),
+                div,
+                "({x} % {k} == 0) should be {div}"
+            );
+        }
+        // Unsigned divisibility too.
+        assert!(run::<bool>(
+            "(: u UInt64)",
+            "(= (% u 4) 0)",
+            &[Val::U64(16)]
+        ));
+        assert!(!run::<bool>(
+            "(: u UInt64)",
+            "(= (% u 4) 0)",
+            &[Val::U64(17)]
+        ));
+    }
+
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
 
     #[test]

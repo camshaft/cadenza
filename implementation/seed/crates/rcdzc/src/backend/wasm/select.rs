@@ -3361,6 +3361,33 @@ fn emit(
             if op == Prim::Eq
                 && let Some(nonzero) = eq_zero_operand(db, lhs, rhs)
             {
+                // DIVISIBILITY-BY-POWER-OF-TWO: `(= (% x 2^k) 0)` — the "is x divisible by 2^k?" test (the
+                // even test `(= (% x 2) 0)` is the k=1 case) — is exactly `(x & (2^k − 1)) == 0`, for BOTH
+                // signednesses (a number is divisible by 2^k iff its low k bits are zero, regardless of
+                // sign). Emitting `x & mask ; eqz` skips the whole `%` — for a SIGNED `%` that is the ~10
+                // instruction round-toward-zero bias sequence (`emit_div_rem`), collapsed to 3. Verified
+                // `(x % 2^k == 0) ≡ (x & (2^k−1) == 0)` exhaustively over signed inputs and every k. Only
+                // fires when the divisor is a compile-time power of two > 1 (`k=1` divisor `2` even test;
+                // `%1` folds to 0 in `lower`, never reaching here).
+                if let Some((x, mask)) = rem_pow2_mask(db, nonzero) {
+                    emit_operand(db, x, it, slots, base, high, scratch_ty, layout, out)?;
+                    out.push(if it.ground_width() <= 32 {
+                        Lir::ConstI32(mask as i32)
+                    } else {
+                        Lir::ConstI64(mask)
+                    });
+                    out.push(if it.ground_width() <= 32 {
+                        Lir::I32And
+                    } else {
+                        Lir::I64And
+                    });
+                    out.push(if it.ground_width() <= 32 {
+                        Lir::I32Eqz
+                    } else {
+                        Lir::I64Eqz
+                    });
+                    return Ok(());
+                }
                 emit_operand(db, nonzero, it, slots, base, high, scratch_ty, layout, out)?;
                 out.push(if it.ground_width() <= 32 {
                     Lir::I32Eqz
@@ -6499,6 +6526,27 @@ fn emit_wrap(
 /// `true`, so it should not reach here — return `None` defensively so it takes the ordinary `eq` path
 /// rather than a wrong single-operand `eqz`). The zero test is by VALUE (`IntValue::eq_value` against
 /// zero), width-agnostic — a zero of any width is the additive identity the `eqz` recognizes.
+/// If `id` is `(% x C)` with `C` a compile-time power of two `> 1`, return `(x, C-1)` — the dividend and
+/// the low-bit mask, for the divisibility test `(= (% x 2^k) 0)` ⇔ `(= (x & (2^k−1)) 0)`. Sign-agnostic:
+/// `x % 2^k == 0` iff `x`'s low `k` bits are all zero, whichever sign, so this fires for both signed and
+/// unsigned `%`. `None` for any other operand (a non-power-of-two divisor, a constant dividend that
+/// already folded, or a different op). `C == 1` never reaches here (`%1` folds to `0` in `lower`).
+fn rem_pow2_mask(db: &mut Db, id: StructId) -> Option<(StructId, i64)> {
+    let Core::Arith {
+        op: Prim::Rem,
+        lhs,
+        rhs,
+    } = core_of(db, id)
+    else {
+        return None;
+    };
+    let Core::ConstInt(v) = core_of(db, rhs) else {
+        return None;
+    };
+    let d = v.to_i64()?;
+    (d > 1 && (d & (d - 1)) == 0).then_some((lhs, d - 1))
+}
+
 fn eq_zero_operand(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId> {
     let is_zero = |db: &mut Db, id: StructId| matches!(core_of(db, id), Core::ConstInt(v) if v.eq_value(&crate::ast::IntValue::zero()));
     let l0 = is_zero(db, lhs);
