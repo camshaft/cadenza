@@ -560,20 +560,12 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
 /// `(<name> <HOLE>)` is returned unchanged (only the constructor-wrap shape the fix producers emit is
 /// reshaped; anything else stays verbatim, so an unexpected form is never mangled).
 fn render_wrap_for_surface(repl: &str, is_ml: bool) -> String {
-    if !is_ml {
-        return repl.to_string();
-    }
-    // Expect `(<name> …)`: strip the outer parens, split off the leading name, the rest is the hole part.
-    let inner = repl.strip_prefix('(').and_then(|s| s.strip_suffix(')'));
-    if let Some(inner) = inner
-        && let Some((ctor, rest)) = inner.split_once(' ')
-        && !ctor.is_empty()
-        && !ctor.contains(['(', ')', ' '])
-    {
-        // `(Some …)` -> `Some(…)`. `rest` is the hole-bearing remainder (usually just the WRAP_HOLE).
-        return format!("{ctor}({rest})");
-    }
-    repl.to_string()
+    // Reuse the shared surface reshape+split (`rcdzc::wrap_prefix_suffix`) so the apply path and the
+    // machine channel agree on how a wrap reshapes for ML — then reassemble the full hole-bearing form
+    // this splicing path expects (`prefix + … + suffix`). One implementation of the reshape rule, so a
+    // fix (e.g. only a bare `(ctor …)` reshapes, not a multi-token `(host (E) …)`) can't drift between them.
+    let (prefix, suffix) = rcdzc::wrap_prefix_suffix(repl, is_ml);
+    format!("{prefix}{}{suffix}", rcdzc::WRAP_HOLE)
 }
 
 /// Apply a structural fix to `source` text, returning the edited text — the byte-level realization of
@@ -787,10 +779,28 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         Some((l, c, _, _)) => format!("{}:{l}:{c}", args.file),
         None => args.file.clone(),
     };
+    // REPORT IN SOURCE ORDER (by node start byte), not the sidecar's fault-collection order — the tree
+    // walk that gathers faults does not visit strictly left-to-right, so without this a reader sees an
+    // error at column 22 above one at column 21 (e.g. `(match foo (a bar) …)` reports `foo`, then `bar`
+    // to its LEFT). A diagnostic whose node has no span (unanchored `-`, or a spanless synthesized node)
+    // sorts LAST via the STABLE sort, keeping the sidecar's relative order — so the sequence stays a
+    // deterministic function of the source (`diagnostics.md` §Diagnostics Are Emitted In A Deterministic
+    // Order), now also legible top-to-bottom. The node id is column 3 (index 2) of each TAB line.
+    let line_start = |line: &str| -> Option<usize> {
+        let node = line.split('\t').nth(2)?;
+        span_of(node).map(|(_, _, from, _)| from)
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort_by(|a, b| match (line_start(a), line_start(b)) {
+        (Some(fa), Some(fb)) => fa.cmp(&fb),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
     // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-kind<TAB>fix-node<TAB>fix-replacement<TAB>
     // fix-verified<TAB>message` — the first seven columns split on the first seven tabs, message is the
     // free-text remainder. `code`/`node-id`/the four fix columns may be `-` (absent).
-    for line in text.lines() {
+    for line in lines {
         let mut cols = line.splitn(8, '\t');
         let (severity, code, node, fix_kind, fix_node, fix_repl, fix_verified, message) = match (
             cols.next(),
@@ -872,16 +882,12 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 let mut fix = json::Object::new();
                 fix.string("kind", fix_kind); // "replace" | "insert" | "wrap" | "delete"
                 if fix_kind == "wrap" {
-                    // Reshape for the target SURFACE first — the compiler renders a wrap s-expr `(ctor …)`,
-                    // but on an ML file it must be `ctor(…)` (D18); an agent splicing the s-expr prefix into
-                    // ML would write invalid syntax. THEN split the surface form on the HOLE sentinel into
-                    // the two literal sides the agent wraps the existing node text with (`prefix + text +
-                    // suffix`) — never leaking the `…` sentinel.
-                    let surface = render_wrap_for_surface(fix_repl, is_ml_source(&args.file));
-                    let (prefix, suffix) = surface
-                        .split_once(rcdzc::WRAP_HOLE)
-                        .map(|(p, s)| (p.to_string(), s.to_string()))
-                        .unwrap_or((surface.clone(), String::new()));
+                    // A wrap emits surface-correct `prefix`/`suffix` (ML `Some(`/`)` vs s-expr `(Some `/`)`)
+                    // rather than a `replacement` bearing the internal `…` HOLE sentinel — an agent splicing
+                    // the raw sentinel over the range would write a literal `…` and corrupt the file. The
+                    // shared `rcdzc::wrap_prefix_suffix` reshapes for the surface then splits on the hole.
+                    let (prefix, suffix) =
+                        rcdzc::wrap_prefix_suffix(fix_repl, is_ml_source(&args.file));
                     fix.string("prefix", &prefix);
                     fix.string("suffix", &suffix);
                 } else {

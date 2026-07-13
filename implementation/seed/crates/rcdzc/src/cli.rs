@@ -239,7 +239,31 @@ pub fn run_prepared(
         .filter(|a| a.kind == crate::spans::KIND_SPANS)
         .filter_map(|a| crate::spans::decode(&a.bytes))
         .collect();
-    for d in &out.diagnostics {
+    // The START byte offset of a diagnostic's node in its source table, if locatable — the sort key that
+    // orders diagnostics as a reader scans top-to-bottom. (node ids are unique across the merged arena,
+    // so the first covering table is the right one.)
+    let start_of = |d: &crate::Diagnostic| -> Option<(String, u32)> {
+        d.node.and_then(|n| {
+            span_tables.iter().find_map(|s| {
+                s.range(crate::ast::StructId(n))
+                    .map(|(start, _)| (s.module_path.clone(), start))
+            })
+        })
+    };
+    // Report in SOURCE ORDER (by module path, then start byte), not fault-collection order — the tree
+    // walk that gathers faults does not visit strictly left-to-right, so without this a reader sees an
+    // error at column 22 before one at column 21, or a derived error above the line that caused it. A
+    // diagnostic with no locatable span (no spans supplied, or a spanless synthesized node) sorts LAST,
+    // keeping its relative order via the STABLE sort — so the ordering stays a deterministic function of
+    // the source (`diagnostics.md` §Diagnostics Are Emitted In A Deterministic Order), now also legible.
+    let mut ordered: Vec<&crate::Diagnostic> = out.diagnostics.iter().collect();
+    ordered.sort_by(|a, b| match (start_of(a), start_of(b)) {
+        (Some(ka), Some(kb)) => ka.cmp(&kb),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    for d in ordered {
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",

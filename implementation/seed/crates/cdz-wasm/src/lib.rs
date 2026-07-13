@@ -43,16 +43,22 @@ pub struct Diagnostic {
     pub from: u32,
     pub to: u32,
     /// A proposed structural repair (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
-    /// A Fix), surfaced to the guide's quick-fix affordance. `fix_replacement` is empty when the
-    /// diagnostic carries no fix; otherwise it is the surface payload, applied per `fix_kind` over the
-    /// target `[fix_from, fix_to)` byte range:
+    /// A Fix), surfaced to the guide's quick-fix affordance. Empty (`fix_kind == ""`) when the diagnostic
+    /// carries no fix; otherwise applied per `fix_kind` over the target `[fix_from, fix_to)` byte range:
     ///   - `"replace"` — replace the range with `fix_replacement`;
     ///   - `"insert"` — insert `fix_replacement` (rendered child forms, e.g. missing match arms) just
     ///     before `fix_to` (the end of the target list, before its closing paren);
-    ///   - `"wrap"` — replace the range with `fix_replacement`, in which the character `…` (U+2026)
-    ///     marks where the ORIGINAL range text goes (`(Some …)` → `(Some <expr>)`).
+    ///   - `"delete"` — replace the range with the empty string;
+    ///   - `"wrap"` — replace the range with `fix_prefix + <range text> + fix_suffix` (`fix_replacement`
+    ///     is EMPTY for a wrap). The two sides are the surface-correct literals to wrap the node in
+    ///     (`Some(` / `)` on ML, `(Some ` / `)` on s-expr) — split here so the JS side NEVER sees the
+    ///     internal `…` hole sentinel it would otherwise have to strip (a raw splice would corrupt text).
     /// `fix_verified` distinguishes a machine-applicable fix from a heuristic the user should confirm.
     pub fix_replacement: String,
+    /// For a `"wrap"` fix, the literal text to insert BEFORE the target range (empty for other kinds).
+    pub fix_prefix: String,
+    /// For a `"wrap"` fix, the literal text to insert AFTER the target range (empty for other kinds).
+    pub fix_suffix: String,
     pub fix_from: u32,
     pub fix_to: u32,
     pub fix_verified: bool,
@@ -84,6 +90,7 @@ impl CompileResult {
 fn to_js_diag(
     d: &rcdzc::Diagnostic,
     spans: Option<&cadenza_syntax::spans::SpanTable>,
+    is_ml: bool,
 ) -> Diagnostic {
     let node = d.node.unwrap_or(u32::MAX);
     let span_of = |n: u32| -> (u32, u32) {
@@ -94,20 +101,49 @@ fn to_js_diag(
     };
     let (from, to) = d.node.map(span_of).unwrap_or((0, 0));
     // Carry the structural fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
-    // Fix) through to the guide's quick-fix affordance — its target node mapped to a byte range here.
-    let (fix_replacement, fix_from, fix_to, fix_verified, fix_kind) = match &d.fix {
-        Some(f) => {
-            let (ff, ft) = span_of(f.node);
-            let kind = match f.kind {
-                rcdzc::FixKind::Replace => "replace",
-                rcdzc::FixKind::InsertInto => "insert",
-                rcdzc::FixKind::Wrap => "wrap",
-                rcdzc::FixKind::Delete => "delete",
-            };
-            (f.replacement.clone(), ff, ft, f.verified, kind.to_string())
-        }
-        None => (String::new(), 0, 0, false, String::new()),
-    };
+    // Fix) through to the guide's quick-fix affordance — its target node mapped to a byte range here. A
+    // WRAP splits into surface-correct `prefix`/`suffix` (via the shared `rcdzc::wrap_prefix_suffix`) so
+    // the JS quick-fix applies `prefix + <range text> + suffix` and never sees the `…` hole sentinel.
+    let (fix_replacement, fix_prefix, fix_suffix, fix_from, fix_to, fix_verified, fix_kind) =
+        match &d.fix {
+            Some(f) => {
+                let (ff, ft) = span_of(f.node);
+                match f.kind {
+                    rcdzc::FixKind::Wrap => {
+                        let (prefix, suffix) = rcdzc::wrap_prefix_suffix(&f.replacement, is_ml);
+                        (String::new(), prefix, suffix, ff, ft, f.verified, "wrap")
+                    }
+                    rcdzc::FixKind::Replace => (
+                        f.replacement.clone(),
+                        String::new(),
+                        String::new(),
+                        ff,
+                        ft,
+                        f.verified,
+                        "replace",
+                    ),
+                    rcdzc::FixKind::InsertInto => (
+                        f.replacement.clone(),
+                        String::new(),
+                        String::new(),
+                        ff,
+                        ft,
+                        f.verified,
+                        "insert",
+                    ),
+                    rcdzc::FixKind::Delete => (
+                        f.replacement.clone(),
+                        String::new(),
+                        String::new(),
+                        ff,
+                        ft,
+                        f.verified,
+                        "delete",
+                    ),
+                }
+            }
+            None => (String::new(), String::new(), String::new(), 0, 0, false, ""),
+        };
     Diagnostic {
         error: d.severity == rcdzc::Severity::Error,
         code: d.code.clone().unwrap_or_default(),
@@ -116,10 +152,12 @@ fn to_js_diag(
         from,
         to,
         fix_replacement,
+        fix_prefix,
+        fix_suffix,
         fix_from,
         fix_to,
         fix_verified,
-        fix_kind,
+        fix_kind: fix_kind.to_string(),
     }
 }
 
@@ -218,6 +256,8 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
                     from: from_b,
                     to: to_b,
                     fix_replacement: String::new(),
+                    fix_prefix: String::new(),
+                    fix_suffix: String::new(),
                     fix_from: 0,
                     fix_to: 0,
                     fix_verified: false,
@@ -257,7 +297,7 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     let diagnostics = out
         .diagnostics
         .iter()
-        .map(|d| to_js_diag(d, spans.as_ref()))
+        .map(|d| to_js_diag(d, spans.as_ref(), from == Format::Ml))
         .collect();
     // Both `Wasm` and `WasmDebug` produce a `component`-kinded artifact (a debug component is a
     // decorated component, not a new kind), so the artifact lookup is the same either way.
@@ -399,6 +439,8 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
             from: 0,
             to: 0,
             fix_replacement: String::new(),
+            fix_prefix: String::new(),
+            fix_suffix: String::new(),
             fix_from: 0,
             fix_to: 0,
             fix_verified: false,
@@ -478,7 +520,7 @@ pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, 
     let diagnostics = out
         .diagnostics
         .iter()
-        .map(|d| to_js_diag(d, None))
+        .map(|d| to_js_diag(d, None, from == Format::Ml))
         .collect();
     let component = out
         .artifact(rcdzc::Target::Wasm.artifact_kind())
@@ -537,6 +579,8 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
                 from: 0,
                 to: 0,
                 fix_replacement: String::new(),
+                fix_prefix: String::new(),
+                fix_suffix: String::new(),
                 fix_from: 0,
                 fix_to: 0,
                 fix_verified: false,
@@ -580,6 +624,16 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
         } else {
             (0, 0)
         };
+        // A WRAP fix splits into surface-correct `prefix`/`suffix` (never the raw `…`-sentinel
+        // replacement, which a JS splice would write literally and corrupt) — the shared reshape+split.
+        let (fix_replacement, fix_prefix, fix_suffix) = if has_fix && fix_kind == "wrap" {
+            let (p, s) = rcdzc::wrap_prefix_suffix(fix_replacement, from == Format::Ml);
+            (String::new(), p, s)
+        } else if has_fix {
+            (fix_replacement.to_string(), String::new(), String::new())
+        } else {
+            (String::new(), String::new(), String::new())
+        };
         out.push(Diagnostic {
             error: severity != "warning",
             code: if code == "-" {
@@ -591,11 +645,9 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
             node: node.unwrap_or(u32::MAX),
             from: span_from,
             to: span_to,
-            fix_replacement: if has_fix {
-                fix_replacement.to_string()
-            } else {
-                String::new()
-            },
+            fix_replacement,
+            fix_prefix,
+            fix_suffix,
             fix_from,
             fix_to,
             fix_verified: fix_verified == "verified",
