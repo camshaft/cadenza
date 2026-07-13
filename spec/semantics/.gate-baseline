@@ -415,6 +415,7 @@ pass	a partially-applied function escapes as a value and runs through a recursiv
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF

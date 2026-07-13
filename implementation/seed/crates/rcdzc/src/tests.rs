@@ -14657,6 +14657,39 @@ mod stage1 {
     }
 
     #[test]
+    fn a_perform_in_a_match_scrutinee_threads_state() {
+        // E-fold `match` arm (the analogue of the `if` arm). A tail-resumptive perform in a match SCRUTINEE
+        // — `(match (Get.next) (0 100) (_ 200))` — threads state: the scrutinee reads the current counter,
+        // then the match dispatches on the resume value. Seed 0 → `Get.next` reads 0 → arm `0` → 100; seed 5
+        // → 200 (wildcard). Before the `Match` thread arm this DECLINED (no arm → the whole handle refused).
+        let zero = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (match (Get.next) (0 100) (_ 200)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(zero)))
+                    .expect("a perform in a match scrutinee threads state"),
+                "main"
+            ),
+            100
+        );
+        // A perform in an ARM BODY threads the post-scrutinee state; an abort in an arm is branch-local.
+        let arm_abort = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) (match x (0 (Bail.bail 7)) (_ 42)))) (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(arm_abort)))
+            .expect("an abortive match arm folds per-arm");
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(0)]),
+            7,
+            "x=0 → the arm aborts to 7"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
+            42,
+            "x=1 → the wildcard arm yields 42"
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
