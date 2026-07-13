@@ -3642,9 +3642,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // Application faults, by the ONE rule: instantiate the head's `(meta t)` scheme and unify each
         // argument's type into the curried parameter positions. A unify FAILURE is the conflicting-use
         // type error (a non-integer where an integer is required, two operands of different widths —
-        // `numeric-model.md` no silent promotion). One check for every operator; no arith-specific
-        // logic. A head with no `(meta t)` (a type constructor / not-yet-typed value) is not checked
-        // here — its own fault, if any, surfaces via the head descent.
+        // no silent promotion). One check for every operator; no arith-specific logic. A head with no
+        // `(meta t)` (a type constructor / not-yet-typed value) is not checked here — its own fault, if
+        // any, surfaces via the head descent.
+        //
+        // Because an operator's parameter types must unify with the operand types (no widening rule sits
+        // between them), two operands of different numeric type is a type error rather than an implicit
+        // promotion, and a result's type is exactly what the operator's scheme + operand types give:
+        //= spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote
+        //# An operation on two numeric values of different types MUST require an explicit conversion rather than promote one operand implicitly.
+        //= spec/capabilities/numeric-model.md#numeric-types-do-not-silently-promote
+        //# The type of an arithmetic result MUST be determined by the operand types and the operation, not by an implicit widening the author did not write.
         Resolved::Apply { head, args } => {
             check_application(db, head, &args, out);
             // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
@@ -3757,6 +3765,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // Type Is Indexed By A Compile-Time Width), the float analogue of an out-of-range integer
                 // width; caught here at the annotation, before the grounding/unify below (which would
                 // otherwise let the sentinel slip through against a deferred literal).
+                //= spec/capabilities/numeric-model.md#a-floating-point-type-is-indexed-by-a-compile-time-width
+                //# A floating-point bit width that is outside the set the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
                 if let Ty::Float(ft) = &annot_ty
                     && let crate::ty::Width::Fixed(w) = ft.width
                     && !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w)

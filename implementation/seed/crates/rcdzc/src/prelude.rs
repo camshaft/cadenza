@@ -208,10 +208,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
 
     // The FLOATING-POINT binary operators `+.` `-.` `*.` `/.` — spelled distinctly from the integer
     // `+`/`-`/`*`/`/` (OCaml-style dot suffix) so no operator silently mixes an integer and a float
-    // operand (numeric-model.md §A Floating-Point Operation Uses A Floating-Point Operator). Each is a
-    // width-generic `∀a. (Float a) → (Float a) → (Float a)` — the SAME operator-record mechanism as the
-    // integer arithmetic, differing only in the `Float` type constructor. An integer operand fails to
-    // unify (`(+. 2 2.0)` → CDZ0301). These names tokenize as plain atoms in the s-expr surface.
+    // operand. Each is a width-generic `∀a. (Float a) → (Float a) → (Float a)` — the SAME operator-record
+    // mechanism as the integer arithmetic, differing only in the `Float` type constructor. An integer
+    // operand fails to unify (`(+. 2 2.0)` → CDZ0301). These names tokenize as plain atoms in the s-expr
+    // surface.
+    //= spec/capabilities/numeric-model.md#a-floating-point-operation-uses-a-floating-point-operator
+    //# An arithmetic operation on floating-point values MUST be written with a floating-point operator distinct from the integer arithmetic operator, so that no operator silently accepts one integer and one floating-point operand and no integer operator coerces a floating-point operand.
     for op in ["+.", "-.", "*.", "/."] {
         names.insert(
             op.to_string(),
@@ -1646,6 +1648,11 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // (Option T)`, the exact result wrapped in `Some` when it fits, `None` on overflow (numeric-model.md
     // §Overflow Is Defined — the defined value outcome alongside the trap). Real operator records (the
     // `(meta apply)` = the checked intrinsic); a constant folds, a runtime operand is a later increment.
+    //
+    // These fallible forms are opted into BY NAME (`checked-add`/`checked-mul`) — the bare `+`/`*` keeps
+    // the trapping default, so overflow is never SILENTLY reported as absent:
+    //= spec/capabilities/numeric-model.md#an-overflow-fallible-operation-reports-overflow-rather-than-trapping
+    //# The overflow-fallible form MUST be opted into by name at the operation, so that an author who writes the ordinary operator still gets the trapping outcome and overflow is never silently reported.
     fields.push(checked_field(
         ast,
         "checked-add",
@@ -1665,6 +1672,11 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // width round-trip wants). Real operator records (`(meta apply)` = the wrapping intrinsic); a constant
     // folds via `wrapping_*`, a runtime operand emits the RAW machine `i64.add`/`i64.mul` (no overflow
     // guard — wasm's add/mul already wrap).
+    //
+    // The wrapping form is opted into BY NAME (`wrapping-add`/`wrapping-mul`), so it never displaces the
+    // trapping default an unqualified `+`/`*` selects:
+    //= spec/capabilities/numeric-model.md#a-wrapping-operation-has-a-defined-modular-outcome
+    //# The wrapping form MUST be opted into by name at the operation, so that it never displaces the trapping default an unqualified operator selects.
     fields.push(wrapping_field(
         ast,
         "wrapping-add",
@@ -1680,9 +1692,12 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
         width,
     ));
     // `of` — the CHECKED (trapping) conversion into this width: in range → the value at the target type,
-    // out of range → a TRAP (numeric-model.md §A Conversion Between Integer Types Is Explicit). The
-    // range-checked companion of `wrap`; NOT `Option`-returning (the overflow-fallible forms are the
-    // `checked-add`/`checked-mul` fields above).
+    // out of range → a TRAP. The range-checked companion of `wrap`; NOT `Option`-returning (the
+    // overflow-fallible forms are the `checked-add`/`checked-mul` fields above). Together with `wrap` (the
+    // truncating conversion, keeping the target's low bits) these are the TWO explicit inter-width
+    // conversions — a named `.of`/`.wrap` at the site, never an implicit widen/narrow:
+    //= spec/capabilities/numeric-model.md#a-conversion-between-integer-types-is-explicit
+    //# A conversion between two integer types MUST be written explicitly, as either a range-checked conversion that traps on a value outside the target type's range or a truncating conversion that keeps the target type's low bits, never an implicit widening or narrowing.
     fields.push(of_field(ast, signed, width));
     let mut children = vec![head];
     children.append(&mut fields);

@@ -491,6 +491,7 @@ pass	an Option built by an if with the payload branch first type-checks (the con
 pass	an Option carrying a Result is matched across two different sum types
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
+pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type

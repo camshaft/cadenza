@@ -390,11 +390,17 @@ fn resolve_import_clause(
         }
     };
     let Some(&from_file) = name_to_ix.get(path) else {
-        return Err(Reject::coded(
-            Code::Malformed,
-            format!("`(import …)` names unknown package file `{path}`"),
-        )
-        .at(occ));
+        // A did-you-mean over the OTHER package files — a mistyped path (`"libb"` for `lib`) is the
+        // file-name analogue of the typoed import NAME handled below, so it gets the same treatment
+        // (the shared `nearest` guards the 1-char/empty cases). `name_to_ix`'s keys ARE the package's
+        // file names, so no extra plumbing is needed.
+        let msg = match crate::diag::suggest::nearest(path, name_to_ix.keys().copied()) {
+            Some(near) => {
+                format!("`(import …)` names unknown package file `{path}` — did you mean `{near}`?")
+            }
+            None => format!("`(import …)` names unknown package file `{path}`"),
+        };
+        return Err(Reject::coded(Code::Malformed, msg).at(occ));
     };
 
     for &name_id in names {
@@ -779,6 +785,25 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("unknown package file")),
             "expected an 'unknown package file' diagnostic; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A mistyped import PATH that is a near-miss for a real package file carries a did-you-mean — the
+    /// file-name analogue of a typoed import NAME's suggestion. `lib` is the sibling file; `"lipb"`
+    /// (a transposition) must suggest it.
+    #[test]
+    fn importing_from_a_typoed_module_path_suggests_the_nearest_file() {
+        let out = compile_package(
+            "(do (def (helper) 40) (export helper))",
+            "(do (import \"lipb\" (helper)) (def (main) (helper)) (export main))",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("unknown package file `lipb`")
+                    && d.message.contains("did you mean `lib`?")),
+            "expected a did-you-mean suggestion for the module path; got {:?}",
             out.diagnostics
         );
     }

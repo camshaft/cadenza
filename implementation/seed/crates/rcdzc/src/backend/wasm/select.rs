@@ -590,6 +590,17 @@ fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
     }
 }
 
+/// After `get-int`ing a value BACK from an i64 heap cell, does it need narrowing i64→i32 to its machine
+/// slot? True for a NARROW int (its slot is i32) OR an ENUM-DISC value (a bare i32 discriminant boxed as
+/// an i64 cell — the exact dual of `emit_box_i32_to_i64_extend`'s extend-on-store). Without the enum-disc
+/// case an enum reached through a heap slot (a tuple/record element, a sum payload, an expect payload, a
+/// closure capture) reads back as an i64 where its i32 discriminant slot is expected → wasm rejects the
+/// module (`type mismatch: expected i32, found i64`). `get_op_ty`'s enum-disc arm returns `get-int` on the
+/// promise that "the caller narrows i64→i32" — this is that narrow.
+fn needs_get_int_narrow(db: &mut Db, id: StructId) -> bool {
+    is_narrow_int(db, id).is_some() || node_is_enum_disc(db, id)
+}
+
 /// Before `box-int`ing a value into a heap cell, widen it from an i32 slot to the i64 `box-int` expects.
 /// Fires for a NARROW int (extended by ITS sign) OR an ENUM-DISC value (a bare i32 discriminant, extended
 /// UNSIGNED — a discriminant is a small non-negative index). A full-width i64 int, or a non-scalar, needs
@@ -3453,7 +3464,7 @@ fn emit(
             // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is.
             if let Some(op) = get_op(db, id)? {
                 out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
-                if is_narrow_int(db, id).is_some() {
+                if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
                 }
             }
@@ -3478,7 +3489,7 @@ fn emit(
             }
             if let Some(op) = get_op(db, id)? {
                 out.push(Lir::CallImport(op)); // → [scalar]
-                if is_narrow_int(db, id).is_some() {
+                if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
                 }
             }
@@ -3552,7 +3563,7 @@ fn emit(
             out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload-handle]
             if let Some(op) = get_op(db, id)? {
                 out.push(Lir::CallImport(op)); // [scalar]
-                if is_narrow_int(db, id).is_some() {
+                if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
                 }
             }
@@ -4296,7 +4307,7 @@ fn emit(
             out.push(Lir::CallImport(OP_ARR_GET));
             if let Some(op) = get_op(db, id)? {
                 out.push(Lir::CallImport(op));
-                if is_narrow_int(db, id).is_some() {
+                if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
                 }
             }
@@ -6571,7 +6582,14 @@ fn emit_checked_arith_to(
         }
         return Ok(());
     }
-    // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot).
+    // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot). This is
+    // the DEFINED outcome of the trapping default — an overflowing `+`/`-`/`*` traps rather than yielding
+    // an undefined value; the guard is emitted (or provably elided) at EVERY reachable overflow, so no
+    // integer op with undefined overflow behavior is ever emitted:
+    //= spec/capabilities/numeric-model.md#overflow-is-defined
+    //# An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
+    //= spec/capabilities/numeric-model.md#overflow-is-defined
+    //# The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
     emit_machine_overflow_guard(op, m, sa, sb, sr, out);
     // Step 2: the narrow-width range-check on the exact result in `$r`. For a narrow signed `± const`
     // the exact result moves in ONE direction from an in-range operand, so only that bound is reachable
