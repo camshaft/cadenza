@@ -4267,6 +4267,60 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_nested_modulo_by_a_dividing_constant_collapses_to_one() {
+        // NESTED-MODULO COLLAPSE: `(% (% v M) N)` → `(% v N)` when `N | M` (both positive constants). `M` is
+        // a multiple of `N`, so reducing mod `M` then mod `N` gives the same residue as mod `N` directly —
+        // `(x % 100) % 10 == x % 10` at every sign (truncated division). One `rem` instead of two. `v` stays
+        // the operand, so its traps survive. A NON-dividing outer (`N ∤ M`) does NOT collapse.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let rems = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64RemS | Lir::I64RemU)).count();
+        // `N | M` (10 | 100, 5 | 100) collapse to ONE rem; `N ∤ M` (7 ∤ 100) keeps TWO.
+        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)")), 1, "10 | 100 → one rem");
+        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 5) Int64)")), 1, "5 | 100 → one rem");
+        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 7) Int64)")), 2, "7 ∤ 100 → two rems");
+        // Equal divisors collapse too (N | N): `(% (% x 10) 10)` → `(% x 10)`.
+        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 10) Int64) 10) Int64)")), 1, "10 | 10 → one rem");
+
+        // VALUE PARITY across signs; the non-dividing case computes its (distinct) real result.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)", &[Val::S64(12347)]), 7);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)", &[Val::S64(-25)]), -5);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)", &[Val::S64(-105)]), -5);
+        // 7 ∤ 100: (101 % 100) % 7 = 1 % 7 = 1 (NOT 101 % 7 = 3) — the non-collapse is the correct answer.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 7) Int64)", &[Val::S64(101)]), 1);
+        // TRAP PRESERVATION: `v` stays the operand, so a trapping `(/ 100 z)` inside still ÷0-traps.
+        assert!(
+            traps("(: z Int64)", "(% (: (% (: (/ 100 z) Int64) 100) Int64) 10)", &[Val::S64(0)]),
+            "the nested-modulo collapse keeps a trapping operand's trap"
+        );
+    }
+
+    #[test]
     fn a_signed_pow2_div_of_a_nonneg_dividend_drops_the_round_toward_zero_bias() {
         // A signed `/`/`%` by a power of two normally emits the round-toward-zero BIAS sequence (needed
         // only to correct NEGATIVE dividends). When the dividend is provably NON-NEGATIVE — a mask

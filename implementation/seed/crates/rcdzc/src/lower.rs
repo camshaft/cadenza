@@ -6493,6 +6493,34 @@ fn arith_identity(
             trace!(target: "rcdzc::fold", node = lhs.0, c, "dividend provably < divisor → x % C = x");
             Some(lc.clone())
         }
+        // NESTED-MODULO COLLAPSE: `(% (% v M) N)` → `(% v N)` when the outer divisor `N` DIVIDES the inner
+        // `M` (`M % N == 0`), both positive constants. Since `M` is a multiple of `N`, reducing mod `M`
+        // first then mod `N` gives the same residue as reducing mod `N` directly — for truncated (toward-
+        // zero) division at every sign of `v` (`(x%100)%10 == x%10`, incl. negatives: `-25%100=-25`,
+        // `-25%10=-5`, and `-25%10=-5` directly). One `rem` instead of two. `v` STAYS the operand of the
+        // outer `% N`, so its own traps (and the outer `% N`'s ÷0 — impossible here, N≥2) are preserved; no
+        // `is_trap_free` needed. Both divisors must be constants ≥ 2 and `N | M`.
+        Prim::Rem
+            if let Core::ConstInt(n) = rc
+                && let Some(n) = n.to_i64()
+                && n >= 2
+                && let Core::Arith {
+                    op: Prim::Rem,
+                    lhs: v,
+                    rhs: inner_div,
+                } = core_of(db, lhs)
+                && let Core::ConstInt(mm) = core_of(db, inner_div)
+                && let Some(m) = mm.to_i64()
+                && m >= 2
+                && m % n == 0 =>
+        {
+            trace!(target: "rcdzc::fold", inner_m = m, outer_n = n, "nested modulo (% (% v M) N) → (% v N) (N | M)");
+            Some(Core::Arith {
+                op: Prim::Rem,
+                lhs: v,
+                rhs,
+            })
+        }
 
         // SAME-OPERAND identities: the two operands are the SAME value (`core_equiv`), so the result is
         // determined regardless of that value. `core_equiv` matches only pure scalar cores, but the
