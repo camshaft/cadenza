@@ -1860,6 +1860,18 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 args,
             })
         }
+        // A map type-value: `(Map K V)` — two type arguments (key first, then value), the dual of
+        // `encode_ty`'s `(Map K V)` head and `Ty::render_name`'s `(Map Int64 Int64)` surface. A map's
+        // identity is `Map<K,V>` (its key SET is runtime data, not encoded in the type).
+        "Map" => {
+            let tail = db.ast.as_form(node, "Map")?;
+            if tail.len() != 2 {
+                return None;
+            }
+            let k = decode_ty(db, tail[0])?;
+            let v = decode_ty(db, tail[1])?;
+            Some(Ty::Map(Box::new(k), Box::new(v)))
+        }
         // A record type-value: `(Record (name T)…)` — each `(name T)` a field pair. The head is
         // capitalized `Record` (the TYPE; the VALUE head is lowercase `record`), matching `encode_ty`
         // and the corpus type surface. The field-name SET + per-field types ARE the type.

@@ -60,6 +60,8 @@ impl Subst {
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
             // A list substitutes into its element type (a deferred `List ?0` — the empty-list case).
             Ty::List(elem) => Ty::List(Box::new(self.apply(elem))),
+            // A map substitutes into its key AND value types (a deferred `Map ?0 ?1` — the empty-map case).
+            Ty::Map(k, v) => Ty::Map(Box::new(self.apply(k)), Box::new(self.apply(v))),
             // A sum's identity is its `decl`, but a GENERIC instantiation carries type ARGS that may hold
             // unsolved variables (a deferred payload — `Option ?0`), so substitute into each arg. A
             // monomorphic sum has empty args, so this is a cheap clone of the name/decl.
@@ -160,6 +162,15 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // share one type (a mixed list fails here) and solves a deferred element (an empty `(list)` : List
         // ?0 unified against a `List Int64`).
         (Ty::List(ea), Ty::List(eb)) => unify(subst, ea, eb),
+        // Two maps unify iff their KEY types unify AND their VALUE types unify — a map's identity is
+        // `Map<K,V>`, parametric in the key and value types (its key SET is runtime data, not part of the
+        // type). This solves a deferred key/value (an empty `Map.empty` : `Map ?0 ?1` unified against a
+        // `Map Int64 Int64`) and makes `Map Int64 Int64` conflict with `Map Int64 Bool`. Crucially it does
+        // NOT compare key sets, so two maps with different keys unify (well-typed comparison → `false`).
+        (Ty::Map(ka, va), Ty::Map(kb, vb)) => {
+            unify(subst, ka, kb)?;
+            unify(subst, va, vb)
+        }
         // Two sums unify iff they are the SAME declaration AND their type ARGS unify pairwise — a sum's
         // identity is its declaration OCCURRENCE (`type-system.md` §158/§160), NOT its name (two `(type
         // Foo …)` declared separately are DISTINCT types even with the same name), together with its
@@ -303,6 +314,8 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, elem),
+        // A map's key or value type may hold the variable (`Map ?0 ?1` — the empty map).
+        Ty::Map(k, val) => occurs(subst, v, k) || occurs(subst, v, val),
         Ty::Int(_)
         | Ty::Float(_)
         | Ty::Bool
@@ -457,6 +470,9 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
         Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| rename(t, m)).collect()),
         // A list scheme's element type may hold a bound variable (a `(fn (a) … (List a))` scheme) — rename.
         Ty::List(elem) => Ty::List(Box::new(rename(elem, m))),
+        // A map scheme's key/value types may hold bound variables (a `(fn (k v) … (Map k v))` op scheme)
+        // — rename each.
+        Ty::Map(k, v) => Ty::Map(Box::new(rename(k, m)), Box::new(rename(v, m))),
         // A GENERIC sum scheme's type ARGS may hold bound variables (a `(fn (a) … (Option a))` variant
         // ctor scheme) — rename each. A monomorphic sum has empty args; nothing to rename.
         Ty::Sum { decl, name, args } => Ty::Sum {
@@ -549,6 +565,10 @@ fn freshen_free_go(
                 .collect(),
         ),
         Ty::List(elem) => Ty::List(Box::new(freshen_free_go(elem, fresh, map, wmap, smap))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(freshen_free_go(k, fresh, map, wmap, smap)),
+            Box::new(freshen_free_go(v, fresh, map, wmap, smap)),
+        ),
         Ty::Sum { decl, name, args } => Ty::Sum {
             decl: *decl,
             name: name.clone(),

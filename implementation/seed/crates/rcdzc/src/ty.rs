@@ -221,6 +221,17 @@ pub enum Ty {
     /// `List Bool` are distinct; the element type is held behind a `Box` (one type, unlike the tuple's
     /// slice). Backed at run time by the persistent `vec-*` RRB heap ops.
     List(Box<Ty>),
+    /// A MAP: a persistent association of KEYS of one type with VALUES of one type
+    /// (`collections-and-text.md` §A Map Associates Keys With Values). PARAMETRIC in two types — the
+    /// key type and the value type — held as two `Box`es (unlike `List`'s single element type). The
+    /// map's KEY SET is runtime data, NOT part of its type: two maps with different keys but the same
+    /// `(key, value)` types are the SAME type `Map<K,V>` (the crucial contrast with a `Record`, whose
+    /// field-name SET IS its shape). So comparing two maps with different keys is well-typed (yields
+    /// `false`), and a `List (Map K V)` whose elements have different key sets is homogeneous. `Map
+    /// Int64 Int64` and `Map Int64 Bool` are distinct. Backed at run time by the persistent CHAMP
+    /// `map-*` heap ops; keys are compared by VALUE under structural equality, and its canonical form
+    /// renders entries in sorted key order.
+    Map(Box<Ty>, Box<Ty>),
     /// A BYTES sequence: a homogeneous, variable-length sequence of BYTES (`collections-and-text.md` §A
     /// Byte Sequence Is A Sequence Of Bytes). NOT parametric — a byte is a byte, so unlike `List` it
     /// carries no element type (a LEAF in the type universe). Distinct from `List Int64`: a `Bytes` packs
@@ -334,6 +345,7 @@ impl Ty {
             Ty::Fn(p, r) => p.has_free_var() || r.has_free_var(),
             Ty::Tuple(elems) => elems.iter().any(|t| t.has_free_var()),
             Ty::List(elem) => elem.has_free_var(),
+            Ty::Map(k, v) => k.has_free_var() || v.has_free_var(),
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
             // Bytes and String are leaves — no inner type, so no free variable.
@@ -394,6 +406,13 @@ impl Ty {
             // Two lists agree iff their ELEMENT types agree — `List Int64` ≠ `List Bool`, and a list of a
             // deferred element type is compatible via the recursive `agrees_with` (the empty-list case).
             (Ty::List(a), Ty::List(b)) => a.agrees_with(b),
+            // Two maps agree iff their KEY types agree AND their VALUE types agree — `Map Int64 Int64` ≠
+            // `Map Int64 Bool`. A map's KEY SET is NOT compared here (it is runtime data, not shape): two
+            // maps with different keys but the same `(key, value)` types are the SAME type and agree, so a
+            // comparison between them is well-typed (yielding `false`) and a list of them is homogeneous —
+            // the contrast with `Record` above (whose field-name set IS its shape). Deferred key/value
+            // types (an empty map) are compatible via the recursive `agrees_with`.
+            (Ty::Map(ka, va), Ty::Map(kb, vb)) => ka.agrees_with(kb) && va.agrees_with(vb),
             // Bytes is a leaf — a bytes agrees only with another bytes (no element type to compare).
             (Ty::Bytes, Ty::Bytes) => true,
             // Two sums agree iff their DECLARATIONS match AND their type ARGS agree pairwise — a sum's
@@ -486,6 +505,12 @@ impl Ty {
             // Two agreeing lists join their element type — a deferred element (`List ?0`, the empty list)
             // is fixed by the other branch's `List Int64`, the list analogue of the sum-arg join above.
             (Ty::List(a), Ty::List(b)) if self.agrees_with(other) => Ty::List(Box::new(a.join(b))),
+            // Two agreeing maps join their key type AND value type — a deferred key/value (`Map ?0 ?1`,
+            // the empty map) is fixed by the other branch's `Map Int64 Int64`, the map analogue of the
+            // list join above.
+            (Ty::Map(ka, va), Ty::Map(kb, vb)) if self.agrees_with(other) => {
+                Ty::Map(Box::new(ka.join(kb)), Box::new(va.join(vb)))
+            }
             _ => self.clone(),
         }
     }
@@ -532,6 +557,9 @@ impl Ty {
             }
             // A list renders as `(List Elem)` — the element type is its only type parameter.
             Ty::List(elem) => format!("(List {})", elem.render_name()),
+            // A map renders as `(Map Key Value)` — its two type parameters, key first (the corpus `(:
+            // (map (1 10) (2 20)) (Map Int64 Int64))` form). The key SET is runtime data, not the type.
+            Ty::Map(k, v) => format!("(Map {} {})", k.render_name(), v.render_name()),
             // Bytes renders as the bare type name `Bytes` (its VALUES render `b"…"`, but the type
             // annotation is the name — the corpus `(: b"…" Bytes)` form).
             Ty::Bytes => "Bytes".to_string(),

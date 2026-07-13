@@ -1727,6 +1727,14 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             let e = encode_ty(db, elem);
             db.push_list(vec![head, e])
         }
+        // A map type-value: `(Map <key> <value>)` — the head then the two type arguments (key first).
+        // Round-trips with `decode_ty`'s `"Map"` arm.
+        Ty::Map(k, v) => {
+            let head = db.push_name("Map");
+            let ke = encode_ty(db, k);
+            let ve = encode_ty(db, v);
+            db.push_list(vec![head, ke, ve])
+        }
         // A bytes type-value: the bare name `Bytes` (a leaf). Round-trips with `decode_ty`'s `"Bytes"`
         // arm. Without this the catch-all below encoded it as `Unit`, so a `(-> … Bytes)` scheme
         // round-tripped to `(-> … Unit)` and `Bytes.of`/`Bytes.len` mis-typed.

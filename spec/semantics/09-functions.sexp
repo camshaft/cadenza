@@ -1576,6 +1576,47 @@
             (def (main)           (bad true)) (export main)))
   (error  CDZ0203))
 
+; A function's RETURN TYPE is declared by ascribing its body: `(def (f …) (: body R))` constrains the
+; result to `R` exactly as a parameter binder `(: name T)` constrains a parameter and a value annotation
+; `(: expr T)` constrains an expression (type-system.md §Annotations Constrain, Never Contradict). The
+; ML surface writes this as `def f(x) -> R = body` (and `fn(x) -> R => body`), which desugars to this
+; body ascription — no dedicated return-type node; the arrow is surface sugar over the annotation the
+; cases below pin. A return type that AGREES with the body is transparent (the case below); one that
+; CONTRADICTS the body's inferred type is rejected (CDZ0203), the result-position companion of the
+; parameter-annotation-contradiction case above.
+
+(case "a function's return type ascription agreeing with the body is transparent"
+  (doc    "`(def (add (: x Int64) (: y Int64)) (: (+ x y) Int64))` declares the result type by ascribing
+           the body `(+ x y)` to `Int64` — the desugaring of the ML `def add(x: Int64, y: Int64) -> Int64
+           = x + y`. The ascription agrees with the body's inferred Int64, so it is transparent and the
+           function computes normally: `(add 20 22)` = 42. Pins that a return-type annotation constrains
+           without changing a well-typed result — the result-position analogue of a matching parameter or
+           value annotation.")
+  (input  (do
+            (def (add (: x Int64) (: y Int64)) (: (+ x y) Int64))
+            (def (main)                        (add 20 22)) (export main)))
+  (output (: 42 Int64)))
+
+(case "a function's return type contradicting the body is rejected"
+  (doc    "`(def (f (: x Int64)) (: (+ x 1) Bool))` declares the return type `Bool` by ascribing the body,
+           but `(+ x 1)` is Int64 — the declared result and the inferred result disagree, so the program
+           is rejected (CDZ0203), exactly as a contradicting parameter or value annotation is. This is the
+           desugaring of the ML `def f(x: Int64) -> Bool = x + 1`: a return-type annotation is an ordinary
+           body ascription, and a return type that contradicts the body cannot be reconciled. The
+           result-position companion of the parameter-annotation-contradiction case above.")
+  (input  (do
+            (def (f (: x Int64)) (: (+ x 1) Bool))
+            (def (main)          (f 5)) (export main)))
+  (error  CDZ0203))
+
+(case "a lambda's return type ascription agreeing with the body is transparent"
+  (doc    "The lambda companion: `(fn (x) (: (* x 2) Int64))` ascribes the lambda body to `Int64` — the
+           desugaring of `fn(x) -> Int64 => x * 2`. The ascription agrees with the body, so applying the
+           lambda computes normally: `((fn (x) (: (* x 2) Int64)) 21)` = 42. A lambda's return type is a
+           body ascription exactly as a named def's is.")
+  (input  ((fn (x) (: (* x 2) Int64)) 21))
+  (output (: 42 Int64)))
+
 ; The case above contradicts the annotation via the BODY (`(: a Bool)` then `(+ a 1)`). The dual is a
 ; contradiction via the ARGUMENT: a parameter whose annotation and body AGREE, called with an argument
 ; of a conflicting type. An argument's type MUST be checked against its parameter's type at the call

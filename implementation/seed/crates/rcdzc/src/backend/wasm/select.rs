@@ -1673,8 +1673,28 @@ fn emit_loop_iteration(
     // earlier arg's i64 arith-guard slot (`(f (- n 1) (match <heap-Option> …))`) would force one slot to
     // two types and the module fails validation. `*high` is the max slot ever touched, so advancing to it
     // hands each arg fresh, never-typed slots (the `MatchSum` arm applies the same discipline internally).
+    // IDENTITY-MOVE ELISION: an argument that is exactly the parameter it is stored back into — the
+    // pass-through `(go (- n 1) k (+ acc k))` re-passes `k` to `k`'s own slot — is a no-op `local.get s ;
+    // local.set s`. Since EVERY arg is read onto the stack BEFORE ANY store (the parallel move reads all
+    // OLD param values first), such a slot keeps its old value throughout, so both the push and the store
+    // can be dropped with no effect on the other args (they already read their sources onto the stack).
+    // This strips the per-iteration self-move that a carried-through parameter (a limit/config/closure)
+    // would otherwise run every loop. Guard `i < param_slots.len()` for safety (arg count matches the
+    // callee's arity, so this always holds).
+    let is_identity: Vec<bool> = args
+        .iter()
+        .enumerate()
+        .map(|(i, &arg)| {
+            i < tl.param_slots.len()
+                && matches!(core_of(db, arg), Core::Param { binder }
+                    if slots.get(&binder) == Some(&tl.param_slots[i]))
+        })
+        .collect();
     let mut arg_base = base;
-    for &arg in args {
+    for (i, &arg) in args.iter().enumerate() {
+        if is_identity[i] {
+            continue; // pass-through to its own slot — no push, no store.
+        }
         if let Core::ConstInt(_) = core_of(db, arg)
             && let Ty::Int(ait) = type_of(db, arg)
         {
@@ -1684,8 +1704,12 @@ fn emit_loop_iteration(
         }
         arg_base = *high;
     }
-    // Pop the values into the parameter slots, last-arg-first (stack is LIFO).
-    for &slot in tl.param_slots.iter().rev() {
+    // Pop the values into the parameter slots, last-arg-first (stack is LIFO). An identity-move slot was
+    // never pushed, so it is not popped either — its old value stands.
+    for (i, &slot) in tl.param_slots.iter().enumerate().rev() {
+        if i < is_identity.len() && is_identity[i] {
+            continue;
+        }
         out.push(Lir::LocalSet(slot));
     }
     // For a mutual group, set the `which` state so the next iteration dispatches into the callee's body.
@@ -6893,6 +6917,36 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::ReturnCall(_))),
             "no return_call — the self-call became a loop iteration"
+        );
+    }
+
+    #[test]
+    fn a_pass_through_parameter_elides_its_self_move_at_the_loop_back_edge() {
+        // (def (go (: n Int64) (: k Int64) (: acc Int64)) (if (= n 0) acc (go (- n 1) k (+ acc k)))) —
+        // `k` is re-passed UNCHANGED to its own slot. The back-edge parallel move is `set acc ; set n`
+        // only: the `k` arg is neither pushed (no `local.get k` for it) nor stored (no `local.set k`),
+        // since a self-move `k ← k` is a no-op. `k`'s slot is read only by `(+ acc k)`, not moved.
+        let ast = crate::testkit::parse(
+            "(module m (def (go (: n Int64) (: k Int64) (: acc Int64)) \
+               (if (= n 0) acc (go (- n 1) k (+ acc k)))) (export go))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("go").expect("def go");
+        let (params, body) = function_of(&mut db, "go");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        // Param slots are 0=n, 1=k, 2=acc. The back-edge stores only n and acc — NOT k. Count the
+        // `local.set` into slot 1 (k): there must be none in the whole body (k is never re-stored).
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::LocalSet(1))),
+            "the pass-through param k (slot 1) is never re-stored, got: {:?}",
+            f.code
+        );
+        // The other two params ARE stored at the back-edge.
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::LocalSet(0)))
+                && f.code.iter().any(|i| matches!(i, Lir::LocalSet(2))),
+            "n and acc are still updated each iteration"
         );
     }
 

@@ -3662,6 +3662,13 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             let ety = type_ast(b, elem)?;
             Some(b.list(vec![head, ety]))
         }
+        // A map's type surface is `(Map Key Value)` — matches `render_name` (key first).
+        Ty::Map(k, v) => {
+            let head = b.name("Map");
+            let kty = type_ast(b, k)?;
+            let vty = type_ast(b, v)?;
+            Some(b.list(vec![head, kty, vty]))
+        }
         // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
         // `render_name`; its VALUE renders `b"…"` (built in `const_value_ast` / the escape walker).
         Ty::Bytes => Some(b.name("Bytes".to_string())),
@@ -4675,9 +4682,16 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
         // canonical form needs machinery this increment does not emit, or it is not a runtime value that
         // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
-        Ty::List(_) | Ty::Bytes | Ty::String | Ty::Float(_) | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
-            false
-        }
+        // NOTE: a `Ty::Map` handle IS canonical by construction (CHAMP), so map equality is wired directly
+        // (M3) via the top-level `=` → `value-eq` path, not through this compound-leaf walkability gate.
+        Ty::List(_)
+        | Ty::Map(_, _)
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Float(_)
+        | Ty::Fn(_, _)
+        | Ty::Type
+        | Ty::Any => false,
     }
 }
 

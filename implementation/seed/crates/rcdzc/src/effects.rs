@@ -1302,6 +1302,7 @@ fn ty_has_any(ty: &crate::ty::Ty) -> bool {
     match ty {
         Ty::Any => true,
         Ty::List(elem) => ty_has_any(elem),
+        Ty::Map(k, v) => ty_has_any(k) || ty_has_any(v),
         Ty::Tuple(elems) => elems.iter().any(ty_has_any),
         Ty::Record(fields) => fields.values().any(ty_has_any),
         Ty::Sum { args, .. } => args.iter().any(ty_has_any),
