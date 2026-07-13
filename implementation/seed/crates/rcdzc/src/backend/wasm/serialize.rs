@@ -935,6 +935,24 @@ pub fn runtime_resource_core_module_form(
     export_abs: u32,
     form: EscapeForm,
 ) -> Result<Vec<u8>, String> {
+    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, false)
+}
+
+/// [`runtime_resource_core_module_form`] plus `with_len`: when true, the core ALSO exports a scalar
+/// `t-len : (borrow-rep i32) -> i32` method = `bytes-len(rep)` (a String/Bytes/List length query the host
+/// calls without decoding the whole value form — VM-1). The method is a borrow method: its i32 param IS
+/// the heap rep (wasmtime's `lift_borrow` passes the rep, not a table index), so `t-len` is
+/// `local.get 0; call bytes-len; end` — a repeatable read, no `resource.rep`, no drop. Its core func is
+/// emitted LAST (after make/t-encode/cabi_realloc), matching `assemble_runtime_resource_with_len`'s alias
+/// order (t-len at core func k+6). Only the RuntimeBytes form uses `with_len` today (the bytes `len` op is
+/// `bytes-len`; a List would use `vec-len`, a later increment).
+pub fn runtime_resource_core_module_form_ex(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    form: EscapeForm,
+    with_len: bool,
+) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
     let n = funcs.len();
@@ -978,7 +996,12 @@ pub fn runtime_resource_core_module_form(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    let total_types = defined_type_base + n + 3;
+    // t-len `(i32)->i32` (VM-1) — emitted only when `with_len`, after the three synthesized types.
+    let len_type_idx = realloc_type_idx + 1;
+    if with_len {
+        type_items.extend_from_slice(&i32_to_i32);
+    }
+    let total_types = defined_type_base + n + 3 + if with_len { 1 } else { 0 };
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + resource-new + resource-rep, all from "heap". Also builds the
@@ -1005,10 +1028,18 @@ pub fn runtime_resource_core_module_form(
     uleb128(make_type_idx as u64, &mut func_items);
     uleb128(encode_type_idx as u64, &mut func_items);
     uleb128(realloc_type_idx as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 3, &func_items));
+    if with_len {
+        uleb128(len_type_idx as u64, &mut func_items);
+    }
+    let n_synth = 3 + if with_len { 1 } else { 0 };
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + n_synth, &func_items),
+    );
     let make_abs = (defined_type_base + n) as u32;
     let encode_abs = make_abs + 1;
     let realloc_abs = encode_abs + 1;
+    let len_abs = realloc_abs + 1; // valid only when `with_len` (t-len is the last defined func)
 
     // ── Memory section ── one memory, min 1 page.
     let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
@@ -1031,7 +1062,11 @@ pub fn runtime_resource_core_module_form(
             wasm_abi::EXPORT_KIND_FUNC,
             realloc_abs,
         ));
-        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(4, &items))
+        if with_len {
+            items.extend_from_slice(&export("t-len", wasm_abi::EXPORT_KIND_FUNC, len_abs));
+        }
+        let n_exports = 4 + if with_len { 1 } else { 0 };
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(n_exports, &items))
     };
 
     // ── Data section ── lay the value-form bytes as the output buffer, then each template's (ptr,len)
@@ -1128,7 +1163,23 @@ pub fn runtime_resource_core_module_form(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 3, &code_items));
+    // t-len(borrow rep) -> i32 (VM-1): the param IS the heap rep (a borrow), so `bytes-len(rep)` directly
+    // — a repeatable scalar read, no resource.rep, no drop. `local.get 0; call bytes-len; end`.
+    if with_len {
+        let f_bytes_len = *import_index
+            .get("bytes-len")
+            .expect("with_len requires the bytes-len op imported");
+        let mut inner = uleb_bytes(0); // no locals
+        inner.push(op::LOCAL_GET);
+        uleb128(0, &mut inner); // the borrow self param = the rep
+        inner.push(op::CALL);
+        uleb128(f_bytes_len as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + n_synth, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
@@ -2098,7 +2149,11 @@ pub fn distinct_sig_roundtrip_core_module(
             next_type += 1;
         }
         for c in &gr.consumers {
-            let params: Vec<u8> = c.params.iter().map(|p| vt_byte(consume_param_vt(p))).collect();
+            let params: Vec<u8> = c
+                .params
+                .iter()
+                .map(|p| vt_byte(consume_param_vt(p)))
+                .collect();
             let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
             t.extend_from_slice(&wasm_vec(params.len(), &params));
             t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));

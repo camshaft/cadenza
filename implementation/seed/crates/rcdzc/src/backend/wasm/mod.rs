@@ -272,11 +272,11 @@ pub fn emit(
     // signature; the consumer body treats its closure param as a cell, and the serializer wrapper
     // `resource.rep`s the boundary handle → cell). A consumer-ONLY program (a host-fabricated closure)
     // stays out of scope — `emit_roundtrip_resource` declines it (no producer).
-    if layout
-        .exports
-        .iter()
-        .any(|e| e.params.iter().any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _))))
-    {
+    if layout.exports.iter().any(|e| {
+        e.params
+            .iter()
+            .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+    }) {
         // Collect every closure SIGNATURE the program touches — a producer's result + each consumer's
         // closure param. If they are all the SAME, the single-resource round-trip handles it; if there is
         // MORE THAN ONE distinct signature, route to the N-resource-type distinct-sig round-trip.
@@ -925,11 +925,14 @@ fn resource_escape_dwarf(
         let export_abs = layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping bytes export is not in the emission order")
         })?;
-        let main_core = serialize::runtime_resource_core_module_form(
+        // MUST match Mode E's `emit_runtime_bytes_resource` (with_len=true — the Bytes resource carries
+        // `t-len`), or the sidecar's code offsets diverge from the embedded component's (VM-1).
+        let main_core = serialize::runtime_resource_core_module_form_ex(
             &funcs,
             &imports,
             export_abs,
             serialize::EscapeForm::RuntimeBytes(&form),
+            true,
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1303,21 +1306,18 @@ fn emit_closure_resource(
     // Boundary bytes (component valtypes) for the `call` method's args + result — aliased scalar widths.
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
-        .map(|t| {
-            closure_boundary_byte(t)
-                .ok_or_else(|| closure_boundary_reject("argument", t))
-        })
+        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    let result_byte = closure_boundary_byte(&ret_ty)
-        .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    let result_byte =
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
     // the `call_indirect` lifted functype shape).
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
         .collect::<Result<_, _>>()?;
-    let ret_vt =
-        valtype_of(&ret_ty).ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+    let ret_vt = valtype_of(&ret_ty)
+        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
 
     // The EXPORT's parameters (C-HOST-2): `make` forwards them so the host computes a distinct closure per
     // input (`(def (adder k) …)` → `make(k)`). Each must have a scalar boundary ABI type this increment.
@@ -1330,14 +1330,14 @@ fn emit_closure_resource(
     let make_param_vts: Vec<crate::backend::wasm::lir::ValType> = export_params
         .iter()
         .map(|(_, t)| {
-            valtype_of(t).ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
+            valtype_of(t)
+                .ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
         })
         .collect::<Result<_, _>>()?;
     let make_param_bytes: Vec<u8> = export_params
         .iter()
         .map(|(_, t)| {
-            closure_boundary_byte(t)
-                .ok_or_else(|| closure_boundary_reject("parameter", t))
+            closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
         })
         .collect::<Result<_, _>>()?;
 
@@ -1353,7 +1353,8 @@ fn emit_closure_resource(
         .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
         .map(|(_, l)| l.body)
         .collect();
-    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
     for &body in &lifted_bodies {
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
@@ -1454,19 +1455,16 @@ fn emit_multi_closure_resource(
     }
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
-        .map(|t| {
-            closure_boundary_byte(t)
-                .ok_or_else(|| closure_boundary_reject("argument", t))
-        })
+        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    let result_byte = closure_boundary_byte(&ret_ty)
-        .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    let result_byte =
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
         .collect::<Result<_, _>>()?;
-    let ret_vt =
-        valtype_of(&ret_ty).ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+    let ret_vt = valtype_of(&ret_ty)
+        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
 
     // Per export: its params (each `make` forwards them) as core valtypes + boundary bytes. Collected
     // BEFORE `resource_escape_build` moves the layout (params live on the pre-build `layout.exports`).
@@ -1487,15 +1485,15 @@ fn emit_multi_closure_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                valtype_of(t).ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
+                valtype_of(t)
+                    .ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
             })
             .collect::<Result<_, _>>()?;
         let param_bytes: Vec<u8> = export
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t)
-                    .ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
             })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
@@ -1514,7 +1512,8 @@ fn emit_multi_closure_resource(
         .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
         .map(|(_, l)| l.body)
         .collect();
-    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
     for &body in &lifted_bodies {
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
@@ -1600,7 +1599,7 @@ fn emit_distinct_sig_resource(
     layout: &Layout,
     _spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
-    use crate::backend::wasm::lir::{valtype_of, ValType};
+    use crate::backend::wasm::lir::{ValType, valtype_of};
     // GROUP the exports by their result signature (preserving first-seen order). Each group is a distinct
     // resource type. `sigs` holds the group signatures in order; `group_of[export-index]` its group.
     let mut sigs: Vec<crate::ty::Ty> = Vec::new();
@@ -1632,15 +1631,22 @@ fn emit_distinct_sig_resource(
             .iter()
             .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
             .collect::<Result<_, _>>()?;
-        let result_byte =
-            closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+        let result_byte = closure_boundary_byte(&ret_ty)
+            .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
         let arg_vts: Vec<ValType> = arg_tys
             .iter()
-            .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+            .map(|t| {
+                valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+            })
             .collect::<Result<_, _>>()?;
         let ret_vt = valtype_of(&ret_ty)
             .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
-        ginfos.push(GroupInfo { arg_vts, ret_vt, arg_bytes, result_byte });
+        ginfos.push(GroupInfo {
+            arg_vts,
+            ret_vt,
+            arg_bytes,
+            result_byte,
+        });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
     {
@@ -1673,12 +1679,16 @@ fn emit_distinct_sig_resource(
         let param_vts: Vec<_> = e
             .params
             .iter()
-            .map(|(_, t)| valtype_of(t).ok_or_else(|| Reject::decline("closure export param has no valtype")))
+            .map(|(_, t)| {
+                valtype_of(t).ok_or_else(|| Reject::decline("closure export param has no valtype"))
+            })
             .collect::<Result<_, _>>()?;
         let param_bytes: Vec<u8> = e
             .params
             .iter()
-            .map(|(_, t)| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t)))
+            .map(|(_, t)| {
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
             def: e.def,
@@ -1697,7 +1707,8 @@ fn emit_distinct_sig_resource(
         .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
         .map(|(_, l)| l.body)
         .collect();
-    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
     for &body in &lifted_bodies {
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
@@ -1721,7 +1732,9 @@ fn emit_distinct_sig_resource(
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
-        return Err(Reject::decline("a distinct-signature closure program produced no lifted lambda"));
+        return Err(Reject::decline(
+            "a distinct-signature closure program produced no lifted lambda",
+        ));
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         let env_key = db.push_name("$closure-env");
@@ -1745,10 +1758,12 @@ fn emit_distinct_sig_resource(
     // Build the serializer SigGroups + envelope SigGroupAbis, in group order.
     let mut ser_groups: Vec<serialize::SigGroup> = Vec::new();
     let mut abi_groups: Vec<envelope::SigGroupAbi> = Vec::new();
-    #[allow(clippy::needless_range_loop)] // `gi` is a semantic GROUP id — indexes sigs/ginfos AND filters make_specs
+    #[allow(clippy::needless_range_loop)]
+    // `gi` is a semantic GROUP id — indexes sigs/ginfos AND filters make_specs
     for gi in 0..sigs.len() {
-        let slot = group_slot(gi)
-            .ok_or_else(|| Reject::decline("a closure signature group has no matching lifted lambda"))?;
+        let slot = group_slot(gi).ok_or_else(|| {
+            Reject::decline("a closure signature group has no matching lifted lambda")
+        })?;
         let mut ser_makes = Vec::new();
         let mut abi_makes = Vec::new();
         for m in make_specs.iter().filter(|m| m.group == gi) {
@@ -1818,7 +1833,11 @@ fn emit_roundtrip_resource(
     let consumers: Vec<&crate::layout::ExportPlan> = layout
         .exports
         .iter()
-        .filter(|e| e.params.iter().any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _))))
+        .filter(|e| {
+            e.params
+                .iter()
+                .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+        })
         .collect();
     // An export that is BOTH a producer (closure RESULT) and a consumer (closure PARAM) — a closure
     // TRANSFORMER `(-> (-> A B) … (-> C D))`, e.g. `(def (twice (: g …)) (fn (x) (g (g x))))` — is out of
@@ -1829,7 +1848,9 @@ fn emit_roundtrip_resource(
     // (the `make`-forwarding site chokes on the closure param).
     if let Some(t) = layout.exports.iter().find(|e| {
         matches!(e.result, crate::ty::Ty::Fn(_, _))
-            && e.params.iter().any(|(_, p)| matches!(p, crate::ty::Ty::Fn(_, _)))
+            && e.params
+                .iter()
+                .any(|(_, p)| matches!(p, crate::ty::Ty::Fn(_, _)))
     }) {
         return Err(Reject::decline(format!(
             "the export `{}` both RECEIVES a closure (a parameter) and RETURNS one (its result) — a \
@@ -1949,7 +1970,9 @@ fn emit_roundtrip_resource(
         let param_vts: Vec<_> = p
             .params
             .iter()
-            .map(|(_, t)| valtype_of(t).ok_or_else(|| Reject::decline("producer param has no valtype")))
+            .map(|(_, t)| {
+                valtype_of(t).ok_or_else(|| Reject::decline("producer param has no valtype"))
+            })
             .collect::<Result<_, _>>()?;
         let param_bytes: Vec<u8> = p
             .params
@@ -2026,7 +2049,8 @@ fn emit_roundtrip_resource(
         .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
         .map(|(_, l)| l.body)
         .collect();
-    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
     for &body in &lifted_bodies {
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
@@ -2059,9 +2083,9 @@ fn emit_roundtrip_resource(
         .map(|m| {
             Ok(serialize::ClosureMake {
                 export_name: m.name.clone(),
-                export_abs: layout
-                    .abs(m.def)
-                    .ok_or_else(|| Reject::decline("a producer export is not in the emission order"))?,
+                export_abs: layout.abs(m.def).ok_or_else(|| {
+                    Reject::decline("a producer export is not in the emission order")
+                })?,
                 param_vts: m.param_vts.clone(),
             })
         })
@@ -2071,9 +2095,9 @@ fn emit_roundtrip_resource(
         .map(|c| {
             Ok(serialize::ClosureConsume {
                 export_name: c.name.clone(),
-                consume_abs: layout
-                    .abs(c.def)
-                    .ok_or_else(|| Reject::decline("a consumer export is not in the emission order"))?,
+                consume_abs: layout.abs(c.def).ok_or_else(|| {
+                    Reject::decline("a consumer export is not in the emission order")
+                })?,
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
             })
@@ -2143,9 +2167,11 @@ fn emit_distinct_sig_roundtrip_resource(
             .collect()
     };
     // A closure TRANSFORMER (both a closure result AND a closure param) is out of scope here too.
-    if let Some(t) = layout.exports.iter().find(|e| {
-        producer_sig(e).is_some() && !consumer_sigs(e).is_empty()
-    }) {
+    if let Some(t) = layout
+        .exports
+        .iter()
+        .find(|e| producer_sig(e).is_some() && !consumer_sigs(e).is_empty())
+    {
         return Err(Reject::decline(format!(
             "the export `{}` both receives and returns a closure (a closure transformer) — not yet \
              supported (DESIGN-closure-host-resource-rcdzc.md, closure transformers)",
@@ -2228,14 +2254,24 @@ fn emit_distinct_sig_roundtrip_resource(
             let param_vts: Vec<_> = e
                 .params
                 .iter()
-                .map(|(_, t)| valtype_of(t).ok_or_else(|| Reject::decline("producer param has no valtype")))
+                .map(|(_, t)| {
+                    valtype_of(t).ok_or_else(|| Reject::decline("producer param has no valtype"))
+                })
                 .collect::<Result<_, _>>()?;
             let param_bytes: Vec<u8> = e
                 .params
                 .iter()
-                .map(|(_, t)| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t)))
+                .map(|(_, t)| {
+                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                })
                 .collect::<Result<_, _>>()?;
-            makes.push(MakeS { def: e.def, group, name: e.name.clone(), param_vts, param_bytes });
+            makes.push(MakeS {
+                def: e.def,
+                group,
+                name: e.name.clone(),
+                param_vts,
+                param_bytes,
+            });
         } else {
             let cs = consumer_sigs(e);
             if cs.is_empty() {
@@ -2251,17 +2287,27 @@ fn emit_distinct_sig_roundtrip_resource(
                     params.push(serialize::ConsumeParam::Closure);
                     abi_params.push(envelope::ConsumeParamAbi::Closure);
                 } else {
-                    let vt = valtype_of(t).ok_or_else(|| Reject::decline("consumer scalar param has no valtype"))?;
+                    let vt = valtype_of(t)
+                        .ok_or_else(|| Reject::decline("consumer scalar param has no valtype"))?;
                     let byte = closure_boundary_byte(t)
                         .ok_or_else(|| closure_boundary_reject("parameter", t))?;
                     params.push(serialize::ConsumeParam::Scalar(vt));
                     abi_params.push(envelope::ConsumeParamAbi::Scalar(byte));
                 }
             }
-            let ret_vt = valtype_of(&e.result).ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
+            let ret_vt = valtype_of(&e.result)
+                .ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
             let result_byte = closure_boundary_byte(&e.result)
                 .ok_or_else(|| closure_boundary_reject("result", &e.result))?;
-            cons.push(ConsS { def: e.def, group, name: e.name.clone(), params, abi_params, ret_vt, result_byte });
+            cons.push(ConsS {
+                def: e.def,
+                group,
+                name: e.name.clone(),
+                params,
+                abi_params,
+                ret_vt,
+                result_byte,
+            });
         }
     }
     // Require at least one producer per group (a consumer group with no producer would need a host-made
@@ -2283,7 +2329,8 @@ fn emit_distinct_sig_roundtrip_resource(
         .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
         .map(|(_, l)| l.body)
         .collect();
-    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
     for &body in &lifted_bodies {
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
@@ -2295,7 +2342,9 @@ fn emit_distinct_sig_roundtrip_resource(
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
-        return Err(Reject::decline("a distinct-signature round-trip produced no lifted lambda"));
+        return Err(Reject::decline(
+            "a distinct-signature round-trip produced no lifted lambda",
+        ));
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         let env_key = db.push_name("$closure-env");
@@ -2346,8 +2395,14 @@ fn emit_distinct_sig_roundtrip_resource(
                 result_byte: c.result_byte,
             });
         }
-        ser_groups.push(serialize::RtSigGroup { makes: ser_makes, consumers: ser_cons });
-        abi_groups.push(envelope::RtSigGroupAbi { makes: abi_makes, consumers: abi_cons });
+        ser_groups.push(serialize::RtSigGroup {
+            makes: ser_makes,
+            consumers: ser_cons,
+        });
+        abi_groups.push(envelope::RtSigGroupAbi {
+            makes: abi_makes,
+            consumers: abi_cons,
+        });
     }
 
     let main_core =
@@ -2413,11 +2468,15 @@ fn emit_runtime_bytes_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
 
-    let mut main_core = serialize::runtime_resource_core_module_form(
+    // VM-1: a Bytes result crosses as a resource carrying make + encode + a scalar `len : borrow<t> ->
+    // u32` (= `bytes-len(rep)`). The core emits `t-len` (with_len=true; `bytes-len` is already in the
+    // imports for the encode walker), and the envelope lifts the third method.
+    let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
+        true, // with_len — a Bytes resource exposes `len`
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -2426,7 +2485,7 @@ fn emit_runtime_bytes_resource(
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_runtime_resource(
+    Ok(envelope::assemble_runtime_resource_with_len(
         &main_core,
         &dtor_core,
         &imports,

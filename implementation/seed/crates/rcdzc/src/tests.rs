@@ -3070,14 +3070,26 @@ mod runtime_ops {
         assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(5)]), -5);
         assert_eq!(run::<i64>("(: x Int64)", "(* -1 x)", &[Val::S64(-7)]), 7);
         assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(0)]), 0);
-        assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(i64::MAX)]), -i64::MAX);
-        assert!(traps("(: x Int64)", "(* x -1)", &[Val::S64(i64::MIN)]), "MIN * -1 overflows → trap");
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(i64::MAX)]),
+            -i64::MAX
+        );
+        assert!(
+            traps("(: x Int64)", "(* x -1)", &[Val::S64(i64::MIN)]),
+            "MIN * -1 overflows → trap"
+        );
         // Narrow: -128 * -1 = 128 overflows Int8 → trap; in range computes.
         assert_eq!(run::<i8>("(: x Int8)", "(* x -1)", &[Val::S8(100)]), -100);
-        assert!(traps("(: x Int8)", "(* x -1)", &[Val::S8(-128)]), "MIN_8 * -1 overflows Int8 → trap");
+        assert!(
+            traps("(: x Int8)", "(* x -1)", &[Val::S8(-128)]),
+            "MIN_8 * -1 overflows Int8 → trap"
+        );
         // The kept operand's OWN trap is preserved (no is_trap_free guard): (* (/ 10 y) -1), y=0 → ÷0.
         assert!(traps("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(0)]));
-        assert_eq!(run::<i64>("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(2)]), -5);
+        assert_eq!(
+            run::<i64>("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(2)]),
+            -5
+        );
     }
 
     #[test]
@@ -3443,7 +3455,9 @@ mod runtime_ops {
                 })
                 .collect();
             let body = db.defs[d].body.expect("body");
-            select_function(&mut db, body, &ps, &layout).expect("select").code
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
         };
         // `(= (if (< x 0) 1 0) 1)` → `(< x 0)`: exactly one compare (`lt_s`), NO `i32.eq`, NO extend.
         let c = lir("(: x Int64)", "(= (if (< x 0) 1 0) 1)");
@@ -3453,18 +3467,47 @@ mod runtime_ops {
             "one lt_s compare only, got: {c:?}"
         );
         assert!(
-            !c.iter().any(|i| matches!(i, Lir::I32Eq | Lir::I64Eq | Lir::I64ExtendI32U)),
+            !c.iter()
+                .any(|i| matches!(i, Lir::I32Eq | Lir::I64Eq | Lir::I64ExtendI32U)),
             "the materialize-then-compare is folded away, got: {c:?}"
         );
         // VALUE PARITY across the four shapes (both K and both branch orders).
-        assert!(run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 1)", &[Val::S64(-1)])); // c → true
-        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 1)", &[Val::S64(5)]));
-        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 0)", &[Val::S64(-1)])); // !c
-        assert!(run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 0)", &[Val::S64(5)]));
-        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 0 1) 1)", &[Val::S64(-1)])); // flipped → !c
-        assert!(run::<bool>("(: x Int64)", "(= (if (< x 0) 0 1) 1)", &[Val::S64(5)]));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 1 0) 1)",
+            &[Val::S64(-1)]
+        )); // c → true
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 1 0) 1)",
+            &[Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 1 0) 0)",
+            &[Val::S64(-1)]
+        )); // !c
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 1 0) 0)",
+            &[Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 0 1) 1)",
+            &[Val::S64(-1)]
+        )); // flipped → !c
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 0 1) 1)",
+            &[Val::S64(5)]
+        ));
         // A constant OTHER than 0/1 does NOT use this fold (range fold makes it false): (= bool-int 5).
-        assert!(!run::<bool>("(: x Int64)", "(= (if (< x 0) 1 0) 5)", &[Val::S64(-1)]));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (if (< x 0) 1 0) 5)",
+            &[Val::S64(-1)]
+        ));
     }
 
     #[test]
@@ -10832,6 +10875,87 @@ mod match_engine {
         )
         .expect("runtime present");
         assert_eq!(out, "(: b\"ABC\" Bytes)", "runtime concat escape");
+    }
+
+    #[test]
+    fn a_runtime_bytes_resource_exposes_a_repeatable_len_method() {
+        // VM-1: a runtime-Bytes result crosses as a resource carrying make + encode + `len : borrow<t> ->
+        // u32` (= `bytes-len(rep)`). The host reaches `len` INSIDE the `cadenza:run/run` instance and calls
+        // it TWICE on one handle (repeatable — borrow, no consume), then `encode` still renders correctly,
+        // then drops (the dtor reclaims). Proves the compiler-EMITTED (not oracle) value-resource-method
+        // shape end-to-end. `(concat b"AB" b"C")` → len 3, encode `(: b"ABC" Bytes)`.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping VM-1 len-method run");
+            return;
+        };
+        // A RECURSIVE (unfoldable) LEB128 builder — a genuine runtime Bytes that imports the runtime (a
+        // constant-arg concat would FOLD to a baked constant with no runtime import, which the resource
+        // still exposes `len` on, but `ComposedRuntime` requires a runtime-importing program). `(uleb
+        // 624485)` = 3 bytes `E5 8E 26`.
+        let src = "(module m (def (uleb n) (if (< n 128) \
+                        ((. Bytes of) (list ((. UInt8 wrap) n))) \
+                        ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7))))) \
+                     (def (main) (uleb 624485)) (export main))";
+        let program = component(src);
+        use wasmtime::component::{ResourceAny, Val};
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        let iface = rt
+            .program
+            .get_export_index(&mut rt.store, None, "cadenza:run/run")
+            .expect("run iface");
+        let get = |rt: &mut super::ComposedRuntime, n: &str| {
+            let idx = rt
+                .program
+                .get_export_index(&mut rt.store, Some(&iface), n)
+                .unwrap_or_else(|| panic!("{n} exported by the value resource"));
+            rt.program.get_func(&mut rt.store, idx).expect("func")
+        };
+        let make = get(&mut rt, "make");
+        let len = get(&mut rt, "len");
+        let encode = get(&mut rt, "encode");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut rt.store, &[], &mut handle).expect("make");
+        make.post_return(&mut rt.store).expect("make post");
+        // len TWICE on the same handle — repeatable borrow method.
+        for round in 0..2 {
+            let mut out = [Val::Bool(false)];
+            len.call(&mut rt.store, &handle, &mut out)
+                .unwrap_or_else(|e| panic!("len round {round}: {e}"));
+            len.post_return(&mut rt.store).expect("len post");
+            assert!(
+                matches!(out[0], Val::U32(3)),
+                "VM-1 len round {round}: expected 3 (uleb 624485 = 3 bytes), got {:?}",
+                out[0]
+            );
+        }
+        // encode after the len calls — the value is still intact.
+        let mut out = [Val::Bool(false)];
+        encode
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("encode");
+        encode.post_return(&mut rt.store).expect("encode post");
+        let bytes: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("expected list<u8>: {o:?}"),
+        };
+        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode value form");
+        assert_eq!(
+            cadenza_syntax::sexpr::print(&arenas).trim(),
+            "(: b\"\\xe5\\x8e&\" Bytes)",
+            "encode still renders after the repeated len calls"
+        );
+        if let Val::Resource(r) = handle[0] {
+            let r: ResourceAny = r;
+            r.resource_drop(&mut rt.store).expect("resource drop");
+        } else {
+            panic!("make did not return a resource handle");
+        }
     }
 
     #[test]
@@ -19157,8 +19281,8 @@ mod stage1 {
                         ((Some t) (match (. t 0) ((Red) 1) ((Grn) 2) ((Blu) 3))) \
                         ((None u) 0))) \
                      (export main))";
-        let bytes =
-            compile_component(&crate::codec::encode(&parse(src))).expect("compile enum-in-tuple-in-sum");
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile enum-in-tuple-in-sum");
         wasmparser::validate(&bytes)
             .expect("an enum reached through a tuple element in a boxed sum must emit VALID wasm");
         let Some(runtime) = super::find_runtime_wasm() else {
@@ -19173,7 +19297,9 @@ mod stage1 {
             host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "the Blu element projects + dispatches to 3"),
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "3", "the Blu element projects + dispatches to 3")
+            }
             cdz_run::Outcome::Trap(t) => panic!("enum-in-tuple-in-sum run trapped: {t}"),
         }
     }
