@@ -1513,13 +1513,16 @@ fn emit_roundtrip_resource(
             .iter()
             .filter_map(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)).then_some(t))
             .collect();
-        if closure_params.len() != 1 {
+        // A consumer may take SEVERAL closure params (each threaded back), but every one must be the
+        // SAME signature as the produced closure — one resource type `t` this increment (distinct
+        // signatures need N resource types, a later slice). A closure param may sit in any position; the
+        // consumer functype follows source order.
+        if closure_params.is_empty() {
             return Err(Reject::decline(
-                "a round-trip consumer with more than one closure parameter is not yet supported \
-                 (this increment threads exactly one closure back per consumer)",
+                "a round-trip consumer takes no closure parameter (nothing to thread back)",
             ));
         }
-        if closure_params[0] != &sig {
+        if closure_params.iter().any(|t| *t != &sig) {
             return Err(Reject::decline(
                 "a round-trip consumer's closure parameter has a different signature than the produced \
                  closure (mixed signatures are a later slice)",
@@ -1552,24 +1555,25 @@ fn emit_roundtrip_resource(
             ));
         }
     }
-    let arg_bytes: Vec<u8> = arg_tys
-        .iter()
-        .map(|t| {
-            closure_boundary_byte(t).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a closure argument of type {} has no scalar host-boundary representation",
-                    t.render_name()
-                ))
-            })
-        })
-        .collect::<Result<_, _>>()?;
-    let result_byte = closure_boundary_byte(&ret_ty)
-        .ok_or_else(|| {
+    // VALIDATE the shared closure signature crosses as scalars (a producer minting a closure whose arg or
+    // result is a compound must decline). The bytes themselves are not used directly — a producer's `make`
+    // functype takes the EXPORT's own params, and a consumer's functype its OWN params (`abi_params`); the
+    // closure signature only shapes the in-guest `call_indirect` (core valtypes, always representable). But
+    // the scalar-boundary check must still fire here so a compound-closure round trip declines.
+    for t in &arg_tys {
+        closure_boundary_byte(t).ok_or_else(|| {
             Reject::decline(format!(
-                "a closure result of type {} has no scalar host-boundary representation",
-                ret_ty.render_name()
+                "a closure argument of type {} has no scalar host-boundary representation",
+                t.render_name()
             ))
         })?;
+    }
+    closure_boundary_byte(&ret_ty).ok_or_else(|| {
+        Reject::decline(format!(
+            "a closure result of type {} has no scalar host-boundary representation",
+            ret_ty.render_name()
+        ))
+    })?;
 
     // Per-PRODUCER: its make spec (name `make-<export>`, param vts + bytes forwarded). Per-CONSUMER: its
     // consume spec (name = the export name, params classified Closure/Scalar, result vt + boundary shape).
@@ -1585,7 +1589,7 @@ fn emit_roundtrip_resource(
         name: String,
         params: Vec<serialize::ConsumeParam>,
         ret_vt: crate::backend::wasm::lir::ValType,
-        arg_bytes: Vec<u8>,
+        abi_params: Vec<envelope::ConsumeParamAbi>,
         result_byte: u8,
     }
     let mut make_specs: Vec<MakeSpec> = Vec::new();
@@ -1619,25 +1623,46 @@ fn emit_roundtrip_resource(
     }
     let mut consume_specs: Vec<ConsumeSpec> = Vec::new();
     for c in &consumers {
+        // Classify each param IN SOURCE ORDER for BOTH the core (`ConsumeParam`: Closure → resource handle,
+        // Scalar → its valtype) and the component boundary (`ConsumeParamAbi`: Closure → own<t>, Scalar →
+        // its comp byte). A closure param may sit anywhere and there may be several (all same signature).
         let mut params = Vec::new();
+        let mut abi_params = Vec::new();
         for (_, t) in &c.params {
             if matches!(t, crate::ty::Ty::Fn(_, _)) {
                 params.push(serialize::ConsumeParam::Closure);
+                abi_params.push(envelope::ConsumeParamAbi::Closure);
             } else {
                 let vt = valtype_of(t)
                     .ok_or_else(|| Reject::decline("consumer scalar param has no valtype"))?;
+                let byte = closure_boundary_byte(t).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a consumer scalar parameter of type {} has no scalar host-boundary representation",
+                        t.render_name()
+                    ))
+                })?;
                 params.push(serialize::ConsumeParam::Scalar(vt));
+                abi_params.push(envelope::ConsumeParamAbi::Scalar(byte));
             }
         }
         let ret_vt = valtype_of(&c.result)
             .ok_or_else(|| Reject::decline("consumer result has no machine valtype"))?;
+        // The consumer's OWN result boundary byte — not the shared closure result. A consumer may return a
+        // different type than the closure it applies (e.g. `(> (g x) 0)` → Bool), so its functype result is
+        // its own `c.result`, which must be a scalar boundary type.
+        let consumer_result_byte = closure_boundary_byte(&c.result).ok_or_else(|| {
+            Reject::decline(format!(
+                "a consumer result of type {} has no scalar host-boundary representation",
+                c.result.render_name()
+            ))
+        })?;
         consume_specs.push(ConsumeSpec {
             def: c.def,
             name: c.name.clone(),
             params,
             ret_vt,
-            arg_bytes: arg_bytes.clone(),
-            result_byte,
+            abi_params,
+            result_byte: consumer_result_byte,
         });
     }
 
@@ -1725,7 +1750,7 @@ fn emit_roundtrip_resource(
         .iter()
         .map(|c| envelope::ClosureConsumeAbi {
             name: c.name.clone(),
-            arg_bytes: c.arg_bytes.clone(),
+            params: c.abi_params.clone(),
             result_byte: c.result_byte,
         })
         .collect();

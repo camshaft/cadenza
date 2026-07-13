@@ -1465,14 +1465,26 @@ pub fn assemble_multi_closure_resource(
     out
 }
 
-/// One CONSUMER export's boundary shape for the round-trip envelope: its name + the closure `call`
-/// argument bytes + result byte. A consumer's component functype is `(g: own<t>, args…) -> R` — the SAME
-/// shape as the multi-export `call` method, but exported as a plain func under its own name (the host
-/// threads a produced handle in as `g`). This increment handles a consumer with exactly ONE closure param
-/// (the leading `own<t>`); additional scalar args ride after it (`arg_bytes`).
+/// One boundary parameter of a round-trip CONSUMER, in SOURCE ORDER: a closure the host hands back
+/// (crosses as `own<t>`) or a plain scalar (its component primitive byte). The consumer's component
+/// functype is its params in this exact order — a closure param need NOT be first, and a consumer may take
+/// several closures (all the same signature → the same resource type `t`).
+#[derive(Clone, Copy)]
+pub enum ConsumeParamAbi {
+    /// A closure the host hands back — crosses as `own<t>` (the resource handle).
+    Closure,
+    /// A scalar param — its component primitive byte (`comp_valtype_of`).
+    Scalar(u8),
+}
+
+/// One CONSUMER export's boundary shape for the round-trip envelope: its name + its params in SOURCE ORDER
+/// (each a closure `own<t>` or a scalar byte) + result byte. Exported as a plain func under its own name;
+/// the host threads a produced handle in for each `Closure` param. Generalizes the earlier "closure first,
+/// then the closure's args" shape — a consumer's boundary params are its OWN params, so a closure can sit
+/// anywhere in the list and there may be more than one.
 pub struct ClosureConsumeAbi {
     pub name: String,
-    pub arg_bytes: Vec<u8>,
+    pub params: Vec<ConsumeParamAbi>,
     pub result_byte: u8,
 }
 
@@ -1621,7 +1633,7 @@ pub fn assemble_roundtrip_resource(
         }
         for c in consumers {
             items.extend_from_slice(&own_item(1));
-            items.extend_from_slice(&closure_call_functype(ti, &c.arg_bytes, c.result_byte));
+            items.extend_from_slice(&consumer_functype(ti, &c.params, c.result_byte));
             ti += 2;
         }
         section(sec::COMPONENT_TYPE, &wasm_vec(2 * nfns, &items))
@@ -1943,7 +1955,7 @@ fn resource_inner_component_roundtrip(
         let ft_ty = (2 + 2 * f) as u32;
         out.extend_from_slice(&{
             let mut items = own_item(0);
-            items.extend_from_slice(&closure_call_functype(own_ty, &c.arg_bytes, c.result_byte));
+            items.extend_from_slice(&consumer_functype(own_ty, &c.params, c.result_byte));
             section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
         });
         out.extend_from_slice(&section(
@@ -1982,7 +1994,7 @@ fn resource_inner_component_roundtrip(
         let ft_ty = r + (2 + 2 * f) as u32;
         out.extend_from_slice(&{
             let mut items = own_item(r);
-            items.extend_from_slice(&closure_call_functype(own_ty, &c.arg_bytes, c.result_byte));
+            items.extend_from_slice(&consumer_functype(own_ty, &c.params, c.result_byte));
             section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
         });
         out.extend_from_slice(&section(
@@ -2288,6 +2300,28 @@ fn closure_call_functype(self_handle_type_idx: u32, arg_bytes: &[u8], result_byt
     }
     item.extend_from_slice(&wasm_vec(1 + arg_bytes.len(), &param_items));
     // One result — the closure's return valtype (a scalar boundary byte).
+    item.extend_from_slice(&[0x00, result_byte]);
+    item
+}
+
+/// A round-trip CONSUMER's component functype: its params in SOURCE ORDER (each an `own<t>` closure handle
+/// or a scalar byte) → `result_byte`. Unlike [`closure_call_functype`] (which hardcodes `own<t>` FIRST +
+/// scalar args), this follows the actual param order — so a closure param may sit anywhere, and there may
+/// be several (all `own<t>` of the same resource). `own_ty` is the `own<t>` defined-type index every
+/// closure param references. Params named `p0`,`p1`,… (positional; names cosmetic).
+fn consumer_functype(own_ty: u32, params: &[ConsumeParamAbi], result_byte: u8) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    for (i, p) in params.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&uleb_bytes(pname.len() as u64));
+        param_items.extend_from_slice(pname.as_bytes());
+        match p {
+            ConsumeParamAbi::Closure => param_items.extend_from_slice(&owned_valtype(own_ty)),
+            ConsumeParamAbi::Scalar(vt) => param_items.push(*vt),
+        }
+    }
+    item.extend_from_slice(&wasm_vec(params.len(), &param_items));
     item.extend_from_slice(&[0x00, result_byte]);
     item
 }

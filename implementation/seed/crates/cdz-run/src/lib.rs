@@ -617,28 +617,57 @@ fn run_roundtrip_closure(
     };
     let producer = get(&mut *store, producer_name)?;
     let consumer = get(&mut *store, consumer_name)?;
-    // Split the flat arg list by the PRODUCER's arity: leading args → producer, rest → consumer (after its
-    // leading `self` handle).
+    // The consumer's params, in SOURCE ORDER — each is either a CLOSURE the host threads a produced handle
+    // into (`Type::Own`/`Type::Borrow` — the resource `t`) or a SCALAR taken from the arg strings. A
+    // closure param may sit anywhere and there may be several (each gets its OWN fresh handle, since
+    // `own<t>` is consumed per call).
+    let cons_params: Vec<Type> = consumer.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let n_closure_params = cons_params
+        .iter()
+        .filter(|t| matches!(t, Type::Own(_) | Type::Borrow(_)))
+        .count();
+    // Split the flat arg list: the PRODUCER's args are supplied ONCE per produced handle (a fresh
+    // production per closure param), the remaining strings are the consumer's scalar args. The corpus
+    // convention: `(call <consumer> <producer-args…×n_closure> <consumer-scalar-args…>)`.
     let prod_params: Vec<Type> = producer.params(&*store).iter().map(|(_, t)| t.clone()).collect();
     let n_prod = prod_params.len();
-    if arg_strs.len() < n_prod {
+    let n_prod_args_total = n_prod * n_closure_params;
+    if arg_strs.len() < n_prod_args_total {
         return Err(anyhow!(
-            "round-trip closure: producer `{producer_name}` needs {n_prod} argument(s) but only {} supplied",
+            "round-trip closure: producing {n_closure_params} closure(s) needs {n_prod_args_total} \
+             producer argument(s) but only {} supplied",
             arg_strs.len()
         ));
     }
-    let prod_args = coerce_args(&arg_strs[..n_prod], &prod_params)?;
-    let mut handle = [Val::Bool(false)];
-    if let Err(e) = producer.call(&mut *store, &prod_args, &mut handle) {
-        return Ok(Outcome::Trap(format!("{e}")));
+    // Produce one handle per closure param (each from the next `n_prod` args).
+    let mut handles: Vec<Val> = Vec::new();
+    for i in 0..n_closure_params {
+        let prod_args = coerce_args(&arg_strs[i * n_prod..(i + 1) * n_prod], &prod_params)?;
+        let mut handle = [Val::Bool(false)];
+        if let Err(e) = producer.call(&mut *store, &prod_args, &mut handle) {
+            return Ok(Outcome::Trap(format!("{e}")));
+        }
+        let _ = producer.post_return(&mut *store);
+        handles.push(handle[0].clone());
     }
-    let _ = producer.post_return(&mut *store);
-    // The consumer's params are `(self, args…)`; coerce the remaining arg strings to its declared arg types.
-    let cons_params: Vec<Type> = consumer.params(&*store).iter().map(|(_, t)| t.clone()).collect();
-    let cons_arg_types = cons_params.get(1..).unwrap_or(&[]);
-    let coerced = coerce_args(&arg_strs[n_prod..], cons_arg_types)?;
-    let mut cons_args = vec![handle[0].clone()];
-    cons_args.extend(coerced);
+    // Build the consumer's args IN ORDER: a closure param → the next produced handle; a scalar param → the
+    // next scalar arg string (coerced to that param's declared type).
+    let scalar_strs = &arg_strs[n_prod_args_total..];
+    let mut cons_args: Vec<Val> = Vec::new();
+    let mut next_handle = 0usize;
+    let mut next_scalar = 0usize;
+    for t in &cons_params {
+        if matches!(t, Type::Own(_) | Type::Borrow(_)) {
+            cons_args.push(handles[next_handle].clone());
+            next_handle += 1;
+        } else {
+            let s = scalar_strs.get(next_scalar).ok_or_else(|| {
+                anyhow!("round-trip closure: consumer `{consumer_name}` needs more scalar arguments")
+            })?;
+            cons_args.push(coerce_one(s, t)?);
+            next_scalar += 1;
+        }
+    }
     let mut out = [Val::Bool(false)];
     match consumer.call(&mut *store, &cons_args, &mut out) {
         Ok(()) => {
