@@ -33,7 +33,7 @@
 use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
-use crate::diag::{Code, Fix, Reject};
+use crate::diag::{Code, Reject};
 use crate::resolved::{HandleArm, Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 use tracing::trace;
@@ -555,25 +555,25 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         ));
     }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
-    // The rustc-gold-standard "did you mean?": if a name in scope is a near-miss for the unbound one
-    // (a typo — one insertion/deletion/substitution/transposition away), name it in the message AND
-    // carry a structural fix an agent applies directly (`spec/capabilities/diagnostics.md` §A Diagnostic
-    // Carries A Route To A Fix). Heuristic applicability: the nearest name is a guess at intent, not a
-    // proof. No near candidate → the bare unbound-name reject, unchanged.
-    match nearest_name_suggestion(db, id, name) {
-        Some(candidate) => Resolved::Poison(
-            Reject::coded(
-                Code::Unbound,
-                format!("unbound name `{name}` — did you mean `{candidate}`?"),
-            )
-            .at(id)
-            .with_fix(Fix::replace_heuristic(id, candidate)),
-        ),
-        None => Resolved::Poison(Reject::coded(
-            Code::Unbound,
-            format!("unbound name `{name}`"),
-        )),
-    }
+    // The "did you mean?" typo suggestion (the nearest in-scope name) is computed LAZILY, at the ONE site
+    // that SURFACES an unbound name as a user fault (`infer::collect_node`) — NOT here. `resolved_of` is
+    // consulted on many occurrences whose unbound Poison is NEVER surfaced (a pattern-binder name `x` in
+    // `(V x)`, classified by `collect_pattern_binders`; a resolve done only to test a value's shape), and
+    // the suggestion is an O(names-in-scope) candidate scan with a Levenshtein per candidate. Computing it
+    // eagerly here made a match over an N-variant sum O(N²) (each of N arm binders resolved unbound, each
+    // scanning all N variant names). Emitting the BARE unbound Poison here (the collector enriches it with
+    // the nearest-name message + heuristic fix, `enrich_unbound`) keeps the diagnostic identical while the
+    // scan runs at most once per SURFACED fault. See `infer::enrich_unbound`.
+    Resolved::Poison(Reject::coded(Code::Unbound, format!("unbound name `{name}`")).at(id))
+}
+
+/// The nearest in-scope name to the unbound name at `id` — the "did you mean?" candidate a surfaced
+/// unbound-name fault names. PUBLIC so `infer::collect_node` can compute it LAZILY at the fault-surfacing
+/// site (the bare unbound Poison `resolve_name` emits carries only the node; the suggestion is attached
+/// there so the O(scope) candidate scan runs at most once per surfaced fault, never per resolve). See
+/// [`nearest_name_suggestion`].
+pub(crate) fn nearest_unbound_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> {
+    nearest_name_suggestion(db, id, name)
 }
 
 /// The nearest in-scope name to an unbound `name` referenced at `id`, if one is close enough to be a
@@ -1760,9 +1760,50 @@ fn last_binder_named(
                     });
                 }
             }
+            // A CONSTRUCTOR destructuring binding `((Id.Mk n) V)` — the LHS is a single-variant-sum
+            // pattern (irrefutable: its sole constructor always matches; refutability is enforced at
+            // lowering by `check_binding_pattern`). A reference to one of its payload binders resolves to a
+            // `SumPayload` reading that payload from `V` — path `[Payload, …]` with the ctor `head`(s),
+            // EXACTLY as a `(match V ((Id.Mk n) …))` arm binder does (`find_binder_in_pattern`, resolve
+            // Case 6). Reuses the same walker as the tuple case; the head-vs-compound-alias exclusion in
+            // `find_binder_in_pattern` keeps a `(list …)`/`(tuple …)` LHS out (those are the tuple case
+            // above / a list binding). Zero new IR — the binding position IS a one-arm irrefutable match.
+            else if find_binder_in_pattern_is_ctor(db, lhs) {
+                let mut path = Vec::new();
+                let mut heads = Vec::new();
+                if find_binder_in_pattern(db, lhs, name, &mut path, &mut heads) {
+                    return Some(Resolved::SumPayload {
+                        scrutinee: kv[1],
+                        steps: path.into(),
+                        heads: heads.into(),
+                    });
+                }
+            }
         }
     }
     None
+}
+
+/// Whether `lhs` is a CONSTRUCTOR-headed destructuring pattern `(Ctor arg…)` — a `(. Sum V)` member head
+/// or a bare variant name, but NOT a compound-value alias (`list`/`tuple`/`record`/`map`, which have
+/// their own binder cases). The gate for routing a `let` binding LHS through `find_binder_in_pattern`
+/// (the variant-payload walker) rather than the tuple/name paths. Mirrors `find_binder_in_pattern`'s own
+/// head check so the two agree on what is a constructor pattern.
+fn find_binder_in_pattern_is_ctor(db: &Db, lhs: StructId) -> bool {
+    let Struct::List(app) = db.ast.get(lhs) else {
+        return false;
+    };
+    let Some(&head) = app.first() else {
+        return false;
+    };
+    if app.len() < 2 {
+        return false; // a lone head / nullary pattern binds no payload
+    }
+    let is_compound_alias = db
+        .ast
+        .as_name(head)
+        .is_some_and(|h| matches!(h, "list" | "tuple" | "record" | "map"));
+    !is_compound_alias && (db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some())
 }
 
 /// If `form` is the bindings-list of a `let` (its parent is a `let` and `form` is that let's first

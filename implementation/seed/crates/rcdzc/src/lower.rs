@@ -2492,7 +2492,7 @@ pub(crate) fn check_binding_pattern(
 fn classify_binding_ctor(
     db: &mut Db,
     pat: StructId,
-    _value_ty: &crate::ty::Ty,
+    value_ty: &crate::ty::Ty,
 ) -> Result<(), Reject> {
     // The constructor head: a bare name / member `(. Sum V)` used as a whole pattern, or a `(head arg…)`
     // application's head.
@@ -2520,11 +2520,37 @@ fn classify_binding_ctor(
         .map(|d| d.variants.len())
         .unwrap_or(0);
     if variant_count == 1 {
-        // A single-variant sum's sole constructor covers the type — irrefutable, but binding-position
-        // support for it is Increment B. DECLINE (not reject) so a valid program flips to accept later.
-        return Err(Reject::decline(
-            "a single-variant-sum binding pattern is not yet supported (Increment B)",
-        ));
+        // A single-variant sum's sole constructor ALWAYS matches — the pattern is IRREFUTABLE, so it is a
+        // valid binding position (`(let (((Id.Mk n) v)) …)`). Its payload sub-patterns must themselves be
+        // irrefutable, exactly as a tuple pattern's elements are: recurse `check_binding_pattern` into each
+        // payload arg at the payload's type (a literal payload → CDZ0210, a bare binder / nested tuple →
+        // Ok). The payload TYPE is the variant's payload at this instantiation; `pattern_constraints` then
+        // checks the shape/arity (CDZ0201) + linearity, reusing the match-arm machinery, so the binder
+        // references (which resolve to a `SumPayload` reading the payload — resolve `last_binder_named`'s
+        // ctor case) read a well-formed pattern. A nullary single-variant sum (`(type Marker (The))`) has
+        // no payload arg to bind — nothing to recurse, trivially irrefutable.
+        check_pattern_linear(db, pat)?;
+        let args: Vec<StructId> = match db.ast.get(pat) {
+            crate::ast::Struct::List(children) => match children.first().copied() {
+                // A bare member `(. Sum V)` used whole — no payload args in the pattern.
+                Some(first) if db.ast.as_name(first) == Some(".") => Vec::new(),
+                _ => children[1..].to_vec(),
+            },
+            _ => Vec::new(),
+        };
+        // Each payload arg's type — the variant's payload types at the value's instantiation. A single
+        // payload IS the underlying type; multiple payloads box as one tuple (matched positionally). Use
+        // the value type's payload when resolvable, else `Any` (permissive — arity/shape faults below).
+        for &arg in &args {
+            // A payload arg is validated for irrefutability against `Any` (refutability is a property of
+            // the pattern shape, not the value type — the tuple case does the same for its elements).
+            check_binding_pattern(db, arg, &crate::ty::Ty::Any)?;
+        }
+        // Shape/arity + nested-literal-type agreement, reusing the match-arm collector (CDZ0201 on a
+        // wrong-arity payload). Runs after the per-arg irrefutability check, exactly as the tuple case.
+        let mut lit_tests = Vec::new();
+        pattern_constraints(db, pat, value_ty, Vec::new(), &mut lit_tests)?;
+        return Ok(());
     }
     // A multi-variant constructor is refutable — the other variants are uncovered, and there is no
     // alternative arm. CDZ0210, the non-exhaustive-single-arm-match code.
@@ -4315,24 +4341,50 @@ pub struct RuntimeBytesForm {
 /// with `<LEB n><n bytes>`. `None` if the encoded form does not have the expected `0b 00` shape (a
 /// codec change) — the escape then declines rather than emit a wrong walker.
 pub fn runtime_bytes_form(db: &mut Db) -> Option<RuntimeBytesForm> {
-    // Build `(: b"" Bytes)` — an empty Bytes leaf — and encode it. Its leaf pool holds `":"`, the empty
-    // bytes leaf (`0b 00`), and `"Bytes"`; the struct table + root follow.
+    runtime_leaf_form(db, false)
+}
+
+/// The runtime STRING escape form — `(: "" String)` with an empty `Leaf::Str`, split at the `KIND_STR`
+/// tag. A runtime String is a UTF-8 byte-rope leaf (the same heap rep as Bytes — `String.concat` is
+/// `bytes-concat`), so it escapes through the SAME looping walker (`emit_runtime_bytes_resource`); only
+/// the value-form framing differs (`(: "…" String)` vs `(: b"…" Bytes)`). The walker's `bytes-len`/
+/// `bytes-get` read the same leaf either way; the payload bytes ARE the UTF-8 the codec decodes back to a
+/// `Leaf::Str`, so `cdz-run` renders `(: "…" String)`.
+pub fn runtime_string_form(db: &mut Db) -> Option<RuntimeBytesForm> {
+    runtime_leaf_form(db, true)
+}
+
+/// Shared builder for the runtime Bytes/String escape form: encode `(: <empty-leaf> <TypeName>)` and split
+/// at the leaf's tag so the walker can splice the runtime `LEB(len) · payload` between the static prefix
+/// (header … tag) and suffix (the `<TypeName>` + struct framing). `is_string` selects a `Leaf::Str`/
+/// `"String"`/`KIND_STR` split vs a `Leaf::Bytes`/`"Bytes"`/`KIND_BYTES` one — the ONLY difference between
+/// a runtime String and a runtime Bytes escape (both are UTF-8/byte leaves on the rope heap).
+fn runtime_leaf_form(db: &mut Db, is_string: bool) -> Option<RuntimeBytesForm> {
     let _ = db; // (kept for signature symmetry with the other form builders; not needed here)
+    const KIND_BYTES: u8 = 11;
+    const KIND_STR: u8 = 7;
     let mut b = crate::ast::Builder::new();
     let colon = b.name(":");
-    let empty = b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new()));
-    let bytes_ty = b.name("Bytes");
-    let root = b.list(vec![colon, empty, bytes_ty]);
+    let (empty, ty_name, kind) = if is_string {
+        (
+            b.atom_leaf(crate::ast::Leaf::Str(String::new())),
+            b.name("String"),
+            KIND_STR,
+        )
+    } else {
+        (
+            b.atom_leaf(crate::ast::Leaf::Bytes(Vec::new())),
+            b.name("Bytes"),
+            KIND_BYTES,
+        )
+    };
+    let root = b.list(vec![colon, empty, ty_name]);
     let arenas = b.finish(root);
     let encoded = crate::codec::encode(&arenas);
-    // Find the `KIND_BYTES`(0x0b) tag IMMEDIATELY followed by its `0x00` length byte (the empty leaf).
-    // `":"` is a NAME leaf (`0x0a 01 3a`) and `"Bytes"` a NAME leaf too, so the only `0b 00` pair is the
-    // empty bytes leaf's tag+length. Split there.
-    const KIND_BYTES: u8 = 11;
-    let pos = encoded.windows(2).position(|w| w == [KIND_BYTES, 0x00])?;
-    // prefix = header … the KIND_BYTES tag (inclusive); the byte at `pos+1` is the `00` length we replace.
+    // Find the leaf's KIND tag IMMEDIATELY followed by its `0x00` length byte (the empty leaf). `":"` and
+    // the type name are NAME leaves (`0x0a …`), so the only `<kind> 00` pair is the empty payload leaf.
+    let pos = encoded.windows(2).position(|w| w == [kind, 0x00])?;
     let prefix = encoded[..=pos].to_vec();
-    // suffix = everything AFTER the `00` length byte (an empty payload contributes no bytes).
     let suffix = encoded[pos + 2..].to_vec();
     Some(RuntimeBytesForm { prefix, suffix })
 }
@@ -4454,6 +4506,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
 enum ShapeNode {
     Int,
     Bool,
+    Str,
     Unit,
     Tuple(Vec<u32>),
     List(u32),
@@ -4486,6 +4539,7 @@ impl ShapeTableBuilder {
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
+            Ty::String => self.push(ShapeNode::Str),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
                 if elems.is_empty() {
@@ -4557,7 +4611,8 @@ impl ShapeTableBuilder {
                 self.table[self_ix as usize] = ShapeNode::Named(name.clone(), inner_ix);
                 self_ix
             }
-            // Float/Str/Bytes payload rendering is a later slice — decline (the escape falls through).
+            // Float/Bytes payload rendering is a later slice — decline (the escape falls through). Str
+            // is supported (→ `ShapeNode::Str`, above); the runtime `value-encode` renders a KIND_STR leaf.
             _ => return None,
         })
     }
@@ -4587,6 +4642,7 @@ impl ShapeTableBuilder {
             match node {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
+                ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Unit => d.push(5),
                 ShapeNode::Tuple(idxs) => {
                     d.push(6);
@@ -6247,6 +6303,34 @@ fn arith_identity(
         Prim::Div if is(rc, 1) => Some(lc.clone()),
         // `x % 1` → 0 (every integer is divisible by 1) — DISCARDS x, so only when x cannot trap.
         Prim::Rem if is(rc, 1) && is_trap_free(db, lhs) => Some(zero()),
+        // DIVIDEND-SMALLER-THAN-DIVISOR: when `x` is provably in `[0, C-1]` for a POSITIVE constant divisor
+        // `C`, the truncating `x / C` is 0 and `x % C` is `x` — the divisor is too big to divide `x` even
+        // once. `(/ (& x 7) 100)` → 0, `(% (& x 7) 100)` → `x & 7` (a masked/refined value modding by a
+        // larger constant). Requires `x` NONNEGATIVE with a known upper bound `< C` (`value_range` lo ≥ 0,
+        // hi < C) so truncation-toward-zero equals the mathematical result; a negative `x` (`-1 % 100 =
+        // -1`, `-1 / 100 = 0`) is excluded for simplicity (the nonneg case is the masked/unsigned idiom).
+        // The `/` DISCARDS `x` → gated on `is_trap_free`; the `%` KEEPS `x` (returns `lc`) so its traps
+        // survive. `C ≥ 2` (the `/1`,`%1` identities above handle `C=1`; a constant `÷0` is a poison in
+        // `lower` before here). Verified: for `0 ≤ x < C`, `x/C == 0` and `x%C == x`.
+        Prim::Div
+            if let Core::ConstInt(c) = rc
+                && let Some(c) = c.to_i64()
+                && c >= 2
+                && dividend_below_divisor(db, lhs, c)
+                && is_trap_free(db, lhs) =>
+        {
+            trace!(target: "rcdzc::fold", node = lhs.0, c, "dividend provably < divisor → x / C = 0");
+            Some(zero())
+        }
+        Prim::Rem
+            if let Core::ConstInt(c) = rc
+                && let Some(c) = c.to_i64()
+                && c >= 2
+                && dividend_below_divisor(db, lhs, c) =>
+        {
+            trace!(target: "rcdzc::fold", node = lhs.0, c, "dividend provably < divisor → x % C = x");
+            Some(lc.clone())
+        }
 
         // SAME-OPERAND identities: the two operands are the SAME value (`core_equiv`), so the result is
         // determined regardless of that value. `core_equiv` matches only pure scalar cores, but the
@@ -6412,6 +6496,16 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     };
     let low = (1i64 << bits) - 1; // 2^bits - 1, all bits the value can possibly set
     (m & low) == low
+}
+
+/// Whether the dividend `val` is provably in `[0, divisor − 1]` for a positive `divisor` — so a truncating
+/// `val / divisor` is `0` and `val % divisor` is `val` (the divisor is too large to divide `val` even
+/// once). True iff `value_range(val)` is a NONNEGATIVE closed interval `[lo, hi]` with `lo >= 0` and
+/// `hi < divisor`. Restricted to a nonnegative dividend: for `0 <= val < divisor`, both the mathematical
+/// and the truncate-toward-zero results are exact (`val / divisor = 0`, `val % divisor = val`); a negative
+/// dividend is excluded (its `value_range` lo is `< 0`, failing the check). `None`/unbounded range → false.
+fn dividend_below_divisor(db: &mut Db, val: StructId, divisor: i64) -> bool {
+    matches!(value_range(db, val), Some((lo, Some(hi))) if lo >= 0 && hi < divisor)
 }
 
 /// An upper bound (in `1..=63`) on the number of LOW bits a runtime value can set — i.e. the value is

@@ -511,6 +511,12 @@ impl<'a, 'b> Reader<'a, 'b> {
         Ok(self.mk_list(items, Span::new(start, self.pos)))
     }
 
+    //= spec/capabilities/collections-and-text.md#a-string-literal-s-escapes-are-a-closed-set
+    //# Within a string literal, a backslash MUST introduce an escape sequence rather than stand for itself.
+    //= spec/capabilities/collections-and-text.md#a-string-literal-s-escapes-are-a-closed-set
+    //# A conforming reader MUST recognize exactly these escape sequences: `\n` (U+000A), `\t` (U+0009), `\r` (U+000D), `\\` (U+005C), and `\"` (U+0022).
+    //= spec/capabilities/collections-and-text.md#a-string-literal-s-escapes-are-a-closed-set
+    //# A backslash followed by any character that does not begin one of the recognized escape sequences MUST be a compile-time error, so that an unrecognized escape is a rejected program rather than a silently-dropped backslash or an implementation-defined character.
     fn read_string(&mut self) -> Result<StructId, ReadError> {
         let start = self.pos;
         self.bump(); // opening quote

@@ -322,6 +322,37 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// spec directive adds its key here.
 const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 
+/// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
+/// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
+/// (`numeric-model.md` §A Module May Declare Its Default Integer Literal Type). `<T>` is reduced to a
+/// type-VALUE by the ordinary evaluator (`eval::typeval_of`, the same path an annotation's type position
+/// takes), and the integer-domain predicate is `Ty::Int` — the ONE representation every fixed-width and
+/// deferred integer type shares. A non-integer type-value (`Float64` → `Ty::Float`, a record, …) is the
+/// numeric-domain rejection CDZ0303, distinct from the structural CDZ0602 (wrong arity) / CDZ0601
+/// (unknown key). A type argument that does NOT reduce to a concrete type-value — an integer type the
+/// numeric model admits but this compiler does not yet represent as a `Ty` (`BigInt`), an unbound name, a
+/// non-type expression — returns `None` here: NOT a domain violation (an unrepresented integer type is a
+/// legitimate default), so the whole program declines downstream on the still-unmodeled pragma rather
+/// than being falsely rejected as non-integer. The predicate is CONSERVATIVE — it fires only on a type it
+/// can prove is non-integer, never on absence of proof.
+fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    if matches!(ty, crate::ty::Ty::Int(_)) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::NonIntegerDefault,
+            format!(
+                "`default-integer` must name an integer type, but `{}` is not an integer type \
+                 (the default fixes the type otherwise-unconstrained integer literals take)",
+                ty.render_name()
+            ),
+        )
+        .at(form),
+    )
+}
+
 /// Every fault across the program's definitions. Well-formedness — scope resolution and type
 /// checking — is UNCONDITIONAL: it holds over EVERY top-level definition's body, not only the ones
 /// reachable from an export, because a program is well-formed or not regardless of what is asked to
@@ -386,12 +417,20 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // is checked (a top-level one or a module member alike); the fault anchors at the pragma form, which
     // sorts before a later reference, so it is the reported error.
     for form in (0..db.ast.structure.len() as u32).map(StructId) {
-        let Some(ptail) = db.ast.as_form(form, "pragma") else {
+        // OWN the tail + key before matching: the domain check below reduces the type argument via
+        // `eval::typeval_of` (which needs `&mut Db`), and a borrowed `key: &str` / `ptail: &[StructId]`
+        // into `db.ast` would pin `db` immutable for the whole match. `StructId` is `Copy`, so owning the
+        // tail is cheap; the key is a short owned `String`.
+        let Some(ptail) = db.ast.as_form(form, "pragma").map(<[_]>::to_vec) else {
             continue;
         };
-        let key = ptail.first().and_then(|&k| db.ast.as_name(k));
-        match key {
-            // `default-integer <T>` — exactly one argument (the default type). Missing/extra → malformed.
+        let key = ptail
+            .first()
+            .and_then(|&k| db.ast.as_name(k))
+            .map(str::to_string);
+        match key.as_deref() {
+            // `default-integer <T>` — exactly one argument (the default type). Missing/extra → malformed;
+            // a well-formed one whose type argument is not an integer type → the numeric-domain CDZ0303.
             Some("default-integer") => {
                 if ptail.len() != 2 {
                     faults.push(
@@ -401,6 +440,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         )
                         .at(form),
                     );
+                } else if let Some(reject) = non_integer_default_fault(db, form, ptail[1]) {
+                    faults.push(reject);
                 }
             }
             // A key the fixed registry does not define — rejected, not ignored. If the typo'd key is a
@@ -948,6 +989,16 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_noncanonical_handle_reject && r.code == Some(Code::EffectNoHome) {
                 return false;
             }
+            // Likewise: a CDZ0401 (no home) that is the CONSEQUENCE of a MALFORMED HANDLER — a misspelled
+            // arm op (CDZ0403) or a missing arm (CDZ0405) — leaves the effect's operation set only
+            // partly discharged, so the handled body's perform spuriously looks home-less. `(handle E …
+            // ((emitt …)) (E.emit …))` reports the arm-typo CDZ0403 ("did you mean `emit`?", with its
+            // fix) AND a derived CDZ0401 on `(E.emit …)`; fixing the arm spelling clears BOTH. Drop the
+            // CDZ0401 in favor of the CDZ0403/CDZ0405 that names the actual, fixable defect (one primary
+            // "no" per root cause — `reference-compiler.md` §Outcomes Are Ordered By Safety).
+            if has_malformed_handler_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
             // An unanchored fault that also appears ANCHORED (same code + message) is that fault minus
             // its location — drop it, the anchored copy already carries the issue with a line:col.
             if r.at.is_none() && anchored_keys.contains(&(r.code, r.message.as_str())) {
@@ -1237,7 +1288,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 /// coverage is DECIDABLE from the pattern alone are represented; anything subtler is not classified (its
 /// arm is treated as covering nothing and shadowing nothing), so the check stays conservative — it never
 /// warns where it cannot prove redundancy.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 enum ArmCover {
     /// A bare binder / `_` — matches EVERY value, so it shadows all arms after it.
     CatchAll,
@@ -1322,7 +1373,10 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             continue;
         };
         let mut catch_all_seen = false;
-        let mut covered: Vec<ArmCover> = Vec::new();
+        // A HASH SET of already-covered literal/variant keys — an O(1) membership probe per arm. A `Vec`
+        // + `contains` was O(covered) per arm → O(arms²) for a match over an N-variant sum (each of N
+        // distinct-variant arms scanned the growing covered list).
+        let mut covered: std::collections::HashSet<ArmCover> = std::collections::HashSet::new();
         for (pat, _) in &arms {
             let cover = arm_cover(db, *pat);
             let redundant = match &cover {
@@ -1343,7 +1397,9 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             }
             match cover {
                 Some(ArmCover::CatchAll) => catch_all_seen = true,
-                Some(c) if !covered.contains(&c) => covered.push(c),
+                Some(c) => {
+                    covered.insert(c);
+                }
                 _ => {}
             }
         }

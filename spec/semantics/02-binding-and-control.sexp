@@ -1996,6 +1996,57 @@
   (input  (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))
   (output (: 6 Int64)))
 
+(case "a let binder may be a single-variant-sum pattern that destructures the payload"
+  (doc    "A SINGLE-VARIANT sum's sole constructor ALWAYS matches, so it is an IRREFUTABLE pattern — valid
+           in a `let` binder position (core-semantics.md #A Binding Position Accepts An Irrefutable
+           Pattern), exactly as a tuple pattern is. `(let (((Id.Mk n) (Id.Mk 42))) n)` binds `n` to the
+           `Mk` payload — the same binding a `(match (Id.Mk 42) ((Id.Mk n) n))` arm makes, written at the
+           binder. Pins that a one-variant sum destructures in a binding position (a MULTI-variant sum
+           there is refutable → CDZ0210, the rejection below), the sum companion of the tuple destructure.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Id (Mk Int64))
+            (def (main) (let (((Id.Mk n) (Id.Mk 42))) n))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a single-variant-sum binding pattern destructures a multi-payload constructor positionally"
+  (doc    "The multi-payload companion: `(let (((P.Mk a b) (P.Mk 5 6))) (+ a b))` binds `a` and `b` to the
+           two payloads of the single-variant `P.Mk` (its payloads box as one tuple, matched positionally,
+           exactly as a `(P.Mk a b)` match arm does). Pins that a single-variant binding pattern binds each
+           payload position, not only a one-payload newtype.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type P (Mk Int64 Int64))
+            (def (main) (let (((P.Mk a b) (P.Mk 5 6))) (+ a b)))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "a single-variant-sum binding pattern nests inside another"
+  (doc    "A single-variant pattern nests, like a tuple one: `(let (((W.Wrap (Id.Mk n)) (W.Wrap (Id.Mk 9))))
+           …)` destructures the outer `Wrap` then the inner `Mk`, binding `n` two payload levels deep
+           (core-semantics.md #Patterns Compose). `n + 1` = 10.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Id (Mk Int64))
+            (type W (Wrap Id))
+            (def (main) (let (((W.Wrap (Id.Mk n)) (W.Wrap (Id.Mk 9)))) (+ n 1)))
+            (export main)))
+  (output (: 10 Int64)))
+
+(case "a multi-variant-sum binding pattern is refutable and rejected"
+  (doc    "The contrast to the single-variant cases above: a MULTI-variant sum's constructor pattern in a
+           binding position is REFUTABLE — the other variants are uncovered and there is no alternative arm
+           — so it is rejected (CDZ0210), not accepted. `(let (((C.A n) (C.A 5))) n)` over `(type C (A
+           Int64) B)` leaves `B` uncovered. Only a single-variant sum earns the binding-position exemption;
+           a many-variant sum's destructure must be a `match`. Pins the refutability boundary.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (main) (let (((C.A n) (C.A 5))) n))
+            (export main)))
+  (error  CDZ0210))
+
 (case "a later let binding sees an earlier pattern's binders"
   (doc    "`(let (((tuple a b) (tuple 3 4)) (c (+ a b))) c)` — the second binding's initializer `(+ a b)`
            references `a` and `b`, the binders the first (destructuring) binding introduced

@@ -411,6 +411,17 @@ pub struct Db {
     /// [`defs`]: Db::defs
     def_name_index: crate::fxhash::FxHashMap<String, usize>,
 
+    /// For each user-sum VARIANT NAME, the occurrence of its CONSTRUCTOR record (first-declared wins).
+    /// Built once at load from `type_decls[].variants[].ctor`. `variant_ctor_by_name` consults it for
+    /// EVERY bare-variant-name reference in `resolve_name` — so a `match` over an N-variant sum resolved
+    /// N arm heads, and the old body (scan `type_decls`, then `variant_ctor_field` scan the sum record's
+    /// V fields by name) was O(V) per arm → O(N·V) = O(N²) for a full match over one big enum (measured:
+    /// 3200 variants ≈ 340ms, ~40% self-time in `variant_ctor_field`'s field scan). This map makes each
+    /// lookup O(1). FIRST-wins matches the old `type_decls`-order scan (a variant name shared across two
+    /// sums takes the first-declared; a qualified `(. Type Variant)` disambiguates). A pure lookup
+    /// ACCELERATOR over `type_decls`, never a source of truth — the ctor's identity is its occurrence.
+    variant_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
+
     /// Per-SCOPE-FORM parameter binder index: `(scope_form_occ, param_name) → the param's NAME
     /// occurrence`. Covers the two forms whose parameters bind by a signature scan — a `fn`'s param
     /// list and a `def`'s signature. Built once at load ([`build_scope_binders`]).
@@ -829,6 +840,18 @@ impl Db {
                 def_by_name.entry(d.name.clone()).or_insert(i);
             }
         }
+        // Index each user-sum VARIANT NAME → its constructor occurrence (first-declared wins), from the
+        // `ctor` synthesize cached on each variant. `variant_ctor_by_name` reads this O(1) instead of an
+        // O(variants) scan per bare-variant reference — an N-arm match over an N-variant sum was O(N²).
+        let mut variant_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
+        for decl in &type_decls {
+            for v in &decl.variants {
+                if let Some(ctor) = v.ctor {
+                    variant_ctor_index.entry(v.name.clone()).or_insert(ctor);
+                }
+            }
+        }
         // Derive the file-scoped resolution table from the package linkage (`Some` only for a >1-file
         // package). For each file: its own top-level VALUE defs (a def whose signature occurrence falls
         // in that file's `StructId` range), plus its imports (each local name → the exporting file's
@@ -852,6 +875,7 @@ impl Db {
             scope_skip,
             def_by_body,
             def_name_index: def_by_name,
+            variant_ctor_index,
             scope_binders,
             prelude,
             unit_families: crate::prelude::unit_families(),
@@ -1406,15 +1430,11 @@ impl Db {
     /// how `type_decl_by_name` / `def_by_name` resolve a shared name. `None` if no declared sum has a
     /// variant named `name`.
     pub fn variant_ctor_by_name(&self, name: &str) -> Option<StructId> {
-        for decl in &self.type_decls {
-            if decl.variants.iter().any(|v| v.name == name)
-                && let Some(record) = decl.synth
-                && let Some(field) = crate::sums::variant_ctor_field(&self.ast, record, name)
-            {
-                return Some(field);
-            }
-        }
-        None
+        // O(1) via `variant_ctor_index` (built at load from each variant's synthesized `ctor`). This was
+        // an O(variants) scan of `type_decls` + `variant_ctor_field` per call — O(N²) for an N-arm match
+        // over one N-variant sum. FIRST-declared-wins is baked into the index build, matching the old
+        // `type_decls`-order scan; the returned occurrence is identical to the old `variant_ctor_field`.
+        self.variant_ctor_index.get(name).copied()
     }
 
     /// The variant-CONSTRUCTOR occurrence for a SAME-NAME NEWTYPE — a declaration `(type UserId (UserId

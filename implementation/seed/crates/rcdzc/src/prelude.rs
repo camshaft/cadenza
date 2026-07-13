@@ -318,9 +318,17 @@ fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
 /// The `List` module record — a record carrying BOTH `(meta apply)` = the `List` type constructor (so
 /// `(List Int64)` in type position builds `Ty::List`) AND a field per list OPERATION (reached by member
 /// access `(. List len)`). Each operation is an operator record: its `(meta t)` is a type-lambda over
-/// the element type, its `(meta apply)` the runtime op. This increment realizes `len : ∀a. (List a) →
-/// Int64`; push/concat/at arrive in the next increment (a projected-but-unrealized field DECLINES, the
-/// same closed-module rule every prelude module follows).
+/// the element type, its `(meta apply)` the runtime op. Realizes `len : ∀a. (List a) → Int64`, `push`
+/// (functional append → a new list), `concat` (two same-element-type lists → their ordered
+/// concatenation), `update` (replace-at-index → a new list), and `at : ∀a. (List a) → Int64 → (Option
+/// a)` (the FALLIBLE indexed read — `None` out of bounds, never a trap). Each construction op yields a
+/// NEW list and leaves its operand unchanged (immutable growth, on the persistent `vec-*` heap).
+//= spec/capabilities/collections-and-text.md#a-list-is-grown-by-functional-construction
+//# A list MUST offer an operation that appends an element and an operation that replaces the element at an index, each of which MUST produce a new list value and leave its operand list unchanged, so that a list is immutable under growth exactly as it is under reading.
+//= spec/capabilities/collections-and-text.md#a-list-is-grown-by-functional-construction
+//# A list MUST also offer an operation that concatenates two lists, producing a new list whose elements are those of the first list in order followed by those of the second, and leaving both operand lists unchanged.
+//= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
+//# An operation that reads an element of a sequence by position — indexing a list, a string (by scalar or byte offset), or a `Bytes` value, or taking a sub-sequence slice — MUST be total, yielding an optional value that is present when the position is in bounds and absent when it is out of bounds, rather than trapping or producing an unspecified value.
 fn list_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta apply)` = the `List` TYPE constructor (`(List Int64)` reduces to `Ty::List(Int64)`).
@@ -356,7 +364,15 @@ fn list_module(ast: &mut Arenas) -> StructId {
 /// runtime op. Realizes `empty : ∀k v. (Map k v)`, `insert : ∀k v. (Map k v) → k → v → (Map k v)`,
 /// `lookup : ∀k v. (Map k v) → k → (Option v)`, `remove : ∀k v. (Map k v) → k → (Map k v)`, `size :
 /// ∀k v. (Map k v) → Int64`. Mirrors `list_module`, but the type constructor and every scheme take two
-/// parameters instead of one.
+/// parameters instead of one. `empty`/`insert`/`remove` are the functional-construction surface (each
+/// yields a NEW map, operand unchanged, on the persistent CHAMP heap); `lookup` is total (`Option v`,
+/// `None` for an absent key, never a trap); `size` reports the key count.
+//= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
+//# A map MUST offer an empty map value, an operation that adds or replaces the association for a key, and an operation that removes the association for a key.
+//= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
+//# Each MUST produce a new map value and leave its operand map unchanged, so that a map is immutable under update exactly as a list is under growth (*A List Is Grown By Functional Construction*).
+//= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
+//# Looking a key up in a map MUST likewise be total, yielding an optional value that is present when the map contains the key and absent when it does not.
 fn map_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta apply)` = the `Map` TYPE constructor (`(Map Int64 Int64)` reduces to `Ty::Map(Int64, Int64)`).
