@@ -164,10 +164,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
         }
         // Member access — the field's type is the type of the field's VALUE, found by reducing the
-        // operand to a record and projecting (the one projection, via the evaluator, so it works off a
-        // literal record, a `let`-bound one, OR a module a type constructor built like `(Int 64)`). A
-        // non-record operand or an absent field has no field type — typed `Any` here so it does not
-        // cascade; the actual fault (CDZ0201) is reported by `type_errors`.
+        // operand to a record and PROJECTING the field named by the key (the one projection, via the
+        // evaluator, so it works off a literal record, a `let`-bound one, OR a module a type constructor
+        // built like `(Int 64)`). A non-record operand or an absent field has no field type — typed
+        // `Any` here so it does not cascade; the actual fault (CDZ0201) is reported by `type_errors`.
+        //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
+        //# Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
         Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
             crate::eval::Member::Field(value) => type_of(db, value),
             // The operand does not reduce to a compile-time-visible record (a call result, an `if`
@@ -3464,10 +3466,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect(db, operand, out);
         }
         // Member access: the operand must be a record, and it must have the named field. Both faults
-        // are CDZ0201 (`core-semantics.md` §Member Access Projects A Record Field — projecting a field
-        // of a non-record, or an absent field, has no defined result). A built-in module is CLOSED the
-        // same way a user record is: it carries every field it will ever have, and an unrealized field
-        // DECLINES when projected rather than being absent (`prelude.rs` — there is no open-module rule).
+        // are compile-time rejections (a non-record operand, or an absent field, has no defined result —
+        // never an unspecified value or a runtime trap). A built-in module is CLOSED the same way a user
+        // record is: it carries every field it will ever have, and an unrealized field DECLINES when
+        // projected rather than being absent (`prelude.rs` — there is no open-module rule). (Projection
+        // of a PRESENT field to the field's value is realized at the `type_of`/`lower` Member arm — the
+        // `Member::Field` case here is the well-formed no-fault path.)
+        //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
+        //# Member access applied to a value that is not a record MUST be rejected at compile time with the machine-readable code for a type error rather than produce an unspecified value or a runtime trap.
+        //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
+        //# Member access naming a field the record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent rather than produce an unspecified value or a runtime trap, so that a projection cannot name a field the operand's type never held.
         Resolved::Member { operand, key } => {
             // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
             // built module is caught too. A poison operand reports its OWN fault (via the descent
