@@ -740,11 +740,7 @@ fn run_roundtrip_closure(
     match consumer.call(&mut *store, &cons_args, &mut out) {
         Ok(()) => {
             let _ = consumer.post_return(&mut *store);
-            Ok(Outcome::Value(match out.first() {
-                None => "unit".to_string(),
-                Some(Val::String(s)) => s.clone(),
-                Some(other) => render_val(other),
-            }))
+            Ok(Outcome::Value(render_closure_call_result(out.first())))
         }
         Err(e) => Ok(Outcome::Trap(format!("{e}"))),
     }
@@ -875,11 +871,7 @@ fn run_closure_resource(
         return match call.call(&mut *store, &call_args, &mut out) {
             Ok(()) => {
                 let _ = call.post_return(&mut *store);
-                Ok(Outcome::Value(match out.first() {
-                    None => "unit".to_string(),
-                    Some(Val::String(s)) => s.clone(),
-                    Some(other) => render_val(other),
-                }))
+                Ok(Outcome::Value(render_closure_call_result(out.first())))
             }
             Err(e) => Ok(Outcome::Trap(format!("{e}"))),
         };
@@ -951,11 +943,7 @@ fn run_closure_resource(
     match call.call(&mut *store, &call_args, &mut out) {
         Ok(()) => {
             let _ = call.post_return(&mut *store);
-            Ok(Outcome::Value(match out.first() {
-                None => "unit".to_string(),
-                Some(Val::String(s)) => s.clone(),
-                Some(other) => render_val(other),
-            }))
+            Ok(Outcome::Value(render_closure_call_result(out.first())))
         }
         Err(e) => Ok(Outcome::Trap(format!("{e}"))),
     }
@@ -1020,6 +1008,36 @@ fn run_resource_escape(
     Ok(Outcome::Value(
         cadenza_syntax::sexpr::print(&arenas).trim().to_string(),
     ))
+}
+
+/// Render a closure `call`'s result value. A scalar/String comes back directly; a `list<u8>` may be EITHER
+/// a raw byte-rope result (a `Bytes`/`String` closure — render the bare byte sequence `(5 6)`) OR the
+/// canonical VALUE FORM of a compound result (tuple/record/sum — decode + pretty-print `(: value T)`). The
+/// two are disambiguated by TRYING to decode: `codec::decode` is total and refuses any bytes whose 8-byte
+/// schema header it does not recognize, so a raw byte-rope (which lacks that header) declines and falls
+/// through to the raw-list render — no ambiguity, no flag needed.
+fn render_closure_call_result(v: Option<&Val>) -> String {
+    match v {
+        None => "unit".to_string(),
+        Some(Val::String(s)) => s.clone(),
+        Some(Val::List(items)) => {
+            // Try the value-form decode first (a compound result); fall back to the raw byte-rope render.
+            let bytes: Option<Vec<u8>> = items
+                .iter()
+                .map(|e| match e {
+                    Val::U8(b) => Some(*b),
+                    _ => None,
+                })
+                .collect();
+            if let Some(bytes) = bytes
+                && let Some(arenas) = cadenza_syntax::codec::decode(&bytes)
+            {
+                return cadenza_syntax::sexpr::print(&arenas).trim().to_string();
+            }
+            render_val(v.unwrap())
+        }
+        Some(other) => render_val(other),
+    }
 }
 
 /// Coerce each raw CLI argument string to the corresponding declared parameter type. The arity must

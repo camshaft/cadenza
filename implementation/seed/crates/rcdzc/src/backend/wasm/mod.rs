@@ -1366,8 +1366,21 @@ fn emit_closure_resource(
         ret_ty.strip_nominal(),
         crate::ty::Ty::Bytes | crate::ty::Ty::String
     );
-    let result_byte = if ret_is_bytes {
-        0 // unused by the bytes path; the `call` returns list<u8>, not a scalar byte
+    // A COMPOUND result (tuple/record/sum/list/map/set) that is NOT a byte-rope crosses `call` as `list<u8>`
+    // carrying the canonical VALUE FORM — the host decodes + pretty-prints the typed `(: value T)` document.
+    // Reuses the value-heap escape's `runtime_value_form_template` (the static template + runtime leaf holes)
+    // + `encode_walk_body` walker, keyed on the CLOSURE'S RESULT handle instead of a resource rep. `None` if
+    // the type has no value-form surface (a function/type-value) → falls through to the scalar decline.
+    // Skip the compound path for a byte-rope (its own list<u8> path) or a scalar (crosses by value); only a
+    // genuine compound (no scalar boundary byte) consults the value-form template.
+    let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
+        None
+    } else {
+        crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+    };
+    let ret_is_compound = ret_template.is_some();
+    let result_byte = if ret_is_bytes || ret_is_compound {
+        0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
@@ -1428,6 +1441,12 @@ fn emit_closure_resource(
             used.insert("bytes-len");
             used.insert("bytes-get");
         }
+        // A COMPOUND-result `call` walks the returned handle to fill the value-form template — it reads
+        // `get-bool` for a boolean leaf (int leaves already covered by `get-int`) and, for a nested compound,
+        // `arr-get` (already covered). Import `get-bool` so a Bool leaf's hole fill resolves.
+        if ret_is_compound {
+            used.insert("get-bool");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -1466,6 +1485,30 @@ fn emit_closure_resource(
             &arg_vts,
             &make_param_vts,
             lifted_type_idx,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes,
+        ));
+    }
+    // A COMPOUND result crosses `call` as `list<u8>` carrying the value form — same `list<u8>` boundary as
+    // the bytes path (so the SAME envelope), but the core walks the closure's returned handle to fill the
+    // value-form template. The host decodes the bytes to `(: value T)`.
+    if let Some(template) = &ret_template {
+        let main_core = serialize::closure_value_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &arg_vts,
+            &make_param_vts,
+            lifted_type_idx,
+            template,
             &layout,
         )
         .map_err(Reject::decline)?;

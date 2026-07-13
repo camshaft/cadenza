@@ -1426,3 +1426,56 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
   (output (8 99)))
+
+; A COMPOUND (tuple/record) closure RESULT — the closure's `call` returns the canonical VALUE FORM as
+; `list<u8>` (the value-heap escape's `runtime_value_form_template` + `encode_walk_body` walker, keyed on
+; the closure's returned handle), so the host DECODES + pretty-prints the typed `(: value T)` document (not
+; a bare byte sequence like the byte-rope path). cdz-run try-decodes the `call` result: the codec's 8-byte
+; schema header disambiguates a value form from a raw byte-rope, so both share the `list<u8>` boundary
+; unambiguously. Fixed-shape compounds (tuple/record/sum) are supported; a variable-length list still
+; declines (no fixed template).
+
+(case "a closure returning a tuple crosses as the typed value form"
+  (doc    "`mk : () -> (-> Int64 (Tuple Int64 Int64))` returns `(tuple n n+1)`. `call(handle, 5)` walks the
+           returned tuple handle, writes the value form, and the host decodes it to `(: (tuple 5 6) (Tuple
+           Int64 Int64))` — the FULL typed document, not a bare byte list.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (+ n 1)))) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "a closure returning a record crosses as the typed value form"
+  (doc    "A record result — `(record (x n) (y n+10))` → `(: (record (x 3) (y 13)) (Record (x Int64) (y
+           Int64)))`. Field names + the record type node are baked in the template; only the leaf values are
+           walked at run time.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (x n) (y (+ n 10))))) (export mk)))
+  (call   mk (: 3 Int64))
+  (output (: (record (x 3) (y 13)) (Record (x Int64) (y Int64)))))
+
+(case "a closure returning a tuple with a Bool leaf"
+  (doc    "A mixed-leaf compound — `(tuple n (< n 5))` → `(: (tuple 2 true) (Tuple Int64 Bool))`. The Bool
+           leaf's hole is filled via `get-bool` (its kind byte flipped true/false), the int via `get-int`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (< n 5)))) (export mk)))
+  (call   mk (: 2 Int64))
+  (output (: (tuple 2 true) (Tuple Int64 Bool))))
+
+(case "a closure returning a NESTED tuple"
+  (doc    "`(tuple n (tuple n+1 n+2))` → `(: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64)))`. The
+           walker descends nested `arr-get` paths (the inner tuple is a boxed handle inside the outer).")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (tuple (+ n 1) (+ n 2))))) (export mk)))
+  (call   mk (: 7 Int64))
+  (output (: (tuple 7 (tuple 8 9)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "a CAPTURING closure returning a tuple"
+  (doc    "`mk : (Int64) -> (-> Int64 (Tuple Int64 Int64))` — `make(100)` captures `k=100`, then
+           `call(handle, 5)` → `(: (tuple 100 5) (Tuple Int64 Int64))`. Confirms a captured value flows into
+           the compound result across the boundary.")
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) (tuple k n))) (export mk)))
+  (call   mk (: 100 Int64) (: 5 Int64))
+  (output (: (tuple 100 5) (Tuple Int64 Int64))))
+
+(case "a closure returning a tuple with a negative int leaf"
+  (doc    "`(tuple n (- 0 n))` → `(: (tuple 5 -5) (Tuple Int64 Int64))`. The negative leaf flips the value
+           form's kind byte to INT_NEG_DEC and writes the absolute magnitude (the escape's neg-int path).")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (- 0 n)))) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: (tuple 5 -5) (Tuple Int64 Int64))))
