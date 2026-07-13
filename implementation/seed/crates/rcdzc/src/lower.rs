@@ -4458,6 +4458,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
 enum ShapeNode {
     Int,
     Bool,
+    Str,
     Unit,
     Tuple(Vec<u32>),
     List(u32),
@@ -4490,6 +4491,7 @@ impl ShapeTableBuilder {
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
+            Ty::String => self.push(ShapeNode::Str),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
                 if elems.is_empty() {
@@ -4561,7 +4563,8 @@ impl ShapeTableBuilder {
                 self.table[self_ix as usize] = ShapeNode::Named(name.clone(), inner_ix);
                 self_ix
             }
-            // Float/Str/Bytes payload rendering is a later slice — decline (the escape falls through).
+            // Float/Bytes payload rendering is a later slice — decline (the escape falls through). Str
+            // is supported (→ `ShapeNode::Str`, above); the runtime `value-encode` renders a KIND_STR leaf.
             _ => return None,
         })
     }
@@ -4591,6 +4594,7 @@ impl ShapeTableBuilder {
             match node {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
+                ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Unit => d.push(5),
                 ShapeNode::Tuple(idxs) => {
                     d.push(6);

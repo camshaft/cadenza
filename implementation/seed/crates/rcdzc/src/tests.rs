@@ -15517,6 +15517,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_string_renders_via_the_value_encode_walker() {
+        // A recursive sum whose payload carries a STRING (a `StrList` — the shape of an AST node with an
+        // identifier, a JSON tree) now COMPILES its value-encode escape. Previously `sum_shape_descriptor`
+        // DECLINED on the `Ty::String` payload (`shape_of` returned None → no descriptor → the escape fell
+        // through), so a string-bearing recursive value could not cross the host boundary at all — even
+        // though the codec wire format has KIND_STR. `shape_of` now emits `ShapeNode::Str` (descriptor tag
+        // 3) and the runtime `value-encode` renders a KIND_STR leaf (guarded byte-exact in cdz-runtime's
+        // `value_encode_renders_a_string_leaf`). Pin that it compiles + imports the runtime.
+        use crate::testkit::parse;
+        let src = "(module m (type StrList (Cons (Tuple String StrList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (StrList.Nil ()) \
+                        (StrList.Cons (tuple \"x\" (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a String compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the string-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
