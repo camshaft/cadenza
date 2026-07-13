@@ -552,87 +552,197 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Reshape a `wrap` fix's replacement for the target SURFACE. The compiler renders a wrap in s-expr
-/// form — `(<ctor> …)`, `<ctor>` a name, `…` the [`rcdzc::WRAP_HOLE`]. On the ML surface a constructor
-/// application is `<ctor>(…)`, so an s-expr `(Some …)` spliced into a `.cdz` file would be a parse error
-/// (ML has no juxtaposition-application). When `is_ml`, rewrite the wrap `(<name> <HOLE>)` → `<name>(<HOLE>)`
-/// so `cdz fix` produces valid ML (`(Some …)` → `Some(…)`). A replacement that is not exactly a single
-/// `(<name> <HOLE>)` is returned unchanged (only the constructor-wrap shape the fix producers emit is
-/// reshaped; anything else stays verbatim, so an unexpected form is never mangled).
-fn render_wrap_for_surface(repl: &str, is_ml: bool) -> String {
-    // Reuse the shared surface reshape+split (`rcdzc::wrap_prefix_suffix`) so the apply path and the
-    // machine channel agree on how a wrap reshapes for ML — then reassemble the full hole-bearing form
-    // this splicing path expects (`prefix + … + suffix`). One implementation of the reshape rule, so a
-    // fix (e.g. only a bare `(ctor …)` reshapes, not a multi-token `(host (E) …)`) can't drift between them.
-    let (prefix, suffix) = rcdzc::wrap_prefix_suffix(repl, is_ml);
-    format!("{prefix}{}{suffix}", rcdzc::WRAP_HOLE)
-}
-
-/// Apply a structural fix to `source` text, returning the edited text — the byte-level realization of
-/// an [`rcdzc::DiagnosticFix`] the `check --verify-fixes` harness recompiles. `is_ml` selects the target
-/// surface (so a `wrap` renders as ML `ctor(…)` rather than s-expr `(ctor …)` — see
-/// [`render_wrap_for_surface`]). `kind` selects the operation over the `[from, to)` byte range (the fix's
-/// target-node span, mapped by the caller). `"replace"` swaps the range for `repl`; `"insert"` inserts
-/// `repl` (rendered child forms) just before `to` (the end of the target list, before its closing paren);
-/// `"wrap"` replaces the range with `repl` (surface-rendered) whose [`rcdzc::WRAP_HOLE`] stands for the
-/// ORIGINAL range text; `"delete"` removes the range plus ONE adjacent separating space so the enclosing
-/// list stays clean (`(a b)` → `(b)`). `None` if the range is out of bounds or not on a char boundary
-/// (defensive — never panics).
+/// Apply a structural fix to `source`, returning the edited text — the STRUCTURAL realization of an
+/// [`rcdzc::DiagnosticFix`]. Rather than splice bytes by hand (finding a list's closing paren for an
+/// insert, trimming a separator for a delete, substituting a `…` sentinel for a wrap, reshaping the wrap
+/// for the surface), it builds the NEW TREE — the parsed program with the target node transformed per the
+/// fix — and hands old+new to `cadenza_syntax`'s formatting-preserving structural rewriter
+/// (`textedit::rewrite_preserving`), the SAME engine `cdz rewrite` uses. That engine edits only the
+/// changed subtree at its span, reprints it in the file's SURFACE (ML pretty-print vs s-expr), and leaves
+/// all other bytes — layout, comments — verbatim. So surface-correctness, insert placement, and
+/// separator hygiene all come from one shared, tested mechanism instead of four hand-rolled text cases.
+///
+/// `arenas`/`spans` are the parsed program + its node→span table (from `load_program_spanned`); `target`
+/// is the fix's node id; `kind`/`repl` its operation + payload. `surface` is the file's format. `None`
+/// when the fix cannot be built structurally (an unparseable payload, a node not found) — the caller then
+/// declines the fix rather than corrupting.
 fn apply_fix_to_source(
     source: &str,
+    arenas: &cadenza_syntax::Arenas,
+    spans: &cadenza_syntax::spans::SpanTable,
     kind: &str,
-    from: usize,
-    to: usize,
+    target: cadenza_syntax::StructId,
     repl: &str,
-    is_ml: bool,
+    surface: cadenza_syntax::convert::Format,
 ) -> Option<String> {
-    if from > to
-        || to > source.len()
-        || !source.is_char_boundary(from)
-        || !source.is_char_boundary(to)
-    {
-        return None;
-    }
-    let mut out = String::with_capacity(source.len() + repl.len());
-    out.push_str(&source[..from]);
-    match kind {
-        "insert" => {
-            // Append the new child form(s) at the end of the target list, before its closing `)`. The
-            // target range is the whole list; splice `repl` in just before the final byte (the paren).
-            let inner_end = source[..to].rfind(')').unwrap_or(to);
-            out.clear();
-            out.push_str(&source[..inner_end]);
-            out.push(' ');
-            out.push_str(repl);
-            out.push_str(&source[inner_end..]);
+    use cadenza_syntax::query::Tree;
+
+    let old = Tree::of(arenas);
+    // Transform the target node into its fixed form, producing the NEW tree. Each fix kind is a pure
+    // tree op — no text, no `…` sentinel, no paren-finding.
+    let new = transform_target(&old, target, &mut |node: &Tree| -> Option<Tree> {
+        match kind {
+            // Replace the node with the parsed payload subtree.
+            "replace" => parse_fragment(repl),
+            // Wrap: build the ctor form from `repl`'s parse and substitute its `…` hole atom with the
+            // ORIGINAL node subtree (spans intact) — `(Some …)` + node → `(Some <node>)`.
+            "wrap" => {
+                let ctor = parse_fragment(repl)?;
+                Some(substitute_hole(&ctor, node))
+            }
+            // Insert: append the parsed arm form(s) as new children at the end of the target LIST.
+            "insert" => {
+                let Tree::List(children, origin) = node else {
+                    return None; // an insert targets a list (the `(match …)` form)
+                };
+                let mut children = children.clone();
+                for arm in split_top_forms(repl) {
+                    children.push(parse_fragment(&arm)?);
+                }
+                Some(Tree::List(children, *origin))
+            }
+            // Delete is handled by the parent (removing the child), not by transforming the node —
+            // see `transform_target`'s delete path; this arm is unreachable for "delete".
+            _ => None,
         }
-        "wrap" => {
-            let original = &source[from..to];
-            let rendered = render_wrap_for_surface(repl, is_ml);
-            out.push_str(&rendered.replace(rcdzc::WRAP_HOLE, original));
-            out.push_str(&source[to..]);
-        }
-        "delete" => {
-            // Remove `[from,to)` plus one adjacent separating space so the list stays well-formed:
-            // prefer a FOLLOWING space (`(log foo)` → `(foo)`); else a PRECEDING one (`(foo log)` →
-            // `(foo)`). `out` currently holds `source[..from]`.
-            let after = &source[to..];
-            if let Some(rest) = after.strip_prefix(' ') {
-                out.push_str(rest); // drop the trailing separator
-            } else if out.ends_with(' ') {
-                out.pop(); // no trailing separator — drop the leading one
-                out.push_str(after);
-            } else {
-                out.push_str(after); // sole element — nothing to trim (`(log)` → `()`)
+    });
+
+    // Delete removes the node from its parent's child list — a structural op the node-transform closure
+    // can't express (it returns a replacement node, not "no node"), so it has its own tree builder.
+    let new = if kind == "delete" {
+        delete_target(&old, target)
+    } else {
+        new
+    };
+    let new = new?;
+
+    let span_of = |t: &Tree| -> Option<(usize, usize)> {
+        t.origin()
+            .and_then(|id| spans.get(id))
+            .map(|s| (s.start, s.end))
+    };
+    let edited = cadenza_syntax::query::textedit::rewrite_preserving(source, &old, &new, &span_of, surface);
+    Some(edited.output)
+}
+
+/// Parse a fix-payload s-expression fragment (`(Some …)`, `(B unit)`, `compute`) into an owned [`Tree`],
+/// or `None` if it does not parse. New nodes carry NO provenance (they are synthesized), which the
+/// structural rewriter handles — only ORIGINAL nodes need spans.
+fn parse_fragment(text: &str) -> Option<cadenza_syntax::query::Tree> {
+    cadenza_syntax::sexpr::read(text)
+        .ok()
+        .map(|a| cadenza_syntax::query::Tree::of(&a))
+}
+
+/// Split a space-joined run of top-level s-expression forms (the `insert` payload, e.g. `(Green unit)
+/// (Blue unit)`) into its individual forms. Uses the reader's multi-form parse, then renders each back —
+/// so each element is a complete, independently-parseable form.
+fn split_top_forms(text: &str) -> Vec<String> {
+    match cadenza_syntax::sexpr::read_all(text) {
+        Ok(a) => {
+            let tree = cadenza_syntax::query::Tree::of(&a);
+            match &tree {
+                // `read_all` wraps multiple forms in a synthetic `(do …)`; unwrap to the forms.
+                cadenza_syntax::query::Tree::List(items, _)
+                    if matches!(
+                        items.first(),
+                        Some(cadenza_syntax::query::Tree::Atom(
+                            cadenza_syntax::ast::Leaf::Name(n),
+                            _,
+                        )) if n == "do"
+                    ) =>
+                {
+                    items.iter().skip(1).map(|t| t.to_sexpr()).collect()
+                }
+                other => vec![other.to_sexpr()],
             }
         }
-        _ => {
-            // "replace" (and any unknown kind, treated as replace): swap the range for `repl`.
-            out.push_str(repl);
-            out.push_str(&source[to..]);
+        Err(_) => vec![text.to_string()],
+    }
+}
+
+/// Substitute the [`rcdzc::WRAP_HOLE`] atom inside `template` with `fill` — the structural realization of
+/// a wrap: `(Some …)` with `…` replaced by the wrapped subtree becomes `(Some <subtree>)`. Recurses; a
+/// non-hole node is copied structurally (preserving its provenance so an unchanged child keeps its span).
+fn substitute_hole(
+    template: &cadenza_syntax::query::Tree,
+    fill: &cadenza_syntax::query::Tree,
+) -> cadenza_syntax::query::Tree {
+    use cadenza_syntax::query::Tree;
+    match template {
+        Tree::Atom(cadenza_syntax::ast::Leaf::Name(n), _) if n == &rcdzc::WRAP_HOLE.to_string() => {
+            fill.clone()
+        }
+        Tree::Atom(..) => template.clone(),
+        Tree::List(items, origin) => Tree::List(
+            items.iter().map(|t| substitute_hole(t, fill)).collect(),
+            *origin,
+        ),
+    }
+}
+
+/// Rebuild `tree`, applying `f` to the node whose origin is `target` (replacing it with `f`'s result).
+/// `None` if the target is not found or `f` declines. Recurses structurally, preserving provenance on the
+/// untouched nodes so the rewriter edits only the one changed subtree.
+fn transform_target(
+    tree: &cadenza_syntax::query::Tree,
+    target: cadenza_syntax::StructId,
+    f: &mut dyn FnMut(&cadenza_syntax::query::Tree) -> Option<cadenza_syntax::query::Tree>,
+) -> Option<cadenza_syntax::query::Tree> {
+    use cadenza_syntax::query::Tree;
+    if tree.origin() == Some(target) {
+        return f(tree);
+    }
+    match tree {
+        Tree::Atom(..) => None,
+        Tree::List(items, origin) => {
+            let mut hit = false;
+            let mut out = Vec::with_capacity(items.len());
+            for child in items {
+                if !hit && let Some(new_child) = transform_target(child, target, f) {
+                    out.push(new_child);
+                    hit = true;
+                } else {
+                    out.push(child.clone());
+                }
+            }
+            hit.then_some(Tree::List(out, *origin))
         }
     }
-    Some(out)
+}
+
+/// Rebuild `tree` with the node whose origin is `target` REMOVED from its parent's child list — the
+/// structural realization of a delete (`(host (log) 42)` → `(host () 42)`; the separator hygiene the old
+/// text path hand-trimmed is handled by the rewriter's child-alignment). `None` if not found.
+fn delete_target(
+    tree: &cadenza_syntax::query::Tree,
+    target: cadenza_syntax::StructId,
+) -> Option<cadenza_syntax::query::Tree> {
+    use cadenza_syntax::query::Tree;
+    match tree {
+        Tree::Atom(..) => None,
+        Tree::List(items, origin) => {
+            if items.iter().any(|c| c.origin() == Some(target)) {
+                let kept: Vec<Tree> = items
+                    .iter()
+                    .filter(|c| c.origin() != Some(target))
+                    .cloned()
+                    .collect();
+                return Some(Tree::List(kept, *origin));
+            }
+            let mut hit = false;
+            let mut out = Vec::with_capacity(items.len());
+            for child in items {
+                if !hit && let Some(nc) = delete_target(child, target) {
+                    out.push(nc);
+                    hit = true;
+                } else {
+                    out.push(child.clone());
+                }
+            }
+            hit.then_some(Tree::List(out, *origin))
+        }
+    }
 }
 
 /// Whether an error diagnostic with code `code` is ABSENT from `text` when parsed as `is_ml` (else
@@ -837,9 +947,19 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             true
         } else if args.verify_fixes && fix_node != "-" && code != "-" {
             let is_ml = is_ml_source(&args.file);
-            span_of(fix_node)
-                .and_then(|(_, _, from, to)| {
-                    apply_fix_to_source(&source, fix_kind, from, to, fix_repl, is_ml)
+            fix_node
+                .parse::<u32>()
+                .ok()
+                .and_then(|n| {
+                    apply_fix_to_source(
+                        &source,
+                        &arenas,
+                        &spans,
+                        fix_kind,
+                        cadenza_syntax::StructId(n),
+                        fix_repl,
+                        surface_of(&args.file),
+                    )
                 })
                 .map(|edited| fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()))
                 .unwrap_or(false)
@@ -931,27 +1051,20 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     }
 }
 
-/// One repair `cdz fix` will apply: replace the source byte range `[from, to)` with `new_text`. This is
-/// the fix's edit already RESOLVED to a plain byte-range replacement — a `wrap` has its `…` filled with
-/// the original text, an `insert` has its target range narrowed to the closing paren — so applying it is
-/// a uniform splice, and a set of edits is applied by descending `from` (later edits first) so earlier
-/// byte offsets stay valid.
-struct Edit {
-    from: usize,
-    to: usize,
-    new_text: String,
-}
-
 /// `cdz fix FILE` — apply every VERIFIED fix and write the repaired program back. Runs the same
 /// `Diagnostics` query as `check`, and for each diagnostic that carries a fix, KEEPS the fix only if it
-/// verifies: applying it to the source and re-checking clears that diagnostic's code (the D11 harness,
-/// `apply_fix_to_source` + `fix_clears_code`). By default only fixes the compiler ALREADY marked
-/// verified (a rule) plus, with `--all`, any heuristic fix that so verifies — a fix that does not verify
-/// is never applied. The kept edits are applied by descending start offset (so offsets don't shift under
-/// each other) skipping any that overlap an already-applied one; the result is written back, or previewed
-/// with `--dry-run` (full text) / `--diff` (a unified diff). Exit 0 on success.
+/// verifies: applying it (structurally, via [`apply_fix_to_source`]) and re-checking clears that
+/// diagnostic's code with no new error (`fix_verifies`). By default only fixes the compiler ALREADY
+/// marked verified (a rule) plus, with `--all`, any heuristic fix that so verifies — a fix that does not
+/// verify is never applied.
+///
+/// Fixes are applied ONE AT A TIME, RE-LOADING (re-parse + re-diagnose) between each: a structural fix
+/// rebuilds the tree and reprints the changed subtree, which shifts node ids, so a second fix must be
+/// resolved against the freshly-edited program rather than stale ids. A fixpoint loop (bounded) applies
+/// fixes until none remain or nothing changes. The result is written back, or previewed with `--dry-run`
+/// (full text) / `--diff` (a unified diff). Exit 0 on success.
 fn run_fix(args: &FixArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+    let (source, arenas, _) = match load_program_spanned(&args.file) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{PROG}: {e}");
@@ -959,138 +1072,86 @@ fn run_fix(args: &FixArgs) -> ExitCode {
         }
     };
     let is_ml = is_ml_source(&args.file);
-    let out = run_sidecar(
-        &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
-    );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
-        report_errors(&out);
-        return ExitCode::FAILURE;
-    };
-    let diag_text = String::from_utf8_lossy(bytes);
-    // The original program's error set — the baseline each `--all` candidate is judged against (apply it
-    // only if it clears its code AND introduces no new error, so a placeholder-body insert stays unapplied).
+    let surface = surface_of(&args.file);
+    // The ORIGINAL program's error set — the baseline every `--all` candidate is judged against (apply a
+    // heuristic fix only if it clears its code AND introduces no new error). Fixed to the original so a
+    // fix's own downstream warning never reads as a regression across the fixpoint iterations.
     let baseline_errors: Option<Vec<(String, String)>> = program_error_keys(&source, is_ml);
 
-    // Collect the edits to apply. Each Diagnostics line is `severity  code  node  fix-kind  fix-node
-    // fix-replacement  fix-verified  message` (8 TAB cols); a fix has a real `fix-node`.
-    let mut edits: Vec<Edit> = Vec::new();
-    let mut considered = 0usize;
-    let mut skipped_unverified = 0usize;
-    for line in diag_text.lines() {
-        let cols: Vec<&str> = line.splitn(8, '\t').collect();
-        if cols.len() < 8 {
-            continue;
-        }
-        let (code, fix_kind, fix_node, fix_repl, fix_verified) =
-            (cols[1], cols[3], cols[4], cols[5], cols[6]);
-        if fix_node == "-" || code == "-" {
-            continue; // no actionable fix
-        }
-        considered += 1;
-        // Resolve the fix's target byte range from the span table.
-        let Some(span) = fix_node
-            .parse::<u32>()
-            .ok()
-            .and_then(|n| spans.get(cadenza_syntax::StructId(n)))
-        else {
-            continue;
+    // Apply fixes to a fixpoint, re-loading between each so node ids track the edited text. Each pass
+    // applies AT MOST ONE fix (the first applicable one), then re-parses; the loop ends when a pass
+    // applies nothing. Bounded so a pathological non-converging fix can't spin forever.
+    let mut current = source.clone();
+    let mut current_arenas = arenas;
+    let mut applied = 0usize;
+    let mut considered_any = false;
+    for _ in 0..64 {
+        let out = run_sidecar(
+            &current_arenas,
+            rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+        );
+        let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+            report_errors(&out);
+            return ExitCode::FAILURE;
         };
-        let (from, to) = (span.start, span.end);
-        // Decide whether to apply: a compiler-verified fix always; a heuristic one only under `--all`
-        // AND only if it actually verifies (apply + re-check clears the code — never apply blind).
-        let rule_verified = fix_verified == "verified";
-        let apply = if rule_verified {
-            true
-        } else if args.all {
-            apply_fix_to_source(&source, fix_kind, from, to, fix_repl, is_ml)
-                .map(|edited| fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()))
-                .unwrap_or(false)
-        } else {
-            false
+        let diag_text = String::from_utf8_lossy(bytes).into_owned();
+        // Rebuild the span table for the CURRENT text (node ids shift after each structural edit).
+        let Some(spans) = reparse_spans(&current, surface) else {
+            break;
         };
-        if !apply {
-            skipped_unverified += 1;
-            continue;
-        }
-        // Resolve the fix to a plain `[from,to) → new_text` splice — the same shapes
-        // `apply_fix_to_source` realizes, but recorded as a precise byte-range edit so a SET of them
-        // applies uniformly (descending offset) below. `replace`/`wrap` target `[from,to)`; `insert`
-        // splices before the target list's closing paren; `delete` removes the range + one adjacent
-        // separator space (so `(a b)` → `(b)`).
-        let edit = match fix_kind {
-            "insert" => {
-                let inner_end = source[..to].rfind(')').unwrap_or(to);
-                Edit {
-                    from: inner_end,
-                    to: inner_end,
-                    new_text: format!(" {fix_repl}"),
-                }
+
+        // Find the first applicable fix in this pass.
+        let mut applied_this_pass = false;
+        for line in diag_text.lines() {
+            let cols: Vec<&str> = line.splitn(8, '\t').collect();
+            if cols.len() < 8 {
+                continue;
             }
-            "wrap" => Edit {
-                from,
-                to,
-                // Surface-render the wrap (`(Some …)` → `Some(…)` on ML) before filling the hole, so the
-                // written text is valid for the file's surface — matching the verify path above.
-                new_text: render_wrap_for_surface(fix_repl, is_ml)
-                    .replace(rcdzc::WRAP_HOLE, &source[from..to]),
-            },
-            "delete" => {
-                // Extend the range over ONE adjacent separator: a following space (`(log foo)` →
-                // `(foo)`), else a preceding one (`(foo log)` → `(foo)`); a sole element leaves `()`.
-                if source[to..].starts_with(' ') {
-                    Edit {
-                        from,
-                        to: to + 1,
-                        new_text: String::new(),
-                    }
-                } else if source[..from].ends_with(' ') {
-                    Edit {
-                        from: from - 1,
-                        to,
-                        new_text: String::new(),
-                    }
-                } else {
-                    Edit {
-                        from,
-                        to,
-                        new_text: String::new(),
-                    }
-                }
+            let (code, fix_kind, fix_node, fix_repl, fix_verified) =
+                (cols[1], cols[3], cols[4], cols[5], cols[6]);
+            if fix_node == "-" || code == "-" {
+                continue;
             }
-            _ => Edit {
-                from,
-                to,
-                new_text: fix_repl.to_string(),
-            },
-        };
-        edits.push(edit);
+            considered_any = true;
+            let Some(target) = fix_node.parse::<u32>().ok().map(cadenza_syntax::StructId) else {
+                continue;
+            };
+            // Build the edited text structurally.
+            let Some(edited) =
+                apply_fix_to_source(&current, &current_arenas, &spans, fix_kind, target, fix_repl, surface)
+            else {
+                continue;
+            };
+            // Apply a compiler-verified fix always; a heuristic one only under `--all` AND only if it
+            // verifies (clears its code, introduces no new error).
+            let apply = fix_verified == "verified"
+                || (args.all && fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()));
+            if !apply {
+                continue;
+            }
+            // Commit this edit, re-parse for the next pass.
+            let Some(next_arenas) = reparse_arenas(&edited, surface) else {
+                continue; // a fix that broke the parse — skip it (should not happen post-verify)
+            };
+            current = edited;
+            current_arenas = next_arenas;
+            applied += 1;
+            applied_this_pass = true;
+            break;
+        }
+        if !applied_this_pass {
+            break;
+        }
     }
 
-    if edits.is_empty() {
+    let repaired = current;
+    if applied == 0 {
         eprintln!(
-            "{PROG}: {}: no applicable fixes ({considered} candidate fix(es), {skipped_unverified} not applied)",
-            args.file
+            "{PROG}: {}: no applicable fixes ({} candidate fix(es) considered)",
+            args.file,
+            if considered_any { "some" } else { "0" },
         );
         return ExitCode::SUCCESS;
-    }
-
-    // Apply by DESCENDING start offset so each splice leaves earlier offsets intact; skip an edit that
-    // overlaps one already applied (defensive — two fixes on the same span).
-    edits.sort_by_key(|e| std::cmp::Reverse(e.from));
-    let mut repaired = source.clone();
-    let mut applied = 0usize;
-    let mut last_from = repaired.len() + 1;
-    for e in &edits {
-        if e.to > last_from {
-            continue; // overlaps a later edit already applied — skip
-        }
-        if e.from > e.to || e.to > repaired.len() {
-            continue;
-        }
-        repaired.replace_range(e.from..e.to, &e.new_text);
-        last_from = e.from;
-        applied += 1;
     }
 
     if args.diff {
@@ -1382,6 +1443,64 @@ fn load_program_spanned(
         let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&raw_arenas);
         let spans = raw_spans.remap(&id_map, arenas.structure.len());
         Ok((source, arenas, spans))
+    }
+}
+
+/// The source surface implied by a file's extension (`.cdz`/`.ml` → ML, else s-expr). The `Format` the
+/// structural rewriter reprints a changed node in, and the surface `reparse_*` read.
+fn surface_of(file: &str) -> cadenza_syntax::convert::Format {
+    if is_ml_source(file) {
+        cadenza_syntax::convert::Format::Ml
+    } else {
+        cadenza_syntax::convert::Format::Sexpr
+    }
+}
+
+/// Parse `text` in `surface` into a canonicalized arena + its remapped span table — the surface-parse
+/// half of [`load_program_spanned`], factored so `cdz fix` can RE-parse its own edited text between fixes
+/// (node ids shift after each structural edit). `None` if the text does not parse cleanly (an ML parse
+/// error, or an s-expr read failure) — the caller stops applying further fixes.
+fn reparse_spans(
+    text: &str,
+    surface: cadenza_syntax::convert::Format,
+) -> Option<cadenza_syntax::spans::SpanTable> {
+    match surface {
+        cadenza_syntax::convert::Format::Ml => {
+            let parsed = cadenza_syntax::parser::read_ml(text);
+            if !parsed.errors.is_empty() {
+                return None;
+            }
+            let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
+            Some(parsed.spans.remap(&id_map, arenas.structure.len()))
+        }
+        _ => match cadenza_syntax::sexpr::read_spanned(text) {
+            Ok((_, spans)) => Some(spans),
+            Err(_) => cadenza_syntax::sexpr::read_all_spanned(text)
+                .ok()
+                .map(|(_, spans)| spans),
+        },
+    }
+}
+
+/// Parse `text` in `surface` into the canonical arena (the compiler's input) — the arena half of
+/// [`reparse_spans`], for driving the next `Diagnostics` pass over `cdz fix`'s edited text. `None` on a
+/// parse failure.
+fn reparse_arenas(
+    text: &str,
+    surface: cadenza_syntax::convert::Format,
+) -> Option<cadenza_syntax::Arenas> {
+    match surface {
+        cadenza_syntax::convert::Format::Ml => {
+            let parsed = cadenza_syntax::parser::read_ml(text);
+            if !parsed.errors.is_empty() {
+                return None;
+            }
+            Some(cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas).0)
+        }
+        _ => match cadenza_syntax::sexpr::read_spanned(text) {
+            Ok((arenas, _)) => Some(arenas),
+            Err(_) => cadenza_syntax::sexpr::read_all(text).ok(),
+        },
     }
 }
 

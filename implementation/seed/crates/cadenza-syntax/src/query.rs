@@ -2079,15 +2079,100 @@ pub mod textedit {
                 diff_children(src, old, a, b, span_of, surface, out);
             }
             _ => {
-                // Whole-node replace: overwrite the old node's span with the new node's text.
+                // The new node does not align with the old by head. If `new` EMBEDS `old` as a descendant
+                // (a WRAP — `old` becomes `(ctor old)`), preserve `old`'s original bytes: reprint only the
+                // wrapper material around it, so a wrapped `E.get` keeps its spelling rather than being
+                // canonically re-rendered. Otherwise fall back to a whole-node reprint.
                 if let Some((s, e)) = span_of(old) {
-                    out.push(Edit {
-                        start: s,
-                        end: e,
-                        text: render(new, surface),
-                    });
+                    if let Some((prefix, suffix)) = wrap_around_original(new, old, surface) {
+                        // Splice the wrapper before/after the preserved original span (two insert edits).
+                        if !prefix.is_empty() {
+                            out.push(Edit {
+                                start: s,
+                                end: s,
+                                text: prefix,
+                            });
+                        }
+                        if !suffix.is_empty() {
+                            out.push(Edit {
+                                start: e,
+                                end: e,
+                                text: suffix,
+                            });
+                        }
+                    } else {
+                        out.push(Edit {
+                            start: s,
+                            end: e,
+                            text: render(new, surface),
+                        });
+                    }
                 }
             }
+        }
+    }
+
+    /// If `new` embeds `original` (by identity — the SAME node, matched by its `origin`) as a descendant,
+    /// return the `(prefix, suffix)` text that wraps `original`'s source bytes to produce `new` — reprinting
+    /// only the WRAPPER, so the wrapped subtree keeps its original formatting. `None` when `new` does not
+    /// contain `original` (a genuine whole-node replacement, reprinted normally). Realized by rendering
+    /// `new` with `original` swapped for a HOLE placeholder, then splitting the rendered text on the hole:
+    /// everything before is the prefix, everything after the suffix. The placeholder is a name that cannot
+    /// occur in real source, so the split is unambiguous.
+    fn wrap_around_original(new: &Tree, original: &Tree, surface: Format) -> Option<(String, String)> {
+        let target = original.origin()?;
+        // Require `original` to be a PROPER DESCENDANT of `new` — not `new` itself. When `new` merely
+        // REPLACES `original` at the same position (a did-you-mean swaps one atom for another; both keep
+        // the same origin), `new` "contains" the origin only as its own root, which is a plain replace, not
+        // a wrap — reprinting it as prefix+HOLE+suffix would blank the whole node. Only a wrap embeds the
+        // original strictly deeper.
+        if new.origin() == Some(target) || !children_contain_origin(new, target) {
+            return None;
+        }
+        // A placeholder that never occurs in source (matches `abi::WRAP_HOLE`'s intent; kept local so
+        // `cadenza-syntax` needs no dependency on the compiler crate).
+        const HOLE: &str = "\u{2026}HOLE\u{2026}";
+        let holed = replace_origin_with_hole(new, target, HOLE);
+        let rendered = render(&holed, surface);
+        let (prefix, suffix) = rendered.split_once(HOLE)?;
+        Some((prefix.to_string(), suffix.to_string()))
+    }
+
+    /// Whether `t` has a descendant (or is a node) whose `origin` is `target`.
+    fn contains_origin(t: &Tree, target: crate::ast::StructId) -> bool {
+        if t.origin() == Some(target) {
+            return true;
+        }
+        match t {
+            Tree::Atom(..) => false,
+            Tree::List(items, _) => items.iter().any(|c| contains_origin(c, target)),
+        }
+    }
+
+    /// Whether a PROPER DESCENDANT of `t` (a child or deeper — not `t` itself) has `origin == target`.
+    fn children_contain_origin(t: &Tree, target: crate::ast::StructId) -> bool {
+        match t {
+            Tree::Atom(..) => false,
+            Tree::List(items, _) => items.iter().any(|c| contains_origin(c, target)),
+        }
+    }
+
+    /// Rebuild `t` with the node whose `origin` is `target` replaced by a bare `HOLE`-named atom — so
+    /// `render` prints a placeholder where the preserved original goes. New/wrapper nodes are rendered
+    /// normally; only the one preserved subtree becomes the hole.
+    fn replace_origin_with_hole(t: &Tree, target: crate::ast::StructId, hole: &str) -> Tree {
+        if t.origin() == Some(target) {
+            return Tree::Atom(crate::ast::Leaf::Name(hole.to_string()), None);
+        }
+        match t {
+            Tree::Atom(..) => t.clone(),
+            Tree::List(items, o) => Tree::List(
+                items
+                    .iter()
+                    .map(|c| replace_origin_with_hole(c, target, hole))
+                    .collect(),
+                *o,
+            ),
         }
     }
 
