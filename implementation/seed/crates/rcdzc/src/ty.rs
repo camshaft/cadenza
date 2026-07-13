@@ -140,6 +140,13 @@ pub const DEFAULT_FLOAT_WIDTH: u32 = 64;
 /// constructor (`prelude::build_float_ty`), exactly as the integer `1..=64` check lives at `Int`.
 pub const ADMITTED_FLOAT_WIDTHS: [u32; 2] = [32, 64];
 
+/// The integer widths that have a pre-installed ALIAS name in the prelude (`Int8`/`Int16`/`Int32`/
+/// `Int64` and their `UInt` twins — `prelude::install`). Every width in `1..=64` is a valid integer
+/// TYPE, but only these have a BOUND module name; `(Int N)` for any other width is built on demand and
+/// has no name to write. A diagnostic that suggests a conversion `(IntN.of …)` must restrict to THIS set
+/// so the suggested name actually resolves — a non-aliased `Int48` would be an unbound name.
+pub const ALIASED_INT_WIDTHS: [u32; 4] = [8, 16, 32, 64];
+
 /// A floating-point type: a [`Width`] (there is no signedness axis — a float is inherently signed, so
 /// this is [`IntTy`] minus its `Sign`). `FloatTy { width: Fixed(64) }` is `Float64` (binary64), the
 /// type a bare float literal grounds to; `Fixed(32)` is `Float32`. The width is polymorphic exactly as

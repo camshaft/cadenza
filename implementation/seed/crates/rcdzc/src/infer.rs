@@ -1864,6 +1864,27 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                                 "convert the integer to {float_name} with `{float_name}.of-int`"
                             ),
                         )));
+                    } else if let (Ty::Int(expected), Ty::Int(_)) = (&sparam, &sat)
+                        && crate::ty::ALIASED_INT_WIDTHS.contains(&expected.ground_width())
+                    {
+                        // Two INTEGER types of different width/sign (`(+ a b)` with `a:Int32`, `b:Int64`)
+                        // — CDZ0301, no silent promotion. The repair is the corpus-blessed CHECKED
+                        // conversion `(<TargetInt>.of operand)` (`06-numeric-model.sexp` — `(+ 2
+                        // (Int64.of 1))`), converting the mis-typed operand to the EXPECTED type. The
+                        // target's name is the expected int type's `render_name()` (`Int64`/`UInt8`/…),
+                        // derived not hard-coded. GATED to an ALIASED width ({8,16,32,64}): only those are
+                        // BOUND names — a non-aliased `Int48` renders to a name nothing binds, so
+                        // suggesting `(Int48.of …)` would itself be unbound (worse than no fix), so a
+                        // non-aliased target gets the plain reject. Heuristic: `.of` is CHECKED (traps out
+                        // of range), and which operand to convert is a guess (convert THIS operand to the
+                        // other's type).
+                        let int_name = sparam.render_name();
+                        out.push(reject.with_fix(Fix::wrap_heuristic(
+                            arg,
+                            format!("({int_name}.of "),
+                            ")",
+                            format!("convert to {int_name} with `{int_name}.of` (checked)"),
+                        )));
                     } else {
                         out.push(reject);
                     }

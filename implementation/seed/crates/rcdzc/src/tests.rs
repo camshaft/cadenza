@@ -8796,6 +8796,39 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_width_mismatch_offers_an_of_conversion_fix() {
+        // The integer-width coercion (sibling of the D7 float case): `(+ a b)` with `a:Int32`, `b:Int64`
+        // is CDZ0301 (no silent promotion), repaired by the corpus-blessed CHECKED conversion
+        // `(<TargetInt>.of …)` (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). The target is the
+        // EXPECTED operand's type; applying the fix type-checks.
+        let d = first_error("(module m (def (f (: a Int32) (: b Int64)) (+ a b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        let fix = d.fix.expect("a coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Int32.of {})", crate::abi::WRAP_HOLE),
+            "wraps the operand in the expected int type's `.of`"
+        );
+        assert!(!fix.verified, "`.of` is checked (can trap) → heuristic");
+    }
+
+    #[test]
+    fn a_non_aliased_int_width_target_carries_no_conversion_fix() {
+        // The conversion is GATED to an ALIASED width ({8,16,32,64}) — those are the only BOUND names. The
+        // TARGET is the FIRST operand's type (the one the operator pins); with a non-aliased `(Int 48)`
+        // first, the target renders to `Int48`, which nothing binds, so no fix is offered (suggesting an
+        // unbound `(Int48.of …)` would be worse than none).
+        let d = first_error("(module m (def (f (: a (Int 48)) (: b Int64)) (+ a b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        assert!(
+            d.fix.is_none(),
+            "no fix for a non-aliased target width (would be unbound): {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
