@@ -11,7 +11,14 @@
 
 /// A kinded byte artifact crossing the tool boundary. The canonical program input is the artifact of
 /// `kind == "ast"`; a derived WebAssembly component is `kind == "component"`; other backends tag their
-/// own kinds. A kind the tool does not recognize is a diagnostic, not a silent drop.
+/// own kinds. A kind the tool does not recognize is a diagnostic, not a silent drop. `compile` takes a
+/// `&[Artifact]` — a LIST of these — so the input channel is an open kinded set (add a source unit, a
+/// `spans`/`sidecar` input) without changing the entry's arity, and a consumer selects by kind not
+/// position.
+//= spec/contracts/build-tool-interface.md#the-tool-s-inputs-are-a-kinded-artifact-list
+//# The build tool's derivation entry MUST take its inputs as a list of kinded artifacts, each a named kind paired with its bytes, so that the canonical source tree is one artifact among an open set and the input channel admits further inputs — additional source units of a multi-unit program, a build cache, or a previously derived dependency — without changing the entry's arity.
+//= spec/contracts/build-tool-interface.md#the-tool-s-inputs-are-a-kinded-artifact-list
+//# The kind of an artifact MUST identify how its bytes are interpreted, so that a consumer selects an input by kind rather than by position, and an input kind the tool does not recognize is reported as a diagnostic rather than silently ignored.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Artifact {
     pub kind: String,
@@ -42,6 +49,8 @@ impl Artifact {
 ///
 //= spec/capabilities/diagnostics.md#every-diagnostic-carries-a-severity
 //# The severity a diagnostic carries MUST be independent of the diagnostic's kind, so that whether an outcome is a failure is read from the severity rather than inferred from whether the outcome is a rejection, a decline, or a trap.
+//= spec/contracts/build-tool-interface.md#a-diagnostic-carries-a-severity-a-code-and-a-message
+//# A diagnostic the build tool produces MUST carry a severity that distinguishes an error — one that denies a component artifact — from a non-error such as a warning that accompanies a produced component, so that a consumer decides from the diagnostic itself whether the derivation failed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {
     Error,
@@ -167,6 +176,8 @@ impl DiagnosticFix {
 ///
 //= spec/capabilities/diagnostics.md#diagnostics-are-machine-readable
 //# The compiler MUST expose its diagnostics in a machine-readable form rather than only as human-formatted text.
+//= spec/contracts/build-tool-interface.md#a-diagnostic-carries-a-severity-a-code-and-a-message
+//# A diagnostic MUST carry the machine-readable code and message fixed by the diagnostics-schema, so that a diagnostic in this interface is the same machine-actionable record the rest of the specification uses.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Diagnostic {
     pub severity: Severity,
@@ -230,7 +241,19 @@ impl Diagnostic {
     }
 }
 
-/// The output of a compilation: the produced artifacts and the always-live diagnostics channel.
+/// The output of a compilation: the produced artifacts and the always-live diagnostics channel. A RECORD
+/// pairing a list of kinded output artifacts with a list of diagnostics — two DISTINCT channels, not
+/// mutually-exclusive arms: the derived component is one artifact (kind `"component"`) in the list, a
+/// debug sidecar another, and a warning rides alongside a produced component. Success/failure is READ
+/// from the outputs (`artifact("component")` present + no error) rather than an in-band sentinel.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The build tool's derivation entry MUST return a record pairing a list of kinded output artifacts with a list of diagnostics, so that the byte outputs and the diagnostics are distinct channels rather than mutually exclusive arms of one result.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The derived component MUST be one artifact in the output artifact list, identified by its kind, so that a byte output that is not the component — a debug-information sidecar, a source map, the capability manifest — is another artifact of the same shape rather than a second return type, and the set of output kinds is open to additive extension.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The tool MUST signal a successful derivation by the presence of a component artifact in the output together with the absence of any error-severity diagnostic, and a failed derivation by the absence of a component artifact together with at least one error-severity diagnostic, so that success and failure are read from the produced artifacts and diagnostics rather than from an in-band sentinel such as an empty byte sequence.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The tool MUST be able to return diagnostics alongside a produced component, so that a derivation that succeeds while reporting non-error diagnostics — a warning — carries both the component and those diagnostics rather than having to discard one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CompileOutput {
     pub artifacts: Vec<Artifact>,

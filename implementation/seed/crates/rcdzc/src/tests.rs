@@ -9228,6 +9228,49 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mistyped_argument_to_a_sum_parameter_offers_a_wrap_in_variant_fix() {
+        // The wrap-in-variant repair at the CALL SITE (not only the `(: n T)` annotation): passing `5 :
+        // Int64` to a `(: o (Option Int64))` parameter offers "wrap in `Some`" → `(Some 5)`. This closes
+        // the argument-position gap (the annotation path already had it); both now route through the shared
+        // `wrap_variant_for`.
+        let d = reject_full(
+            "(module m (def (f (: o (Option Int64))) o) (def (main) (f 5)) (export main))",
+        )
+        .expect("the mistyped argument must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        let fix = d.fix.expect("a wrap fix is carried at the call site");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Some {})", crate::abi::WRAP_HOLE),
+            "wraps the argument in `Some`"
+        );
+        assert!(!fix.verified, "a wrap is a heuristic (intent guess)");
+        // FORCED-CHOICE ONLY: `(Result Int64 Int64)` given an `Int64` — BOTH `Ok` and `Err` could wrap it
+        // → ambiguous → NO fix (we never guess which construction the author meant).
+        let ambiguous = reject_full(
+            "(module m (def (f (: r (Result Int64 Int64))) r) (def (main) (f 5)) (export main))",
+        )
+        .expect("the mistyped argument must reject");
+        assert!(
+            ambiguous.fix.is_none(),
+            "an ambiguous wrap (Ok vs Err both fit) offers no fix: {:?}",
+            ambiguous.fix
+        );
+        // The OTHER-arm case is unambiguous: `(Result Int64 String)` given `Int64` → only `Ok` fits.
+        let ok_only = reject_full(
+            "(module m (def (f (: r (Result Int64 String))) r) (def (main) (f 5)) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(
+            ok_only.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Ok {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "only Ok's payload matches Int64: {}",
+            ok_only.message
+        );
+    }
+
+    #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
         // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),
@@ -10832,6 +10875,107 @@ mod match_engine {
                 cdz_run::Outcome::Trap(t) => panic!("if-list-len run trapped: {t}"),
             }
         }
+    }
+
+    #[test]
+    fn a_collection_length_is_known_nonnegative_and_folds_range_comparisons() {
+        // A `List.len`/`Bytes.len`/`Map.size`/`Set.len` is a NON-NEGATIVE `Int64` (the backend zero-extends
+        // an i32 count), so `value_range` bounds it to `[0, 2^32-1]`. That lets the range folds fire on a
+        // length: `(>= (List.len xs) 0)` is a tautology (→ the taken branch, NO compare, NO vec-len call),
+        // `(< (List.len xs) 0)` is impossible, and a `(match (List.len xs) (-1 …) …)` drops the impossible
+        // negative arm. Pins the fold at the Lir level (no compare / no length call remains) AND runtime
+        // value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = |src: &str, name: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(>= (List.len xs) 0)` folds to `true` → the `if` takes the then-branch: no comparison, and the
+        // whole `List.len` (a trap-free, discarded operand) drops — no `vec-len` call at all.
+        let taut = code(
+            "(module m (def (f (: xs (List Int64))) (if (>= (List.len xs) 0) 111 222)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !taut.iter().any(|i| matches!(i, Lir::I64GeS | Lir::I64LtS)),
+            "a length `>= 0` tautology folds — no comparison, got: {taut:?}"
+        );
+        assert!(
+            taut.iter().any(|i| matches!(i, Lir::ConstI64(111))),
+            "the tautology takes the then-branch (111), got: {taut:?}"
+        );
+        assert!(
+            !taut.iter().any(|i| matches!(i, Lir::ConstI64(222))),
+            "the impossible else-branch (222) is dead, got: {taut:?}"
+        );
+        // A `match` on the length drops the impossible `-1` arm (a length is never negative): no `const -1`.
+        let m = code(
+            "(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !m.iter()
+                .any(|i| matches!(i, Lir::ConstI64(-1) | Lir::ConstI64(999))),
+            "the impossible negative-length arm is dropped, got: {m:?}"
+        );
+
+        // RUNTIME VALUE PARITY (needs the runtime wasm to execute the length call in the surviving arms).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping length-fold run");
+            return;
+        };
+        let run_f = |src: &str, want: &str| {
+            let bytes = component(src);
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want),
+                cdz_run::Outcome::Trap(t) => panic!("length-fold run trapped: {t}"),
+            }
+        };
+        // The tautology returns the then-branch value regardless of the (built, then measured) list.
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (if (>= (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))",
+            "111",
+        );
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (if (< (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))",
+            "222",
+        );
+        // The match: len 0 hits the `0` arm, len 1 the wildcard; the `-1` arm never (and was dropped).
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list))) (export main))",
+            "111",
+        );
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list 5))) (export main))",
+            "222",
+        );
     }
 
     #[test]
@@ -17163,19 +17307,65 @@ mod stage1 {
         // annotation is REJECTED at compile time (CDZ0302) rather than building `Ty::Int(Fixed(65))` and
         // carrying a "no machine representation" decline to emit. Pins the upper boundary of the width
         // constraint — a compile-time reject, not a parse error and not a run.
-        for body in [
-            "(: 5 (UInt 65))",
-            "(: 5 (UInt 128))",
-            "(: 5 (Int 65))",
-            "(: 5 (Int 200))",
+        // The message names the ORIGINAL written width ("`UInt65` is not a valid integer type"), not the
+        // clamped sentinel "UInt0" the literal-fit path used to report — a misleading name that hid what
+        // was written.
+        for (body, name) in [
+            ("(: 5 (UInt 65))", "UInt65"),
+            ("(: 5 (UInt 128))", "UInt128"),
+            ("(: 5 (Int 65))", "Int65"),
+            ("(: 5 (Int 200))", "Int200"),
         ] {
+            let msg = expect_decline(body);
             assert!(
-                expect_decline(body).contains("does not fit"),
-                "an over-ceiling width must be rejected CDZ0302: {body}"
+                msg.contains(name) && msg.contains("not a valid integer type"),
+                "an over-ceiling width must be rejected CDZ0302 naming `{name}`: {body} -> {msg}"
             );
         }
         // The boundary itself (64) is still valid — `(UInt 64)` builds and 5 fits (crosses as u64).
         assert_eq!(run_main_as::<u64>("(: 5 (UInt 64))"), 5);
+    }
+
+    #[test]
+    fn an_over_ceiling_width_in_an_unused_parameter_is_rejected_cdz0302() {
+        // 06-numeric-model "an over-ceiling integer width in an unused parameter is rejected, like a used
+        // one". Well-formedness is TOTAL — it holds over every def, reachable or not — so an ill-formed
+        // integer width `(UInt 65)` in the type of a PARAMETER of a private, never-literal-called def must
+        // be rejected CDZ0302 at the annotation, not only when a literal is fit-checked against it or the
+        // def is exported. `reduce_ctor` clamps the width to the sentinel 0 (so `typeval_of` succeeds with
+        // `Int0` and the "not a type" check does not fire); `param_annotation_faults` reads the ORIGINAL
+        // width off the annotation and rejects it. Regression for the escape where a private
+        // unconstrained-param type carried an unrepresentable width into a compiled artifact.
+        let compile =
+            |src: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(src)));
+        for (src, name) in [
+            (
+                "(module m (def (f (: x (UInt 65))) x) (def (main) 0) (export main))",
+                "UInt65",
+            ),
+            (
+                "(module m (def (f (: x (UInt 0))) x) (def (main) 0) (export main))",
+                "UInt0",
+            ),
+            (
+                "(module m (def (f (: x (Int 128))) x) (def (main) 0) (export main))",
+                "Int128",
+            ),
+        ] {
+            let e = compile(src).expect_err("an over-ceiling param width must be rejected");
+            assert_eq!(e.code.as_deref(), Some("CDZ0302"), "src: {src}");
+            assert!(
+                e.message.contains(name) && e.message.contains("not a valid integer type"),
+                "the reject must name the written width `{name}`: {}",
+                e.message
+            );
+        }
+        // NO OVER-REJECTION: a VALID width `(UInt 8)` in an unused param compiles (the def is dead but
+        // well-formed) — the totality check fires only on an ill-formed width, not any narrow param.
+        assert!(
+            compile("(module m (def (f (: x (UInt 8))) x) (def (main) 0) (export main))").is_ok(),
+            "a valid narrow width in an unused parameter must not be rejected"
+        );
     }
 
     #[test]
@@ -27800,6 +27990,352 @@ mod closure_host_resource {
         call.post_return(&mut store).expect("call post_return 2");
         assert_eq!(out2[0], Val::S64(42), "same closure applied to 41 = 42");
         // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
+    }
+
+    /// COMPOUND-RESULT oracle core (the byte anchor for a closure whose result is a `list<u8>` / a compound
+    /// rendered as the canonical value form): a closure `call : (self: own<t>, x: s64) -> list<u8>`. The
+    /// core carries a MEMORY + `cabi_realloc` (which a scalar `call` does not need) so the canonical ABI can
+    /// return the `(ptr, len)` area. `call` dispatches the lifted closure via `call_indirect` (recovering the
+    /// code slot from the resource rep, exactly as the scalar `call` does) to compute a byte `n`, then writes
+    /// a 2-byte payload `[n, n+1]` + the return area and returns the retptr — the same `(ptr, len)` shape
+    /// `working_list_core` proves for a nullary `-> list<u8>`, now behind the closure resource's `call`.
+    /// This isolates the ONE new thing over the scalar closure oracle: the `call` lift carries Memory/Realloc
+    /// canon options and a `list<u8>` result, so the compiler's real compound-result `call` can hand-emit it.
+    fn closure_list_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64)->i64 (the call_indirect functype);
+        // 2 = make ()->i32; 3 = call (i32 self, i64 x)->i32 retptr; 4 = cabi_realloc (i32×4)->i32.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1 lifted / indirect
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I32]); // 3 call → retptr
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        ); // 4 cabi_realloc
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        // Defined funcs: lifted = 2, make = 3, call = 4, cabi_realloc = 5.
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        funcs.function(4); // cabi_realloc
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+        let f_realloc = 5u32;
+
+        // Core section ORDER: table (sec 4) precedes memory (sec 5).
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        exports.export("cabi_realloc", ExportKind::Func, f_realloc);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(x) = x + 1 — the closure body (the same one the scalar oracle dispatches).
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::I64Const(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0).
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, x): n = call_indirect(lifted)(x) via the recovered slot; write [n, n+1] at 0, the
+        // return area [ptr=0, len=2] at 8, return retptr=8. One i32 scratch local for the low byte of n.
+        let mut call = Function::new(vec![(1, ValType::I32)]); // local 2 = i32 scratch
+        call.instruction(&Instruction::LocalGet(1)); // x
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → slot
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::I32WrapI64); // n (i32)
+        call.instruction(&Instruction::LocalSet(2));
+        // mem[0] = n (low byte)
+        call.instruction(&Instruction::I32Const(0));
+        call.instruction(&Instruction::LocalGet(2));
+        call.instruction(&Instruction::I32Store8(MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
+        // mem[1] = n+1 (low byte)
+        call.instruction(&Instruction::I32Const(1));
+        call.instruction(&Instruction::LocalGet(2));
+        call.instruction(&Instruction::I32Const(1));
+        call.instruction(&Instruction::I32Add);
+        call.instruction(&Instruction::I32Store8(MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
+        // return area at 8: [ptr=0, len=2]
+        call.instruction(&Instruction::I32Const(8));
+        call.instruction(&Instruction::I32Const(0));
+        call.instruction(&Instruction::I32Store(MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
+        call.instruction(&Instruction::I32Const(12));
+        call.instruction(&Instruction::I32Const(2));
+        call.instruction(&Instruction::I32Store(MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        }));
+        call.instruction(&Instruction::I32Const(8)); // return the retarea pointer
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        // cabi_realloc stub (not called for this fixed-size return area).
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End);
+        code.function(&realloc);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the COMPOUND-RESULT closure: `make : () -> own<t>` and
+    /// `call : (self: own<t>, x: s64) -> list<u8>`. Mirrors `inner_reexport_component` but the `call` result
+    /// is a `list<u8>` defined type instead of `s64`. The list type is minted on both the import and export
+    /// sides (each component-type space is independent). The outer component lifts `call` with Memory/Realloc
+    /// canon options; here the import/export functypes just declare the `list<u8>` result shape.
+    fn inner_reexport_component_list() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        ); // type 0
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty)); // func 0
+        // call : (self: own<0>, x: s64) -> list<u8>
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (list_imp, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Type(list_imp)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty)); // func 1
+        // RE-EXPORT the resource type directly.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        // make ascribed.
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        // call ascribed (list<u8> result).
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (list_exp, ld2) = c.type_defined();
+        ld2.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Type(list_exp)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer COMPOUND-RESULT oracle: wraps `closure_list_call_core` in a resource with `make` + a
+    /// `call` that returns `list<u8>`. Like `oracle_closure_component` but the `call` lift carries
+    /// Memory/Realloc canon options (the compound result crosses through linear memory by the canonical
+    /// ABI), and the inner re-export component types `call`'s result as `list<u8>`.
+    fn oracle_closure_list_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, x: s64) -> list<u8>  WITH Memory/Realloc options.
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (list_u8, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Type(list_u8)));
+        let call_comp = c.lift_func(
+            call_core,
+            call_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        let inner_idx = c.component(inner_reexport_component_list());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// COMPOUND-RESULT END-TO-END ORACLE: a closure whose `call` returns `list<u8>` runs under wasmtime.
+    /// `make()` → a handle; `call(handle, 5)` dispatches the lifted `(x) -> x+1` (n = 6) and returns the
+    /// bytes `[6, 7]` through the canonical `(ptr, len)` ABI (Memory/Realloc lift). Proves the ONE new
+    /// piece over the scalar closure resource — a `call` returning a compound via linear memory — before the
+    /// compiler hand-emits a real compound-result `call`. Byte-shape validated + behavior observed.
+    #[test]
+    fn a_closure_returning_a_list_crosses_and_the_host_reads_the_bytes() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_list_component(&closure_list_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("compound-result closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make");
+        make.post_return(&mut store).expect("post_return");
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), Val::S64(5)], &mut out)
+            .expect("call");
+        call.post_return(&mut store).expect("post_return");
+        let bytes: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("expected list<u8>, got {o:?}"),
+        };
+        // lifted(5) = 6, so the payload is [6, 7] — the compound crossed as list<u8> through the call.
+        assert_eq!(
+            bytes,
+            vec![6u8, 7],
+            "closure call returned the byte payload [n, n+1]"
+        );
     }
 
     /// MULTI-EXPORT oracle core (the byte anchor for the next real increment): TWO closures of the SAME

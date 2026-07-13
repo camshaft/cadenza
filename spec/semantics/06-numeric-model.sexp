@@ -1643,6 +1643,21 @@
   (input  (: 5 (UInt 65)))
   (error  CDZ0302))
 
+(case "an over-ceiling integer width in an unused parameter is rejected, like a used one"
+  (doc    "`(UInt 65)` as the type of a PARAMETER of a private def that is never called with a literal —
+           `(def (f (: x (UInt 65))) x)` with `f` unused — is rejected CDZ0302, exactly as the value
+           annotation `(: 5 (UInt 65))` is. Well-formedness is TOTAL: it holds over every definition,
+           reachable or not (an unbound name in the same unused def is CDZ0101), so an ill-formed integer
+           width must be rejected wherever the annotation appears — not only where a literal is fit-checked
+           against it or the def is exported. Pins that the width constraint is checked at the annotation
+           itself, closing the escape where a private unconstrained-parameter type carried a width with no
+           valid representation into a compiled artifact.")
+  (input  (do
+            (def (f (: x (UInt 65))) x)
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0302))
+
 (case "a wide fixed-size integer width is reserved, not yet a valid type"
   (doc    "`(: 5 (UInt 128))` names a 128-bit integer — beyond the 1..=64 register-width ceiling, so it is
            rejected (CDZ0302) today rather than silently accepted. The notation is reserved: a later

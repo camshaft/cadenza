@@ -2340,6 +2340,32 @@ fn width_is_runtime(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// If the type expression at `id` is `(Int W)`/`(UInt W)` with a CONCRETE width OUTSIDE the admitted
+/// `1..=64` range — an over-ceiling `(UInt 65)`/`(UInt 128)` or a zero `(UInt 0)` — return
+/// `(signed, original_width)`. `reduce_ctor` clamps such a width to the sentinel 0, so the built `Ty` is
+/// `Int0` and its own name no longer reveals what was written; this reads the ORIGINAL width off the
+/// annotation for a diagnostic that names it ("width 65 exceeds the 64-bit ceiling") instead of the
+/// misleading clamped "UInt0". `None` for an in-range width, a non-concrete width (an unbound name, a
+/// runtime parameter — those are diagnosed by scope / `is_runtime_width_type`), or a non-integer-ctor
+/// type. Keyed on the constructor prim + `read_width`, so no width literal is special-cased here.
+pub fn out_of_range_int_width(db: &mut Db, id: StructId) -> Option<(bool, u32)> {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return None;
+    };
+    let signed = match meta_apply_of(db, head) {
+        Some(Prim::IntCtor) => true,
+        Some(Prim::UIntCtor) => false,
+        _ => return None,
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    match read_width(db, args[0]) {
+        WidthRead::Fixed(w) if !(1..=64).contains(&w) => Some((signed, w)),
+        _ => None,
+    }
+}
+
 /// Encode a `Ty` as a `(typeval …)` arena node the resolver decodes back to `Resolved::TypeVal`.
 /// Compact and total over the type shapes the evaluator builds (integers, bool, unit, function).
 pub fn encode_typeval(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
