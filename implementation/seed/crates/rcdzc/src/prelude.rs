@@ -1152,9 +1152,28 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     // reached by member access `(. Float64 nan)`. Its value is the `float-nan` intrinsic directly
     // (`Prim::FloatNan` → `Core::ConstFloatNan`); NOT a literal, since `Decimal` holds only finite values.
     // Every NaN shares one canonical byte form, so `(= Float64.nan Float64.nan)` is true (core-semantics.md
-    // #Floating-Point Equality Follows The Canonical Byte Form). The field is a bare intrinsic node (a
-    // VALUE), not an operator record — projecting it yields the NaN value, applying nothing.
-    let nan_val = intrinsic_node(ast, "float-nan");
+    // #Floating-Point Equality Follows The Canonical Byte Form). The intrinsic is width-agnostic on its own
+    // (`Prim::FloatNan` types as a DEFERRED-width float), so — exactly like `Int64.max` is `(: <lit> (Int
+    // 64))` — the field ANNOTATES it with THIS module's width `(: <nan> (Float width))`. Without the
+    // annotation `Float64.nan` typed as an unfixed float and unified with EITHER width, so a cross-width
+    // comparison `(= Float32.nan Float64.nan)` slipped past the CDZ0301 the identical FINITE comparison
+    // gets. Annotated, `Float64.nan` is `Ty::Float(Fixed(64))` and does not unify with a `Float32`.
+    let nan_ty_expr = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let nan_val = {
+        let intrinsic = intrinsic_node(ast, "float-nan");
+        let colon = push_atom(ast, Leaf::Name(":".to_string()));
+        push_list(ast, vec![colon, intrinsic, nan_ty_expr])
+    };
     let fields = vec![
         meta_field(ast, "t", ty_expr),
         {
