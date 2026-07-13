@@ -173,10 +173,9 @@ the component type. The new work:
 
 ## Increment plan (each = commit + triple gate, reject-don't-miscompile)
 
-- **C-HOST-0 — codegen probe (byte-neutral).** Add the closure-resource item helpers (the
-  per-signature resource-type emit; a functype builder for a `call` method of arity N; the
-  nested re-export component variant for a `{call}` resource) as pub fns, unreferenced.
-  Confirm the component bytes assemble against a `wasm-encoder` oracle. No behavior change.
+- **C-HOST-0 — codegen probe (byte-neutral). ✅ LANDED `@a7d7b903`.** `closure_call_functype`
+  (the `call`-method component functype) + an oracle test pinning its byte shape.
+  `#[allow(dead_code)]`, unreferenced.
 - **C-HOST-1 — export a NO-CAPTURE closure, host calls it (own/no-drop).** An export whose
   RESULT is `(-> Int64 Int64)` → resource `closure-s64-s64` with a `call` method, published
   in `cadenza:closure/*`. The export body builds the cell and `resource.new`s it at the
@@ -184,6 +183,22 @@ the component type. The new work:
   First e2e: `(def (main) (fn (x) (+ x 1)))` exported; host calls the result with 5 → 6.
   Corpus: a new `17-host-closures.sexp` (or an extension) whose driver invokes the
   resource method.
+  - **✅ ORACLE LANDED `@63d3d96b`** (`closure_host_resource` test module): a
+    `ComponentBuilder` reference RUNS under wasmtime — `make()` → resource handle,
+    `call(handle, 5)` = 6, fresh `make()` + `call(_, 41)` = 42. Standalone core (the
+    no-capture cell IS the funcref-table slot; `make` = `resource.new(slot)`, `call` =
+    `resource.rep(self)` → `call_indirect`); a `{make, call}` inner re-export component
+    published as `cadenza:closure/exports`. **PROVES the whole mechanism** (wasmtime accepts
+    a guest closure resource dispatching via the guest's own `call_indirect`). 🔑 CONFIRMED:
+    `own<t>` CONSUMES the handle per `call` (a 2nd call on the same handle → "unknown handle
+    index") — so a closure is single-use per handle until C-HOST-5's `borrow<t>`. This is
+    the byte reference the compiler EMIT PATH (still TODO) hand-emits from a real export.
+  - **⏳ REMAINING: the compiler emit path + `cdz-run` method-drive + a corpus case.** Route
+    an export whose RESULT is `Ty::Fn` (NOT the escape's nullary-compound trigger) into a
+    closure-resource envelope (`assemble_closure_resource`, forked from
+    `assemble_runtime_resource`), splicing `resource.new` at the boundary-return; teach
+    `cdz-run` to call `make` then `call(args)`; add `17-host-closures.sexp` (needs a gate
+    driver that invokes a resource METHOD, not a bare export — an open item).
 - **C-HOST-2 — a PARAMETERIZED export returning a CAPTURING closure.** `(def (adder (: k
   Int64)) (fn (x) (+ x k)))` → `adder : (s64) -> own<closure-s64-s64>`; host calls
   `adder(10)` then `call(5)` → 15. Proves the handle is computed from the host's input AND

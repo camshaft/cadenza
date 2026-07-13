@@ -449,14 +449,18 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
         // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), a
-        // BYTES sequence (`bytes-*` handle), or a STRING (a UTF-8 byte-leaf handle) — is already a u32
-        // handle, so it is `arr-set` into the parent array (or used as a sum payload) as-is, no box op. A
-        // CLOSURE (`Ty::Fn`) is likewise a u32 cell handle (`valtype_of(Ty::Fn) = I32`) — a closure
-        // captured BY another closure (a fn-typed capture) is stored as-is.
+        // MAP (its CHAMP `map-*` handle), a BYTES sequence (`bytes-*` handle), or a STRING (a UTF-8
+        // byte-leaf handle) — is already a u32 handle, so it is `arr-set` into the parent array (or used
+        // as a sum payload / a map key or value) as-is, no box op. A CLOSURE (`Ty::Fn`) is likewise a u32
+        // cell handle (`valtype_of(Ty::Fn) = I32`) — a closure captured BY another closure is stored
+        // as-is. A `Ty::Map` here is what lets a MAP be a KEY or VALUE of another map — its handle is
+        // CANONICAL by construction (order-independent CHAMP), so the outer map's `champ_hash`/`champ_eq`
+        // walk over the nested map key is exact, exactly as a nested tuple/record key already is.
         Ty::Tuple(_)
         | Ty::Record(_)
         | Ty::Sum { .. }
         | Ty::List(_)
+        | Ty::Map(_, _)
         | Ty::Bytes
         | Ty::String
         | Ty::Fn(_, _) => Ok(None),
@@ -485,13 +489,16 @@ fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
-        // A nested compound / SUM / LIST / BYTES / STRING handle `arr-get` (or `sum-payload`) yields is
-        // used as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed value
-        // (`Core::Captured` of a closure) reads back the handle directly, ready for a `call_indirect`.
+        // A nested compound / SUM / LIST / MAP / BYTES / STRING handle `arr-get` (or `sum-payload`) yields
+        // is used as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed
+        // value (`Core::Captured` of a closure) reads back the handle directly, ready for a `call_indirect`.
+        // A `Ty::Map` here is the dual of `box_op_ty`'s Map arm: a map read back from a heap slot (a map
+        // stored as another map's key/value, or a tuple/sum element) is used as its handle directly.
         Ty::Tuple(_)
         | Ty::Record(_)
         | Ty::Sum { .. }
         | Ty::List(_)
+        | Ty::Map(_, _)
         | Ty::Bytes
         | Ty::String
         | Ty::Fn(_, _) => Ok(None),

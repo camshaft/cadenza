@@ -914,6 +914,387 @@ fn op_sum_payload(h: Handle) -> Handle {
     })
 }
 
+// ─── Value-form encode (index 62): render a runtime value to its canonical binary AST document ──
+//
+// The type-directed renderer the compiler bakes into a program (`sum_form_template` / the fixed
+// hole-templates) can render a value of FIXED shape, but a RUNTIME RECURSIVE sum (a linked list, a
+// tree — `(type IL (Cons (Tuple Int64 IL)) Nil)`) has unbounded depth, so no fixed template exists and
+// the escape declined. This op walks such a value to its canonical value form — the binary AST codec
+// document (`codec.rs`: header · leaf pool · struct table · root) — guided by a SHAPE DESCRIPTOR the
+// compiler bakes as bytes. The runtime stays NOMINAL-AGNOSTIC: every NAME (the `:` frame, a variant
+// head, `tuple`, `unit`, the type name) comes from the descriptor, never invented here; the runtime
+// owns only the document ASSEMBLY (leaf dedup, struct indices, byte layout) — the error-prone part that
+// hand-emitted wasm would get wrong. See `DESIGN-recursive-sum-escape-walker.md` (approach C).
+//
+// Shape descriptor wire format (a compiler-baked constant, read by `decode_descriptor`):
+//   [ table_len:LEB ]( Shape )*table_len   [ root:LEB ]
+// A descriptor is a TABLE of shapes + a root index; a shape references another by INDEX (tag 11 Ref),
+// so a self-referential type is FINITE — the recursive payload position is a `Ref` back to the sum's
+// table entry, and the value walk follows it only as deep as the runtime value actually nests. Each
+// shape is a tag byte + per-tag operands (all counts/lengths unsigned LEB128):
+//     0 Int | 1 Bool | 2 Float | 3 Str | 4 Bytes | 5 Unit
+//     6 Tuple  [ n ][ elem: idx ]*n                       — each element is a table INDEX
+//     7 List   [ elem: idx ]
+//     8 Record [ n ]( [ name_len ][ name_utf8 ] [ field: idx ] )*n
+//     9 Sum    [ n ]( [ head_len ][ head_utf8 ] [ payload: idx ] )*n       (nullary payload → a Unit idx)
+//    10 Named  [ name_len ][ name_utf8 ] [ inner: idx ]   — the `(: <value> <name>)` frame (root only)
+//    11 Ref    [ idx ]                                    — an alias to another table entry (recursion)
+// (Every child position is an INDEX into the table, not an inline shape — that is what lets a cycle
+// close: entry k's Sum names entry k as a payload, a finite 1-entry loop the value walk unfolds.)
+
+/// The canonical binary-AST codec tags — kept in lock-step with `rcdzc::codec` (the native encoder this
+/// reproduces byte-for-byte). A drift is caught by the `encode_matches_codec` cross-check in the native
+/// suite (a runtime document is decoded by `rcdzc::codec::decode` and compared to the source tree).
+mod doc {
+    pub const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
+    pub const KIND_INT_POS_DEC: u8 = 0;
+    pub const KIND_BOOL_FALSE: u8 = 8;
+    pub const KIND_BOOL_TRUE: u8 = 9;
+    pub const KIND_NAME: u8 = 10;
+    pub const TAG_ATOM: u8 = 0;
+    pub const TAG_LIST: u8 = 1;
+}
+
+/// Append `value` as unsigned LEB128 — the codec's `write_u64`, byte-identical.
+fn doc_leb(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+/// A shape descriptor node — a value position's shape. Child positions are TABLE INDICES (`u32`), so a
+/// recursive type closes as a finite cycle. `Named` carries the outer type name for the
+/// `(: <value> <Type>)` frame; `Ref` is an alias to another table entry.
+enum Shape {
+    Int,
+    Bool,
+    Float,
+    Str,
+    Bytes,
+    Unit,
+    Tuple(Vec<u32>),
+    List(u32),
+    Record(Vec<(String, u32)>),
+    Sum(Vec<(String, u32)>),
+    Named(String, u32),
+    Ref(u32),
+}
+
+/// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
+/// the value walk (with a depth cap as a malformed-descriptor backstop).
+struct Descriptor {
+    table: Vec<Shape>,
+    root: u32,
+}
+
+fn desc_leb(d: &[u8], pos: &mut usize) -> Option<u64> {
+    let mut result = 0u64;
+    let mut shift = 0u32;
+    loop {
+        let byte = *d.get(*pos)?;
+        *pos += 1;
+        result |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 64 {
+            return None;
+        }
+    }
+}
+
+fn desc_name(d: &[u8], pos: &mut usize) -> Option<String> {
+    let len = desc_leb(d, pos)? as usize;
+    let bytes = d.get(*pos..*pos + len)?;
+    *pos += len;
+    core::str::from_utf8(bytes).ok().map(String::from)
+}
+
+fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
+    let tag = *d.get(*pos)?;
+    *pos += 1;
+    Some(match tag {
+        0 => Shape::Int,
+        1 => Shape::Bool,
+        2 => Shape::Float,
+        3 => Shape::Str,
+        4 => Shape::Bytes,
+        5 => Shape::Unit,
+        6 => {
+            let n = desc_leb(d, pos)?;
+            let mut elems = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                elems.push(desc_leb(d, pos)? as u32);
+            }
+            Shape::Tuple(elems)
+        }
+        7 => Shape::List(desc_leb(d, pos)? as u32),
+        8 => {
+            let n = desc_leb(d, pos)?;
+            let mut fields = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let name = desc_name(d, pos)?;
+                fields.push((name, desc_leb(d, pos)? as u32));
+            }
+            Shape::Record(fields)
+        }
+        9 => {
+            let n = desc_leb(d, pos)?;
+            let mut variants = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                let head = desc_name(d, pos)?;
+                variants.push((head, desc_leb(d, pos)? as u32));
+            }
+            Shape::Sum(variants)
+        }
+        10 => {
+            let name = desc_name(d, pos)?;
+            Shape::Named(name, desc_leb(d, pos)? as u32)
+        }
+        11 => Shape::Ref(desc_leb(d, pos)? as u32),
+        _ => return None,
+    })
+}
+
+fn decode_descriptor(d: &[u8]) -> Option<Descriptor> {
+    let mut pos = 0usize;
+    let n = desc_leb(d, &mut pos)?;
+    let mut table = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        table.push(decode_shape(d, &mut pos)?);
+    }
+    let root = desc_leb(d, &mut pos)? as u32;
+    if root as usize >= table.len() {
+        return None;
+    }
+    Some(Descriptor { table, root })
+}
+
+/// The document builder — a growing leaf pool + struct table, with leaf DEDUP (a repeated name/int
+/// collapses to one pool entry, matching the canonical arenas the native encoder is handed). Each
+/// `push_*` returns the entry's absolute index; `finish(root)` serializes to the codec document.
+#[derive(Default)]
+struct DocBuilder {
+    leaves: Vec<DocLeaf>,
+    structs: Vec<DocStruct>,
+}
+enum DocLeaf {
+    Name(String),
+    Int(bool, Vec<u8>), // (negative, big-endian magnitude)
+    Bool(bool),
+}
+enum DocStruct {
+    Atom(u32),
+    List(Vec<u32>),
+}
+
+impl DocBuilder {
+    fn name_leaf(&mut self, name: &str) -> u32 {
+        for (i, l) in self.leaves.iter().enumerate() {
+            if let DocLeaf::Name(n) = l
+                && n == name
+            {
+                return i as u32;
+            }
+        }
+        self.leaves.push(DocLeaf::Name(String::from(name)));
+        (self.leaves.len() - 1) as u32
+    }
+    fn int_leaf(&mut self, v: i64) -> u32 {
+        // Big-endian magnitude with leading zeros stripped (empty for zero) — the codec's canonical Int.
+        let neg = v < 0;
+        let mag = (v.unsigned_abs()).to_be_bytes();
+        let start = mag.iter().position(|&b| b != 0).unwrap_or(mag.len());
+        let magnitude = mag[start..].to_vec();
+        self.leaves.push(DocLeaf::Int(neg, magnitude));
+        (self.leaves.len() - 1) as u32
+    }
+    fn bool_leaf(&mut self, b: bool) -> u32 {
+        self.leaves.push(DocLeaf::Bool(b));
+        (self.leaves.len() - 1) as u32
+    }
+    fn atom(&mut self, leaf: u32) -> u32 {
+        self.structs.push(DocStruct::Atom(leaf));
+        (self.structs.len() - 1) as u32
+    }
+    fn list(&mut self, children: Vec<u32>) -> u32 {
+        self.structs.push(DocStruct::List(children));
+        (self.structs.len() - 1) as u32
+    }
+    fn finish(&self, root: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&doc::SCHEMA_HEADER);
+        doc_leb(&mut out, self.leaves.len() as u64);
+        for leaf in &self.leaves {
+            match leaf {
+                DocLeaf::Int(neg, mag) => {
+                    // Zero carries an empty magnitude and the POSITIVE kind (never negative-zero).
+                    let is_neg = *neg && !mag.is_empty();
+                    // Kinds are (sign<<0 offset): pos-dec = 0, neg-dec = 3 (see codec KIND_INT_*).
+                    out.push(if is_neg {
+                        doc::KIND_INT_POS_DEC + 3
+                    } else {
+                        doc::KIND_INT_POS_DEC
+                    });
+                    doc_leb(&mut out, mag.len() as u64);
+                    out.extend_from_slice(mag);
+                }
+                DocLeaf::Bool(b) => out.push(if *b {
+                    doc::KIND_BOOL_TRUE
+                } else {
+                    doc::KIND_BOOL_FALSE
+                }),
+                DocLeaf::Name(n) => {
+                    out.push(doc::KIND_NAME);
+                    doc_leb(&mut out, n.len() as u64);
+                    out.extend_from_slice(n.as_bytes());
+                }
+            }
+        }
+        doc_leb(&mut out, self.structs.len() as u64);
+        for s in &self.structs {
+            match s {
+                DocStruct::Atom(id) => {
+                    out.push(doc::TAG_ATOM);
+                    doc_leb(&mut out, *id as u64);
+                }
+                DocStruct::List(children) => {
+                    out.push(doc::TAG_LIST);
+                    doc_leb(&mut out, children.len() as u64);
+                    for &c in children {
+                        doc_leb(&mut out, c as u64);
+                    }
+                }
+            }
+        }
+        doc_leb(&mut out, root as u64);
+        out
+    }
+}
+
+/// The recursion cap on the value walk — a runtime value nesting deeper than this declines rather than
+/// overflowing the native stack (a malformed descriptor with a self-`Ref` over a cyclic-looking heap, or
+/// a pathologically deep value). Ample for any real recursive value form; the walk is O(nodes).
+const ENCODE_DEPTH_CAP: u32 = 100_000;
+
+/// Walk the runtime value `h` under table entry `shape_ix`, appending its value-form structs to `b`;
+/// return this sub-value's root struct index. A `Ref` follows the table (this is where a recursive
+/// value re-enters the sum's shape); recursion is bounded by the value's ACTUAL depth (capped by
+/// `ENCODE_DEPTH_CAP`). `None` on a malformed descriptor / out-of-range disc / unrenderable shape.
+/// BORROWS `h`; the caller drops the root once after the whole document is built.
+fn encode_value(
+    desc: &Descriptor,
+    b: &mut DocBuilder,
+    h: Handle,
+    shape_ix: u32,
+    depth: u32,
+) -> Option<u32> {
+    if depth > ENCODE_DEPTH_CAP {
+        return None;
+    }
+    let shape = desc.table.get(shape_ix as usize)?;
+    Some(match shape {
+        Shape::Ref(target) => return encode_value(desc, b, h, *target, depth + 1),
+        Shape::Int => {
+            let l = b.int_leaf(op_get_int(h));
+            b.atom(l)
+        }
+        Shape::Bool => {
+            let l = b.bool_leaf(op_get_bool(h));
+            b.atom(l)
+        }
+        Shape::Unit => {
+            let l = b.name_leaf("unit");
+            b.atom(l)
+        }
+        // Float/Str/Bytes runtime rendering is a later slice (the sum vertical targets Int/Bool/Unit
+        // payloads first); a descriptor carrying them declines here rather than emitting a wrong leaf.
+        Shape::Float | Shape::Str | Shape::Bytes => return None,
+        Shape::Tuple(elems) => {
+            if elems.is_empty() {
+                let l = b.name_leaf("unit");
+                return Some(b.atom(l));
+            }
+            let head = b.name_leaf("tuple");
+            let head_s = b.atom(head);
+            let mut children = vec![head_s];
+            for (i, &es) in elems.iter().enumerate() {
+                children.push(encode_value(
+                    desc,
+                    b,
+                    op_arr_get(h, i as u32),
+                    es,
+                    depth + 1,
+                )?);
+            }
+            b.list(children)
+        }
+        Shape::List(elem) => {
+            let (elem, n) = (*elem, op_arr_len(h));
+            let head = b.name_leaf("list");
+            let head_s = b.atom(head);
+            let mut children = vec![head_s];
+            for i in 0..n {
+                children.push(encode_value(desc, b, op_arr_get(h, i), elem, depth + 1)?);
+            }
+            b.list(children)
+        }
+        Shape::Record(fields) => {
+            let head = b.name_leaf("record");
+            let head_s = b.atom(head);
+            let mut children = vec![head_s];
+            for (i, (k, fs)) in fields.iter().enumerate() {
+                let kname = b.name_leaf(k);
+                let katom = b.atom(kname);
+                let fval = encode_value(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
+                children.push(b.list(vec![katom, fval]));
+            }
+            b.list(children)
+        }
+        Shape::Sum(variants) => {
+            let disc = op_sum_disc(h) as usize;
+            let (head, payload_shape) = variants.get(disc)?;
+            let (head, payload_shape) = (head.clone(), *payload_shape);
+            let head_leaf = b.name_leaf(&head);
+            let head_s = b.atom(head_leaf);
+            // A nullary variant's payload shape is `Unit`, rendered as the bare `unit` atom (the
+            // `(Variant unit)` canonical form); a payload variant reaches its payload via `sum-payload`.
+            let payload = encode_value(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
+            b.list(vec![head_s, payload])
+        }
+        Shape::Named(name, inner) => {
+            // The `(: <value> <Type>)` value-form frame — only the outermost shape.
+            let (name, inner) = (name.clone(), *inner);
+            let colon = b.name_leaf(":");
+            let colon_s = b.atom(colon);
+            let value = encode_value(desc, b, h, inner, depth + 1)?;
+            let tname = b.name_leaf(&name);
+            let tname_s = b.atom(tname);
+            b.list(vec![colon_s, value, tname_s])
+        }
+    })
+}
+
+/// Render the runtime value `h` to its canonical binary-AST value-form document, under the shape
+/// descriptor `desc` (compiler-baked bytes; see the module note). `None` on a malformed descriptor or an
+/// unrenderable shape (a not-yet-supported Float/Str/Bytes payload). Does NOT drop `h` — the caller
+/// (the escape `encode`) owns the release point.
+fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
+    let descriptor = decode_descriptor(desc)?;
+    let mut b = DocBuilder::default();
+    let root = encode_value(&descriptor, &mut b, h, descriptor.root, 0)?;
+    Some(b.finish(root))
+}
+
 // ─── Bytes: a packed immutable byte buffer (in `raw`) ───────────────────────────────────
 // OOB into a valid buffer traps; null is benign.
 
@@ -2652,6 +3033,21 @@ impl Guest for Component {
     // structural comparison the map/set key path runs, exposed for the language's `=`.
     fn value_eq(a: u32, b: u32) -> bool {
         champ_eq(Handle::from_u32(a), Handle::from_u32(b))
+    }
+    // Value-form encode (index 62) — render a runtime value to its canonical binary-AST document,
+    // guided by the compiler-baked shape descriptor `desc` (a Bytes handle). BORROWS both `v` and
+    // `desc` (an inspector — the caller/escape owns the release of `v`; `desc` is a constant). Returns a
+    // fresh owned Bytes. A malformed descriptor / unrenderable shape yields the empty Bytes (the
+    // compiler only bakes a well-formed descriptor, so this is a defensive total, never a trap).
+    fn value_encode(v: u32, desc: u32) -> u32 {
+        let desc_h = Handle::from_u32(desc);
+        let n = op_bytes_len(desc_h);
+        let mut bytes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        let doc = op_value_encode_form(Handle::from_u32(v), &bytes).unwrap_or_default();
+        alloc(Vec::new(), doc).to_u32()
     }
     fn bytes_concat(a: u32, b: u32) -> u32 {
         op_bytes_concat(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
@@ -4911,6 +5307,90 @@ mod tests {
     /// No shared table to clear — every value is its own allocation and every test holds the handles
     /// it builds. Kept as a documented no-op so each test reads as a self-contained scenario.
     fn reset() {}
+
+    /// The `IntList` shape descriptor `(type IL (Cons (Tuple Int64 IL)) Nil)`, wrapped in the outer
+    /// `(: <value> IL)` frame — a TABLE with a self-`Ref` closing the recursion (as the compiler bakes
+    /// it). Table: [0]=Int, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit, [4]=Named("IL"→1);
+    /// root=4. The `Cons` payload tuple's second element (→1) points back at the Sum — a finite 1-entry
+    /// cycle the value walk unfolds to the value's depth.
+    fn intlist_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(out: &mut Vec<u8>, s: &str) {
+            leb(out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 5); // table_len = 5
+        // [0] Int
+        d.push(0);
+        // [1] Sum [(Cons → 2), (Nil → 3)]
+        d.push(9);
+        leb(&mut d, 2);
+        name(&mut d, "Cons");
+        leb(&mut d, 2);
+        name(&mut d, "Nil");
+        leb(&mut d, 3);
+        // [2] Tuple [→0, →1]
+        d.push(6);
+        leb(&mut d, 2);
+        leb(&mut d, 0);
+        leb(&mut d, 1);
+        // [3] Unit
+        d.push(5);
+        // [4] Named("IL" → 1)
+        d.push(10);
+        name(&mut d, "IL");
+        leb(&mut d, 1);
+        leb(&mut d, 4); // root = 4
+        d
+    }
+
+    #[test]
+    fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
+        reset();
+        let desc = intlist_descriptor();
+        // Nil (disc 1, unit payload) → the LEN-46 oracle dump (see the const IntList value form).
+        let nil = op_sum_new(1, op_arr_alloc(0));
+        let got = op_value_encode_form(nil, &desc).expect("encode Nil");
+        let expect_nil: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x04, 0x0a, 0x01, 0x3a, 0x0a, 0x03,
+            0x4e, 0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x0a, 0x02, 0x49, 0x4c, 0x06,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x01, 0x03,
+            0x00, 0x03, 0x04, 0x05,
+        ];
+        assert_eq!(got, expect_nil, "Nil value form must be byte-identical to the codec");
+        op_drop(nil);
+
+        // Cons(tuple 1 Nil) → the LEN-77 oracle dump.
+        let inner_nil = op_sum_new(1, op_arr_alloc(0));
+        let pair = op_arr_alloc(2);
+        op_arr_set(pair, 0, op_box_int(1));
+        op_arr_set(pair, 1, inner_nil);
+        let cons = op_sum_new(0, pair);
+        let got = op_value_encode_form(cons, &desc).expect("encode Cons");
+        let expect_cons: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a, 0x0a, 0x04,
+            0x43, 0x6f, 0x6e, 0x73, 0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, 0x00, 0x01, 0x01,
+            0x0a, 0x03, 0x4e, 0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x0a, 0x02, 0x49,
+            0x4c, 0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05,
+            0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x02, 0x03, 0x06, 0x01, 0x02, 0x01, 0x07, 0x00,
+            0x06, 0x01, 0x03, 0x00, 0x08, 0x09, 0x0a,
+        ];
+        assert_eq!(got, expect_cons, "Cons value form must be byte-identical to the codec");
+        op_drop(cons);
+    }
 
     fn alloc_calls() -> u64 {
         ALLOC_CALLS.load(std::sync::atomic::Ordering::Relaxed)

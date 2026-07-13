@@ -3912,6 +3912,52 @@
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 10) true 20)) (export main)))
   (error  CDZ0201))
 
+; A map's VALUE type is unrestricted — a value may itself be a MAP (collections-and-text.md #A Map
+; Associates Keys With Values: values of ONE type, and that type may be any type, including `Map`). So a
+; `Map Int64 (Map Int64 Int64)` — a map whose values are maps — is well-typed, built and queried like any
+; map. `Map.lookup 1` on `(Map.insert Map.empty 1 (map (2 20)))` yields `(Some <the inner map>)`, whose
+; `Map.size` is 1. Pins that a map nests as a VALUE: the inner map is stored as an ordinary heap-handle
+; value (no boxing distinct from any other compound value), and reading it back gives the same map.
+
+(case "a map can hold a map as a value"
+  (doc    "A map's value type may be another `Map`: `(Map.insert Map.empty 1 (map (2 20)))` is a `Map Int64
+           (Map Int64 Int64)`, and `Map.lookup 1` yields `(Some (map (2 20)))` — the inner map, whose size
+           is 1. Pins that a map value nests (a map is an ordinary heap value, stored/read like any
+           compound), so `Map.size` of the looked-up inner map is 1.")
+  (needs  maps)
+  (input  (do (def (main)
+                (match (Map.lookup (Map.insert Map.empty 1 (map (2 20))) 1)
+                  ((Some inner) (Map.size inner))
+                  ((None _) 0))) (export main)))
+  (output (: 1 Int64)))
+
+; A map's KEY type is likewise unrestricted — a KEY may itself be a MAP. Keys are compared BY VALUE under
+; structural equality (collections-and-text.md #Keys Are Compared By Value), and a map value is CANONICAL
+; (its equality is order-independent — §A Map Renders As Its Entries In Canonical Key Order), so a map is a
+; well-behaved key exactly as a tuple is: two ENTRIES whose map-keys are EQUAL maps collapse to one entry.
+; `(map ((map (1 10)) 1) ((map (1 10)) 2))` names key `(map (1 10))` twice (with the same value), so the
+; map has ONE entry (size 1); `(map ((map (1 10)) 1) ((map (2 20)) 2))` names two DIFFERENT map-keys, so
+; size 2. Pins that a map is hashable/comparable as a key by its canonical value, not by handle identity.
+
+(case "a map can be a key, compared by its value"
+  (doc    "A map's KEY type may be another `Map`: keys are compared BY VALUE (collections-and-text.md #Keys
+           Are Compared By Value) and a map's value is canonical (order-independent), so two entries whose
+           map-keys are EQUAL maps collapse to one. `(map ((map (1 10)) 1) ((map (1 10)) 2))` names the key
+           `(map (1 10))` twice → ONE entry, size 1 (the same each-key-at-most-once rule as any key type). A
+           key compared by handle identity would keep both. MUST be 1.")
+  (needs  maps)
+  (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (1 10)) 2)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "two distinct map-keys are distinct entries"
+  (doc    "The companion: `(map ((map (1 10)) 1) ((map (2 20)) 2))` names two DIFFERENT map-keys, so the map
+           has TWO entries (size 2) — the map-keys `(map (1 10))` and `(map (2 20))` are unequal values, so
+           they do not collapse. Pins that a map key is discriminated by its canonical VALUE (contrast the
+           equal-map-keys case above, size 1).")
+  (needs  maps)
+  (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
+  (output (: 2 Int64)))
+
 ; --- Map PATTERN matching (ask-61) — a SEPARATE phase, gated `(needs map-patterns)`. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`
 ; matches when the map HAS key `k` bound to a value matching `p`, binding `rest` to the remaining map. This

@@ -289,6 +289,21 @@ interface heap {
   //    drops it after the compare (the compiler emits the `drop`). Identical handles (structural
   //    sharing) short-circuit true.
   value-eq: func(a: u32, b: u32) -> bool;              // 61 — structural equality (borrows both)
+
+  // ── Value-form encode (index 62) — render a RUNTIME value to its canonical binary-AST value-form
+  //    document (the `codec` format: header · leaf pool · struct table · root), the bytes a compound
+  //    result crosses the host boundary as. The fixed hole-templates the compiler bakes handle a value
+  //    of FIXED shape; a RUNTIME RECURSIVE sum (a linked list, a tree) has unbounded depth and no fixed
+  //    template, so its escape declined. `value-encode(v, desc)` walks `v` to the document, guided by a
+  //    SHAPE DESCRIPTOR `desc` (a Bytes handle the compiler bakes as a constant — a shape table with a
+  //    self-`Ref` closing the recursion). The runtime stays NOMINAL-AGNOSTIC: every NAME (`:`, a variant
+  //    head, `tuple`, `unit`, the type name) is read from the descriptor, never invented; the runtime
+  //    owns only document ASSEMBLY (leaf dedup, struct indices, byte layout). Ownership: an INSPECTOR of
+  //    `v` (BORROWS it — the caller/escape owns the drop) and of `desc` (a constant it does not consume);
+  //    returns a fresh owned Bytes. Traps never — a malformed descriptor or unrenderable shape returns
+  //    the empty Bytes (the compiler only ever bakes a well-formed descriptor). See
+  //    DESIGN-recursive-sum-escape-walker.md.
+  value-encode: func(v: u32, desc: u32) -> u32;        // 62 — canonical value-form Bytes (borrows v+desc)
 }
 
 world runtime {

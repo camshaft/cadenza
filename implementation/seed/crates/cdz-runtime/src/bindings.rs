@@ -576,6 +576,16 @@ pub mod exports {
                         false => 0,
                     }
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_value_encode_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::value_encode(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -877,6 +887,21 @@ pub mod exports {
                     ///    drops it after the compare (the compiler emits the `drop`). Identical handles (structural
                     ///    sharing) short-circuit true.
                     fn value_eq(a: u32, b: u32) -> bool;
+                    /// 61 — structural equality (borrows both)
+                    /// ── Value-form encode (index 62) — render a RUNTIME value to its canonical binary-AST value-form
+                    ///    document (the `codec` format: header · leaf pool · struct table · root), the bytes a compound
+                    ///    result crosses the host boundary as. The fixed hole-templates the compiler bakes handle a value
+                    ///    of FIXED shape; a RUNTIME RECURSIVE sum (a linked list, a tree) has unbounded depth and no fixed
+                    ///    template, so its escape declined. `value-encode(v, desc)` walks `v` to the document, guided by a
+                    ///    SHAPE DESCRIPTOR `desc` (a Bytes handle the compiler bakes as a constant — a shape table with a
+                    ///    self-`Ref` closing the recursion). The runtime stays NOMINAL-AGNOSTIC: every NAME (`:`, a variant
+                    ///    head, `tuple`, `unit`, the type name) is read from the descriptor, never invented; the runtime
+                    ///    owns only document ASSEMBLY (leaf dedup, struct indices, byte layout). Ownership: an INSPECTOR of
+                    ///    `v` (BORROWS it — the caller/escape owns the drop) and of `desc` (a constant it does not consume);
+                    ///    returns a fresh owned Bytes. Traps never — a malformed descriptor or unrenderable shape returns
+                    ///    the empty Bytes (the compiler only ever bakes a well-formed descriptor). See
+                    ///    DESIGN-recursive-sum-escape-walker.md.
+                    fn value_encode(v: u32, desc: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1098,7 +1123,11 @@ pub mod exports {
                         #[unsafe (export_name = "cadenza:runtime/heap#value-eq")] unsafe
                         extern "C" fn export_value_eq(arg0 : i32, arg1 : i32,) -> i32 {
                         unsafe { $($path_to_types)*:: _export_value_eq_cabi::<$ty >
-                        (arg0, arg1) } } };
+                        (arg0, arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#value-encode")] unsafe extern "C" fn
+                        export_value_encode(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_value_encode_cabi::<$ty > (arg0,
+                        arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1290,9 +1319,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1621] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xd7\x0b\x01A\x02\x01\
-A\x02\x01Bf\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1652] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xf6\x0b\x01A\x02\x01\
+A\x02\x01Bh\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
 \x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\x06h\
 andley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\x01\x04\
 \x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\0\x09\
@@ -1325,9 +1354,10 @@ t-iter\x01$\x04\0\x0dset-iter-next\x01!\x04\0\x0dset-iter-elem\x01!\x04\0\x0cliv
 e-objects\x01\x18\x04\0\x0avec-concat\x01\x1d\x01o\x02yy\x01@\x02\x01vy\x05index\
 y\0%\x04\0\x09vec-split\x01&\x04\0\x09set-union\x01\x1d\x04\0\x10set-intersectio\
 n\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x0avec-of-arr\x01\x09\x01@\x02\x01\
-ay\x01by\0\x7f\x04\0\x08value-eq\x01'\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17\
-cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\
-\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+ay\x01by\0\x7f\x04\0\x08value-eq\x01'\x01@\x02\x01vy\x04descy\0y\x04\0\x0cvalue-\
+encode\x01(\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\
+\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
+wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

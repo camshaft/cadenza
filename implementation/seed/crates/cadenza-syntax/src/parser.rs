@@ -1500,7 +1500,15 @@ impl<'a> Parser<'a> {
     /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
-        let binder = self.binder();
+        // A parameter is normally a plain binder name, but a `(`-led parameter is a destructuring
+        // PATTERN — a tuple pattern `(a, b)` or a literal-bearing one like `(1, x)` (which desugars
+        // to a refutable `let` binder, rejected as CDZ0210). Parse it as a pattern so the ML surface
+        // round-trips the pattern parameters the s-expr surface and the printer already support.
+        let binder = if self.at(Kind::LParen) {
+            self.pattern()
+        } else {
+            self.binder()
+        };
         if self.at(Kind::Colon) {
             self.bump(); // `:`
             let colon = self.name(":", start);
