@@ -3129,6 +3129,25 @@
   (call   main (: false Bool))
   (output (: 3 Int64)))
 
+(case "an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip"
+  (doc    "The composition of the two heap boxings: an all-nullary enum (a bare i32 discriminant) as a
+           tuple ELEMENT that is itself inside a BOXED SUM — `(Some (tuple Color.Blue 5)) : (Option (Tuple
+           Color Int64))`. Matching out the Option, projecting element 0 (the enum), and switching on it
+           yields 3 (Blue). The enum-in-a-tuple case above (no sum) and the enum-directly-in-a-sum case
+           both work; this pins their COMPOSITION: the enum element crosses the tuple slot as an i32-disc
+           boxed in an i64 cell and is read back with the i64->i32 narrow (the dual of the extend on
+           store) — not left as a raw i64 where the i32 discriminant slot is declared (which emitted an
+           invalid component: `type mismatch: expected i32, found i64`). The reconciliation applies at
+           every heap-slot read of an enum-disc, reached through a compound element, not only a direct
+           sum payload.")
+  (input  (do
+            (type Col (Red) (Grn) (Blu))
+            (def (main) (match (Some (tuple (Blu) 5))
+                          ((Some t) (match (. t 0) ((Red) 1) ((Grn) 2) ((Blu) 3)))
+                          ((None u) 0)))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "all-nullary enum equality compares discriminants"
   (doc    "Equality on an all-nullary enum compares its DISCRIMINANT directly — two enum values are equal
            iff they are the same variant. Since the value is a bare discriminant (not a heap handle), this

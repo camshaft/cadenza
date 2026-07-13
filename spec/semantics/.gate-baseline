@@ -750,6 +750,7 @@ pass	an abortive perform under a non-tail conditional abandons the enclosing com
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
+pass	an all-nullary enum reached through a tuple element inside a boxed sum survives the heap round-trip
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type

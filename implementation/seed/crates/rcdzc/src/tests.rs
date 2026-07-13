@@ -18885,6 +18885,44 @@ mod stage1 {
     }
 
     #[test]
+    fn an_all_nullary_enum_reached_through_a_tuple_element_in_a_boxed_sum_round_trips() {
+        // ⚠ INVALID WASM regression (residual of the direct-in-sum fix above): an all-nullary enum (a bare
+        // i32 disc) as a TUPLE ELEMENT inside a boxed sum — `(Some (tuple (Blue) 5))` — mis-emitted the
+        // READ end: projecting the enum element `get-int`s the i64 cell but SKIPPED the i64→i32 narrow
+        // (the wrap fired only for `is_narrow_int`, which excludes an enum-disc `Ty::Sum`), leaving an i64
+        // where the i32 discriminant slot is declared → `type mismatch: expected i32, found i64`. The
+        // direct-in-sum case was fixed; the compound-element read was not. Fixed by `needs_get_int_narrow`
+        // (narrow int OR enum-disc) at every `get-int`-then-narrow site (Proj / SumPayload / SumExpect /
+        // Captured). `(Some (tuple (Blue) 5))` → match out the Option, project element 0 (the enum),
+        // switch on it → 3 (Blue).
+        use crate::testkit::parse;
+        let src = "(module m (type Col (Red) (Grn) (Blu)) \
+                     (def (main) (match (Some (tuple (Blu) 5)) \
+                        ((Some t) (match (. t 0) ((Red) 1) ((Grn) 2) ((Blu) 3))) \
+                        ((None u) 0))) \
+                     (export main))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile enum-in-tuple-in-sum");
+        wasmparser::validate(&bytes)
+            .expect("an enum reached through a tuple element in a boxed sum must emit VALID wasm");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed enum-in-tuple run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "the Blu element projects + dispatches to 3"),
+            cdz_run::Outcome::Trap(t) => panic!("enum-in-tuple-in-sum run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_sum_match_disc_zero_probe_uses_eqz_and_dispatches() {
         // A sum match dispatches on `sum-disc(scrutinee) == disc`; when the tested discriminant is 0 —
         // the FIRST declared variant (`Some`), the common first-arm probe — that is `i32.eqz` (opcode
