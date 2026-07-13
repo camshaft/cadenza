@@ -122,6 +122,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
     // intermediates are all PURE keeps the `Ref{last}` fold (the intermediates contribute nothing), so
     // this only fires when a non-final statement genuinely reaches a host call. Each sequenced statement
     // is a def-free value form (a do-local `(def …)` is a binding, not a statement — resolved by name).
+    //
+    // `Core::Seq { stmts, tail }` emits the statements in written order then the tail, and the block's
+    // value is the tail (the last form) — and an earlier statement's host call is emitted before a later
+    // statement's, so host effects observe the written order:
+    //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+    //# A sequencing block MUST evaluate each of its forms in the order they are written.
+    //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+    //# A sequencing block MUST evaluate to the value of its last form.
+    //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+    //# A host call a form in a sequencing block makes MUST be observed before a host call made by a later form in the same block.
     if db.ast.head_name(id) == Some("do")
         && let Some(forms) = db.ast.as_form(id, "do")
         && let Some((&tail, stmts)) = forms.split_last()

@@ -373,6 +373,14 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
     // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
     // payload, not a plain occurrence) — `binder_in` returns the full resolved form.
+    //
+    // Scope-FIRST is what makes binding lexical and shadowing well-defined: `lookup_scope` walks
+    // parents to the NEAREST enclosing binder, so a name resolves to its closest binding, and a local
+    // binding is found before (thus shadows) a top-level def or prelude entry of the same name.
+    //= spec/capabilities/core-semantics.md#binding-is-lexical
+    //# A name MUST resolve to the nearest enclosing binding of that name.
+    //= spec/capabilities/core-semantics.md#shadowing-is-well-defined
+    //# A binding that shadows an outer binding of the same name MUST take effect for references in its scope as defined by the corpus.
     if let Some(resolved) = lookup_scope(db, id, name) {
         trace!(target: "rcdzc::resolve", node = id.0, %name, "name → lexical scope");
         return resolved;
@@ -481,8 +489,10 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         return Resolved::Ref { value };
     }
     // 3. Off the end of the lookup — the name is unbound. This is a REJECTION (the program is
-    // ill-formed), not a decline: the unbound-name rule is unconditional (`core-semantics.md`
-    // §Binding Is Lexical).
+    // ill-formed), not a decline: the unbound-name rule is unconditional. A reference that reaches here
+    // has no enclosing binding (and is no top-level def / prelude entry), so it is a compile-time error:
+    //= spec/capabilities/core-semantics.md#binding-is-lexical
+    //# A reference to a name with no enclosing binding MUST be a compile-time error.
     //
     // BUT a DIGIT-LED token is a NUMBER, never an identifier (an identifier may not start with a
     // digit). The reader classifies a numeric token that fails to parse — `0o17` (octal is not a

@@ -500,8 +500,15 @@ pub enum Core {
     /// leaves the stack polymorphic, so a `Core::Trap` validates in ANY result position (the runtime
     /// counterpart of its `Never` type — the else-branch of `SumExpect` emits the same instruction). The
     /// `String` message argument is DROPPED (the wasm trap carries no text); the node carries nothing.
+    ///
+    /// The `unreachable` halts the program at THIS point rather than continuing with an unspecified value:
+    //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
+    //# A trap MUST halt the program at a defined point rather than continue with an unspecified value.
     Trap,
-    /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s.
+    /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s. The
+    /// backend emits a wasm `if`/`else`, so ONLY the branch the condition selects executes:
+    //= spec/capabilities/core-semantics.md#conditionals-evaluate-one-branch
+    //# A conditional MUST evaluate only the branch its condition selects.
     If {
         cond: StructId,
         then_: StructId,
@@ -511,8 +518,10 @@ pub enum Core {
     /// when it did not fold to a constant in `lower`. `is_and` picks the semantics: `and` emits `if lhs
     /// then rhs else false`, `or` emits `if lhs then true else rhs` — so the RIGHT operand is evaluated
     /// only on the non-short-circuiting branch, shielding a trapping/effectful `rhs` exactly as a
-    /// conditional's unselected branch does (core-semantics.md §Boolean Connectives Short-Circuit). The
-    /// backend emits it as that `if` over the operands' i32 boolean values.
+    /// conditional's unselected branch does. The backend emits it as that `if` over the operands' i32
+    /// boolean values.
+    //= spec/capabilities/core-semantics.md#boolean-connectives-short-circuit
+    //# A logical conjunction MUST evaluate its right operand only when its left operand is true, and a logical disjunction MUST evaluate its right operand only when its left operand is false, so that a connective shields a trapping or effectful right operand exactly as the unselected branch of a conditional does.
     And {
         lhs: StructId,
         rhs: StructId,
