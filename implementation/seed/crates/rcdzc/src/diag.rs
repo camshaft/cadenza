@@ -104,6 +104,14 @@ pub enum Code {
     /// structural rejection, not a runtime surprise (a value that does not fit its segment traps at run
     /// time instead, "binary value does not fit segment"). The CDZ02xx types-and-patterns band.
     IllFormedBinary,
+    /// A DIMENSIONAL mismatch — combining quantities of incompatible dimension (`units-of-measure.md` §A
+    /// Dimensional Mismatch Is An Error): adding, subtracting, or comparing a length to a time; annotating
+    /// a quantity at a dimension the expression does not derive. Units are checked THEN ERASED before the
+    /// program runs, so a dimensional inconsistency is ALWAYS a compile-time rejection, never a runtime
+    /// trap — which is why it opens the CDZ05xx VERIFICATION-LAYER band, not a numeric-trap code. The
+    /// dimensional specialization of the annotation conflict: `TypeMismatch` (CDZ0203) names the general
+    /// type conflict; this names it when the conflict is dimensional.
+    DimensionMismatch,
 }
 
 impl Code {
@@ -128,6 +136,7 @@ impl Code {
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::LatentAuthority => "CDZ0404",
             Code::IllFormedBinary => "CDZ0220",
+            Code::DimensionMismatch => "CDZ0501",
         }
     }
 }

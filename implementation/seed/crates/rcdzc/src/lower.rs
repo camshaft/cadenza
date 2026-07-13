@@ -764,6 +764,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 return core_of(db, head);
             }
             match crate::eval::meta_apply_of(db, head) {
+                // A quantity over a FLOAT magnitude combined with `+`/`-`/`*`/`/` runs the INNER numeric
+                // type's operation — the plain `T` op (units-of-measure.md §A Unit Conversion Is The
+                // Arithmetic The Source Denotes: the running arithmetic is the plain `T` operation on erased
+                // values). For a Float-inner quantity that is FLOAT arithmetic, so map the integer arith
+                // prim to its float counterpart and route to `lower_float_arith` (the operands erase to their
+                // inner floats, so the fold/emit is over `Core::ConstFloat`). A quantity's `+`/`*` is thus
+                // polymorphic over the inner numeric, unlike the bare int-only `+` (which rejects a float).
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if quantity_inner_is_float(db, id, &args) =>
+                {
+                    let fprim = match prim {
+                        Prim::Add => Prim::FAdd,
+                        Prim::Sub => Prim::FSub,
+                        Prim::Mul => Prim::FMul,
+                        _ => Prim::FDiv,
+                    };
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity float arithmetic (inner Float)");
+                    lower_float_arith(db, id, fprim, &args)
+                }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
@@ -4608,22 +4627,23 @@ fn const_value_ast_at(
 
 /// Materialize a compile-time `Unit` value as SOURCE structure — the `<unit>` position of a rendered
 /// `(Qty.of <value> <unit>)` and of a `(Qty T <unit>)` type. The dimensionless unit renders `Unit.one`;
-/// a single base to the first power renders `(Unit.base #"name")`; a base to a power renders `(Unit.^
-/// (Unit.base #"name") k)`; a product of several renders a left-nested `(Unit.* …)`. Uses the `#"name"`
-/// SYMBOL leaf for each base dimension, so the rendered unit re-reads to the same `Unit` (the corpus
-/// surface `(Unit.base #"metre")`). Mirrors `ty::Unit::render` but builds real arena nodes.
+/// a single base to the first power renders `((. Unit base) #"name")`; a base to a power `(Unit.^ …
+/// k)`; a product of positive factors a left-nested `(Unit.* …)`; and — crucially — a unit with
+/// NEGATIVE exponents renders as a QUOTIENT `(Unit./ <numerator> <denominator>)`, the surface the corpus
+/// records for a derived unit (`(Unit./ metre second)` for a velocity, NOT `(Unit.* metre (Unit.^ second
+/// -1))`). The numerator is the positive-exponent factors (`Unit.one` if none); the denominator the
+/// negative-exponent factors with their exponents made positive. Uses the `#"name"` SYMBOL leaf per base
+/// so the rendered unit re-reads to the same `Unit`. `Unit.base` is member access; `Unit.^`/`Unit.*`/
+/// `Unit./` stay BARE names (their segment is not alphabetic, so the reader does not desugar them).
 fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
     use crate::ast::Leaf;
     let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
     if entries.is_empty() {
-        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)` the reader
-        // normalizes `Unit.one` to.
+        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)`.
         return member_access(b, "Unit", "one");
     }
-    // Build each base factor: `((. Unit base) #"name")` or `(Unit.^ ((. Unit base) #"name") k)`. The
-    // `Unit.base` head is member access (an alphabetic segment desugars); `Unit.^`/`Unit.*` stay BARE
-    // names (the `^`/`*` segment is not alphabetic, so the reader does NOT desugar them).
-    let factor = |b: &mut crate::ast::Builder, name: &str, exp: i64| -> StructId {
+    // One base factor at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
+    fn factor(b: &mut crate::ast::Builder, name: &str, exp: i64) -> StructId {
         let base_head = member_access(b, "Unit", "base");
         let sym = b.atom_leaf(Leaf::Sym(name.to_string()));
         let base = b.list(vec![base_head, sym]);
@@ -4637,16 +4657,40 @@ fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> Struct
             });
             b.list(vec![pow_head, base, n])
         }
-    };
-    let mut it = entries.into_iter();
-    let (n0, e0) = it.next().unwrap();
-    let mut acc = factor(b, &n0, e0);
-    for (name, exp) in it {
-        let f = factor(b, &name, exp);
-        let mul_head = b.name("Unit.*");
-        acc = b.list(vec![mul_head, acc, f]);
     }
-    acc
+    // Left-nested product of a factor list, or `Unit.one` when empty.
+    fn product(b: &mut crate::ast::Builder, factors: &[(String, i64)]) -> StructId {
+        if factors.is_empty() {
+            return member_access(b, "Unit", "one");
+        }
+        let mut acc = factor(b, &factors[0].0, factors[0].1);
+        for (name, exp) in &factors[1..] {
+            let f = factor(b, name, *exp);
+            let mul_head = b.name("Unit.*");
+            acc = b.list(vec![mul_head, acc, f]);
+        }
+        acc
+    }
+    // Split into positive (numerator) and negative (denominator, exponents made positive) factors.
+    let num: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(_, e)| *e > 0)
+        .map(|(n, e)| (n.clone(), *e))
+        .collect();
+    let den: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(_, e)| *e < 0)
+        .map(|(n, e)| (n.clone(), -*e))
+        .collect();
+    if den.is_empty() {
+        // All positive — a plain product (or a single factor).
+        return product(b, &num);
+    }
+    // A quotient `(Unit./ numerator denominator)` — the derived-unit surface.
+    let numerator = product(b, &num);
+    let denominator = product(b, &den);
+    let div_head = b.name("Unit./");
+    b.list(vec![div_head, numerator, denominator])
 }
 
 /// Build a member-access form `(. <operand-name> <key>)` — the canonical shape the reader normalizes a
@@ -4900,6 +4944,23 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
 /// a shipped runtime trap (`reference-compiler.md` §A Compile-Provable Trap Fails The Build). An
 /// operand that is not a constant stays a runtime `Arith` (its wasm op selected from the solved width
 /// at selection); a poison operand propagates.
+/// Whether the arithmetic application at `id` is over QUANTITIES whose inner numeric type is a FLOAT —
+/// so `+`/`-`/`*`/`/` must run the float operation on the erased inner values (a quantity's operator is
+/// polymorphic over its inner numeric). Reads the node's solved type: `+`/`-`/comparison keep the
+/// operands' unit so the RESULT is `(Qty Float …)`; `*`/`/` compose units so the result is still a
+/// quantity — either way a `Ty::Qty { inner: Float }` result marks the float case. Falls back to the
+/// first operand's type when the result is not itself a quantity (a `Qty.value`-peeled position).
+fn quantity_inner_is_float(db: &mut Db, id: StructId, args: &[StructId]) -> bool {
+    let is_qty_float = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Qty { inner, .. } if matches!(**inner, crate::ty::Ty::Float(_)));
+    if is_qty_float(&crate::infer::type_of(db, id)) {
+        return true;
+    }
+    // The result may not be a quantity (a comparison yields Bool); check the first operand.
+    args.first()
+        .map(|&a| is_qty_float(&crate::infer::type_of(db, a)))
+        .unwrap_or(false)
+}
+
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(Reject::coded(
@@ -5475,7 +5536,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitDiv
         | Prim::UnitPow
         | Prim::QtyOf
-        | Prim::QtyValue => {
+        | Prim::QtyValue
+        | Prim::QtyCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -7975,6 +8037,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitPow => "unit-pow",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
+        Prim::QtyCtor => "Qty",
     }
 }
 

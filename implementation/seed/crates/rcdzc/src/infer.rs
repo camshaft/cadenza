@@ -1150,6 +1150,73 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             _ => Ty::Any,
         };
     }
+    // A binary OPERATOR applied to QUANTITIES — the dimensional result type (units-of-measure.md §How
+    // Arithmetic Composes Dimensions). Only engages when an operand is a `Ty::Qty` (two bare numbers take
+    // the ordinary scheme path). `+`/`-` keep the shared unit (result `(Qty T u)`); `*`/`/` COMPOSE units
+    // by the group product/quotient (result `(Qty T (u_a·u_b))` / `(Qty T (u_a/u_b))` — a `Unit.one`
+    // result renders dimensionless); comparisons yield `Bool`. The unit COMPOSITION is why this is not an
+    // HM scheme — a unit multiplies, it does not unify. A dimensional/​numeric FAULT is reported by
+    // `check_application`; here we only fill the value-column TYPE. (When the units disagree for `+`/`-`,
+    // the fault fires there and this type is unused; we still return the lhs quantity so the shape stays
+    // sane.)
+    if args.len() == 2
+        && let Some(prim) = crate::eval::meta_apply_of(db, head)
+    {
+        {
+            let a = type_of(db, args[0]);
+            let b = type_of(db, args[1]);
+            let a_qty = matches!(a, Ty::Qty { .. });
+            let b_qty = matches!(b, Ty::Qty { .. });
+            if a_qty || b_qty {
+                match prim {
+                    crate::resolved::Prim::Add | crate::resolved::Prim::Sub => {
+                        // Keep the (shared) unit; the inner is the operands' joined numeric type.
+                        if let Ty::Qty { inner, unit } = &a {
+                            return Ty::Qty {
+                                inner: Box::new((**inner).clone()),
+                                unit: unit.clone(),
+                            };
+                        }
+                        return b;
+                    }
+                    crate::resolved::Prim::Mul | crate::resolved::Prim::Div => {
+                        // Compose the units. A bare-number operand contributes `Unit.one` (scaling keeps
+                        // the other's dimension — `(* (Qty 2 metre) 3)` stays metre).
+                        let ua = match &a {
+                            Ty::Qty { unit, .. } => unit.clone(),
+                            _ => crate::ty::Unit::one(),
+                        };
+                        let ub = match &b {
+                            Ty::Qty { unit, .. } => unit.clone(),
+                            _ => crate::ty::Unit::one(),
+                        };
+                        let unit = if matches!(prim, crate::resolved::Prim::Mul) {
+                            ua.mul(&ub)
+                        } else {
+                            ua.div(&ub)
+                        };
+                        // The inner numeric type is a quantity operand's inner (both share it).
+                        let inner = match (&a, &b) {
+                            (Ty::Qty { inner, .. }, _) | (_, Ty::Qty { inner, .. }) => {
+                                (**inner).clone()
+                            }
+                            _ => Ty::Any,
+                        };
+                        return Ty::Qty {
+                            inner: Box::new(inner),
+                            unit,
+                        };
+                    }
+                    crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Eq => return Ty::Bool,
+                    _ => {}
+                }
+            }
+        }
+    }
     // A compound-VALUE constructor (the `tuple`/`record`/`list` alias) applied — its type is the compound
     // of the argument types, even at ZERO arguments (an empty `(list)` / `(tuple)` is a valid empty
     // compound, NOT the ctor record). This is checked BEFORE the zero-arg identity short-circuit below so
@@ -1649,6 +1716,111 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                 "a map and a record are different types (their comparison is a type error)",
             ));
             return;
+        }
+    }
+    // DIMENSIONAL check on a binary operator applied to QUANTITIES (units-of-measure.md §A Dimensional
+    // Mismatch Is An Error). Fires BEFORE the generic scheme-unify (whose `∀a. (Int a) → …` scheme has no
+    // notion of a unit) and `return`s to avoid a duplicate report:
+    //  - `+`/`-`/comparison/`=`: the two operands' DIMENSIONS must be EQUAL (Layer 1 = same unit exactly;
+    //    conversion between different units of one dimension is Layer 2). A length + a time, or a quantity
+    //    + a bare number (no implicit dimensionless coercion), is CDZ0501. The inner numeric types must
+    //    ALSO agree (the numeric core is unchanged under a unit — an Int64 metre + a Float64 metre is the
+    //    numeric mismatch CDZ0301, reported here so it is not masked).
+    //  - `*`/`/`: ALWAYS well-formed on quantities — the dimensions COMPOSE (they are not required equal),
+    //    so no dimensional fault; the result unit is computed in `apply_type`. (A quantity × a bare number
+    //    is Layer 2 scaling; in Layer 1 a mixed quantity/non-quantity `*`/`/` is left to the generic path.)
+    if args.len() == 2 {
+        let prim = crate::eval::meta_apply_of(db, head);
+        let is_additive = matches!(
+            prim,
+            Some(
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Eq
+                    | crate::resolved::Prim::Compare
+            )
+        );
+        let is_multiplicative = matches!(
+            prim,
+            Some(crate::resolved::Prim::Mul | crate::resolved::Prim::Div)
+        );
+        let a0 = type_of(db, args[0]);
+        let b0 = type_of(db, args[1]);
+        let any_qty = matches!(a0, Ty::Qty { .. }) || matches!(b0, Ty::Qty { .. });
+        // `*`/`/` on a quantity is ALWAYS well-formed dimensionally (the dimensions compose, not required
+        // equal), so it must NOT reach the generic scheme-unify below (which would unify a `Ty::Qty`
+        // against `(Int a)` → a spurious CDZ0203). Skip the fault check, descend for operand faults, and
+        // return — the result unit is computed in `apply_type`.
+        if is_multiplicative && any_qty {
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
+        if is_additive {
+            let a = a0;
+            let b = b0;
+            // Only engage when at least one operand is a quantity — two bare numbers take the ordinary
+            // numeric path (CDZ0301 etc.), unchanged.
+            if matches!(a, Ty::Qty { .. }) || matches!(b, Ty::Qty { .. }) {
+                match (&a, &b) {
+                    (
+                        Ty::Qty {
+                            inner: ia,
+                            unit: ua,
+                        },
+                        Ty::Qty {
+                            inner: ib,
+                            unit: ub,
+                        },
+                    ) => {
+                        if ua != ub {
+                            trace!(target: "rcdzc::infer", head = head.0, "fault: combining quantities of incompatible dimension (CDZ0501)");
+                            out.push(Reject::coded(
+                                Code::DimensionMismatch,
+                                format!(
+                                    "combining quantities of incompatible dimension: {} and {}",
+                                    a.render_name(),
+                                    b.render_name()
+                                ),
+                            ));
+                        } else {
+                            // Same dimension — the INNER numeric types must still agree (no promotion
+                            // under a unit): unify them and report a numeric mismatch as CDZ0301.
+                            let mut subst = Subst::new();
+                            if let Err(reject) = crate::unify::unify(&mut subst, ia, ib) {
+                                out.push(reject);
+                            }
+                        }
+                        for &arg in args {
+                            collect(db, arg, out);
+                        }
+                        return;
+                    }
+                    // A quantity combined additively with a NON-quantity (a bare number) — no implicit
+                    // dimensionless coercion (the numeric core's no-silent-promotion discipline applied to
+                    // dimensions). CDZ0501.
+                    _ => {
+                        trace!(target: "rcdzc::infer", head = head.0, "fault: combining a quantity with a non-quantity (CDZ0501)");
+                        out.push(Reject::coded(
+                            Code::DimensionMismatch,
+                            format!(
+                                "combining a quantity with a non-quantity: {} and {}",
+                                a.render_name(),
+                                b.render_name()
+                            ),
+                        ));
+                        for &arg in args {
+                            collect(db, arg, out);
+                        }
+                        return;
+                    }
+                }
+            }
         }
     }
     // `Map.insert m k v` — the inserted KEY must agree with the map's key type AND the inserted VALUE with
@@ -2712,6 +2884,35 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ),
                         ));
                     }
+                } else if let (
+                    Ty::Qty {
+                        inner: ai,
+                        unit: au,
+                    },
+                    Ty::Qty {
+                        inner: ei,
+                        unit: eu,
+                    },
+                ) = (&annot_ty, &type_of(db, expr))
+                    && au != eu
+                {
+                    // A DIMENSIONAL annotation conflict — the value derives one dimension but the
+                    // annotation asserts another (`(: (* (Qty 2 metre) (Qty 3 metre)) (Qty Float64
+                    // metre))` — the product is metre², annotated metre). This is the dimensional
+                    // specialization of the annotation conflict: CDZ0501, not the CDZ0203 the generic
+                    // unify below would give (units-of-measure.md §A Dimensional Mismatch Is An Error;
+                    // the erasure fence's dimensional case). The inner types are irrelevant when the
+                    // units already disagree — the dimension is the conflict.
+                    let _ = (ai, ei);
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: annotation at a dimension the expression does not derive (CDZ0501)");
+                    out.push(Reject::coded(
+                        Code::DimensionMismatch,
+                        format!(
+                            "annotation dimension {} does not match the derived dimension {}",
+                            annot_ty.render_name(),
+                            type_of(db, expr).render_name()
+                        ),
+                    ));
                 } else {
                     // A non-literal value has a real type that must AGREE with the annotation — unify,
                     // and report a genuine conflict (`(: true Int64)`) as CDZ0203.

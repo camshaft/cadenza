@@ -1553,6 +1553,23 @@ pub fn reduce_ctor(
             trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))
         }
+        // `Qty` — the quantity-TYPE constructor: `(Qty T u)` builds `Ty::Qty { inner: T, unit: u }`, the
+        // type an annotation `(: e (Qty T u))` checks against. The first arg is the inner numeric type
+        // (`typeval_of`); the second is a compile-time UNIT (`unit_of`). A malformed inner/unit rejects.
+        Prim::QtyCtor => {
+            if args.len() != 2 {
+                return Err("Qty takes an inner type and a unit".to_string());
+            }
+            let inner =
+                typeval_of(db, args[0]).ok_or_else(|| "Qty inner is not a type".to_string())?;
+            let unit = unit_of(db, args[1]).ok_or_else(|| "Qty unit is not a unit".to_string())?;
+            let qty = crate::ty::Ty::Qty {
+                inner: Box::new(inner),
+                unit,
+            };
+            trace!(target: "rcdzc::eval", ty = %qty.render_name(), "ctor (Qty): built quantity type-value");
+            Ok(encode_typeval(db, &qty))
+        }
         // `Tuple` — VARIADIC over its element TYPES: reduce each arg to a `Ty`, build `Ty::Tuple`. Its
         // arity + element types ARE the type, so `(: e (Tuple T…))` checks the value's shape against it
         // (a wrong arity/element is CDZ0203 at the annotation, via `agrees_with`).

@@ -8825,6 +8825,40 @@ mod match_engine {
     }
 
     #[test]
+    fn combining_quantities_of_incompatible_dimension_is_cdz0501() {
+        // L1-2: adding a length to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md §A
+        // Dimensional Mismatch Is An Error), the code that opens the CDZ05xx verification-layer band. It
+        // is a compile-time rejection (units erase before the program runs), never a runtime trap.
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"metre\")) \
+                   ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "a length + a time must reject CDZ0501 (dimensional mismatch)"
+        );
+    }
+
+    #[test]
+    fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
+        // L1-2: `(/ (Qty 6.0 metre) (Qty 2.0 second))` derives metre/second (the classic velocity) with
+        // value 3.0 — the dimensions divide by the free-abelian-group quotient, the magnitudes by the
+        // (float) division. `Qty.value` recovers the erased magnitude; this pins that it COMPILES + RUNS.
+        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"metre\")) \
+                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a velocity quotient compiles and runs"),
+                "main"
+            ),
+            3.0
+        );
+    }
+
+    #[test]
     fn a_quantity_over_a_wrong_inner_numeric_type_is_rejected_not_miscompiled() {
         // L1-1b: the unit layer sits OVER the numeric core and does not relax it — adding an Int64
         // quantity to a Float64 quantity (SAME dimension `metre`, DIFFERENT inner type) must be REFUSED,
