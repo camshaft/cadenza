@@ -816,22 +816,30 @@ fn a_recursive_sum_declines_the_whole_function() {
 }
 
 #[test]
-fn a_recursive_sum_constructed_as_a_discarded_intermediate_declines() {
-    // REGRESSION: a recursive sum's enum declines (needs Box), and the SIGNATURE guard catches a param/
-    // result of that type — but the fold can INLINE a helper that constructs the sum as a discarded
-    // intermediate (`mk` returns `(tuple (NLit 5) 9)`, `main` reads `.1` = the Int64 and drops the sum).
-    // `main`'s result is `Int64` (passes the signature guard), but its body still names `Node::NLit`,
-    // which was never declared → `cannot find type Node`. `sum_variant_path` must decline that construct.
-    let err = try_compile_rust(
+fn a_recursive_sum_constructed_as_a_discarded_intermediate_folds_away() {
+    // A helper `mk` returns `(tuple (NLit 5) 9)` — a pair whose element 0 is a recursive-sum value and
+    // whose element 1 is the Int64 9. `main` reads `.1` and DISCARDS element 0. The projection folds
+    // through the constant tuple (`(. l 1)` → 9), so the discarded `(NLit 5)` is never constructed and
+    // the (Box-needing, un-emittable) `Node` enum is never referenced — `main` compiles to the constant
+    // 9 on BOTH backends. Previously the projection stayed a runtime read that forced the recursive-sum
+    // element to materialize, and the rust backend DECLINED "no emitted Rust enum". The projection-fold
+    // (a tuple projection through a compile-time-visible tuple, incl. one produced by a tuple operation)
+    // drops the un-projected element, so a discarded intermediate of an un-representable type is elided
+    // rather than declined — the same DCE the wasm backend already performs, now reached on rust too.
+    let rs = try_compile_rust(
         "(module m (type Node (NLit Int64) (NAdd (Tuple Node Node))) \
            (def (mk) (tuple (NLit 5) 9)) \
            (def (main) (let ((l (mk))) (. l 1))) (export main))",
     )
-    .expect_err("constructing a recursive sum, even as a discarded intermediate, must decline");
+    .expect("a discarded recursive-sum intermediate folds away — the projection drops it");
+    // The discarded sum is elided: no `Node` enum emitted, `main` returns the folded constant 9.
     assert!(
-        err.iter()
-            .any(|d| d.contains("no emitted Rust enum") || d.contains("recursive")),
-        "decline reason should cite the unrepresentable sum: {err:?}"
+        !rs.contains("enum Node"),
+        "the discarded recursive sum must not be emitted: {rs}"
+    );
+    assert!(
+        rs.contains("9u64 as i64") || rs.contains("9i64") || rs.contains("-> i64"),
+        "main folds to the projected Int64 constant 9: {rs}"
     );
 }
 

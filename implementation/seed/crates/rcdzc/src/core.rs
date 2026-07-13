@@ -628,6 +628,13 @@ pub enum Core {
     /// callee (a non-recursive call still inlines, so it never becomes a `Call`; this is the one path
     /// that forces a real wasm call). The callee is emitted as its own wasm function (reachability adds
     /// it to the layout's emission order); the backend emits each arg then `call <callee's abs index>`.
+    ///
+    /// Recursion is realized HERE as a STATIC reference to code — the callee's definition index resolved
+    /// to a wasm function index — never as a heap value that points back at a value created earlier. So a
+    /// recursive definition introduces no cycle into the value heap, and the compiler emits no construct
+    /// that would form one, which is what lets the reference-count reclamation leave no value uncollected.
+    //= spec/capabilities/memory-and-resource-model.md#the-value-heap-is-acyclic
+    //# The compiler MUST NOT emit a construct that forms a cycle among heap values, so that a reference-count reclamation discipline leaves no value uncollected.
     Call { callee: usize, args: Vec<StructId> },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of

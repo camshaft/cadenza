@@ -1008,9 +1008,10 @@ fn op_sum_payload(h: Handle) -> Handle {
 //    10 Named  [ name_len ][ name_utf8 ] [ inner: idx ]   — the `(: <value> <name>)` frame (root only)
 //    11 Ref    [ idx ]                                    — an alias to another table entry (recursion)
 //    12 Set    [ elem: idx ]                              — 13 Map [ key: idx ][ val: idx ] — 14 Float32
-//    15 Framed [ head_len ][ head_utf8 ] [ n_args ]( [ arg_len ][ arg_utf8 ] )*n [ inner: idx ]
-//              — the `(: <value> (<head> <arg>…))` frame: a PARAMETRIC type node (e.g. `(List Int64)`),
-//                each `arg` a bare type name (root only). Used for a runtime List result.
+//    15 Framed <TypeNode> [ inner: idx ]   where TypeNode = [ head_len ][ head_utf8 ] [ n ]( TypeNode )*n
+//              — the `(: <value> <type-node>)` frame: an arbitrary (possibly NESTED) type node written
+//                RECURSIVELY, so a nested element type shows (e.g. `(List (List Int64))`, `(Map Int64
+//                (Set Int64))`). A leaf node has n=0 (a bare name). Used for a runtime collection result.
 // (Every child position is an INDEX into the table, not an inline shape — that is what lets a cycle
 // close: entry k's Sum names entry k as a payload, a finite 1-entry loop the value walk unfolds.)
 
@@ -1075,17 +1076,38 @@ enum Shape {
     /// NOT hash order. Only a SCALAR KEY shape is orderable-and-encodable; the VALUE may be any encodable
     /// shape (the walk recurses on it). `(key_shape, value_shape)` table indices.
     Map(u32, u32),
-    /// A `(: <value> (<head> <arg>…))` frame — like `Named` but the TYPE is a PARAMETRIC node
-    /// `(head arg…)` (each `arg` a bare type name), not a single name. Used for `(List <elem>)` (and any
-    /// parametric result type whose arguments are type names) so a runtime List renders `(: (list …)
-    /// (List Int64))` — the element type is OBSERVABLE, matching the constant-List value form.
-    Framed(String, Vec<String>, u32),
+    /// A `(: <value> <type-node>)` frame — like `Named` but the TYPE is an arbitrary (possibly NESTED)
+    /// type node, not a single name. Carries a recursive [`TypeNode`] so a nested collection renders its
+    /// full parametric type — e.g. `(List (List Int64))`, `(Map Int64 (List Bool))` — matching the
+    /// constant-value form. The `u32` is the inner value shape index.
+    Framed(TypeNode, u32),
     /// A MULTI-payload sum variant's payload — a tuple handle at run time (`arr` of the boxed payloads)
     /// whose elements render FLATTENED as the variant's children: `(Cons h t)`, NOT `(Cons (tuple h t))`.
     /// Read exactly like a `Tuple` (each element via `arr-get`) but the enclosing `Sum` walk splices the
     /// elements directly under the variant head instead of emitting a `tuple` form. Only a `Sum` variant's
     /// payload references a `Spread`; a genuine tuple VALUE stays a `Tuple`.
     Spread(Vec<u32>),
+}
+
+/// A compile-time-baked TYPE node for a `Framed` frame: `head` + child type nodes. A LEAF type
+/// (`Int64`/`Bool`/`String`/`Unit`/a nominal name) has no children and renders as the bare name atom; a
+/// PARAMETRIC type (`(List e)`, `(Map k v)`, `(Tuple …)`, `(Set e)`) renders `list([head, child…])`, each
+/// child rendered recursively. The whole thing is compile-time-known (the result type), so the runtime
+/// only re-emits it — it never inspects the runtime value to build the type.
+struct TypeNode {
+    head: String,
+    children: Vec<TypeNode>,
+}
+
+/// Decode a [`TypeNode`]: `[ head_len ][ head_utf8 ] [ n_children:LEB ]( TypeNode )*n`.
+fn decode_type_node(d: &[u8], pos: &mut usize) -> Option<TypeNode> {
+    let head = desc_name(d, pos)?;
+    let n = desc_leb(d, pos)?;
+    let mut children = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        children.push(decode_type_node(d, pos)?);
+    }
+    Some(TypeNode { head, children })
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -1169,14 +1191,9 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         }
         14 => Shape::Float32,
         15 => {
-            // Framed: [ head_len ][ head_utf8 ] [ n_args ]( [ arg_len ][ arg_utf8 ] )*n [ inner: idx ]
-            let head = desc_name(d, pos)?;
-            let n = desc_leb(d, pos)?;
-            let mut args = Vec::with_capacity(n as usize);
-            for _ in 0..n {
-                args.push(desc_name(d, pos)?);
-            }
-            Shape::Framed(head, args, desc_leb(d, pos)? as u32)
+            // Framed: <TypeNode> [ inner: idx ]  where TypeNode = [ head ][ n ]( TypeNode )*n (recursive).
+            let type_node = decode_type_node(d, pos)?;
+            Shape::Framed(type_node, desc_leb(d, pos)? as u32)
         }
         16 => {
             // Spread: [ n ]( idx )*n — same wire shape as Tuple (tag 6), a distinct tag so the Sum walk
@@ -1362,6 +1379,21 @@ impl DocBuilder {
         self.child_pool.extend_from_slice(tail);
         self.structs.push(DocStruct::List { start, len: 1 + tail.len() as u32 });
         (self.structs.len() - 1) as u32
+    }
+    /// Render a [`TypeNode`] to a struct index (recursive): a LEAF type (no children) → the bare name
+    /// atom; a PARAMETRIC type → `list([head-atom, child…])`, each child rendered recursively. Builds the
+    /// `(: value <type>)` frame's type position for a `Framed` — handles arbitrary nesting like
+    /// `(List (List Int64))` / `(Map Int64 (List Bool))`.
+    fn render_type_node(&mut self, tn: &TypeNode) -> u32 {
+        let head_leaf = self.name_leaf(&tn.head);
+        let head_atom = self.atom(head_leaf);
+        if tn.children.is_empty() {
+            head_atom
+        } else {
+            let child_structs: Vec<u32> =
+                tn.children.iter().map(|c| self.render_type_node(c)).collect();
+            self.list_head_tail(head_atom, &child_structs)
+        }
     }
     fn finish(&self, root: u32) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1563,13 +1595,12 @@ enum EncodeWork<'d> {
     /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
     /// (matching the recursive order), then `list([colon_s, value, tname_s])`.
     Named { colon_s: u32, name: &'d str },
-    /// Assemble a `(: value (head arg…))` frame — like `Named` but the type is a PARAMETRIC node. Pop the
-    /// inner value, build the type node `list([head_atom, arg_atoms…])`, then `list([colon_s, value,
+    /// Assemble a `(: value <type-node>)` frame — like `Named` but the type is an arbitrary (possibly
+    /// NESTED) type node. Pop the inner value, `render_type_node` the type, then `list([colon_s, value,
     /// type_node])`.
     Framed {
         colon_s: u32,
-        head: &'d str,
-        args: &'d [String],
+        type_node: &'d TypeNode,
     },
     /// Assemble one record pair: pop the field value, `list([katom, fval])`.
     Pair { katom: u32 },
@@ -1777,17 +1808,13 @@ fn encode_value(
                             refs: refs + 1,
                         });
                     }
-                    Shape::Framed(head, args, inner) => {
-                        // The `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node. Same `h`, no node
-                        // consumed → count toward the ref cap.
+                    Shape::Framed(type_node, inner) => {
+                        // The `(: <value> <type-node>)` frame — an arbitrary (possibly nested) type node.
+                        // Same `h`, no node consumed → count toward the ref cap.
                         let inner = *inner;
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
-                        work.push(EncodeWork::Framed {
-                            colon_s,
-                            head,
-                            args,
-                        });
+                        work.push(EncodeWork::Framed { colon_s, type_node });
                         work.push(EncodeWork::Visit {
                             h,
                             shape_ix: inner,
@@ -1887,20 +1914,9 @@ fn encode_value(
                 let tname_s = b.atom(tname);
                 out.push(b.list(&[colon_s, value, tname_s]));
             }
-            EncodeWork::Framed {
-                colon_s,
-                head,
-                args,
-            } => {
+            EncodeWork::Framed { colon_s, type_node } => {
                 let value = out.pop()?;
-                // Build the parametric type node `(head arg…)` = list([head_atom, arg_atoms…]).
-                let head_leaf = b.name_leaf(head);
-                let mut type_children = vec![b.atom(head_leaf)];
-                for arg in args {
-                    let a = b.name_leaf(arg);
-                    type_children.push(b.atom(a));
-                }
-                let type_s = b.list(&type_children);
+                let type_s = b.render_type_node(type_node);
                 out.push(b.list(&[colon_s, value, type_s]));
             }
             EncodeWork::Pair { katom } => {
@@ -6369,20 +6385,15 @@ mod tests {
                 let tname_s = b.atom(tname);
                 b.list(&[colon_s, value, tname_s])
             }
-            S::Framed(head, args, inner) => {
-                // The `(: value (head arg…))` parametric-type frame — mirrors the iterative walk's
-                // `Framed` arm: colon eagerly, value, then the `(head arg…)` type node, then the outer list.
-                let (head, args, inner) = (head.clone(), args.clone(), *inner);
+            S::Framed(type_node, inner) => {
+                // The `(: value <type-node>)` frame — mirrors the iterative walk: colon, the value, then
+                // the (possibly nested) type node, then the outer list. The type node is rendered from the
+                // baked `TypeNode` (compile-time-known), so it handles arbitrary nesting.
+                let inner = *inner;
                 let colon = b.name_leaf(":");
                 let colon_s = b.atom(colon);
                 let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
-                let head_leaf = b.name_leaf(&head);
-                let mut type_children = vec![b.atom(head_leaf)];
-                for arg in &args {
-                    let a = b.name_leaf(arg);
-                    type_children.push(b.atom(a));
-                }
-                let type_s = b.list(&type_children);
+                let type_s = b.render_type_node(type_node);
                 b.list(&[colon_s, value, type_s])
             }
             S::Set(elem) => {
@@ -6458,6 +6469,22 @@ mod tests {
     /// deep value would overflow the recursive oracle (the exact bug the iterative walk fixes).
     #[test]
     fn value_encode_iterative_matches_recursive_reference() {
+        // The N=500 differential drives the RECURSIVE oracle 500 levels deep. That oracle exists only as
+        // the simple recursive mirror of the iterative production walk, so it must STAY recursive — but as
+        // Set/Map/Spread/Framed arms were added to it its debug-build frame grew (Rust sizes a frame to its
+        // largest arm), and 500 frames now exceed the 2 MB default test-thread stack. Run the body on a
+        // thread with a generous stack so the byte-identity coverage at N=500 is preserved. The heap and
+        // its counters are thread-local, so `reset()`/`live_nodes()` all belong INSIDE the spawned thread.
+        // (The production walk is iterative and proven safe to N=50 000 by the sibling deep test.)
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(differential_body)
+            .expect("spawn oracle-differential thread")
+            .join()
+            .expect("oracle-differential thread panicked");
+    }
+
+    fn differential_body() {
         reset();
         let desc = intlist_descriptor();
         for &n in &[0usize, 1, 2, 5, 50, 500] {
@@ -7192,6 +7219,112 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every empty collection dropped");
     }
 
+    /// `value-encode` renders a MULTI-payload recursive variant via `Shape::Spread` (descriptor tag 16):
+    /// the payload elements are spliced FLAT under the variant head — `(Node 1 l r)`, NOT the
+    /// tuple-wrapped `(Node (tuple 1 l r))` (landed @75fe7e80). That production Sum→Spread walk arm had NO
+    /// dedicated value-encode test (only the differential oracle arm — the same gap as Framed). A splice
+    /// bug (tuple-wrapping, wrong element order, wrong arity) would be a silent miscompile on a common
+    /// recursive shape (a tree). Verifies iterative==recursive byte-identity + the FLAT rendering.
+    #[test]
+    fn value_encode_multi_payload_variant_escapes_flat_via_spread() {
+        reset();
+        let before = live_nodes();
+        // Tree = (Node Int64 Tree Tree) | Leaf. Descriptor:
+        //   [0] Int; [1] Unit (Leaf payload); [2] Sum[(Node→3),(Leaf→1)]; [3] Spread[0,2,2] (Node's
+        //   payload: Int, Tree, Tree — the two Tree elements Ref back to [2]); root=2.
+        let mut d: Vec<u8> = Vec::new();
+        let leb = |out: &mut Vec<u8>, v: u64| {
+            let mut v = v;
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        };
+        let name = |out: &mut Vec<u8>, s: &str| {
+            let mut n = s.len() as u64;
+            loop {
+                let mut b = (n & 0x7f) as u8;
+                n >>= 7;
+                if n != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if n == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(s.as_bytes());
+        };
+        leb(&mut d, 4); // table_len
+        d.push(0); // [0] Int
+        d.push(5); // [1] Unit
+        d.push(9); // [2] Sum
+        leb(&mut d, 2); // 2 variants
+        name(&mut d, "Node");
+        leb(&mut d, 3); // Node → [3]
+        name(&mut d, "Leaf");
+        leb(&mut d, 1); // Leaf → [1] (Unit)
+        d.push(16); // [3] Spread
+        leb(&mut d, 3); // 3 elements
+        leb(&mut d, 0); // Int
+        leb(&mut d, 2); // Tree (Ref to the Sum)
+        leb(&mut d, 2); // Tree
+        leb(&mut d, 2); // root = [2]
+
+        // Build `Node(1, Leaf, Leaf)`. A Leaf = sum disc 1, unit payload; a Node = sum disc 0, payload =
+        // a 3-tuple arr [box_int(1), leaf, leaf].
+        let leaf = || op_sum_new(1, op_arr_alloc(0));
+        let payload = op_arr_alloc(3);
+        op_arr_set(payload, 0, op_box_int(1));
+        op_arr_set(payload, 1, leaf());
+        op_arr_set(payload, 2, leaf());
+        let node = op_sum_new(0, payload);
+
+        let doc = op_value_encode_form(node, &d).expect("encode a multi-payload variant");
+        // Differential: iterative == recursive oracle byte-for-byte.
+        let descriptor = decode_descriptor(&d).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, node, descriptor.root, 0).expect("recursive");
+        assert_eq!(doc, b.finish(root), "iterative and recursive Spread encode must agree");
+
+        // FLAT structure: the name leaves in walk order are `Node`, then `Leaf`, `Leaf` (the two children;
+        // `unit` for each Leaf's payload). Crucially NO `tuple` name — the Int + two Trees are spliced
+        // directly under `Node`, not wrapped. Collect names + assert `tuple` is absent, `Node`/`Leaf`/`unit` present.
+        let mut names: Vec<String> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            match kind {
+                0 => {
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                10 => {
+                    let len = doc[i] as usize;
+                    i += 1;
+                    names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
+                    i += len;
+                }
+                k => panic!("unexpected leaf kind {k} in a Spread document"),
+            }
+        }
+        assert!(!names.iter().any(|n| n == "tuple"), "multi-payload variant is FLAT — no `tuple` wrapper, got {names:?}");
+        assert!(names.iter().any(|n| n == "Node"), "`Node` head present");
+        assert!(names.iter().any(|n| n == "Leaf"), "`Leaf` children present");
+        assert!(names.iter().any(|n| n == "unit"), "each Leaf's unit payload present");
+        op_drop(node);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     /// `value-encode` renders a `Shape::Framed` (descriptor tag 15) as the `(: value (head arg…))`
     /// parametric-type frame — the shape a RUNTIME `List` result escapes as `(: (list …) (List <elem>))`
     /// (landed @72d5d80a). That production walk arm had NO dedicated value-encode test (only the
@@ -7240,9 +7373,14 @@ mod tests {
         d.push(7); // [1] List
         leb(&mut d, 0); // elem → 0
         d.push(15); // [2] Framed
+        // The type node is now a RECURSIVE `TypeNode` (`08d4a99a`): every node — INCLUDING a leaf — declares
+        // its own child count, so a nested type like `(List Int64)` is `List{ Int64{} }`. `Int64` therefore
+        // needs an explicit `n_children = 0` before the `inner` index (the old flat `[head][n_args](arg)*n`
+        // wire had no per-arg child count — that stale layout desynced the recursive decoder).
         name(&mut d, "List"); // head
-        leb(&mut d, 1); // n_args
-        name(&mut d, "Int64"); // arg[0]
+        leb(&mut d, 1); // List n_children = 1
+        name(&mut d, "Int64"); // child[0] head
+        leb(&mut d, 0); // Int64 n_children = 0 (a leaf type node)
         leb(&mut d, 1); // inner → 1
         leb(&mut d, 2); // root
 
@@ -7950,6 +8088,39 @@ mod tests {
             }
         });
         println!("ALLOC value_encode x{VE_REPS}: {venc}");
+        // (M) FREE CASCADE — `op_drop` of a DEEP unique structure. This is the single hottest RC path (the
+        // compiler emits `drop` at every dead heap binding and the resource destructor), yet every OTHER
+        // row above bundles the drop with O(N) CONSTRUCTION, so a regression in the cascade's own
+        // allocation behavior is masked. Here construction is OUTSIDE the measured closure — ONLY the
+        // teardown is timed. The invariant under guard: reclaiming an N-deep spine costs O(1) allocations,
+        // NOT O(N). The cascade seeds an inline root's ≤2 children into a fixed `[Handle; 2]` buffer and,
+        // on reaching the first HEAP child, ADOPTS that dying node's own handle Vec (`core::mem::take`) as
+        // the worklist backing — so it never allocates a fresh worklist per level. A regression that
+        // materializes a fresh Vec per node (O(N) allocs) or reverts to a recursive free (stack overflow at
+        // this depth) trips this. Build a `(arr2 leaf spine)` cons-spine identical to the overflow test.
+        const DROP_DEPTH: i64 = 4000;
+        let build_spine = || {
+            let mut acc = op_arr_alloc(0); // inline unit terminator — no node
+            for _ in 0..DROP_DEPTH {
+                let node = op_arr_alloc(2);
+                op_arr_set(node, 0, op_box_int(1)); // immediate leaf — no element box
+                op_arr_set(node, 1, acc);
+                acc = node;
+            }
+            acc
+        };
+        let spine = build_spine();
+        let drop_allocs = measure(&mut || op_drop(spine));
+        println!("ALLOC free_cascade_deep DEPTH={DROP_DEPTH}: {drop_allocs}");
+        // MEASURED near-ZERO: the root donates seed_buf, the first heap child's Vec is adopted as the sole
+        // worklist, and every deeper level's ≤2 children refill the fixed buffer or the adopted Vec (which
+        // may realloc a small O(log DEPTH) number of times as it grows — NOT O(DEPTH)). The ceiling is a
+        // tiny constant, DEPTH-INDEPENDENT: a per-node-Vec regression at DEPTH=4000 would blow past it by
+        // three orders of magnitude.
+        assert!(
+            drop_allocs <= 40,
+            "free_cascade_deep DEPTH={DROP_DEPTH} allocs {drop_allocs} exceeds ceiling 40 (O(1) teardown: fixed seed buffer + adopt-by-move worklist; a fresh-Vec-per-node regression would be ~O(DEPTH), a recursive-free regression would stack-overflow)"
+        );
         // MEASURED ~100 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.67 allocs/node after
         // the flat `child_pool` arena replaced the per-compound-node children Vec (was ~195/encode = ~1.3/
         // node). The remaining allocs are the grow-once `leaves`/`structs`/`child_pool` Vecs + the output

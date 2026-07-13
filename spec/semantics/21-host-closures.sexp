@@ -1289,3 +1289,140 @@
               (export mkb) (export isz) (export two)))
   (call   two)
   (output (: 2 Int64)))
+
+; BYTE-ROPE result on the ROUND-TRIP path — a consumer takes a produced closure back, applies it, and
+; RETURNS a `Bytes`/`String`. The consumer crosses as `(own<t>, args…) -> list<u8>` (memory + cabi_realloc
+; shared), completing the byte-rope compound `call` across ALL closure shapes (single/multi/mixed/distinct-
+; sig/round-trip). A byte-rope consumer can coexist with a scalar consumer of the same closure and with a
+; plain export. (Also fixed a latent BinBuild slot-typing bug: two `(g x)` closure applications across two
+; `bin` segments aliased one wasm local at two widths — now each segment's value floats above the
+; high-water mark, the same disjoint-slot discipline the checked-arith path uses.)
+
+(case "round-trip: a consumer applies the handed-back closure and returns Bytes"
+  (doc    "`mk : () -> (-> Int64 Int64)` (adds 1); `app : (own<t>, Int64) -> Bytes` applies the handed-back
+           closure TWICE — `(bin (u8 (g x)) (u8 (g x)+1))`. Host produces a handle via `mk`, hands it to
+           `app(handle, 5)` → the closure yields 6, so the bytes are `[6, 7]`. Pins the byte-rope result on
+           the round-trip path (the consumer returns `list<u8>`).")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64))
+                (bin (u8 (UInt8.wrap (g x))) (u8 (UInt8.wrap (+ (g x) 1)))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (6 7)))
+
+(case "round-trip: a consumer returns a byte-rope built from a single closure result"
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> Bytes` = `(bin (u8 (g x)))`. `app(handle, 10)` → the
+           closure yields 20 → `[20]`. The single-segment byte-rope consumer result.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (export mk) (export app)))
+  (call   app (: 10 Int64))
+  (output (20)))
+
+(case "round-trip: a String-returning consumer of a closure"
+  (doc    "`label : (own<t>, Int64) -> String` returns the constant \"hi\" (UTF-8 `[104,105]`) — a String
+           consumer result crosses on the same byte-rope `list<u8>` path as Bytes.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 65)))
+              (def (label (: g (-> Int64 Int64)) (: x Int64)) "hi")
+              (export mk) (export label)))
+  (call   label (: 0 Int64))
+  (output (104 105)))
+
+(case "round-trip byte-rope consumer alongside a plain export — the consumer"
+  (doc    "`app : (own<t>, Int64) -> Bytes` beside a plain `seven : () -> 7`. `app(handle, 41)` → `[42]`.
+           Pins the byte-rope round-trip consumer carrying a plain export alongside.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (def (seven) 7)
+              (export mk) (export app) (export seven)))
+  (call   app (: 41 Int64))
+  (output (42)))
+
+(case "round-trip byte-rope consumer alongside a plain export — the plain"
+  (doc    "The SAME program, calling the plain `seven` → 7. Confirms the plain top-level export is reachable
+           when a byte-rope round-trip consumer shares the component.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (def (seven) 7)
+              (export mk) (export app) (export seven)))
+  (call   seven)
+  (output (: 7 Int64)))
+
+(case "round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one"
+  (doc    "One closure signature, TWO consumers: `asnum : (own<t>, Int64) -> Int64` (returns the value) and
+           `asbytes : (own<t>, Int64) -> Bytes` (wraps it into a `bin`). `asbytes(handle, 8)` → `[9]`. Pins a
+           SCALAR consumer and a BYTE-ROPE consumer of the same resource coexisting (one lifted by value, one
+           with Memory/Realloc).")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (export mk) (export asnum) (export asbytes)))
+  (call   asbytes (: 8 Int64))
+  (output (9)))
+
+(case "round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one"
+  (doc    "The SAME two-consumer program, driving the SCALAR consumer: `asnum(handle, 8)` → 9 (by value, NOT
+           a byte list). Confirms the scalar consumer is unaffected by the sibling byte-rope consumer's
+           memory/realloc lift.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (export mk) (export asnum) (export asbytes)))
+  (call   asnum (: 8 Int64))
+  (output (: 9 Int64)))
+
+; BYTE-ROPE result on the DISTINCT-SIG ROUND-TRIP path — the LAST byte-rope gap. Closures of DIFFERENT
+; signatures each cross as their own resource type, and a CONSUMER of one signature can RETURN a
+; `Bytes`/`String` (crossing as `(own<t_g>, args…) -> list<u8>`, memory + cabi_realloc shared across groups).
+; Completes the byte-rope compound `call` across EVERY closure shape. A byte-rope consumer coexists with a
+; scalar consumer of another signature, and two byte-rope consumers of different signatures coexist.
+
+(case "distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one"
+  (doc    "`mka : () -> (-> Int64 Int64)` and `mkb : () -> (-> Bool Int64)` are distinct signatures → two
+           resource types. `appa : (own<t0>, Int64) -> Bytes` applies its closure TWICE — `(bin (u8 (g x))
+           (u8 (g x)+1))`. Host produces via `mka`, hands to `appa(handle, 5)` → `[6, 7]`. Pins the byte-rope
+           consumer result on the distinct-sig round-trip path.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64))
+                (bin (u8 (UInt8.wrap (g x))) (u8 (UInt8.wrap (+ (g x) 1)))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (6 7)))
+
+(case "distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one"
+  (doc    "The SAME two-resource-type program, driving the SCALAR consumer of the OTHER signature: `appb :
+           (own<t1>, Bool) -> Int64` applies `mkb`'s closure → `appb(handle, true)` = 10 (by value). Confirms
+           the scalar consumer is unaffected by the sibling byte-rope consumer's memory/realloc plumbing.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64))
+                (bin (u8 (UInt8.wrap (g x))) (u8 (UInt8.wrap (+ (g x) 1)))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: 10 Int64)))
+
+(case "distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one"
+  (doc    "Both consumers return `Bytes`, but of DISTINCT closure signatures (two resource types, each
+           lifted with its own Memory/Realloc). `appa(mka-handle, 40)` → `[41]`.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y))) (u8 99)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 40 Int64))
+  (output (41)))
+
+(case "distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one"
+  (doc    "The SAME program, driving the OTHER byte-rope consumer: `appb(mkb-handle, false)` → `mkb`'s
+           closure yields 8, so `(bin (u8 8) (u8 99))` = `[8, 99]`. Confirms each distinct byte-rope
+           resource dispatches its own closure body + writes its own `list<u8>`.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y))) (u8 99)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: false Bool))
+  (output (8 99)))

@@ -48,11 +48,12 @@ export default function Strings() {
       <P>
         Like <C>List.at</C>, <C>String.at</C> returns an <C>Option</C> — the one-character string at a
         given position, or <C>None</C> if the index is past the end. You never read off the end by
-        accident. It indexes by <em>character</em> (scalar), not byte.
+        accident. And it indexes by <em>character</em>, not byte — so in <C>"café"</C> the character at
+        index <C>3</C> is the <C>é</C>, even though that <C>é</C> starts at byte 3 and spans two bytes:
       </P>
       <Runnable
         source={`(def (main)
-  (match (String.at "abc" 1)
+  (match (String.at "café" 3)
     ((Some ch) ch)
     ((None _) "?")))`}
       />
@@ -62,24 +63,47 @@ export default function Strings() {
       </Note>
 
       <H2>Your turn</H2>
+      <P>
+        The word <C>"naïve"</C> has an accented <C>ï</C> that takes two bytes in UTF-8 — so its two
+        lengths disagree. These two exercises ask for each in turn; the point is choosing the operation
+        that answers the question you actually mean.
+      </P>
       <Exercise
         id="strings:1"
-        prompt={<>Finish <C>banner</C> so its result is <C>6</C> characters — join <C>"hi"</C> with itself, then measure it.</>}
-        starter={`(def (main)
-  (String.scalar-len (String.concat "hi" ?)))`}
-        solution={`(def (main)
-  (String.scalar-len (String.concat "hi" "hihi")))`}
-        expected="6"
-        hint={<>"hi" plus a 4-character string makes 6 characters. What 4-character string?</>}
+        prompt={
+          <>
+            How many <em>characters</em> are in <C>"naïve"</C>? Pick the length that counts characters —
+            the answer is <C>5</C>.
+          </>
+        }
+        starter={`(def (main) (String.?-len "naïve"))`}
+        solution={`(def (main) (String.scalar-len "naïve"))`}
+        expected="5"
+        hint={
+          <>
+            Characters (Unicode scalars), not bytes → <C>scalar-len</C>. The accented <C>ï</C> is still
+            one character.
+          </>
+        }
       />
 
       <Exercise
         id="strings:2"
-        prompt={<>Report the number of <em>characters</em> in <C>"héllo"</C> — it should be <C>5</C>, not the byte count.</>}
-        starter={`(def (main) (String.?-len "héllo"))`}
-        solution={`(def (main) (String.scalar-len "héllo"))`}
-        expected="5"
-        hint={<>Characters, not bytes → <C>scalar-len</C>.</>}
+        prompt={
+          <>
+            Now how many <em>bytes</em> does <C>"naïve"</C> take in UTF-8? The two-byte <C>ï</C> pushes it
+            one past the character count — the answer is <C>6</C>.
+          </>
+        }
+        starter={`(def (main) (String.?-len "naïve"))`}
+        solution={`(def (main) (String.byte-len "naïve"))`}
+        expected="6"
+        hint={
+          <>
+            Bytes, not characters → <C>byte-len</C>. Five characters, but <C>ï</C> costs two bytes, so{" "}
+            <C>6</C>.
+          </>
+        }
       />
     </article>
   );
