@@ -149,6 +149,8 @@ pub enum Keyword {
     Match,
     With,
     Module,
+    Import,
+    Export,
 }
 
 /// The keyword an identifier's text denotes, if any.
@@ -165,6 +167,8 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "match" => Keyword::Match,
         "with" => Keyword::With,
         "module" => Keyword::Module,
+        "import" => Keyword::Import,
+        "export" => Keyword::Export,
         _ => return None,
     })
 }

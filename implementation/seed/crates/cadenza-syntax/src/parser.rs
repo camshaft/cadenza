@@ -515,6 +515,8 @@ impl<'a> Parser<'a> {
                 Some(Keyword::Type) => self.type_expr(),
                 Some(Keyword::Match) => self.match_expr(),
                 Some(Keyword::Module) => self.module_expr(),
+                Some(Keyword::Import) => self.import_expr(),
+                Some(Keyword::Export) => self.export_expr(),
                 Some(_) => {
                     // `in`/`then`/`else` bare in prefix position is an error; keep the ident as a
                     // name so we make progress and the arena stays well-formed.
@@ -918,6 +920,75 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
+    /// `export { name, … }`  ->  `(export name …)`. A declaration of the module's public surface: a
+    /// brace-delimited, comma-separated list of exported names (the same brace-of-names shape as a
+    /// record's field-shorthand list, reused as the export surface). The names are the `(export …)`
+    /// form's direct children — NOT a nested record — matching the corpus `(export main)` shape.
+    fn export_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.keyword_head("export", start);
+        self.bump(); // `export`
+        let mut items = vec![head];
+        items.extend(self.brace_name_list());
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// `import { name, … } from "path"`  ->  `(import "path" (name …))`. Brings a sibling module's
+    /// public names into scope. The surface orders names-then-source for readability; the arena is the
+    /// corpus's path-first shape `(import "path" (name …))` (a path string then a name-LIST), so both
+    /// surfaces agree. (The qualified/alias form is a later phase.)
+    fn import_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.keyword_head("import", start);
+        self.bump(); // `import`
+        let names_start = self.cur_span();
+        let names = self.brace_name_list();
+        let names_span = names_start.merge(self.prev_span());
+        let name_list = self.list(names, names_span);
+        // `from` is a CONTEXTUAL keyword — an ordinary identifier `from` in this one position, not a
+        // globally-reserved word (so `from` stays usable as a variable name elsewhere).
+        if self.at(Kind::Ident) && self.cur_text() == "from" {
+            self.bump();
+        } else {
+            self.error("expected `from` after the import name list");
+        }
+        // The module path: a string literal.
+        let path = if self.at(Kind::Str) {
+            let path_span = self.cur_span();
+            let t = self.bump().unwrap();
+            self.atom(literal::unescape_string_token(self.text(t)), path_span)
+        } else {
+            self.error("expected a module path string after `from`");
+            self.error_node(self.cur_span())
+        };
+        let span = start.merge(self.prev_span());
+        // Arena order is path-first: `(import "path" (name…))`.
+        self.list(vec![head, path, name_list], span)
+    }
+
+    /// A brace-delimited comma-separated name list `{ a, b, … }` -> the vector of name occurrences.
+    /// Shared by `export`/`import`. Each element is a bare (or backtick-escaped) name; a non-name
+    /// element records an error and is skipped, so a malformed list still terminates.
+    fn brace_name_list(&mut self) -> Vec<StructId> {
+        self.expect(Kind::LBrace, "`{`");
+        let mut names = Vec::new();
+        if !self.at(Kind::RBrace) {
+            loop {
+                let before = self.pos;
+                names.push(self.binder());
+                if !self.sep_continue(Kind::RBrace) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // no name consumed — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RBrace, "`}`");
+        names
+    }
+
     /// A parenthesized parameter list `(p, …)` -> `(p …)`.
     fn param_list(&mut self) -> StructId {
         let params_start = self.cur_span();
@@ -1191,9 +1262,24 @@ impl<'a> Parser<'a> {
             loop {
                 let before = self.pos;
                 let f_start = self.cur_span();
+                // Capture the field name's spelling BEFORE building the binder, so a shorthand field
+                // can reuse it for the punned value (`binder` consumes the token; the builder doesn't
+                // read occurrences back).
+                let pun = self.binder_spelling();
                 let name = self.binder();
-                self.expect(Kind::Eq, "`=`");
-                let value = self.expr(0);
+                // Field SHORTHAND: `{ x }` puns to `{ x = x }` — a field with no `= value` binds the
+                // field to a same-named value in scope. The value is a SECOND `x` occurrence (so it
+                // resolves as an ordinary name reference), spanning the same name text.
+                let value = if self.at(Kind::Eq) {
+                    self.bump(); // `=`
+                    self.expr(0)
+                } else if let Some(n) = pun {
+                    self.name(n, f_start)
+                } else {
+                    // a non-name field with no `=` — record the missing `=` as before.
+                    self.expect(Kind::Eq, "`=`");
+                    self.expr(0)
+                };
                 let f_span = f_start.merge(self.prev_span());
                 items.push(self.list(vec![name, value], f_span));
                 if !self.sep_continue(Kind::RBrace) {
@@ -1207,6 +1293,17 @@ impl<'a> Parser<'a> {
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
+    }
+
+    /// The spelling of the upcoming binder token (a plain or backtick-escaped name), WITHOUT consuming
+    /// it — so a caller can reuse the name (e.g. a punned record field `{ x }` → `{ x = x }`). `None`
+    /// when the next token is not a name.
+    fn binder_spelling(&self) -> Option<String> {
+        match self.kind() {
+            Kind::Ident => Some(self.cur_text().to_string()),
+            Kind::BacktickName => Some(literal::unescape_backtick_name(self.cur_text())),
+            _ => None,
+        }
     }
 
     /// `#{ key = v, … }`  ->  `(map (key v) …)`. A dynamic key→value map (keys are arbitrary
