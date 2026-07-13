@@ -29528,6 +29528,121 @@ mod closure_host_resource {
             .expect("closure-resource core module validates");
     }
 
+    /// COMPOUND-RESULT compiler serializer: `serialize::closure_bytes_resource_core_module` — the production
+    /// core a closure whose result is a runtime `Bytes` emits — is structurally valid. The closure body
+    /// `(env, x) -> Bytes` builds a 2-byte `[x, x+1]` (`bytes-alloc`/`bytes-set`); `call` dispatches it via
+    /// `call_indirect`, copies the returned Bytes handle to the `(ptr, len)` return area (`bytes-len`/
+    /// `bytes-get` loop over the exported memory), and drops both the cell + the Bytes handle. The core
+    /// carries a MEMORY + `cabi_realloc` (a scalar `call` needs neither) so the canonical `list<u8>` ABI can
+    /// read the return area — the shape `oracle_closure_list_component` proved runs under wasmtime.
+    #[test]
+    fn closure_bytes_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        // Imports (any order — the serializer maps name→index by position): the cell ops (make + call), the
+        // Bytes ops (the closure body builds a Bytes; `call` copies it), drop (own<t> + Bytes release).
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.bytes_alloc,
+            OPS.bytes_get,
+            OPS.bytes_len,
+            OPS.bytes_set,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        // Defined func 0 = the export body `main : () -> own<closure>` — build a 1-slot cell (slot 0, no
+        // captures), returning the cell handle.
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(Ty::Bytes));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Defined func 1 = the lifted closure `(env: i32, x: i64) -> Bytes(i32)` = the 2-byte `[x, x+1]`.
+        // bytes-alloc(2); bytes-set(_, 0, wrap x); bytes-set(_, 1, wrap x + 1).
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: Ty::Bytes,
+            code: vec![
+                Lir::ConstI32(2),
+                Lir::CallImport("bytes-alloc"),
+                Lir::ConstI32(0),
+                Lir::LocalGet(1),
+                Lir::I32WrapI64,
+                Lir::CallImport("bytes-set"),
+                Lir::ConstI32(1),
+                Lir::LocalGet(1),
+                Lir::I32WrapI64,
+                Lir::ConstI32(1),
+                Lir::I32Add,
+                Lir::CallImport("bytes-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: Ty::Bytes,
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2; // k ops + resource-new + resource-rep
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::closure_bytes_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &[ValType::I64], // the closure's one arg
+            &[],             // nullary export → make() has no params
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("compound-result closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("compound-result closure-resource core module validates");
+    }
+
     /// MULTI-EXPORT compiler serializer: `serialize::multi_closure_resource_core_module` — the production
     /// core a program with TWO same-signature closure exports emits — is structurally valid. Two export
     /// bodies each build a 1-slot cell (its own funcref slot), two lifted bodies, and the serializer emits
