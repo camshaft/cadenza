@@ -7,12 +7,31 @@
 //!
 //! Failures are bucketed by the head symbol of the input form, so a regression points at the
 //! construct that broke. Also checks idempotence: `print_ml(x) == print_ml(read_ml(print_ml(x)))`.
+//!
+//! A few heads are CANONICALIZED away by the ML surface (a qualified infix head like `Unit.^` prints
+//! as the bare glyph `^`); for those the contract is idempotence only, not structural equality — see
+//! [`has_canonicalizing_head`].
 
 use cadenza_syntax::ast::{Arenas, Struct, StructId};
-use cadenza_syntax::{parser, printer, sexpr};
+use cadenza_syntax::{parser, printer, sexpr, token};
 use std::collections::BTreeMap;
 
 const WIDTH: usize = 100;
+
+/// Does this tree contain a head that the ML surface CANONICALIZES away — a QUALIFIED infix head
+/// (`Unit.^`, `Unit.*`, `Unit./`) whose surface glyph drops the qualifier (`^`, `*`, `/`)? For such
+/// an input the guaranteed contract is only an IDEMPOTENT round-trip (`ml(ml(x)) == ml(x)`), not
+/// structural equality: `(Unit.^ u 2)` prints as `u ^ 2`, which re-reads to the BARE `^` arena head
+/// (the units layer treats `^`/`*`/`/` as unit composition), so the surface deliberately collapses
+/// `Unit.^` → `^` exactly as it collapses name-alias constructors. `structurally_eq` cannot hold
+/// across that collapse, so these inputs are checked for parse-ok + idempotence only. See
+/// `token::infix_glyph`.
+fn has_canonicalizing_head(a: &Arenas) -> bool {
+    (0..a.structure.len() as u32).map(StructId).any(|id| {
+        a.head_name(id)
+            .is_some_and(|h| h.contains('.') && token::infix_glyph(h) != h)
+    })
+}
 
 /// Directory of corpus files, relative to this crate's manifest.
 fn corpus_dir() -> std::path::PathBuf {
@@ -82,8 +101,12 @@ fn ml_surface_round_trips_the_corpus() {
             let ml = printer::print(&input, WIDTH);
             let reparsed = parser::read_ml(&ml);
 
+            // A head the surface canonicalizes away (`Unit.^` → `^`) cannot satisfy structural
+            // equality, so it is held to the weaker idempotence contract only.
+            let structural_required = !has_canonicalizing_head(&input);
+
             let ok = reparsed.ok()
-                && reparsed.arenas.structurally_eq(&input)
+                && (!structural_required || reparsed.arenas.structurally_eq(&input))
                 // idempotence: printing the reparsed tree is byte-identical
                 && printer::print(&reparsed.arenas, WIDTH) == ml;
 
@@ -95,7 +118,7 @@ fn ml_surface_round_trips_the_corpus() {
                 if entry.1.is_empty() {
                     let reason = if !reparsed.ok() {
                         format!("parse error: {:?}", reparsed.errors.first())
-                    } else if !reparsed.arenas.structurally_eq(&input) {
+                    } else if structural_required && !reparsed.arenas.structurally_eq(&input) {
                         "AST mismatch".to_string()
                     } else {
                         "not idempotent".to_string()

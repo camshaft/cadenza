@@ -121,6 +121,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Bytes.tsx")),
   },
   {
+    slug: "symbols",
+    title: "Symbols",
+    blurb: "Interned names, compared by identity.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Symbols.tsx")),
+  },
+  {
     slug: "errors",
     title: "Errors & absence",
     blurb: "Option, Result, safe indexing, and checked arithmetic.",
@@ -150,6 +158,14 @@ export const CHAPTERS: Chapter[] = [
     section: "What makes Cadenza different",
     exercises: 2,
     Component: lazy(() => import("./chapters/Effects.tsx")),
+  },
+  {
+    slug: "modules",
+    title: "Modules",
+    blurb: "Grouping definitions under a name; a module is a record of its exports.",
+    section: "What makes Cadenza different",
+    exercises: 1,
+    Component: lazy(() => import("./chapters/Modules.tsx")),
   },
   {
     // NOT "playground": the top-level `/playground` route (the full IDE) is matched before `/:slug`,

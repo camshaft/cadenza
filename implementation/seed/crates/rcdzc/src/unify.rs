@@ -446,9 +446,21 @@ fn mismatch(a: &Ty, b: &Ty) -> Reject {
             ),
         );
     }
+    // Name the two conflicting types in the house term ("type mismatch"), NOT the HM-algorithm verb
+    // "unify" — a Cadenza author never meets the word "unify", and reporting a raw "unification failure"
+    // is precisely the naive-HM leak the reporting discipline forbids (`type-errors-report-the-minimal-
+    // conflict.md`: report the conflicting requirements, not the algorithm step that noticed them). The
+    // two types are stated SYMMETRICALLY ("A and B must be the same type here, but differ") because the
+    // caller's argument order is not a reliable expected-vs-found orientation — some call sites pass
+    // (annotation, expr), others (expr, expected) — so an "expected X, found Y" phrasing would lie about
+    // direction half the time. The precise blame (which site imposes which) rides in `related` spans.
     Reject::coded(
         Code::TypeMismatch,
-        format!("cannot unify {} with {}", a.render_name(), b.render_name()),
+        format!(
+            "type mismatch: {} and {} must be the same type here, but differ",
+            a.render_name(),
+            b.render_name(),
+        ),
     )
 }
 

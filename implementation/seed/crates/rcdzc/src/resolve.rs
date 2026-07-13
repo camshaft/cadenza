@@ -429,7 +429,14 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         // position `head_ctor` dispatches `list`/`tuple` structurally) AND the name is a same-name newtype,
         // resolve to the variant CTOR instead. A non-head occurrence keeps the type. Position-based, not a
         // name special-case (`prelude-and-resolution.md` §Nothing Is Privileged By Name).
+        // Only fire on a USER node — a real program `(Box 42)`. A SYNTHESIZED node (id ≥
+        // `user_node_count`) heading a list is the sum's OWN ctor-result type expression `(Box a)` that
+        // `sums::sum_applied` builds for a GENERIC same-name sum, where `Box` MUST stay the type record
+        // (re-applied in type position via `(meta apply)` = `sum-ctor`). Firing there resolved `Box` to
+        // the ctor and corrupted the arrow → the variant looked nullary. The value-vs-type-position
+        // distinction the head-position rule alone can't see is supplied by the user/synth boundary.
         if db.child_ix_of(id) == 0
+            && db.is_user_node(id)
             && let Some(ctor) = db.same_name_newtype_ctor(name)
         {
             trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = ctor.0, "name → same-name newtype ctor (head position)");
@@ -521,29 +528,71 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
     if name.chars().count() < 2 {
         return None;
     }
+    // CONTEXT-AWARE candidate pool: the syntactic POSITION of the typo constrains which names could have
+    // been meant, so the suggestion is one the fix would actually resolve (the one-shot rule), not merely
+    // the lexically-nearest name of any kind. Three positions:
+    //   • MEMBER OPERAND `(. name key)` — a `handle`'s effect (rewritten to `(. E op)` arms), `(. Int64
+    //     max)`: only a member-accessible name (effect, type, prelude module) fits. A value/binder/variant
+    //     ctor would move the fault (`(. Log op)` → "record has no field `op`") — the `handle Logg` case
+    //     where variant `Log` was a worse pick than effect `Logr`.
+    //   • TYPE EXPRESSION `(: expr name)` — a value or parameter annotation: only a TYPE name fits. A value
+    //     def / binder / variant ctor would fail the annotation check ("requires a type, found a non-type")
+    //     — the `(: p flg)` → `flag` (a value) case.
+    //   • VALUE — everywhere else: every kind is a candidate (the original unrestricted pool).
+    let parent = db.parent_of(id);
+    let member_operand = matches!(parent, Some(p)
+        if db.ast.as_form(p, ".").map(|t| t.first().copied()) == Some(Some(id)));
+    // The type slot of a `(: expr TYPE)` form — TYPE is `tail[1]` (`as_form` drops the head).
+    let type_expr = matches!(parent, Some(p)
+        if db.ast.as_form(p, ":").and_then(|t| t.get(1).copied()) == Some(id));
+    // Positions that admit only NON-VALUE names drop the value tiers (lexical binders, value defs) — a
+    // member operand and a type expression are each such a position.
+    let non_value_position = member_operand || type_expr;
     let mut candidates: Vec<String> = Vec::new();
-    // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
-    // pattern binders), gathered by the shared scope walk.
-    for (n, _occ) in visible_bindings(db, id) {
-        candidates.push(n);
-    }
-    // Tier 2 — this module's top-level value definitions.
-    for d in &db.defs {
-        candidates.push(d.name.clone());
-    }
-    // Tier 3 — `(type …)` names + their variant constructors, and `(effect …)` names (the same
-    // declarations `resolve_name` consults before the prelude).
-    for t in &db.type_decls {
-        candidates.push(t.name.clone());
-        for v in &t.variants {
-            candidates.push(v.name.clone());
+    if !non_value_position {
+        // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
+        // pattern binders). Only meaningful in value position — a type/member position takes no local.
+        for (n, _occ) in visible_bindings(db, id) {
+            candidates.push(n);
+        }
+        // Tier 2 — this module's top-level value definitions (value position only).
+        for d in &db.defs {
+            candidates.push(d.name.clone());
         }
     }
-    for e in &db.effect_decls {
-        candidates.push(e.name.clone());
+    // Tier 3 — `(type …)` names (a type name fits BOTH a member operand `Int64.max` AND a type expr `(: x
+    // Int64)`) + their variant CONSTRUCTORS (a value, so kept ONLY in value position) — and `(effect …)`
+    // names (member-accessible, so a member-operand candidate; NOT a type, so excluded from a type expr).
+    for t in &db.type_decls {
+        candidates.push(t.name.clone());
+        if !non_value_position {
+            for v in &t.variants {
+                candidates.push(v.name.clone());
+            }
+        }
     }
-    // Tier 4 — the prelude's built-in names.
+    if !type_expr {
+        for e in &db.effect_decls {
+            candidates.push(e.name.clone());
+        }
+    }
+    // Tier 4 — the prelude's built-in names. In a NON-VALUE position drop the prelude's VARIANT
+    // CONSTRUCTORS (`None`/`Some`/`Ok`/`Err`): a variant is a value, member-inaccessible AND not a type, so
+    // suggesting `Nope`→`None` in `(. Nope op)` / `(: x Nope)` position would fail the one-shot rule. A
+    // variant name is one some sum declares; collect that set and skip it. (A prelude MODULE/TYPE like
+    // `Bytes`/`Int64` — the valid target in both non-value positions — is not a variant name, so it stays.)
+    let variant_names: std::collections::HashSet<&str> = if non_value_position {
+        db.type_decls
+            .iter()
+            .flat_map(|t| t.variants.iter().map(|v| v.name.as_str()))
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     for key in db.prelude.keys() {
+        if non_value_position && variant_names.contains(key.as_str()) {
+            continue;
+        }
         candidates.push(key.clone());
     }
     crate::diag::suggest::nearest(name, candidates)
@@ -1823,11 +1872,15 @@ fn resolve_quote(db: &Db, id: StructId) -> Resolved {
 /// pattern/body stay AST occurrences (resolved on their own demand); this records only the shape. Each
 /// arm must be a two-element `(pattern body)` list. A `match` with no arms is malformed.
 fn resolve_match(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a match is `(match <scrutinee> (<pattern> <body>)…)`";
     let tail = db.ast.as_form(id, "match").unwrap_or(&[]);
     let scrutinee = match tail.first() {
         Some(&s) => s,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "match has no scrutinee"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this match has no scrutinee — {SHAPE}"),
+            ));
         }
     };
     let mut arms: Vec<(StructId, StructId)> = Vec::new();
@@ -1837,13 +1890,16 @@ fn resolve_match(db: &Db, id: StructId) -> Resolved {
             _ => {
                 return Resolved::Poison(Reject::coded(
                     Code::Malformed,
-                    "a match arm must be (pattern body)",
+                    format!("a match arm must be `(<pattern> <body>)` — {SHAPE}"),
                 ));
             }
         }
     }
     if arms.is_empty() {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "match has no arms"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("this match has no arms — {SHAPE}"),
+        ));
     }
     Resolved::Match { scrutinee, arms }
 }
@@ -2025,38 +2081,64 @@ fn resolve_pipeline(db: &Db, id: StructId) -> Resolved {
 /// arm body finds its binder), so here we only record the shape. A malformed arm or a missing
 /// init/body is a `Poison`.
 fn resolve_handle(db: &Db, id: StructId) -> Resolved {
+    // Every malformed-handle message shows the FULL canonical SURFACE shape, so a truncated form teaches
+    // the author every part it needs. Vocab is the surface's: the state the handler establishes is the
+    // "seed" (`capabilities-and-effects.md` §A Handler Discharges Its Effect / the corpus header), never
+    // the internal "init state". A too-short tail reaches here UN-desugared (the effect-promotion rewrite
+    // fires only on the well-formed 5-child form), so its children are shifted by one versus the well-
+    // formed post-desugar tail — meaning we CANNOT reliably name WHICH part is missing (tail[0] might be
+    // the effect or the seed). So a too-short handle is reported as incomplete, not mis-enumerated; the
+    // shape carries the fix.
+    const SHAPE: &str =
+        "a handle is `(handle <effect> <seed> ((<op> (params…) <state> <body>)…) <body>)`";
     let tail = db.ast.as_form(id, "handle").unwrap_or(&[]);
     let init = match tail.first() {
         Some(&s) => s,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no init state"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this handle is empty — {SHAPE}"),
+            ));
         }
     };
     let arms_occ = match tail.get(1) {
         Some(&a) => a,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this handle is incomplete — {SHAPE}"),
+            ));
+        }
     };
     let body = match tail.get(2) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this handle is incomplete — {SHAPE}"),
+            ));
+        }
     };
     // The arms list `((E.op (p…) s body) …)`. Each arm has FOUR parts: op projection, param list, state
     // binder, arm body.
     let Struct::List(arm_nodes) = db.ast.get(arms_occ) else {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "handle arms must be a list"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("this handle's arms must be a list of arms — {SHAPE}"),
+        ));
     };
     let mut arms = Vec::new();
     for &arm in arm_nodes {
         let Struct::List(parts) = db.ast.get(arm) else {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "a handle arm must be (op (params…) state body)",
+                "a handle arm must be `(<op> (params…) <state> <body>)`",
             ));
         };
         if parts.len() != 4 {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "a handle arm must be (op (params…) state body)",
+                "a handle arm must be `(<op> (params…) <state> <body>)`",
             ));
         }
         let op = parts[0];
@@ -2073,7 +2155,12 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
         });
     }
     if arms.is_empty() {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!(
+                "this handle has an empty arm list — a handler must bind every operation its effect declares. {SHAPE}"
+            ),
+        ));
     }
     Resolved::Handle { init, arms, body }
 }
@@ -2082,15 +2169,24 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
 /// resolved on demand. Meaningful only inside a handler arm (the enclosing arm's lowering consumes it);
 /// a stray `resume` declines at lowering. A missing value or next-state is a `Poison`.
 fn resolve_resume(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a resume is `(resume <value> <next-state>)`";
     let tail = db.ast.as_form(id, "resume").unwrap_or(&[]);
     let value = match tail.first() {
         Some(&v) => v,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no value")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this resume has no value or next-state — {SHAPE}"),
+            ));
+        }
     };
     let next_state = match tail.get(1) {
         Some(&s) => s,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no next state"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this resume has no next-state — {SHAPE}"),
+            ));
         }
     };
     Resolved::Resume { value, next_state }
@@ -2100,21 +2196,32 @@ fn resolve_resume(db: &Db, id: StructId) -> Resolved {
 /// delegated effects' name occurrences; `body` the delegated computation. A missing effect list or body
 /// is a `Poison`.
 fn resolve_host(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a host is `(host (<effect>…) <body>)`";
     let tail = db.ast.as_form(id, "host").unwrap_or(&[]);
     let effects_occ = match tail.first() {
         Some(&e) => e,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no effect list")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this host has no effect list and no body — {SHAPE}"),
+            ));
+        }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this host has no body — {SHAPE}"),
+            ));
+        }
     };
     let effects = match db.ast.get(effects_occ) {
         Struct::List(es) => es.clone(),
         _ => {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "host effects must be a list",
+                format!("this host's effects must be a list — {SHAPE}"),
             ));
         }
     };
@@ -2124,18 +2231,32 @@ fn resolve_host(db: &Db, id: StructId) -> Resolved {
 /// Resolve `(let (BINDINGS) BODY)` into its resolved form. The bindings are `(name init)` pairs; scope
 /// is handled by the parent-walk (a reference finds its binder), so here we only record the shape.
 fn resolve_let(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a let is `(let ((<name> <init>)…) <body>)`";
     let tail = db.ast.as_form(id, "let").unwrap_or(&[]);
     let bindings_occ = match tail.first() {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "let has no bindings")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this let has no bindings and no body — {SHAPE}"),
+            ));
+        }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "let has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this let has no body — {SHAPE}"),
+            ));
+        }
     };
     let pairs = binding_pairs(db, bindings_occ);
     if pairs.is_empty() {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "let bindings are malformed"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}"),
+        ));
     }
     Resolved::Let {
         bindings: pairs,
@@ -2262,20 +2383,12 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 args.push(decode_ty(db, a)?);
             }
             let decl = StructId(decl);
-            // NEWTYPE NORMALIZATION: an erasable single-variant sum is a NOMINAL type — its runtime box
-            // is erased, so it decodes to `Ty::Nominal { inner }` (the underlying structural type
-            // precomputed at load), NOT a boxed `Ty::Sum`. This is the ONE chokepoint every monomorphic
-            // sum type flows through (a sum record's `(meta t)`, a ctor's result, a `(: x T)`
-            // annotation), so the `Sum`↔`Nominal` choice is uniform. A non-erasable decl (multi-variant /
-            // recursive / sum-carrying) is absent from the map and stays a boxed `Ty::Sum`.
-            if let Some(inner) = db.newtype_inner.get(&decl) {
-                return Some(Ty::Nominal {
-                    decl,
-                    name,
-                    inner: Box::new(inner.clone()),
-                });
-            }
-            Some(Ty::Sum { decl, name, args })
+            // NEWTYPE NORMALIZATION via the shared `Db::normalize_sum` — the ONE place the `Sum`↔`Nominal`
+            // decision + generic template substitution lives, so this wire-decode path agrees with
+            // `eval::reduce_sum_ctor` (the generic ctor `(Box Int64)` type-application path). An erasable
+            // newtype decl decodes to `Ty::Nominal { inner }` (its stored template with `args` substituted
+            // for the param vars); a non-erasable decl stays a boxed `Ty::Sum`.
+            Some(db.normalize_sum(decl, name, args))
         }
         // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the dual of `eval::encode_ty`'s
         // `Nominal` arm. Carries its own encoded `inner`, so it round-trips independently of
@@ -2443,16 +2556,25 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
 /// (the ordinary parameter-scope mechanism, via `binder_in`). A type-lambda like `(fn (a) (-> (Int a)
 /// …))` is just this — `a` is an ordinary parameter, not a special "type variable".
 fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a fn is `(fn (<param>…) <body>)`";
     let tail = db.ast.as_form(id, "fn").unwrap_or(&[]);
     let params_occ = match tail.first() {
         Some(&p) => p,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no parameter list"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this fn has no parameter list and no body — {SHAPE}"),
+            ));
         }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this fn has no body — {SHAPE}"),
+            ));
+        }
     };
     // The parameter occurrences (each a bare name). Collected into the `Arc<[StructId]>` the variant
     // holds (a refcounted slice — cloning the lambda is then O(1)).
@@ -2461,7 +2583,7 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
         _ => {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "fn parameters must be a list",
+                format!("this fn's parameters must be a list — {SHAPE}"),
             ));
         }
     };

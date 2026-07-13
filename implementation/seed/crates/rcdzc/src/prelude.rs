@@ -1679,10 +1679,11 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
         signed,
         width,
     ));
-    // Operations not yet realized — present, but their value declines when projected. `of` (the CHECKED
-    // conversion) returns `Option<T>`; sum types now exist, so what remains is wiring `.of` to build a
-    // `(Some v)` in range / `(None)` out (task #59) — until that lands it stays an unrealized field.
-    fields.push(unrealized_field(ast, "of"));
+    // `of` — the CHECKED (trapping) conversion into this width: in range → the value at the target type,
+    // out of range → a TRAP (numeric-model.md §A Conversion Between Integer Types Is Explicit). The
+    // range-checked companion of `wrap`; NOT `Option`-returning (the overflow-fallible forms are the
+    // `checked-add`/`checked-mul` fields above).
+    fields.push(of_field(ast, signed, width));
     let mut children = vec![head];
     children.append(&mut fields);
     push_list(ast, children)
@@ -1728,6 +1729,50 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(wrap record)`.
     let k = push_atom(ast, Leaf::Name("wrap".to_string()));
+    push_list(ast, vec![k, record])
+}
+
+/// A `(of (record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic checked-of))))` field — the module's
+/// CHECKED conversion. Identical SHAPE to `wrap_field` (`TYPE-LAMBDA` = `(fn (a) (-> (Int a) TARGET))`:
+/// a fully-polymorphic source integer `(Int a)` → this module's own concrete `TARGET`), so the target
+/// width is read off the application's solved type at lowering exactly as `wrap`'s is. The ONLY
+/// difference is the intrinsic — `checked-of`, which TRAPS on an out-of-range value where `wrap`
+/// truncates. One prim serves every target width (no pair-explosion), like `wrap`.
+fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
+    // `(fn (a) (-> (Int a) TARGET))`.
+    let int_a = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![int, a])
+    };
+    let target = {
+        let ctor = push_atom(
+            ast,
+            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
+        );
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let arr = push_atom(ast, Leaf::Name("->".to_string()));
+    let body = push_list(ast, vec![arr, int_a, target]);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic checked-of)))`.
+    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim = intrinsic_node(ast, "checked-of");
+    let apply_field = meta_field(ast, "apply", prim);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    // `(of record)`.
+    let k = push_atom(ast, Leaf::Name("of".to_string()));
     push_list(ast, vec![k, record])
 }
 
