@@ -10073,6 +10073,60 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wrong_type_variant_payload_is_a_malformed_construction() {
+        // A variant constructor is a single-arity function whose argument is checked against its DECLARED
+        // payload type (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function). A wrong-type
+        // / wrong-arity payload is a MALFORMED construction (CDZ0201, a structural sum-shape violation),
+        // the code the corpus assigns — NOT the generic unify mismatch (CDZ0203) an ordinary function's
+        // argument mismatch gets. The reclassification is on the SAME instantiated-and-substituted unify
+        // the generic application takes, so a GENERIC/nested construction is not over-rejected.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Wrong-type scalar payload (String where Int64 declared), wrong-arity tuple payload → CDZ0201.
+        assert_eq!(
+            code("(type T (Mk Int64)) (def (main) (T.Mk \"x\"))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            code("(type W (Wt (Tuple Int64 Int64))) (def (main) (W.Wt (tuple 1 2 3)))").as_deref(),
+            Some("CDZ0201")
+        );
+        // NO OVER-REJECTION: a GENERIC variant accepts any payload type; a nested construction is fine.
+        assert_eq!(
+            code("(def (main) (match (Some true) ((Some x) (if x 1 0)) (None 0)))"),
+            None
+        );
+        assert_eq!(
+            code("(def (main) (match (Ok (Err 9)) ((Ok (Ok n)) n) ((Ok (Err e)) e) ((Err _) -2)))"),
+            None
+        );
+        // An ordinary (non-constructor) function's argument mismatch stays CDZ0203, not reclassified.
+        assert_eq!(
+            code("(def (main) (if (< 1 true) 1 0))").as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call

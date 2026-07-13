@@ -2885,11 +2885,12 @@
 (case "a unary variant applied to a wrong-arity tuple payload is a type error"
   (doc    "`(type T (Pair (Tuple Int64 Int64)))` declares `T.Pair` with payload type `(Tuple Int64 Int64)`,
            so `(T.Pair (tuple 1 2 3))` applies it to a three-element tuple where a two-element one is
-           declared — a type mismatch the compiler MUST reject (CDZ0203): a tuple's length is part of its
-           type (type-system.md #A Tuple Is Reshaped Positionally, #The Structural Types Are Record, Tuple,
-           And Sum), so the arities do not unify, exactly as the scalar unary-variant case (`(T.Mk \"x\")`)
-           above. Pins that the unary-variant payload-type check covers a COMPOUND (tuple) payload, not
-           only scalars/String/List/Record: a compiler that skips the tuple payload constructs `(T.Pair
+           declared — a malformed construction the compiler MUST reject (CDZ0201): a tuple's length is part
+           of its type (type-system.md #A Tuple Is Reshaped Positionally, #The Structural Types Are Record,
+           Tuple, And Sum), so the payload does not match the declared shape, exactly as the scalar
+           unary-variant case (`(T.Mk \"x\")`) above (same CDZ0201, a wrong-payload construction). Pins that
+           the unary-variant payload-type check covers a COMPOUND (tuple) payload, not only
+           scalars/String/List/Record: a compiler that skips the tuple payload constructs `(T.Pair
            (tuple 1 2 3))` and lets a downstream `(. p 2)` project a position the declared two-element
            payload lacks, yielding 3 — a wrong value the declared arity forbids. A generation that does not
            yet check a tuple-typed payload declines rather than constructing the mistyped value.")
@@ -2897,7 +2898,7 @@
   (input     (do
                (type T (Pair (Tuple Int64 Int64)))
                (def (main) (T.Pair (tuple 1 2 3))) (export main)))
-  (error     CDZ0203))
+  (error     CDZ0201))
 
 (case "a variant carrying a RECORD payload constructs and matches"
   (doc    "The Record-payload companion of the Tuple-payload cases: `(type P (Pt (Record (x Int64) (y

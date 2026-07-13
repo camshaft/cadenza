@@ -1381,7 +1381,27 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                 let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
                 if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter (type fault)");
-                    out.push(reject);
+                    // A wrong-type payload to a VARIANT CONSTRUCTOR — `(T.Mk "x")` for `(Mk Int64)` — is a
+                    // MALFORMED construction (`CDZ0201`), the code the corpus assigns a constructor applied
+                    // to a wrong-type/wrong-arity payload (the typed-payload companion of the nullary-Unit
+                    // check above). It flows through this SAME instantiated-and-substituted unify as any
+                    // application — so a GENERIC/nested construction (`(Ok (Err 9))`, `(Some (None))`) is
+                    // NOT over-rejected — only the diagnostic CODE is specialized: a variant-ctor head
+                    // reclassifies the unify mismatch from the generic `CDZ0203` to the structural
+                    // `CDZ0201`. A non-ctor head (an ordinary function, an operator) keeps `CDZ0203`.
+                    if crate::eval::variant_disc_of(db, head).is_some() {
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "a variant constructor's payload has declared type {}, but a value of \
+                                 type {} was applied",
+                                subst.apply(&param).render_name(),
+                                subst.apply(&at).render_name()
+                            ),
+                        ));
+                    } else {
+                        out.push(reject);
+                    }
                 }
                 cur = *result;
             }
