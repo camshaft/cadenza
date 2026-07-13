@@ -578,3 +578,35 @@
               (export main)))
   (call   main (: 7 Int64))
   (output (: 5 Int64)))
+
+(case "a runtime bin match binds the tail after a fixed header via a final rest segment"
+  (doc    "A `(bin …)` pattern ending in a FINAL UNSIZED `(bytes rest)` over a RUNTIME scrutinee: a fixed
+           one-byte header then a variable-length tail. The length probe accepts any length `>= 1` (the
+           header, not an exact width), the header binds via a fixed-offset read, and the tail binds as
+           `bytes-slice(scrutinee, 1, len - 1)`. Built from a runtime tag with a three-byte payload, so
+           `rest` is those three bytes and `Bytes.len rest = 3`. Pins the header-plus-rest parser shape —
+           a tag followed by an opaque remainder — over a runtime value.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64))
+                (let ((payload (Bytes.of (list 1 2 3))))
+                  (match (bin (u8 n) (bytes payload))
+                    ((bin (u8 t) (bytes rest)) (Bytes.len rest))
+                    (_ -9))))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 3 Int64)))
+
+(case "a runtime final rest segment binds the empty tail when the scrutinee is only the header"
+  (doc    "The final `(bytes rest)` binds an EMPTY tail when the runtime scrutinee is exactly the fixed
+           header: `bytes-len >= 1` still holds (the header is present), and the tail slice is `[1, 0)` —
+           an empty Bytes, so `Bytes.len rest = 0`. Pins that a rest segment absorbs zero remaining bytes
+           without trapping (the degenerate case of the header-plus-rest parser).")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64))
+                (let ((payload (Bytes.of (list))))
+                  (match (bin (u8 n) (bytes payload))
+                    ((bin (u8 t) (bytes rest)) (Bytes.len rest))
+                    (_ -9))))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: 0 Int64)))

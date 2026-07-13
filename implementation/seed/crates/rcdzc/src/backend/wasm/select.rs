@@ -283,7 +283,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             .any(|s| binding_escapes(db, s.value, binder, false)),
         // A `BinIntRead` reads (borrows) its bytes operand to decode a segment — a binding used as the
         // scrutinee flows in; treat like a projection operand (does not consume-escape).
-        Core::BinIntRead { bytes, .. } => binding_escapes(db, bytes, binder, false),
+        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+            binding_escapes(db, bytes, binder, false)
+        }
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
         Core::ListPush { list, elem } => {
@@ -682,6 +684,14 @@ pub fn collect_used_ops(
         // A `BinIntRead` reads its segment bytes with `bytes-get`.
         Core::BinIntRead { bytes, .. } => {
             out.insert(OP_BYTES_GET);
+            collect_used_ops(db, bytes, out);
+        }
+        // A `BinRestRead` slices the tail: `dup` the shared scrutinee, then `bytes-slice(bytes, off,
+        // bytes-len - off)` on the copy.
+        Core::BinRestRead { bytes, .. } => {
+            out.insert(OP_DUP);
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_SLICE);
             collect_used_ops(db, bytes, out);
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
@@ -2466,6 +2476,34 @@ fn emit(
                 out.push(Lir::I64ShrS); // arithmetic → sign-extended
             }
             Ok(()) // leaves [value:i64]
+        }
+        // A `BinRestRead` binds a FINAL unsized `(bytes rest)` segment: the tail of the scrutinee after
+        // the fixed int prefix, as a fresh `Bytes` handle. Emit `bytes-slice(bytes, off, bytes-len - off)`.
+        // `bytes` is the materialized scrutinee (a `LocalRef` — a borrow shared by every arm), but
+        // `bytes-slice` CONSUMES its source handle, so DUP the scrutinee first (rc++) and slice the copy;
+        // the original stays live for the enclosing `let`'s scope-end drop. `off` is a static u32 (the sum
+        // of the preceding int widths); the length is `bytes-len - off`, computed at i32 width (both are
+        // non-negative and `off <= bytes-len` since the arm's length probe already required `len >= off`).
+        Core::BinRestRead { bytes, byte_offset } => {
+            // dup(handle) pops the handle and rc++'s it, returning nothing — so `tee` it into a scratch
+            // slot, dup that copy, then get it back as the slice source. The slot is typed i32 (a handle).
+            let handle_slot = base;
+            if handle_slot + 1 > *high {
+                *high = handle_slot + 1;
+            }
+            scratch_ty.insert(handle_slot, ValType::I32);
+            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalTee(handle_slot)); // [bytes], slot = bytes
+            out.push(Lir::CallImport(OP_DUP)); // pops the copy, rc++ → []
+            // Slice source (the retained, rc-incremented handle), then start = off, then len = bytes-len - off.
+            out.push(Lir::LocalGet(handle_slot)); // [bytes] (owned copy for bytes-slice to consume)
+            out.push(Lir::ConstI32(byte_offset as i32)); // [bytes, off]
+            out.push(Lir::LocalGet(handle_slot)); // [bytes, off, bytes]
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [bytes, off, len:i32] (borrows)
+            out.push(Lir::ConstI32(byte_offset as i32));
+            out.push(Lir::I32Sub); // [bytes, off, len - off]
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [slice-handle] (consumes the copied bytes)
+            Ok(()) // leaves [rest:bytes-handle]
         }
         // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
         // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.

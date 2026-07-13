@@ -6600,6 +6600,86 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_bin_match_binds_a_final_rest_bytes_segment_under_wasmtime() {
+        // A `(bin …)` PATTERN ending in a FINAL UNSIZED `(bytes rest)` over a RUNTIME scrutinee: a fixed
+        // int prefix (a header) then a variable-length tail. The length probe uses `bytes-len >= prefix`
+        // (not `==`), the prefix binders read via `BinIntRead`, and the tail binds via `BinRestRead` —
+        // `bytes-slice(scrutinee, prefix, len - prefix)`. We measure the tail's length so `main` returns a
+        // scalar, proving the slice covers exactly the bytes after the header.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime bin rest match run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // A 1-byte tag then a rest. Build `(bin (u8 5) (bytes payload))` from a runtime `payload` bytes; the
+        // arm binds the tail and returns its length. Payload = the 3-byte `(list 1 2 3)` → rest length 3.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (let ((payload (Bytes.of (list 1 2 3)))) \
+                     (match (bin (u8 n) (bytes payload)) \
+                       ((bin (u8 t) (bytes rest)) (Bytes.len rest)) \
+                       (_ -9)))) (export main))",
+                &["5"]
+            ),
+            "3",
+            "runtime final-rest match: tail length"
+        );
+        // The rest is EMPTY when the scrutinee is exactly the header (len == prefix): `bytes-len >= 1`
+        // still holds, and the tail slice is `[1, 0)` → an empty Bytes → length 0.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (let ((payload (Bytes.of (list)))) \
+                     (match (bin (u8 n) (bytes payload)) \
+                       ((bin (u8 t) (bytes rest)) (Bytes.len rest)) \
+                       (_ -9)))) (export main))",
+                &["7"]
+            ),
+            "0",
+            "runtime final-rest match: empty tail"
+        );
+        // A 2-byte header (u16 tag) then a rest: the tail starts at offset 2. Payload of 5 bytes → 5.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (let ((payload (Bytes.of (list 9 8 7 6 5)))) \
+                     (match (bin (u16 n) (bytes payload)) \
+                       ((bin (u16 t) (bytes rest)) (Bytes.len rest)) \
+                       (_ -9)))) (export main))",
+                &["300"]
+            ),
+            "5",
+            "runtime final-rest match: 2-byte header, 5-byte tail"
+        );
+        // A length TOO SHORT for even the fixed prefix (built 1 byte, prefix wants 2) → the catch-all,
+        // NOT an out-of-range slice: the `>=` probe fails.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (match (bin (u8 n)) \
+                     ((bin (u16 t) (bytes rest)) (Bytes.len rest)) \
+                     (_ -9))) (export main))",
+                &["5"]
+            ),
+            "-9",
+            "runtime final-rest match: too short for prefix → catch-all"
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the

@@ -296,6 +296,12 @@ pub enum Core {
         signed: bool,
         little_endian: bool,
     },
+    /// Read the FINAL `(bytes rest)` segment out of a runtime `Bytes` scrutinee — the remainder from a
+    /// static `byte_offset` to the end. Emits `bytes-slice(bytes, byte_offset, bytes-len - byte_offset)`
+    /// (the tail after the fixed prefix). The caller (`lower_match_bin`) guarded `bytes-len >= byte_offset`
+    /// (the arm's length probe), so the slice is in bounds. `byte_offset` is static (a final rest after
+    /// fixed-width int segments; a dependent-size `(bytes b n)` with a dynamic offset is a later slice).
+    BinRestRead { bytes: StructId, byte_offset: u32 },
     /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
     /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds

@@ -765,6 +765,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::MapSize { .. }
         | Core::BinBuild { .. }
         | Core::BinIntRead { .. }
+        | Core::BinRestRead { .. }
         | Core::Closure { .. }
         | Core::CallClosure { .. }
         | Core::Captured { .. }
