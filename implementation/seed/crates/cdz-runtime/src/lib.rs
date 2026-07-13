@@ -7260,6 +7260,32 @@ mod tests {
         });
         println!("ALLOC tuple2_build x{N}: {tbuild}");
         assert!(tbuild <= 1200, "tuple2_build x{N} allocs {tbuild} exceeds ceiling 2200 (node Box + 2-elem handles Vec; scalar elements are immediate, raw is empty — this is the ≤2-handle construction floor until handles inline)");
+
+        // (L) value-encode a recursive value (the op-62 escape walker): encode a FIXED 50-element IntList
+        // repeatedly. Each encode builds a fresh value-form document — a leaf pool Vec + struct table Vec
+        // + the output byte Vec + the returned Bytes leaf — so its allocation is INHERENTLY linear in the
+        // value's node count (each Cons/tuple/int emits leaves+structs) and constant per encode. The value
+        // is built ONCE outside the measured loop (only the encode is timed). This row guards against a
+        // regression to per-NODE transient churn or an O(N²) re-walk in the iterative walker (the
+        // `EncodeWork` stack + `out`/`work` Vecs must stay grow-once, not realloc-per-node).
+        let ve_desc = intlist_descriptor();
+        let ve_list = build_intlist(50);
+        const VE_REPS: usize = 100;
+        let venc = measure(&mut || {
+            for _ in 0..VE_REPS {
+                let doc = op_value_encode_form(ve_list, &ve_desc).expect("encode");
+                core::hint::black_box(&doc);
+            }
+        });
+        println!("ALLOC value_encode x{VE_REPS}: {venc}");
+        // MEASURED ~195 allocs/encode of a 50-element IntList (~150 value nodes) = ~1.3 allocs/node: the
+        // DocBuilder's `leaves`/`structs` Vec growth + a per-`list()` children Vec per compound struct +
+        // the output byte Vec + the returned Bytes leaf. LINEAR in the value's node count. The ceiling
+        // catches an O(N²) re-walk or a big per-node transient-Vec regression while tolerating measurement
+        // noise; it does NOT claim the current figure is optimal (the per-`list()` children Vec is the
+        // reducible part, a future tick — value-encode is a host-escape path, not a hot inner loop).
+        assert!(venc <= 24000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 24000 (~195/encode of a 50-node list, linear in node count: leaf/struct Vecs grow-once + a children Vec per compound struct + output + Bytes; an O(N²) re-walk or per-node transient churn would blow past this)");
+        op_drop(ve_list);
     }
 
 

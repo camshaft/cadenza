@@ -4326,6 +4326,112 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_nested_modulo_by_a_dividing_constant_collapses_to_one() {
+        // NESTED-MODULO COLLAPSE: `(% (% v M) N)` → `(% v N)` when `N | M` (both positive constants). `M` is
+        // a multiple of `N`, so reducing mod `M` then mod `N` gives the same residue as mod `N` directly —
+        // `(x % 100) % 10 == x % 10` at every sign (truncated division). One `rem` instead of two. `v` stays
+        // the operand, so its traps survive. A NON-dividing outer (`N ∤ M`) does NOT collapse.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let rems = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64RemS | Lir::I64RemU))
+                .count()
+        };
+        // `N | M` (10 | 100, 5 | 100) collapse to ONE rem; `N ∤ M` (7 ∤ 100) keeps TWO.
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)")),
+            1,
+            "10 | 100 → one rem"
+        );
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 5) Int64)")),
+            1,
+            "5 | 100 → one rem"
+        );
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 7) Int64)")),
+            2,
+            "7 ∤ 100 → two rems"
+        );
+        // Equal divisors collapse too (N | N): `(% (% x 10) 10)` → `(% x 10)`.
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 10) Int64) 10) Int64)")),
+            1,
+            "10 | 10 → one rem"
+        );
+
+        // VALUE PARITY across signs; the non-dividing case computes its (distinct) real result.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 10) Int64)",
+                &[Val::S64(12347)]
+            ),
+            7
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 10) Int64)",
+                &[Val::S64(-25)]
+            ),
+            -5
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 10) Int64)",
+                &[Val::S64(-105)]
+            ),
+            -5
+        );
+        // 7 ∤ 100: (101 % 100) % 7 = 1 % 7 = 1 (NOT 101 % 7 = 3) — the non-collapse is the correct answer.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 7) Int64)",
+                &[Val::S64(101)]
+            ),
+            1
+        );
+        // TRAP PRESERVATION: `v` stays the operand, so a trapping `(/ 100 z)` inside still ÷0-traps.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(% (: (% (: (/ 100 z) Int64) 100) Int64) 10)",
+                &[Val::S64(0)]
+            ),
+            "the nested-modulo collapse keeps a trapping operand's trap"
+        );
+    }
+
+    #[test]
     fn a_signed_pow2_div_of_a_nonneg_dividend_drops_the_round_toward_zero_bias() {
         // A signed `/`/`%` by a power of two normally emits the round-toward-zero BIAS sequence (needed
         // only to correct NEGATIVE dividends). When the dividend is provably NON-NEGATIVE — a mask
@@ -15811,6 +15917,31 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
+        // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
+        // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
+        // `n : Int8` — is CDZ0203, repaired by wrapping the INIT in `(Int64.of n)`. Shares `int_coercion_wrap`
+        // with the other two sites (the D33 lesson: the same repair fires wherever the same mismatch surfaces).
+        let d = first_error("(module m (def (f (: n Int8)) (let (((: x Int64) n)) x)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        let fix = d.fix.expect("a let-binder coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Int64.of {})", crate::abi::WRAP_HOLE),
+            "wraps the INIT value in the annotation type's `.of`"
+        );
+        assert!(!fix.verified, "`.of` is checked → heuristic");
+        // NO over-reach: a Bool init annotated Int64 has no coercion.
+        let d = first_error("(module m (def (f) (let (((: x Int64) true)) x)) (export f))");
+        assert!(
+            d.fix.is_none(),
+            "no coercion fix Bool→Int64 let-binder: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
@@ -20433,6 +20564,36 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "two performs in the handle body must decline the single-hole fold"
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_fold_passes_a_perform_arg_and_reads_the_seed_state() {
+        // The perform may take a PURE non-trivial ARG the op reads, and the arm may read the SEED state —
+        // both substitute correctly on the pure spine (nothing runs before the perform, so the state seen
+        // is the init seed). (A) `pick(x)` resumes `x*2`; body `(+ 1 (Amb.pick (+ 2 3)))`, arm
+        // `(+ 0 (resume (* x 2) s))`, x=5 → resume 10, `C=(+ 1 □)` → `(+ 0 (+ 1 10))` = 11.
+        let arg_passing = "(do (effect Amb (op pick (-> Int64 Int64))) \
+                   (def (main) (handle Amb 0 ((pick (x) s (+ 0 (resume (* x 2) s)))) (+ 1 (Amb.pick (+ 2 3))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(arg_passing)))
+                    .expect("a perform arg passes through the fold"),
+                "main"
+            ),
+            11
+        );
+        // (B) the arm READS the state `(+ s (resume 10 s))` with a NON-ZERO seed 7. On a pure spine the
+        // state at the perform is the seed, so `s = 7`; `C=(+ 100 □)` → `(+ 7 (+ 100 10))` = 117.
+        let reads_seed = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 7 ((flip (u) s (+ s (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(reads_seed)))
+                    .expect("a state-reading arm folds against the seed"),
+                "main"
+            ),
+            117
         );
     }
 

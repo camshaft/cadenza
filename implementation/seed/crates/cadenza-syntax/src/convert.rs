@@ -2,6 +2,17 @@
 //! the **s-expression** text, and the **ML** text. All three are projections of the same
 //! [`Arenas`]; converting is `read into arenas` then `write from arenas`. Pure (no I/O) — the CLI
 //! bin does the file/stdin/stdout plumbing.
+//!
+//! This crate IS the reader/printer surface the compiler exposes — text-to-canonical-binary (a
+//! `read`) and canonical-binary-to-text (a `print`) — so the knowledge of a value's textual form lives
+//! here, not in a host; and the text a printer produces is the value's canonical text (a structurally-
+//! equal value prints identical text):
+//!
+//= spec/capabilities/self-hosting-surface.md#the-reader-printer-and-display-are-compiler-exposed-surfaces
+//# The reader, printer, and display conversion MUST be surfaces the compiler exposes — text-to-canonical-binary, canonical-binary-to-text, and typed-result-to-text — rather than logic any host embeds, so that the knowledge of a value's textual form lives in the compiler and a host stays value-agnostic (host-interface-binding.md §The Host Formats Nothing).
+//!
+//= spec/capabilities/self-hosting-surface.md#the-reader-printer-and-display-are-compiler-exposed-surfaces
+//# The text form the printer produces for a value MUST be the value's canonical text form, so that two runs producing structurally-equal values print identical text.
 
 use crate::ast::Arenas;
 use crate::{codec, parser, sexpr};
@@ -101,9 +112,13 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             let text = utf8(input)?;
             let parsed = parser::read_ml(text);
             if let Some(err) = parsed.errors.first() {
+                // Render the position as `line:col`, not a raw byte offset an editor/user can't place —
+                // the same shape `cdz check` gives an ML parse error (the source is in hand here, so the
+                // mapping is cheap and there is no reason to leak the byte number).
+                let (line, col) = crate::query::driver::line_col(text, err.span.start);
                 return Err(ConvertError(format!(
-                    "ML parse error at byte {}: {}",
-                    err.span.start, err.message
+                    "ML parse error at {line}:{col}: {}",
+                    err.message
                 )));
             }
             Ok(parsed.arenas)
@@ -186,6 +201,18 @@ fn utf8(input: &[u8]) -> Result<&str, ConvertError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ml_parse_error_renders_line_col_not_a_byte_offset() {
+        // A `read(.., Ml)` parse error names the position as `line:col` (matching `cdz check`), not a
+        // raw byte offset a user/editor can't place. A second-line error reports line 2.
+        let err = read("let x = 1\n  @bad".as_bytes(), Format::Ml).unwrap_err();
+        assert!(
+            err.0.contains("at 2:") && !err.0.contains("byte"),
+            "expected a line:col position, no raw byte offset; got {}",
+            err.0
+        );
+    }
 
     #[test]
     fn format_names() {
