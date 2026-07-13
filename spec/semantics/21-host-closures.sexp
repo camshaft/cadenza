@@ -557,3 +557,38 @@
               (export mk) (export app)))
   (call   app (: 1 Int64))
   (output (: 100 Int64)))
+
+; CLOSURE BODY RICHNESS — the boundary machinery is agnostic to what the closure's body DOES; these witness
+; body constructs (a `match`, a multi-binding `let`, several captures + args at once) crossing and
+; dispatching correctly, a dimension distinct from the arity/capture/multi-export shapes above.
+
+(case "an escaping closure captures two values and takes three arguments"
+  (doc    "`(def (main (: k Int64)) (fn (a b c) (+ (+ (+ a b) c) k)))` — the export param `k` is captured
+           while the closure takes THREE args. `make(100)` (capturing k=100) then `call(1, 2, 3)` = 1 + 2 +
+           3 + 100 = 106. Pins capture composing with a 3-arg call.")
+  (input  (do (def (main (: k Int64)) (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ (+ a b) c) k))) (export main)))
+  (call   main (: 100 Int64) (: 1 Int64) (: 2 Int64) (: 3 Int64))
+  (output (: 106 Int64)))
+
+(case "an escaping closure whose body is a match hits the literal arm"
+  (doc    "`(fn (x) (match x (0 100) (_ x)))` — the closure body is a `match`. `call(0)` takes the literal
+           arm → 100. Pins that a control-flow body (`match`) lowers and dispatches through the closure
+           boundary.")
+  (input  (do (def (main) (fn ((: x Int64)) (match x (0 100) (_ x)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case "an escaping closure whose body is a match hits the wildcard arm"
+  (doc    "The same match-bodied closure, `call(5)` → the wildcard arm → 5. Pins both arms of the closure's
+           `match` dispatch across the boundary.")
+  (input  (do (def (main) (fn ((: x Int64)) (match x (0 100) (_ x)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "an escaping closure whose body binds a multi-variable let"
+  (doc    "`(def (main (: k Int64)) (fn (x) (let ((a (* x 2)) (b (+ x k))) (+ a b))))` — the body binds two
+           locals (one using the captured `k`) then sums. `make(10)` then `call(5)` = (5*2) + (5+10) = 10 +
+           15 = 25. Pins a multi-binding `let` body composing with capture.")
+  (input  (do (def (main (: k Int64)) (fn ((: x Int64)) (let ((a (* x 2)) (b (+ x k))) (+ a b)))) (export main)))
+  (call   main (: 10 Int64) (: 5 Int64))
+  (output (: 25 Int64)))

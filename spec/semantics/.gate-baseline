@@ -765,6 +765,10 @@ pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
+pass	an escaping closure captures two values and takes three arguments
+pass	an escaping closure whose body binds a multi-variable let
+pass	an escaping closure whose body is a match hits the literal arm
+pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
