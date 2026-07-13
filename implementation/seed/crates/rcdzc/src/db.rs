@@ -804,6 +804,21 @@ impl Db {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
     }
 
+    /// Graft `node`'s root under `new_parent` (at child position `child_ix`) so a scope walk from a name
+    /// INSIDE `node` continues up into `new_parent`'s enclosing scope. Used when a fold synthesizes a
+    /// replacement subtree (the effects `reduce_handle` body) that must resolve its FREE variables against
+    /// the site the original form occupied — e.g. a `handle` body referencing an enclosing function's
+    /// parameter. `push_list` leaves a synthesized root's parent `None` (self-contained), which strands a
+    /// free reference as CDZ0101; re-anchoring it to the original site's parent restores the lexical chain.
+    /// Only the ROOT is re-parented — its children already point at it. A no-op if `node` is out of range.
+    pub fn reparent(&mut self, node: StructId, new_parent: Option<StructId>, child_ix: u32) {
+        let ix = node.0 as usize;
+        if ix < self.parent.len() {
+            self.parent[ix] = new_parent;
+            self.child_ix[ix] = child_ix;
+        }
+    }
+
     /// The source NAME of a `let` binding whose value is the occurrence `init`. A `let` binding is a
     /// two-element pair `(name init)` in the bindings list, and a kept `Core::Let` binding is keyed by
     /// its `init` occurrence (see `lower_let`) — so the name is `init`'s FIRST sibling. Reached in O(1)

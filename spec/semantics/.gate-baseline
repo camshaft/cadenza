@@ -205,6 +205,7 @@ pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
+pass	a handle body reads an enclosing function parameter
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler folds a counter across the operations it discharges
@@ -462,6 +463,7 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
+pass	a runtime condition selects an abortive branch reading an enclosing parameter
 pass	a runtime conditional selects its then-branch when the runtime condition holds
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime division by zero traps
