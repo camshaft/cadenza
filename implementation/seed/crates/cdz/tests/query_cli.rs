@@ -1502,6 +1502,26 @@ fn fix_all_wraps_a_no_home_effect_in_a_host_delegation_and_recompiles_clean() {
 }
 
 #[test]
+fn fix_all_widens_an_out_of_range_annotation_and_recompiles_clean() {
+    // CDZ0302's widen fix end-to-end: `(: 999 Int8)` → replace the annotation with `Int16` (the smallest
+    // fitting width), and the repaired file re-checks clean. The widen verifies (recompile, no
+    // regression), so `fix --all` applies it.
+    let dir = scratch_dir("fix_widen");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) (: 999 Int8)) (export main))\n").unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(: 999 Int16)"),
+        "the annotation is widened to the fitting type: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_all_applies_one_wrap_when_a_second_independent_fault_survives() {
     // The message-keyed no-regression baseline: with TWO ungranted effects, applying `(host (A) …)` clears
     // A's CDZ0401 and leaves B's — a PRE-EXISTING fault, not a regression. A node-id-keyed baseline would

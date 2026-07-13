@@ -7266,6 +7266,54 @@ mod match_engine {
     }
 
     #[test]
+    fn an_out_of_range_literal_carries_a_widen_the_annotation_fix() {
+        // CDZ0302 now carries the rustc-style "value doesn't fit; use a wider type" repair: replace the
+        // annotation with the SMALLEST aliased width of the same signedness the literal fits
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). `999` overflows
+        // `Int8` but fits `Int16`.
+        let d = reject_full("(module m (def (main) (: 999 Int8)) (export main))")
+            .expect("999 overflows Int8");
+        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        let fix = d.fix.expect("a widen fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "Int16", "widens to the smallest fitting width");
+        assert!(!fix.verified, "widening is a heuristic — the author confirms intent");
+        // A value that needs the widest width jumps straight there (not an intermediate that still fails).
+        let big = reject_full("(module m (def (main) (: 5000000000 Int8)) (export main))")
+            .expect("5e9 overflows Int8");
+        assert_eq!(
+            big.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Int64"),
+            "5e9 needs Int64: {}",
+            big.message
+        );
+        // Unsigned widens to the unsigned family.
+        let u = reject_full("(module m (def (main) (: 300 UInt8)) (export main))")
+            .expect("300 overflows UInt8");
+        assert_eq!(
+            u.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("UInt16"),
+            "unsigned widens to UInt16: {}",
+            u.message
+        );
+    }
+
+    #[test]
+    fn a_negative_into_unsigned_gets_no_widen_fix() {
+        // Widening never rescues a NEGATIVE literal in an UNSIGNED type (no unsigned width holds a
+        // negative), so CDZ0302 stays the honest bare reject — no misleading widen fix. (Switching to a
+        // signed type is a larger intent guess the compiler must not make.)
+        let d = reject_full("(module m (def (main) (: -5 UInt8)) (export main))")
+            .expect("-5 does not fit UInt8");
+        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        assert!(
+            d.fix.is_none(),
+            "no widen fix for a negative into unsigned: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn a_constant_argument_is_range_checked_against_a_narrow_parameter_width() {
         // A CONSTANT argument passed to a NARROW-typed parameter must be range-checked against the
         // parameter's declared width, exactly as a direct `(: 200 Int8)` is — β-reduction now carries the

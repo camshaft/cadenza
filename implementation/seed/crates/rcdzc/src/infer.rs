@@ -403,12 +403,51 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
         },
     };
     if !v.fits_width(it.ground_signed(), w) {
-        return Some(Reject::coded(
-            Code::IntOutOfRange,
-            int_out_of_range_message(&annot_ty, it.ground_signed(), w),
+        return Some(int_out_of_range_reject(
+            &annot_ty,
+            it.ground_signed(),
+            w,
+            &v,
+            ty_expr,
         ));
     }
     None
+}
+
+/// The CDZ0302 reject for an integer literal `v` that overflows the `(signed, width)` type `annot_ty`,
+/// carrying — when possible — a WIDEN fix: replace the annotation `ty_expr` with the SMALLEST aliased
+/// width ({8,16,32,64}) of the same signedness the literal DOES fit (`(: 999 Int8)` → `Int16`), the
+/// rustc-style "value doesn't fit; use a wider type" repair (`spec/capabilities/diagnostics.md` §A
+/// Diagnostic Carries A Route To A Fix). Only a WIDER width is offered (the search starts above `w`) and
+/// only when one fits — a value beyond `Int64`/`UInt64`, or a NEGATIVE into any UNSIGNED width (which no
+/// widening rescues), gets the bare reject: switching signedness is a larger intent guess the compiler
+/// must not make. Replacing the whole `ty_expr` rewrites either spelling — a bare `Int8` or a `(Int 8)`
+/// compound — to the bare `Int16`. Heuristic: widening clears the range fault, but whether the author
+/// meant a wider type (vs. a different literal) is theirs to confirm. Shared by both CDZ0302 literal-range
+/// sites (the value annotation `(: v T)` and the let-binder/param `((: name T) v)`), so both carry the fix.
+fn int_out_of_range_reject(
+    annot_ty: &Ty,
+    signed: bool,
+    w: u32,
+    v: &crate::ast::IntValue,
+    ty_expr: StructId,
+) -> Reject {
+    let reject = Reject::coded(
+        Code::IntOutOfRange,
+        int_out_of_range_message(annot_ty, signed, w),
+    );
+    match crate::ty::ALIASED_INT_WIDTHS
+        .iter()
+        .copied()
+        .filter(|&aw| aw > w)
+        .find(|&aw| v.fits_width(signed, aw))
+    {
+        Some(fit) => {
+            let stem = if signed { "Int" } else { "UInt" };
+            reject.with_fix(Fix::replace_heuristic(ty_expr, format!("{stem}{fit}")))
+        }
+        None => reject,
+    }
 }
 
 /// The CDZ0302 message for an integer literal that overflows the annotated type: names the type and,
@@ -3606,9 +3645,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         && !v.fits_width(it.ground_signed(), w)
                     {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), "fault: literal does not fit annotated width (CDZ0302)");
-                        out.push(Reject::coded(
-                            Code::IntOutOfRange,
-                            int_out_of_range_message(&annot_ty, it.ground_signed(), w),
+                        out.push(int_out_of_range_reject(
+                            &annot_ty,
+                            it.ground_signed(),
+                            w,
+                            &v,
+                            ty_expr,
                         ));
                     }
                 } else if let (
