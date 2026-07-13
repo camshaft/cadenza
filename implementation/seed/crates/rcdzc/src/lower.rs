@@ -6267,10 +6267,23 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant integer comparison");
                 Core::ConstBool(r)
             }
-            // An operand beyond the fold's machine range — decline (a wider fold arrives with widths).
-            _ => Core::Poison(Reject::decline(
-                "comparison of an integer beyond the machine width is not yet folded",
-            )),
+            // An operand exceeds `i64` range — an UNSIGNED value at/above `2^63` (`UInt64.max = 2^64-1`
+            // does not fit `i64`). Compare by the TRUE numeric value at 128-bit precision: `to_i128`
+            // reads the exact value (any ≤128-bit operand, unsigned or signed), and comparing the true
+            // values is correct for BOTH signednesses — an unsigned value is non-negative, a signed one
+            // carries its sign, so a naive i64-bit-pattern compare (where `UInt64.max` looks like `-1`)
+            // is avoided. This folds `(< (: 0 UInt64) (. UInt64 max))` → true (numeric-model.md §Unsigned
+            // Comparison Orders By Magnitude). A value wider than 128 bits (a BigInt) still declines.
+            _ => match (a.to_i128(), b.to_i128()) {
+                (Some(x), Some(y)) => {
+                    let r = compare_ord(op, x.cmp(&y));
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant integer comparison (i128, wide unsigned)");
+                    Core::ConstBool(r)
+                }
+                _ => Core::Poison(Reject::decline(
+                    "comparison of an integer beyond the machine width is not yet folded",
+                )),
+            },
         },
         (Core::ConstBool(a), Core::ConstBool(b)) => {
             let r = compare_ord(op, a.cmp(&b));

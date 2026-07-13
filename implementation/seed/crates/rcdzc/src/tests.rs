@@ -2351,6 +2351,29 @@ fn an_exported_comparison_runs_over_runtime_args() {
     ));
 }
 
+/// A CONSTANT unsigned comparison whose operand exceeds `i64` range folds by the TRUE numeric value at
+/// 128-bit precision — `(< (: 0 UInt64) UInt64.max)` is true, NOT the `false` a naive i64-bit-pattern
+/// compare (reading `UInt64.max` as `-1`) would give (06-numeric-model §Unsigned Comparison Orders By
+/// Magnitude). The fold uses `to_i128` when `to_i64` overflows, correct for signed and unsigned alike.
+#[test]
+fn a_wide_unsigned_constant_comparison_folds_by_magnitude() {
+    use crate::testkit::parse;
+    let run = |src: &str| {
+        let full = format!("(module m (def (main) {src}) (export main))");
+        run_returns::<bool>(
+            &compile_component(&crate::codec::encode(&parse(&full))).expect("compile"),
+            "main",
+        )
+    };
+    // 0 < UInt64.max (=2^64-1, beyond i64) → true (magnitude order, not the -1 bit pattern).
+    assert!(run("(< (: 0 UInt64) (. UInt64 max))"));
+    // UInt64.max > 0 → true; UInt64.max <= 0 → false.
+    assert!(run("(> (. UInt64 max) (: 0 UInt64))"));
+    assert!(!run("(<= (. UInt64 max) (: 0 UInt64))"));
+    // Equality against itself still holds at the wide value.
+    assert!(run("(= (. UInt64 max) (. UInt64 max))"));
+}
+
 /// `(if (< a b) true false)` is the boolean-coercion no-op — it folds to `(< a b)` and returns exactly
 /// the comparison's value. Running it confirms the fold preserves the boolean result (not inverted).
 #[test]
@@ -21459,12 +21482,7 @@ mod closure_host_resource {
         };
         // funcs = [export0, export1, lifted_inc, lifted_triple] — the two export bodies at emission
         // positions 0,1 (in `order`), the two lifted bodies appended after.
-        let funcs = vec![
-            export_body(0),
-            export_body(1),
-            lifted_inc,
-            lifted_triple,
-        ];
+        let funcs = vec![export_body(0), export_body(1), lifted_inc, lifted_triple];
 
         let mk_export = |name: &str, def: usize| ExportPlan {
             name: name.to_string(),
@@ -21494,7 +21512,7 @@ mod closure_host_resource {
         let makes = vec![
             ClosureMake {
                 export_name: "make-inc".to_string(),
-                export_abs: import_base,     // def 0 at emission position 0
+                export_abs: import_base, // def 0 at emission position 0
                 param_vts: vec![],
             },
             ClosureMake {
