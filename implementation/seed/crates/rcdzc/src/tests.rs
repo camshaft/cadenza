@@ -16873,6 +16873,53 @@ mod stage1 {
     }
 
     #[test]
+    fn a_multi_export_string_declines_by_arity_not_by_type() {
+        // A STRING (and every other heap value: list/bytes/map/set/…) crosses the host boundary FINE as
+        // the SOLE export (the resource-escape path). So a String export ALONGSIDE a second export must
+        // decline by ARITY — "a heap value crosses only as the single export" — NOT by TYPE ("String has
+        // no component boundary representation", the old misleading message that blamed the type and
+        // misdirected a fix). The diagnosis is keyed on the SAME `crosses_as_resource_escape` predicate the
+        // escape gate uses, so every escape-capable type gets the arity message, not just Tuple/Record/Sum.
+        for src in [
+            // two compound (String) exports
+            "(module m (def (aaa) \"first\") (def (bbb) \"second\") (export aaa) (export bbb))",
+            // a compound (String) alongside a scalar
+            "(module m (def (aaa) \"first\") (def (n) 5) (export aaa) (export n))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a multi-export String declines");
+            assert!(
+                err.message.contains("SINGLE export") && err.message.contains("multiple exports"),
+                "a multi-export String must decline by ARITY (single-export), got: {}",
+                err.message
+            );
+            assert!(
+                !err.message.contains("no component boundary representation"),
+                "the message must not blame the TYPE (String crosses fine as the sole export), got: {}",
+                err.message
+            );
+        }
+        // CONTRAST: a String as the SOLE export crosses fine (the resource escape) — the constraint is
+        // arity, not the type.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (greet) \"hello\") (export greet))"
+            )))
+            .is_ok(),
+            "a String as the sole export must cross the boundary"
+        );
+        // NO OVER-REJECTION: a multi-export program with a NOMINAL-over-scalar export still crosses (it
+        // erases to a scalar boundary valtype, so it is not an arity decline).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (uid) (UserId.Mk 42)) (def (n) 5) (export uid) (export n))"
+            )))
+            .is_ok(),
+            "a nominal-over-scalar in a multi-export program crosses as its scalar, not an arity decline"
+        );
+    }
+
+    #[test]
     fn an_escaped_value_with_an_unresolved_type_reports_an_ambiguity_not_an_export_shape_error() {
         // A bare `(None)` returned as the program result has type `(Option ?0)` — the payload is a free
         // variable nothing constrains, so the escaped value has no defined serialization. This is a
