@@ -6496,6 +6496,19 @@ fn arith_identity(
             trace!(target: "rcdzc::fold", node = inner.0, ?op, "idempotent bitwise (OP (OP v w) w) → (OP v w)");
             Some(core_of(db, inner))
         }
+        // ABSORPTION LAW: `x & (x | y)` → `x` and `x | (x & y)` → `x` — a value combined with the DUAL op of
+        // itself-with-anything absorbs to itself. The outer op is `&`/`|` and one operand is an inner op of
+        // the DUAL kind (`| ` under `&`, `&` under `|`) that CONTAINS `x` (either side); the OTHER outer
+        // operand is `x` (`core_equiv`). Result is `x`. DISCARDS the inner op's OTHER operand `y`, so gated
+        // on `is_trap_free(y)` (a trapping `y` must still trap). `x` is returned so its own traps stay. Both
+        // outer orders and both inner-operand positions are tried by `absorption_operand`.
+        Prim::BitAnd | Prim::BitOr
+            if let Some((x, y)) = absorption_operand(db, op, lhs, rhs)
+                && is_trap_free(db, y) =>
+        {
+            trace!(target: "rcdzc::fold", node = x.0, ?op, "absorption law (x OP (x DUAL y)) → x");
+            Some(core_of(db, x))
+        }
         // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
         // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
         // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
@@ -6749,6 +6762,42 @@ fn idempotent_bitwise_collapse(db: &mut Db, op: Prim, lhs: StructId, rhs: Struct
         // The outer operand equals ONE side of the inner op → re-applying `op` by it is a no-op.
         if core_equiv(db, il, outer_w) || core_equiv(db, ir, outer_w) {
             Some(inner)
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
+/// ABSORPTION LAW for an outer `(op lhs rhs)` where `op` is `&` or `|`: when one operand is an inner op of
+/// the DUAL kind (`|` under `&`, `&` under `|`) that contains `x`, and the OTHER outer operand IS `x`
+/// (`core_equiv`), the whole expression absorbs to `x` — `x & (x | y) == x`, `x | (x & y) == x`. Returns
+/// `(x, y)` where `y` is the inner op's OTHER operand (the one absorbed away), so the caller can trap-check
+/// `y` (it is DISCARDED). Both outer orders and both inner-operand positions are tried. `None` when the
+/// shape does not match.
+fn absorption_operand(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId)> {
+    let dual = match op {
+        Prim::BitAnd => Prim::BitOr,
+        Prim::BitOr => Prim::BitAnd,
+        _ => return None,
+    };
+    // `inner` must be `(dual p q)`; `outer_x` must equal one of `p`/`q` (that side is `x`, the other `y`).
+    let check = |db: &mut Db, inner: StructId, outer_x: StructId| -> Option<(StructId, StructId)> {
+        let Core::Arith {
+            op: inner_op,
+            lhs: ip,
+            rhs: iq,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        if inner_op != dual {
+            return None;
+        }
+        if core_equiv(db, ip, outer_x) {
+            Some((outer_x, iq)) // (x, y) — x matched ip, y is iq
+        } else if core_equiv(db, iq, outer_x) {
+            Some((outer_x, ip)) // (x, y) — x matched iq, y is ip
         } else {
             None
         }

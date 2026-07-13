@@ -7541,6 +7541,59 @@ mod runtime_ops {
     }
 
     #[test]
+    fn the_bitwise_absorption_law_folds_to_the_absorbing_operand() {
+        // ABSORPTION LAW: `x & (x | y)` → `x` and `x | (x & y)` → `x` — combining `x` with the DUAL op of
+        // itself-with-anything absorbs to `x`. DISCARDS `y` (the inner op's other operand), so gated on
+        // `is_trap_free(y)`; `x` is returned so its traps stay. A DISTINCT operand does not absorb. Pins the
+        // fold at the Lir level (no or/and) + value/trap parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let bitops = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or | Lir::I64And)).count();
+        // Both laws, both outer orders, both inner-operand positions — all absorb (no or/and remains).
+        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& (: (| x y) Int64) x) Int64)")), 0, "x & (x|y) → x");
+        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (| (: (& x y) Int64) x) Int64)")), 0, "x | (x&y) → x");
+        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& x (: (| x y) Int64)) Int64)")), 0, "outer order");
+        assert_eq!(bitops(&lir("(: x Int64) (: y Int64)", "(: (& (: (| y x) Int64) x) Int64)")), 0, "inner order");
+        // A DISTINCT third operand does NOT absorb — both ops stay.
+        assert_eq!(bitops(&lir("(: a Int64) (: b Int64) (: c Int64)", "(: (& (: (| a b) Int64) c) Int64)")), 2, "distinct c kept");
+
+        // VALUE PARITY.
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (& (: (| x y) Int64) x) Int64)", &[Val::S64(12), Val::S64(10)]), 12);
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (| (: (& x y) Int64) x) Int64)", &[Val::S64(12), Val::S64(10)]), 12);
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (& x (: (| x y) Int64)) Int64)", &[Val::S64(-9), Val::S64(4)]), -9);
+        // TRAP SAFETY: the absorbed-away `y = (/ 100 z)` is discarded — must NOT be dropped, still ÷0.
+        assert!(
+            traps("(: x Int64) (: z Int64)", "(& (: (| x (: (/ 100 z) Int64)) Int64) x)", &[Val::S64(5), Val::S64(0)]),
+            "a trapping absorbed operand must keep its trap"
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
