@@ -376,14 +376,22 @@ the component type. The new work:
   emits G signature groups, EACH a producer(s) + consumer(s): per group its own `resource-new-<g>`/
   `resource-rep-<g>`, its makes (new-<g>), its consumer wrappers (each closure param rep-<g>'d → cell, body
   called, cell dropped). `RtSigGroup { makes, consumers }`; no shared `call-<g>`. +1 serializer unit test
-  (two groups, valid). NEXT for the distinct-sig round-trip: the ENVELOPE (N resource types + producers +
-  consumers, model = `assemble_distinct_sig_resource` + the round-trip inner component), `emit` grouping
-  (producers+consumers by sig → `RtSigGroup`s; replaces the "mixing DIFFERENT signatures" round-trip
-  decline), and `cdz-run` (make-<name> → the group's matching consumer).
-- **REMAINING (all optional, none blocking):** the distinct-sig round-trip ENVELOPE+EMIT+HOST (serializer
-  done); a compound/closure-typed closure ARG-or-RESULT (recursion into the value-heap escape's encode/
-  decode); a closure exported ALONGSIDE a non-closure export; a closure TRANSFORMER (`own<t>` both
-  directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
+  (two groups, valid).
+- **✅✅ DISTINCT-SIG ROUND-TRIP COMPLETE — END-TO-END `@d7e6de1b`.** Produce + consume closures of DIFFERENT
+  signatures, each its own resource type. `envelope::assemble_distinct_sig_roundtrip_resource` (+ inner
+  component + instantiate) publishes per group its producers + consumers; `emit_distinct_sig_roundtrip_resource`
+  groups producers+consumers by signature → `RtSigGroup`/`RtSigGroupAbi` (dispatch routes here when the
+  program's closure signatures aren't all the same); `cdz-run::run_roundtrip_closure` pairs each consumer
+  closure param with the PRODUCER whose result resource type matches. 🔑 TWO BUGS FIXED: (1) all func
+  sections must be uniformly PER-GROUP (makes then consumers) — a makes-flat-then-consumers-flat listing
+  mismatched the envelope's per-group aliases; (2) the core emits 2*G rintr functypes so `defined_type_base
+  = import_base` — else a SELECTED consumer body's `call_indirect(lifted_type_index)` was off by 2*G-1.
+  e2e: appa(t0,I64->I64) adder(10)+appa(5)=15; appb(t1,I64->Bool) isz()+appb(0)=true/appb(5)=false. +3
+  corpus (→54). ⚠ still declines: a closure TRANSFORMER, a >1-closure-param consumer.
+- **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
+  into the value-heap escape's encode/decode); a closure exported ALONGSIDE a non-closure export; a closure
+  TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
+  handle. Everything else DONE.
 
 ## Risks / open questions
 
