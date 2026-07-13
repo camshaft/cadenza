@@ -5583,7 +5583,26 @@ fn emit_operand(
         }
         return Ok(());
     }
-    emit(db, id, slots, base, high, scratch_ty, layout, out)
+    emit(db, id, slots, base, high, scratch_ty, layout, out)?;
+    // WIDTH NORMALIZATION for a CONTROL-FLOW / non-literal operand. `emit_operand` grounds a DIRECT
+    // literal to the op width above; but an operand that is an `if`/`match`/`let` (or any node) whose
+    // BRANCHES are bare deferred-width literals types as its own join — which defaults to Int64 (an i64
+    // slot) — while the enclosing op emits at a NARROW width (an i32 slot). That pushes an i64 into an
+    // i32 op and wasm rejects the module (`expected i32, found i64`). Reconcile HERE, at the consuming
+    // site: when the operand's emitted machine slot is WIDER than the op's, wrap it down (`i32.wrap_i64`).
+    // SOUND: a genuine fixed-width Int64-vs-narrow disagreement is a type FAULT (CDZ0203) that aborts
+    // before emit — so an i64 operand reaching a narrow op is necessarily a deferred literal defaulted to
+    // i64, whose low bits ARE its value; the enclosing op's own range-check then traps a true overflow.
+    // (The reverse — a narrow operand into a wider op — is likewise a fault, so it never reaches here; the
+    // comparison path handles its own pair via `operand_int_ty`, and a direct literal is grounded above.)
+    if matches!(type_of(db, id), Ty::Int(_)) {
+        let op_slot = m_slot(it);
+        let operand_slot = valtype_of(&type_of(db, id));
+        if operand_slot == Some(ValType::I64) && op_slot == ValType::I32 {
+            out.push(Lir::I32WrapI64);
+        }
+    }
+    Ok(())
 }
 
 /// Emit an `if`/`match` branch (or arm) body producing the construct's RESULT type. Both branches must
