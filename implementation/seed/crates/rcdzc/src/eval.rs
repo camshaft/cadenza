@@ -1123,6 +1123,10 @@ pub fn variant_owner_decl(db: &mut Db, id: StructId) -> Option<crate::ast::Struc
     }
     match result {
         Ty::Sum { decl, .. } => Some(decl),
+        // A NEWTYPE constructor's result is `Ty::Nominal` (the erased single-variant sum), whose `decl`
+        // is the same declaration-occurrence identity — so a `(Mk …)` pattern resolves its owning newtype
+        // exactly as a boxed-sum variant resolves its sum.
+        Ty::Nominal { decl, .. } => Some(decl),
         _ => None,
     }
 }
@@ -1930,6 +1934,21 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
                 items.push(encode_ty(db, a));
             }
             db.push_list(items)
+        }
+        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the declared name (for rendering),
+        // the declaration occurrence (the identity, an integer literal), and the encoded UNDERLYING type.
+        // Round-trips with `resolve::decode_ty`'s `"Nominal"` arm. Without this arm the catch-all below
+        // encoded a `Ty::Nominal` as `Unit`, so a ctor arrow `(-> Int64 UserId)` round-tripped through
+        // `reduce_ctor`'s `encode_typeval` to `(-> Int64 Unit)` — the newtype vanished.
+        Ty::Nominal { decl, name, inner } => {
+            let head = db.push_name("Nominal");
+            let nm = db.push_name(name);
+            let d = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(decl.0 as i64),
+                radix: crate::ast::Radix::Dec,
+            });
+            let i = encode_ty(db, inner);
+            db.push_list(vec![head, nm, d, i])
         }
         // A list type-value: `(List <elem>)` — the head then the element type. Round-trips with
         // `decode_ty`'s `"List"` arm.

@@ -233,9 +233,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                         let Some(&head) = heads.next() else {
                             return Ty::Any; // malformed path (fewer heads than Payload steps)
                         };
-                        match payload_ty_at_instantiation(db, head, &cur) {
-                            Some(t) => t,
-                            None => return Ty::Any,
+                        // Over a NOMINAL NEWTYPE the `Payload` step UNWRAPS the tag to its underlying
+                        // type (a runtime no-op — the value is unchanged). `(Mk n)` over a `Ty::Nominal {
+                        // inner: Int64 }` binds `n : Int64`.
+                        if let Ty::Nominal { inner, .. } = &cur {
+                            *inner.clone()
+                        } else {
+                            match payload_ty_at_instantiation(db, head, &cur) {
+                                Some(t) => t,
+                                None => return Ty::Any,
+                            }
                         }
                     }
                     crate::core::PathStep::Elem(i) => match &cur {
@@ -1300,13 +1307,14 @@ pub(crate) fn payload_ty_at_instantiation(
 /// a sum, or no variant's single payload matches — so a wrap is offered only when it would actually
 /// resolve the mismatch. Variants are scanned in declaration order → deterministic.
 fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
-    let Ty::Sum { decl, .. } = expected else {
-        return None;
-    };
+    // Both a boxed `Ty::Sum` and an erased single-variant `Ty::Nominal` newtype offer the wrap: `(: n
+    // Box)` for `(type Box (Wrap Int64))` suggests `(Wrap n)` exactly as `(: n Option)` suggests
+    // `(Some n)` — the ctor is derived from the declaration either way.
+    let decl = nominal_or_sum_decl(expected)?;
     // Snapshot (name, ctor) pairs first — `payload_ty_at_instantiation` borrows `db` mutably, so we
     // cannot hold a `&TypeDecl` across the calls.
     let variants: Vec<(String, StructId)> = db
-        .type_decl_by_occ(*decl)?
+        .type_decl_by_occ(decl)?
         .variants
         .iter()
         .filter_map(|v| v.ctor.map(|c| (v.name.clone(), c)))
@@ -1341,53 +1349,77 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
 ///  3. no payload type mentions the declaration's OWN name (directly or nested). A recursive
 ///     single-variant sum (`(type Stream (More (Tuple Int64 Stream)))`) is NOT erased: its self-reference
 ///     `decode`s to a BOXED `Ty::Sum`, so erasing the outer while the inner stays boxed would be an
-///     inconsistent representation for the same type. It stays a boxed `Ty::Sum` (decline-to-erase).
-// `allow(dead_code)`: N2 lands the predicate + its unit tests; N3 wires it into the solve. Removed then.
-#[allow(dead_code)]
+///     inconsistent representation for the same type. It stays a boxed `Ty::Sum` (decline-to-erase). AND
+///  4. the underlying type is SUM-FREE (no `Ty::Sum`/`Ty::Nominal` anywhere inside). A payload that is
+///     itself a sum/nominal (`(type W (Mk (Option Int64)))`, or a newtype wrapping another newtype) has
+///     a HANDLE runtime representation, and erasing it would conflict with a wrapped newtype's own
+///     erasure — so it stays boxed. This covers every idiomatic newtype (over an int, float, string,
+///     bytes, list, or a tuple of those); nested-sum erasure is a possible follow-up.
+///
+/// **Why this decodes payloads DIRECTLY (not via `scheme_of`).** It is precomputed once at load into
+/// `Db::newtype_inner`, which `decode_ty` then consults to normalize a `Sum` into a `Nominal`. Using the
+/// CACHED `scheme_of` here would cache the ctor's result type as `Sum` (the pre-normalization value),
+/// and that stale scheme would then make `(Mk 42)` type as `Sum` even after `decode_ty` starts returning
+/// `Nominal` — a representation split. Decoding the payload occurrences directly (via `typeval_of`,
+/// uncached for types) avoids seeding any scheme with a soon-to-be-stale result, and the sum-free
+/// restriction makes the result independent of which other decls are already cached.
 pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
-    // Copy out what the predicate needs before the `&mut db` call below (the borrow of `type_decl_by_occ`
-    // is immutable and must end first).
-    let (name, payload_count, ctor, payloads) = {
+    let (payload_count, payloads) = {
         let td = db.type_decl_by_occ(decl)?;
         // (1) exactly one variant, (2) monomorphic.
         if td.variants.len() != 1 || !td.params.is_empty() {
             return None;
         }
         let v = &td.variants[0];
-        (td.name.clone(), v.payloads.len(), v.ctor, v.payloads.clone())
+        (v.payloads.len(), v.payloads.clone())
     };
-    // (3) recursion guard — a payload mentioning the decl's own name is not erasable.
-    if payloads
-        .iter()
-        .any(|&p| subtree_mentions_name(&db.ast, p, &name))
-    {
-        return None;
-    }
     // A NULLARY single variant is a nominal Unit (`(type Marker (The))`).
     if payload_count == 0 {
         return Some(Ty::Unit);
     }
-    // Otherwise the underlying type is the variant's payload type at the (monomorphic) base sum — a
-    // single payload's type, or the `Ty::Tuple` of a multi-payload variant, computed by the same
-    // arrow-peel `payload_ty_at_instantiation` uses. The base scrutinee is the args-less `Ty::Sum`.
-    let ctor = ctor?;
-    let base = Ty::Sum {
-        decl,
-        name,
-        args: Vec::new(),
+    // Decode each payload TYPE occurrence directly to a `Ty` (no `scheme_of` — see the doc comment). A
+    // single payload's type IS the underlying type; multiple payloads box as one tuple (the shape a
+    // multi-payload variant already builds), so the underlying type is their `Ty::Tuple`.
+    let mut tys = Vec::with_capacity(payload_count);
+    for p in payloads {
+        tys.push(crate::eval::typeval_of(db, p)?);
+    }
+    let inner = if tys.len() == 1 {
+        tys.pop().unwrap()
+    } else {
+        Ty::Tuple(tys.into())
     };
-    payload_ty_at_instantiation(db, ctor, &base)
+    // (3) + (4): a self-reference decodes to a `Ty::Sum` naming this decl, and any other sum/nominal
+    // payload is also a `Ty::Sum` here (nothing is normalized yet during the load-time precompute) — the
+    // single sum-free check covers BOTH the recursion guard and the nested-sum restriction.
+    if ty_contains_sum(&inner) {
+        return None;
+    }
+    Some(inner)
 }
 
-/// Whether the arena subtree rooted at `node` contains a NAME atom equal to `name` — the self-reference
-/// probe for the newtype recursion guard. Walks the structure arena; a name atom matches by string.
-#[allow(dead_code)]
-fn subtree_mentions_name(ast: &crate::ast::Arenas, node: StructId, name: &str) -> bool {
-    match ast.get(node) {
-        crate::ast::Struct::Atom(_) => ast.as_name(node) == Some(name),
-        crate::ast::Struct::List(children) => children
-            .iter()
-            .any(|&c| subtree_mentions_name(ast, c, name)),
+/// Whether `ty` contains a `Ty::Sum` or `Ty::Nominal` anywhere (the newtype-erasure sum-free guard) — a
+/// type whose runtime representation involves a nominal handle, which must not be erased into a newtype's
+/// underlying value. Descends the structural compounds (tuple/record/list/fn); the scalar leaves are free.
+fn ty_contains_sum(ty: &Ty) -> bool {
+    match ty {
+        Ty::Sum { .. } | Ty::Nominal { .. } => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_contains_sum),
+        Ty::Record(fields) => fields.values().any(ty_contains_sum),
+        Ty::List(elem) => ty_contains_sum(elem),
+        Ty::Map(k, v) => ty_contains_sum(k) || ty_contains_sum(v),
+        Ty::Qty { inner, .. } => ty_contains_sum(inner),
+        Ty::Fn(p, r) => ty_contains_sum(p) || ty_contains_sum(r),
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Char
+        | Ty::Float(_)
+        | Ty::Type
+        | Ty::Var(_)
+        | Ty::Any => false,
     }
 }
 
@@ -1791,10 +1823,10 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                                 sat.render_name()
                             ),
                         ));
-                    } else if let (Ty::Sum { decl: da, .. }, Ty::Sum { decl: db_, .. }) =
-                        (&sparam, &sat)
+                    } else if let (Some(da), Some(db_)) =
+                        (nominal_or_sum_decl(&sparam), nominal_or_sum_decl(&sat))
                         && da != db_
-                        && same_sum_shape(db, *da, *db_)
+                        && same_sum_shape(db, da, db_)
                     {
                         // Two DISTINCT NOMINAL types (both sums) of the SAME STRUCTURAL SHAPE unified in the
                         // same position — the classic is comparing them, `(= (A.Mk 1) (B.Mk 1))` for
@@ -1859,6 +1891,17 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
 /// Any Structural Type): the tag distinguishes two types that would otherwise be the same shape. Compares
 /// the declared variant names + payload counts (the shape the corpus's disjoint-vs-same-shape cases draw
 /// the line on); it does not descend payload TYPES (a same-names-different-payload edge is out of scope).
+/// The declaration occurrence of a NOMINAL type — a boxed `Ty::Sum` OR an erased `Ty::Nominal` newtype —
+/// so the nominal-boundary comparison (`CDZ0202`) fires for BOTH: a single-variant sum that erased to a
+/// `Ty::Nominal` (`(type A (Mk Int64))`) has the same "distinct declarations of the same shape are not
+/// comparable" property its boxed multi-variant sibling does. `None` for a non-nominal type.
+fn nominal_or_sum_decl(ty: &Ty) -> Option<StructId> {
+    match ty {
+        Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => Some(*decl),
+        _ => None,
+    }
+}
+
 fn same_sum_shape(db: &Db, a: StructId, b: StructId) -> bool {
     let (Some(da), Some(dbecl)) = (db.type_decl_by_occ(a), db.type_decl_by_occ(b)) else {
         return false;

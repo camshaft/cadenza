@@ -2176,10 +2176,43 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             for &a in tail.iter().skip(2) {
                 args.push(decode_ty(db, a)?);
             }
-            Some(Ty::Sum {
+            let decl = StructId(decl);
+            // NEWTYPE NORMALIZATION: an erasable single-variant sum is a NOMINAL type — its runtime box
+            // is erased, so it decodes to `Ty::Nominal { inner }` (the underlying structural type
+            // precomputed at load), NOT a boxed `Ty::Sum`. This is the ONE chokepoint every monomorphic
+            // sum type flows through (a sum record's `(meta t)`, a ctor's result, a `(: x T)`
+            // annotation), so the `Sum`↔`Nominal` choice is uniform. A non-erasable decl (multi-variant /
+            // recursive / sum-carrying) is absent from the map and stays a boxed `Ty::Sum`.
+            if let Some(inner) = db.newtype_inner.get(&decl) {
+                return Some(Ty::Nominal {
+                    decl,
+                    name,
+                    inner: Box::new(inner.clone()),
+                });
+            }
+            Some(Ty::Sum { decl, name, args })
+        }
+        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the dual of `eval::encode_ty`'s
+        // `Nominal` arm. Carries its own encoded `inner`, so it round-trips independently of
+        // `newtype_inner` (an already-built `Ty::Nominal` re-encoded, e.g. through `reduce_ctor`). Name +
+        // decl are the identity/render; `inner` is the underlying structural type.
+        "Nominal" => {
+            let tail = db.ast.as_form(node, "Nominal")?;
+            let name = db.ast.as_name(*tail.first()?)?.to_string();
+            let decl = match db.ast.get(*tail.get(1)?) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => {
+                        value.to_i64().and_then(|n| u32::try_from(n).ok())?
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            let inner = decode_ty(db, *tail.get(2)?)?;
+            Some(Ty::Nominal {
                 decl: StructId(decl),
                 name,
-                args,
+                inner: Box::new(inner),
             })
         }
         // A map type-value: `(Map K V)` — two type arguments (key first, then value), the dual of

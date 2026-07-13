@@ -90,6 +90,12 @@ pub fn emit(
                 // time) has no constant form; `constant_value_form` returns None and it falls through to
                 // the decline below (the looping string-escape walker is a later increment, like a list).
                 | crate::ty::Ty::String
+                // A NOMINAL newtype export crosses as its ERASED underlying value (the tag adds nothing to
+                // the runtime representation): a nominal-over-COMPOUND takes this resource escape (its
+                // constant/runtime value form is the underlying value, with `type_ast` tagging it under the
+                // nominal NAME); a nominal-over-scalar has a scalar boundary valtype and is handled by the
+                // scalar path below (where `export_result_valtype` strips the tag), so both cross faithfully.
+                | crate::ty::Ty::Nominal { .. }
         )
     {
         let body = def_body(db, e.def)?;
@@ -642,6 +648,10 @@ fn resource_escape_dwarf(
                 | crate::ty::Ty::Map(_, _)
                 | crate::ty::Ty::Bytes
                 | crate::ty::Ty::String
+                // A nominal-over-COMPOUND export takes the resource-escape core too (its erased value is
+                // the underlying compound), so the sidecar-DWARF path declines it here alongside the other
+                // compounds — parallel to Mode E's scope.
+                | crate::ty::Ty::Nominal { .. }
         )
     {
         return Ok(None);

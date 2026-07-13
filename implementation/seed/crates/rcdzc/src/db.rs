@@ -296,6 +296,15 @@ pub struct Db {
     /// `type_decls`; identity is the declaration occurrence.
     pub effect_decls: Vec<EffectDecl>,
 
+    /// For each ERASABLE nominal NEWTYPE declaration (a single-variant sum whose box is erased), its
+    /// UNDERLYING structural type — the `inner` of the `Ty::Nominal` its `decl` denotes. Precomputed
+    /// ONCE at load (by `infer::newtype_underlying`) so `resolve::decode_ty` can normalize a `Ty::Sum`
+    /// naming an erasable decl into a `Ty::Nominal` with only `&Db` (the predicate needs `&mut`). A decl
+    /// NOT in this map stays an ordinary boxed `Ty::Sum` (multi-variant / generic / recursive /
+    /// sum-carrying). This is the ONE place the "which sums erase" decision is materialized; every type
+    /// reader consults it via `decode_ty`, so the `Sum`↔`Nominal` choice is uniform across the compiler.
+    pub newtype_inner: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
+
     /// For each `StructId`, the `List` occurrence that holds it as a child, or `None` for the root.
     /// The structure arena is NOT deduplicated, so every occurrence has exactly one parent — this is
     /// one deterministic scan, filled at load. It is what lets `resolve` derive a name's LEXICAL scope
@@ -706,12 +715,13 @@ impl Db {
         // def of that name). A single-file compile carries no linkage, so this stays `None` and every
         // lookup falls through to the flat `def_name_index` — byte-identical to before.
         let file_scope = linkage.map(|lk| build_file_scope(&lk, &defs, &def_by_name));
-        Db {
+        let mut db = Db {
             ast,
             defs,
             exports,
             type_decls,
             effect_decls,
+            newtype_inner: crate::fxhash::FxHashMap::default(),
             parent,
             child_ix,
             scope_skip,
@@ -744,7 +754,20 @@ impl Db {
             types: Column::new(),
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
+        };
+        // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
+        // underlying structural type. `decode_ty` consults this to normalize a `Ty::Sum` naming an
+        // erasable decl into a `Ty::Nominal`, so every type reader agrees on the representation. Run AFTER
+        // the `Db` is built (the predicate uses `typeval_of` over the synthesized ctor payloads) and
+        // BEFORE any type/scheme is computed (so nothing caches a pre-normalization `Sum`). Only USER +
+        // prelude sum decls are probed; a non-newtype decl contributes no entry (stays boxed).
+        let decls: Vec<StructId> = db.type_decls.iter().map(|t| t.occ).collect();
+        for decl in decls {
+            if let Some(inner) = crate::infer::newtype_underlying(&mut db, decl) {
+                db.newtype_inner.insert(decl, inner);
+            }
         }
+        db
     }
 
     /// Enter a β-reduction: on success returns a guard that holds the depth bumped for its lifetime;

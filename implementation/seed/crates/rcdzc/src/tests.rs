@@ -4871,17 +4871,102 @@ mod match_engine {
 
     #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
-        // A multi-payload variant VALUE crossing to the host renders its fields inline under the variant's
-        // BARE name: `(Rec.Mk 1 2 3)` → `(: (Mk 1 2 3) Rec)` (the same variant-name form built-in sums
-        // use). Pins that construction + escape of a 3-field variant (a tuple-payload handle) round-trips
-        // through the resource `encode()`.
+        // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
+        // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and
+        // it crosses the host boundary as that underlying tuple TAGGED with the nominal name — `(Rec.Mk 1
+        // 2 3)` → `(: (tuple 1 2 3) Rec)`. (A nominal value adds nothing to the runtime representation,
+        // `type-system.md §Nominal Is An Orthogonal Modifier`; this is the erased escape, NOT the boxed
+        // `(: (Mk 1 2 3) Rec)` a multi-VARIANT sum's variant would render.) Pins construction + escape of
+        // an erased 3-field struct round-tripping through the resource `encode()`.
         let Some(v) = run_heap_value_escape(
             "(module m (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main))",
         ) else {
             eprintln!("runtime wasm not found; skipping multi-payload escape run");
             return;
         };
-        assert_eq!(v, "(: (Mk 1 2 3) Rec)");
+        assert_eq!(v, "(: (tuple 1 2 3) Rec)");
+    }
+
+    #[test]
+    fn a_newtype_over_a_scalar_constructs_matches_and_erases() {
+        // A single-variant sum over a scalar is a NOMINAL NEWTYPE: `(Mk 42)` constructs (erased to the raw
+        // Int64 — no `sum-new` box), and `(match … ((Mk n) …))` binds `n` directly to the underlying value
+        // (the `Payload` step is a runtime no-op). CONSTANT scrutinee.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (Mk Int64)) \
+                       (def (main) (match (Mk 42) ((Mk n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_scalar_matches_a_runtime_payload() {
+        // The RUNTIME (non-constant) payload path: the payload is behind an `if`, so the match can't fold —
+        // it reads the erased value directly (no `sum-payload`, since the box is gone). Exercises the
+        // `erase_nominal_steps` path (a `[Payload]` walk that drops to an empty path).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Wrap (Mk Int64)) \
+                       (def (main) (match (Mk (if true 42 0)) ((Mk n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_struct_newtype_over_multiple_fields_destructures() {
+        // A multi-payload single variant is a STRUCT: `(Mk 3 4)` erases to the payload TUPLE, and `(Mk x
+        // y)` destructures its elements (`[Payload, Elem(i)]` → the `Payload` erases, the `Elem` reads the
+        // tuple handle).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Point (Mk Int64 Int64)) \
+                       (def (main) (match (Mk 3 4) ((Mk x y) (+ x y)))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn a_nullary_newtype_is_a_unit_tag() {
+        // A nullary single variant `(type Marker (The))` is a nominal Unit — `The` erases to unit (no box),
+        // and `(match The ((The) …))` matches unconditionally.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Marker (The)) \
+                       (def (main) (match The ((The) 99))) (export main))"
+                ),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
+    fn a_newtype_wrong_constructor_pattern_is_a_type_error() {
+        // A `(Some x)` pattern over a `UserId` scrutinee names a constructor of ANOTHER type — a type
+        // confusion the matcher must REJECT (CDZ0203), the nominal analogue of the boxed-sum
+        // wrong-variant-pattern check (identity is by declaration occurrence).
+        assert_eq!(
+            reject_code(
+                "(module m (type UserId (Mk Int64)) \
+                   (def (main) (match (Mk 1) ((Some n) n))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
     }
 
     #[test]

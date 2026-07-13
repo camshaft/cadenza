@@ -499,6 +499,20 @@ impl Ty {
         Ty::Float(FloatTy::f64())
     }
 
+    /// Peel every NOMINAL tag, returning the innermost underlying structural type. A nominal newtype is
+    /// erased at run time (`type-system.md §156` — the tag adds nothing to the representation), so the
+    /// BOUNDARY treats a nominal value exactly as its underlying value: a `(type UserId (Mk Int64))`
+    /// crosses as `Int64`, a `(type Rec (Mk Int64 Int64 Int64))` as its `(Tuple …)`. A non-nominal type
+    /// is returned unchanged. (Nesting is not produced this increment — the guard is sum-free — but peel
+    /// through it anyway so the helper is robust.)
+    pub fn strip_nominal(&self) -> &Ty {
+        let mut t = self;
+        while let Ty::Nominal { inner, .. } = t {
+            t = inner;
+        }
+        t
+    }
+
     /// Whether the type contains an UNRESOLVED type variable ([`Ty::Var`]) — a payload/element/parameter
     /// the inference solve never determined (a bare `(None)` is `Option ?0`; an empty `(list)` is `List
     /// ?0`). Such a type has no defined serialization, so a value of it reaching the HOST BOUNDARY is a
