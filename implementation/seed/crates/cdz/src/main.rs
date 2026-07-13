@@ -792,12 +792,13 @@ fn delete_target(
 /// cleared" (returns `false`), so a fix is confirmed ONLY when the program parses AND the same-code
 /// error is gone. Conservative: it does not require the WHOLE program to be clean (an unrelated
 /// pre-existing error may remain), only that THIS diagnostic's code no longer appears.
-/// The multiset of ERROR-severity diagnostics a source produces, each keyed by `(code, node-id)` — the
+/// The multiset of diagnostics a source produces, each keyed by `(severity, code, message)` — the
 /// baseline a candidate fix is judged against. Returns `None` if the source does not parse/compile at the
-/// entry (a broken edit), so a caller treats an unparseable result as "no clean verdict". The node id is
-/// the diagnostic's ANCHOR (col 2 of the wire), so two independent errors of the same code at different
-/// spots are distinct keys — a fix that clears one but leaves the other is not mistaken for a regression.
-fn program_error_keys(text: &str, is_ml: bool) -> Option<Vec<(String, String)>> {
+/// entry (a broken edit), so a caller treats an unparseable result as "no clean verdict". Tracking
+/// SEVERITY (not just errors) lets a WARNING-clearing fix verify too — a redundant-arm DELETE (CDZ0213, a
+/// warning) clears its warning without touching the error set, which an error-only baseline could never
+/// confirm. Keyed by MESSAGE (see below), not node id, so a renumbering edit does not spuriously regress.
+fn program_diagnostic_keys(text: &str, is_ml: bool) -> Option<Vec<(String, String, String)>> {
     let arenas = if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(text);
         if !parsed.errors.is_empty() {
@@ -820,20 +821,20 @@ fn program_error_keys(text: &str, is_ml: bool) -> Option<Vec<(String, String)>> 
     let bytes = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)?; // no artifact → failed at entry
     let text_out = String::from_utf8_lossy(bytes);
     // The wire is one fault per line: `severity<TAB>code<TAB>node<TAB>fix-kind<TAB>fix-node<TAB>
-    // fix-repl<TAB>fix-verified<TAB>message` (8 cols). Key each ERROR by `(code, MESSAGE)` — NOT the node
-    // id. A fix that RENUMBERS nodes (a wrap/insert shifts every following node's id) would make an
-    // untouched, still-present error land at a different id and look "new", failing the no-regression
+    // fix-repl<TAB>fix-verified<TAB>message` (8 cols). Key each fault by `(SEVERITY, code, MESSAGE)` — NOT
+    // the node id. A fix that RENUMBERS nodes (a wrap/insert shifts every following node's id) would make
+    // an untouched, still-present fault land at a different id and look "new", failing the no-regression
     // check spuriously (`cdz fix --all` would then decline a valid fix when a SECOND independent fault
     // survives). The message text is invariant under renumbering, so it identifies "the same fault"
     // faithfully; two genuinely-distinct faults of one code differ in their message (they name different
     // variants / spots), so they stay distinct keys.
-    let mut keys: Vec<(String, String)> = text_out
+    let mut keys: Vec<(String, String, String)> = text_out
         .lines()
         .filter_map(|line| {
             let cols: Vec<&str> = line.splitn(8, '\t').collect();
             match (cols.first(), cols.get(1), cols.get(7)) {
-                (Some(&"error"), Some(code), Some(msg)) => {
-                    Some((code.to_string(), msg.to_string()))
+                (Some(sev), Some(code), Some(msg)) => {
+                    Some((sev.to_string(), code.to_string(), msg.to_string()))
                 }
                 _ => None,
             }
@@ -849,33 +850,47 @@ fn program_error_keys(text: &str, is_ml: bool) -> Option<Vec<(String, String)>> 
 /// gone), AND (2) the edit introduces NO NEW error — every error the edited program still has was already
 /// present in `baseline`. Condition (2) is what keeps an insert-arms fix HEURISTIC: adding `(Blue unit)`
 /// clears the CDZ0210 but its `unit` PLACEHOLDER body mismatches the other arms' type (a fresh CDZ0203),
-/// so it is not "apply blind" — the author must fill the body. `baseline` is `program_error_keys` of the
-/// ORIGINAL source; `None` means the original itself did not compile (then any edit that yields a clean
-/// parse and clears the code is accepted — there is no baseline to regress against).
-fn fix_verifies(text: &str, is_ml: bool, code: &str, baseline: Option<&[(String, String)]>) -> bool {
-    let Some(after) = program_error_keys(text, is_ml) else {
+/// so it is not "apply blind" — the author must fill the body. `baseline` is `program_diagnostic_keys` of
+/// the ORIGINAL source; `None` means the original itself did not compile (then any edit that yields a clean
+/// parse and clears the fault is accepted — there is no baseline to regress against). `severity` is the
+/// faulting diagnostic's severity ("error"/"warning"): a WARNING-clearing fix (a redundant-arm DELETE,
+/// CDZ0213) verifies the same way an error fix does — condition (1) matches on (severity, code), condition
+/// (2) still guards the ERROR set only (a fix may freely change warnings, but must never introduce an error).
+fn fix_verifies(
+    text: &str,
+    is_ml: bool,
+    severity: &str,
+    code: &str,
+    baseline: Option<&[(String, String, String)]>,
+) -> bool {
+    let Some(after) = program_diagnostic_keys(text, is_ml) else {
         return false; // the edit broke the parse/compile — not a clean fix
     };
-    // (1) an error with this code must be GONE — the edited program has strictly fewer of this code.
-    let count_of = |keys: &[(String, String)], c: &str| keys.iter().filter(|(k, _)| k == c).count();
+    // (1) a fault with THIS (severity, code) must be GONE — the edited program has strictly fewer.
+    let count_of = |keys: &[(String, String, String)], sev: &str, c: &str| {
+        keys.iter().filter(|(s, k, _)| s == sev && k == c).count()
+    };
     let cleared = match baseline {
-        Some(b) => count_of(&after, code) < count_of(b, code),
-        None => !after.iter().any(|(k, _)| k == code),
+        Some(b) => count_of(&after, severity, code) < count_of(b, severity, code),
+        None => !after.iter().any(|(s, k, _)| s == severity && k == code),
     };
     if !cleared {
         return false;
     }
-    // (2) NO NEW error: every remaining error key must have been in the baseline (compared as a multiset,
-    // so an edit that turns one error into two of a kind is caught). A missing baseline waives this — the
-    // original did not compile, so there is nothing to regress.
+    // (2) NO NEW ERROR: every ERROR the edited program still has must have been in the baseline (as a
+    // multiset, so an edit that turns one error into two of a kind is caught). Warnings are NOT guarded —
+    // a fix that clears one warning may leave/introduce others (e.g. deleting a redundant arm could expose
+    // a now-unused binding), which an agent handles on the next pass; only a NEW error blocks the fix. A
+    // missing baseline waives this — the original did not compile, so there is nothing to regress.
     if let Some(b) = baseline {
-        let mut remaining = b.to_vec();
-        for key in &after {
-            match remaining.iter().position(|k| k == key) {
+        let mut remaining: Vec<&(String, String, String)> =
+            b.iter().filter(|(s, _, _)| s == "error").collect();
+        for key in after.iter().filter(|(s, _, _)| s == "error") {
+            match remaining.iter().position(|k| *k == key) {
                 Some(i) => {
                     remaining.swap_remove(i);
                 }
-                None => return false, // a key not accounted for by the baseline — a NEW error
+                None => return false, // an error not accounted for by the baseline — a NEW error
             }
         }
     }
@@ -905,11 +920,11 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
-    // The ORIGINAL program's error set — the baseline `--verify-fixes` judges each candidate fix against
-    // (a fix upgrades to verified only if it clears its code AND introduces no new error). Computed once
-    // (a recompile), only when `--verify-fixes` is set, so plain `check`/`--json` pay nothing.
-    let baseline_errors: Option<Vec<(String, String)>> = if args.verify_fixes {
-        program_error_keys(&source, is_ml_source(&args.file))
+    // The ORIGINAL program's diagnostic set — the baseline `--verify-fixes` judges each candidate fix
+    // against (a fix upgrades to verified only if it clears its fault AND introduces no new error).
+    // Computed once (a recompile), only when `--verify-fixes` is set, so plain `check`/`--json` pay nothing.
+    let baseline_errors: Option<Vec<(String, String, String)>> = if args.verify_fixes {
+        program_diagnostic_keys(&source, is_ml_source(&args.file))
     } else {
         None
     };
@@ -1006,7 +1021,9 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                         surface_of(&args.file),
                     )
                 })
-                .map(|edited| fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()))
+                .map(|edited| {
+                    fix_verifies(&edited, is_ml, severity, code, baseline_errors.as_deref())
+                })
                 .unwrap_or(false)
         } else {
             false
@@ -1124,10 +1141,11 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     };
     let is_ml = is_ml_source(&args.file);
     let surface = surface_of(&args.file);
-    // The ORIGINAL program's error set — the baseline every `--all` candidate is judged against (apply a
-    // heuristic fix only if it clears its code AND introduces no new error). Fixed to the original so a
-    // fix's own downstream warning never reads as a regression across the fixpoint iterations.
-    let baseline_errors: Option<Vec<(String, String)>> = program_error_keys(&source, is_ml);
+    // The ORIGINAL program's diagnostic set — the baseline every `--all` candidate is judged against
+    // (apply a heuristic fix only if it clears its fault AND introduces no new error). Fixed to the
+    // original so a fix's own downstream warning never reads as a regression across the fixpoint iterations.
+    let baseline_errors: Option<Vec<(String, String, String)>> =
+        program_diagnostic_keys(&source, is_ml);
 
     // Apply fixes to a fixpoint, re-loading between each so node ids track the edited text. Each pass
     // applies AT MOST ONE fix (the first applicable one), then re-parses; the loop ends when a pass
@@ -1161,8 +1179,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             if cols.len() < 8 {
                 continue;
             }
-            let (code, fix_kind, fix_node, fix_repl, fix_verified, message) =
-                (cols[1], cols[3], cols[4], cols[5], cols[6], cols[7]);
+            let (severity, code, fix_kind, fix_node, fix_repl, fix_verified, message) = (
+                cols[0], cols[1], cols[3], cols[4], cols[5], cols[6], cols[7],
+            );
             if fix_node == "-" || code == "-" {
                 continue;
             }
@@ -1177,9 +1196,10 @@ fn run_fix(args: &FixArgs) -> ExitCode {
                 continue;
             };
             // Apply a compiler-verified fix always; a heuristic one only under `--all` AND only if it
-            // verifies (clears its code, introduces no new error).
+            // verifies (clears its fault, introduces no new error).
             let apply = fix_verified == "verified"
-                || (args.all && fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()));
+                || (args.all
+                    && fix_verifies(&edited, is_ml, severity, code, baseline_errors.as_deref()));
             if !apply {
                 continue;
             }

@@ -15284,6 +15284,36 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_redundant_arm_warning_carries_a_delete_fix_for_the_whole_arm() {
+        // The rustc-gold repair for an unreachable arm: DELETE it. The warning now carries a `delete` fix
+        // targeting the ARM node (the `(pattern body)` list, the pattern's PARENT) — not the pattern alone
+        // — so applying it removes pattern AND body together. Heuristic: a redundant arm is often a pattern
+        // bug (the author meant a different, reachable pattern), so an agent confirms rather than applies blind.
+        let src = "(module m (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main))";
+        let ws = redundant_arms_of(src);
+        assert_eq!(ws.len(), 1);
+        let fix = ws[0]
+            .fix
+            .as_ref()
+            .expect("a redundant-arm warning carries a delete fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(
+            !fix.verified,
+            "a redundant arm is often a pattern bug — confirm, don't apply blind"
+        );
+        // The fix targets the ARM (`(pattern body)`), which is the PARENT of the warning's pattern node.
+        let db = Db::load(parse(src));
+        let pat = StructId(ws[0].node.expect("the warning carries the dead pattern"));
+        let arm = db
+            .parent_of(pat)
+            .expect("the pattern has an enclosing arm node");
+        assert_eq!(
+            fix.node, arm.0,
+            "the delete targets the whole arm, not just the pattern"
+        );
+    }
+
+    #[test]
     fn a_redundant_arm_warning_anchors_to_the_dead_arms_pattern() {
         // The warning carries the DEAD arm's PATTERN node — a real user node the front-end maps to the
         // redundant arm's span (not a prelude/synthesized id).
