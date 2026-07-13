@@ -894,6 +894,7 @@ pass	an ordering operator with a single operand is rejected, not a crash
 pass	an out-of-range float literal is a malformed literal, not a non-finite value
 pass	an out-of-range integer literal is a malformed literal, not an unbound name
 pass	an outer definition references a sibling nested module by bare name
+pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
