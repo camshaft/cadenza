@@ -298,16 +298,25 @@ the component type. The new work:
   via `Core::CallClosure`), so the wrapper is the ONLY boundary→cell bridge — NO change to `select.rs`'s
   `CallClosure` emit or `closure_type_index` (the closure was lifted in this module; the type index
   resolves by signature). +1 serializer unit test. Gate 1151p/0f.
-- **C-HOST-4 REMAINING (next): emit routing + envelope + host.** (1) `emit_roundtrip_resource` in mod.rs:
-  route a producer(closure-RESULT) + consumer(closure-PARAM) export set; select each consumer body with
-  its closure params typed as Ty::Fn (→ i32 CELL locals — the wrapper reps the handle first), build the
-  `ClosureConsume`/`ClosureMake` specs, call the serializer + a new envelope. The mod.rs:178 guard
-  ("passed AS A PARAMETER") is what this REPLACES. (2) `envelope::assemble_roundtrip_resource` — like the
-  multi-export envelope but each CONSUMER is a plain component FUNC export (not a resource method) whose
-  first param is `own<t>` (model = the oracle's `roundtrip_inner_component`: `apply : (g: own<t>, x) -> R`,
-  re-exported ascribed). (3) `cdz-run` threads a `ResourceAny` returned by a `make` call into a second
-  consumer export call (a NEW driver shape — the corpus needs a `(call producer …)`-then-`(call consumer
-  <handle> …)` form, or a dedicated round-trip fixture). ⚠ scalar closure args/result still.
+- **✅✅ C-HOST-4 COMPLETE — the ROUND-TRIP END-TO-END `@a134b13a`.** The host produces a closure from one
+  export and hands it BACK into another that applies it. All three remaining seams landed: (1)
+  `emit_roundtrip_resource` (mod.rs) routes a producer(closure-RESULT) + consumer(closure-PARAM) export
+  set — consumer bodies select NORMALLY (closure param = i32 cell), the serializer wrapper reps the
+  handed-back handle; the consumer's `call_indirect` resolves against the producer's in-program lifted
+  lambda by signature. Replaced the "passed AS A PARAMETER" decline; a consumer-ONLY program (no producer)
+  still declines (host-fabricated closure = out of scope). (2) `envelope::assemble_roundtrip_resource` +
+  `resource_inner_component_roundtrip` + `component_instantiate_roundtrip_item` — N producer `make-<name>`
+  (exported under the source name in a round-trip, NOT `make-` prefixed) + M consumer funcs, each a plain
+  component func whose first param is `own<t>`, sharing one resource type. (3) `cdz-run::run_roundtrip_closure`
+  — a closure interface with NO `call` method is a round-trip; `(call <consumer> args…)` names the consumer,
+  the driver calls the sole PRODUCER with leading args → a handle, then the consumer with handle + rest.
+  +3 corpus cases (→21p/1todo: make-adder→apply-it, capture-tracking, a consumer applying the closure TWICE)
+  + e2e compiler test (`a_produced_closure_round_trips_through_a_consumer_export`) + a consumer-only decline
+  test. Gate 1167p/0f, baseline 1329. ⚠ scalar closure args/result still; ONE closure param per consumer.
+- **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
+  wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
+  dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak
+  (`envelope.rs:1052`). One fix, two beneficiaries.
 - **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
   wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
   dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak

@@ -96,6 +96,13 @@ pub fn emit(
                 // time) has no constant form; `constant_value_form` returns None and it falls through to
                 // the decline below (the looping string-escape walker is a later increment, like a list).
                 | crate::ty::Ty::String
+                // A SYMBOL export crosses via the resource escape like a String (a symbol has no scalar
+                // boundary valtype — it is a heap-backed name value). Its CONSTANT bytes bake the value
+                // form `(: ((. Symbol of) "…") Symbol)` — the construction form `const_value_ast` renders
+                // from the `Ty::Symbol` type + `Core::ConstStr` rep. A runtime (interned-at-run-time)
+                // symbol has no constant form → `constant_value_form` returns None → falls through to the
+                // decline (the runtime intern + walker is a later increment).
+                | crate::ty::Ty::Symbol
                 // A NOMINAL newtype export crosses as its ERASED underlying value (the tag adds nothing to
                 // the runtime representation): a nominal-over-COMPOUND takes this resource escape (its
                 // constant/runtime value form is the underlying value, with `type_ast` tagging it under the
@@ -168,24 +175,19 @@ pub fn emit(
         return emit_closure_resource(db, layout, e.def, &e.result, spans);
     }
 
-    // DIRECTION 2 (host hands a closure BACK — not yet built): an export whose PARAMETER is a closure
-    // type `(-> …)` — the host would pass a closure resource in, and the body applies it. This needs a
-    // signature-derived `call_indirect` type (a host-origin closure has no in-program lifted lambda for
-    // `closure_type_index` to match) + the `own<closure>` param ABI (recover the cell via `resource.rep`).
-    // Until then, DECLINE with a message that names the feature (rather than the internal "no matching
-    // function type" the select-time `Core::CallClosure` would surface). Applies to any export with a
-    // closure-typed parameter (single- or multi-export). Reject-don't-miscompile: a clean Todo.
-    if layout
-        .exports
-        .iter()
-        .flat_map(|e| e.params.iter())
-        .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
-    {
-        return Err(Reject::decline(
-            "a closure passed AS A PARAMETER to an export (the host handing a closure back) is not yet \
-             supported — it needs a signature-derived indirect-call type and the own<closure> parameter \
-             ABI (DESIGN-closure-host-resource-rcdzc.md, Direction 2 / C-HOST-4)",
-        ));
+    // DIRECTION 2, the ROUND-TRIP (C-HOST-4): an export whose PARAMETER is a closure `(-> …)` — the host
+    // hands a closure resource back in, and the body applies it. Routed to `emit_roundtrip_resource` when
+    // the program ALSO has a PRODUCER export (a closure-RESULT) so the closure the consumer receives was
+    // minted in-guest (its lifted lambda is in-program → the consumer's `call_indirect` resolves by
+    // signature; the consumer body treats its closure param as a cell, and the serializer wrapper
+    // `resource.rep`s the boundary handle → cell). A consumer-ONLY program (a host-fabricated closure)
+    // stays out of scope — `emit_roundtrip_resource` declines it (no producer).
+    if layout.exports.iter().any(|e| {
+        e.params
+            .iter()
+            .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+    }) {
+        return emit_roundtrip_resource(db, layout, spans);
     }
 
     // MULTI-EXPORT closures: more than one export, and EVERY export's result is a closure of the SAME
@@ -1076,6 +1078,30 @@ fn emit_runtime_resource(
 /// lifted body. Reuses the value-heap runtime (the cell is a heap allocation) via
 /// `assemble_closure_resource`. First cut: the closure's args + result are the aliased scalar widths
 /// (`abi_val_type`); a compound/closure arg or an un-representable result declines.
+/// The decline for a closure `role` (`"argument"` / `"result"` / `"parameter"`) whose type `ty` cannot
+/// cross the closure `call` host boundary. When `ty` is `Any` — the parameter was never constrained to
+/// a concrete type — the "no scalar representation" phrasing is misleading (it reads as if a real type
+/// is unsupported): the usual cause is a PARTIAL APPLICATION escaping as an export result (e.g. an
+/// entrypoint returning `(f 1)` for a two-parameter `f`), whose remaining parameter has no solved type.
+/// Say THAT. A concrete-but-unrepresentable type (a compound, a nested closure) keeps the precise
+/// "no scalar host-boundary representation (only aliased widths cross yet)" message.
+fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty) -> Reject {
+    if matches!(ty, crate::ty::Ty::Any) {
+        Reject::decline(format!(
+            "a closure crossing the host boundary has an unconstrained {role} type — the entrypoint's \
+             result is a closure whose {role} type inference never fixed (a partial application like \
+             `(f 1)` for a two-parameter `f`, or a closure with an unannotated parameter); a closure \
+             crosses the boundary only with concrete, aliased-width scalar {role}s",
+        ))
+    } else {
+        Reject::decline(format!(
+            "a closure {role} of type {} has no scalar host-boundary representation (only aliased \
+             widths cross the closure `call` boundary yet)",
+            ty.render_name()
+        ))
+    }
+}
+
 fn emit_closure_resource(
     db: &mut Db,
     layout: &Layout,
@@ -1130,23 +1156,14 @@ fn emit_closure_resource(
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
         .map(|t| {
-            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a closure argument of type {} has no scalar host-boundary representation \
-                         (only aliased widths cross the closure `call` boundary yet)",
-                    t.render_name()
-                ))
-            })
+            host::abi_val_type(t)
+                .map(|a| a.comp_byte())
+                .ok_or_else(|| closure_boundary_reject("argument", t))
         })
         .collect::<Result<_, _>>()?;
     let result_byte = host::abi_val_type(&ret_ty)
         .map(|a| a.comp_byte())
-        .ok_or_else(|| {
-            Reject::decline(format!(
-                "a closure result of type {} has no scalar host-boundary representation",
-                ret_ty.render_name()
-            ))
-        })?;
+        .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
     // the `call_indirect` lifted functype shape).
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
@@ -1174,12 +1191,9 @@ fn emit_closure_resource(
     let make_param_bytes: Vec<u8> = export_params
         .iter()
         .map(|(_, t)| {
-            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a closure-export parameter of type {} has no scalar host-boundary representation",
-                    t.render_name()
-                ))
-            })
+            host::abi_val_type(t)
+                .map(|a| a.comp_byte())
+                .ok_or_else(|| closure_boundary_reject("parameter", t))
         })
         .collect::<Result<_, _>>()?;
 
@@ -1298,22 +1312,14 @@ fn emit_multi_closure_resource(
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
         .map(|t| {
-            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
-                Reject::decline(format!(
-                    "a closure argument of type {} has no scalar host-boundary representation",
-                    t.render_name()
-                ))
-            })
+            host::abi_val_type(t)
+                .map(|a| a.comp_byte())
+                .ok_or_else(|| closure_boundary_reject("argument", t))
         })
         .collect::<Result<_, _>>()?;
     let result_byte = host::abi_val_type(&ret_ty)
         .map(|a| a.comp_byte())
-        .ok_or_else(|| {
-            Reject::decline(format!(
-                "a closure result of type {} has no scalar host-boundary representation",
-                ret_ty.render_name()
-            ))
-        })?;
+        .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
@@ -1348,12 +1354,9 @@ fn emit_multi_closure_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
-                    Reject::decline(format!(
-                        "a closure-export parameter of type {} has no scalar host-boundary representation",
-                        t.render_name()
-                    ))
-                })
+                host::abi_val_type(t)
+                    .map(|a| a.comp_byte())
+                    .ok_or_else(|| closure_boundary_reject("parameter", t))
             })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
@@ -1444,6 +1447,295 @@ fn emit_multi_closure_resource(
         &abi_makes,
         &arg_bytes,
         result_byte,
+    ))
+}
+
+/// Emit the ROUND-TRIP closure-resource component (C-HOST-4, Direction 2): a program with PRODUCER exports
+/// (result is a closure `(-> A… R)`) AND CONSUMER exports (a PARAMETER is a closure of that same signature)
+/// — the host produces a closure handle from a producer, then threads it BACK into a consumer, which
+/// applies it. Producers emit `make-<name>` (as in the multi-export path); consumers are selected NORMALLY
+/// (their closure param is a plain CELL handle applied via `Core::CallClosure`), and the serializer's
+/// consumer wrapper `resource.rep`s the boundary handle → cell before calling the body. All share the ONE
+/// resource type + funcref table — the closure the host holds was lifted in THIS module, so the consumer's
+/// `call_indirect` resolves against the same in-program lifted lambda by signature (the round-trip oracle's
+/// key realization). First cut: scalar-aliased closure args/result; a consumer takes EXACTLY ONE closure
+/// param (leading), optionally followed by scalar args.
+fn emit_roundtrip_resource(
+    db: &mut Db,
+    layout: &Layout,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    // Partition exports into producers (result Ty::Fn) and consumers (a Ty::Fn param). The shared closure
+    // signature is a producer's result (all producers + all consumer closure-params must match it).
+    let producers: Vec<&crate::layout::ExportPlan> = layout
+        .exports
+        .iter()
+        .filter(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+        .collect();
+    let consumers: Vec<&crate::layout::ExportPlan> = layout
+        .exports
+        .iter()
+        .filter(|e| {
+            e.params
+                .iter()
+                .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+        })
+        .collect();
+    let sig = producers
+        .first()
+        .map(|p| p.result.clone())
+        .ok_or_else(|| {
+            Reject::decline(
+                "a round-trip closure program needs at least one PRODUCER export (whose result is a \
+                 closure) so the consumer has a closure to receive; a consumer-only program (the host \
+                 fabricating a closure) is out of scope",
+            )
+        })?;
+    // Every producer result AND every consumer closure-param must be the SAME signature (one resource
+    // type + one lifted functype this increment).
+    for p in &producers {
+        if p.result != sig {
+            return Err(Reject::decline(
+                "a round-trip program mixing closures of DIFFERENT signatures is not yet supported \
+                 (one resource type per signature is a later slice)",
+            ));
+        }
+    }
+    for c in &consumers {
+        let closure_params: Vec<&crate::ty::Ty> = c
+            .params
+            .iter()
+            .filter_map(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)).then_some(t))
+            .collect();
+        if closure_params.len() != 1 {
+            return Err(Reject::decline(
+                "a round-trip consumer with more than one closure parameter is not yet supported \
+                 (this increment threads exactly one closure back per consumer)",
+            ));
+        }
+        if closure_params[0] != &sig {
+            return Err(Reject::decline(
+                "a round-trip consumer's closure parameter has a different signature than the produced \
+                 closure (mixed signatures are a later slice)",
+            ));
+        }
+    }
+    // Flatten the shared signature → arg types + result (the closure `call`/consumer boundary shape).
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = sig.clone();
+    while let crate::ty::Ty::Fn(dom, rng) = cur {
+        arg_tys.push((*dom).clone());
+        cur = *rng;
+    }
+    let ret_ty = cur;
+    // Effect-escape fence (same as the other closure paths): no lifted body may perform a host effect.
+    {
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it (closures escaping effects are \
+                     not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
+    let arg_bytes: Vec<u8> = arg_tys
+        .iter()
+        .map(|t| {
+            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                Reject::decline(format!(
+                    "a closure argument of type {} has no scalar host-boundary representation",
+                    t.render_name()
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let result_byte = host::abi_val_type(&ret_ty)
+        .map(|a| a.comp_byte())
+        .ok_or_else(|| {
+            Reject::decline(format!(
+                "a closure result of type {} has no scalar host-boundary representation",
+                ret_ty.render_name()
+            ))
+        })?;
+
+    // Per-PRODUCER: its make spec (name `make-<export>`, param vts + bytes forwarded). Per-CONSUMER: its
+    // consume spec (name = the export name, params classified Closure/Scalar, result vt + boundary shape).
+    // Collected BEFORE `resource_escape_build` moves the layout.
+    struct MakeSpec {
+        def: usize,
+        name: String,
+        param_vts: Vec<crate::backend::wasm::lir::ValType>,
+        param_bytes: Vec<u8>,
+    }
+    struct ConsumeSpec {
+        def: usize,
+        name: String,
+        params: Vec<serialize::ConsumeParam>,
+        ret_vt: crate::backend::wasm::lir::ValType,
+        arg_bytes: Vec<u8>,
+        result_byte: u8,
+    }
+    let mut make_specs: Vec<MakeSpec> = Vec::new();
+    for p in &producers {
+        let param_vts: Vec<_> = p
+            .params
+            .iter()
+            .map(|(_, t)| {
+                valtype_of(t).ok_or_else(|| Reject::decline("producer param has no valtype"))
+            })
+            .collect::<Result<_, _>>()?;
+        let param_bytes: Vec<u8> = p
+            .params
+            .iter()
+            .map(|(_, t)| {
+                host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a producer parameter of type {} has no scalar host-boundary representation",
+                        t.render_name()
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        // In a round-trip the producer IS its export — the host calls it by the source export name (not a
+        // `make-` prefix, which the multi-export path uses to distinguish N makes of ONE resource). So the
+        // make function is exported under the producer's own name.
+        make_specs.push(MakeSpec {
+            def: p.def,
+            name: p.name.clone(),
+            param_vts,
+            param_bytes,
+        });
+    }
+    let mut consume_specs: Vec<ConsumeSpec> = Vec::new();
+    for c in &consumers {
+        let mut params = Vec::new();
+        for (_, t) in &c.params {
+            if matches!(t, crate::ty::Ty::Fn(_, _)) {
+                params.push(serialize::ConsumeParam::Closure);
+            } else {
+                let vt = valtype_of(t)
+                    .ok_or_else(|| Reject::decline("consumer scalar param has no valtype"))?;
+                params.push(serialize::ConsumeParam::Scalar(vt));
+            }
+        }
+        let ret_vt = valtype_of(&c.result)
+            .ok_or_else(|| Reject::decline("consumer result has no machine valtype"))?;
+        consume_specs.push(ConsumeSpec {
+            def: c.def,
+            name: c.name.clone(),
+            params,
+            ret_vt,
+            arg_bytes: arg_bytes.clone(),
+            result_byte,
+        });
+    }
+
+    // Lifted-body ops (a capturing producer closure reads its env in the lifted body).
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
+    let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+        used.extend(lifted_ops.iter().copied());
+    })?;
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline(
+            "a round-trip closure program produced no lifted lambda (the producer built no closure value)",
+        ));
+    }
+    // APPEND the lifted closure bodies after the order defs.
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+
+    let ser_makes: Vec<serialize::ClosureMake> = make_specs
+        .iter()
+        .map(|m| {
+            Ok(serialize::ClosureMake {
+                export_name: m.name.clone(),
+                export_abs: layout.abs(m.def).ok_or_else(|| {
+                    Reject::decline("a producer export is not in the emission order")
+                })?,
+                param_vts: m.param_vts.clone(),
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+    let ser_consumers: Vec<serialize::ClosureConsume> = consume_specs
+        .iter()
+        .map(|c| {
+            Ok(serialize::ClosureConsume {
+                export_name: c.name.clone(),
+                consume_abs: layout.abs(c.def).ok_or_else(|| {
+                    Reject::decline("a consumer export is not in the emission order")
+                })?,
+                params: c.params.clone(),
+                ret_vt: c.ret_vt,
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+
+    let main_core = serialize::roundtrip_resource_core_module(
+        &funcs,
+        &imports,
+        &ser_makes,
+        &ser_consumers,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    let abi_makes: Vec<envelope::ClosureMakeAbi> = make_specs
+        .iter()
+        .map(|m| envelope::ClosureMakeAbi {
+            name: m.name.clone(),
+            make_param_bytes: m.param_bytes.clone(),
+        })
+        .collect();
+    let abi_consumers: Vec<envelope::ClosureConsumeAbi> = consume_specs
+        .iter()
+        .map(|c| envelope::ClosureConsumeAbi {
+            name: c.name.clone(),
+            arg_bytes: c.arg_bytes.clone(),
+            result_byte: c.result_byte,
+        })
+        .collect();
+    Ok(envelope::assemble_roundtrip_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &abi_makes,
+        &abi_consumers,
+        None,
     ))
 }
 

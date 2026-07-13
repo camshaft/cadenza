@@ -1683,6 +1683,55 @@ impl ComposedRuntime {
         out[0].clone()
     }
 
+    /// ROUND-TRIP driver (C-HOST-4): call a PRODUCER export by name (`producer(make_args…)` → a closure
+    /// resource handle the host holds), then thread that handle BACK into a CONSUMER export
+    /// (`consumer(handle, consume_args…)` → the result). Both are plain funcs in `cadenza:closure/exports`.
+    /// This is the host-as-custodian round trip: a closure crosses OUT of one export call and back IN to
+    /// another.
+    fn closure_produce_consume(
+        &mut self,
+        producer: &str,
+        make_args: &[wasmtime::component::Val],
+        consumer: &str,
+        consume_args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let mut get = |name: &str| {
+            let idx = self
+                .program
+                .get_export_index(&mut self.store, Some(&iface), name)
+                .unwrap_or_else(|| panic!("closure `{name}` exported"));
+            self.program
+                .get_func(&mut self.store, idx)
+                .unwrap_or_else(|| panic!("func `{name}`"))
+        };
+        let produce = get(producer);
+        let consume = get(consumer);
+        // producer(make_args…) → the closure resource handle.
+        let mut handle = [Val::Bool(false)];
+        produce
+            .call(&mut self.store, make_args, &mut handle)
+            .expect("producer call");
+        produce
+            .post_return(&mut self.store)
+            .expect("producer post_return");
+        // consumer(handle, consume_args…) → the result.
+        let mut full = vec![handle[0].clone()];
+        full.extend_from_slice(consume_args);
+        let mut out = [Val::Bool(false)];
+        consume
+            .call(&mut self.store, &full, &mut out)
+            .expect("consumer call");
+        consume
+            .post_return(&mut self.store)
+            .expect("consumer post_return");
+        out[0].clone()
+    }
+
     /// Call a runtime HEAP op by name (e.g. `arr-get`, `get-int`, `arr-len`, `drop`) on the shared
     /// runtime instance — how a test reads back a handle the program returned (the "display function"),
     /// or releases it. Returns the op's single result, or `Val::Bool(false)` for a no-result op like
@@ -8703,6 +8752,21 @@ mod match_engine {
             return;
         };
         assert_eq!(out, "(: b\"ABC\" Bytes)", "printable bytes escape");
+    }
+
+    #[test]
+    fn a_constant_symbol_escapes_as_symbol_of() {
+        // 17-symbols "a symbol is constructed from a string": a CONSTANT Symbol returned as the program
+        // result crosses the host boundary through the resource-escape path (like a String), and renders
+        // its CONSTRUCTION form `((. Symbol of) "…")` under the `Symbol` type — NOT the bare string its
+        // ConstStr rep carries (recovered from the solved `Ty::Symbol`, as `Qty.of` is from `Ty::Qty`).
+        let Some(out) =
+            escape_render("(module m (def (main) (Symbol.of \"map-insert\")) (export main))")
+        else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "(: ((. Symbol of) \"map-insert\") Symbol)");
     }
 
     #[test]
@@ -22881,22 +22945,85 @@ mod closure_host_resource {
         );
     }
 
-    /// DIRECTION 2 (host hands a closure BACK) is NOT YET SUPPORTED — an export whose PARAMETER is a
-    /// closure declines cleanly (reject-don't-miscompile) with a message naming the feature, rather than
-    /// the internal "no matching function type" the select-time `Core::CallClosure` would otherwise
-    /// surface (a host-origin closure has no in-program lifted lambda to match). Pins the honest Todo
-    /// until the round-trip (C-HOST-4: signature-derived indirect-call type + `own<closure>` param ABI).
+    /// ROUND-TRIP end-to-end (C-HOST-4, the whole COMPILER pipeline): a program with a PRODUCER export
+    /// (`make-adder(k)` mints a closure capturing k) and a CONSUMER export (`apply-it(g, x)` applies the
+    /// closure). The host produces a handle from `make-adder(10)`, then threads it BACK into
+    /// `apply-it(handle, 5)` = 5 + 10 = 15 — a closure crossing OUT of one export call and back IN to
+    /// another, applied via the guest's own `call_indirect`. The production analog of the round-trip
+    /// oracle: proves `emit_roundtrip_resource` → `roundtrip_resource_core_module` →
+    /// `assemble_roundtrip_resource` composes with the runtime and the consumer's wrapper `resource.rep`s
+    /// the handed-back handle to the guest cell.
     #[test]
-    fn a_closure_export_parameter_declines_with_a_clear_message() {
+    fn a_produced_closure_round_trips_through_a_consumer_export() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+                   (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) \
+                   (export make-adder) (export apply-it))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
+            "a round-trip closure program imports the value-heap runtime (the closure cell is a heap value)"
+        );
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make-adder(10) → a closure handle capturing k=10; apply-it(handle, 5) = 5 + 10 = 15.
+        assert_eq!(
+            rt.closure_produce_consume("make-adder", &[Val::S64(10)], "apply-it", &[Val::S64(5)]),
+            Val::S64(15),
+            "the host produced a closure from make-adder(10) and handed it back into apply-it(_, 5) = 15"
+        );
+        // A different capture + arg: make-adder(100) then apply-it(_, 7) = 107.
+        assert_eq!(
+            rt.closure_produce_consume("make-adder", &[Val::S64(100)], "apply-it", &[Val::S64(7)]),
+            Val::S64(107)
+        );
+    }
+
+    /// A CONSUMER-ONLY program (a closure export PARAMETER with no producer that mints one) stays out of
+    /// scope — the host would have to FABRICATE a Cadenza closure (a host-implemented function of a
+    /// Cadenza signature), which needs an import-side resource + a second dispatch path. Declines cleanly
+    /// naming the missing producer, rather than emitting a component whose consumer has no closure to
+    /// receive. (A round-trip WITH a producer compiles — see `a_produced_closure_round_trips_…`.)
+    #[test]
+    fn a_consumer_only_closure_program_declines() {
         use crate::testkit::parse;
         let src =
             "(module m (def (invoke (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export invoke))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a closure-typed export parameter must DECLINE (Direction 2 not yet built)",
+            "a consumer-only closure program must DECLINE (no producer mints the closure)",
         );
         assert!(
-            err.message.contains("passed AS A PARAMETER"),
-            "expected the Direction-2 not-yet-supported message, got: {}",
+            err.message.contains("PRODUCER") && err.code.is_none(),
+            "expected the no-producer decline, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_partial_application_escaping_as_a_result_declines_with_an_arity_message() {
+        use crate::testkit::parse;
+        // An entrypoint whose result is a PARTIAL APPLICATION — `(f 1)` for a two-parameter `f` — is a
+        // closure whose remaining parameter has an UNCONSTRAINED (`Any`) type, so it cannot cross the
+        // host boundary. The message must explain THAT (a partial application escaping as the result),
+        // not the misleading "a closure argument of type Any has no scalar representation" (which reads
+        // as if a real type is unsupported). Internal partial application still WORKS (a separate test);
+        // only escaping one as the export result declines.
+        let src = "(do (def (f x y) (+ x y)) (def (main) (f 1)) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a partial application escaping as the export result must decline");
+        assert!(
+            err.message.contains("unconstrained")
+                && err.message.contains("partial application")
+                && !err.message.contains("of type Any"),
+            "expected the partial-application explanation, not the raw `type Any` phrasing, got: {}",
             err.message
         );
     }
