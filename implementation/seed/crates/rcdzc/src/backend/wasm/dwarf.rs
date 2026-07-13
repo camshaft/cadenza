@@ -81,6 +81,7 @@ mod dw {
     pub const LANG_C: u16 = 0x0002;
     // Base-type encodings (`DW_ATE_*`).
     pub const ATE_BOOLEAN: u8 = 0x02;
+    pub const ATE_FLOAT: u8 = 0x04; // IEEE floating point (`f32`/`f64`)
     pub const ATE_SIGNED: u8 = 0x05;
     pub const ATE_UNSIGNED: u8 = 0x07;
     // A location expression: a value in a wasm LOCAL. `DW_OP_WASM_location 0x00 <local-idx-uleb>`
@@ -212,6 +213,18 @@ pub fn base_type_of(ty: &crate::ty::Ty) -> Option<BaseType> {
             };
             Some(BaseType {
                 encoding,
+                byte_size,
+                name,
+            })
+        }
+        // A float is a scalar the runtime holds in a wasm `f32`/`f64` local, so it earns a base type
+        // (`DW_ATE_float`) exactly like an integer — a debugger can then `print` a float argument. The
+        // width is an IEEE format (32/64); an unresolved width grounds to `Float64` (`ground_width`).
+        Ty::Float(ft) => {
+            let bits = ft.ground_width();
+            let (byte_size, name) = if bits <= 32 { (4, "f32") } else { (8, "f64") };
+            Some(BaseType {
+                encoding: dw::ATE_FLOAT,
                 byte_size,
                 name,
             })

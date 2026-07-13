@@ -17594,6 +17594,68 @@ mod debug_info {
     }
 
     #[test]
+    fn float_params_get_formal_parameter_dies_with_a_float_base_type() {
+        // D3 for FLOATS: a `Float32`/`Float64` parameter is a scalar the runtime holds in a wasm
+        // `f32`/`f64` local, so it earns a `DW_TAG_formal_parameter` with a `DW_ATE_float` base type +
+        // a `DW_OP_WASM_location` local slot — a debugger can `print` a float argument, exactly as for
+        // an integer. (Before this, `base_type_of` returned `None` for `Ty::Float`, so a float param got
+        // NO DIE.) Both widths are covered: `Float64` → `f64` (8 bytes), `Float32` → `f32` (4 bytes).
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (scale (: x Float64) (: k Float32)) (*. x (Float64.of-int 1))) \
+                     (export scale))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3f-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump reported an error:\n{stdout}"
+        );
+        // Both scalar float widths get a base type with the IEEE-float encoding.
+        assert!(
+            stdout.contains("DW_ATE_float"),
+            "a float param must reference a DW_ATE_float base type:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"f64\"") && stdout.contains("\"f32\""),
+            "both f64 and f32 base types must be present:\n{stdout}"
+        );
+        // The params are formal parameters with names + wasm-local locations.
+        assert!(
+            stdout.contains("DW_TAG_formal_parameter")
+                && stdout.contains("\"x\"")
+                && stdout.contains("\"k\""),
+            "the float params x and k must have formal_parameter DIEs:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x0")
+                && stdout.contains("DW_OP_WASM_location 0x0 0x1"),
+            "the float params must sit at local slots 0 and 1:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn wasm_plus_dwarf_links_the_component_to_the_sidecar() {
         // When a run emits BOTH a lean component and a detached DWARF sidecar, the component carries an
         // `external_debug_info` custom section naming the sidecar file — so a debugger auto-loads it.
