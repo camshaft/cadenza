@@ -645,6 +645,7 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an annotated destructuring let binder

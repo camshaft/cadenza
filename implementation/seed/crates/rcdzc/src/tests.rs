@@ -12974,19 +12974,50 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_conditional_abortive_perform_declines_rather_than_miscompiles() {
-        // E4 soundness guard: an abortive perform under a NON-tail conditional cannot be realized by either
-        // sound shape — the unconditional collapse (whole handle → arm value) would abort the other path
-        // too, and the per-branch fold needs the `if` to BE the handle value. `(+ 1 (if true (Bail.bail 7)
-        // 0))` would have to abort OUT of the enclosing `+ 1`, which needs a real `block`/`br` control node
-        // (a later increment). `body_has_unsound_abortive_perform` flags it (`under_cond && !tail`) and
-        // `reduce_handle` DECLINES rather than miscompile. The guard is STRUCTURAL — a constant condition
-        // does not let the abort slip past as an unconditional one. Regression guard for the E4-a miscompile.
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+    fn a_non_tail_conditional_abortive_perform_hoists_and_folds() {
+        // E4 non-tail hoist: an abortive perform under a NON-tail conditional — `(+ 1 (if c (Bail.bail 7)
+        // 0))` — is lifted by distributing the enclosing strict op into both `if` branches:
+        // `(if c (+ 1 (Bail.bail 7)) (+ 1 0))`. The abort then sits in a branch tail (an unconditional
+        // abort inside the branch), which `thread_branch_local_abort` captures — the branch value IS the
+        // abort value. Sound because the abort ABANDONS the enclosing `+ 1` and the sibling operand `1` is
+        // pure (duplicated harmlessly). True branch → 7 (abort discards `+ 1`); false branch → 0+1 = 1.
+        // (Previously this DECLINED — the hoist is what makes it fold.)
+        let t = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(t)))
+                    .expect("a non-tail conditional abort hoists and compiles"),
+                "main"
+            ),
+            7
+        );
+        let f = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if false (Bail.bail 7) 0)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(f)))
+                    .expect("the non-aborting branch folds"),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_alongside_an_effectful_sibling_declines() {
+        // E4 hoist soundness LIMIT: the non-tail hoist distributes the enclosing op into both branches, so
+        // it requires the op's OTHER operands to be PURE (duplicating them is observably free). When a
+        // sibling operand is EFFECTFUL — here `(Get.get 0)` under a tail-resumptive `Get` handler, in
+        // `(+ (Get.get 0) (if c (Bail.bail 7) 50))` — the sibling runs (threads state) BEFORE the abort, so
+        // it can be neither duplicated nor dropped. The hoist declines to lift, and the guard flags the
+        // still-non-tail abort → `reduce_handle` DECLINES rather than miscompile. Regression guard.
+        let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) \
+                     (handle 0 ((Get.get (n) s (resume 5 s))) (+ (Get.get 0) (if true (Bail.bail 7) 50))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail conditional abortive perform must decline, not miscompile"
+            "an abort alongside an effectful sibling must decline, not miscompile"
         );
     }
 

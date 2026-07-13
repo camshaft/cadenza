@@ -1034,13 +1034,23 @@ pub fn reduce_handle(
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
     let ctx = HandlerCtx::new(db, map, vec![slot]);
+    // ABORTIVE (E4) NON-TAIL HOIST. An abort in a strict OPERAND under a conditional — `(+ 100 (if c
+    // (Bail.bail 7) 50))` — is not directly foldable (the abort must escape the `+`). But an abort
+    // ABANDONS the enclosing computation, so distributing the surrounding strict op INTO both `if` branches
+    // is value-preserving: `(+ 100 (if c (Bail.bail 7) 50))` ≡ `(if c (+ 100 (Bail.bail 7)) (+ 100 50))`.
+    // In the rewritten form the abort sits in an `if` BRANCH TAIL — the shape the per-branch fold
+    // (`thread_branch_local_abort`) already handles (the abort branch's `(+ 100 (Bail.bail 7))` is an
+    // unconditional-abort-in-a-branch, captured locally). Sound because the op's OTHER operands are pure
+    // (the hoist requires it), so duplicating them across the two branches changes no observable effect.
+    // Runs to a fixpoint (bounded) so a nested non-tail abort is lifted level by level; a shape it can't
+    // lift is left as-is and the guard below declines it.
+    let body = hoist_conditional_abort(db, body, &ctx);
     // ABORTIVE (E4) SOUNDNESS GUARD. Two sound abort shapes are realized below: (1) an UNCONDITIONAL abort
     // collapses the whole handle to the arm value; (2) an abort in the TAIL of a tail-position `if` branch
     // folds per-branch (the branch-local abort restores the cell so the other branch survives — see
-    // `thread_branch_local_abort`). An abort at any OTHER conditional position (a NON-tail branch like
-    // `(+ 1 (if c (Bail.bail 7) 0))`, or a condition) fires on one path but cannot be expressed by either
-    // collapse or per-branch fold — it needs a real `block`/`br` control node (a later increment). Decline
-    // that cleanly rather than miscompile. The body root is tail position and not under a conditional.
+    // `thread_branch_local_abort`). An abort at any OTHER conditional position the hoist above could not
+    // lift to a branch tail (e.g. under an EFFECTFUL sibling operand, or a short-circuit connective) still
+    // fires on one path with no realizable shape — decline cleanly rather than miscompile.
     if !ctx.abortive.is_empty() && body_has_unsound_abortive_perform(db, body, &ctx, true, false) {
         return None;
     }
@@ -1057,16 +1067,125 @@ pub fn reduce_handle(
     Some(rewritten)
 }
 
+/// Whether the subtree at `node` contains a perform of an ABORTIVE operation (one in `ctx.abortive`) —
+/// the trigger for the non-tail hoist. A structural walk mirroring `subtree_performs`, narrowed to
+/// abortive ops only (a tail-resumptive perform is threaded, not hoisted).
+fn subtree_has_abortive_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && ctx.abortive.contains(&id)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| subtree_has_abortive_perform(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Rewrite a NON-TAIL conditional abort into a branch-tail one by distributing the enclosing strict op
+/// into both `if` branches, to a fixpoint. `(+ 100 (if c (Bail.bail 7) 50))` → `(if c (+ 100 (Bail.bail
+/// 7)) (+ 100 50))`. Sound because an abort ABANDONS the enclosing computation (so pushing the op into
+/// the aborting branch, where it never completes, changes nothing) and the op's OTHER operands are PURE
+/// (required below — duplicating a pure operand across the two branches is observably identical). After
+/// the lift the abort sits in an `if` branch tail, the shape `thread_branch_local_abort` already folds.
+///
+/// Only a genuine application `(op a…)` that is NOT itself a perform / special form is a hoist site, and
+/// only when EXACTLY the `if`-argument's subtree holds the abortive perform while every sibling operand
+/// is perform-free. A shape that does not match is left unchanged (the guard then declines it). Bounded
+/// by a rewrite budget so a pathological input cannot loop.
+fn hoist_conditional_abort(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    let mut cur = node;
+    // A generous fixpoint bound: each pass lifts at least one `if` one level, and a body has far fewer
+    // than this many nested strict operands. Prevents any accidental non-convergence.
+    for _ in 0..256 {
+        match hoist_once(db, cur, ctx) {
+            Some(next) => cur = next,
+            None => break,
+        }
+    }
+    cur
+}
+
+/// One rewrite step of [`hoist_conditional_abort`]: find the FIRST (pre-order) application `(op a…)` with
+/// an `if` operand carrying an abortive perform and all other operands pure, distribute the op into the
+/// branches, and return the rewritten WHOLE tree. `None` if no such site exists (fixpoint reached).
+fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+    // Is THIS node a hoist site? A plain application `(op a0 … ak)` — head not a perform — with one arg an
+    // `if` holding an abortive perform and every OTHER arg perform-free.
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+    {
+        // The op must be a strict primitive/operator whose operands all evaluate — an `if`/`let`/`match`
+        // head is a special form handled by its own thread arm, not a distributable op. `resolved_of` of
+        // an operator head is a prim; we simply require the head itself to be perform-free and rebuild the
+        // same head. (Being conservative: we only distribute when the head is perform-free.)
+        if !subtree_performs(db, head, ctx) {
+            for (i, &a) in args.iter().enumerate() {
+                if let Resolved::If { cond, then_, else_ } = resolved_of(db, a)
+                    && subtree_has_abortive_perform(db, a, ctx)
+                {
+                    // Every OTHER operand (and the head) must be perform-free, so distributing them into
+                    // both branches duplicates only pure code. The `if`'s CONDITION must also be pure (it
+                    // evaluates once before the branch; duplicating it is fine only if pure — an effectful
+                    // condition would perform twice). If any sibling or the condition performs, this is not
+                    // a sound hoist site — leave it (the guard declines).
+                    let others_pure = args
+                        .iter()
+                        .enumerate()
+                        .all(|(j, &b)| j == i || !subtree_performs(db, b, ctx));
+                    let cond_pure = !subtree_performs(db, cond, ctx);
+                    if others_pure && cond_pure {
+                        // Build `(op a0 … <branch> … ak)` for each branch, then `(if cond then' else')`.
+                        let rebuild = |db: &mut Db, branch: StructId| -> StructId {
+                            let children: Vec<StructId> = std::iter::once(head)
+                                .chain(
+                                    args.iter()
+                                        .enumerate()
+                                        .map(|(j, &b)| if j == i { branch } else { b }),
+                                )
+                                .collect();
+                            db.push_list(children)
+                        };
+                        let new_then = rebuild(db, then_);
+                        let new_else = rebuild(db, else_);
+                        let if_head = db.push_atom(Leaf::Name("if".to_string()));
+                        return Some(db.push_list(vec![if_head, cond, new_then, new_else]));
+                    }
+                }
+            }
+        }
+    }
+    // Not a site here — recurse into children, rebuilding with the FIRST rewritten child. A special form
+    // (`if`/`let`/`match`) is descended structurally too: a non-tail abort nested in a `let` init or an
+    // `if` branch's operand is lifted within that sub-position, then the enclosing thread arm folds it.
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for (k, &c) in children.iter().enumerate() {
+            if let Some(new_c) = hoist_once(db, c, ctx) {
+                let mut new_children = children.clone();
+                new_children[k] = new_c;
+                return Some(db.push_list(new_children));
+            }
+        }
+    }
+    None
+}
+
 /// Whether `node` contains an abortive perform (of an op in `ctx.abortive`) the fold CANNOT realize
-/// soundly. Two SOUND shapes: (1) an UNCONDITIONAL abort not under any conditional (`(+ 1 (Bail.bail 7))`
-/// — E4-a collapses the whole handle to the arm value); (2) an abort in the TAIL of an `if` branch whose
-/// `if` is itself in TAIL position (`(if c (Bail.bail 7) x)` folds per-branch to `(if c 7 x)`). UNSOUND
-/// (flagged → `reduce_handle` declines): an abort under a conditional at a NON-tail position — either a
-/// non-tail branch (`(+ 1 (if c (Bail.bail 7) 0))`, the abort must escape the `+`) or a conditional's
-/// CONDITION — because collapsing / per-branch-folding both give the wrong value there. That case needs a
-/// real `block`/`br` control node (a later increment). `tail` = value flows directly to the handle value;
-/// `under_cond` = we have descended into a conditional branch. Flag = an abort reached at
-/// `under_cond && !tail`.
+/// soundly — run AFTER `hoist_conditional_abort`, so every abort the hoist could lift to a branch tail
+/// already has been. What remains SOUND: (1) an UNCONDITIONAL abort (`(+ 1 (Bail.bail 7))` — E4-a
+/// collapses the whole handle to the arm value); (2) an abort anywhere inside a TAIL-position `if`/`let`
+/// branch reached through only PURE STRICT OPS — `thread_branch_local_abort` captures the branch's abort
+/// regardless of how deep the pure nesting is (`(if c (+ 100 (Bail.bail 7)) …)` folds: the branch value
+/// IS the abort). UNSOUND (flagged → `reduce_handle` declines): an abort the hoist could not lift and the
+/// per-branch capture cannot intercept — (a) under a SHORT-CIRCUIT connective `and`/`or` right operand
+/// (threaded strictly, collapses the whole handle across a branch), (b) alongside an EFFECTFUL sibling
+/// operand (the hoist requires pure siblings to distribute, so a perform-bearing sibling blocks the lift),
+/// or (c) in a conditional's CONDITION. `tail` = value flows to the handle value along a pure-strict path
+/// from the nearest enclosing branch; `under_cond` = descended into a conditional branch. Flag = an abort
+/// at `under_cond && !tail`.
 fn body_has_unsound_abortive_perform(
     db: &mut Db,
     node: StructId,
@@ -1074,7 +1193,7 @@ fn body_has_unsound_abortive_perform(
     tail: bool,
     under_cond: bool,
 ) -> bool {
-    // An abort reached under a conditional at a non-tail position is the unsound shape.
+    // An abort reached under a conditional at a non-tail (non-capturable) position is the unsound shape.
     if under_cond
         && !tail
         && let Resolved::Apply { head, .. } = resolved_of(db, node)
@@ -1083,22 +1202,17 @@ fn body_has_unsound_abortive_perform(
     {
         return true;
     }
-    // An `if`: the CONDITION is a NON-tail, NON-branch strict operand (its abort would be the unconditional
-    // E4-a case IF the `if` is unconditional — but an abort in a condition is itself odd; treat it as
-    // under_cond=false, tail=false — a plain strict operand). Each BRANCH is a conditional position:
-    // `under_cond=true`, and `tail` carries the `if`'s own tail-ness (a tail `if` → tail branches, folded
-    // per-branch; a non-tail `if` → non-tail branches, flagged).
+    // An `if`: the CONDITION is a NON-tail, NON-branch strict operand (an abort in a condition can't be
+    // captured per-branch — treat it as `tail=false`). Each BRANCH is a conditional position:
+    // `under_cond=true`, and `tail` carries the `if`'s own tail-ness (a tail `if` → tail branches, whose
+    // aborts the per-branch capture intercepts; a non-tail `if` → non-tail branches, flagged).
     if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
         return body_has_unsound_abortive_perform(db, cond, ctx, false, under_cond)
             || body_has_unsound_abortive_perform(db, then_, ctx, tail, true)
             || body_has_unsound_abortive_perform(db, else_, ctx, tail, true);
     }
     // A `(let ((n init)…) body)`: the let's VALUE is the BODY's value, so the body inherits THIS position's
-    // tail-ness + `under_cond` (a branch-tail abort in a tail-position let body folds like one in a bare
-    // `if` — the fold's `let` arm threads the body through `thread_bounded`, routing an inner `if` to the
-    // per-branch capture). Each INIT is a strict operand — NON-tail, but UNCONDITIONAL relative to the let
-    // (it always runs when the let runs), so it carries the let's `under_cond` (an abort in an init under
-    // no conditional is the sound E4-a collapse; under a conditional it is the flagged shape).
+    // tail-ness + `under_cond`. Each INIT is a strict operand — NON-tail, carrying the let's `under_cond`.
     if let Some(form) = db.ast.as_form(node, "let")
         && form.len() == 2
     {
@@ -1115,25 +1229,39 @@ fn body_has_unsound_abortive_perform(
         }
         return body_has_unsound_abortive_perform(db, body_occ, ctx, tail, under_cond);
     }
-    // Generic descent: a strict OPERAND is NON-tail (its value feeds an enclosing op), so lower `tail` for
-    // children while carrying `under_cond`. This keeps `(+ 1 (Bail 7))` sound (the abort is `!under_cond`,
-    // never flagged) while `(if c (+ 1 (Bail 7)) 0)` flags it (`under_cond && !tail`). Descend children at
-    // `tail=false` (a child is a strict operand of `node`, not the handle's value). A short-circuit
-    // connective `(and lhs rhs)` / `(or lhs rhs)` evaluates its RIGHT operand only conditionally (on `lhs`)
-    // — but the threading path folds `and`/`or` as a STRICT `Apply` (both operands, no per-branch capture
-    // like `if`), so an abort in the right operand there would wrongly collapse the whole handle. Mark that
-    // operand `under_cond` so its abort is flagged and declined (a short-circuit conditional abort needs
-    // the `if`-style per-branch fold, which `and`/`or` do not get in this increment).
+    // Generic descent over a strict application `(op a0 … ak)`. KEY (post-hoist): an abort nested under a
+    // PURE strict op INSIDE a tail branch is CAPTURABLE — `thread_branch_local_abort` takes the branch's
+    // abort value regardless of the pure `op` wrapping it — so we PRESERVE `tail` for such an operand
+    // rather than lowering it. An operand is capturable-tail iff (i) we are already on a capturable path
+    // (`tail`), (ii) the op is NOT a short-circuit connective, and (iii) every OTHER operand (and the head)
+    // is PERFORM-FREE (an effectful sibling would run before/after the abort and cannot be duplicated or
+    // dropped — the hoist declines to lift across it, so its abort stays flagged). A short-circuit right
+    // operand (index >= 2 of `and`/`or`) is conditional AND non-capturable (threaded strictly), so it is
+    // marked `under_cond` and `tail=false`.
     match db.ast.get(node).clone() {
         Struct::List(children) => {
             let head_name = children
                 .first()
                 .and_then(|&c| db.ast.as_name(c).map(str::to_string));
             let is_short_circuit = matches!(head_name.as_deref(), Some("and") | Some("or"));
-            children.iter().enumerate().any(|(i, &c)| {
-                // The right operand (index >= 2) of a short-circuit connective is conditional.
-                let child_cond = under_cond || (is_short_circuit && i >= 2);
-                body_has_unsound_abortive_perform(db, c, ctx, false, child_cond)
+            // Whether every element (head + operands) OTHER than `i` is perform-free — so the abort in
+            // operand `i` is the sole effect and its enclosing pure op is transparent to the per-branch
+            // capture (the branch collapses to the abort value, discarding the pure wrapper).
+            let siblings_pure = |db: &mut Db, i: usize| -> bool {
+                (0..children.len()).all(|j| j == i || !subtree_performs(db, children[j], ctx))
+            };
+            (0..children.len()).any(|i| {
+                let c = children[i];
+                if i == 0 {
+                    // The head: descend as a strict, non-capturable operand (a head rarely performs).
+                    return body_has_unsound_abortive_perform(db, c, ctx, false, under_cond);
+                }
+                let sc_right = is_short_circuit && i >= 2;
+                // Capturable-tail: on a tail path, not a short-circuit right operand, siblings all pure.
+                let capturable = tail && !sc_right && siblings_pure(db, i);
+                let child_tail = capturable;
+                let child_cond = under_cond || sc_right;
+                body_has_unsound_abortive_perform(db, c, ctx, child_tail, child_cond)
             })
         }
         Struct::Atom(_) => false,
