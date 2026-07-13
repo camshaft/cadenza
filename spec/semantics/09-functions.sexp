@@ -1273,6 +1273,19 @@
   (call   main (: 50 UInt8))
   (output (: 100 UInt8)))
 
+(case "matching against zero probes the normalized narrow value, not the raw wide slot"
+  (doc    "A match probe against the literal 0 may be emitted as wasm `eqz` (a single zero test rather than
+           `const 0 ; eq`). It MUST test the NORMALIZED narrow value, not the raw machine slot that carries
+           it: `(match (UInt8.wrap n) (0 100) (_ 200))` with `n = 2^32` truncates to the UInt8 0 — its low
+           8 bits are zero — so the `0` arm fires and the result is 100, EVEN THOUGH the wide i64 slot
+           holding 2^32 is non-zero. An `eqz` applied to the un-masked wide slot would see 2^32 ≠ 0 and
+           wrongly take the `_` arm (200). Pins that the zero-probe operates on the value at its width (the
+           `UInt8.wrap` result masked to 8 bits), the match-probe companion of the narrow-operand
+           normalization the arithmetic cases require.")
+  (input  (do (def (main (: n Int64)) (match (UInt8.wrap n) (0 100) (_ 200))) (export main)))
+  (call   main (: 4294967296 Int64))
+  (output (: 100 Int64)))
+
 ; An `if` whose branches MIX a narrow-width value and a bare integer literal must reconcile the branch
 ; widths: both branches produce the `if`'s RESULT type, so a bare-literal branch (which defaults to
 ; Int64 on its own) takes the result's narrow width — otherwise a default-Int64 branch beside a narrow
