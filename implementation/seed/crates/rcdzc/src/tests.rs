@@ -7082,6 +7082,36 @@ mod match_engine {
     }
 
     #[test]
+    fn an_export_naming_no_definition_is_reported_by_check() {
+        // `(export nope)` with no `(def nope …)` is ill-formed — the public surface must name real
+        // definitions. It used to be caught only in the emit-path LAYOUT (so `compile` failed but
+        // `cdz check`'s Diagnostics query MISSED it). Now it is a coded CDZ0101 in `collect_faults`, so
+        // BOTH surfaces report it, anchored at the `(export …)` clause and (for a typo) with a suggestion.
+        // Use the DIAGNOSTICS query — the path `cdz check` runs (`collect_faults`) — where the fault is
+        // the coded CDZ0101 (the full `compile` pipeline ALSO surfaces the emit-path layout decline for
+        // the same issue, uncoded; `check` is the surface this fix is about).
+        let mut db = crate::db::Db::load(parse("(module m (def (main) 1) (export mian))"));
+        let diags = crate::compile::diagnostics(&mut db);
+        let d = diags
+            .iter()
+            .find(|d| {
+                d.severity == crate::abi::Severity::Error
+                    && d.message.contains("names no definition")
+            })
+            .expect("check reports an export naming no definition");
+        assert_eq!(
+            d.code.as_deref(),
+            Some("CDZ0101"),
+            "coded as an unbound export"
+        );
+        assert!(
+            d.message.contains("`mian`") && d.message.contains("did you mean `main`?"),
+            "names the bad export + suggests the nearest def: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_nested_module_value_def_projects_through_member_access() {
         // 11-modules "a module value definition registers a reachable export field": a do-local `(module m
         // (def v 7))` binds `m` to a synthesized record of its exports (`modules::synthesize`), so `(. m
