@@ -48,6 +48,7 @@ mod dw {
     pub const TAG_FORMAL_PARAMETER: u64 = 0x05;
     pub const TAG_VARIABLE: u64 = 0x34;
     pub const TAG_BASE_TYPE: u64 = 0x24;
+    pub const TAG_LEXICAL_BLOCK: u64 = 0x0b;
     // Attributes.
     pub const AT_NAME: u64 = 0x03;
     pub const AT_LOW_PC: u64 = 0x11;
@@ -102,6 +103,7 @@ mod dw {
     pub const ABBREV_FORMAL_PARAMETER: u64 = 4;
     pub const ABBREV_BASE_TYPE: u64 = 5;
     pub const ABBREV_VARIABLE: u64 = 6; // a `let`-binding local (a DW_TAG_variable, not a parameter)
+    pub const ABBREV_LEXICAL_BLOCK: u64 = 7; // a match-binder scope (has children: its variables)
 }
 
 /// A string table (`.debug_str`) built incrementally: `intern(s)` returns the byte offset of `s`,
@@ -137,6 +139,20 @@ pub struct DwarfFunc {
     /// line (the payoff for s-expression Cadenza, where several constructs share a line). Empty → one
     /// row at `low_pc`/`line`/column 0 (the function-granularity fallback for a single-construct body).
     pub rows: Vec<(u32, u32, u32)>,
+    /// Scalar MATCH-BINDER lexical scopes (D3 locals for `(match e (x body)…)`). Each becomes a
+    /// `DW_TAG_lexical_block` child of the subprogram, with a `DW_AT_low_pc`/`high_pc` PC range and a
+    /// `DW_TAG_variable` per binder — so a match binder is `print`-able ONLY inside its match (its slot
+    /// is reused elsewhere, so a function-scoped variable would misreport it). Empty for a function with
+    /// no scalar match binder (the common case) → the subprogram DIE is unchanged.
+    pub scopes: Vec<DwarfScope>,
+}
+
+/// A lexical-block scope inside a function: an ABSOLUTE `[low_pc, high_pc)` code range and the scalar
+/// variables live within it (a scalar match's binders). Emitted as a `DW_TAG_lexical_block` DIE.
+pub struct DwarfScope {
+    pub low_pc: u32,
+    pub high_pc: u32,
+    pub vars: Vec<DwarfVar>,
 }
 
 /// A named scalar local to describe (D3): its source name, wasm local slot, base type, and whether it
@@ -224,12 +240,29 @@ pub fn debug_sections(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
     let mut seen_bt: std::collections::HashSet<BaseType> = std::collections::HashSet::new();
     let mut var_name_off: std::collections::HashMap<(usize, usize), u32> =
         std::collections::HashMap::new();
+    // Scope-var name offsets, keyed by (func index, scope index, var index) — the match-binder locals.
+    let mut scope_name_off: std::collections::HashMap<(usize, usize, usize), u32> =
+        std::collections::HashMap::new();
+    let intern_bt = |str_tab: &mut StrTab,
+                     base_types: &mut Vec<(BaseType, u32)>,
+                     seen_bt: &mut std::collections::HashSet<BaseType>,
+                     bt: BaseType| {
+        if seen_bt.insert(bt) {
+            let bt_name_off = str_tab.intern(bt.name);
+            base_types.push((bt, bt_name_off));
+        }
+    };
     for (fi, f) in funcs.iter().enumerate() {
         for (vi, v) in f.vars.iter().enumerate() {
             var_name_off.insert((fi, vi), str_tab.intern(&v.name));
-            if seen_bt.insert(v.base) {
-                let bt_name_off = str_tab.intern(v.base.name);
-                base_types.push((v.base, bt_name_off));
+            intern_bt(&mut str_tab, &mut base_types, &mut seen_bt, v.base);
+        }
+        // A scope's binder vars intern their names + base types too (same DIE pool), so the
+        // lexical-block `DW_TAG_variable`s resolve their `DW_AT_type` ref4 to an emitted base type.
+        for (si, sc) in f.scopes.iter().enumerate() {
+            for (vi, v) in sc.vars.iter().enumerate() {
+                scope_name_off.insert((fi, si, vi), str_tab.intern(&v.name));
+                intern_bt(&mut str_tab, &mut base_types, &mut seen_bt, v.base);
             }
         }
     }
@@ -250,6 +283,7 @@ pub fn debug_sections(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
         cu_high,
         &base_types,
         &var_name_off,
+        &scope_name_off,
     );
 
     // Append as custom sections (id 0): each is `<id=0> <uleb total-len> <name-uleb-len><name><payload>`.
@@ -433,6 +467,19 @@ fn build_abbrev() -> Vec<u8> {
             (dw::AT_LOCATION, dw::FORM_EXPRLOC),
         ],
     );
+    // 7: lexical_block — a scalar match-binder scope. HAS children (its `DW_TAG_variable`s) + a PC range
+    // (low_pc addr + high_pc as a size, matching the subprogram encoding) so a debugger scopes the
+    // binder to exactly the match's instructions.
+    entry(
+        &mut b,
+        dw::ABBREV_LEXICAL_BLOCK,
+        dw::TAG_LEXICAL_BLOCK,
+        dw::CHILDREN_YES,
+        &[
+            (dw::AT_LOW_PC, dw::FORM_ADDR),
+            (dw::AT_HIGH_PC, dw::FORM_DATA4),
+        ],
+    );
     // End of the abbreviation table.
     uleb128(0, &mut b);
     b
@@ -459,6 +506,7 @@ fn build_info(
     cu_high: u32,
     base_types: &[(BaseType, u32)], // (type, its .debug_str name offset), in emission order
     var_name_off: &std::collections::HashMap<(usize, usize), u32>, // (func_ix, var_ix) → name strp
+    scope_name_off: &std::collections::HashMap<(usize, usize, usize), u32>, // (func_ix, scope_ix, var_ix) → name strp
 ) -> Vec<u8> {
     // DIE bytes accumulate AFTER the CU header; a `DW_FORM_ref4` is `CU_HEADER_LEN + die.len()` at the
     // point a DIE begins. Record each base type's DIE offset so variables can reference it.
@@ -486,11 +534,33 @@ fn build_info(
         die.push(bt.byte_size); // DW_AT_byte_size (data1)
     }
 
-    // One subprogram DIE per function; abbrev 3 (has children) when it has scalar vars, else abbrev 2.
-    for (fi, (f, &fn_name_off)) in funcs.iter().zip(fn_name_offs).enumerate() {
-        let has_vars = !f.vars.is_empty();
+    // Emit one scalar-variable DIE (a formal_parameter for a param, else a variable — a `let` local or a
+    // match binder) with a name/type-ref/location. Shared by the subprogram's direct vars and a lexical
+    // block's binders, so both encode identically.
+    let emit_var = |die: &mut Vec<u8>, v: &DwarfVar, name_off: u32| {
         uleb128(
-            if has_vars {
+            if v.is_param {
+                dw::ABBREV_FORMAL_PARAMETER
+            } else {
+                dw::ABBREV_VARIABLE
+            },
+            die,
+        );
+        die.extend_from_slice(&name_off.to_le_bytes()); // DW_AT_name (strp)
+        die.extend_from_slice(&base_die_off[&v.base].to_le_bytes()); // DW_AT_type (ref4 → base type DIE)
+        // DW_AT_location (exprloc): `DW_OP_WASM_location 0x00 <local-idx-uleb>`. Length-prefixed.
+        let mut loc = vec![dw::OP_WASM_LOCATION, 0x00];
+        uleb128(v.slot as u64, &mut loc);
+        uleb128(loc.len() as u64, die); // exprloc length
+        die.extend_from_slice(&loc);
+    };
+
+    // One subprogram DIE per function; abbrev 3 (has children) when it has scalar vars OR match-binder
+    // scopes (lexical-block children), else abbrev 2.
+    for (fi, (f, &fn_name_off)) in funcs.iter().zip(fn_name_offs).enumerate() {
+        let has_kids = !f.vars.is_empty() || !f.scopes.is_empty();
+        uleb128(
+            if has_kids {
                 dw::ABBREV_SUBPROGRAM_KIDS
             } else {
                 dw::ABBREV_SUBPROGRAM
@@ -505,24 +575,20 @@ fn build_info(
         // A formal_parameter (a param) / variable (a `let`-binding local) DIE per scalar var — the tag
         // differs so a debugger shows args and locals distinctly; the attributes are identical.
         for (vi, v) in f.vars.iter().enumerate() {
-            uleb128(
-                if v.is_param {
-                    dw::ABBREV_FORMAL_PARAMETER
-                } else {
-                    dw::ABBREV_VARIABLE
-                },
-                &mut die,
-            );
-            die.extend_from_slice(&var_name_off[&(fi, vi)].to_le_bytes()); // DW_AT_name (strp)
-            let ty_off = base_die_off[&v.base];
-            die.extend_from_slice(&ty_off.to_le_bytes()); // DW_AT_type (ref4 → the base type DIE)
-            // DW_AT_location (exprloc): `DW_OP_WASM_location 0x00 <local-idx-uleb>`. Length-prefixed.
-            let mut loc = vec![dw::OP_WASM_LOCATION, 0x00];
-            uleb128(v.slot as u64, &mut loc);
-            uleb128(loc.len() as u64, &mut die); // exprloc length
-            die.extend_from_slice(&loc);
+            emit_var(&mut die, v, var_name_off[&(fi, vi)]);
         }
-        if has_vars {
+        // A `DW_TAG_lexical_block` per scalar match: its PC range fences the binder vars to the match's
+        // instructions (the binder slot is reused elsewhere, so a function-scoped var would misreport).
+        for (si, sc) in f.scopes.iter().enumerate() {
+            uleb128(dw::ABBREV_LEXICAL_BLOCK, &mut die);
+            die.extend_from_slice(&sc.low_pc.to_le_bytes()); // DW_AT_low_pc (addr)
+            die.extend_from_slice(&sc.high_pc.saturating_sub(sc.low_pc).to_le_bytes()); // DW_AT_high_pc (data4)
+            for (vi, v) in sc.vars.iter().enumerate() {
+                emit_var(&mut die, v, scope_name_off[&(fi, si, vi)]);
+            }
+            uleb128(0, &mut die); // terminate the lexical block's children
+        }
+        if has_kids {
             uleb128(0, &mut die); // terminate the subprogram's children
         }
     }

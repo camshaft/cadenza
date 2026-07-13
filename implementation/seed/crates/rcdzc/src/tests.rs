@@ -370,6 +370,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         declared: vec![],
         src_body: None,
         locals: vec![],
+        scopes: vec![],
         stmt_lines: vec![],
     };
     let layout = Layout::new(
@@ -15015,6 +15016,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(11)),
                 locals: vec![],
+                scopes: vec![],
                 stmt_lines: vec![],
             },
             SelectedFunc {
@@ -15024,6 +15026,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(22)),
                 locals: vec![],
+                scopes: vec![],
                 stmt_lines: vec![],
             },
         ];
@@ -15711,6 +15714,102 @@ mod debug_info {
         assert!(
             stdout.contains("DW_OP_WASM_location 0x0 0x1"),
             "the kept local must live at local slot 1:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_scalar_match_binder_gets_a_lexical_block_variable() {
+        // D3 match binders: a bare-binder arm over a COMPUTED scrutinee (`(match (+ a b) (x (* x x)))`)
+        // binds the scrutinee's spill slot — described by a `DW_TAG_variable` inside a
+        // `DW_TAG_lexical_block` whose PC range fences it to the match (its slot is a reused scratch slot,
+        // so a function-scoped variable would misreport `x` for the rest of the function). Verified via
+        // llvm-dwarfdump on the sidecar. Skips if the tool is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src =
+            "(module m (def (f (: a Int64) (: b Int64)) (match (+ a b) (x (* x x)))) (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-mb-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump error:\n{stdout}"
+        );
+        // A lexical block scopes the binder — NOT a function-scoped variable.
+        assert!(
+            stdout.contains("DW_TAG_lexical_block"),
+            "no lexical block for the match binder:\n{stdout}"
+        );
+        // The binder `x` is a variable inside it, with a wasm-local location (the scrutinee spill slot).
+        assert!(
+            stdout.contains("DW_TAG_variable") && stdout.contains("\"x\""),
+            "the match binder `x` is missing:\n{stdout}"
+        );
+        // The lexical block's low_pc must be ABOVE the subprogram's (the block covers only the match's
+        // arm code, not the whole function) — i.e. two distinct low_pc values appear.
+        let low_pcs: Vec<&str> = stdout
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("DW_AT_low_pc"))
+            .collect();
+        assert!(
+            low_pcs.len() >= 3,
+            "expected a low_pc for the CU, subprogram, AND lexical block:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_scalar_match_binder_dwarf_verifies_under_llvm_dwarfdump() {
+        // The lexical-block DIE tree (subprogram → lexical_block → variable, with the nested NULL
+        // terminators) must be WELL-FORMED — `llvm-dwarfdump --verify` reports no errors. This guards the
+        // delicate DIE-tree/offset math of the match-binder scope. Skips if the tool is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src =
+            "(module m (def (f (: a Int64) (: b Int64)) (match (- a b) (y (+ y 1)))) (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-mbv-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--verify")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("No errors"),
+            "the match-binder DWARF failed --verify:\n{stdout}"
         );
     }
 

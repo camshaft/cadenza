@@ -51,6 +51,26 @@ pub struct Emit {
     /// debugger `print x` for a local, not just a parameter. Params are collected separately in
     /// `select_function_of` (slots `0..n`); these are the bindings above `base`.
     binding_locals: Vec<LocalVar>,
+    /// Scalar MATCH-BINDER lexical scopes (D3 locals for `(match e (x body)…)`). A scalar match spills
+    /// its scrutinee to ONE slot for the whole match; a bare-binder arm binds that slot's value. Unlike a
+    /// param/let (function-scoped), a match binder is live ONLY within its match expression — and its
+    /// slot is a REUSED scratch slot the rest of the function repurposes — so a flat function-scoped
+    /// `DW_TAG_variable` would MISLEAD. Recorded as a scope `(Lir range, vars)` so the backend emits a
+    /// `DW_TAG_lexical_block` with a PC range that fences the binder to its arms. Indices are into `code`
+    /// as emitted; `peephole_emit` remaps them alongside `lines`.
+    match_scopes: Vec<MatchScope>,
+}
+
+/// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
+/// locals visible there (one per distinct binder name across the arms, all aliasing the scrutinee's
+/// spill slot). Becomes a `DW_TAG_lexical_block` in the DWARF (`DESIGN-debug-info-rcdzc.md` §2.4). The
+/// `start_ix`/`end_ix` are Lir indices (remapped by `peephole_emit`); `dwarf_funcs_for` turns them into
+/// absolute code offsets for the block's `DW_AT_low_pc`/`high_pc`.
+#[derive(Clone, Debug)]
+pub struct MatchScope {
+    pub start_ix: u32,
+    pub end_ix: u32,
+    pub vars: Vec<LocalVar>,
 }
 
 impl Emit {
@@ -76,6 +96,21 @@ impl Emit {
             ty,
             is_param: false,
         });
+    }
+    /// The CURRENT instruction position — the start/end anchor for a match-binder scope (`match_scope`).
+    fn here(&self) -> u32 {
+        self.code.len() as u32
+    }
+    /// Record a scalar match-binder lexical scope: the `[start, end)` Lir range over its arm bodies plus
+    /// the binder locals visible there (D3 locals). Skips an empty scope (no named binder / no code).
+    fn match_scope(&mut self, start_ix: u32, end_ix: u32, vars: Vec<LocalVar>) {
+        if !vars.is_empty() && end_ix > start_ix {
+            self.match_scopes.push(MatchScope {
+                start_ix,
+                end_ix,
+                vars,
+            });
+        }
     }
 }
 
@@ -427,9 +462,16 @@ pub struct SelectedFunc {
     /// each a `(wasm local slot, source name, solved scalar type)`. Populated with the function's scalar
     /// PARAMETERS (slots `0..n`, the common `print n` target). A `DW_TAG_variable` DIE emits from each so
     /// a debugger can read the value. A compound (heap-handle) param is omitted — DWARF cannot walk the
-    /// tagless heap (§3), so only scalars appear. `let`-bindings / match binders live in dynamically-
-    /// claimed scratch slots and are a later refinement. Empty unless debug is requested.
+    /// tagless heap (§3), so only scalars appear. Function-scoped `let`-bindings also land here; MATCH
+    /// binders — live only within one match expression, in a REUSED scratch slot — are NOT flat locals
+    /// but scoped `scopes` below. Empty unless debug is requested.
     pub locals: Vec<LocalVar>,
+    /// Scalar MATCH-BINDER lexical scopes (D3, `DESIGN-debug-info-rcdzc.md` §2.4): each a `[Lir start,
+    /// end)` range + the binder locals visible there. Distinct from `locals` because a match binder is
+    /// live only within its match (its slot is later reused), so the backend fences it in a
+    /// `DW_TAG_lexical_block` with a PC range rather than a function-scoped `DW_TAG_variable`. Ranges are
+    /// post-peephole Lir indices; `dwarf_funcs_for` maps them to code offsets. Empty unless debug.
+    pub scopes: Vec<MatchScope>,
     /// Per-CONSTRUCT source line markers (`DESIGN-debug-line-granularity-rcdzc.md`): `(Lir index,
     /// source occurrence)` at each point a distinct source construct's evaluation begins, in emission
     /// order, remapped through the peephole pass. The backend turns each into a `.debug_line` row (one
@@ -474,6 +516,7 @@ pub fn stub_function(params: &[(StructId, Ty)], ret: &Ty) -> SelectedFunc {
         declared: Vec::new(),
         src_body: None,
         locals: Vec::new(),
+        scopes: Vec::new(),
         stmt_lines: Vec::new(),
     }
 }
@@ -1034,6 +1077,8 @@ pub fn select_function_of(
         src_body: Some(body),
         // Scalar params + `let`-binding locals for debug-info variable inspection (§2.4, D3).
         locals,
+        // Scalar match-binder lexical scopes (§2.4, D3) — a `DW_TAG_lexical_block` per match.
+        scopes: code.match_scopes,
         // Per-construct source line markers (per-statement granularity), remapped through the peephole.
         stmt_lines: code.lines,
     })
@@ -1102,6 +1147,13 @@ fn peephole_emit(emit: &mut Emit) {
             .get(*idx as usize)
             .copied()
             .unwrap_or(out.len() as u32);
+    }
+    // Match-binder scope ranges shift with the same remap (an EXCLUSIVE end at `old.len()` maps to the
+    // new code end). Both endpoints go through `remap`, keeping the range covering the same instructions.
+    let remap_ix = |ix: u32| remap.get(ix as usize).copied().unwrap_or(out.len() as u32);
+    for sc in emit.match_scopes.iter_mut() {
+        sc.start_ix = remap_ix(sc.start_ix);
+        sc.end_ix = remap_ix(sc.end_ix);
     }
     emit.code = out;
 }
@@ -3247,6 +3299,38 @@ fn emit_match_arms_tailable(
             (OperandSrc::Slot(slot), *high)
         }
     };
+    // DEBUG (D3 match-binder locals): a bare-binder arm (`(x body)`) binds the WHOLE scrutinee — which,
+    // for a scalar match, lives in the single spill slot resolved above. Collect one local per DISTINCT
+    // binder name across the arms (all alias that slot) so the backend emits a `DW_TAG_lexical_block`
+    // scoping them to this match's PC range. Only a SLOT-backed scrutinee is describable (a constant
+    // scrutinee folds; a re-pushed param/local is itself already a nameable var). `scope_start` anchors
+    // the block at the first dispatch instruction; each `return` records the scope at the block's end.
+    let scope_start = out.here();
+    let binder_vars: Vec<LocalVar> = match src {
+        OperandSrc::Slot(slot) => {
+            let mut seen: Vec<String> = Vec::new();
+            let mut vars = Vec::new();
+            for arm in arms {
+                let ty = type_of(db, arm.body);
+                if !matches!(ty, Ty::Int(_) | Ty::Bool) {
+                    continue;
+                }
+                if let Some(name) = db.match_arm_binder_name(arm.body)
+                    && !seen.iter().any(|s| s == name)
+                {
+                    seen.push(name.to_string());
+                    vars.push(LocalVar {
+                        slot,
+                        name: name.to_string(),
+                        ty,
+                        is_param: false,
+                    });
+                }
+            }
+            vars
+        }
+        _ => Vec::new(),
+    };
     // BRANCHLESS 2-ARM SELECT: a match of exactly TWO UNGUARDED arms — a literal probe then a wildcard
     // (`(match n (0 a) (_ b))`), or a Bool's two literals (`(match p (true a) (false b))`) — is
     // `(if (scrutinee == probe0) body0 body1)`, so when both bodies are cheap trap-free LEAVES and the
@@ -3299,12 +3383,17 @@ fn emit_match_arms_tailable(
         )?;
         emit_probe_condition(&arms[0].probe, src, it, out);
         out.push(Lir::Select);
+        let end = out.here();
+        out.match_scope(scope_start, end, binder_vars);
         return Ok(());
     }
     emit_probe_chain(
         db, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty, layout, out,
         tail,
-    )
+    )?;
+    let end = out.here();
+    out.match_scope(scope_start, end, binder_vars);
+    Ok(())
 }
 
 /// Emit the boolean `scrutinee == probe` for a match's literal probe: push the scrutinee `src`, then the

@@ -488,6 +488,38 @@ fn dwarf_funcs_for(
             prev_pos = (line, col);
             keep
         });
+        // Match-binder lexical scopes (D3): map each `[start_ix, end_ix)` Lir range to an ABSOLUTE
+        // `[low_pc, high_pc)` code range. A start index reads its instruction's byte offset; an EXCLUSIVE
+        // end at `code.len()` (past the last instruction) is the entry's full size (`code_end -
+        // code_start`). A binder whose type has no scalar base type is skipped (DWARF can't describe the
+        // heap, §3); a scope left with no describable var is dropped.
+        let entry_len = r.code_end - r.code_start;
+        let abs =
+            |ix: u32| code_base + r.code_start + *instr_offs.get(ix as usize).unwrap_or(&entry_len);
+        let scopes: Vec<dwarf::DwarfScope> = f
+            .scopes
+            .iter()
+            .filter_map(|sc| {
+                let vars: Vec<dwarf::DwarfVar> = sc
+                    .vars
+                    .iter()
+                    .filter_map(|lv| {
+                        dwarf::base_type_of(&lv.ty).map(|base| dwarf::DwarfVar {
+                            name: lv.name.clone(),
+                            slot: lv.slot,
+                            base,
+                            is_param: lv.is_param,
+                        })
+                    })
+                    .collect();
+                let (low_pc, high_pc) = (abs(sc.start_ix), abs(sc.end_ix));
+                (!vars.is_empty() && high_pc > low_pc).then_some(dwarf::DwarfScope {
+                    low_pc,
+                    high_pc,
+                    vars,
+                })
+            })
+            .collect();
         out.push(dwarf::DwarfFunc {
             name: db.defs[def].name.clone(),
             low_pc: code_base + r.code_start,
@@ -495,6 +527,7 @@ fn dwarf_funcs_for(
             line,
             vars,
             rows,
+            scopes,
         });
     }
     out

@@ -788,6 +788,34 @@ impl Db {
         }
     }
 
+    /// The BINDER NAME a scalar match arm binds, given the arm's BODY occurrence. A match arm is a
+    /// two-element `(pattern body)` list; a binder pattern is either a bare name `x` or a guard
+    /// `(guard x cond)` whose first child is the binder (`resolve` Case 5 / 5g). The binder binds the
+    /// whole scrutinee, so the DWARF backend describes it as a `DW_TAG_variable` at the scrutinee's slot,
+    /// scoped to the match's lexical block. Returns `None` when the pattern is a literal, the wildcard
+    /// `_`, or `body` is not an arm body — the cases with no name to inspect. Mirrors `let_binding_name`
+    /// (reached O(1) via `parent_of` + a child read).
+    pub fn match_arm_binder_name(&self, body: StructId) -> Option<&str> {
+        let arm = self.parent_of(body)?;
+        let Struct::List(pb) = self.ast.get(arm) else {
+            return None;
+        };
+        // A genuine `(pattern body)` arm with `body` in the body slot (not the pattern position).
+        if pb.len() != 2 || pb[1] != body {
+            return None;
+        }
+        // The binder pattern: a bare name, or the first child of a `(guard binder cond)`.
+        let binder_pat = match self.ast.as_form(pb[0], "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pb[0],
+        };
+        match self.ast.as_name(binder_pat) {
+            // The wildcard `_` binds nothing to inspect; a literal pattern is not a name at all.
+            Some("_") | None => None,
+            Some(name) => Some(name),
+        }
+    }
+
     /// Whether `id` is `ancestor` or lexically WITHIN its subtree — walk `id`'s parent chain and see if
     /// `ancestor` is on it. Used by the closure-capture check to tell a reference to the lambda's OWN
     /// scope (its param, a nested `let`) from a reference OUTSIDE it (a captured free variable). O(depth)
