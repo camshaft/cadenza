@@ -342,6 +342,7 @@ pass	a named function is partially applied, bound, and used
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
+pass	a named rate unit converts to the reference rate (Float)
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
@@ -427,6 +428,7 @@ pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
+pass	a rate derived by division mixes with a named rate unit of the same dimension
 pass	a recognized string escape denotes its one scalar value
 pass	a record annotated with the wrong field type is rejected
 pass	a record field VALUE still reads the parameter it names after the call
@@ -796,6 +798,7 @@ pass	checked addition yields None on overflow instead of trapping
 pass	checked addition yields Some of the sum when it fits
 pass	checked multiplication reports overflow as None
 pass	checked multiplication yields Some when it fits
+pass	combining a named rate with a length is a dimensional error
 pass	compacting a byte sequence built at run time preserves its bytes
 pass	compacting a slice preserves its bytes
 pass	compacting is the identity on value for a whole byte sequence
