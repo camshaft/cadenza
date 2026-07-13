@@ -19,14 +19,84 @@ export type EditorOutcome =
 
 /// Wrap a bare expression into a minimal runnable module in the given surface. The compiler needs an
 /// `(export …)`; a bare expression alone declines. Authored snippets are usually bare expressions.
+/// Wrap an example snippet into a compilable module, so a chapter can show just the interesting part.
+/// Three shapes are recognized so `module m { … }` / `(export main)` boilerplate only appears when the
+/// author actually wrote it:
+///   1. Already a full `module` — left untouched.
+///   2. DEFINITIONS (starts with `def`/`type`) — one or more top-level defs with a `main` among them;
+///      wrapped in a module + `(export main)`. This is the common "helper + main" example.
+///   3. A bare EXPRESSION — wrapped as the body of `main` (+ module + export).
 export function wrapModule(src: string, surface: Surface): string {
   const trimmed = src.trim();
   if (surface === "sexpr") {
     if (/^\(module\b/.test(trimmed)) return trimmed;
+    if (/^\((def|type)\b/.test(trimmed)) return `(module m ${trimmed} (export main))`;
     return `(module m (def (main) ${trimmed}) (export main))`;
   }
   if (/^module\b/.test(trimmed)) return trimmed;
+  if (/^(def|type)\b/.test(trimmed)) return `module m {\n${indent(trimmed)}\n  export(main)\n}`;
   return `module m {\n  def main() = ${trimmed}\n  export(main)\n}`;
+}
+
+/// Indent each line of a multi-line ML definitions block by two spaces (module-body indentation).
+function indent(src: string): string {
+  return src
+    .split("\n")
+    .map((line) => (line ? `  ${line}` : line))
+    .join("\n");
+}
+
+/// Strip the `module m { … }` / `(module m … (export main))` scaffolding a `wrapModule` added, back to
+/// the bare definitions (or expression), for DISPLAY. The inverse of `wrapModule` over a RENDERED
+/// module; used so the surface toggle can round-trip a defs-only snippet (which isn't a single form)
+/// through the compiler by wrapping first, rendering, then stripping. Returns the input unchanged if
+/// it doesn't look like a generated wrapper (so a hand-written full module the author showed is kept).
+export function stripModule(rendered: string, surface: Surface): string {
+  const t = rendered.trim();
+  if (surface === "sexpr") {
+    // `(module m <body…> (export main))` → the body, minus a trailing `(export …)`.
+    const m = /^\(module\s+\w+\s+([\s\S]*)\)\s*$/.exec(t);
+    if (!m) return rendered;
+    let body = m[1].trim().replace(/\(export\s+[^)]*\)\s*$/, "").trim();
+    // A single `(def (main) <expr>)` that we synthesized for a bare expression → unwrap to the expr.
+    const bare = /^\(def\s+\(main\)\s+([\s\S]*)\)$/.exec(body);
+    if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
+    return body;
+  }
+  // ML: `module m {\n <body> \n}` → dedented body minus the `export(...)` line.
+  const m = /^module\s+\w+\s*\{\s*\n([\s\S]*)\n\s*\}\s*$/.exec(t);
+  if (!m) return rendered;
+  const lines = m[1].split("\n").filter((l) => !/^\s*export\(/.test(l));
+  const dedented = dedent(lines.join("\n"));
+  // Unwrap a synthesized `def main() = <expr>` (single def, no helpers) back to the expression.
+  const bare = /^def\s+main\(\)\s*=\s*([\s\S]*)$/.exec(dedented.trim());
+  if (bare && !/^\s*(def|type)\b/m.test(bare[1])) return bare[1].trim();
+  return dedented;
+}
+
+/// Remove the common leading indentation from a block (the two spaces `wrapModule` added, plus any).
+function dedent(src: string): string {
+  const lines = src.split("\n");
+  const indents = lines.filter((l) => l.trim()).map((l) => l.match(/^ */)![0].length);
+  const min = indents.length ? Math.min(...indents) : 0;
+  return lines.map((l) => l.slice(min)).join("\n");
+}
+
+/// Re-render a DISPLAY snippet from one surface to another for the syntax toggle. A defs-only or bare
+/// snippet isn't a single parseable form, so we wrap it into a module, render THAT (a single form), and
+/// strip the wrapper back off — round-tripping through the compiler without exposing the scaffolding.
+/// A `wrap={false}` example (a full module the author wrote) renders directly.
+export async function renderSnippet(
+  text: string,
+  from: Surface,
+  to: Surface,
+  wrap: boolean,
+): Promise<string> {
+  if (from === to) return text;
+  if (!wrap) return renderSyntax(text, from, to);
+  const wrapped = wrapModule(text, from);
+  const rendered = await renderSyntax(wrapped, from, to);
+  return stripModule(rendered, to);
 }
 
 export interface CadenzaEditor {
@@ -58,7 +128,7 @@ export function useCadenzaEditor(
   useEffect(() => {
     let cancelled = false;
     if (authoredIn !== surface) {
-      renderSyntax(source, authoredIn, surface)
+      renderSnippet(source, authoredIn, surface, wrap)
         .then((r) => {
           if (!cancelled) {
             setText(r);
@@ -81,7 +151,7 @@ export function useCadenzaEditor(
     if (surface === shownSurface.current) return;
     const from = shownSurface.current;
     let cancelled = false;
-    renderSyntax(text, from, surface)
+    renderSnippet(text, from, surface, wrap)
       .then((r) => {
         if (!cancelled) {
           setText(r);
@@ -123,11 +193,11 @@ export function useCadenzaEditor(
     if (authoredIn === target) {
       setText(source);
     } else {
-      renderSyntax(source, authoredIn, target)
+      renderSnippet(source, authoredIn, target, wrap)
         .then(setText)
         .catch(() => setText(source));
     }
-  }, [authoredIn, source]);
+  }, [authoredIn, source, wrap]);
 
   return { text, setText, surface: shownSurface.current, reset, run };
 }

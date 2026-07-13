@@ -23,15 +23,12 @@ export default function Errors() {
         quotient otherwise. The caller <C>match</C>es on the result and can't forget the empty case.
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (safe-div a b)
-    (if (= b 0) (None unit) (Some (/ a b))))
-  (def (main)
-    (match (safe-div 10 2)
-      ((Some q) q)
-      ((None _) (- 0 1))))
-  (export main))`}
+        source={`(def (safe-div a b)
+  (if (= b 0) (None unit) (Some (/ a b))))
+(def (main)
+  (match (safe-div 10 2)
+    ((Some q) q)
+    ((None _) (- 0 1))))`}
       />
       <P>Change the <C>2</C> to <C>0</C> and Run: the <C>None</C> arm fires and you get <C>-1</C> — no crash.</P>
 
@@ -49,13 +46,10 @@ export default function Errors() {
         never read past the end by accident:
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (main)
-    (match (List.at (list 10 20 30) 1)
-      ((Some x) x)
-      ((None _) 0)))
-  (export main))`}
+        source={`(def (main)
+  (match (List.at (list 10 20 30) 1)
+    ((Some x) x)
+    ((None _) 0)))`}
       />
 
       <H2>When you're sure: <C>expect</C></H2>
@@ -73,13 +67,10 @@ export default function Errors() {
         an <C>Option</C> — <C>None</C> exactly when the result wouldn't fit.
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (def (main)
-    (match (Int64.checked-mul 9223372036854775807 2)
-      ((Some x) x)
-      ((None _) (- 0 1))))
-  (export main))`}
+        source={`(def (main)
+  (match (Int64.checked-mul 9223372036854775807 2)
+    ((Some x) x)
+    ((None _) (- 0 1))))`}
       />
       <P>That's <C>Int64</C>'s largest value times 2 — it can't fit, so you get the <C>None</C> arm.</P>
 
@@ -89,16 +80,13 @@ export default function Errors() {
         exactly <C>(Some 0)</C>; a different <C>Some</C> falls through to the binding arm.
       </P>
       <Runnable
-        wrap={false}
-        source={`(module m
-  (type Opt (Some Int64) (None unit))
-  (def (describe o)
-    (match o
-      ((Some 0) 100)
-      ((Some x) x)
-      ((None _) (- 0 1))))
-  (def (main) (describe (Some 0)))
-  (export main))`}
+        source={`(type Opt (Some Int64) (None unit))
+(def (describe o)
+  (match o
+    ((Some 0) 100)
+    ((Some x) x)
+    ((None _) (- 0 1))))
+(def (main) (describe (Some 0)))`}
       />
 
       <Note>
@@ -110,40 +98,30 @@ export default function Errors() {
       <Exercise
         id="errors:1"
         prompt={<>Finish <C>safe-div</C>'s empty case so <C>(safe-div 20 4)</C> gives <C>5</C>.</>}
-        starter={`(module m
-  (def (safe-div a b)
-    (if (= b 0) ? (Some (/ a b))))
-  (def (main)
-    (match (safe-div 20 4)
-      ((Some q) q)
-      ((None _) (- 0 1))))
-  (export main))`}
-        solution={`(module m
-  (def (safe-div a b)
-    (if (= b 0) (None unit) (Some (/ a b))))
-  (def (main)
-    (match (safe-div 20 4)
-      ((Some q) q)
-      ((None _) (- 0 1))))
-  (export main))`}
+        starter={`(def (safe-div a b)
+  (if (= b 0) ? (Some (/ a b))))
+(def (main)
+  (match (safe-div 20 4)
+    ((Some q) q)
+    ((None _) (- 0 1))))`}
+        solution={`(def (safe-div a b)
+  (if (= b 0) (None unit) (Some (/ a b))))
+(def (main)
+  (match (safe-div 20 4)
+    ((Some q) q)
+    ((None _) (- 0 1))))`}
         expected="5"
-        wrap={false}
         hint={<>When the divisor is zero there's no answer — return <C>(None unit)</C>.</>}
       />
 
       <Exercise
         id="errors:2"
         prompt={<>Multiply 6 and 7 with a checked op and unwrap it, so the answer is <C>42</C>.</>}
-        starter={`(module m
-  (def (main)
-    (Option.expect (Int64.checked-mul 6 ?) "overflow"))
-  (export main))`}
-        solution={`(module m
-  (def (main)
-    (Option.expect (Int64.checked-mul 6 7) "overflow"))
-  (export main))`}
+        starter={`(def (main)
+  (Option.expect (Int64.checked-mul 6 ?) "overflow"))`}
+        solution={`(def (main)
+  (Option.expect (Int64.checked-mul 6 7) "overflow"))`}
         expected="42"
-        wrap={false}
         hint={<>Fill in the second factor: <C>7</C>.</>}
       />
     </article>

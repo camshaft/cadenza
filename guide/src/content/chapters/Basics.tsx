@@ -61,18 +61,13 @@ export default function Basics() {
       <Exercise
         id="basics:2"
         prompt={<>Write a <C>max</C> function that returns the larger of two numbers, then call it on 3 and 9.</>}
-        starter={`(module m
-  (def (max a b)
-    (if ? a b))
-  (def (main) (max 3 9))
-  (export main))`}
-        solution={`(module m
-  (def (max a b)
-    (if (> a b) a b))
-  (def (main) (max 3 9))
-  (export main))`}
+        starter={`(def (max a b)
+  (if ? a b))
+(def (main) (max 3 9))`}
+        solution={`(def (max a b)
+  (if (> a b) a b))
+(def (main) (max 3 9))`}
         expected="9"
-        wrap={false}
         hint={<>The condition should be true when <C>a</C> is bigger. Try <C>(&gt; a b)</C>.</>}
       />
     </article>
