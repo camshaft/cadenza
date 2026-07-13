@@ -6251,6 +6251,34 @@ fn arith_identity(
         Prim::Div if is(rc, 1) => Some(lc.clone()),
         // `x % 1` → 0 (every integer is divisible by 1) — DISCARDS x, so only when x cannot trap.
         Prim::Rem if is(rc, 1) && is_trap_free(db, lhs) => Some(zero()),
+        // DIVIDEND-SMALLER-THAN-DIVISOR: when `x` is provably in `[0, C-1]` for a POSITIVE constant divisor
+        // `C`, the truncating `x / C` is 0 and `x % C` is `x` — the divisor is too big to divide `x` even
+        // once. `(/ (& x 7) 100)` → 0, `(% (& x 7) 100)` → `x & 7` (a masked/refined value modding by a
+        // larger constant). Requires `x` NONNEGATIVE with a known upper bound `< C` (`value_range` lo ≥ 0,
+        // hi < C) so truncation-toward-zero equals the mathematical result; a negative `x` (`-1 % 100 =
+        // -1`, `-1 / 100 = 0`) is excluded for simplicity (the nonneg case is the masked/unsigned idiom).
+        // The `/` DISCARDS `x` → gated on `is_trap_free`; the `%` KEEPS `x` (returns `lc`) so its traps
+        // survive. `C ≥ 2` (the `/1`,`%1` identities above handle `C=1`; a constant `÷0` is a poison in
+        // `lower` before here). Verified: for `0 ≤ x < C`, `x/C == 0` and `x%C == x`.
+        Prim::Div
+            if let Core::ConstInt(c) = rc
+                && let Some(c) = c.to_i64()
+                && c >= 2
+                && dividend_below_divisor(db, lhs, c)
+                && is_trap_free(db, lhs) =>
+        {
+            trace!(target: "rcdzc::fold", node = lhs.0, c, "dividend provably < divisor → x / C = 0");
+            Some(zero())
+        }
+        Prim::Rem
+            if let Core::ConstInt(c) = rc
+                && let Some(c) = c.to_i64()
+                && c >= 2
+                && dividend_below_divisor(db, lhs, c) =>
+        {
+            trace!(target: "rcdzc::fold", node = lhs.0, c, "dividend provably < divisor → x % C = x");
+            Some(lc.clone())
+        }
 
         // SAME-OPERAND identities: the two operands are the SAME value (`core_equiv`), so the result is
         // determined regardless of that value. `core_equiv` matches only pure scalar cores, but the
@@ -6412,6 +6440,16 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     };
     let low = (1i64 << bits) - 1; // 2^bits - 1, all bits the value can possibly set
     (m & low) == low
+}
+
+/// Whether the dividend `val` is provably in `[0, divisor − 1]` for a positive `divisor` — so a truncating
+/// `val / divisor` is `0` and `val % divisor` is `val` (the divisor is too large to divide `val` even
+/// once). True iff `value_range(val)` is a NONNEGATIVE closed interval `[lo, hi]` with `lo >= 0` and
+/// `hi < divisor`. Restricted to a nonnegative dividend: for `0 <= val < divisor`, both the mathematical
+/// and the truncate-toward-zero results are exact (`val / divisor = 0`, `val % divisor = val`); a negative
+/// dividend is excluded (its `value_range` lo is `< 0`, failing the check). `None`/unbounded range → false.
+fn dividend_below_divisor(db: &mut Db, val: StructId, divisor: i64) -> bool {
+    matches!(value_range(db, val), Some((lo, Some(hi))) if lo >= 0 && hi < divisor)
 }
 
 /// An upper bound (in `1..=63`) on the number of LOW bits a runtime value can set — i.e. the value is

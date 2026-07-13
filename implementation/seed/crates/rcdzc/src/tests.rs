@@ -4092,6 +4092,75 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_dividend_provably_below_its_divisor_folds_div_to_zero_and_rem_to_itself() {
+        // RANGE-BASED div/rem: when `x` is provably in `[0, C-1]` for a positive constant divisor `C`, the
+        // truncating `x / C` is 0 and `x % C` is `x` (the divisor is too big to divide `x` once). A masked
+        // value modding by a larger constant — `(% (& x 7) 100)` → `x & 7`, `(/ (& x 7) 100)` → 0 — drops a
+        // hardware divide entirely. Bounded by hi < C (a range reaching C does NOT fold). Pins the
+        // elimination at the Lir level (no div/rem) AND value parity, including the boundary + un-folded case.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let divrem = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64DivS | Lir::I64DivU | Lir::I64RemS | Lir::I64RemU
+                    )
+                })
+                .count()
+        };
+        // `(& x 7) ∈ [0,7]`, divisor 100 → `% 100` folds to `x & 7` (no rem), `/ 100` folds to 0 (no div).
+        let remf = lir("(: x Int64)", "(: (% (: (& x 7) Int64) 100) Int64)");
+        assert_eq!(divrem(&remf), 0, "rem of a small dividend folds away, got: {remf:?}");
+        assert!(remf.contains(&Lir::I64And), "the mask that bounds the dividend stays, got: {remf:?}");
+        let divf = lir("(: x Int64)", "(: (/ (: (& x 7) Int64) 100) Int64)");
+        assert_eq!(divrem(&divf), 0, "div of a small dividend folds to 0, got: {divf:?}");
+        // Boundary: `(& x 15) ∈ [0,15]`, divisor 16 → hi=15 < 16 folds; divisor 15 → hi=15 NOT < 15, stays.
+        assert_eq!(divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 16) Int64)")), 0, "hi 15 < 16 → fold");
+        assert_eq!(divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)")), 1, "hi 15 !< 15 → keep rem");
+
+        // VALUE PARITY: folded cases + the un-folded case compute the real result.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 7) Int64) 100) Int64)", &[Val::S64(255)]), 7);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (/ (: (& x 7) Int64) 100) Int64)", &[Val::S64(255)]), 0);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 15) Int64) 16) Int64)", &[Val::S64(200)]), 8);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)", &[Val::S64(255)]), 0); // 15%15
+        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)", &[Val::S64(200)]), 8); // 8%15
+
+        // TRAP PRESERVATION: the `/` fold DISCARDS its dividend, so a trapping dividend keeps its trap —
+        // `(& (/ 100 z) 7)` contains a ÷z that must still trap at z=0 (the fold declines, `x` not trap-free).
+        assert!(
+            traps("(: z Int64)", "(: (/ (: (& (: (/ 100 z) Int64) 7) Int64) 100) Int64)", &[Val::S64(0)]),
+            "a trapping dividend keeps its trap (the discarding / fold declines)"
+        );
+    }
+
+    #[test]
     fn a_signed_pow2_div_of_a_nonneg_dividend_drops_the_round_toward_zero_bias() {
         // A signed `/`/`%` by a power of two normally emits the round-toward-zero BIAS sequence (needed
         // only to correct NEGATIVE dividends). When the dividend is provably NON-NEGATIVE — a mask
