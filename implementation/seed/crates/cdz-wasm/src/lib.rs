@@ -102,6 +102,7 @@ fn to_js_diag(
                 rcdzc::FixKind::Replace => "replace",
                 rcdzc::FixKind::InsertInto => "insert",
                 rcdzc::FixKind::Wrap => "wrap",
+                rcdzc::FixKind::Delete => "delete",
             };
             (f.replacement.clone(), ff, ft, f.verified, kind.to_string())
         }
@@ -256,7 +257,11 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
 const REPL_ENTRY: &str = "cdz-repl-eval";
 
 /// Does form `id` start with the name `head` (`(head …)`)?
-fn is_form_head(src: &cadenza_syntax::ast::Arenas, id: cadenza_syntax::ast::StructId, head: &str) -> bool {
+fn is_form_head(
+    src: &cadenza_syntax::ast::Arenas,
+    id: cadenza_syntax::ast::StructId,
+    head: &str,
+) -> bool {
     use cadenza_syntax::ast::Struct;
     matches!(src.get(id), Struct::List(kids) if kids.first().is_some_and(|&h| src.as_name(h) == Some(head)))
 }
@@ -272,8 +277,14 @@ fn buffer_items(src: &cadenza_syntax::ast::Arenas) -> Vec<cadenza_syntax::ast::S
     match src.get(root) {
         // A `(do item…)` (guide wrap) or `(module NAME item…)` (hand-written) shell. `module` carries a
         // NAME child after the head; `do` does not — skip past the head, and for `module` the name too.
-        Struct::List(kids) if is_form_head(src, root, "do") || is_form_head(src, root, "module") => {
-            let skip = if src.as_name(kids[0]) == Some("module") { 2 } else { 1 };
+        Struct::List(kids)
+            if is_form_head(src, root, "do") || is_form_head(src, root, "module") =>
+        {
+            let skip = if src.as_name(kids[0]) == Some("module") {
+                2
+            } else {
+                1
+            };
             kids.iter()
                 .skip(skip)
                 .copied()
@@ -290,7 +301,10 @@ fn buffer_items(src: &cadenza_syntax::ast::Arenas) -> Vec<cadenza_syntax::ast::S
 /// — a function, whose name is the head of the signature list — and `(def name body)` — a bare value
 /// binding, whose name is the second child directly. Returns `None` for a non-`def` item (e.g. a
 /// `type`) or a malformed one.
-fn def_name(src: &cadenza_syntax::ast::Arenas, item: cadenza_syntax::ast::StructId) -> Option<String> {
+fn def_name(
+    src: &cadenza_syntax::ast::Arenas,
+    item: cadenza_syntax::ast::StructId,
+) -> Option<String> {
     use cadenza_syntax::ast::Struct;
     let Struct::List(kids) = src.get(item) else {
         return None;
@@ -301,7 +315,10 @@ fn def_name(src: &cadenza_syntax::ast::Arenas, item: cadenza_syntax::ast::Struct
     let target = *kids.get(1)?;
     match src.get(target) {
         // `(def (name param…) body)` — the signature list; its head is the function name.
-        Struct::List(sig) => sig.first().and_then(|&h| src.as_name(h)).map(str::to_string),
+        Struct::List(sig) => sig
+            .first()
+            .and_then(|&h| src.as_name(h))
+            .map(str::to_string),
         // `(def name body)` — a bare value binding.
         Struct::Atom(_) => src.as_name(target).map(str::to_string),
     }

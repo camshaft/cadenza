@@ -12585,6 +12585,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_latent_authority_delegation_offers_a_delete_fix() {
+        // The CDZ0404 repair is to DROP the unreached effect from the manifest — a DELETE fix on the
+        // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+        // Fix), the first use of `Edit::Delete`. `main` delegates `log` but never performs it.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) 42)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("latent authority must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0404"), "got: {}", err.message);
+        let fix = err.fix.expect("a delete fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(!fix.verified, "a delete is heuristic (intent guess)");
+        // The fix targets the delegated effect-name occurrence (the same node the diagnostic anchors).
+        assert_eq!(
+            Some(fix.node),
+            err.node,
+            "delete targets the effect-name node"
+        );
+    }
+
+    #[test]
     fn a_stateful_handler_threads_its_state_across_performs() {
         // E1c-2: a handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and
         // threads `s+1` forward — is reduced by the evaluation-order fold. `(Fresh.next)` reads state
