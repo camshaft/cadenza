@@ -503,6 +503,13 @@ impl<'a> Parser<'a> {
                     span,
                 )
             }
+            Kind::CharLit => {
+                let t = self.bump().unwrap();
+                // The token text is `#\<word>`; `char_leaf` classifies `<word>` into a `Char` scalar or a
+                // `BadChar` MARKER (surrogate / out-of-range / unknown name) the compiler rejects CDZ0002.
+                let word = self.text(t).strip_prefix("#\\").unwrap_or("");
+                self.atom(literal::char_leaf(word), span)
+            }
             Kind::BacktickName => {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)
@@ -1136,6 +1143,11 @@ impl<'a> Parser<'a> {
                     Leaf::Bytes(literal::unescape_byte_string_token(self.text(t))),
                     span,
                 )
+            }
+            Kind::CharLit => {
+                let t = self.bump().unwrap();
+                let word = self.text(t).strip_prefix("#\\").unwrap_or("");
+                self.atom(literal::char_leaf(word), span)
             }
             Kind::BacktickName => {
                 let t = self.bump().unwrap();

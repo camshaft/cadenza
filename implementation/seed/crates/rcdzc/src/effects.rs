@@ -715,11 +715,23 @@ fn check_no_home_walk(
 }
 
 /// Whether the resolved subtree at `node` performs an operation of the effect whose declaration
-/// occurrence is `decl` — following NON-RECURSIVE calls into their callee bodies (the perform may be
-/// cross-function, as the delegation-reaches-a-recursive-callee case shows; a recursive callee is not
-/// followed here — that reachability is E3, and missing it only UNDER-reports latent authority, the
-/// safe direction). Used by the CDZ0404 latent-authority check.
+/// occurrence is `decl` — following calls into their callee bodies (the perform may be cross-function).
+/// A RECURSIVE callee IS followed (its body walked ONCE), guarded by a `visited` set of callee-body
+/// occurrences so a self-/mutual-recursive cycle terminates. Used by the CDZ0404 latent-authority check:
+/// following a recursive callee is required so `(host (log) (go 1))` where `go` recursively performs
+/// `log.emit` is NOT falsely flagged as latent authority (its perform IS reached, through the recursion).
 fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    body_reaches_effect_visited(db, node, decl, depth, &mut visited)
+}
+
+fn body_reaches_effect_visited(
+    db: &mut Db,
+    node: StructId,
+    decl: u32,
+    depth: u32,
+    visited: &mut std::collections::HashSet<StructId>,
+) -> bool {
     if depth > 64 {
         return false;
     }
@@ -732,15 +744,17 @@ fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bo
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && let Some(callee) = crate::eval::lambda_body(db, head)
             .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
-        && !crate::eval::is_recursive(db, callee)
-        && body_reaches_effect(db, callee, decl, depth + 1)
+        // Walk the callee's body ONCE — `visited.insert` is false on a re-entry (a recursive cycle),
+        // which stops the descent so a self-/mutual-recursive callee terminates.
+        && visited.insert(callee)
+        && body_reaches_effect_visited(db, callee, decl, depth + 1, visited)
     {
         return true;
     }
     match db.ast.get(node).clone() {
         Struct::List(children) => children
             .iter()
-            .any(|&c| body_reaches_effect(db, c, decl, depth)),
+            .any(|&c| body_reaches_effect_visited(db, c, decl, depth, visited)),
         Struct::Atom(_) => false,
     }
 }

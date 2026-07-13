@@ -134,6 +134,8 @@ A binding position — a `let` binder, a function or `fn` parameter — MUST acc
 
 A binding position has no alternative arm, so its pattern MUST be irrefutable — it MUST match every value of the bound value's type. A refutable pattern in a binding position — a constructor pattern of a multi-variant sum, a literal, or a length-constrained list pattern, none of which matches every value of its type — MUST be a compile-time error (`CDZ0210`), the same non-exhaustiveness the equivalent single-arm match would raise under *Matching Is Exhaustive Or Rejected*. A pattern whose shape cannot match the bound value's type at all — a tuple pattern of the wrong arity, or a tuple pattern against a non-tuple value — MUST be a compile-time error (`CDZ0201`), and a non-linear binding pattern MUST be the same `CDZ0102` error as in any other pattern position.
 
+A binding pattern MAY carry a type annotation `(: <pattern> <Type>)`, which constrains the bound value's type while the inner pattern binds its names, in accordance with *Annotations Constrain, Never Contradict* (`type-system.md`): the annotation participates in inference as an added constraint, and a value whose type cannot satisfy it MUST be a compile-time error (`CDZ0203`), exactly as a value annotation `(: <expression> <Type>)` is.
+
 ### A List Is Deconstructed By Element Patterns With An Optional Rest
 
 A list MUST be matchable by an element pattern that names some number of leading elements positionally and MAY end in a rest binder for the remaining elements.

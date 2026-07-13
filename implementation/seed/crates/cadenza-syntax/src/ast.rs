@@ -38,6 +38,12 @@ pub enum Leaf {
     },
     Float(Decimal),
     Str(String),
+    /// A CHAR literal (`#\a`, `#\newline`, `#\u+00E9`) — a single Unicode scalar value, the element type
+    /// of a string's scalar sequence (`collections-and-text.md` §A Char Is A Single Unicode Scalar
+    /// Value). A `char` is a scalar by construction (Rust `char` excludes the surrogate range), so this
+    /// only ever holds a valid scalar; a literal spelling a NON-scalar (`#\u+D800`) is the `BadChar`
+    /// marker instead. Printed `#\c` for a printable char, `#\u+HHHH` for a control/non-printable one.
+    Char(char),
     /// A BYTE SEQUENCE literal (`b"…"`) — the value form of a `Bytes`. Holds the raw bytes (arbitrary,
     /// NOT necessarily UTF-8, so distinct from `Str`); printed `b"…"` (printable ASCII raw, `\n \r \t \\
     /// \"` named, else `\xNN`). The canonical value-form leaf a byte sequence crosses the boundary as.
@@ -51,6 +57,12 @@ pub enum Leaf {
     /// the COMPILER rejects it (CDZ0001, `collections-and-text.md` §A String Literal's Escapes Are A Closed
     /// Set). Holds the offending escape character (for the diagnostic message).
     BadEscape(char),
+    /// A CHAR literal that names a NON-scalar code point (`#\u+D800`, a surrogate) or is otherwise
+    /// malformed — a lexical defect the reader detected but cannot itself report, so it rides the binary
+    /// AST as a MARKER (like `BadEscape`). Resolving it is a `CDZ0002` rejection (`collections-and-text.md`
+    /// §A Char Is A Single Unicode Scalar Value): a `char` cannot hold a surrogate, so the reader records
+    /// the offending spelling here rather than fabricating an invalid scalar. Holds the literal's text.
+    BadChar(String),
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.

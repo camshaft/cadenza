@@ -11,6 +11,7 @@
 //!          IntPos{Dec,Hex,Bin} / IntNeg{Dec,Hex,Bin}  [ mag_len:var ][ mag_be:bytes ]
 //!       Float                         [ sign:1 ][ exp:i64-be ][ sig_len:var ][ sig_be:bytes ]
 //!       Str                           [ len:var ][ utf8:bytes ]
+//!       Char                          [ len:var ][ utf8:bytes ]  (one scalar)
 //!       BoolFalse | BoolTrue          (no payload)
 //!       Name                          [ len:var ][ utf8:bytes ]
 //! [ struct_count:var ]
@@ -60,6 +61,8 @@ const KIND_BOOL_TRUE: u8 = 9;
 const KIND_NAME: u8 = 10;
 const KIND_BYTES: u8 = 11;
 const KIND_BAD_ESCAPE: u8 = 12;
+const KIND_CHAR: u8 = 13;
+const KIND_BAD_CHAR: u8 = 14;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -140,6 +143,17 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         }
         Leaf::Str(s) => {
             out.push(KIND_STR);
+            write_bytes(out, s.as_bytes());
+        }
+        // A char leaf — the scalar, UTF-8 encoded (a length then that many bytes, like a string body).
+        Leaf::Char(c) => {
+            out.push(KIND_CHAR);
+            let mut buf = [0u8; 4];
+            write_bytes(out, c.encode_utf8(&mut buf).as_bytes());
+        }
+        // A bad-char MARKER — the offending literal text (UTF-8, like a name/string body).
+        Leaf::BadChar(s) => {
+            out.push(KIND_BAD_CHAR);
             write_bytes(out, s.as_bytes());
         }
         Leaf::Bytes(b) => {
@@ -278,6 +292,8 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
+        KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
+        KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
         _ => return None,
     })
 }

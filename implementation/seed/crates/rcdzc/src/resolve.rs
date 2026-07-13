@@ -200,6 +200,18 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     "unrecognized string escape `\\{c}` (the escape set is `\\n \\t \\r \\\\ \\\"`)"
                 ),
             )),
+            // A char literal (`#\a`) — a single Unicode scalar, a `Ty::Char` constant. Folds to
+            // `Core::ConstChar` (equality/ordering by scalar value; `Char.to-int`/`from-int` later).
+            Leaf::Char(c) => Resolved::Char(c),
+            // A bad-char MARKER the reader emitted for a char literal naming a NON-scalar (`#\u+D800`, a
+            // surrogate). Like `BadEscape`, the COMPILER turns the reader-detected lexical defect into a
+            // coded rejection: CDZ0002 (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value).
+            Leaf::BadChar(s) => Resolved::Poison(Reject::coded(
+                Code::BadChar,
+                format!(
+                    "`#\\{s}` does not name a Unicode scalar value (a code point in U+0000..=U+10FFFF, excluding the surrogates U+D800..=U+DFFF)"
+                ),
+            )),
         },
         Struct::List(children) => {
             // `()` — the empty list — is unit.
@@ -217,6 +229,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("record") => return resolve_record(db, id),
                 Some("tuple") => return resolve_tuple(db, id),
                 Some("list") => return resolve_list(db, id),
+                Some("map") => return resolve_map(db, id),
                 _ => {}
             }
             match db.ast.head_name(id) {
@@ -1373,9 +1386,18 @@ fn last_binder_named(
         if let Struct::List(kv) = db.ast.get(pair)
             && kv.len() == 2
         {
+            // An ANNOTATED binding `((: pat T) V)` — peel the annotation to the inner pattern `pat`; the
+            // binder is `pat`'s, and the type `T` is a constraint on `V` (checked when the let is lowered,
+            // CDZ0203 on contradiction). So `(: x Int64)` binds `x` and `(: (tuple a b) T)` destructures,
+            // both exactly as the un-annotated form does — the annotation does not change WHAT `name`
+            // binds, only constrains its type.
+            let lhs = match db.ast.as_form(kv[0], ":") {
+                Some(ann) if ann.len() == 2 => ann[0],
+                _ => kv[0],
+            };
             // A bare-name binding `(x V)` binds `name` directly to the value occurrence `V` — a `Ref`,
             // the common case (an allocation-free early return, the hot path).
-            if db.ast.as_name(kv[0]) == Some(name) {
+            if db.ast.as_name(lhs) == Some(name) {
                 return Some(Resolved::Ref { value: kv[1] });
             }
             // A DESTRUCTURING binding `((tuple a b) V)` — the LHS is a tuple PATTERN. A reference to one
@@ -1385,10 +1407,10 @@ fn last_binder_named(
             // match; reusing `find_binder_in_tuple` gives the desugar with zero new IR. (Refutability +
             // linearity are enforced when the `let` is lowered, so an ill-formed binding still faults —
             // this lookup only routes an in-scope binder to its value.)
-            if is_tuple_pattern(db, kv[0]) {
+            if is_tuple_pattern(db, lhs) {
                 let mut path = Vec::new();
                 let mut heads = Vec::new();
-                if find_binder_in_tuple(db, kv[0], name, &mut path, &mut heads) {
+                if find_binder_in_tuple(db, lhs, name, &mut path, &mut heads) {
                     return Some(Resolved::SumPayload {
                         scrutinee: kv[1],
                         steps: path.into(),
@@ -2262,6 +2284,32 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
     let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
     Resolved::List { elems }
+}
+
+/// Resolve `(map (k v) …)` — a persistent key→value association literal. Each entry is a two-element
+/// `(key value)` list; UNLIKE a record, BOTH positions are ORDINARY VALUE occurrences (resolved on
+/// demand by the normal scope lookup, NOT read as a label via `read_key`) — that is what makes a map
+/// key a VALUE (`(let ((a 5)) (map (a 1)))` keys by 5, `(+ 2 3)` is a runtime key, an unbound key is
+/// the ordinary CDZ0101). A malformed entry (not a 2-element list — e.g. `(map ("a"))`, a key with no
+/// value) is a `Poison` (CDZ0201), never a panic reaching for the absent value. An empty `(map)` is a
+/// map with no entries. `infer`/`type_errors` enforce key/value homogeneity + duplicate-const-key.
+fn resolve_map(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_ctor_form(id, "map").unwrap_or(&[]);
+    let mut entries: Vec<(StructId, StructId)> = Vec::with_capacity(tail.len());
+    for &entry in tail {
+        match db.ast.get(entry) {
+            Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
+            _ => {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a map entry is a (key value) pair",
+                ));
+            }
+        }
+    }
+    Resolved::Map {
+        entries: entries.into(),
+    }
 }
 
 /// Resolve `(: expr ty_expr)` — a type annotation. Both children stay AST occurrences: `expr` is the

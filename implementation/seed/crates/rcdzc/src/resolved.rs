@@ -510,6 +510,10 @@ pub enum Resolved {
     /// to a `Core::BytesOf` of its bytes (same shape `(Bytes.of (list …))` builds), so it bakes at escape,
     /// compares/slices/concats as a constant, and renders back `b"…"`. The companion of `Str` for bytes.
     Bytes(Vec<u8>),
+    /// A CHAR literal (`#\a`) — a single Unicode scalar value. Types as `Ty::Char` (DISTINCT from `Int`);
+    /// folds to a `Core::ConstChar`. Constant equality/ordering compare by scalar value (`Char.to-int`/
+    /// `from-int` and `String.scalar-at` are later increments).
+    Char(char),
     /// A FLOATING-POINT literal (`2.0`). Types as `Ty::Float` — DISTINCT from `Ty::Int`, so mixing a
     /// float and an integer in one arithmetic operator is rejected (no silent promotion). Its VALUE does
     /// not yet run: `core_of` DECLINES (there is no float arithmetic / boundary rep yet), so a pure-float
@@ -595,6 +599,18 @@ pub enum Resolved {
     /// fixed-arity product with per-position types): a list's length is a runtime property and all
     /// elements share a type. Built on the persistent `vec-*` heap at run time.
     List { elems: std::sync::Arc<[StructId]> },
+    /// A MAP literal `(map (k v) …)` — a persistent association of keys to values. Each entry is a
+    /// `(key-occ, value-occ)` PAIR of ORDINARY VALUE occurrences — the key is NOT a compile-time label
+    /// (unlike a `Record` field, read by `read_key` into a `Symbol`): it is an expression resolved in
+    /// scope, so a bound name keys by its VALUE (`(let ((a 5)) (map (a 1)))` is the map at key 5), a
+    /// computed key `(+ 2 3)` is a runtime key, and an unbound key is the ordinary CDZ0101 scope error
+    /// (never coerced to a String). Both axes are HOMOGENEOUS — all keys unify to one type, all values
+    /// to one — so its type is `Ty::Map(key, value)`; two maps with different KEY SETS are the SAME type
+    /// (the keyset is runtime data, unlike a record's fixed field set). Built on the persistent CHAMP
+    /// `map-*` heap at run time; a later duplicate key overwrites (keys compared by value).
+    Map {
+        entries: std::sync::Arc<[(StructId, StructId)]>,
+    },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

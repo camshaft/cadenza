@@ -73,6 +73,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
+        // A char literal (`#\a`) is the monomorphic `Ty::Char`.
+        Resolved::Char(_) => Ty::Char,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
         // A `bin` PATTERN binder: an integer segment decodes an `Int`, a `bytes` segment a `Bytes`.
@@ -168,6 +170,20 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 elem_ty = elem_ty.join(&type_of(db, e));
             }
             Ty::List(Box::new(elem_ty))
+        }
+        // A map literal's type is `Map <key> <value>` where `<key>` is the JOIN of the entry key types
+        // and `<value>` the JOIN of the entry value types (each homogeneous — a mixed-key or mixed-value
+        // map is CDZ0201, the CHECK is `type_errors`' job; this fills the value column). An empty `(map)`
+        // is `Map Any Any` (deferred, solved by unification against a use). A map's KEY SET is NOT part
+        // of its type — only the key TYPE is (`Map<K,V>`).
+        Resolved::Map { entries } => {
+            let mut key_ty = Ty::Any;
+            let mut val_ty = Ty::Any;
+            for &(k, v) in entries.iter() {
+                key_ty = key_ty.join(&type_of(db, k));
+                val_ty = val_ty.join(&type_of(db, v));
+            }
+            Ty::Map(Box::new(key_ty), Box::new(val_ty))
         }
         // (Arc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
         // A tuple projection's type is the operand tuple's element type AT `index`. An operand that is
@@ -940,6 +956,29 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return compound_ctor_type(db, prim, args);
     }
+    // The `map` VALUE-constructor alias applied — `(map (k v) …)` written as a bare NAME head. Its `args`
+    // are the ENTRY-PAIR nodes (each a two-element `(key value)` list), NOT curried arguments — so type
+    // it as `Map <join keys> <join values>` DIRECTLY (like the `list` alias types `List <join elems>`),
+    // never peeling the pairs as a curried application (which would wrongly type `(a 1)` as applying `a`).
+    // An empty `(map)` is `Map Any Any`. Homogeneity is `type_errors`' job; this fills the value column.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::MapNew) {
+        let mut key_ty = Ty::Any;
+        let mut val_ty = Ty::Any;
+        for &entry in args {
+            // Read the entry's RAW `(key value)` children — a map entry is structure, not an application
+            // (`(a 1)` is the pair a↦1, not `a` applied to `1`), so read the AST list directly.
+            if let crate::ast::Struct::List(items) = db.ast.get(entry)
+                && items.len() == 2
+            {
+                let (k, v) = (items[0], items[1]);
+                key_ty = key_ty.join(&type_of(db, k));
+                val_ty = val_ty.join(&type_of(db, v));
+            }
+            // A malformed entry (not a 2-element list) — the fault is reported elsewhere; the map's
+            // key/value stay whatever the well-formed entries determined.
+        }
+        return Ty::Map(Box::new(key_ty), Box::new(val_ty));
+    }
     // A NULLARY PERFORM `(E.op)` — an effect operation applied to no argument. Its `(meta t)` scheme is
     // `(-> Unit result)` (a `Unit`-domain op whose unit argument is elided in the corpus surface), so the
     // performance's type is `result`, NOT the op record's type (which the zero-arg identity short-circuit
@@ -1227,6 +1266,55 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
         }
         return;
     }
+    // A MAP constructor (`map` alias) applied — its arguments are its ENTRY PAIRS `(key value)`, NOT
+    // curried arguments and NOT ordinary sub-expressions (a `(a 1)` entry is the pair a↦1, so it must
+    // NOT be checked as "apply `a` to `1`"). Read each entry's RAW `(key value)` children, check key/
+    // value homogeneity (all keys one type, all values one type — CDZ0201) + duplicate-const-key, then
+    // `collect` faults from each KEY and each VALUE (as values, in scope). The `map` NAME alias resolves
+    // to a `Resolved::Apply` (this path), so this — not the `Resolved::Map` `collect` arm — catches the
+    // name-alias map's faults; the two share the same rules.
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(crate::resolved::Prim::MapNew)
+    ) {
+        // Read the entry pairs' (key, value) child occurrences (a malformed entry is faulted at resolve).
+        let entries: Vec<(StructId, StructId)> = args
+            .iter()
+            .filter_map(|&e| match db.ast.get(e) {
+                crate::ast::Struct::List(items) if items.len() == 2 => Some((items[0], items[1])),
+                _ => None,
+            })
+            .collect();
+        let mut ksubst = Subst::new();
+        let mut vsubst = Subst::new();
+        if let Some(&(fk, fv)) = entries.first() {
+            let (fkt, fvt) = (type_of(db, fk), type_of(db, fv));
+            for &(k, v) in entries.iter().skip(1) {
+                let kt = type_of(db, k);
+                if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        "a map associates keys of one type (its keys do not share a type)",
+                    ));
+                }
+                let vt = type_of(db, v);
+                if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        "a map associates values of one type (its values do not share a type)",
+                    ));
+                }
+            }
+        }
+        if let Some(reject) = map_duplicate_const_key(db, &entries) {
+            out.push(reject);
+        }
+        for (k, v) in entries {
+            collect(db, k, out);
+            collect(db, v, out);
+        }
+        return;
+    }
     // A NULLARY variant CONSTRUCTOR applied to the unit value — `(None unit)` / `(Nil ())` — is the
     // canonical construction of a nullary variant (core-semantics.md §Construction MUST Be Via
     // Application). Its ctor `(meta t)` is the bare sum (no arrow — `variant_payload_type` is `None`), so
@@ -1459,6 +1547,47 @@ fn no_field_reject(
             format!("record has no field `{}`", key.name),
         ),
     }
+}
+
+/// Whether a key occurrence is a DIRECT LITERAL — a constant written IN the map literal (an int/string/
+/// bool/float/unit atom), NOT a name reference. The duplicate-key reject compares only these: a repeated
+/// WRITTEN literal (`(map ("a" 1) ("a" 2))`) is the ambiguous duplicate the spec forbids, whereas two
+/// distinct NAMES that merely fold to the same value (`(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))`)
+/// are a RUNTIME overwrite (size 1, keys compared by value), NOT a compile-time reject. Reading the key
+/// through a name binding would conflate the two, so a name key (`Resolved::Ref`) is NOT a direct literal.
+fn is_direct_literal_key(db: &mut Db, key: StructId) -> bool {
+    matches!(
+        resolved_of(db, key),
+        Resolved::Int(_)
+            | Resolved::Str(_)
+            | Resolved::Bool(_)
+            | Resolved::Float(_)
+            | Resolved::Unit
+    )
+}
+
+/// A map literal has a DUPLICATE WRITTEN-LITERAL key → CDZ0201 (the association is ambiguous — which
+/// value does the key hold? collections-and-text.md §A Map Associates Keys With Values: each key at most
+/// once). Only DIRECT LITERAL keys are checked (see `is_direct_literal_key`): two literal keys that
+/// compare structurally equal (`const_compound_eq`) are a duplicate. A NAME key — even two distinct
+/// names bound to the same value — is a runtime overwrite (size 1), never a reject. `None` if no duplicate.
+fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Option<Reject> {
+    for i in 0..entries.len() {
+        if !is_direct_literal_key(db, entries[i].0) {
+            continue;
+        }
+        for j in (i + 1)..entries.len() {
+            if is_direct_literal_key(db, entries[j].0)
+                && crate::lower::const_compound_eq(db, entries[i].0, entries[j].0) == Some(true)
+            {
+                return Some(Reject::coded(
+                    Code::Malformed,
+                    "a map contains each key at most once (a duplicate literal key)",
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// Collect faults at and under `id`, stamping each with its origin node. The recursive `collect_node`
@@ -1725,6 +1854,49 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, e, out);
             }
         }
+        // A map literal is HOMOGENEOUS on BOTH axes: all keys share one type AND all values share one
+        // type (collections-and-text.md §A Map Associates Keys With Values — keys of ONE type with values
+        // of ONE type). Unify each key against the first key and each value against the first value — a
+        // mismatch (`(map (a 1) (b true))` values, or `(map (j 1) (k 2))` with `j`:Int/`k`:Bool keys) is
+        // CDZ0201 (a map is ill-typed, not merely a shape mismatch — coded Malformed like the list-of-
+        // homogeneous). Independent of the key-is-a-value rule (the keys are ordinary value occurrences).
+        // Then descend into each key and value for its own faults. The DUPLICATE-CONSTANT-KEY check is
+        // separate (a repeated compile-time-constant key is CDZ0201 — a runtime-computed duplicate is a
+        // runtime overwrite, not a reject); it lives in `map_duplicate_const_key` below.
+        Resolved::Map { entries } => {
+            let mut ksubst = Subst::new();
+            let mut vsubst = Subst::new();
+            if let Some(&(fk, fv)) = entries.first() {
+                let (fkt, fvt) = (type_of(db, fk), type_of(db, fv));
+                for &(k, v) in entries.iter().skip(1) {
+                    let kt = type_of(db, k);
+                    if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
+                        trace!(target: "rcdzc::infer", node = id.0, "fault: map keys differ in type (CDZ0201)");
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            "a map associates keys of one type (its keys do not share a type)",
+                        ));
+                    }
+                    let vt = type_of(db, v);
+                    if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
+                        trace!(target: "rcdzc::infer", node = id.0, "fault: map values differ in type (CDZ0201)");
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            "a map associates values of one type (its values do not share a type)",
+                        ));
+                    }
+                }
+            }
+            // A repeated COMPILE-TIME-CONSTANT key makes the association ambiguous → CDZ0201.
+            if let Some(reject) = map_duplicate_const_key(db, &entries) {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: map has a duplicate constant key (CDZ0201)");
+                out.push(reject);
+            }
+            for &(k, v) in entries.iter() {
+                collect(db, k, out);
+                collect(db, v, out);
+            }
+        }
         // A `(bin …)` construction: check STATIC well-formedness (CDZ0220 — decidable from the segment
         // list alone), then descend into each segment's value slot for its own faults. Well-formedness:
         // the running bit-cursor from `bits` segments must close to a whole byte before any byte-aligned
@@ -1851,6 +2023,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         }
                     }
                     Err(reject) => out.push(reject),
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::MapNew)
+            ) {
+                // A MAP value-constructor alias applied — `(map (k v) …)`. Its arguments are `(key value)`
+                // ENTRY PAIRS, not expressions: descending into a pair as an expression would resolve the
+                // key `a` as applied to the value (the `(a 1)`→"cannot apply Int64" fault). `check_application`
+                // above already validated homogeneity + descended into each key/value; here we only handle
+                // the MALFORMED-entry fault (a non-`(key value)` entry) so it is reported — the well-formed
+                // entries' faults are already collected. Do NOT `collect` the raw entry pairs.
+                for &entry in args.iter() {
+                    if !matches!(db.ast.get(entry), crate::ast::Struct::List(items) if items.len() == 2)
+                    {
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            "a map entry is a (key value) pair",
+                        ));
+                    }
                 }
             } else {
                 for &arg in args.iter() {
@@ -2055,6 +2246,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)

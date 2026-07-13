@@ -99,11 +99,52 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
 /// record used as a runtime value survives as `Core::Record` (which declines at select until the
 /// value heap exists). This is the one compile-time reduction tier acting through lowering
 /// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
+/// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
+/// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
+/// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
+fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
+    if matches!(core_of(db, id), Core::HostCall { .. }) {
+        return true;
+    }
+    match db.ast.get(id).clone() {
+        crate::ast::Struct::List(children) => {
+            children.iter().any(|&c| subtree_reaches_host_call(db, c))
+        }
+        crate::ast::Struct::Atom(_) => false,
+    }
+}
+
 fn compute(db: &mut Db, id: StructId) -> Core {
+    // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
+    // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
+    // the block's value. A `do` resolves to a `Ref` to its last form (`resolve_do`), which would DROP the
+    // intermediates; intercept here for the effectful case so the calls are not lost. A `do` whose
+    // intermediates are all PURE keeps the `Ref{last}` fold (the intermediates contribute nothing), so
+    // this only fires when a non-final statement genuinely reaches a host call. Each sequenced statement
+    // is a def-free value form (a do-local `(def …)` is a binding, not a statement — resolved by name).
+    if db.ast.head_name(id) == Some("do")
+        && let Some(forms) = db.ast.as_form(id, "do")
+        && let Some((&tail, stmts)) = forms.split_last()
+    {
+        let stmts: Vec<StructId> = stmts
+            .iter()
+            .copied()
+            .filter(|&f| db.ast.head_name(f) != Some("def"))
+            .collect();
+        // Only build a Seq if some non-final statement reaches a host call (else the ordinary Ref{last}
+        // fold is correct + cheaper). `subtree_reaches_host_call` walks the statement's core.
+        if stmts.iter().any(|&s| subtree_reaches_host_call(db, s)) {
+            return Core::Seq { stmts, tail };
+        }
+    }
     match resolved_of(db, id) {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A char literal (`#\a`) folds to its `Core::ConstChar` — a `Ty::Char` value. Constant
+        // equality/ordering compare by scalar value; crossing the boundary as a char value is a later
+        // increment (a char at the boundary declines).
+        Resolved::Char(c) => Core::ConstChar(c),
         // A byte-string literal `b"…"` lowers to a `Core::BytesOf` of its bytes — each a fresh `UInt8`
         // `Leaf::Int` synthesized into the arena (the SAME shape `(Bytes.of (list …))` and
         // `String.to-bytes` build), so it bakes at escape, compares/slices/concats as a constant, and
@@ -295,6 +336,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::List { elems } => Core::ListNew {
             elems: elems.to_vec(),
         },
+        // A map literal `(map (k v) …)` — a `Core::MapNew` the backend builds on the persistent CHAMP
+        // `map-*` heap (`map-empty` + a `map-insert` per entry, in source order). The key/value types come
+        // from the node's own solved `Ty::Map` (fully determined by unification — key/value homogeneity is
+        // enforced in `type_errors`). A poison key/value propagates. Keys are VALUE occurrences (the
+        // resolver stored them as such), so a computed key `(+ 2 3)` lowers its expression normally, and a
+        // bound name keys by its value — no per-entry const-folding here yet (M3 adds the constant-map fold
+        // for equality/render; the runtime build via `map-insert` is already order-canonical by CHAMP).
+        Resolved::Map { entries } => {
+            for &(k, v) in entries.iter() {
+                if let Core::Poison(r) = core_of(db, k) {
+                    return Core::Poison(r);
+                }
+                if let Core::Poison(r) = core_of(db, v) {
+                    return Core::Poison(r);
+                }
+            }
+            let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Map(k, v) => (*k, *v),
+                _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
+            };
+            Core::MapNew {
+                entries: entries.to_vec(),
+                key_ty,
+                val_ty,
+            }
+        }
         // A tuple PROJECTION `(. t N)`. FOLD when the operand reduces to a compile-time-visible tuple:
         // lower the element's core directly (no heap, like a record member fold). Otherwise the operand
         // is a RUNTIME tuple (a parameter, a kept `let` binding) — emit a `Core::Proj` the backend lowers
@@ -1676,6 +1743,41 @@ pub(crate) fn check_binding_pattern(
     pat: StructId,
     value_ty: &crate::ty::Ty,
 ) -> Result<(), Reject> {
+    // An ANNOTATED binding pattern `(: <pat> <Type>)` (type-system.md §Annotations Constrain, Never
+    // Contradict): the annotation constrains the bound value's type and the inner `<pat>` is the real
+    // binder. Peel it — check the annotation type AGREES with the value's type (a contradiction is
+    // CDZ0203, `(: x Bool) = 5`), then recurse on `<pat>` so the inner pattern's own well-formedness
+    // (irrefutable / linear / right shape) is still checked. A generic/deferred value type (`Any`, an
+    // unsolved var) agrees with any annotation — the annotation grounds it, no contradiction.
+    if let Some(ann) = db.ast.as_form(pat, ":")
+        && ann.len() == 2
+    {
+        let inner = ann[0];
+        let ty_expr = ann[1];
+        if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr)
+            && !value_ty.agrees_with(&annot_ty)
+        {
+            return Err(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "a binder annotated {} is bound to a value of type {}",
+                    annot_ty.render_name(),
+                    value_ty.render_name()
+                ),
+            )
+            .at(pat));
+        }
+        // The annotation may REFINE the value type (a deferred literal grounded to the annotated width),
+        // so validate the inner pattern against the annotation type when it is more specific than the
+        // value type, else the value type.
+        let refined = crate::eval::typeval_of(db, ty_expr).unwrap_or_else(|| value_ty.clone());
+        let inner_ty = if matches!(value_ty, crate::ty::Ty::Any) {
+            refined
+        } else {
+            value_ty.clone()
+        };
+        return check_binding_pattern(db, inner, &inner_ty);
+    }
     // A bare name (a binder) or `_` (wildcard) — trivially irrefutable, the common case.
     if let Some(name) = db.ast.as_name(pat) {
         // A bare name that resolves to a NULLARY constructor (`None`) is a refutable ctor, not a binder.
@@ -2801,7 +2903,27 @@ fn collect_captures(
         }
         _ => {}
     }
-    // Descend into the AST children (a form's operands, an if's branches, a nested lambda's body).
+    // A NESTED LAMBDA `(fn (inner-params) inner-body)` in the body — its OWN params are bound WITHIN it,
+    // so they are neither captures of the outer lambda nor self-captures; only its FREE variables (which,
+    // if bound outside the OUTER lambda, are the outer's captures too) matter. Descend into the inner
+    // BODY with the inner params ADDED to the excluded set, and SKIP the inner param list (whose binder
+    // occurrences would otherwise trip the `binder == node` self-capture guard, spuriously declining any
+    // lifted lambda containing a nested lambda). This keeps a nested applied lambda `((fn (y) …) x)`
+    // analyzable so it β-reduces at lowering rather than declining here.
+    if let Some(tail) = db.ast.as_form(node, "fn")
+        && let (Some(&inner_params_occ), Some(&inner_body)) = (tail.first(), tail.get(1))
+        && let crate::ast::Struct::List(inner_params) = db.ast.get(inner_params_occ)
+    {
+        let inner_param_occs: Vec<StructId> = inner_params
+            .clone()
+            .iter()
+            .map(|&p| crate::eval::param_name_occ(db, p))
+            .collect();
+        let mut combined = params.to_vec();
+        combined.extend_from_slice(&inner_param_occs);
+        return collect_captures(db, inner_body, &combined, lam_id, captures, capture_refs);
+    }
+    // Descend into the AST children (a form's operands, an if's branches, a `let`'s bindings).
     match db.ast.get(node) {
         crate::ast::Struct::List(children) => {
             let children: Vec<StructId> = children.clone();
@@ -2997,6 +3119,10 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             elems.iter().any(|&e| ref_escapes_whole(db, e, init))
         }
+        // A map literal uses each entry's key AND value as a whole value (both consumed into the map).
+        Resolved::Map { entries } => entries
+            .iter()
+            .any(|&(k, v)| ref_escapes_whole(db, k, init) || ref_escapes_whole(db, v, init)),
         // A `(bin …)` construction uses each segment's value slot (and dependent size) as a whole value.
         Resolved::Bin { segs } => segs.iter().any(|s| {
             ref_escapes_whole(db, s.slot, init)
@@ -3034,6 +3160,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -3508,9 +3635,15 @@ fn resolve_leaf_offsets(
                 off += 1 + leb_len(bs.len() as u64) + bs.len();
             }
             crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
-            // A bad-escape marker is a POISON — it never reaches a constant value form (resolving it
-            // rejects CDZ0001 before any escape emission), so a runtime template over it is meaningless.
-            crate::ast::Leaf::BadEscape(_) => return None,
+            // A char leaf encodes like a Str (kind byte + len LEB + utf8 bytes); a char does not yet
+            // cross the boundary in the runtime escape, so advance past it (no runtime hole).
+            crate::ast::Leaf::Char(c) => {
+                off += 1 + leb_len(c.len_utf8() as u64) + c.len_utf8();
+            }
+            // A bad-escape / bad-char marker is a POISON — it never reaches a constant value form
+            // (resolving it rejects CDZ0001/CDZ0002 before any escape emission), so a runtime template
+            // over it is meaningless.
+            crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
         }
     }
     let _ = bytes;
@@ -3659,9 +3792,9 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom. `String` is a monomorphic named type too, so its
-        // surface is the bare `String` atom (`render_name`).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String => Some(b.name(ty.render_name())),
+        // A scalar's type surface is its name atom. `String`/`Char` are monomorphic named types too, so
+        // their surface is the bare `String`/`Char` atom (`render_name`).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char => Some(b.name(ty.render_name())),
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
@@ -3810,6 +3943,13 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             }
             n
         }
+        Resolved::Map { entries } => {
+            let mut n = 0;
+            for &(k, v) in entries.iter() {
+                n += uses_in(db, k, init) + uses_in(db, v, init);
+            }
+            n
+        }
         Resolved::Proj { operand, .. } => uses_in(db, operand, init),
         Resolved::Annot { expr, .. } => uses_in(db, expr, init),
         Resolved::Apply { head, args } => {
@@ -3855,6 +3995,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -4416,6 +4557,8 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
         },
         (Core::ConstBool(a), Core::ConstBool(b)) => Some(a.cmp(&b)),
         (Core::ConstStr(a), Core::ConstStr(b)) => Some(a.cmp(&b)),
+        // Two chars order by scalar value (`compare #\a #\b` → Less).
+        (Core::ConstChar(a), Core::ConstChar(b)) => Some((a as u32).cmp(&(b as u32))),
         (Core::ConstFloat(a), Core::ConstFloat(b)) => {
             f64::from_bits(a.to_f64_bits()).partial_cmp(&f64::from_bits(b.to_f64_bits()))
         }
@@ -4474,6 +4617,15 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         (Core::ConstStr(a), Core::ConstStr(b)) => {
             let r = compare_ord(op, a.cmp(&b));
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant string comparison");
+            Core::ConstBool(r)
+        }
+        // Two CONSTANT chars compare by SCALAR VALUE (`collections-and-text.md` §A Char Is A Single
+        // Unicode Scalar Value: "a char's ordering MUST be the numeric order of its scalar value"), so `=`
+        // is scalar equality and `<`/`>` order by code point — `(= #\a #\a)` → true, `(< #\a #\b)` → true
+        // (97 < 98). A constant fold, no runtime (a char has no machine slot this increment).
+        (Core::ConstChar(a), Core::ConstChar(b)) => {
+            let r = compare_ord(op, (a as u32).cmp(&(b as u32)));
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
         }
         // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
@@ -4576,11 +4728,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
 /// type, so same-typed records share keys — compare each). Scalar leaves compare by value. Two DIFFERENT
 /// compound KINDS (a tuple vs a sum) never fold here — the type checker rejects a cross-shape `=` before
 /// lowering, so a kind mismatch reaching here is a compiler bug → `None` (decline).
-fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
+pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
     match (core_of(db, a), core_of(db, b)) {
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
+        // Two chars: equal iff their scalar values match.
+        (Core::ConstChar(x), Core::ConstChar(y)) => Some(x == y),
         // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
         // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false) and a nested NaN equals a nested NaN (identical
         // bits under the canonical byte form; contracts/deterministic-value-form.md). By-bits, NOT
@@ -4730,15 +4884,17 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             seen.pop();
             ok
         }
-        // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
-        // canonical form needs machinery this increment does not emit, or it is not a runtime value that
-        // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
+        // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
+        // here (its canonical form needs machinery this increment does not emit, or it is not a runtime
+        // value that reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at
+        // run time). A `Char` has no runtime machine rep yet (its equality folds at compile time).
         // NOTE: a `Ty::Map` handle IS canonical by construction (CHAMP), so map equality is wired directly
         // (M3) via the top-level `=` → `value-eq` path, not through this compound-leaf walkability gate.
         Ty::List(_)
         | Ty::Map(_, _)
         | Ty::Bytes
         | Ty::String
+        | Ty::Char
         | Ty::Float(_)
         | Ty::Fn(_, _)
         | Ty::Type

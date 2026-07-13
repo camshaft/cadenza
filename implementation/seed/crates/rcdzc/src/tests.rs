@@ -4717,6 +4717,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_char_literal_is_a_scalar_that_compares_by_scalar_value() {
+        // 13-strings CHAR increment 1 (`collections-and-text.md` §A Char Is A Single Unicode Scalar
+        // Value): a `#\c` literal is a `Ty::Char` constant whose value is its Unicode scalar. Equality is
+        // scalar equality and ordering is the numeric order of the scalar, both folding at compile time to
+        // a `Bool` (a char has no runtime machine slot this increment). A literal spelling a NON-scalar
+        // (a surrogate `#\u+D800`) is a reader-detected lexical defect the compiler rejects CDZ0002.
+        let run = |src: &str| run_returns::<bool>(&component(src), "main");
+        // Equality by scalar value: two equal chars are equal, two distinct chars are not.
+        assert!(run("(module m (def (main) (= #\\a #\\a)) (export main))"));
+        assert!(!run("(module m (def (main) (= #\\a #\\b)) (export main))"));
+        // Ordering by scalar value: 97 (`a`) < 98 (`b`).
+        assert!(run("(module m (def (main) (< #\\a #\\b)) (export main))"));
+        assert!(!run("(module m (def (main) (< #\\b #\\a)) (export main))"));
+        // The `#\u+HHHH` code-point spelling names the same scalar (`#\u+0061` = `a`).
+        assert!(run(
+            "(module m (def (main) (= #\\u+0061 #\\a)) (export main))"
+        ));
+        // A named control char (`#\newline`) reads to its scalar (U+000A).
+        assert!(run(
+            "(module m (def (main) (= #\\newline #\\u+000A)) (export main))"
+        ));
+        // A surrogate code point is not a scalar — the literal is malformed (CDZ0002).
+        assert_eq!(
+            reject_code("(module m (def (main) #\\u+D800) (export main))").as_deref(),
+            Some("CDZ0002")
+        );
+        // A code point past U+10FFFF is likewise not a scalar.
+        assert_eq!(
+            reject_code("(module m (def (main) #\\u+110000) (export main))").as_deref(),
+            Some("CDZ0002")
+        );
+    }
+
+    #[test]
     fn a_string_match_is_well_formed_or_rejected() {
         // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
         // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
@@ -8044,6 +8078,35 @@ mod diagnostics {
             .collect()
     }
 
+    /// The CDZ0306 unused-binding DIAGNOSTICS (full records, so a test can read the carried fix).
+    fn unused_diags(src: &str) -> Vec<crate::abi::Diagnostic> {
+        let mut db = Db::load(parse(src));
+        crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0306"))
+            .collect()
+    }
+
+    #[test]
+    fn an_unused_binding_carries_a_verified_underscore_prefix_fix() {
+        // The first MACHINE-APPLICABLE fix (`spec/capabilities/diagnostics.md` §A Confirmed Fix Is
+        // Marked Verified): the CDZ0306 warning's prose "prefix with `_`" is now a structural fix an
+        // agent applies WITHOUT review — rename the binder to `_<name>`, which the silencing rule makes
+        // behaviour-preserving and clears the warning by construction.
+        let src = "(module m (def (f p q) (+ p 1)) (export f))";
+        let diags = unused_diags(src);
+        assert_eq!(diags.len(), 1, "only q is unused: {diags:?}");
+        let fix = diags[0].fix.as_ref().expect("a fix is carried");
+        assert_eq!(fix.replacement, "_q", "the `_`-prefixed name");
+        assert!(
+            fix.verified,
+            "the silencing rule makes this fix VERIFIED, not heuristic"
+        );
+        // And applying it (q → _q) clears the warning — the fix's correctness, demonstrated.
+        let fixed = "(module m (def (f p _q) (+ p 1)) (export f))";
+        assert!(unused_diags(fixed).is_empty(), "the _-prefix silences it");
+    }
+
     #[test]
     fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
         // A RECURSIVE function freshens its parameter binder when its body is resolved (and the
@@ -9943,6 +10006,54 @@ mod stage1 {
     }
 
     #[test]
+    fn an_annotated_let_binder_constrains_the_value() {
+        // A `let` binder MAY carry a `(: <pat> <Type>)` annotation (core-semantics.md §A Binding Position
+        // Accepts An Irrefutable Pattern / type-system.md §Annotations Constrain, Never Contradict): the
+        // annotation constrains the value's type while the inner pattern binds. `check_binding_pattern` +
+        // `last_binder_named` peel it — a contradiction is CDZ0203, else the inner pattern binds normally.
+        let run = |body: &str| -> i64 {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&src))).expect("compile"),
+                "main",
+            )
+        };
+        // An annotated name binder, and an annotated DESTRUCTURING binder (annotation before the pattern).
+        assert_eq!(run("(let (((: x Int64) 5)) x)"), 5);
+        assert_eq!(
+            run("(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 3 4))) (+ a b))"),
+            7
+        );
+        // A CONTRADICTING annotation is CDZ0203.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        assert_eq!(code("(let (((: x Bool) 5)) x)").as_deref(), Some("CDZ0203"));
+        assert_eq!(
+            code("(let (((: (tuple a b) (Tuple Int64 Bool)) (tuple 3 4))) a)").as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_def_parameter_may_be_a_tuple_pattern() {
         // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
         // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites
@@ -10606,16 +10717,37 @@ mod stage1 {
     }
 
     #[test]
-    fn a_dropped_host_call_in_a_non_final_do_statement_declines() {
-        // E2h: a `(do …)` block lowers to only its LAST form's value, so a host call in a NON-FINAL
-        // statement would be silently dropped. The compiler DECLINES rather than miscompile (drop the
-        // call's side effect). Multi-statement host sequencing is a later increment.
+    fn a_do_block_of_host_calls_sequences_them() {
+        // E2h-seq: a `(do (log.emit "first") (log.emit "second"))` — two side-effecting host-call
+        // statements — lowers to a `Core::Seq` that EMITS each statement in order (their calls both cross
+        // the boundary), then the tail is the block's value. Was a clean decline (the block would else
+        // drop the non-final call); now it compiles + BOTH calls fire (verified in order via the corpus
+        // gate → observed [log.emit, log.emit]). The host imports are unbound in-process, so this asserts
+        // it COMPILES; the gate runs the observed sequence.
         let src = "(do (effect log (op emit (-> String Unit))) \
                    (def (main) (host (log) (do (log.emit \"first\") (log.emit \"second\")))) \
                    (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a dropped host call in a non-final do statement must decline, not miscompile"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a do block of host-call statements must compile (sequencing both calls)"
+        );
+    }
+
+    #[test]
+    fn a_delegated_effect_reached_through_a_recursive_callee_compiles() {
+        // E2h-rec: `main` delegates `log` and calls a RECURSIVE `go` that performs `log.emit` on each
+        // step. Two coupled fixes: (1) `body_reaches_effect` (the CDZ0404 latent-authority check) now
+        // FOLLOWS a recursive callee (visited-set guarded), so `log` is seen as reached — no false
+        // "latent authority"; (2) `go`'s `log.emit` lowers to a `Core::HostCall` via
+        // `perform_host_target`'s program-delegation fallback (the enclosing entrypoint delegates `log`),
+        // and the `(do (log.emit "x") (go …))` body sequences it via `Core::Seq` (E2h-seq) so the call is
+        // EMITTED, not dropped. Compiles to a component importing `log` (gate → unit + observed log.emit).
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (go n) (if (= n 0) unit (do (log.emit \"x\") (go (- n 1))))) \
+                   (def (main) (host (log) (go 1))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a host effect reached through a recursive callee must compile"
         );
     }
 
@@ -12881,41 +13013,32 @@ mod stage1 {
     }
 
     #[test]
-    fn a_fn_capture_of_an_inlined_lambda_declines_rather_than_miscompiling() {
-        // REJECT-DON'T-MISCOMPILE. The companion of the case above, but the outer HOF `twice` is
-        // NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by the concrete lambda.
-        // The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it must survive as a
-        // runtime closure — but the inline+capture interaction leaves a degenerate SELF-CAPTURE: the
-        // argument-lambda was `resolve_subtree`-pinned at the `sumapply` call site, and when `twice` is
-        // inlined a pinned own-param body reference is shared into the copy while the param list is copied
-        // fresh, so a body occurrence resolves to the ORIGINAL param binder (`binder == the reference
-        // node` — a self-loop). Emitting that produced an INVALID MODULE (`local.get 0` in a no-env
-        // context). `collect_captures` now detects the self-capture and DECLINES; a sound α-renaming fix
-        // to the copy machinery is a separate, larger change. This test PINS that the program declines
-        // cleanly (a Todo) rather than emitting a broken component.
+    fn a_lambda_forwarding_to_a_substituted_fn_param_runs_through_a_recursive_hof() {
+        // The outer HOF `twice` is NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by
+        // `main`'s concrete lambda. The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it
+        // must survive as a runtime closure. This case DECLINED for several ticks (a spurious "self-capture"
+        // — `collect_captures` tripped its `binder == node` guard on the inner lambda's OWN param binder,
+        // reached while descending a nested `(fn …)` in the lifted body). Now `collect_captures` handles a
+        // nested lambda explicitly (descends its body with the inner params EXCLUDED, skipping the param
+        // list), so the inner applied lambda β-reduces during lowering and the program RUNS. `sumapply
+        // (fn (b) (g b)) 3` with `g = (+1)`: g(3)+g(2)+g(1) = 4+3+2 = 9.
         let src = "(module m \
             (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
             (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g b)) 3)) \
             (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a degenerate self-capture must DECLINE, not miscompile");
-        assert!(
-            err.message
-                .contains("captures a value with no runtime representation"),
-            "expected a capture decline, got: {}",
-            err.message
-        );
-        // The `(g (g b))` double-apply form triggers the same artifact and must likewise decline.
+        let Some(r) = run_closure_nullary(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "9"); // (3+1)+(2+1)+(1+1)
+        // The `(g (g b))` double-apply form runs too: `h(b) = g(g(b)) = b+2`, so h(3)+h(2)+h(1) = 5+4+3 = 12.
         let src2 = "(module m \
             (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
             (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3)) \
             (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src2))).is_err(),
-            "the double-apply self-capture must also decline"
-        );
+        assert_eq!(run_closure_nullary(src2).unwrap(), "12"); // (3+2)+(2+2)+(1+2)
     }
 
     #[test]

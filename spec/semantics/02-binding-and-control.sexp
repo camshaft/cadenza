@@ -2070,6 +2070,33 @@
   (input  (let (((tuple x x) (tuple 1 2))) x))
   (error  CDZ0102))
 
+; A binding pattern MAY carry a type ANNOTATION `(: <pat> <Type>)` (type-system.md #Annotations Constrain,
+; Never Contradict): the annotation constrains the bound value's type and the inner pattern is the real
+; binder. A contradiction is CDZ0203, the same code any annotation-vs-value mismatch gets.
+
+(case "an annotated let binder constrains the value's type"
+  (doc    "`(let (((: x Int64) 5)) x)` — the binder `x` is annotated `Int64`, which agrees with the value
+           `5`, so `x` binds 5 (type-system.md #Annotations Constrain, Never Contradict). Pins that a `let`
+           binder MAY carry a `(: <name> <Type>)` annotation, the binder analogue of an annotated
+           parameter `(def (f (: x Int64)) …)`.")
+  (input  (let (((: x Int64) 5)) x))
+  (output (: 5 Int64)))
+
+(case "an annotated destructuring let binder"
+  (doc    "`(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 3 4))) (+ a b))` — the annotation constrains
+           the whole tuple before the pattern takes it apart, then `a`/`b` bind its elements (7). Pins that
+           the annotation wraps a DESTRUCTURING binder, not only a bare name.")
+  (input  (let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 3 4))) (+ a b)))
+  (output (: 7 Int64)))
+
+(case "an annotated let binder that contradicts the value is rejected"
+  (doc    "`(let (((: x Bool) 5)) x)` annotates `x` `Bool` but binds it to the Int64 `5` — a contradiction
+           the compiler MUST reject (CDZ0203, type-system.md #Annotations Constrain, Never Contradict: an
+           annotation participates in inference as a constraint, and a value that cannot satisfy it is a
+           type error). Pins that a binder's annotation is CHECKED against the value, not merely recorded.")
+  (input  (do (def (main) (let (((: x Bool) 5)) x)) (export main)))
+  (error  CDZ0203))
+
 ; A FUNCTION PARAMETER is a binding position too (core-semantics.md #A Binding Position Accepts An
 ; Irrefutable Pattern): `(def (f (tuple a b)) …)` names the two halves of its single pair argument, keeping
 ; ARITY ONE. The compiler realizes this (a load-time rewrite to a fresh whole-value parameter + a

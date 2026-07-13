@@ -59,6 +59,8 @@ const KIND_BOOL_TRUE: u8 = 9;
 const KIND_NAME: u8 = 10;
 const KIND_BYTES: u8 = 11;
 const KIND_BAD_ESCAPE: u8 = 12;
+const KIND_CHAR: u8 = 13;
+const KIND_BAD_CHAR: u8 = 14;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -130,6 +132,17 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         }
         Leaf::Str(s) => {
             out.push(KIND_STR);
+            write_bytes(out, s.as_bytes());
+        }
+        // A char leaf — the scalar, UTF-8 encoded (mirrors cadenza-syntax's codec).
+        Leaf::Char(c) => {
+            out.push(KIND_CHAR);
+            let mut buf = [0u8; 4];
+            write_bytes(out, c.encode_utf8(&mut buf).as_bytes());
+        }
+        // A bad-char MARKER — the offending literal text (mirrors cadenza-syntax's codec).
+        Leaf::BadChar(s) => {
+            out.push(KIND_BAD_CHAR);
             write_bytes(out, s.as_bytes());
         }
         Leaf::Bytes(b) => {
@@ -271,6 +284,8 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
+        KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
+        KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
         _ => return None,
     })
 }
