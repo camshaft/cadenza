@@ -187,6 +187,13 @@ pub enum Core {
     /// ARITHMETIC and crossing the boundary as a float value are later increments (a float value at the
     /// boundary / an arithmetic operand still declines — no f64 machine path yet).
     ConstFloat(crate::ast::Decimal),
+    /// The canonical NOT-A-NUMBER Float constant (`nan`) — a `Ty::Float` value distinct from any
+    /// `ConstFloat` (`Decimal` holds only finite values, so NaN cannot be a `ConstFloat`). Under the
+    /// canonical-byte-form equality every NaN is equal to every NaN and unequal to every finite float
+    /// (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte Form). Its bit pattern is
+    /// `f64::NAN.to_bits()` — the one canonical quiet NaN. Folds in `=`; does not yet cross the boundary
+    /// (no written value form) — the escape/emit paths decline, like a runtime float.
+    ConstFloatNan,
     /// The unit value.
     Unit,
     /// A record value — a fixed set of named fields, each field's value referenced by its AST

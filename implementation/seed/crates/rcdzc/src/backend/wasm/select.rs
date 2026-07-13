@@ -405,6 +405,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
+        | Core::ConstFloatNan
         | Core::Unit
         | Core::Param { .. }
         | Core::Captured { .. }
@@ -1038,6 +1039,7 @@ pub fn collect_used_ops(
         | Core::ConstBool(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
+        | Core::ConstFloatNan
         | Core::Unit
         | Core::Param { .. }
         | Core::LocalRef { .. }
@@ -2193,6 +2195,22 @@ fn emit(
         Core::ConstChar(_) => Err(Reject::decline(
             "a runtime char value is not yet built (only a constant char folds; boundary crossing is later)",
         )),
+        // The canonical NaN emits an `f64.const`/`f32.const` of the canonical NaN bit pattern at the
+        // node's solved width — the same machine-slot value a returned NaN leaves on the stack (a NaN is a
+        // real Float value that crosses the boundary, unlike a char). `f32::NAN`/`f64::NAN` are the one
+        // canonical quiet NaN, matching the fold's `to_f64_bits` comparison basis.
+        Core::ConstFloatNan => {
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            if width == 32 {
+                out.push(Lir::F32ConstBits(f32::NAN.to_bits()));
+            } else {
+                out.push(Lir::F64ConstBits(f64::NAN.to_bits()));
+            }
+            Ok(())
+        }
         // A float CONSTANT emits an `f64.const`/`f32.const` of its canonical bit pattern at the node's
         // SOLVED width — the value a float occupies in its machine slot, and what an export returning a
         // float leaves on the stack (the boundary lifts it to the component `f64`/`f32`). A `Float32`

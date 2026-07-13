@@ -143,6 +143,13 @@ pub enum Prim {
     /// an image at another float width — no trap). No implicit promotion (numeric-model.md §A Conversion
     /// Involving A Floating-Point Type Is Explicit).
     FloatOf,
+    /// `nan` — the canonical not-a-number Float VALUE (a bare prelude name, like `unit`). NOT a literal
+    /// (`Decimal` holds only finite values); it resolves to this prim and lowers to `Core::ConstFloatNan`,
+    /// the ONE canonical NaN byte form. Every NaN equals every NaN and NaN differs from every finite float
+    /// under the canonical-byte-form equality (`core-semantics.md` §Floating-Point Equality Follows The
+    /// Canonical Byte Form) — the fold compares by `to_f64_bits`, so a single canonical NaN bit pattern
+    /// makes `(= nan nan)` true. Types as `Ty::Float` (a bare `nan` grounds to Float64).
+    FloatNan,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
     /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
@@ -408,6 +415,7 @@ impl Prim {
             "UInt" => Some(Prim::UIntCtor),
             "Float" => Some(Prim::FloatCtor),
             "float-of-int" => Some(Prim::FloatOfInt),
+            "float-nan" => Some(Prim::FloatNan),
             "float-of" => Some(Prim::FloatOf),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),

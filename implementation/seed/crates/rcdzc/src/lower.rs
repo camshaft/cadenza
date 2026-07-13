@@ -559,6 +559,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
         Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
+        // `nan` — the canonical NaN Float VALUE (a bare prim naming a value, not an operation). Lowers to
+        // `Core::ConstFloatNan`; folds in `=` by the canonical byte form.
+        Resolved::Prim(Prim::FloatNan) => Core::ConstFloatNan,
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(
@@ -5082,6 +5085,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FloatCtor
         | Prim::FloatOfInt
         | Prim::FloatOf
+        | Prim::FloatNan
         | Prim::MapCtor
         | Prim::MapNew
         | Prim::MapEmpty
@@ -5261,6 +5265,31 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             let r = compare_ord(op, (a as u32).cmp(&(b as u32)));
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
+        }
+        // NaN under the CANONICAL BYTE FORM (core-semantics.md #Floating-Point Equality Follows The
+        // Canonical Byte Form): every NaN shares one canonical byte form, so `(= nan nan)` is TRUE (NOT
+        // IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float (distinct byte
+        // forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as the finite-pair
+        // path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair.
+        (Core::ConstFloatNan, Core::ConstFloatNan) => {
+            if matches!(op, Prim::Eq) {
+                trace!(target: "rcdzc::fold", "folded nan = nan → true (canonical byte form)");
+                Core::ConstBool(true)
+            } else {
+                Core::Poison(Reject::decline(
+                    "an ordering comparison with a NaN operand has no defined result",
+                ))
+            }
+        }
+        (Core::ConstFloatNan, Core::ConstFloat(_)) | (Core::ConstFloat(_), Core::ConstFloatNan) => {
+            if matches!(op, Prim::Eq) {
+                trace!(target: "rcdzc::fold", "folded nan = finite → false (distinct byte forms)");
+                Core::ConstBool(false)
+            } else {
+                Core::Poison(Reject::decline(
+                    "an ordering comparison with a NaN operand has no defined result",
+                ))
+            }
         }
         // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
         // form.md #Numeric Values Serialize Deterministically — floats equal under structural equality
@@ -5492,10 +5521,16 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         // Two chars: equal iff their scalar values match.
         (Core::ConstChar(x), Core::ConstChar(y)) => Some(x == y),
         // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
-        // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false) and a nested NaN equals a nested NaN (identical
-        // bits under the canonical byte form; contracts/deterministic-value-form.md). By-bits, NOT
-        // `f64` `==`, precisely so `-0.0`/`0.0` differ and NaN self-equals — the structural byte-form rule.
+        // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false). By-bits, NOT `f64` `==`, precisely so `-0.0`/
+        // `0.0` differ — the structural byte-form rule.
         (Core::ConstFloat(x), Core::ConstFloat(y)) => Some(x.to_f64_bits() == y.to_f64_bits()),
+        // A nested NaN under the canonical byte form: every NaN equals every NaN (`(= (tuple nan) (tuple
+        // nan))` → true, `(= (Some nan) (Some nan))` → true), and `nan` is unequal to any finite float —
+        // the SAME rule the scalar `=` fold applies, recursed through a compound.
+        (Core::ConstFloatNan, Core::ConstFloatNan) => Some(true),
+        (Core::ConstFloatNan, Core::ConstFloat(_)) | (Core::ConstFloat(_), Core::ConstFloatNan) => {
+            Some(false)
+        }
         (Core::Unit, Core::Unit) => Some(true),
         // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
         // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same
@@ -7504,6 +7539,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",
+        Prim::FloatNan => "nan",
         Prim::MapCtor => "Map",
         Prim::MapNew => "map-new",
         Prim::MapEmpty => "map-empty",

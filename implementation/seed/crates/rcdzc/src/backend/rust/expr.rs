@@ -752,6 +752,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::ListAt { .. }
         | Core::ConstStr(_)
         | Core::ConstChar(_)
+        | Core::ConstFloatNan
         | Core::BytesOf { .. }
         | Core::BytesLen { .. }
         | Core::BytesAt { .. }

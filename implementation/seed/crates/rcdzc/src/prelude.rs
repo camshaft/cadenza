@@ -1062,6 +1062,13 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     // width-generic in its SOURCE, this module's width as TARGET. The `(meta apply)` is `float-of`.
     let of_ty = float_of_type(ast, width);
     let of_op = list_op_record(ast, "float-of", of_ty);
+    // `nan` — the canonical NOT-A-NUMBER value of THIS float width, a CONSTANT field (like `Int64.max`),
+    // reached by member access `(. Float64 nan)`. Its value is the `float-nan` intrinsic directly
+    // (`Prim::FloatNan` → `Core::ConstFloatNan`); NOT a literal, since `Decimal` holds only finite values.
+    // Every NaN shares one canonical byte form, so `(= Float64.nan Float64.nan)` is true (core-semantics.md
+    // #Floating-Point Equality Follows The Canonical Byte Form). The field is a bare intrinsic node (a
+    // VALUE), not an operator record — projecting it yields the NaN value, applying nothing.
+    let nan_val = intrinsic_node(ast, "float-nan");
     let fields = vec![
         meta_field(ast, "t", ty_expr),
         {
@@ -1071,6 +1078,10 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         {
             let k = push_atom(ast, Leaf::Name("of".to_string()));
             push_list(ast, vec![k, of_op])
+        },
+        {
+            let k = push_atom(ast, Leaf::Name("nan".to_string()));
+            push_list(ast, vec![k, nan_val])
         },
     ];
     let mut children = vec![head];

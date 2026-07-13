@@ -755,6 +755,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
+        | Core::ConstFloatNan
         | Core::Unit => {}
     }
 }
