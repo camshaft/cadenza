@@ -191,8 +191,13 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // WARNINGS (non-error; ride alongside the artifact). The program is clean — every REACHED provable
     // trap already faulted above — so a computation that PROVES it traps yet survives to here was
     // dropped by dead-code elimination (its value is unobserved: an unprojected element, an unreferenced
-    // binding, an unused argument). That is conformant (`core-semantics.md` §A Trap Occurs Only Where
-    // Its Computation Is Observed) but almost always a defect, so warn — the build still succeeds.
+    // binding, an unused argument). That is conformant but almost always a defect, so warn — the build
+    // still succeeds. Dropping an unobserved trapping computation is the MAY-elide; the non-error warning
+    // is the SHOULD-emit-a-diagnostic on a dropped provably-trapping computation.
+    //= spec/capabilities/core-semantics.md#a-trap-occurs-only-where-its-computation-is-observed
+    //# An implementation MAY decline to evaluate a computation whose value cannot affect the program's observable behavior — one whose result reaches neither the program's terminal value nor any host call — and so MAY elide a trap that computation would raise.
+    //= spec/capabilities/core-semantics.md#a-trap-occurs-only-where-its-computation-is-observed
+    //# Because eliding a computation the implementation can PROVE would trap is far more likely a program defect than an intent, an implementation SHOULD emit a diagnostic of non-error severity — one that leaves the build successful — when it drops a provably-trapping computation whose value is unobserved, so that a program does not silently discard a computation that could never have produced a value.
     let mut diagnostics = collect_dead_trap_warnings(&mut db);
     // Unused-binding warnings (a let binding / parameter / non-exported def nothing references, unless
     // `_`-prefixed) ride alongside the artifact too — well-formed, just likely a defect (CDZ0306).

@@ -87,6 +87,16 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // and being ordinary names they are SHADOWABLE (a local `(let ((tuple …)) …)` wins via the
     // scope-first lookup, never reaching this entry). This is what removes the head-vs-value resolution
     // split — the name is looked up, the symbol is the unspellable primitive.
+    //
+    // The alias is an ORDINARY prelude name (like any built-in module), so it obeys Binding Is Lexical:
+    // a program binding named `tuple`/`record` shadows it in scope, and the name resolves identically in
+    // head and value position (never recognized as the constructor where a program name would not be).
+    //= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+    //# Each such primitive MUST ALSO be reachable through an ordinary **alias name** — `tuple` for `("tuple" …)`, `record` for `("record" …)` — bound in the prelude exactly as any other built-in name, and therefore subject to *Binding Is Lexical* and *A Built-In Module Is A Record Of Its Operations*: a reference to the alias MUST resolve to the nearest enclosing binding of that name.
+    //= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+    //# Consequently a program binding named `tuple` or `record` (by `let`, a definition, or a parameter) MUST shadow the built-in alias for the extent of its scope — an application `(tuple a b)` in that scope MUST apply the bound value, not construct a tuple — precisely as a binding named `list` shadows the list constructor.
+    //= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+    //# The alias name MUST resolve identically in application-head position and in value position: the language MUST NOT recognize the alias name as the built-in constructor in a position a program-defined name would not be, so that one name never resolves two ways by syntactic position (the resolution split *Binding Is Lexical* forbids).
     names.insert("tuple".to_string(), ctor_record(ast, "tuple-new"));
     names.insert("record".to_string(), ctor_record(ast, "record-new"));
     // `list` — the list-VALUE constructor alias (`(list 1 2 3)`), variadic + homogeneous → `Ty::List`.
