@@ -113,6 +113,22 @@
             ((None _) 0)))
   (output (: 10 Int64)))
 
+(case "a CAPTURING closure carried in a sum payload keeps its capture through the match binder"
+  (doc    "The capturing companion: the closure stored in the sum payload closes over a RUNTIME value, and
+           that capture must survive being boxed into the variant and read back out. `(mk k)` returns
+           `(Some (fn (x) (+ x k)))` capturing the parameter `k`; `(match (mk k) ((Some f) (f 5)) …)`
+           extracts `f` and applies it, so with `k` = 100 the result is 5 + 100 = 105. The closure cell
+           carried in the `Some` payload must retain its captured environment (not just the code pointer):
+           a lowering that stored the function but dropped the capture would compute 5 (or read garbage).
+           Pins that a closure's captured environment round-trips through a sum-variant payload, the
+           capturing extension of the non-capturing payload-closure case above.")
+  (input  (do
+            (def (mk (: k Int64)) (Some (fn ((: x Int64)) (+ x k))))
+            (def (main (: k Int64)) (match (mk k) ((Some f) (f 5)) ((None _) -1)))
+            (export main)))
+  (call   main (: 100 Int64))
+  (output (: 105 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
