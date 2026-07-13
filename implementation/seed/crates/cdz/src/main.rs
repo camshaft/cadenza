@@ -774,10 +774,28 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         Some((l, c, _, _)) => format!("{}:{l}:{c}", args.file),
         None => args.file.clone(),
     };
+    // REPORT IN SOURCE ORDER (by node start byte), not the sidecar's fault-collection order — the tree
+    // walk that gathers faults does not visit strictly left-to-right, so without this a reader sees an
+    // error at column 22 above one at column 21 (e.g. `(match foo (a bar) …)` reports `foo`, then `bar`
+    // to its LEFT). A diagnostic whose node has no span (unanchored `-`, or a spanless synthesized node)
+    // sorts LAST via the STABLE sort, keeping the sidecar's relative order — so the sequence stays a
+    // deterministic function of the source (`diagnostics.md` §Diagnostics Are Emitted In A Deterministic
+    // Order), now also legible top-to-bottom. The node id is column 3 (index 2) of each TAB line.
+    let line_start = |line: &str| -> Option<usize> {
+        let node = line.split('\t').nth(2)?;
+        span_of(node).map(|(_, _, from, _)| from)
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort_by(|a, b| match (line_start(a), line_start(b)) {
+        (Some(fa), Some(fb)) => fa.cmp(&fb),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
     // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-kind<TAB>fix-node<TAB>fix-replacement<TAB>
     // fix-verified<TAB>message` — the first seven columns split on the first seven tabs, message is the
     // free-text remainder. `code`/`node-id`/the four fix columns may be `-` (absent).
-    for line in text.lines() {
+    for line in lines {
         let mut cols = line.splitn(8, '\t');
         let (severity, code, node, fix_kind, fix_node, fix_repl, fix_verified, message) = match (
             cols.next(),
