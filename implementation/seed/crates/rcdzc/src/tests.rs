@@ -5541,6 +5541,35 @@ mod match_engine {
     }
 
     #[test]
+    fn under_applying_a_unary_variant_constructor_is_a_type_error() {
+        // 09-functions "under-applying a unary constructor is a type error, not a fabricated unit
+        // payload": `(Some)` applies the unary constructor to ZERO arguments — under-application, the
+        // low-arity mirror of `(Some 1 2)`. A payload-carrying variant produces its value only when
+        // applied to its argument (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function),
+        // so `(Some)` is CDZ0201 — NOT a decline (a fabricated `(Some unit)` would slip a value the
+        // program never wrote past the payload check).
+        assert_eq!(
+            reject_code("(module m (def (main) (Some)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // A NULLARY variant applied to nothing `(None)` is NOT under-applied — it has no payload, so it
+        // CONSTRUCTS its value (used here as a match scrutinee, which types + runs).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (None) ((Some x) x) ((None _) 0))) (export main))"
+            ),
+            None
+        );
+        // A correctly-applied unary ctor `(Some 5)` compiles (the control).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (Some 5) ((Some x) x) ((None _) 0))) (export main))"
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its

@@ -747,6 +747,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         format!("{} takes exactly 2 operands", intrinsic_name(prim)),
                     ));
                 }
+                // A UNARY (payload-carrying) VARIANT CONSTRUCTOR applied to ZERO arguments — `(Some)` —
+                // is UNDER-application, the low-arity mirror of the over-application `(Some 1 2)`: a sum
+                // constructor produces its value only when applied to its payload argument
+                // (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function). Reject CDZ0201
+                // rather than fall through to `core_of(head)`, which would decline the bare partial
+                // application ("needs closures") — a to-do, not the well-formedness error `(Some)` is
+                // (09-functions "under-applying a unary constructor is a type error, not a fabricated unit
+                // payload"). A NULLARY variant `(None)` has NO payload type, so it is NOT under-applied —
+                // it constructs its value here (falls through to `core_of(head)`), preserving the valid
+                // bare-nullary-construction path.
+                if crate::eval::variant_disc_of(db, head).is_some()
+                    && crate::eval::variant_payload_type(db, head).is_some()
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unary variant ctor under-applied (CDZ0201)");
+                    return Core::Poison(Reject::coded(
+                        Code::Malformed,
+                        "a variant constructor with a payload must be applied to its argument",
+                    ));
+                }
                 // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
                 // the head would re-enter the same body without end. Decline it exactly as a recursive
                 // parameterized call declines (a nullary def has no runtime-function form yet, so there
