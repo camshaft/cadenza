@@ -754,6 +754,8 @@ pass	a well-formed annotation still checks and accepts a matching type (the cont
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
+pass	a zero-arm match on an empty-sum scrutinee is exhaustive
+pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
