@@ -7192,6 +7192,112 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every empty collection dropped");
     }
 
+    /// `value-encode` renders a MULTI-payload recursive variant via `Shape::Spread` (descriptor tag 16):
+    /// the payload elements are spliced FLAT under the variant head — `(Node 1 l r)`, NOT the
+    /// tuple-wrapped `(Node (tuple 1 l r))` (landed @75fe7e80). That production Sum→Spread walk arm had NO
+    /// dedicated value-encode test (only the differential oracle arm — the same gap as Framed). A splice
+    /// bug (tuple-wrapping, wrong element order, wrong arity) would be a silent miscompile on a common
+    /// recursive shape (a tree). Verifies iterative==recursive byte-identity + the FLAT rendering.
+    #[test]
+    fn value_encode_multi_payload_variant_escapes_flat_via_spread() {
+        reset();
+        let before = live_nodes();
+        // Tree = (Node Int64 Tree Tree) | Leaf. Descriptor:
+        //   [0] Int; [1] Unit (Leaf payload); [2] Sum[(Node→3),(Leaf→1)]; [3] Spread[0,2,2] (Node's
+        //   payload: Int, Tree, Tree — the two Tree elements Ref back to [2]); root=2.
+        let mut d: Vec<u8> = Vec::new();
+        let leb = |out: &mut Vec<u8>, v: u64| {
+            let mut v = v;
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        };
+        let name = |out: &mut Vec<u8>, s: &str| {
+            let mut n = s.len() as u64;
+            loop {
+                let mut b = (n & 0x7f) as u8;
+                n >>= 7;
+                if n != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if n == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(s.as_bytes());
+        };
+        leb(&mut d, 4); // table_len
+        d.push(0); // [0] Int
+        d.push(5); // [1] Unit
+        d.push(9); // [2] Sum
+        leb(&mut d, 2); // 2 variants
+        name(&mut d, "Node");
+        leb(&mut d, 3); // Node → [3]
+        name(&mut d, "Leaf");
+        leb(&mut d, 1); // Leaf → [1] (Unit)
+        d.push(16); // [3] Spread
+        leb(&mut d, 3); // 3 elements
+        leb(&mut d, 0); // Int
+        leb(&mut d, 2); // Tree (Ref to the Sum)
+        leb(&mut d, 2); // Tree
+        leb(&mut d, 2); // root = [2]
+
+        // Build `Node(1, Leaf, Leaf)`. A Leaf = sum disc 1, unit payload; a Node = sum disc 0, payload =
+        // a 3-tuple arr [box_int(1), leaf, leaf].
+        let leaf = || op_sum_new(1, op_arr_alloc(0));
+        let payload = op_arr_alloc(3);
+        op_arr_set(payload, 0, op_box_int(1));
+        op_arr_set(payload, 1, leaf());
+        op_arr_set(payload, 2, leaf());
+        let node = op_sum_new(0, payload);
+
+        let doc = op_value_encode_form(node, &d).expect("encode a multi-payload variant");
+        // Differential: iterative == recursive oracle byte-for-byte.
+        let descriptor = decode_descriptor(&d).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, node, descriptor.root, 0).expect("recursive");
+        assert_eq!(doc, b.finish(root), "iterative and recursive Spread encode must agree");
+
+        // FLAT structure: the name leaves in walk order are `Node`, then `Leaf`, `Leaf` (the two children;
+        // `unit` for each Leaf's payload). Crucially NO `tuple` name — the Int + two Trees are spliced
+        // directly under `Node`, not wrapped. Collect names + assert `tuple` is absent, `Node`/`Leaf`/`unit` present.
+        let mut names: Vec<String> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            match kind {
+                0 => {
+                    let len = doc[i] as usize;
+                    i += 1 + len;
+                }
+                10 => {
+                    let len = doc[i] as usize;
+                    i += 1;
+                    names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
+                    i += len;
+                }
+                k => panic!("unexpected leaf kind {k} in a Spread document"),
+            }
+        }
+        assert!(!names.iter().any(|n| n == "tuple"), "multi-payload variant is FLAT — no `tuple` wrapper, got {names:?}");
+        assert!(names.iter().any(|n| n == "Node"), "`Node` head present");
+        assert!(names.iter().any(|n| n == "Leaf"), "`Leaf` children present");
+        assert!(names.iter().any(|n| n == "unit"), "each Leaf's unit payload present");
+        op_drop(node);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     /// `value-encode` renders a `Shape::Framed` (descriptor tag 15) as the `(: value (head arg…))`
     /// parametric-type frame — the shape a RUNTIME `List` result escapes as `(: (list …) (List <elem>))`
     /// (landed @72d5d80a). That production walk arm had NO dedicated value-encode test (only the
