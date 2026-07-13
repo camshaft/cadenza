@@ -20101,6 +20101,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_one_hole_fold_passes_a_perform_arg_and_reads_the_seed_state() {
+        // The perform may take a PURE non-trivial ARG the op reads, and the arm may read the SEED state —
+        // both substitute correctly on the pure spine (nothing runs before the perform, so the state seen
+        // is the init seed). (A) `pick(x)` resumes `x*2`; body `(+ 1 (Amb.pick (+ 2 3)))`, arm
+        // `(+ 0 (resume (* x 2) s))`, x=5 → resume 10, `C=(+ 1 □)` → `(+ 0 (+ 1 10))` = 11.
+        let arg_passing = "(do (effect Amb (op pick (-> Int64 Int64))) \
+                   (def (main) (handle Amb 0 ((pick (x) s (+ 0 (resume (* x 2) s)))) (+ 1 (Amb.pick (+ 2 3))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(arg_passing)))
+                    .expect("a perform arg passes through the fold"),
+                "main"
+            ),
+            11
+        );
+        // (B) the arm READS the state `(+ s (resume 10 s))` with a NON-ZERO seed 7. On a pure spine the
+        // state at the perform is the seed, so `s = 7`; `C=(+ 100 □)` → `(+ 7 (+ 100 10))` = 117.
+        let reads_seed = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 7 ((flip (u) s (+ s (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(reads_seed)))
+                    .expect("a state-reading arm folds against the seed"),
+                "main"
+            ),
+            117
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_locates_the_hole_at_a_non_leading_and_a_nested_position() {
         // The hole may be at a NON-LEADING operand and NESTED several operators deep — `splice_context`
         // locates the sole perform occurrence by identity, so pure siblings on either side and enclosing
