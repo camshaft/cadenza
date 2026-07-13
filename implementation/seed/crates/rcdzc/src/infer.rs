@@ -4547,15 +4547,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 break;
                             }
                         }
+                        // The record's own field NAMES — the closed set a dropped/projected label must
+                        // name, so a near-miss is a "did you mean?" (the same closed-set suggestion a
+                        // member access `(. r k)` gets — a mistyped `Record.without r (alfa)` for a field
+                        // `alpha` should point at it, not just say "no field `alfa`").
+                        let field_names: Vec<&str> =
+                            fields.keys().map(|k| k.name.as_str()).collect();
                         for label in &labels {
                             if !fields.contains_key(label) {
-                                out.push(
-                                    Reject::coded(
-                                        Code::AbsentField,
-                                        format!("record has no field `{}`", label.name),
-                                    )
-                                    .at(args[1]),
-                                );
+                                let msg = match crate::diag::suggest::nearest(
+                                    &label.name,
+                                    field_names.iter().copied(),
+                                ) {
+                                    Some(near) => format!(
+                                        "record has no field `{}` — did you mean `{near}`?",
+                                        label.name
+                                    ),
+                                    None => format!("record has no field `{}`", label.name),
+                                };
+                                out.push(Reject::coded(Code::AbsentField, msg).at(args[1]));
                             }
                         }
                     }

@@ -11149,6 +11149,18 @@ mod match_engine {
             Some("CDZ0212"),
             "projecting onto an absent field is CDZ0212"
         );
+        // A CDZ0212 absent-field name that near-misses a real field carries a did-you-mean — the closed
+        // set is the operand record's own fields, so the same suggestion a member access `(. r k)` gets.
+        let d = reject_full(
+            "(module m (def (main) (Record.without (record (alpha 1) (beta 2)) (alpa))) (export main))",
+        )
+        .expect("an absent-field CDZ0212");
+        assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
+        assert!(
+            d.message.contains("did you mean `alpha`?"),
+            "the absent-field message must suggest the near field; got {}",
+            d.message
+        );
         // `Record` is STILL the record-TYPE constructor in type position — the module dual-shape did not
         // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
         assert_eq!(
