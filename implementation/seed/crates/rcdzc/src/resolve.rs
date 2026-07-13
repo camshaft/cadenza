@@ -521,29 +521,59 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
     if name.chars().count() < 2 {
         return None;
     }
+    // CONTEXT-AWARE candidate pool: if this name is the OPERAND of a member projection `(. name key)` —
+    // e.g. a `handle`'s effect (rewritten to `(. E op)` arms), or `(. Int64 max)` — then only a name that
+    // SUPPORTS member access could be meant: an effect, a type, or a prelude module. Suggesting a bare
+    // value def, a lexical binder, or a VARIANT CONSTRUCTOR there would violate the one-shot rule — the
+    // suggested spelling wouldn't resolve the fault, it would just move it to a different error (a variant
+    // has no members, so `(. Log op)` → "record has no field `op`"). This is exactly the `handle Logg …`
+    // case where `Log` (a nearby variant) is a WORSE suggestion than `Logr` (the actual effect). Restrict
+    // the pool to member-accessible names so the nearest one is a name the fix would actually work on.
+    let member_operand = matches!(db.parent_of(id), Some(p)
+        if db.ast.as_form(p, ".").map(|t| t.first().copied()) == Some(Some(id)));
     let mut candidates: Vec<String> = Vec::new();
-    // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
-    // pattern binders), gathered by the shared scope walk.
-    for (n, _occ) in visible_bindings(db, id) {
-        candidates.push(n);
+    if !member_operand {
+        // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
+        // pattern binders), gathered by the shared scope walk. (A member operand can't be a local value.)
+        for (n, _occ) in visible_bindings(db, id) {
+            candidates.push(n);
+        }
+        // Tier 2 — this module's top-level value definitions. (Not member-accessible either.)
+        for d in &db.defs {
+            candidates.push(d.name.clone());
+        }
     }
-    // Tier 2 — this module's top-level value definitions.
-    for d in &db.defs {
-        candidates.push(d.name.clone());
-    }
-    // Tier 3 — `(type …)` names + their variant constructors, and `(effect …)` names (the same
-    // declarations `resolve_name` consults before the prelude).
+    // Tier 3 — `(type …)` names (member-accessible: `Int64.max`) + their variant CONSTRUCTORS (which are
+    // NOT member-accessible, so excluded for a member operand) — and `(effect …)` names (member-accessible:
+    // `E.op`). These are the declarations `resolve_name` consults before the prelude.
     for t in &db.type_decls {
         candidates.push(t.name.clone());
-        for v in &t.variants {
-            candidates.push(v.name.clone());
+        if !member_operand {
+            for v in &t.variants {
+                candidates.push(v.name.clone());
+            }
         }
     }
     for e in &db.effect_decls {
         candidates.push(e.name.clone());
     }
-    // Tier 4 — the prelude's built-in names.
+    // Tier 4 — the prelude's built-in names. For a MEMBER OPERAND, drop the prelude's VARIANT
+    // CONSTRUCTORS (`None`/`Some`/`Ok`/`Err`): a variant has no members, so suggesting `Nope`→`None` in
+    // `(. Nope op)` position would fail the one-shot rule (`(. None op)` → "record has no field `op`").
+    // A variant name is one that some sum declares; collect that set and skip it. (A prelude MODULE like
+    // `Bytes`/`Float64` — member-accessible — is not a variant name, so it stays.)
+    let variant_names: std::collections::HashSet<&str> = if member_operand {
+        db.type_decls
+            .iter()
+            .flat_map(|t| t.variants.iter().map(|v| v.name.as_str()))
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     for key in db.prelude.keys() {
+        if member_operand && variant_names.contains(key.as_str()) {
+            continue;
+        }
         candidates.push(key.clone());
     }
     crate::diag::suggest::nearest(name, candidates)
