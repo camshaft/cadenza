@@ -8106,6 +8106,50 @@ fn set_has_const_elem(db: &mut Db, elems: &[StructId], elem: StructId) -> bool {
         .any(|&e| const_compound_eq(db, e, elem) == Some(true))
 }
 
+/// The canonical, HASHABLE identity of a SCALAR constant value at `id` — `None` for a compound (a
+/// tuple/record/sum/list/…) or a runtime value. Reproduces `const_compound_eq`'s SCALAR-leaf equality
+/// EXACTLY, so two scalar constants share a token iff `const_compound_eq` on them is `Some(true)`: an int
+/// by its trimmed, sign-normalized magnitude (matching `IntValue::eq_value`), a float by canonical
+/// `Float64` bits (so `-0.0` ≠ `0.0`), NaN a singleton distinct from every finite float, string/bool/char
+/// by value, unit a singleton. This is the O(1) basis of the LINEAR set dedup: a scalar element hashes to
+/// its token and dedups in one hash-set probe, replacing an O(elements²) pairwise `const_compound_eq`
+/// scan that re-derived and deep-cloned each element's `Core` on every comparison.
+#[derive(PartialEq, Eq, Hash)]
+enum ScalarKey {
+    Int { negative: bool, magnitude: Vec<u8> },
+    Bool(bool),
+    Str(String),
+    Char(char),
+    FloatBits(u64),
+    FloatNan,
+    Unit,
+}
+
+fn scalar_const_key(db: &mut Db, id: StructId) -> Option<ScalarKey> {
+    match core_of(db, id) {
+        Core::ConstInt(v) => {
+            // Trim leading zero bytes + normalize a zero's sign — the SAME canonicalization
+            // `IntValue::eq_value` applies, so equal tokens ⟺ `eq_value` true.
+            let start = v.magnitude.iter().take_while(|&&b| b == 0).count();
+            let magnitude = v.magnitude[start..].to_vec();
+            let negative = !magnitude.is_empty() && v.negative;
+            Some(ScalarKey::Int {
+                negative,
+                magnitude,
+            })
+        }
+        Core::ConstBool(b) => Some(ScalarKey::Bool(b)),
+        Core::ConstStr(s) => Some(ScalarKey::Str(s)),
+        Core::ConstChar(c) => Some(ScalarKey::Char(c)),
+        Core::ConstFloat(d) => Some(ScalarKey::FloatBits(d.to_f64_bits())),
+        Core::ConstFloatNan => Some(ScalarKey::FloatNan),
+        Core::Unit => Some(ScalarKey::Unit),
+        // A compound (tuple/record/sum/list/set/map/bytes) or a runtime value has no scalar token — the
+        // caller keeps it on the O(compounds²) pairwise path (compounds are rare + small).
+        _ => None,
+    }
+}
+
 /// Lower `(Set.of list)` — construct a set from a list, DEDUPLICATING. When the `list` operand is a
 /// compile-time-visible `Core::ListNew`, fold to a canonical constant `Core::SetOf` (dropping later
 /// duplicates by value — `const_compound_eq`), so it bakes/compares/renders as a constant set; a runtime
@@ -8124,11 +8168,33 @@ fn lower_set_of(db: &mut Db, id: StructId, list: StructId) -> Core {
     match core_of(db, list) {
         // A constant list → a canonical DEDUP'd constant set. Keep the FIRST occurrence of each element
         // value (order-independent equality means which copy is kept is unobservable; the render sorts).
+        // LINEAR for scalar elements (the corpus shape): a scalar's canonical `ScalarKey` dedups in one
+        // hash-set probe. A COMPOUND element (rare) has no scalar token, so it falls back to the pairwise
+        // `const_compound_eq` against only the OTHER kept compounds (`compounds` list). This replaced an
+        // O(elements²) `set_has_const_elem` scan over ALL kept elements (each comparison re-cloning a
+        // `Core`) — a `(Set.of (list 0 1 … N))` of N distinct ints was quadratic (N=3200 spent ~82% of
+        // the compile in `const_compound_eq`); the scalar fast path makes it linear.
         Core::ListNew { elems } => {
             let mut deduped: Vec<StructId> = Vec::with_capacity(elems.len());
+            let mut seen_scalars: crate::fxhash::FxHashSet<ScalarKey> =
+                crate::fxhash::FxHashSet::default();
+            let mut compounds: Vec<StructId> = Vec::new();
             for &e in &elems {
-                if !set_has_const_elem(db, &deduped, e) {
-                    deduped.push(e);
+                match scalar_const_key(db, e) {
+                    Some(key) => {
+                        if seen_scalars.insert(key) {
+                            deduped.push(e);
+                        }
+                    }
+                    // A compound element: dedup against the other kept compounds only (a scalar can never
+                    // equal a compound, so cross-checking is unnecessary — `const_compound_eq` of two
+                    // different kinds is `None`/`Some(false)`).
+                    None => {
+                        if !set_has_const_elem(db, &compounds, e) {
+                            compounds.push(e);
+                            deduped.push(e);
+                        }
+                    }
                 }
             }
             trace!(target: "rcdzc::fold", node = id.0, elems = deduped.len(), "Set.of folds a constant list to a canonical set");
