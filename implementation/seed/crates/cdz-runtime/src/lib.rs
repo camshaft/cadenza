@@ -1493,10 +1493,16 @@ fn canonical_scalar_order(shape: &Shape, a: Handle, b: Handle) -> Option<core::c
         Shape::Bool => Some(op_get_bool(a).cmp(&op_get_bool(b))),
         Shape::Unit => Some(core::cmp::Ordering::Equal),
         Shape::Str => {
-            // Compare the stored UTF-8 bytes lexicographically (== string lexicographic order).
-            let av = with_node(a, Vec::new(), |n| n.raw.as_slice().to_vec());
-            let bv = with_node(b, Vec::new(), |n| n.raw.as_slice().to_vec());
-            Some(av.cmp(&bv))
+            // Compare the stored UTF-8 bytes lexicographically (== string lexicographic order). BORROW
+            // both nodes' raw slices and compare IN PLACE — no `to_vec`. This runs inside a `sort_by`
+            // (O(N·log N) compares per string-keyed map/set encode), so a per-compare pair of transient
+            // Vec copies would be ~2·N·log N wasted allocations; the borrowed-slice compare is the same
+            // zero-alloc discipline `champ_eq` already uses on raw leaves. A null node reads as empty.
+            let av = unsafe { a.0.as_ref() };
+            let bv = unsafe { b.0.as_ref() };
+            let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
+            let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
+            Some(as_.cmp(bs))
         }
         _ => None,
     }
@@ -8130,6 +8136,40 @@ mod tests {
             }
         });
         println!("ALLOC value_encode x{VE_REPS}: {venc}");
+
+        // (L2) value-encode a STRING-KEYED MAP — exercises `map_entries_canonical`'s `sort_by`, whose
+        // comparator (`canonical_scalar_order` on `Shape::Str`) compares the keys' stored UTF-8 bytes.
+        // That comparator now BORROWS both nodes' raw slices and compares in place; a regression to
+        // `to_vec`-per-compare would allocate ~2·N·log N transient Vecs PURELY to sort (here ~2·32·5 ≈ 320
+        // per encode). The map is built ONCE outside the loop, so only the encode+sort is measured. A
+        // scalar-Int-keyed map sorts by `op_get_int` (no alloc) — this row specifically guards the STRING
+        // comparator, the only ordering path that ever touched the heap.
+        // Descriptor: [0]=Str (key), [1]=Int (val), [2]=Map(→0,→1), root=2. Tags: 3=Str, 0=Int, 13=Map.
+        let smap_desc: &[u8] = &[0x03, 0x03, 0x00, 0x0d, 0x00, 0x01, 0x02];
+        const SMAP_N: i64 = 32;
+        let mut smap = op_map_empty();
+        for k in 0..SMAP_N {
+            // Keys "k00".."k31" — distinct, and inserted in-order so the CHAMP holds them in HASH order,
+            // forcing the canonical `sort_by` to actually reorder (its comparator is the measured work).
+            smap = op_map_insert(smap, op_str_new(alloc::format!("k{k:02}")), op_box_int(k));
+        }
+        const SMAP_REPS: usize = 100;
+        let smap_enc = measure(&mut || {
+            for _ in 0..SMAP_REPS {
+                let doc = op_value_encode_form(smap, smap_desc).expect("encode string-keyed map");
+                core::hint::black_box(&doc);
+            }
+        });
+        println!("ALLOC value_encode_stringkeymap x{SMAP_REPS}: {smap_enc}");
+        // The per-encode allocation is the document's grow-once pools + the entries Vec + the output/Bytes
+        // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
+        // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
+        assert!(
+            smap_enc <= 30000,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 30000 (grow-once pools + entries Vec + output, linear in entries; the Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs)"
+        );
+        op_drop(smap);
+
         // (M) FREE CASCADE — `op_drop` of a DEEP unique structure. This is the single hottest RC path (the
         // compiler emits `drop` at every dead heap binding and the resource destructor), yet every OTHER
         // row above bundles the drop with O(N) CONSTRUCTION, so a regression in the cascade's own
