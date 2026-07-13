@@ -1,0 +1,23 @@
+# cdz-rt — the SHARED native runtime interface for the Rust backend's emitted code.
+#
+# An emitted Cadenza→Rust module depends on THIS crate rather than defining its own copy of the
+# runtime traits: the gas/yield capability (`CdzEnv`) and the value-runtime seam (`CdzRuntime` /
+# `CdzRuntimeAsync`) live here ONCE, so an application implements each trait a single time and every
+# emitted module shares it (two modules interoperate over the same `CdzEnv`/`R`). A default wiring
+# (`RcRuntime`) implements the value runtime with ordinary Rust collections, so the common case needs
+# no configuration — the caller can still supply its own impl to choose the representation.
+#
+# Native, dep-free, and small: it carries only the trait definitions + the default impl, so linking it
+# into an existing Rust codebase adds no transitive weight. (Distinct from `cdz-runtime`, which is the
+# wasm32-only value HEAP the wasm backend imports — this is the NATIVE-target counterpart.)
+[package]
+name = "cdz-rt"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+# `rlib` so the corpus gate and a downstream crate can link it as an ordinary Rust library.
+crate-type = ["rlib"]
+
+[dependencies]

@@ -516,6 +516,10 @@ struct Tools {
     corpus: PathBuf,
     rcdzc: PathBuf,
     run: PathBuf,
+    /// The directory holding the built `cdz-rt` rlib + its deps (`target/<subdir>`), passed to `rustc`
+    /// as `-L dependency=<dir> --extern cdz_rt=<dir>/libcdz_rt.rlib` when compiling an emitted async
+    /// module (which `use`s the shared `cdz_rt::CdzEnv`). `None` if the rlib build failed / wasn't run.
+    cdz_rt_dir: Option<PathBuf>,
 }
 
 /// Build the three pipeline tools once (under `profile`) and return their binary paths — shared by
@@ -528,9 +532,12 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // The front-end + compiler CLIs are now ONE binary, `cdz` (`cdz convert …` / `cdz compile …`);
     // `cdz-corpus` and `cdz-run` stay separate (corpus normalization; wasmtime runner). Build `cdz`
     // in place of the retired `cdz-syntax`/`rcdzc` bins.
+    // Also build `cdz-rt` (the shared native runtime interface an emitted ASYNC module links against for
+    // `CdzEnv`). It is a plain rlib; the Rust-async gate passes it to `rustc` via `--extern`. Built here
+    // once (cheap, tiny crate) so the ~900-case async gate does not rebuild it per case.
     if let Err(e) = cmd!(
         sh,
-        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run"
+        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run -p cdz-rt"
     )
     .quiet()
     .run()
@@ -545,11 +552,15 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // `syntax` and `rcdzc` now BOTH point at `cdz`; the call sites supply the subcommand (`convert`
     // is already the first arg at every `syntax` site; a `compile` is prepended at every `rcdzc` site).
     let cdz = bin.join("cdz");
+    // The `cdz-rt` rlib lands at `target/<subdir>/libcdz_rt.rlib`; the directory itself is the `-L`
+    // search path for `rustc`. Only present when the rlib actually built.
+    let cdz_rt_dir = bin.join("libcdz_rt.rlib").exists().then(|| bin.clone());
     Tools {
         syntax: cdz.clone(),
         corpus: bin.join("cdz-corpus"),
         rcdzc: cdz,
         run: bin.join("cdz-run"),
+        cdz_rt_dir,
     }
 }
 
@@ -939,13 +950,20 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
         return Ran::BadArtifact("could not write emitted Rust to a temp file".to_string());
     }
     // Compile with the ambient rustc. A compile failure is a BAD ARTIFACT (the backend emitted source
-    // that does not build) — the exact miscompile class this gate catches.
-    let compiled = Command::new("rustc")
-        .args(["-O", "--edition", "2021"])
-        .arg(&src)
-        .arg("-o")
-        .arg(&bin)
-        .output();
+    // that does not build) — the exact miscompile class this gate catches. In ASYNC mode the emitted
+    // module `use`s the shared `cdz_rt::CdzEnv`, so link the pre-built `cdz-rt` rlib: `-L dependency=<dir>
+    // --extern cdz_rt=<dir>/libcdz_rt.rlib`. (Sync mode needs no extern — it emits plain `fn`s.)
+    let mut cmd = Command::new("rustc");
+    cmd.args(["-O", "--edition", "2021"]).arg(&src).arg("-o").arg(&bin);
+    if async_mode
+        && let Some(dir) = tools.cdz_rt_dir.as_deref()
+    {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", dir.display()))
+            .arg("--extern")
+            .arg(format!("cdz_rt={}", dir.join("libcdz_rt.rlib").display()));
+    }
+    let compiled = cmd.output();
     let compiled = match compiled {
         Ok(o) => o,
         Err(e) => return Ran::BadArtifact(format!("rustc failed to launch: {e}")),
@@ -997,7 +1015,7 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
 /// driver before `fn main`.
 const ASYNC_GATE_HARNESS: &str = r#"
 struct GateEnv;
-impl prog::CdzEnv for GateEnv {
+impl cdz_rt::CdzEnv for GateEnv {
     async fn consume(&mut self, _gas: u64) {}
 }
 fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
