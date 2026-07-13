@@ -370,6 +370,7 @@ fn core_module_with_a_runtime_import_matches_wasm_encoder_oracle() {
         declared: vec![],
         src_body: None,
         locals: vec![],
+        scopes: vec![],
         stmt_lines: vec![],
     };
     let layout = Layout::new(
@@ -1881,6 +1882,32 @@ fn an_exported_addition_runs_over_runtime_args() {
     assert_eq!(got2, 99);
 }
 
+/// The float dual: an exported `(+. a b)` over two runtime Float64 params emits `local.get 0;
+/// local.get 1; f64.add` (no fold — the params are unknown, no overflow guard — floats never trap) and
+/// the boundary carries the params as component `f64`. Run under wasmtime it computes the IEEE sum.
+/// Exercised with a NON-exact pair (0.1, 0.2 → 0.30000000000000004) so a wrong op or a fold-to-0.3
+/// would be caught, plus `*.`/`/.` to pin each machine op. Compared BY BITS.
+#[test]
+fn an_exported_float_op_runs_over_runtime_args() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    for (op, a, b, want) in [
+        ("+.", 0.1f64, 0.2f64, 0.1f64 + 0.2f64),
+        ("*.", 6.0, 7.0, 42.0f64),
+        ("-.", 5.5, 2.0, 3.5f64),
+        ("/.", 1.0, 3.0, 1.0f64 / 3.0f64),
+    ] {
+        let src = format!("(module m (def (f (: a Float64) (: b Float64)) ({op} a b)) (export f))");
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        let got: f64 = run_returns_with(&bytes, "f", &[Val::Float64(a), Val::Float64(b)]);
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "runtime float {op} over ({a}, {b}) must equal the IEEE result by bits"
+        );
+    }
+}
+
 /// `(= n 0)` selects to `eqz` (one instruction), and it must still compute the correct boolean under
 /// wasmtime: true at zero, false otherwise, for both operand orders — a wrong `eqz` (say, ignoring the
 /// operand) would return a constant. `is-zero`/`is-zero2` (commuted) both return 1 at 0, 0 elsewhere.
@@ -2646,6 +2673,70 @@ mod runtime_ops {
                 &[Val::S64(2), Val::S64(1)]
             ),
             7
+        );
+    }
+
+    #[test]
+    fn if_not_comparison_one_zero_computes_the_negated_predicate() {
+        // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
+        // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
+        // `eqz ; eqz`). Confirm the VALUE equals the negated predicate for every comparison.
+        // (not (< a b)) == a >= b.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (not (< a b)) 1 0)",
+                &[Val::S64(5), Val::S64(5)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (not (< a b)) 1 0)",
+                &[Val::S64(4), Val::S64(5)]
+            ),
+            0
+        );
+        // (not (= n 0)) == n is nonzero — the "eqz;eqz" case that now folds to a single ne.
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(0)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(7)]),
+            1
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(-3)]),
+            1
+        );
+        // (not (= a b)) == a != b.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (not (= a b)) 1 0)",
+                &[Val::S64(5), Val::S64(5)]
+            ),
+            0
+        );
+        // Unsigned complement stays unsigned.
+        assert_eq!(
+            run::<i64>(
+                "(: a UInt64) (: b UInt64)",
+                "(if (not (< a b)) 1 0)",
+                &[Val::U64(u64::MAX), Val::U64(1)]
+            ),
+            1
+        );
+        // A bare bool param `(if (not p) 1 0)` — no comparison to fold, still correct via eqz.
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if (not p) 1 0)", &[Val::Bool(true)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if (not p) 1 0)", &[Val::Bool(false)]),
+            1
         );
     }
 
@@ -4450,15 +4541,59 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0210")
         );
-        // A REST pattern `(list x .. rest)` is not yet lowered — it DECLINES (a to-do), never a
-        // miscompile. (The runtime element-pattern matcher + rest-tail materialization is a later
-        // increment.) `reject_code` returns the decline's code, which is uncoded (None) for a to-do.
+        // A malformed rest pattern — more than one binder after `..` — is CDZ0201 (a rest pattern is
+        // `(list p… .. rest)`, exactly one tail binder).
         assert_eq!(
-            reject_code("(module m (def (main) (match (list 1 2 3) ((list x .. rest) x) (_ 0))) (export main))")
+            reject_code("(module m (def (main) (match (list 1 2 3) ((list x .. r s) x) (_ 0))) (export main))")
                 .as_deref(),
-            // the rest binder's body reference is unbound today (CDZ0101) — a clean decline-class outcome,
-            // NOT a value/miscompile; pins that a rest pattern does not silently produce a wrong result.
-            Some("CDZ0101")
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
+        // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
+        // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to
+        // its element (a `SumPayload` `Elem(i)` fold over the constant list) — the rest binder captures the
+        // tail (a sublist; unused here, so it stays inert). A `(list .. rest)` with zero leading binders is
+        // a catch-all (length ≥ 0). The scrutinee folds, so the whole match folds to the selected arm.
+        let run = |src: &str| run_returns::<i64>(&component(src), "main");
+        // A rest pattern selects on length ≥ leading count; the leading binder reads element 0.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 10 20 30) ((list) 0) ((list x .. rest) x))) (export main))"
+            ),
+            10
+        );
+        // The empty list matches `(list)`, not the rest pattern (which needs length ≥ 1 here).
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list) ((list) 1) ((list a .. r) 2))) (export main))"
+            ),
+            1
+        );
+        // A non-empty list falls through `(list)` to the length-≥-1 rest arm.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 5) ((list) 1) ((list a .. r) 2))) (export main))"
+            ),
+            2
+        );
+        // `(list .. rest)` with zero leading binders is a catch-all (matches every length).
+        assert_eq!(
+            run("(module m (def (main) (match (list 1 2 3) ((list .. all) 7))) (export main))"),
+            7
+        );
+        assert_eq!(
+            run("(module m (def (main) (match (list) ((list .. all) 7))) (export main))"),
+            7
+        );
+        // Two leading binders read elements 0 and 1 past the minimum-length gate.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 4 5 6 7) ((list a b .. rest) (+ a b)) (_ 0))) (export main))"
+            ),
+            9
         );
     }
 
@@ -9498,6 +9633,81 @@ mod stage1 {
     }
 
     #[test]
+    fn a_def_parameter_may_be_a_tuple_pattern() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
+        // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites
+        // `(def (f (tuple a b)) BODY)` → `(def (f p$0) (let (((tuple a b) p$0)) BODY))` at load, so it
+        // reuses the (proven) destructuring-`let` path. A body reference to `a`/`b` resolves through the
+        // synthesized `let`; the fresh `p$0` binds the whole argument.
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            run_returns::<i64>(&bytes, "main")
+        };
+        // A single tuple param, a nested one, multiple tuple params, and a mixed name+tuple signature.
+        assert_eq!(
+            run(
+                "(module m (def (fst (tuple a b)) a) (def (main) (fst (tuple 7 8))) (export main))"
+            ),
+            7
+        );
+        assert_eq!(
+            run("(module m (def (f (tuple a (tuple b c))) (+ a (+ b c))) \
+                   (def (main) (f (tuple 1 (tuple 2 3)))) (export main))"),
+            6
+        );
+        assert_eq!(
+            run(
+                "(module m (def (f (tuple a b) (tuple c d)) (+ (+ a b) (+ c d))) \
+                   (def (main) (f (tuple 1 2) (tuple 3 4))) (export main))"
+            ),
+            10
+        );
+        assert_eq!(
+            run("(module m (def (f x (tuple a b)) (+ x (+ a b))) \
+                   (def (main) (f 10 (tuple 2 4))) (export main))"),
+            16
+        );
+    }
+
+    #[test]
+    fn an_ill_formed_def_parameter_pattern_is_rejected() {
+        // A parameter position is a binding position — no alternative arm — so its pattern must be
+        // irrefutable and linear (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
+        // The rewrite carries the pattern to the same `let`-validation the binder case uses, so a refutable
+        // / non-linear parameter faults with the binding-position code rather than miscompiling.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (def (main) 0) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Refutable multi-variant constructor parameter → CDZ0210.
+        assert_eq!(code("(def (f (Some x)) x)").as_deref(), Some("CDZ0210"));
+        // Non-linear tuple parameter → CDZ0102.
+        assert_eq!(code("(def (f (tuple x x)) x)").as_deref(), Some("CDZ0102"));
+        // NO OVER-REJECTION: a well-formed tuple parameter compiles (used by `main`).
+        assert_eq!(
+            code("(def (f (tuple a b)) (+ a b)) (def (g) (f (tuple 1 2)))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
@@ -11997,6 +12207,43 @@ mod stage1 {
         }
     }
 
+    /// `run_closure`'s sibling for a program whose `main` takes a single BOOL argument — used to exercise
+    /// a closure that captures a boolean (its lifted body unboxes with `get-bool`). Same composed-runtime
+    /// path; `arg` is rendered as the s-expr boolean literal the entrypoint expects.
+    fn run_closure_bool(src: &str, arg: bool) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
+    /// `run_closure`'s sibling for a program whose `main` is NULLARY (a closure captures a compound built
+    /// in `main`, so no runtime entry argument is needed). Same composed-runtime path.
+    fn run_closure_nullary(src: &str) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
     #[test]
     fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
         // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
@@ -12080,6 +12327,56 @@ mod stage1 {
               (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
             (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
         assert_eq!(run_closure(src2, 3).unwrap(), "27");
+    }
+
+    #[test]
+    fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
+        // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
+        // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted
+        // bodies — so an op no top-level def happens to use, but a closure body does (`get-bool` unboxing a
+        // captured boolean; `box-bool` storing it), resolved to a bogus import index and the module was
+        // INVALID (`call 4294967295`). `collect_module_used_ops` now walks the reached lifted bodies too.
+        // `(fn (x) (if flag (* x 2) x))` captures the boolean `flag`; the lifted body reads it back with
+        // `get-bool`. With flag=true it doubles: apply-sum over 3,2,1 = 6+4+2 = 12. (Before the fix this
+        // compiled to a module wasmtime rejects — `run_closure` would panic on the invalid component.)
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: t Bool)) (apply-sum (fn ((: x Int64)) (if t (* x 2) x)) 3)) \
+            (export main))";
+        let Some(r) = run_closure_bool(src, true) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "12"); // flag=true → 2·(3+2+1) = 12
+        assert_eq!(run_closure_bool(src, false).unwrap(), "6"); // flag=false → 3+2+1 = 6
+    }
+
+    #[test]
+    fn a_closure_captures_a_compound_and_reads_it_back_inside_its_lifted_body() {
+        // A capture slot holds a COMPOUND heap HANDLE (a tuple / a sum), not a boxed scalar — stored into
+        // the env cell as-is and read back as-is (`box_op`/`get_op` return None for a compound). Two
+        // shapes: (a) a captured TUPLE projected in the body; (b) a captured SUM matched in the body (the
+        // scrutinee of a `match` is a CAPTURED free variable, read from the env cell). Both survive the
+        // recursive `apply-sum` indirect-call boundary.
+        // (a) tuple capture: each application adds (. p 0)+(. p 1) = 30, so over 3,2,1 = 96.
+        let tup = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main) (let ((p (tuple 10 20))) \
+              (apply-sum (fn ((: x Int64)) (+ (+ x (. p 0)) (. p 1))) 3))) (export main))";
+        let Some(r) = run_closure_nullary(tup) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "96");
+        // (b) sum capture matched: each application takes the Some arm and adds 100, so over 3,2,1 = 306.
+        let sum = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main) (let ((o (Some 100))) \
+              (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3))) (export main))";
+        assert_eq!(run_closure_nullary(sum).unwrap(), "306");
     }
 
     #[test]
@@ -15015,6 +15312,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(11)),
                 locals: vec![],
+                scopes: vec![],
                 stmt_lines: vec![],
             },
             SelectedFunc {
@@ -15024,6 +15322,7 @@ mod debug_info {
                 declared: vec![],
                 src_body: Some(StructId(22)),
                 locals: vec![],
+                scopes: vec![],
                 stmt_lines: vec![],
             },
         ];
@@ -15711,6 +16010,102 @@ mod debug_info {
         assert!(
             stdout.contains("DW_OP_WASM_location 0x0 0x1"),
             "the kept local must live at local slot 1:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_scalar_match_binder_gets_a_lexical_block_variable() {
+        // D3 match binders: a bare-binder arm over a COMPUTED scrutinee (`(match (+ a b) (x (* x x)))`)
+        // binds the scrutinee's spill slot — described by a `DW_TAG_variable` inside a
+        // `DW_TAG_lexical_block` whose PC range fences it to the match (its slot is a reused scratch slot,
+        // so a function-scoped variable would misreport `x` for the rest of the function). Verified via
+        // llvm-dwarfdump on the sidecar. Skips if the tool is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src =
+            "(module m (def (f (: a Int64) (: b Int64)) (match (+ a b) (x (* x x)))) (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-mb-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump error:\n{stdout}"
+        );
+        // A lexical block scopes the binder — NOT a function-scoped variable.
+        assert!(
+            stdout.contains("DW_TAG_lexical_block"),
+            "no lexical block for the match binder:\n{stdout}"
+        );
+        // The binder `x` is a variable inside it, with a wasm-local location (the scrutinee spill slot).
+        assert!(
+            stdout.contains("DW_TAG_variable") && stdout.contains("\"x\""),
+            "the match binder `x` is missing:\n{stdout}"
+        );
+        // The lexical block's low_pc must be ABOVE the subprogram's (the block covers only the match's
+        // arm code, not the whole function) — i.e. two distinct low_pc values appear.
+        let low_pcs: Vec<&str> = stdout
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("DW_AT_low_pc"))
+            .collect();
+        assert!(
+            low_pcs.len() >= 3,
+            "expected a low_pc for the CU, subprogram, AND lexical block:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_scalar_match_binder_dwarf_verifies_under_llvm_dwarfdump() {
+        // The lexical-block DIE tree (subprogram → lexical_block → variable, with the nested NULL
+        // terminators) must be WELL-FORMED — `llvm-dwarfdump --verify` reports no errors. This guards the
+        // delicate DIE-tree/offset math of the match-binder scope. Skips if the tool is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src =
+            "(module m (def (f (: a Int64) (: b Int64)) (match (- a b) (y (+ y 1)))) (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-mbv-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--verify")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("No errors"),
+            "the match-binder DWARF failed --verify:\n{stdout}"
         );
     }
 

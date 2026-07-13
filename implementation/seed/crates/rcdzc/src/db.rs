@@ -658,6 +658,12 @@ impl Db {
         // and its self-reference resolve like any hand-written def. A def that does not match is untouched.
         let mut defs = defs;
         crate::accum::introduce(&mut ast, &mut defs);
+        // DESTRUCTURING PARAMETERS: rewrite a `def` whose parameter is a tuple PATTERN (`(def (f (tuple a
+        // b)) …)`) into a fresh whole-value parameter plus a destructuring `let` over the body (`(def (f
+        // p$0) (let (((tuple a b) p$0)) …))`) — so a body reference to `a`/`b` resolves through the `let`
+        // machinery the binding-pattern `let` case already realizes. Runs HERE (after accum, before the
+        // parent index / `def_by_name`) so the rewritten def resolves like a hand-written one.
+        crate::binding_params::lower(&mut ast, &mut defs);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary
@@ -785,6 +791,34 @@ impl Db {
             self.ast.as_name(kv[0])
         } else {
             None
+        }
+    }
+
+    /// The BINDER NAME a scalar match arm binds, given the arm's BODY occurrence. A match arm is a
+    /// two-element `(pattern body)` list; a binder pattern is either a bare name `x` or a guard
+    /// `(guard x cond)` whose first child is the binder (`resolve` Case 5 / 5g). The binder binds the
+    /// whole scrutinee, so the DWARF backend describes it as a `DW_TAG_variable` at the scrutinee's slot,
+    /// scoped to the match's lexical block. Returns `None` when the pattern is a literal, the wildcard
+    /// `_`, or `body` is not an arm body — the cases with no name to inspect. Mirrors `let_binding_name`
+    /// (reached O(1) via `parent_of` + a child read).
+    pub fn match_arm_binder_name(&self, body: StructId) -> Option<&str> {
+        let arm = self.parent_of(body)?;
+        let Struct::List(pb) = self.ast.get(arm) else {
+            return None;
+        };
+        // A genuine `(pattern body)` arm with `body` in the body slot (not the pattern position).
+        if pb.len() != 2 || pb[1] != body {
+            return None;
+        }
+        // The binder pattern: a bare name, or the first child of a `(guard binder cond)`.
+        let binder_pat = match self.ast.as_form(pb[0], "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pb[0],
+        };
+        match self.ast.as_name(binder_pat) {
+            // The wildcard `_` binds nothing to inspect; a literal pattern is not a name at all.
+            Some("_") | None => None,
+            Some(name) => Some(name),
         }
     }
 

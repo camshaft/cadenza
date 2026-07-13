@@ -69,6 +69,28 @@ pub enum Lir {
     /// so `-0.0` and a NaN round-trip verbatim; `f64.const` is emitted as 8 little-endian bytes of the
     /// bit pattern, NOT LEB128). A float literal crossing the boundary emits this.
     F64ConstBits(u64),
+    /// `f32.const` — a 32-bit float constant, carried as its raw IEEE-754 bit pattern (4 little-endian
+    /// bytes, NOT LEB128). A `Float32` constant emits this.
+    F32ConstBits(u32),
+    /// Float ARITHMETIC — the machine op a runtime `+.`/`-.`/`*.`/`/.` selects, at the operand width
+    /// (f64/f32). IEEE, never trapping (no overflow guard, unlike the integer arith).
+    F64Add,
+    F64Sub,
+    F64Mul,
+    F64Div,
+    F32Add,
+    F32Sub,
+    F32Mul,
+    F32Div,
+    /// Float EQUALITY / inequality — a runtime float `=` (IEEE: `-0.0 == 0.0`, `NaN != NaN`).
+    F64Eq,
+    F64Ne,
+    F32Eq,
+    F32Ne,
+    /// Float width conversion — `f32.demote_f64` (Float64→Float32, rounds) / `f64.promote_f32`
+    /// (Float32→Float64, exact). Emitted by the width-conversion `Float32.of`/`Float64.of` (F5).
+    F32DemoteF64,
+    F64PromoteF32,
     /// `local.get I` — read local `I`.
     LocalGet(u32),
     /// `local.set I` — pop the stack top into local `I`. Used by the checked-arithmetic guard to stash

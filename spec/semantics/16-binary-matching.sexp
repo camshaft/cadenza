@@ -351,16 +351,18 @@
             (_ false)))
   (output (: true Bool)))
 
-(case "constructing a sized bytes segment whose value length differs from the size traps"
+(case "constructing a sized bytes segment whose value length differs from the size is rejected"
   (doc    "`(bin (bytes (Bytes.of (list 1 2 3)) 2))` splices a three-byte value into a segment declared to
            be two bytes wide; the declared size and the value's length disagree, so there is no defined
-           encoding and construction traps with reason \"binary value does not fit segment\". Pins that a
-           SIZED `(bytes b n)` build is length-checked against n — the whole-value analogue of the u8
-           out-of-range trap, and the construction-side counterpart of a matching `(bytes body n)` overrun
-           being a non-match.")
+           encoding. With CONSTANT operands the mismatch is provable at compile time, so — like every
+           compile-provable trap — it FAILS THE BUILD (CDZ0304) rather than shipping a component that traps
+           (reference-compiler.md #A Compile-Provable Trap Fails The Build); a runtime `b`/`n` whose lengths
+           disagree traps \"binary value does not fit segment\" at that point. Pins that a SIZED `(bytes b
+           n)` build is length-checked against n — the whole-value analogue of the u8 out-of-range check,
+           and the construction-side counterpart of a matching `(bytes body n)` overrun being a non-match.")
   (needs  binary-matching)
   (input  (bin (bytes (Bytes.of (list 1 2 3)) 2)))
-  (trap   "binary value does not fit segment"))
+  (error  CDZ0304))
 
 ; ============================================================================================
 ; Protocol round-trips — construct and match are inverse over a whole realistic layout
@@ -464,30 +466,36 @@
   (error  CDZ0220))
 
 ; ============================================================================================
-; Runtime fit — a value that does not fit its segment traps (total-or-trap construction)
+; Fit — a value that does not fit its segment has no encoding (rejected when provable, else traps)
 ; ============================================================================================
 
-(case "constructing a u8 segment from a value above its range traps"
+(case "constructing a u8 segment from a value above its range is rejected"
   (doc    "`(bin (u8 256))` asks an 8-bit unsigned segment to hold 256, which needs nine bits and has no
-           8-bit encoding, so construction traps with reason \"binary value does not fit segment\" rather
-           than truncating to 0. The companion of the Bytes out-of-range trap, at the segment boundary.")
+           8-bit encoding — it does NOT truncate to 0. With a CONSTANT operand the overflow is provable, so
+           it FAILS THE BUILD (CDZ0304) — the compile-provable-trap rule (reference-compiler.md #A
+           Compile-Provable Trap Fails The Build); a runtime value out of range traps \"binary value does
+           not fit segment\" at that point. The companion of the Bytes out-of-range check, at the segment
+           boundary.")
   (needs  binary-matching)
   (input  (bin (u8 256)))
-  (trap   "binary value does not fit segment"))
+  (error  CDZ0304))
 
-(case "constructing an unsigned segment from a negative value traps"
-  (doc    "`(bin (u8 -1))` gives a negative value to an UNSIGNED segment, which has no negative encoding,
-           so it traps — it does NOT wrap to 255 (that is the meaning of the SIGNED `(i8 -1)` case above).
-           Pins that unsigned and signed segments differ on a negative value: the signed one encodes it in
-           two's complement, the unsigned one traps.")
+(case "constructing an unsigned segment from a negative value is rejected"
+  (doc    "`(bin (u8 -1))` gives a negative value to an UNSIGNED segment, which has no negative encoding —
+           it does NOT wrap to 255 (that is the meaning of the SIGNED `(i8 -1)` case above). With a CONSTANT
+           operand the out-of-range value is provable, so it FAILS THE BUILD (CDZ0304); a runtime negative
+           traps \"binary value does not fit segment\". Pins that unsigned and signed segments differ on a
+           negative value: the signed one encodes it in two's complement, the unsigned one has no encoding.")
   (needs  binary-matching)
   (input  (bin (u8 -1)))
-  (trap   "binary value does not fit segment"))
+  (error  CDZ0304))
 
-(case "constructing a bit-field from a value wider than its width traps"
-  (doc    "`(bin (bits 2 1))` gives the value 2 (which needs two bits) to a 1-bit field, so it does not
-           fit and construction traps. Pins that a bit-field's value is range-checked against its width at
-           run time, the sub-byte companion of the u8-overflow trap.")
+(case "constructing a bit-field from a value wider than its width is rejected"
+  (doc    "`(bin (bits 2 1))` gives the value 2 (which needs two bits) to a 1-bit field, so it does not fit.
+           With a CONSTANT operand the misfit is provable at compile time, so the ill-formed bit-field is
+           rejected (CDZ0220 — the binary well-formedness code); a runtime value wider than the field traps
+           \"binary value does not fit segment\". Pins that a bit-field's value is range-checked against its
+           width, the sub-byte companion of the u8-overflow check.")
   (needs  binary-matching)
   (input  (bin (bits 2 1)))
-  (trap   "binary value does not fit segment"))
+  (error  CDZ0220))

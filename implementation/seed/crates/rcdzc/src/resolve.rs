@@ -895,11 +895,12 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     Some(scrutinee)
 }
 
-/// If `form` is a match arm `((list a b …) body)` ascended from `body`, and the FIXED-ARITY list pattern
-/// binds `name` at element position `i`, return `(scrutinee, i)`. Only a fixed-arity `(list …)` (no `..`)
-/// is handled — a rest binder binds a sublist, not one element (a later increment), so a pattern with
-/// `..` returns `None`. Element sub-patterns are bare names. `None` if not a fixed-arity `(list …)` arm
-/// binding `name`.
+/// If `form` is a match arm `((list a b …) body)` ascended from `body`, and the list pattern binds `name`
+/// at LEADING element position `i`, return `(scrutinee, i)`. Handles a fixed-arity `(list a b)` AND the
+/// LEADING binders of a rest pattern `(list a b .. rest)` (the binders BEFORE `..`) — both read a definite
+/// element index via `SumPayload{Elem(i)}`. The REST binder itself (the name after `..`) binds a SUBLIST,
+/// not one element, so it is NOT matched here (it resolves inert; a used rest sublist is a later
+/// increment). `None` if not a `(list …)` arm binding `name` at a leading position.
 fn list_pattern_element_binds(
     db: &Db,
     form: StructId,
@@ -916,26 +917,29 @@ fn list_pattern_element_binds(
         .ast
         .as_ctor_form(pb[0], "list")
         .or_else(|| db.ast.as_form(pb[0], "list"))?;
-    if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
-        return None; // a REST pattern is a later increment — decline the whole list-match
-    }
+    // The LEADING positions are those before a `..` marker (all of them for a fixed-arity pattern).
+    let lead = elems
+        .iter()
+        .position(|&e| db.ast.as_name(e) == Some(".."))
+        .unwrap_or(elems.len());
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;
     let scrutinee = *mtail.first()?;
     if form == scrutinee {
         return None;
     }
-    // The FIRST element position bound to `name` (a bare name, not `_`).
-    elems
+    // The FIRST leading element position bound to `name` (a bare name, not `_`).
+    elems[..lead]
         .iter()
         .position(|&e| db.ast.as_name(e) == Some(name) && name != "_")
         .map(|i| (scrutinee, i))
 }
 
-/// Whether `id` is a NAME occurrence that is a FIXED-ARITY `(list …)` match-pattern element — a binder in
-/// the PATTERN position, which must resolve INERT (not a looked-up value) so walking the arm's pattern
-/// never reports it unbound. Only a fixed-arity list pattern (no `..`); a rest pattern is a later
-/// increment. Mirrors the arm/scrutinee shape `list_pattern_element_binds` requires.
+/// Whether `id` is a NAME occurrence that is a `(list …)` match-pattern binder in the PATTERN position — a
+/// LEADING element binder, the `..` marker, OR the rest binder — all of which must resolve INERT (not a
+/// looked-up value) so walking the arm's pattern never reports them unbound. (A body reference to a
+/// leading binder resolves to `SumPayload` via Case 6l; the rest binder is inert until a used-sublist
+/// increment.) Mirrors the arm/scrutinee shape `list_pattern_element_binds` requires.
 fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
     let Some(list) = db.parent_of(id) else {
         return false;
@@ -943,8 +947,8 @@ fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
     let Some(elems) = db.ast.as_form(list, "list") else {
         return false;
     };
-    if !elems.contains(&id) || elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
-        return false; // not an element, or a rest pattern (handled later)
+    if !elems.contains(&id) {
+        return false; // not an element of the list
     }
     let Some(arm) = db.parent_of(list) else {
         return false;

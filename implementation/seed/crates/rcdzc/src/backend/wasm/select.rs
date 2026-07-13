@@ -51,6 +51,26 @@ pub struct Emit {
     /// debugger `print x` for a local, not just a parameter. Params are collected separately in
     /// `select_function_of` (slots `0..n`); these are the bindings above `base`.
     binding_locals: Vec<LocalVar>,
+    /// Scalar MATCH-BINDER lexical scopes (D3 locals for `(match e (x body)…)`). A scalar match spills
+    /// its scrutinee to ONE slot for the whole match; a bare-binder arm binds that slot's value. Unlike a
+    /// param/let (function-scoped), a match binder is live ONLY within its match expression — and its
+    /// slot is a REUSED scratch slot the rest of the function repurposes — so a flat function-scoped
+    /// `DW_TAG_variable` would MISLEAD. Recorded as a scope `(Lir range, vars)` so the backend emits a
+    /// `DW_TAG_lexical_block` with a PC range that fences the binder to its arms. Indices are into `code`
+    /// as emitted; `peephole_emit` remaps them alongside `lines`.
+    match_scopes: Vec<MatchScope>,
+}
+
+/// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
+/// locals visible there (one per distinct binder name across the arms, all aliasing the scrutinee's
+/// spill slot). Becomes a `DW_TAG_lexical_block` in the DWARF (`DESIGN-debug-info-rcdzc.md` §2.4). The
+/// `start_ix`/`end_ix` are Lir indices (remapped by `peephole_emit`); `dwarf_funcs_for` turns them into
+/// absolute code offsets for the block's `DW_AT_low_pc`/`high_pc`.
+#[derive(Clone, Debug)]
+pub struct MatchScope {
+    pub start_ix: u32,
+    pub end_ix: u32,
+    pub vars: Vec<LocalVar>,
 }
 
 impl Emit {
@@ -76,6 +96,21 @@ impl Emit {
             ty,
             is_param: false,
         });
+    }
+    /// The CURRENT instruction position — the start/end anchor for a match-binder scope (`match_scope`).
+    fn here(&self) -> u32 {
+        self.code.len() as u32
+    }
+    /// Record a scalar match-binder lexical scope: the `[start, end)` Lir range over its arm bodies plus
+    /// the binder locals visible there (D3 locals). Skips an empty scope (no named binder / no code).
+    fn match_scope(&mut self, start_ix: u32, end_ix: u32, vars: Vec<LocalVar>) {
+        if !vars.is_empty() && end_ix > start_ix {
+            self.match_scopes.push(MatchScope {
+                start_ix,
+                end_ix,
+                vars,
+            });
+        }
     }
 }
 
@@ -427,9 +462,16 @@ pub struct SelectedFunc {
     /// each a `(wasm local slot, source name, solved scalar type)`. Populated with the function's scalar
     /// PARAMETERS (slots `0..n`, the common `print n` target). A `DW_TAG_variable` DIE emits from each so
     /// a debugger can read the value. A compound (heap-handle) param is omitted — DWARF cannot walk the
-    /// tagless heap (§3), so only scalars appear. `let`-bindings / match binders live in dynamically-
-    /// claimed scratch slots and are a later refinement. Empty unless debug is requested.
+    /// tagless heap (§3), so only scalars appear. Function-scoped `let`-bindings also land here; MATCH
+    /// binders — live only within one match expression, in a REUSED scratch slot — are NOT flat locals
+    /// but scoped `scopes` below. Empty unless debug is requested.
     pub locals: Vec<LocalVar>,
+    /// Scalar MATCH-BINDER lexical scopes (D3, `DESIGN-debug-info-rcdzc.md` §2.4): each a `[Lir start,
+    /// end)` range + the binder locals visible there. Distinct from `locals` because a match binder is
+    /// live only within its match (its slot is later reused), so the backend fences it in a
+    /// `DW_TAG_lexical_block` with a PC range rather than a function-scoped `DW_TAG_variable`. Ranges are
+    /// post-peephole Lir indices; `dwarf_funcs_for` maps them to code offsets. Empty unless debug.
+    pub scopes: Vec<MatchScope>,
     /// Per-CONSTRUCT source line markers (`DESIGN-debug-line-granularity-rcdzc.md`): `(Lir index,
     /// source occurrence)` at each point a distinct source construct's evaluation begins, in emission
     /// order, remapped through the peephole pass. The backend turns each into a `.debug_line` row (one
@@ -474,6 +516,7 @@ pub fn stub_function(params: &[(StructId, Ty)], ret: &Ty) -> SelectedFunc {
         declared: Vec::new(),
         src_body: None,
         locals: Vec::new(),
+        scopes: Vec::new(),
         stmt_lines: Vec::new(),
     }
 }
@@ -1034,6 +1077,8 @@ pub fn select_function_of(
         src_body: Some(body),
         // Scalar params + `let`-binding locals for debug-info variable inspection (§2.4, D3).
         locals,
+        // Scalar match-binder lexical scopes (§2.4, D3) — a `DW_TAG_lexical_block` per match.
+        scopes: code.match_scopes,
         // Per-construct source line markers (per-statement granularity), remapped through the peephole.
         stmt_lines: code.lines,
     })
@@ -1102,6 +1147,13 @@ fn peephole_emit(emit: &mut Emit) {
             .get(*idx as usize)
             .copied()
             .unwrap_or(out.len() as u32);
+    }
+    // Match-binder scope ranges shift with the same remap (an EXCLUSIVE end at `old.len()` maps to the
+    // new code end). Both endpoints go through `remap`, keeping the range covering the same instructions.
+    let remap_ix = |ix: u32| remap.get(ix as usize).copied().unwrap_or(out.len() as u32);
+    for sc in emit.match_scopes.iter_mut() {
+        sc.start_ix = remap_ix(sc.start_ix);
+        sc.end_ix = remap_ix(sc.end_ix);
     }
     emit.code = out;
 }
@@ -1874,23 +1926,22 @@ fn emit(
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
         )),
-        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Float64`
-        // occupies in its f64 machine slot, and what an export returning a float leaves on the stack (the
-        // boundary lifts it to the component `f64`). A `Float32`-typed constant needs an `f32.const`
-        // (a different opcode + a rounded-to-binary32 immediate) — DECLINES here until the f32 emit path
-        // lands (a clean Todo, never an f64 value in an f32 slot = invalid wasm). The width is read off
-        // the node's SOLVED type (the same read the boundary valtype uses). Float ARITHMETIC is later.
+        // A float CONSTANT emits an `f64.const`/`f32.const` of its canonical bit pattern at the node's
+        // SOLVED width — the value a float occupies in its machine slot, and what an export returning a
+        // float leaves on the stack (the boundary lifts it to the component `f64`/`f32`). A `Float32`
+        // constant rounds the exact `Decimal` through binary32 (`as f32`) and emits `f32.const`. The width
+        // is read off the solved type (the same read the boundary valtype uses).
         Core::ConstFloat(d) => {
             let width = match crate::infer::type_of(db, id) {
                 crate::ty::Ty::Float(ft) => ft.ground_width(),
                 _ => 64,
             };
             if width == 32 {
-                return Err(Reject::decline(
-                    "a Float32 constant is not yet emitted (only Float64 crosses; f32 emit is a later increment)",
-                ));
+                let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
+                out.push(Lir::F32ConstBits(bits));
+            } else {
+                out.push(Lir::F64ConstBits(d.to_f64_bits()));
             }
-            out.push(Lir::F64ConstBits(d.to_f64_bits()));
             Ok(())
         }
         Core::Unit => {
@@ -2894,6 +2945,21 @@ fn emit(
         // A runtime operand only arises from a boundary parameter, and only the aliased widths
         // (8/16/32/64) have a boundary representation — but the recipe is correct for any N in 1..=64,
         // so nothing here assumes a machine width. A constant of any width folds in `lower` instead.
+        // A runtime FLOAT arithmetic op (`+.`/`-.`/`*.`/`/.`) — emit the two operands then the machine
+        // `f64`/`f32` op at the result width (read off the solved type). IEEE, NEVER traps, so NO overflow
+        // guard (unlike the integer arith below). Both operands share the result's float type (binary-op
+        // unification), so they emit at the same width.
+        Core::Arith { op, lhs, rhs } if op.is_float_arith() => {
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            trace!(target: "rcdzc::select", node = id.0, ?op, width, "emit runtime float op");
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+            out.push(float_arith_op(op, width));
+            Ok(())
+        }
         Core::Arith { op, lhs, rhs } => {
             let m = Machine::of(int_ty_of(db, id));
             trace!(target: "rcdzc::select", node = id.0, ?op, width = m.width, signed = m.signed, "emit runtime integer op");
@@ -2965,28 +3031,11 @@ fn emit(
                 _ => Err(Reject::decline("not a runtime conversion")),
             }
         }
-        // A runtime boolean NEGATION `!operand` — emit the operand (a Bool i32), then `i32.eqz` (1 if 0,
-        // else 0 = logical NOT). From the `(if c false true)` fold.
+        // A runtime boolean NEGATION `!operand` — emit the logical NOT of the operand (a Bool i32). From
+        // the `(if c false true)` fold. `emit_negated_bool` folds `(not (CMP a b))` into the complement
+        // comparison and otherwise emits `operand ; i32.eqz`.
         Core::Not { operand } => {
-            // COMPARISON NEGATION: `(not (CMP a b))` folds into the single COMPLEMENT comparison — `(not
-            // (< a b))` → `a >=ₛ b`, `(not (= a b))` → `a ≠ b` — instead of emitting the comparison and an
-            // `i32.eqz`. Every comparison over a total order has an exact complement (`compare_op_negated`),
-            // dropping one instruction from the ubiquitous negated-predicate. Emit the operands exactly as
-            // the `Core::Compare` arm does (same width grounding + RHS-above-high-water discipline), but
-            // with the inverted op and no trailing `eqz`. The `= 0` operand is NOT special-cased to `eqz`
-            // here: `(not (= x 0))` is `x ≠ 0`, i.e. `i64.ne` against a zero — the general compare path,
-            // which for a zero operand is as cheap (`eqz` would need its own inversion anyway).
-            if let Core::Compare { op, lhs, rhs } = core_of(db, operand) {
-                let it = operand_int_ty(db, lhs, rhs);
-                emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
-                let rhs_base = base.max(*high);
-                emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
-                out.push(compare_op_negated(op, it));
-                return Ok(());
-            }
-            emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
-            out.push(Lir::I32Eqz);
-            Ok(())
+            emit_negated_bool(db, operand, slots, base, high, scratch_ty, layout, out)
         }
         // A SHORT-CIRCUITING boolean connective — emitted as an `if` over `lhs` (a Bool i32), so `rhs` is
         // evaluated on ONLY ONE branch (the shield core-semantics.md §Boolean Connectives Short-Circuit
@@ -3247,6 +3296,38 @@ fn emit_match_arms_tailable(
             (OperandSrc::Slot(slot), *high)
         }
     };
+    // DEBUG (D3 match-binder locals): a bare-binder arm (`(x body)`) binds the WHOLE scrutinee — which,
+    // for a scalar match, lives in the single spill slot resolved above. Collect one local per DISTINCT
+    // binder name across the arms (all alias that slot) so the backend emits a `DW_TAG_lexical_block`
+    // scoping them to this match's PC range. Only a SLOT-backed scrutinee is describable (a constant
+    // scrutinee folds; a re-pushed param/local is itself already a nameable var). `scope_start` anchors
+    // the block at the first dispatch instruction; each `return` records the scope at the block's end.
+    let scope_start = out.here();
+    let binder_vars: Vec<LocalVar> = match src {
+        OperandSrc::Slot(slot) => {
+            let mut seen: Vec<String> = Vec::new();
+            let mut vars = Vec::new();
+            for arm in arms {
+                let ty = type_of(db, arm.body);
+                if !matches!(ty, Ty::Int(_) | Ty::Bool) {
+                    continue;
+                }
+                if let Some(name) = db.match_arm_binder_name(arm.body)
+                    && !seen.iter().any(|s| s == name)
+                {
+                    seen.push(name.to_string());
+                    vars.push(LocalVar {
+                        slot,
+                        name: name.to_string(),
+                        ty,
+                        is_param: false,
+                    });
+                }
+            }
+            vars
+        }
+        _ => Vec::new(),
+    };
     // BRANCHLESS 2-ARM SELECT: a match of exactly TWO UNGUARDED arms — a literal probe then a wildcard
     // (`(match n (0 a) (_ b))`), or a Bool's two literals (`(match p (true a) (false b))`) — is
     // `(if (scrutinee == probe0) body0 body1)`, so when both bodies are cheap trap-free LEAVES and the
@@ -3299,12 +3380,17 @@ fn emit_match_arms_tailable(
         )?;
         emit_probe_condition(&arms[0].probe, src, it, out);
         out.push(Lir::Select);
+        let end = out.here();
+        out.match_scope(scope_start, end, binder_vars);
         return Ok(());
     }
     emit_probe_chain(
         db, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty, layout, out,
         tail,
-    )
+    )?;
+    let end = out.here();
+    out.match_scope(scope_start, end, binder_vars);
+    Ok(())
 }
 
 /// Emit the boolean `scrutinee == probe` for a match's literal probe: push the scrutinee `src`, then the
@@ -4464,11 +4550,42 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
     )
 }
 
+/// Emit the LOGICAL NEGATION of a boolean expression `id` (a Bool i32 → its `0`/`1` complement). When
+/// `id` is a `Core::Compare`, the negation folds into the single COMPLEMENT comparison (`(not (< a b))`
+/// → `a >=ₛ b`, `(not (= a b))` → `a ≠ b`) — the operands emit exactly as the `Core::Compare` arm does
+/// (same width grounding + RHS-above-`*high` discipline), with the inverted op and NO trailing `i32.eqz`.
+/// Any other bool emits then `i32.eqz`. Shared by `Core::Not` and the negated arm of the boolean
+/// materialization, so a `(not CMP)` reached either directly or through the `(if c 0 1)` bool-int form
+/// gets the same one-op complement (no `eqz ; eqz` double negation when the two folds compose).
+#[allow(clippy::too_many_arguments)]
+fn emit_negated_bool(
+    db: &mut Db,
+    id: StructId,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    if let Core::Compare { op, lhs, rhs } = core_of(db, id) {
+        let it = operand_int_ty(db, lhs, rhs);
+        emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
+        let rhs_base = base.max(*high);
+        emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
+        out.push(compare_op_negated(op, it));
+        return Ok(());
+    }
+    emit(db, id, slots, base, high, scratch_ty, layout, out)?;
+    out.push(Lir::I32Eqz);
+    Ok(())
+}
+
 /// BOOLEAN MATERIALIZATION: an `(if c 1 0)` / `(if c 0 1)` whose branches are the integer literals `1`
 /// and `0` is just the condition itself, coerced to the result's integer width — no branch and no
 /// `select`. A bool `c` already evaluates to exactly `0`/`1` in an i32 slot, so:
 ///   `(if c 1 0)` → `c`            (identity, then widen to the result slot);
-///   `(if c 0 1)` → `i32.eqz c`    (logical negation, likewise `0`/`1`).
+///   `(if c 0 1)` → `!c`           (logical negation via `emit_negated_bool`, likewise `0`/`1`).
 /// This attempts the emit and returns `Some(Ok(()))` when it fired, `None` when the shape does not match
 /// (the caller falls through to the `select`/`if` lowering). Sound at every width: `c` is unconditionally
 /// evaluated exactly as it was as the condition (so any trap in `c` still fires), and the branches carry
@@ -4506,12 +4623,17 @@ fn try_bool_materialization(
         (0, 1) => true,
         _ => return None,
     };
-    // Emit the condition (a bool → i32 `0`/`1`); negate via `i32.eqz` for the `0 1` form.
-    if let Err(r) = emit(db, cond, slots, base, high, scratch_ty, layout, out) {
+    // Emit the condition (a bool → i32 `0`/`1`). The `0 1` form is the NEGATION, emitted via
+    // `emit_negated_bool` so a `(if (not (= n 0)) 1 0)` — which `lower` branch-swaps to `(if (= n 0) 0 1)`
+    // — folds the negation into the compare's complement (`n ≠ 0`) instead of stacking a second `i32.eqz`
+    // atop the compare-with-zero `eqz` (the `eqz ; eqz` double negation).
+    let emitted = if negate {
+        emit_negated_bool(db, cond, slots, base, high, scratch_ty, layout, out)
+    } else {
+        emit(db, cond, slots, base, high, scratch_ty, layout, out)
+    };
+    if let Err(r) = emitted {
         return Some(Err(r));
-    }
-    if negate {
-        out.push(Lir::I32Eqz);
     }
     // Widen the i32 `0`/`1` to a 64-bit result slot; a ≤32-bit result already holds it.
     if m_slot(*it) == ValType::I64 {
@@ -5858,6 +5980,44 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
     }
 }
 
+/// The wasm machine op for a runtime FLOAT arithmetic prim at a given width — the f64/f32 `add`/`sub`/
+/// `mul`/`div`. `width` is the operands' solved float width (32 → f32, else f64). IEEE, never trapping.
+fn float_arith_op(op: Prim, width: u32) -> Lir {
+    let f32 = width == 32;
+    match op {
+        Prim::FAdd => {
+            if f32 {
+                Lir::F32Add
+            } else {
+                Lir::F64Add
+            }
+        }
+        Prim::FSub => {
+            if f32 {
+                Lir::F32Sub
+            } else {
+                Lir::F64Sub
+            }
+        }
+        Prim::FMul => {
+            if f32 {
+                Lir::F32Mul
+            } else {
+                Lir::F64Mul
+            }
+        }
+        Prim::FDiv => {
+            if f32 {
+                Lir::F32Div
+            } else {
+                Lir::F64Div
+            }
+        }
+        // A non-float-arith prim never reaches here (guarded by `op.is_float_arith()` at the call site).
+        _ => Lir::F64Add,
+    }
+}
+
 /// The INTEGER type of each parameter of the def at index `callee` — `Some(it)` for an integer
 /// parameter, `None` for a non-integer one. This lets a `Core::Call` GROUND a bare-literal integer
 /// argument to its parameter's machine width via `emit_operand`: a narrow parameter (UInt8/Int8/…) is
@@ -6373,7 +6533,9 @@ mod tests {
 
     #[test]
     fn if_c_zero_one_materializes_the_negated_bool() {
-        // (if (< a b) 0 1) — the reversed literals are the NEGATION: compare, `i32.eqz`, then widen.
+        // (if (< a b) 0 1) — the reversed literals are the NEGATION of the condition. Since the condition
+        // is a comparison, the negation folds into the COMPLEMENT comparison (`a >=ₛ b`) rather than
+        // `compare ; i32.eqz` — one instruction fewer, no double negation — then widen.
         let ast = crate::testkit::parse(
             "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 0 1)) (def (main) 0) (export main))",
         );
@@ -6386,10 +6548,67 @@ mod tests {
             vec![
                 Lir::LocalGet(0),
                 Lir::LocalGet(1),
-                Lir::I64LtS,
-                Lir::I32Eqz, // negate the 0/1 bool.
+                Lir::I64GeS, // the complement of `<` — no trailing eqz.
                 Lir::I64ExtendI32U,
             ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "the negated materialization folds into the complement, no eqz"
+        );
+    }
+
+    #[test]
+    fn if_not_compare_one_zero_avoids_the_double_negation() {
+        // (if (not (< a b)) 1 0) — `lower` branch-swaps this to `(if (< a b) 0 1)`, then the negated
+        // materialization would naively stack `i32.eqz` on the compare. Because the condition is a
+        // comparison, the negation folds into the complement `a >=ₛ b` — NO `eqz` at all (the fold that
+        // prevents an `eqz ; eqz` when `(not (= n 0))` composes with the bool-int form).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (not (< a b)) 1 0)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::I64GeS,
+                Lir::I64ExtendI32U,
+            ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "no eqz — the negation folded into the complement comparison"
+        );
+    }
+
+    #[test]
+    fn if_not_eq_zero_one_zero_is_a_single_ne() {
+        // (if (not (= n 0)) 1 0) — the ubiquitous "n is nonzero as an int" idiom. Was `eqz ; eqz` (the
+        // compare-with-zero peephole then the negation). Now the negation folds the compare's complement:
+        // `n ≠ 0` = `n ; const 0 ; i64.ne` — one `ne`, no double eqz.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (not (= n 0)) 1 0)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::I64Eqz | Lir::I32Eqz)),
+            "no eqz double negation, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::I64Ne),
+            "nonzero folds to a single i64.ne, got: {:?}",
+            f.code
         );
     }
 

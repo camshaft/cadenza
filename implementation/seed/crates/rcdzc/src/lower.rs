@@ -1257,7 +1257,8 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     enum Arm {
         Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
-        Wild(StructId),         // a bare binder / `_` — matches any length
+        Rest(usize, StructId), // a rest `(list p0 … p_{k-1} .. rest)` — matches length ≥ k (lead = k)
+        Wild(StructId),        // a bare binder / `_` — matches any length
     }
     let mut classified: Vec<Arm> = Vec::with_capacity(arms.len());
     for &(pat, body) in arms {
@@ -1270,30 +1271,75 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             .as_ctor_form(pat, "list")
             .or_else(|| db.ast.as_form(pat, "list"))
         {
-            Some(es) if !es.iter().any(|&e| db.ast.as_name(e) == Some("..")) => {
-                // Fixed arity: each element must be a bare name binder / `_` (a nested/literal element
-                // pattern is a later increment).
-                if es.iter().all(|&e| db.ast.as_name(e).is_some()) {
-                    classified.push(Arm::Fixed(es.len(), body));
-                } else {
-                    return Core::Poison(Reject::decline(
-                        "a list element sub-pattern that is not a binder is not yet supported",
-                    ));
+            Some(es) => {
+                // Split at a `..` marker: `lead` leading binders, then (for a rest pattern) the rest
+                // binder name. A rest pattern needs EXACTLY one binder after `..`.
+                match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+                    Some(i) => {
+                        if i + 2 != es.len() {
+                            return Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
+                            ));
+                        }
+                        // Each leading element must be a bare name binder / `_` (a nested/literal element
+                        // pattern is a later increment). The leading binders read via `SumPayload`; the
+                        // rest binder is a sublist (bound in the body — resolve's list-pattern case; over a
+                        // constant scrutinee, the tail folds when referenced).
+                        if es[..i].iter().all(|&e| db.ast.as_name(e).is_some()) {
+                            classified.push(Arm::Rest(i, body));
+                        } else {
+                            return Core::Poison(Reject::decline(
+                                "a list element sub-pattern that is not a binder is not yet supported",
+                            ));
+                        }
+                    }
+                    None => {
+                        // Fixed arity: each element must be a bare name binder / `_`.
+                        if es.iter().all(|&e| db.ast.as_name(e).is_some()) {
+                            classified.push(Arm::Fixed(es.len(), body));
+                        } else {
+                            return Core::Poison(Reject::decline(
+                                "a list element sub-pattern that is not a binder is not yet supported",
+                            ));
+                        }
+                    }
                 }
             }
-            _ => {
+            None => {
                 return Core::Poison(Reject::decline(
-                    "a list rest pattern `(list x .. rest)` (or a non-element list arm) is not yet supported",
+                    "a list match arm that is not an element pattern or a binder is not yet supported",
                 ));
             }
         }
     }
-    // WELL-FORMEDNESS: a list is OPEN (any length), so the arms must cover every length via a bare
-    // binder / `_` catch-all (a finite set of fixed arities cannot). Else CDZ0210.
-    if !classified.iter().any(|a| matches!(a, Arm::Wild(_))) {
+    // WELL-FORMEDNESS: a list is OPEN (any length), so the arms must JOINTLY cover every length n ≥ 0.
+    // A `Wild` / `Rest(k)` covers the infinite tail [k, ∞) (a `Wild` = `Rest(0)`); a `Fixed(k)` covers the
+    // single length {k}. Let `m` be the SMALLEST tail-start among all catch-all arms (0 if any `Wild`).
+    // If there is no `Wild`/`Rest` arm at all, no arm covers the infinite tail → non-exhaustive. Otherwise
+    // lengths [m, ∞) are covered by that arm; the finite prefix 0..m must be covered by `Fixed` arms (no
+    // `Rest(j)` with j < m exists, since m is the minimum). Else CDZ0210.
+    let tail_start = classified.iter().filter_map(|a| match a {
+        Arm::Wild(_) => Some(0),
+        Arm::Rest(k, _) => Some(*k),
+        Arm::Fixed(_, _) => None,
+    });
+    let Some(m) = tail_start.min() else {
         return Core::Poison(Reject::coded(
             Code::NonExhaustive,
-            "a list match must cover every length (end in a `_` or a whole-list binder arm)",
+            "a list match must cover every length (end in a `_`, a whole-list binder, or a `(list .. rest)` arm)",
+        ));
+    };
+    // Every length in 0..m must have a matching `Fixed` arm.
+    let prefix_covered = (0..m).all(|n| {
+        classified
+            .iter()
+            .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
+    });
+    if !prefix_covered {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a list match must cover every length (a rest pattern leaves shorter lengths uncovered)",
         ));
     }
     // FOLD only a constant scrutinee this increment: the length selects the arm; the body's element
@@ -1311,6 +1357,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     for arm in &classified {
         let (matches, body) = match arm {
             Arm::Fixed(k, body) => (*k == n, *body),
+            Arm::Rest(lead, body) => (n >= *lead, *body), // rest: length ≥ leading count
             Arm::Wild(body) => (true, *body),
         };
         if matches {
@@ -3862,11 +3909,14 @@ fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> 
                 )),
             }
         }
-        // A runtime float operand — the machine `f64.add`/… emit is a later increment (needs the f64
-        // arithmetic opcodes via the codegen op-list). Decline cleanly.
-        _ => Core::Poison(Reject::decline(
-            "a runtime float arithmetic operand is not yet emitted (only a constant float folds)",
-        )),
+        // A runtime float operand — emit the machine `f64.add`/`f32.add`/… at selection (the op's width
+        // read off the solved type there, like the integer `Core::Arith`). Float ops never trap, so no
+        // overflow guard — just the two operands + the machine op. A poison operand already returned above.
+        _ => Core::Arith {
+            op,
+            lhs: args[0],
+            rhs: args[1],
+        },
     }
 }
 
