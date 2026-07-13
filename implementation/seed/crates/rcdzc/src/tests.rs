@@ -2987,6 +2987,65 @@ mod runtime_ops {
     }
 
     #[test]
+    fn multiply_by_negative_one_is_negation() {
+        // `(* x -1)` / `(* -1 x)` is negation `(- 0 x)` — a strength reduction: the full-width `* -1`
+        // otherwise keeps the expensive `div_s` round-trip guard (the const-multiplier fast path excludes
+        // -1), but negation has the single `x == MIN` overflow check. Value + trap identical to `* -1`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // Full-width `(* x -1)`: NO `div_s` (it became `0 - x`), and the negation's `x == MIN` guard is a
+        // single `i64.eq` (not the mul's div round-trip). Both operand orders.
+        for body in ["(* x -1)", "(* -1 x)"] {
+            let c = lir("(: x Int64)", body);
+            assert!(
+                !c.iter().any(|i| matches!(i, Lir::I64DivS)),
+                "{body} is negation, no div_s: {c:?}"
+            );
+            assert!(
+                c.iter().any(|i| matches!(i, Lir::I64Sub)),
+                "{body} emits a subtraction (0 - x): {c:?}"
+            );
+        }
+        // VALUE + TRAP parity with the numeric model.
+        assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(5)]), -5);
+        assert_eq!(run::<i64>("(: x Int64)", "(* -1 x)", &[Val::S64(-7)]), 7);
+        assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(0)]), 0);
+        assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(i64::MAX)]), -i64::MAX);
+        assert!(traps("(: x Int64)", "(* x -1)", &[Val::S64(i64::MIN)]), "MIN * -1 overflows → trap");
+        // Narrow: -128 * -1 = 128 overflows Int8 → trap; in range computes.
+        assert_eq!(run::<i8>("(: x Int8)", "(* x -1)", &[Val::S8(100)]), -100);
+        assert!(traps("(: x Int8)", "(* x -1)", &[Val::S8(-128)]), "MIN_8 * -1 overflows Int8 → trap");
+        // The kept operand's OWN trap is preserved (no is_trap_free guard): (* (/ 10 y) -1), y=0 → ÷0.
+        assert!(traps("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(0)]));
+        assert_eq!(run::<i64>("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(2)]), -5);
+    }
+
+    #[test]
     fn not_over_a_comparison_folds_to_the_complement() {
         // `(not (CMP a b))` is the single complement comparison — no `i32.eqz`. The Lir shape is checked
         // in select.rs; here we confirm the VALUE matches the branchy negation across every comparison,
