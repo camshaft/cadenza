@@ -49,6 +49,7 @@ pub mod effects;
 // `resolve` fills `resolved`, `infer` fills `types`, `lower` fills `core`. A query reads another
 // module's fact by calling that module's producer (which fills it lazily), never a raw column.
 pub mod accum;
+pub mod binding_params;
 pub mod db;
 pub mod infer;
 pub mod lower;

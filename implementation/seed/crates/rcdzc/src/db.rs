@@ -658,6 +658,12 @@ impl Db {
         // and its self-reference resolve like any hand-written def. A def that does not match is untouched.
         let mut defs = defs;
         crate::accum::introduce(&mut ast, &mut defs);
+        // DESTRUCTURING PARAMETERS: rewrite a `def` whose parameter is a tuple PATTERN (`(def (f (tuple a
+        // b)) …)`) into a fresh whole-value parameter plus a destructuring `let` over the body (`(def (f
+        // p$0) (let (((tuple a b) p$0)) …))`) — so a body reference to `a`/`b` resolves through the `let`
+        // machinery the binding-pattern `let` case already realizes. Runs HERE (after accum, before the
+        // parent index / `def_by_name`) so the rewritten def resolves like a hand-written one.
+        crate::binding_params::lower(&mut ast, &mut defs);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary

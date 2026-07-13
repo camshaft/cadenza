@@ -9569,6 +9569,81 @@ mod stage1 {
     }
 
     #[test]
+    fn a_def_parameter_may_be_a_tuple_pattern() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
+        // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites
+        // `(def (f (tuple a b)) BODY)` → `(def (f p$0) (let (((tuple a b) p$0)) BODY))` at load, so it
+        // reuses the (proven) destructuring-`let` path. A body reference to `a`/`b` resolves through the
+        // synthesized `let`; the fresh `p$0` binds the whole argument.
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            run_returns::<i64>(&bytes, "main")
+        };
+        // A single tuple param, a nested one, multiple tuple params, and a mixed name+tuple signature.
+        assert_eq!(
+            run(
+                "(module m (def (fst (tuple a b)) a) (def (main) (fst (tuple 7 8))) (export main))"
+            ),
+            7
+        );
+        assert_eq!(
+            run("(module m (def (f (tuple a (tuple b c))) (+ a (+ b c))) \
+                   (def (main) (f (tuple 1 (tuple 2 3)))) (export main))"),
+            6
+        );
+        assert_eq!(
+            run(
+                "(module m (def (f (tuple a b) (tuple c d)) (+ (+ a b) (+ c d))) \
+                   (def (main) (f (tuple 1 2) (tuple 3 4))) (export main))"
+            ),
+            10
+        );
+        assert_eq!(
+            run("(module m (def (f x (tuple a b)) (+ x (+ a b))) \
+                   (def (main) (f 10 (tuple 2 4))) (export main))"),
+            16
+        );
+    }
+
+    #[test]
+    fn an_ill_formed_def_parameter_pattern_is_rejected() {
+        // A parameter position is a binding position — no alternative arm — so its pattern must be
+        // irrefutable and linear (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
+        // The rewrite carries the pattern to the same `let`-validation the binder case uses, so a refutable
+        // / non-linear parameter faults with the binding-position code rather than miscompiling.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (def (main) 0) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Refutable multi-variant constructor parameter → CDZ0210.
+        assert_eq!(code("(def (f (Some x)) x)").as_deref(), Some("CDZ0210"));
+        // Non-linear tuple parameter → CDZ0102.
+        assert_eq!(code("(def (f (tuple x x)) x)").as_deref(), Some("CDZ0102"));
+        // NO OVER-REJECTION: a well-formed tuple parameter compiles (used by `main`).
+        assert_eq!(
+            code("(def (f (tuple a b)) (+ a b)) (def (g) (f (tuple 1 2)))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
