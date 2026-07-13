@@ -6694,6 +6694,31 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
     {
         return Some((v, Some(v)));
     }
+    // A VARIABLE reference (a parameter or a kept `let`-binding) MAY carry a flow-sensitive REFINEMENT: a
+    // range known to hold in the branch currently being emitted (`n : Int64` refined to `[2, MAX]` inside
+    // the else-branch of `(< n 2)`). When present, INTERSECT it with the declared-type bounds — the
+    // tightest sound range — so a guard-elision check sees the narrowed range and drops a dead overflow
+    // guard (`(- n 1)` under `n ≥ 2` cannot underflow). Refinements are EMIT-ONLY (the const-fold callers
+    // run with the stack empty, so this is a no-op there) and `value_range` is never memoized, so a
+    // transient refinement cannot poison any cached result. When no refinement applies, falls through to
+    // the ordinary arith/type range below.
+    if let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, id)
+        && let Some((rlo, rhi)) = db.refined_range(binder)
+    {
+        // Intersect with the declared-type bounds (a refinement only NARROWS a real value).
+        let type_range = match crate::infer::type_of(db, id) {
+            crate::ty::Ty::Int(it) => resolved_int_bounds(it).and_then(|(lo, hi)| lo.map(|lo| (lo, hi))),
+            _ => None,
+        };
+        let (tlo, thi) = type_range.unwrap_or((i64::MIN, Some(i64::MAX)));
+        let lo = rlo.max(tlo);
+        let hi = match (rhi, thi) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, b) => b,
+        };
+        return Some((lo, hi));
+    }
     // An ARITHMETIC / BITWISE / SHIFT node's range PROPAGATES from its operands' ranges — this is the
     // dataflow layer that lets a bounded sub-expression bound its enclosing op (`(+ (& x 15) (& y 15))`
     // → [0,30], and a further `(+ … (& z 15))` → [0,45]). All interval math is in `i128` so endpoints

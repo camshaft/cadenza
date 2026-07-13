@@ -4193,6 +4193,79 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
+        // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
+        // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound
+        // NARROWING (the branch guarantees it), so only a provably-dead guard is elided; a `±c` that could
+        // still leave the type keeps its guard. Pins the elision at the Lir level (no `Unreachable` in the
+        // subtraction) AND the value/trap parity (correct results; a live guard still traps).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(> n 0)` → then-branch `n ≥ 1` → `(- n 1)` in [0, MAX-1] cannot underflow: NO guard.
+        let elided = select(
+            "(module m (def (f (: n Int64)) (if (> n 0) (- n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !elided.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the underflow guard on (- n 1) under n>0 is dead and must be elided, got: {elided:?}"
+        );
+        // CONTRAST: `(+ n 1)` under `n ≥ 1` CAN overflow (n = MAX), so its guard is KEPT.
+        let kept = select(
+            "(module m (def (f (: n Int64)) (if (> n 0) (+ n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the overflow guard on (+ n 1) under n>0 is LIVE (n=MAX overflows) and must be kept, got: {kept:?}"
+        );
+        // VALUE + TRAP parity. The elided-guard function computes correctly and never falsely traps:
+        assert_eq!(run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(5)]), 4);
+        assert_eq!(run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(0)]), 0);
+        // `n = MIN` takes the else-branch (no subtraction) — no false underflow trap.
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(i64::MIN)]),
+            0
+        );
+        // The kept-guard function still TRAPS at the real overflow (n = MAX, n+1 leaves Int64).
+        assert!(traps("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(i64::MAX)]));
+        assert_eq!(run::<i64>("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(5)]), 6);
+        // `<` refines the ELSE branch: `(if (< n 1) 0 (- n 1))` — else knows `n ≥ 1`, guard dropped.
+        let else_refine = select(
+            "(module m (def (f (: n Int64)) (if (< n 1) 0 (- n 1))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !else_refine.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the else-branch of (< n 1) knows n>=1, so (- n 1) sheds its guard, got: {else_refine:?}"
+        );
+        assert_eq!(run::<i64>("(: n Int64)", "(if (< n 1) 0 (- n 1))", &[Val::S64(3)]), 2);
+    }
+
+    #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
         // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32

@@ -1861,9 +1861,22 @@ fn emit_tail(
                     emit_tail(db, b, slots, branch_base, high, st, layout, out, inner_tl)
                 }
             };
-            emit_tail_branch(db, then_, high, scratch_ty, out)?;
+            // FLOW-SENSITIVE RANGE REFINEMENT (see the non-tail `Core::If` arm): push the branch's
+            // condition-derived variable bound while emitting each branch, so a guard-elision check inside
+            // sees the narrowed range (`(- n 1)` under `(> n 0)` sheds its underflow guard). Pop even on an
+            // early `?` return. Fires here too because an exported/tail-position `if` reaches THIS arm.
+            let base_frame = db.current_refinements();
+            let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
+            db.push_range_refinements(then_frame);
+            let then_res = emit_tail_branch(db, then_, high, scratch_ty, out);
+            db.pop_range_refinements();
+            then_res?;
             out.push(Lir::Else);
-            emit_tail_branch(db, else_, high, scratch_ty, out)?;
+            let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
+            db.push_range_refinements(else_frame);
+            let else_res = emit_tail_branch(db, else_, high, scratch_ty, out);
+            db.pop_range_refinements();
+            else_res?;
             out.push(Lir::End);
             Ok(())
         }
@@ -3526,11 +3539,21 @@ fn emit(
                 },
             };
             out.push(Lir::If(block_ty));
+            // FLOW-SENSITIVE RANGE REFINEMENT: while emitting a branch, push a refinement frame recording
+            // any one-sided bound this branch's condition establishes on a variable (`(< n 2)` → `n ≤ 1`
+            // in `then`, `n ≥ 2` in `else`). A guard-elision check inside the branch (`value_range` →
+            // `arith_provably_in_range`) then sees the narrowed range and drops a dead overflow guard
+            // (`(- n 1)` under `n ≥ 2` cannot underflow). Frame merges the parent's (nested `if`s
+            // accumulate). Pushed/popped around EACH branch so the refinement never leaks past it — and
+            // popped even on an early `?` return (capture the result, pop, then `?`).
+            let base_frame = db.current_refinements();
             // Both branches must produce the `if`'s RESULT machine slot; a bare-literal branch (default
             // Int64) opposite a NARROW branch would otherwise push a mismatched i64 into a narrow-i32
             // block. Ground a bare-`ConstInt` branch to the result's integer width via `emit_operand`,
             // exactly as an operator operand (`@1a4528f`) and a match arm (`@10f7bdb`) are grounded.
-            emit_branch(
+            let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
+            db.push_range_refinements(then_frame);
+            let then_res = emit_branch(
                 db,
                 then_,
                 &result,
@@ -3540,9 +3563,13 @@ fn emit(
                 scratch_ty,
                 layout,
                 out,
-            )?;
+            );
+            db.pop_range_refinements();
+            then_res?;
             out.push(Lir::Else);
-            emit_branch(
+            let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
+            db.push_range_refinements(else_frame);
+            let else_res = emit_branch(
                 db,
                 else_,
                 &result,
@@ -3552,7 +3579,9 @@ fn emit(
                 scratch_ty,
                 layout,
                 out,
-            )?;
+            );
+            db.pop_range_refinements();
+            else_res?;
             out.push(Lir::End);
             Ok(())
         }
@@ -5731,6 +5760,109 @@ fn emit_branch(
         return emit_operand(db, id, *rit, slots, base, high, scratch_ty, layout, out);
     }
     emit(db, id, slots, base, high, scratch_ty, layout, out)
+}
+
+/// The flow-sensitive range REFINEMENT a branch of `if <cond> …` establishes for a variable — the frame
+/// [`crate::db::Db::push_range_refinements`] pushes while that branch is emitted. When `cond` is a SIGNED
+/// comparison of a variable against a compile-time constant (`(< n 2)`, `(>= n 1)`, either operand order),
+/// the branch KNOWS a one-sided bound on that variable: in the `then` branch the comparison holds, in the
+/// `else` its negation. Merges that bound INTO the parent frame (`base`) keyed by the variable's binder,
+/// so nested `if`s accumulate (`if (> n 0) … if (< n 10) …` bounds `n` to `[1,9]` in the inner body). A
+/// condition that is not a var-vs-const signed comparison contributes NOTHING (returns `base` unchanged) —
+/// conservative, so no guard is ever wrongly elided. UNSIGNED comparisons are skipped (the wrap-around
+/// order needs its own reasoning); `Eq`/`Ne` are skipped (they pin a point/hole, not an interval that
+/// helps a `±c` guard). The refinement is a SOUND narrowing — the branch genuinely guarantees it — so a
+/// guard the narrowed range proves dead is safe to drop.
+fn refined_frame_for_branch(
+    db: &mut Db,
+    cond: StructId,
+    then_branch: bool,
+    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
+) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
+    let Core::Compare { op, lhs, rhs } = core_of(db, cond) else {
+        return base;
+    };
+    // Identify `(<var> <op> <const>)` or `(<const> <op> <var>)`, normalizing to `var <op'> const`.
+    let binder_of = |db: &mut Db, id: StructId| -> Option<StructId> {
+        match core_of(db, id) {
+            Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+            _ => None,
+        }
+    };
+    let const_of = |db: &mut Db, id: StructId| -> Option<i64> {
+        match core_of(db, id) {
+            Core::ConstInt(v) => v.to_i64(),
+            _ => None,
+        }
+    };
+    // `(var, op-with-var-on-left, const)`. `(C op var)` flips to `var op.flip C`.
+    let (var, cmp, c) = if let (Some(v), Some(k)) = (binder_of(db, lhs), const_of(db, rhs)) {
+        (v, op, k)
+    } else if let (Some(k), Some(v)) = (const_of(db, lhs), binder_of(db, rhs)) {
+        // flip: `C < var`  ≡ `var > C`; `C <= var` ≡ `var >= C`; and the mirror for `>`/`>=`.
+        let flipped = match op {
+            Prim::Lt => Prim::Gt,
+            Prim::Gt => Prim::Lt,
+            Prim::Le => Prim::Ge,
+            Prim::Ge => Prim::Le,
+            other => other,
+        };
+        (v, flipped, k)
+    } else {
+        return base;
+    };
+    // SIGNED integer variable only — an unsigned comparison's order wraps differently, and only the
+    // signed `[lo, hi]` interval feeds the guard reasoning soundly here.
+    let signed = matches!(type_of(db, var), Ty::Int(it) if it.ground_signed());
+    if !signed {
+        return base;
+    }
+    // The bound the taken branch establishes. In the `then` branch the comparison `var cmp c` holds; in
+    // the `else`, its negation. Each is a ONE-SIDED bound (`lo` or `hi`); the other side stays open.
+    // `< c` → `hi = c-1`; `<= c` → `hi = c`; `> c` → `lo = c+1`; `>= c` → `lo = c`. The else negates:
+    // `!(< c)` = `>= c`, `!(<= c)` = `> c`, `!(> c)` = `<= c`, `!(>= c)` = `< c`. All in `i128` to avoid
+    // overflow at the extremes, then clamped back (an out-of-i64 bound = no refinement on that side).
+    let effective = if then_branch {
+        cmp
+    } else {
+        match cmp {
+            Prim::Lt => Prim::Ge,
+            Prim::Le => Prim::Gt,
+            Prim::Gt => Prim::Le,
+            Prim::Ge => Prim::Lt,
+            other => other,
+        }
+    };
+    let c = c as i128;
+    let clamp_lo = |lo: i128| -> Option<i64> {
+        if lo > i64::MAX as i128 || lo < i64::MIN as i128 {
+            None
+        } else {
+            Some(lo as i64)
+        }
+    };
+    let clamp_hi = clamp_lo;
+    let (new_lo, new_hi): (Option<i64>, Option<i64>) = match effective {
+        Prim::Lt => (None, clamp_hi(c - 1)),
+        Prim::Le => (None, clamp_hi(c)),
+        Prim::Gt => (clamp_lo(c + 1), None),
+        Prim::Ge => (clamp_lo(c), None),
+        _ => return base, // Eq/Ne/compare — no interval bound
+    };
+    let mut frame = base;
+    // Merge with any existing refinement for this var (a tighter parent bound wins on each side).
+    let (mut lo, mut hi) = frame.get(&var).copied().unwrap_or((i64::MIN, Some(i64::MAX)));
+    if let Some(nl) = new_lo {
+        lo = lo.max(nl);
+    }
+    if let Some(nh) = new_hi {
+        hi = Some(match hi {
+            Some(h) => h.min(nh),
+            None => nh,
+        });
+    }
+    frame.insert(var, (lo, hi));
+    frame
 }
 
 /// Whether an `if`'s BRANCH is cheap enough to compute UNCONDITIONALLY for a branchless `select`: a
