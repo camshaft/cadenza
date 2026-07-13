@@ -177,6 +177,7 @@ pass	a function chosen by a runtime condition is applied (false branch)
 pass	a function chosen by a runtime condition is applied (true branch)
 pass	a function declaration in a do block calls an earlier sibling declaration
 pass	a function declaration in a do block is callable by the following forms
+pass	a function deriving a velocity from a distance and a time
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
 pass	a function open over a record's extra fields accepts any record with the used field
@@ -207,6 +208,7 @@ pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler folds a counter across the operations it discharges
 pass	a handler resumes its continuation at most once by default
+pass	a handler that does not discharge every operation of its effect is rejected
 pass	a header of packed nibbles and a length-prefixed body round-trips
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
@@ -602,6 +604,7 @@ pass	a unary constructor applied to a runtime value is returned as a program res
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
+pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a value declaration in a do block is in scope for the following forms
@@ -618,6 +621,9 @@ pass	a wrong-arity tuple pattern nested under a constructor pattern is a type er
 pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
+pass	adding quantities of incompatible dimension is a compile-time error
+pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+pass	adding two quantities of the same dimension keeps that dimension
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
@@ -710,6 +716,7 @@ pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
+pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
@@ -743,6 +750,7 @@ pass	comparing a lesser value to a greater yields Less
 pass	comparing a map to a record is a type error
 pass	comparing an empty map to an empty record is a type error
 pass	comparing equal values yields Equal
+pass	comparing quantities of incompatible dimension is a compile-time error
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
@@ -782,14 +790,17 @@ pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
+pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
+pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
 pass	encoding a decoded string round-trips to the same bytes
+pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
 pass	every not-a-number value is equal to every not-a-number value
 pass	expect makes a checked-arithmetic result trap on overflow
@@ -877,6 +888,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiplying quantities multiplies their dimensions
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime narrow integer just above its min is exact
 pass	negation inverts a boolean
@@ -927,6 +939,7 @@ pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	scalar length counts Unicode scalar values, not bytes
 pass	scalar length of a supplementary-plane character is one scalar value
+pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
 pass	slicing a runtime byte sequence with a negative start yields None
@@ -951,6 +964,7 @@ pass	string to bytes produces the exact UTF-8 byte values, not just the right co
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	subset record comparison is explicit projection, not an overloaded equality
+pass	subtracting quantities of incompatible dimension is a compile-time error
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	subtraction of an integer and a float does not silently promote
@@ -1001,6 +1015,7 @@ pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
+pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 pass	the unit value
 pass	the value-yielding insert reports the value it replaced
 pass	the value-yielding remove reports the value it dropped
@@ -1048,6 +1063,7 @@ pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
+pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
 pass	updating a list index replaces that element, leaving others
@@ -1078,7 +1094,6 @@ todo	a delegated capability is not itself an export field
 todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
-todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list mixing integer and float elements is a type error
@@ -1142,16 +1157,12 @@ todo	a symbol's identity is its content, not how the content was derived
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 todo	a utf8-decoding bin match with no catch-all is non-exhaustive
 todo	a value definition may carry a leading doc, like a function definition
 todo	a whole rational carries a denominator of one
 todo	a wide fixed-size integer width is reserved, not yet a valid type
-todo	adding quantities of incompatible dimension is a compile-time error
-todo	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
-todo	adding two quantities of the same dimension keeps that dimension
 todo	adding two units of one dimension converts to the reference unit exactly
 todo	an AST from quasiquoting a runtime value equals the same AST built by quote
 todo	an IEC binary prefix scales a unit by a power of two
@@ -1172,8 +1183,6 @@ todo	an unquote nested inside a plain quote is a syntax error, not an active unq
 todo	an unrecognized pragma key is rejected rather than ignored
 todo	an unusual in-range width is a first-class type
 todo	an unusual-width value that overflows its computed range traps
-todo	annotating a quantity at a dimension the expression does not derive is an error
-todo	comparing quantities of incompatible dimension is a compile-time error
 todo	comparing same-shape nominal types is a type error
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating tuples preserves each element's type
@@ -1185,14 +1194,11 @@ todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	decoding bytes that are not a canonical AST yields the error case, not a trap
 todo	decoding canonical bytes followed by a trailing byte yields the error case
-todo	dimensional equality is decided by canonical exponent map, not written form
-todo	dividing quantities divides their dimensions
 todo	dropping an absent field from a record is rejected
 todo	dropping fields from a record leaves the remaining fields
 todo	each definition in a module registers a reachable export field
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
-todo	equality across incompatible dimensions is a compile-time error
 todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
 todo	exact rational arithmetic is exact and normalized
@@ -1210,7 +1216,6 @@ todo	membership of an absent element is false, not a trap
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
-todo	multiplying quantities multiplies their dimensions
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	ordering a string against an integer is a type error regardless of operand order
@@ -1232,7 +1237,6 @@ todo	quote-vs-constructor AST equality holds regardless of operand order
 todo	reading the text a printer produced round-trips to an equal value
 todo	record reshaping is subset comparison as explicit projection
 todo	removing an element yields a set without it
-todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
@@ -1240,7 +1244,6 @@ todo	splicing a non-list value into a quasiquote is a type error
 todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
-todo	subtracting quantities of incompatible dimension is a compile-time error
 todo	symbol identity follows String normalization
 todo	symbols interned from different strings are unequal
 todo	the AST is a sum type deconstructible by pattern matching
@@ -1255,12 +1258,10 @@ todo	the empty symbol equals itself
 todo	the intersection contains the elements in both sets
 todo	the number of elements counts distinct elements
 todo	the reader literal reads to Symbol.of
-todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 todo	the union contains the elements of either set
 todo	two rationals denoting the same number are equal regardless of how they were written
 todo	two sets of different sizes are unequal, not a type error
 todo	two sets with different elements are unequal, not a type error
-todo	under-applying a unary constructor is a type error, not a fabricated unit payload
 todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote outside quasiquote is a syntax error
 todo	unquote with more than one operand inside a quasiquote is malformed

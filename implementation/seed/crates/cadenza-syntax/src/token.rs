@@ -154,6 +154,9 @@ pub enum Keyword {
     Module,
     Import,
     Export,
+    Effect,
+    Handle,
+    Host,
 }
 
 /// The keyword an identifier's text denotes, if any.
@@ -172,6 +175,9 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "module" => Keyword::Module,
         "import" => Keyword::Import,
         "export" => Keyword::Export,
+        "effect" => Keyword::Effect,
+        "handle" => Keyword::Handle,
+        "host" => Keyword::Host,
         _ => return None,
     })
 }

@@ -4593,6 +4593,75 @@ mod runtime_ops {
             7
         ); // 15 & 7 = 7
     }
+
+    #[test]
+    fn a_logical_shift_dropping_all_significant_bits_folds_to_zero() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(x & 15) >>ᵤ 4`: the masked value fits 4 bits, `>>ᵤ 4` shifts them all out → constant 0, no
+        // `shr_u`, no `and` (the whole expression is dead).
+        let zero = lir("(: x UInt8)", "(>> (& x 15) 4)");
+        assert!(
+            zero.contains(&Lir::ConstI32(0))
+                && !zero
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32ShrU | Lir::I64ShrU)),
+            "the fully-shifted-out value folds to 0, no shift; got {zero:?}"
+        );
+        // `(x & 15) >>ᵤ 3` keeps a bit (value fits 1 bit, not 0) — NOT folded.
+        let kept = lir("(: x UInt8)", "(>> (& x 15) 3)");
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::I32ShrU)),
+            "a shift leaving a bit keeps the shr_u; got {kept:?}"
+        );
+        // A SIGNED value is NOT provably nonnegative (its slot high bits may be sign extension), so
+        // `unsigned_value_bits` declines it and the fold does not fire — the `shr_s` stays. (Use an
+        // in-range count on an Int16 so this is a genuine runtime shift, not a count-guard trap.)
+        let signed = lir("(: x Int16)", "(>> (& x 15) 7)");
+        assert!(
+            signed.iter().any(|i| matches!(i, Lir::I32ShrS)),
+            "a signed >> is not folded to 0; got {signed:?}"
+        );
+
+        // VALUE PARITY.
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(>> (& x 15) 4)", &[Val::U8(200)]),
+            0
+        ); // (200&15)=8, 8>>4=0
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(>> (& x 15) 4)", &[Val::U8(255)]),
+            0
+        ); // (255&15)=15, 15>>4=0
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(>> (& x 15) 3)", &[Val::U8(255)]),
+            1
+        ); // 15>>3 = 1
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
@@ -5536,6 +5605,35 @@ mod match_engine {
         // A well-formed argument to a dead parameter still compiles (no over-rejection).
         assert_eq!(
             reject_code("(module m (def (f a) 0) (def (main) (f 99)) (export main))"),
+            None
+        );
+    }
+
+    #[test]
+    fn under_applying_a_unary_variant_constructor_is_a_type_error() {
+        // 09-functions "under-applying a unary constructor is a type error, not a fabricated unit
+        // payload": `(Some)` applies the unary constructor to ZERO arguments — under-application, the
+        // low-arity mirror of `(Some 1 2)`. A payload-carrying variant produces its value only when
+        // applied to its argument (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function),
+        // so `(Some)` is CDZ0201 — NOT a decline (a fabricated `(Some unit)` would slip a value the
+        // program never wrote past the payload check).
+        assert_eq!(
+            reject_code("(module m (def (main) (Some)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // A NULLARY variant applied to nothing `(None)` is NOT under-applied — it has no payload, so it
+        // CONSTRUCTS its value (used here as a match scrutinee, which types + runs).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (None) ((Some x) x) ((None _) 0))) (export main))"
+            ),
+            None
+        );
+        // A correctly-applied unary ctor `(Some 5)` compiles (the control).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (Some 5) ((Some x) x) ((None _) 0))) (export main))"
+            ),
             None
         );
     }
@@ -8821,6 +8919,40 @@ mod match_engine {
                 "main"
             ),
             5.0
+        );
+    }
+
+    #[test]
+    fn combining_quantities_of_incompatible_dimension_is_cdz0501() {
+        // L1-2: adding a length to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md §A
+        // Dimensional Mismatch Is An Error), the code that opens the CDZ05xx verification-layer band. It
+        // is a compile-time rejection (units erase before the program runs), never a runtime trap.
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"metre\")) \
+                   ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "a length + a time must reject CDZ0501 (dimensional mismatch)"
+        );
+    }
+
+    #[test]
+    fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
+        // L1-2: `(/ (Qty 6.0 metre) (Qty 2.0 second))` derives metre/second (the classic velocity) with
+        // value 3.0 — the dimensions divide by the free-abelian-group quotient, the magnitudes by the
+        // (float) division. `Qty.value` recovers the erased magnitude; this pins that it COMPILES + RUNS.
+        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"metre\")) \
+                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a velocity quotient compiles and runs"),
+                "main"
+            ),
+            3.0
         );
     }
 
@@ -12206,6 +12338,48 @@ mod stage1 {
             err.code.as_deref(),
             Some("CDZ0403"),
             "expected CDZ0403 (handler arm names an undeclared op), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn an_undeclared_handler_op_close_to_a_declared_one_suggests_it() {
+        // The effect-op "did you mean?" (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
+        // To A Fix): a handler arm names `emitt`, a typo of the effect's declared `emit` → CDZ0403 names
+        // the near op AND carries a replace fix on the op KEY.
+        let src = "(do (effect Log (op emit (-> Int64 Unit))) \
+                   (def (main) (handle unit (((. Log emitt) (v) s (resume unit s))) ((. Log emit) 5))) \
+                   (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("undeclared op must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0403"), "got: {}", err.message);
+        assert!(
+            err.message.contains("did you mean `emit`?"),
+            "names the near op: {}",
+            err.message
+        );
+        let fix = err.fix.expect("a fix is carried");
+        assert_eq!(fix.replacement, "emit");
+        assert!(!fix.verified, "a nearest-name guess is heuristic");
+    }
+
+    #[test]
+    fn a_non_exhaustive_handler_is_cdz0405() {
+        // A `handle E` names ONE effect and its arms ARE that effect's operations; an effect's operations
+        // are a closed set, so a handler must discharge the WHOLE set (CDZ0405 —
+        // `capabilities-and-effects.md` §A Handler Discharges Its Effect, the effect analogue of match
+        // exhaustiveness). `Diag` declares `emit` + `collect`; a `handle Diag` binding only `emit` leaves
+        // `collect` undischarged — rejected. Written in the CANONICAL shape so the load-time desugar
+        // (effect + seed promoted, bare arm op) is exercised on the way to the check.
+        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+                   (def (main) (handle Diag (list) ((emit (code) s (resume unit (List.push s code)))) \
+                                 (do (Diag.emit 1) 0))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a handler missing an operation must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0405"),
+            "expected CDZ0405 (non-exhaustive handler), got: {}",
             err.message
         );
     }

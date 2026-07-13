@@ -316,6 +316,11 @@ impl<'a> Printer<'a> {
                 "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
+                "effect" if self.is_effect_shape(args) => return self.print_effect(args),
+                "handle" if self.is_handle_shape(args) => {
+                    return self.print_handle(args, parent_prec);
+                }
+                "host" if self.is_host_shape(args) => return self.print_host(args, parent_prec),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "export" if self.is_export_shape(args) => return self.print_export(args),
                 "import" if self.is_import_shape(args) => return self.print_import(args),
@@ -1024,6 +1029,193 @@ impl<'a> Printer<'a> {
             }
             // a nullary variant (bare name atom), or a defensive fallback for an odd shape
             _ => self.expr(id, 0),
+        }
+    }
+
+    /// `effect Name { op : Type … }` — an effect declaration. `args` is `name (op <op> <ty>)…`; each
+    /// operation renders as `op : ty` on its own line (mirroring a `module`'s members). Inline when it
+    /// fits (`effect E { op : A -> B }`); else one op per line, block-indented.
+    fn print_effect(&mut self, args: &[StructId]) {
+        let ops = &args[1..];
+        self.doc.cbox(INDENT);
+        self.doc.word("effect ");
+        self.expr(args[0], 0); // effect name
+        self.doc.word(" {");
+        for &op in ops {
+            self.doc.hardbreak();
+            // op = (op <name> <ty>)
+            if let Some(o) = self.a.as_form(op, "op") {
+                self.expr(o[0], 0); // operation name
+                self.doc.word(" : ");
+                self.print_op_type(o[1]);
+            }
+        }
+        self.doc.break_with(1, -INDENT);
+        self.doc.word("}");
+        self.doc.end();
+    }
+
+    /// An effect operation's type. An operation type is always a function arrow. The flat two-element
+    /// `(-> P R)` prints via the ordinary arrow surface `P -> R`. The NULLARY-elided one-element
+    /// `(-> R)` (typed as `Unit -> R`) has no infix form, so it prints with a LEADING arrow `-> R` —
+    /// the surface `effect_op` reads back to the same one-element node.
+    fn print_op_type(&mut self, ty: StructId) {
+        if let Some(a) = self.a.as_form(ty, "->")
+            && a.len() == 1
+        {
+            self.doc.word("-> ");
+            self.expr(a[0], PREC_ARROW);
+            return;
+        }
+        self.expr(ty, 0);
+    }
+
+    /// `handle E(seed) with | op(p…, state) => body … in body` — the effect-handler surface. `args` is
+    /// `effect seed (arm…) body`. The effect name and seed promote into the head (`E(seed)`, or bare
+    /// `E` when the seed is the stateless `unit`); each arm `(op (p…) state body)` renders
+    /// `op(p…, state) => body`, the state binder LAST in the binder list. Mirrors `match`'s `|`-led
+    /// arms and `let`'s `… in body` tail. Parenthesizes as a block form when `parent_prec > 0`.
+    fn print_handle(&mut self, args: &[StructId], parent_prec: u8) {
+        let paren = parent_prec > 0;
+        let (effect, seed, arms_occ, body) = (args[0], args[1], args[2], args[3]);
+        self.doc.cbox(0);
+        if paren {
+            self.doc.word("(");
+        }
+        self.doc.cbox(INDENT);
+        self.doc.word("handle ");
+        self.expr(effect, 0); // effect name
+        // A `unit` seed is the stateless degenerate case — elide the `(seed)`. Any other seed prints
+        // as `E(seed)`.
+        if self.head_name(seed).as_deref() != Some("unit") {
+            self.doc.word("(");
+            self.expr(seed, 0);
+            self.doc.word(")");
+        }
+        self.doc.word(" with");
+        // Arms are `|`-led, one per line, indented under the `handle` — the same shape as a `match`'s
+        // arms. The arm box closes before `in` so `in` returns to the `handle` column.
+        if let Struct::List(arms) = self.a.get(arms_occ) {
+            let arms = arms.clone();
+            for &arm in &arms {
+                self.doc.hardbreak();
+                self.doc.word("| ");
+                self.print_handle_arm(arm);
+            }
+        }
+        self.doc.end();
+        // `in` on its own line at the `handle` column, then the body on the next line at that column —
+        // the `let … in` idiom, so a `handle` at the tail of a def body reads as a flat sequence.
+        self.doc.hardbreak();
+        self.doc.word("in");
+        self.doc.hardbreak();
+        self.expr(body, 0);
+        if paren {
+            self.doc.word(")");
+        }
+        self.doc.end();
+    }
+
+    /// One handler arm `(op (p…) state body)` -> `op(p…, state) => body`. The state binder is appended
+    /// as the LAST entry of the parenthesized binder list (symmetric with `resume(value, state)`).
+    fn print_handle_arm(&mut self, arm: StructId) {
+        let Struct::List(parts) = self.a.get(arm) else {
+            return self.expr(arm, 0);
+        };
+        let parts = parts.clone();
+        // parts = op, (params…), state, body
+        let (op, params_occ, state, body) = (parts[0], parts[1], parts[2], parts[3]);
+        self.expr(op, 0); // bare operation name
+        self.doc.word("(");
+        let params: Vec<StructId> = match self.a.get(params_occ) {
+            Struct::List(ps) => ps.clone(),
+            _ => vec![params_occ],
+        };
+        for &p in &params {
+            self.expr(p, 0);
+            self.doc.word(", ");
+        }
+        self.expr(state, 0); // the state binder, last
+        self.doc.word(") => ");
+        self.expr(body, 0);
+    }
+
+    /// `host E, … in body` — an entrypoint delegation. `args` is `(E …) body`; the effects render as a
+    /// comma-separated name list, the body after `in`. Mirrors `handle`'s `… in body` tail.
+    fn print_host(&mut self, args: &[StructId], parent_prec: u8) {
+        let paren = parent_prec > 0;
+        let (effects_occ, body) = (args[0], args[1]);
+        self.doc.cbox(0);
+        if paren {
+            self.doc.word("(");
+        }
+        self.doc.word("host ");
+        if let Struct::List(effects) = self.a.get(effects_occ) {
+            let effects = effects.clone();
+            for (i, &e) in effects.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                self.expr(e, 0);
+            }
+        }
+        // `host E in body` stays on one line when it fits, else `in` and the body break to fresh lines
+        // at the `host` column — the `let … in` idiom.
+        self.doc.space();
+        self.doc.word("in");
+        self.doc.space();
+        self.expr(body, 0);
+        if paren {
+            self.doc.word(")");
+        }
+        self.doc.end();
+    }
+
+    /// An `(effect Name (op <op> <ty>)…)` the `effect Name { … }` surface handles: a name head, then
+    /// zero or more `(op <name> <ty>)` operation forms (each a 3-element list headed `op` with a name
+    /// operation). Anything else falls back to the generic call form so it still round-trips.
+    fn is_effect_shape(&self, args: &[StructId]) -> bool {
+        if args.is_empty() || self.head_name(args[0]).is_none() {
+            return false;
+        }
+        args[1..].iter().all(|&op| match self.a.as_form(op, "op") {
+            Some(o) => o.len() == 2 && self.head_name(o[0]).is_some(),
+            None => false,
+        })
+    }
+
+    /// A `(handle E seed (arm…) body)` the `handle E(seed) with … in body` surface handles: an effect
+    /// NAME head, a seed, an arms LIST (each arm a 4-element `(op (params…) state body)` whose op and
+    /// params are well-shaped), and a body. Anything else falls back to the generic call form.
+    fn is_handle_shape(&self, args: &[StructId]) -> bool {
+        if args.len() != 4 || self.head_name(args[0]).is_none() {
+            return false;
+        }
+        let Struct::List(arms) = self.a.get(args[2]) else {
+            return false;
+        };
+        !arms.is_empty()
+            && arms.iter().all(|&arm| match self.a.get(arm) {
+                Struct::List(parts) => {
+                    parts.len() == 4
+                        && self.head_name(parts[0]).is_some() // bare operation name
+                        && matches!(self.a.get(parts[1]), Struct::List(_)) // params list
+                }
+                _ => false,
+            })
+    }
+
+    /// A `(host (E…) body)` the `host E, … in body` surface handles: an effects LIST (at least one
+    /// name) and a body. Anything else falls back to the generic call form.
+    fn is_host_shape(&self, args: &[StructId]) -> bool {
+        if args.len() != 2 {
+            return false;
+        }
+        match self.a.get(args[0]) {
+            Struct::List(effects) => {
+                !effects.is_empty() && effects.iter().all(|&e| self.head_name(e).is_some())
+            }
+            _ => false,
         }
     }
 
