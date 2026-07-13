@@ -5637,6 +5637,32 @@ mod match_engine {
     }
 
     #[test]
+    fn if_branches_of_distinct_numeric_type_are_cdz0201_but_cross_kind_stays_cdz0203() {
+        // 02-binding "a conditional with integer and floating-point branches is a type error": two DISTINCT
+        // NUMERIC branch types (Int64 vs Float64) are the no-silent-promotion rule (numeric-model.md
+        // #Numeric Types Do Not Silently Promote) → a MALFORMED program (CDZ0201). Every OTHER branch
+        // disagreement — a cross-KIND mismatch (Int vs Bool, a compound vs a scalar, tuples of different
+        // arity) — is the structural type mismatch (CDZ0203). The split is by "both branches numeric".
+        assert_eq!(
+            reject_code("(module m (def (main) (if true 1 3.5)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // Cross-kind: Int64 then vs Bool else — a structural mismatch, still CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (main) (if true 1 false)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        // Cross-kind: two tuples of different arity — CDZ0203 (a tuple's arity is part of its type).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (if true (tuple 1 2) (tuple 3 4 5))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
@@ -8341,18 +8367,20 @@ mod match_engine {
 
     #[test]
     fn a_boolean_connective_operand_must_be_bool() {
-        // A non-Bool operand is a type mismatch (CDZ0203), the same class as a non-Bool `if` condition.
+        // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
+        // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
+        // disagreement is (02-binding "a boolean connective with a non-boolean operand is a type error").
         assert_eq!(
             reject_code("(module m (def (main) (and true 1)) (export main))").as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
         assert_eq!(
             reject_code("(module m (def (main) (or 5 false)) (export main))").as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
         assert_eq!(
             reject_code("(module m (def (main) (not 7)) (export main))").as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
     }
 
