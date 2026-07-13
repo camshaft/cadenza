@@ -1131,7 +1131,6 @@
 ; an Int64 payload does. Tagged `(needs chars)`/`(needs symbols)` — the leaf's own capability.
 
 (case "a variant carrying a Char payload constructs, matches, and binds it"
-  (needs  chars)
   (doc    "`(type Tok (Ch Char) (End))` declares a variant `Ch` whose payload is a `Char` — a leaf type
            like `String`/`Bytes`. Constructing `(Tok.Ch #\\a)` and matching binds the char to `c`, and
            `(Char.to-int c)` reads its scalar value 97. Pins that a Char is a valid variant payload: the
@@ -1145,7 +1144,6 @@
   (output (: 97 Int64)))
 
 (case "a variant carrying a Symbol payload constructs, matches, and binds it"
-  (needs  symbols)
   (doc    "The Symbol companion: `(type T (Mk Symbol) (No))` carries a `Symbol` payload. Constructing
            `(T.Mk (Symbol.of \"hi\"))` and matching binds the symbol to `s`, and `(Symbol.to-string s)`
            recovers its content \"hi\". Pins that a Symbol — the other bare-name leaf omitted from the
@@ -1158,7 +1156,6 @@
   (output (: "hi" String)))
 
 (case "a Char-payload sum value escapes across the boundary in its canonical form"
-  (needs  chars)
   (doc    "The escape companion: a `(Ch Char)` variant value returned across the boundary renders in its
            canonical value form `(Ch #\\a)` — the char payload survives the value-escape walk exactly as
            an Int64 payload does. Pins that the Char leaf's payload round-trips not only through the
@@ -1760,7 +1757,6 @@
            three-leaf tree sums to 12. Pins recursive-sum-parameter inference for a GENERIC branching sum
            whose fold anchors the payload type — the annotation is needed only when NO arm anchors it (the
            result is purely the polymorphic payload, e.g. a max/identity fold, which stays annotated).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Tree (Leaf a) (Branch (Tuple Tree Tree)))
             (def (sm t)
@@ -1801,7 +1797,6 @@
            consumer is parametric in the payload — the annotation is required only when the result TYPE
            depends on the payload (the `(sm t)` fold above, where the `Leaf` arm returns `n : a`, which is
            the deferred polymorphic-recursion increment).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a))))
             (def (cnt t)
@@ -2958,7 +2953,6 @@
            is genuinely non-exhaustive (CDZ0210, the rejection cases below). Here `never` is declared but
            unreached, so the program compiles and `main` returns 0. Pins that an empty sum is recognized as
            uninhabited by the exhaustiveness check, not treated as a type with values a case must cover.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Void)
             (def (never (: v Void)) (match v))
@@ -2981,7 +2975,6 @@
            zero-arm `(match c)` covers neither — it is non-exhaustive and rejects CDZ0210. Only the EMPTY
            sum earns the zero-arm exemption; a populated sum's zero-arm match is the ordinary
            non-exhaustiveness error. Pins the boundary the empty-sum exemption draws.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C Red Green)
             (def (f (: c C)) (match c))
