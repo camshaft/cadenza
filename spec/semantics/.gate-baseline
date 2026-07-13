@@ -137,6 +137,7 @@ pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
+pass	a consumer applies the handed-back closure inside a larger expression
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
@@ -420,6 +421,7 @@ pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
+pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a program that delegates no effect is pure and never suspends
 pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
@@ -430,6 +432,7 @@ pass	a quantity's erased value is the identical numeric value the bare literal h
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
+pass	a reader literal carries a qualified name with a dot
 pass	a recognized string escape denotes its one scalar value
 pass	a record annotated with the wrong field type is rejected
 pass	a record field VALUE still reads the parameter it names after the call
@@ -539,6 +542,8 @@ pass	a runtime sum match drives a tail-recursive loop
 pass	a runtime sum whose payload comes from recursion compares equal by a heap walk
 pass	a runtime sum whose payload comes from recursion compares unequal by a heap walk
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
+pass	a runtime symbol compared to an interned constant matches by content
+pass	a runtime symbol that differs from the interned constant does not match
 pass	a runtime three-variant classifier dispatches to the middle arm
 pass	a runtime three-variant classifier dispatches to the negative arm
 pass	a runtime truncation into a signed byte sign-extends
@@ -587,6 +592,7 @@ pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
+pass	a string compared to a symbol is a type error
 pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
@@ -600,6 +606,9 @@ pass	a sum value annotated as a scalar type is rejected
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
+pass	a symbol compared to a string is a type error
+pass	a symbol converts back to its content string
+pass	a symbol's identity is its content, not how the content was derived
 pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
@@ -906,6 +915,7 @@ pass	integer division of a negative dividend truncates toward zero, not toward n
 pass	integer division truncates toward zero
 pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
+pass	interning the same string twice yields equal symbols
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
@@ -1043,14 +1053,19 @@ pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	subtraction of an integer and a float does not silently promote
 pass	sum type constructors are in scope after declaration
+pass	symbol identity follows String normalization
+pass	symbols interned from different strings are unequal
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the difference contains the elements not in the second set
 pass	the empty byte sequence has length zero
+pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set
 pass	the empty string has length zero
+pass	the empty symbol converts to the empty string
+pass	the empty symbol equals itself
 pass	the entrypoint adds one to its runtime argument
 pass	the entrypoint branches on its runtime argument
 pass	the entrypoint compares its runtime argument to a bound
@@ -1084,8 +1099,10 @@ pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
 pass	the prelude binds Constructor values not pre-applied Sums
 pass	the program manifest is the union of its entrypoints' delegations
+pass	the reader literal reads to Symbol.of
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
+pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
 pass	the same function called under two handlers is discharged by each in turn
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
@@ -1213,18 +1230,11 @@ todo	a rational operation does not silently promote an integer operand
 todo	a rational with numerator and denominator both negative normalizes to positive
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
-todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
-todo	a runtime symbol compared to an interned constant matches by content
-todo	a runtime symbol that differs from the interned constant does not match
-todo	a string compared to a symbol is a type error
-todo	a symbol compared to a string is a type error
-todo	a symbol converts back to its content string
 todo	a symbol is constructed from a string
-todo	a symbol's identity is its content, not how the content was derived
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a tautology comparison against a masked value's derived range still traps on the operand
 todo	a tautology comparison against the type minimum still traps on a div-by-zero operand
@@ -1277,7 +1287,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	interning the same string twice yields equal symbols
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
 todo	negating a runtime Int64 overflows at Int64.min
@@ -1304,16 +1313,10 @@ todo	splicing a non-list value into a quasiquote is a type error
 todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
-todo	symbol identity follows String normalization
-todo	symbols interned from different strings are unequal
 todo	the AST is a sum type deconstructible by pattern matching
 todo	the built-in Ast is transformed as an ordinary value
 todo	the built-in list is folded by an element-with-rest pattern
 todo	the default-integer pragma is definition-site scoped, not use-site
-todo	the empty reader literal is the empty symbol
-todo	the empty symbol converts to the empty string
-todo	the empty symbol equals itself
-todo	the reader literal reads to Symbol.of
 todo	two rationals denoting the same number are equal regardless of how they were written
 todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote outside quasiquote is a syntax error

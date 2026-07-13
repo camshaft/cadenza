@@ -1465,6 +1465,195 @@ pub fn assemble_multi_closure_resource(
     out
 }
 
+/// One CONSUMER export's boundary shape for the round-trip envelope: its name + the closure `call`
+/// argument bytes + result byte. A consumer's component functype is `(g: own<t>, args…) -> R` — the SAME
+/// shape as the multi-export `call` method, but exported as a plain func under its own name (the host
+/// threads a produced handle in as `g`). This increment handles a consumer with exactly ONE closure param
+/// (the leading `own<t>`); additional scalar args ride after it (`arg_bytes`).
+pub struct ClosureConsumeAbi {
+    pub name: String,
+    pub arg_bytes: Vec<u8>,
+    pub result_byte: u8,
+}
+
+/// Assemble a ROUND-TRIP closure-resource component (C-HOST-4): N producer `make-<name>` functions PLUS M
+/// CONSUMER functions, published together under `cadenza:closure/exports`. A producer mints a closure
+/// handle (`() / (params…) -> own<t>`); a consumer takes a handle back (`(g: own<t>, args…) -> R`) and
+/// applies it. Structurally the multi-export envelope with the shared `call` generalized to M named
+/// consumers (each a `call`-shaped functype). `main_core` is
+/// [`serialize::roundtrip_resource_core_module`]'s output (exporting each `make-<name>` + each consumer).
+///
+/// Outer index spaces (k = imports.len(), N = makes, M = consumers): lowered ops → core funcs 0..k;
+/// `t-dtor` → k; `resource.new` → k+1, `resource.rep` → k+2; aliased make[i] → k+3+i, consumer[j] →
+/// k+3+N+j. Component funcs: aliased ops 0..k, lifted make[i] → comp func k+i, consumer[j] → k+N+j.
+/// Component types: 0 = import instance-type, 1 = resource; then per make: `own<t>` + make-functype; then
+/// per consumer: `own<t>` + consume-functype.
+pub fn assemble_roundtrip_resource(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    makes: &[ClosureMakeAbi],
+    consumers: &[ClosureConsumeAbi],
+    _spans: Option<()>,
+) -> Vec<u8> {
+    let k = imports.len();
+    let nmk = makes.len();
+    let ncons = consumers.len();
+    let nfns = nmk + ncons;
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: the import instance-type declaring the k used runtime ops (component type 0).
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
+
+    // sec 10: import the runtime interface.
+    out.extend_from_slice(&{
+        let mut item = extern_name(import_name);
+        item.push(0x05);
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    });
+    // sec 6: alias each op → comp funcs 0..k.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    });
+    // sec 8: canon-lower each aliased op → core funcs 0..k.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    });
+    // sec 2/1/2/6: dtor instance, module, instantiate, alias `t-dtor` → core func k.
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| i as u32)
+        .expect("the closure-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    out.extend_from_slice(&core_module_section(dtor_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 0)])),
+    ));
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(1, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: resource type `t` → component type 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(k as u32)),
+    ));
+    // sec 8: canon resource.new (k+1) + resource.rep (k+2).
+    out.extend_from_slice(&{
+        let mut items = resource_new_item(1);
+        items.extend_from_slice(&resource_rep_item(1));
+        section(sec::CANON, &wasm_vec(2, &items))
+    });
+    // sec 2: the `heap` core instance (k ops + resource-new + resource-rep) → core instance 2.
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, i as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (k + 1) as u32));
+        ex.push((RESOURCE_REP, (k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    // sec 1/2: program core module (module 1); instantiate → core instance 3.
+    out.extend_from_slice(&core_module_section(main_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
+    ));
+    // sec 6: alias each make + each consumer off the program instance → core funcs k+3..k+3+nfns.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for mk in makes {
+            items.extend_from_slice(&core_alias_item(3, &mk.name));
+        }
+        for c in consumers {
+            items.extend_from_slice(&core_alias_item(3, &c.name));
+        }
+        section(sec::ALIAS, &wasm_vec(nfns, &items))
+    });
+    // sec 7: per make, `own<t>` + make functype; per consumer, `own<t>` + consume functype (`(g: own<t>,
+    // args…) -> R`, the `call` shape). Resource is comp type 1.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        let mut ti = 2u32; // next defined-type index (type 0 = import inst, 1 = resource)
+        for mk in makes {
+            items.extend_from_slice(&own_item(1));
+            items.extend_from_slice(&params_result_functype(
+                &mk.make_param_bytes,
+                &owned_valtype(ti),
+            ));
+            ti += 2;
+        }
+        for c in consumers {
+            items.extend_from_slice(&own_item(1));
+            items.extend_from_slice(&closure_call_functype(ti, &c.arg_bytes, c.result_byte));
+            ti += 2;
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * nfns, &items))
+    });
+    // sec 8: lift each make + each consumer against its functype → comp funcs k..k+nfns.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for i in 0..nfns {
+            let core_fn = (k + 3 + i) as u32;
+            let functype = (3 + 2 * i) as u32;
+            items.extend_from_slice(&canon_lift_item(core_fn, functype));
+        }
+        section(sec::CANON, &wasm_vec(nfns, &items))
+    });
+    // sec 4/5/11: nested re-export component; instantiate (resource + comp funcs k..k+nfns); export.
+    out.extend_from_slice(&component_section(&resource_inner_component_roundtrip(
+        makes, consumers,
+    )));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_roundtrip_item(1, k as u32, makes, consumers),
+        ),
+    ));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
+    ));
+    out
+}
+
 /// The nested RE-EXPORT component (a self-contained component blob, its own magic + sections). It
 /// IMPORTS an abstract resource (`SubResource` bound) + the two funcs typed against it, then RE-EXPORTS
 /// the resource DIRECTLY (no `SubResource` ascription — that would mint a fresh identity distinct from
@@ -1709,6 +1898,132 @@ fn resource_inner_component_multi_closure(
         ),
     ));
     out
+}
+
+/// The MULTI-EXPORT-plus-CONSUMER (round-trip) inner re-export component: imports the abstract resource +
+/// N `import-func-<make>` (each `(params…) -> own<t>`) + M `import-func-<consumer>` (each `(g: own<t>,
+/// args…) -> R`), then re-exports the resource + all N+M funcs ascribed. A make and a consumer are both
+/// "own<t>-shaped" component funcs, so they interleave uniformly here (makes first, then consumers), each
+/// contributing an `own<0>` + functype pair on import and an `own<R>` + functype pair on export. Type-index
+/// layout mirrors `resource_inner_component_multi_closure` with M extra funcs appended.
+fn resource_inner_component_roundtrip(
+    makes: &[ClosureMakeAbi],
+    consumers: &[ClosureConsumeAbi],
+) -> Vec<u8> {
+    let nfns = makes.len() + consumers.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import the abstract resource → type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_subresource_item("import-type-t")),
+    ));
+    // IMPORT each fn: make[i] `(params…) -> own<0>`, then consumer[j] `(g: own<0>, args…) -> R`. Each pins
+    // `own<0>` (type 1+2f) + its functype (type 2+2f), then imports the func → func f.
+    let mut f = 0usize;
+    for mk in makes {
+        let own_ty = (1 + 2 * f) as u32;
+        let ft_ty = (2 + 2 * f) as u32;
+        out.extend_from_slice(&{
+            let mut items = own_item(0);
+            items.extend_from_slice(&params_result_functype(
+                &mk.make_param_bytes,
+                &owned_valtype(own_ty),
+            ));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_IMPORT,
+            &wasm_vec(1, &import_func_item(&format!("import-func-{}", mk.name), ft_ty)),
+        ));
+        f += 1;
+    }
+    for c in consumers {
+        let own_ty = (1 + 2 * f) as u32;
+        let ft_ty = (2 + 2 * f) as u32;
+        out.extend_from_slice(&{
+            let mut items = own_item(0);
+            items.extend_from_slice(&closure_call_functype(own_ty, &c.arg_bytes, c.result_byte));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_IMPORT,
+            &wasm_vec(1, &import_func_item(&format!("import-func-{}", c.name), ft_ty)),
+        ));
+        f += 1;
+    }
+    // sec 11: RE-EXPORT the resource type 0 DIRECTLY as `t` → exported type R = 2*nfns+1.
+    let r = (2 * nfns + 1) as u32;
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
+    ));
+    // EXPORT each fn ascribed against the exported resource identity, in the same order.
+    let mut f = 0usize;
+    for mk in makes {
+        let own_ty = r + (1 + 2 * f) as u32;
+        let ft_ty = r + (2 + 2 * f) as u32;
+        out.extend_from_slice(&{
+            let mut items = own_item(r);
+            items.extend_from_slice(&params_result_functype(
+                &mk.make_param_bytes,
+                &owned_valtype(own_ty),
+            ));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(1, &export_func_ascribed_item(&mk.name, f as u32, ft_ty)),
+        ));
+        f += 1;
+    }
+    for c in consumers {
+        let own_ty = r + (1 + 2 * f) as u32;
+        let ft_ty = r + (2 + 2 * f) as u32;
+        out.extend_from_slice(&{
+            let mut items = own_item(r);
+            items.extend_from_slice(&closure_call_functype(own_ty, &c.arg_bytes, c.result_byte));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(1, &export_func_ascribed_item(&c.name, f as u32, ft_ty)),
+        ));
+        f += 1;
+    }
+    out
+}
+
+/// The round-trip instantiate item: supply the resource type + each make (`import-func-<make>` → comp func
+/// `first_fn + i`) + each consumer (`import-func-<consumer>` → the following comp funcs). The inner
+/// component imports under these same names, makes first then consumers.
+fn component_instantiate_roundtrip_item(
+    res_ty: u32,
+    first_fn: u32,
+    makes: &[ClosureMakeAbi],
+    consumers: &[ClosureConsumeAbi],
+) -> Vec<u8> {
+    let mut item = vec![0x00]; // instantiate form
+    uleb128(0, &mut item); // inner component index (component 0)
+    let mut arg_items = Vec::new();
+    let push = |name: &str, sort: u8, idx: u32, out: &mut Vec<u8>| {
+        out.extend_from_slice(&uleb_bytes(name.len() as u64));
+        out.extend_from_slice(name.as_bytes());
+        out.push(sort);
+        uleb128(idx as u64, out);
+    };
+    push("import-type-t", 0x03, res_ty, &mut arg_items);
+    let mut f = 0u32;
+    for mk in makes {
+        push(&format!("import-func-{}", mk.name), 0x01, first_fn + f, &mut arg_items);
+        f += 1;
+    }
+    for c in consumers {
+        push(&format!("import-func-{}", c.name), 0x01, first_fn + f, &mut arg_items);
+        f += 1;
+    }
+    item.extend_from_slice(&wasm_vec(1 + makes.len() + consumers.len(), &arg_items));
+    item
 }
 
 /// The nested RE-EXPORT component for the RUNTIME escape (R2) — like [`resource_inner_component`] but

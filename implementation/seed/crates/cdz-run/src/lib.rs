@@ -254,7 +254,14 @@ fn run_export(
             .map(|name| instance.get_func(&mut *store, name).is_none())
             .unwrap_or(true)
     {
-        return run_closure_resource(&mut *store, &instance, opts.export.as_deref(), &opts.args);
+        return run_closure_resource(
+            engine,
+            component,
+            &mut *store,
+            &instance,
+            opts.export.as_deref(),
+            &opts.args,
+        );
     }
 
     // Resolve the export to call: the named one, or the sole function export found by signature.
@@ -565,6 +572,87 @@ fn has_closure_instance(engine: &Engine, component: &Component) -> bool {
         })
 }
 
+/// The FUNCTION names the `cadenza:closure/exports` instance exports — used to distinguish a round-trip
+/// component (named producer + consumer funcs, NO `call` method) from the single/multi-export shape
+/// (which has a `call`). Read off the component type, so nothing is hard-coded.
+fn closure_interface_funcs(engine: &Engine, component: &Component) -> Vec<String> {
+    for (name, item) in component.component_type().exports(engine) {
+        if name != CLOSURE_INTERFACE {
+            continue;
+        }
+        if let ComponentItem::ComponentInstance(inst) = item {
+            return inst
+                .exports(engine)
+                .filter_map(|(fname, i)| {
+                    matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Run a ROUND-TRIP closure program (C-HOST-4): the host produces a closure handle from a PRODUCER export,
+/// then threads it BACK into a CONSUMER export that applies it. Recognized when the closure interface has
+/// NO `call` method (the single/multi-export shape) but a named CONSUMER (a func whose FIRST param is the
+/// resource handle). The corpus names the CONSUMER in `(call <consumer> args…)`; the driver finds the sole
+/// PRODUCER (the other func, whose result is the resource — every non-consumer func), calls it with the
+/// LEADING args (its own params), then the consumer with the produced handle + the REMAINING args. So
+/// `(call apply-it 10 5)` → `make-adder(10)` → handle → `apply-it(handle, 5)`.
+fn run_roundtrip_closure(
+    store: &mut Store<()>,
+    instance: &wasmtime::component::Instance,
+    iface: &wasmtime::component::ComponentExportIndex,
+    consumer_name: &str,
+    producer_name: &str,
+    arg_strs: &[String],
+) -> Result<Outcome> {
+    let get = |store: &mut Store<()>, name: &str| -> Result<wasmtime::component::Func> {
+        let idx = instance
+            .get_export_index(&mut *store, Some(iface), name)
+            .ok_or_else(|| anyhow!("round-trip closure: `{CLOSURE_INTERFACE}` exports no `{name}`"))?;
+        instance
+            .get_func(&mut *store, idx)
+            .ok_or_else(|| anyhow!("round-trip closure: `{name}` is not a function"))
+    };
+    let producer = get(&mut *store, producer_name)?;
+    let consumer = get(&mut *store, consumer_name)?;
+    // Split the flat arg list by the PRODUCER's arity: leading args → producer, rest → consumer (after its
+    // leading `self` handle).
+    let prod_params: Vec<Type> = producer.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let n_prod = prod_params.len();
+    if arg_strs.len() < n_prod {
+        return Err(anyhow!(
+            "round-trip closure: producer `{producer_name}` needs {n_prod} argument(s) but only {} supplied",
+            arg_strs.len()
+        ));
+    }
+    let prod_args = coerce_args(&arg_strs[..n_prod], &prod_params)?;
+    let mut handle = [Val::Bool(false)];
+    if let Err(e) = producer.call(&mut *store, &prod_args, &mut handle) {
+        return Ok(Outcome::Trap(format!("{e}")));
+    }
+    let _ = producer.post_return(&mut *store);
+    // The consumer's params are `(self, args…)`; coerce the remaining arg strings to its declared arg types.
+    let cons_params: Vec<Type> = consumer.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let cons_arg_types = cons_params.get(1..).unwrap_or(&[]);
+    let coerced = coerce_args(&arg_strs[n_prod..], cons_arg_types)?;
+    let mut cons_args = vec![handle[0].clone()];
+    cons_args.extend(coerced);
+    let mut out = [Val::Bool(false)];
+    match consumer.call(&mut *store, &cons_args, &mut out) {
+        Ok(()) => {
+            let _ = consumer.post_return(&mut *store);
+            Ok(Outcome::Value(match out.first() {
+                None => "unit".to_string(),
+                Some(Val::String(s)) => s.clone(),
+                Some(other) => render_val(other),
+            }))
+        }
+        Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+    }
+}
+
 /// Run a CLOSURE-resource program: reach `make`/`call` inside the `cadenza:closure/exports` instance,
 /// call `make(make-args…)` → the closure resource handle, then `call(handle, call-args…)` → the closure's
 /// result, rendered. The host acts as the closure's custodian: it holds the opaque handle and invokes the
@@ -576,6 +664,8 @@ fn has_closure_instance(engine: &Engine, component: &Component) -> bool {
 /// CLOSURE's own arguments, e.g. `x`). A nullary export (N=0) sends all args to `call`. So
 /// `(call adder (: 10 Int64) (: 5 Int64))` → `make(10)` then `call(5)` = 15.
 fn run_closure_resource(
+    engine: &Engine,
+    component: &Component,
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
     export: Option<&str>,
@@ -584,6 +674,23 @@ fn run_closure_resource(
     let iface = instance
         .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
         .ok_or_else(|| anyhow!("closure escape: no `{CLOSURE_INTERFACE}` instance export"))?;
+    // ROUND-TRIP (C-HOST-4): a program with producer + consumer exports has NO `call` method. The corpus
+    // `(call <consumer> args…)` names the consumer; the sole PRODUCER (the other func) mints the closure.
+    // Detected by the absence of a `call` export in the interface.
+    let iface_funcs = closure_interface_funcs(engine, component);
+    if !iface_funcs.iter().any(|f| f == "call") {
+        let consumer = export.ok_or_else(|| {
+            anyhow!("round-trip closure: no --call given (name the CONSUMER export)")
+        })?;
+        let producer = iface_funcs
+            .iter()
+            .find(|f| f.as_str() != consumer)
+            .ok_or_else(|| {
+                anyhow!("round-trip closure: no producer export found alongside `{consumer}`")
+            })?
+            .clone();
+        return run_roundtrip_closure(&mut *store, instance, &iface, consumer, &producer, arg_strs);
+    }
     // The make function to call: a single-export program publishes a bare `make`; a MULTI-EXPORT program
     // publishes `make-<name>` per closure export, and the corpus `(call <name> …)` picks which. Try
     // `make-<export>` first (multi), then the bare `make` (single) — so a single-export case with a `--call

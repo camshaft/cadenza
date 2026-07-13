@@ -269,3 +269,57 @@
               (export add) (export mul) (export sub)))
   (call   mul (: 4 Int64) (: 5 Int64))
   (output (: 20 Int64)))
+
+; THE ROUND-TRIP (C-HOST-4, Direction 2) — the host produces a closure from one export and hands it BACK
+; into another. A PRODUCER export's result is a closure (`make-adder : (Int64) -> (-> Int64 Int64)`); a
+; CONSUMER export takes that closure as a PARAMETER (`apply-it : ((-> Int64 Int64), Int64) -> Int64`) and
+; applies it. Both cross as ONE resource type: the producer mints a handle (`resource.new`), the consumer
+; recovers it (`resource.rep`) and dispatches via the guest's own `call_indirect` — the closure logic never
+; leaves Cadenza; the host is a CUSTODIAN threading an opaque handle from one call to the next. The corpus
+; `(call <consumer> <producer-args…> <consumer-args…>)` names the consumer; the driver calls the sole
+; PRODUCER with the leading args (its params), then the consumer with the produced handle + the rest. So
+; `(call apply-it 10 5)` runs `make-adder(10)` → a handle, then `apply-it(handle, 5)` = 5 + 10 = 15. This is
+; the missing half of first-class functions: a Cadenza closure the host stores and drives, handed back as a
+; callback. (A CONSUMER-ONLY program — the host fabricating a Cadenza closure — stays out of scope: it
+; declines, since no producer mints the handle.)
+
+(case "a produced closure is handed back into a consumer export (the round trip)"
+  (doc    "`(def (make-adder (: k Int64)) (fn (x) (+ x k)))` PRODUCES a closure capturing k; `(def (apply-it
+           (: g (-> Int64 Int64)) (: x Int64)) (g x))` CONSUMES one. The host produces a handle from
+           `make-adder(10)`, then threads it back into `apply-it(handle, 5)` = 5 + 10 = 15 — a closure
+           crossing OUT of one export call and back IN to another, applied via the guest's own
+           `call_indirect`. Pins host-as-custodian: the producer's `resource.new` handle is recovered by the
+           consumer's `resource.rep` and dispatched.")
+  (input  (do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (export make-adder) (export apply-it)))
+  (call   apply-it (: 10 Int64) (: 5 Int64))
+  (output (: 15 Int64)))
+
+; The same round trip with a different capture and argument — the handle genuinely carries the per-produce
+; captured environment across the boundary and back, and the consumer's dispatch reads it.
+
+(case "the round trip tracks the produced closure's captured value"
+  (doc    "`make-adder(100)` produces a closure capturing k=100; `apply-it(handle, 7)` = 7 + 100 = 107. A
+           different capture (100) and consumer argument (7) — the result follows both, so the captured
+           environment rides in the handle the host hands back, not in any shared state.")
+  (input  (do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (export make-adder) (export apply-it)))
+  (call   apply-it (: 100 Int64) (: 7 Int64))
+  (output (: 107 Int64)))
+
+; A consumer that does MORE than apply the closure once — it applies it and adds a constant — showing the
+; consumer body is ordinary Cadenza code with the handed-back closure as a first-class value in it.
+
+(case "a consumer applies the handed-back closure inside a larger expression"
+  (doc    "`(def (twice-plus (: g (-> Int64 Int64)) (: x Int64)) (+ (g x) (g x)))` applies the handed-back
+           closure TWICE and sums. With `make-adder(1)` producing `(+ x 1)`, `twice-plus(handle, 5)` =
+           (5+1) + (5+1) = 12. Pins that the consumer body is ordinary code — the closure param is a
+           first-class value it may apply more than once (the `own<t>` handle serves the whole consumer
+           call; it is consumed once, at the boundary, not per in-body application).")
+  (input  (do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (twice-plus (: g (-> Int64 Int64)) (: x Int64)) (+ (g x) (g x)))
+              (export make-adder) (export twice-plus)))
+  (call   twice-plus (: 1 Int64) (: 5 Int64))
+  (output (: 12 Int64)))
