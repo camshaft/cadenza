@@ -1,5 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
+import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
 
 export default function Numbers() {
@@ -10,40 +11,63 @@ export default function Numbers() {
 
       <H2>Checked Int64</H2>
       <P>
-        Cadenza's core integer type is a checked <C>Int64</C>. Arithmetic that would overflow is
-        defined behavior, not a silent wrap-around — the ordinary operators trap rather than quietly
-        producing a wrong answer.
+        Cadenza's core integer type is a checked <C>Int64</C> — a 64-bit signed integer. Ordinary
+        arithmetic works as you'd expect, and the result carries its exact type:
       </P>
-      <Runnable source={`(* 1000 1000)`} />
+      <Runnable source={`(* 1000000 1000000)`} />
+
+      <H2>Overflow is caught, not wrapped</H2>
+      <P>
+        What happens when a result is too big to fit? In many languages it silently <em>wraps around</em>{" "}
+        to a wrong (often negative) answer. Cadenza refuses instead. <C>Int64</C>'s largest value times 2
+        can't fit — and the compiler says so rather than producing garbage:
+      </P>
+      <Note>
+        This example is <strong>meant to be refused</strong>. Run it and read the status bar: the result
+        can't fit an <C>Int64</C>, so the compiler declines rather than wrapping to a bogus value.
+      </Note>
+      <Runnable source={`(* 9223372036854775807 2)`} expect="error" />
+      <P>
+        Division by zero is the same story — there's no correct answer, so it's caught, not left to
+        produce a garbage result or a silent zero:
+      </P>
+      <Runnable source={`(/ 5 0)`} expect="error" />
 
       <H2>Types don't mix by accident</H2>
       <P>
-        Numeric and boolean values don't silently coerce into one another. Ask the compiler to add a
-        number and a boolean and it refuses — with a diagnostic pointing right at the mismatch, rather
-        than inventing a conversion you didn't ask for.
+        Numeric and boolean values don't silently coerce into one another either. Ask the compiler to
+        add a number and a boolean and it refuses — with a diagnostic pointing right at the mismatch,
+        rather than inventing a conversion you didn't ask for:
       </P>
-      <Note>
-        This example is <strong>meant to be refused</strong>. Run it and read the diagnostic: the
-        status bar shows the compiler declining, which is exactly the right outcome here.
-      </Note>
       <Runnable source={`(+ 1 true)`} expect="error" />
 
-      <Why tenet="No silent promotion — refuse the ambiguity">
-        Many languages would quietly bridge a mismatch like this — coercing the boolean to a number, or
-        widening one numeric type into another. Cadenza refuses, because that convenience hides a real
-        question: what did you actually mean? A conversion you didn't write is a decision the compiler
-        made <em>for</em> you. So mixing types is a compile-time error, and a conversion has to be
-        something you asked for by name. The same instinct governs overflow: the ordinary <C>+</C> traps
-        rather than wrapping around, and wrapping arithmetic is a separate operation you opt into — you
-        never get modular arithmetic by accident.
+      <Why tenet="Refuse the ambiguity, don't guess">
+        Many languages would quietly bridge these gaps — wrapping an overflow around, coercing a boolean
+        to a number, widening one numeric type into another. Cadenza refuses, because each convenience
+        hides a real question: what did you actually mean? A conversion you didn't write, or a wrap you
+        didn't ask for, is a decision the compiler made <em>for</em> you — and the classic source of
+        "why is this number negative?" bugs. So an operation that can't produce a correct result{" "}
+        <em>declines</em> with a diagnostic instead of guessing, and any conversion is something you
+        write by name.
       </Why>
 
       <P>
-        This is a running theme in Cadenza: an operation the compiler can't carry out correctly{" "}
-        <em>declines</em> with a diagnostic instead of guessing. You'll see the same discipline in the
-        type system and in pattern matching — and, next, in how integers and floating-point numbers
-        refuse to blur together.
+        This is a running theme: an operation the compiler can't carry out correctly declines instead of
+        guessing. When you'd rather <em>handle</em> an overflow than have it halt the program, that's
+        what the checked operations in <strong>Errors &amp; absence</strong> are for — they hand back an{" "}
+        <C>Option</C> so you decide. And it's the same discipline that keeps integer widths from blurring,
+        next in <strong>Sized integers</strong>.
       </P>
+
+      <H2>Your turn</H2>
+      <Exercise
+        id="numbers:1"
+        prompt={<>Integer division truncates toward zero. What is <C>17 / 5</C>? Fill in the divisor so the answer is <C>3</C>.</>}
+        starter={`(/ 17 ?)`}
+        solution={`(/ 17 5)`}
+        expected="3"
+        hint={<>17 ÷ 5 is 3 remainder 2; integer division keeps the whole part, <C>3</C>. The divisor is <C>5</C>.</>}
+      />
     </article>
   );
 }

@@ -1893,12 +1893,11 @@ fn resolve_match(db: &Db, id: StructId) -> Resolved {
             }
         }
     }
-    if arms.is_empty() {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            format!("this match has no arms — {SHAPE}"),
-        ));
-    }
+    // A ZERO-ARM match is NOT malformed: it is the degenerate exhaustiveness base case, valid when the
+    // scrutinee is UNINHABITED (`Never` — a diverging expression; `type-system.md §Never Is The Empty
+    // Sum`). Whether THIS scrutinee is actually uninhabited is a downstream verdict (`lower_match` returns
+    // the scrutinee's divergence, or `Code::NonExhaustive` if it has values), not a syntactic one — so the
+    // shape resolves and the type/lowering stages decide, rather than a blanket "no arms" rejection here.
     Resolved::Match { scrutinee, arms }
 }
 

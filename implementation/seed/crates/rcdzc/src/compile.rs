@@ -310,14 +310,29 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// reachability-driven (the `layout` decides what is emitted); only well-formedness is total.
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
-    // UNMODELED TOP-LEVEL FORM. A top-level declaration the compiler does not model — `(effect …)`,
-    // `(pragma …)` — makes the whole program decline (decline-don't-miscompile): compiling the rest as
-    // if the declaration were absent would silently drop its meaning (e.g. an `(effect E …)` whose
-    // duplicate operation goes unchecked, then `main` runs). Reported here so the reject anchors a node.
+    // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
+    // recognized declaration (`def`/`export`/`type`/`effect`) nor a grammar head nor a bound name. Two
+    // real cases reach here, and they are STRUCTURALLY INDISTINGUISHABLE (both a list led by an unbound
+    // name): an ordinary APPLICATION of an unbound function (`foo(bar)` — by FAR the common case, an agent
+    // calling a name it never defined) and a genuinely UNMODELED DECLARATION keyword (`(pragma …)`). The
+    // old message ("`foo` is not a construct this compiler models") diagnosed only the rare case and
+    // MISLED the common one — a plain unbound call read as an unsupported language feature. So LEAD with
+    // the certain, actionable fact (the head is an unbound name — the same truth the nested `foo` in
+    // `(def (g) (foo 1))` reports as CDZ0101), naming a near defined name when one is a plausible typo,
+    // and note the unmodeled-declaration reading as the secondary possibility. It stays a DECLINE (not a
+    // coded CDZ0101): a top-level unbound head still means the compiler cannot claim to compile the whole
+    // program (decline-don't-miscompile — an unmodeled declaration's meaning would be silently dropped),
+    // so the OUTCOME is unchanged; only the message stops misleading.
+    let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
+        let hint = match crate::diag::suggest::nearest(&head, &defined_names) {
+            Some(near) => format!(" — did you mean `{near}`?"),
+            None => String::new(),
+        };
         faults.push(
             Reject::decline(format!(
-                "`{head}` is not a construct this compiler models — the program cannot be compiled"
+                "unbound name `{head}` at the top level{hint} (if `{head}` is meant as a declaration, \
+                 it is not one this compiler models — the program cannot be compiled either way)"
             ))
             .at(occ),
         );
@@ -528,8 +543,27 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .iter()
         .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
         .collect();
-    for body in export_bodies {
+    for body in export_bodies.iter().copied() {
         crate::effects::check_no_home(db, body, &mut faults);
+    }
+    // EXPORTED-CLOSURE BODY TYPE-CHECK. An export whose body is a bare `(fn …)` crosses the host boundary
+    // as a closure — it is NEVER applied in-guest, so its body is never β-reduced, and `collect_node`'s
+    // `Resolved::Lambda` arm is a no-op (a called def's body is checked on β-reduction at its call site,
+    // so the arm deliberately does not descend). That leaves an EXPORTED closure's body UNCHECKED: an
+    // ill-typed body (`(fn ((: x Int64)) (: x Bool))`) escaped the type-checker and emitted an invalid
+    // component, where an ordinary def / an in-guest-applied `(fn …)` rejects CDZ0203. Run the same
+    // `type_errors` over the closure body here — its params are bound (a `(: x Int64)` param types as
+    // Int64), so an annotation/unification fault in the body surfaces exactly as it does for an ordinary
+    // definition. (SUBSUMES the narrow-arg-wide-result invalid-component case: `(fn ((: x Int8)) (: (+ x
+    // 100) Int64))`'s body is ill-typed — the `(+ x 100)` is Int8, not Int64 — so it rejects CDZ0203
+    // instead of emitting invalid wasm.) A non-lambda export body is already fully checked above.
+    for body in export_bodies {
+        if let crate::resolved::Resolved::Lambda {
+            body: closure_body, ..
+        } = crate::resolve::resolved_of(db, body)
+        {
+            faults.extend(type_errors(db, closure_body));
+        }
     }
     // AN EXPORT NAMING NO DEFINITION is ill-formed — `(export nope)` with no `(def nope …)`. This is a
     // well-formedness fault (the public surface must name real definitions), so it belongs in

@@ -787,6 +787,8 @@ pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export whose name is not kebab-case crosses under a normalized extern name
+pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
+pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct

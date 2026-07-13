@@ -7417,6 +7417,24 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_newtype_over_a_sum_escapes_to_the_host() {
+        // REGRESSION: a newtype-over-sum RETURNED to the host at RUN TIME used to DECLINE ("a `(Option
+        // Int64)` sum crosses the host boundary only as a single nullary export's result") — the escape
+        // routing matched the raw `Ty::Nominal` result and missed the sum-escape arm, so it fell to the
+        // scalar decline. It now routes on the ERASED (stripped) result → the sum escape. The `(if …)`
+        // keeps the payload RUNTIME (a constant folds through a type-agnostic path that masked the bug).
+        // The value renders as its underlying sum (`(: (Some 7) (Option Int64))` — the erased inner).
+        let Some(v) = run_heap_value_escape(
+            "(module m (type Cached (Mk (Option Int64))) \
+               (def (main) (Mk (Some (if true 7 0)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime newtype-over-sum escape");
+            return;
+        };
+        assert_eq!(v, "(: (Some 7) (Option Int64))");
+    }
+
+    #[test]
     fn a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum() {
         // The proof there is NO double-box: a newtype-over-Option compiles to the BYTE-IDENTICAL component
         // as the bare Option it wraps — the `Mk` tag erased to nothing. (A constant fold makes both a
@@ -7515,6 +7533,38 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0201"),
             "an over-arity multi-payload pattern is a malformed destructure"
+        );
+    }
+
+    #[test]
+    fn an_exported_closure_body_is_type_checked() {
+        // TYPE-SOUNDNESS HOLE: an EXPORTED closure `(def (a) (fn …))` crosses the host boundary and is
+        // never β-reduced, so its body escaped the type-checker (`collect_node`'s `Lambda` arm is a no-op)
+        // — an ill-typed body emitted an invalid component instead of rejecting. The closure-export path
+        // now runs `type_errors` over the body, so a body fault surfaces exactly as an ordinary def's does.
+        //   annotation mismatch: (: x Bool) over an Int64 value → CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int64)) (: x Bool))) (export a))").as_deref(),
+            Some("CDZ0203"),
+            "an ill-typed exported-closure body must reject, not emit an invalid component"
+        );
+        // arithmetic type mismatch: Int64 + Bool → CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int64)) (+ x true))) (export a))").as_deref(),
+            Some("CDZ0203"),
+        );
+        // SUBSUMES the narrow-arg-wide-result invalid-component case: the body `(+ x 100)` over Int8 is
+        // Int8, annotated Int64 — an ill-typed body → CDZ0203, no longer an invalid `i64/i32` component.
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int8)) (: (+ x 100) Int64))) (export a))")
+                .as_deref(),
+            Some("CDZ0203"),
+        );
+        // NO OVER-REJECTION: a WELL-TYPED exported closure still compiles clean (returns no rejection).
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int64)) (+ x 100))) (export a))"),
+            None,
+            "a well-typed exported closure must still compile"
         );
     }
 
@@ -7993,6 +8043,32 @@ mod match_engine {
         // type — no machine representation at the boundary — so it declines, exactly as any unannotated
         // undetermined-type export does. `trap` fits any INTERNAL position (the two cases above); an
         // export still needs a concrete result type, which a bare trap does not supply.
+    }
+
+    #[test]
+    fn a_zero_arm_match_is_valid_on_an_uninhabited_scrutinee_else_non_exhaustive() {
+        // 07-type-system §Never Is The Empty Sum (4th sentence): a match on a Never-typed (diverging)
+        // scrutinee is exhaustive with ZERO arms — the degenerate base case, NOT the malformed "no arms"
+        // rejection it used to be. The scrutinee still evaluates, so its divergence IS the match's outcome.
+        use wasmtime::component::Val;
+        // A zero-arm match over a diverging scrutinee, in an internal Int64 position, TRAPS at run time
+        // (the `(bomb)` never returns, so the match diverges). Uses an internal position to sidestep the
+        // orthogonal bare-trap-EXPORT limitation (an undetermined `main` return type — see the note above).
+        assert!(
+            call_traps(
+                &component(
+                    "(module m (def (bomb) (trap \"unreachable\")) (def (main) (+ 1 (match (bomb)))) (export main))"
+                ),
+                "main",
+                &[] as &[Val],
+            ),
+            "a zero-arm match on a diverging scrutinee traps through the scrutinee"
+        );
+        // A zero-arm match on an INHABITED scrutinee is genuinely NON-EXHAUSTIVE (CDZ0210) — the scrutinee
+        // has values a case must cover — NOT the old malformed "this match has no arms" (CDZ0201).
+        let d = reject_full("(module m (def (f (: n Int64)) (match n)) (export f))")
+            .expect("a zero-arm match on an inhabited scrutinee must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
     }
 
     #[test]
