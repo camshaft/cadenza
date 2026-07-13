@@ -1173,6 +1173,8 @@ pass	performing an operation with a wrong-type argument for a compound parameter
 pass	performing an operation with an argument of the wrong type is a type error
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
+pass	projecting a record onto an absent field is rejected
+pass	projecting a record restricts it to the named fields
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	promoting a Float32 to Float64 is exact
@@ -1187,6 +1189,7 @@ pass	reading a string's scalar in bounds yields Some of the char
 pass	reading a string's scalar out of bounds yields None
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
+pass	record reshaping is subset comparison as explicit projection
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
@@ -1476,8 +1479,6 @@ todo	pattern matching over AST distinguishes forms
 todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
 todo	popping an absent field is rejected
-todo	projecting a record onto an absent field is rejected
-todo	projecting a record restricts it to the named fields
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	quasiquote constructs AST with selective evaluation
@@ -1487,7 +1488,6 @@ todo	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 todo	quote produces an AST value without evaluating
 todo	quote-vs-constructor AST equality holds regardless of operand order
 todo	reading the text a printer produced round-trips to an equal value
-todo	record reshaping is subset comparison as explicit projection
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
 todo	splitting a tuple at a position yields a prefix and a suffix

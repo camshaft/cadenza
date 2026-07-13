@@ -999,6 +999,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 // `List.len` applied to a list — FOLD when the operand is a compile-time-visible list
                 // literal (its length is statically known), else emit `Core::ListLen` (the runtime
+                // `Record.project r (a c)` — narrow a record to the named fields. FOLD over a
+                // compile-time-visible `Core::Record`: build a NEW `Core::Record` holding only the named
+                // fields, each carrying the operand's own value occurrence (the value heap is immutable,
+                // so the result shares the operand's field values — `type-system.md` §A Record Row
+                // Operation Yields A New Value). The second operand is a LITERAL field-name list `(a c)`
+                // (labels via `record_op_labels`, NOT an evaluated value). A named field absent from the
+                // record is the CDZ0212 `infer` reports; here the fold simply omits it (the reject denies
+                // the build, so this core is never emitted). A poison operand / non-record / non-constant
+                // record declines (the runtime row op is a later increment).
+                Some(Prim::RecordProject) if args.len() == 2 => {
+                    lower_record_project(db, id, args[0], args[1])
+                }
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
                     let operand = args[0];
@@ -7068,6 +7080,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SumCtor
         | Prim::TupleNew
         | Prim::RecordNew
+        | Prim::RecordProject
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
@@ -9451,6 +9464,41 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
 /// yet (declines cleanly — no corpus case exercises a constant absent expect, and a codeless decline
 /// grades Todo, never a miscompile). A runtime sum emits `Core::SumExpect` (disc probe → payload / trap).
 /// A poison sum propagates. `message` is not lowered — the wasm trap carries no text.
+/// Lower `(Record.project r (a c))` — narrow `r` to the named fields. FOLD over a compile-time-visible
+/// `Core::Record`: build a NEW `Core::Record` holding only the named fields, each carrying `r`'s own value
+/// occurrence (the value heap is immutable, so the result SHARES `r`'s field values — `type-system.md` §A
+/// Record Row Operation Yields A New Value). The second operand is a LITERAL field-name list `(a c)` (labels
+/// via `record_op_labels`, NOT an evaluated value). A named field absent from `r` is the CDZ0212 `infer`
+/// reports; here the fold simply omits it (the reject denies the build, so this core is never emitted). A
+/// poison operand propagates; a non-record / non-constant record declines (the runtime row op is a later
+/// increment). A malformed label list is CDZ0201.
+fn lower_record_project(db: &mut Db, id: StructId, record: StructId, labels: StructId) -> Core {
+    let Core::Record { fields } = core_of(db, record) else {
+        return match core_of(db, record) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "Record.project over a runtime record is not yet built",
+            )),
+        };
+    };
+    let Some(labels) = crate::resolve::record_op_labels(db, labels) else {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "Record.project's second operand is a list of field names, e.g. `(a c)`",
+        ));
+    };
+    let mut kept = std::collections::BTreeMap::new();
+    for label in &labels {
+        if let Some(&v) = fields.get(label) {
+            kept.insert(label.clone(), v);
+        }
+    }
+    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), "Record.project folds a constant record to its named fields");
+    Core::Record {
+        fields: std::sync::Arc::new(kept),
+    }
+}
+
 fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, sum) {
         return Core::Poison(r);
@@ -10678,6 +10726,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
         Prim::RecordNew => "record-new",
+        Prim::RecordProject => "record-project",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",

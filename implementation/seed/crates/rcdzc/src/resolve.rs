@@ -2484,6 +2484,24 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
 /// structure (`((meta t) VALUE)` is a meta field; `(. r (meta t))` projects it), so a namespaced key
 /// needs no dotted-string parsing and no reserved section — it is one more key shape read structurally
 /// (`prelude-and-resolution.md` §A Member Key Is A Label). A key is NEVER resolved as a value.
+/// Read a record row-operation's LITERAL field-name list operand `(a c)` into its labels — the ONE rule
+/// shared by `Record.project`/`without`/… (`type-system.md` §A Record Row Is Reshaped Only Through An
+/// Explicit Operation). The operand is a bare list whose elements are field NAMES, read as labels via
+/// [`read_key`] exactly as a `record` literal's field names are (`prelude-and-resolution.md` §A Member
+/// Key Is A Label, Not A Value) — NOT an evaluated value, so `(a c)` is never resolved as an application
+/// of `a` to `c`. `None` if the operand is not a list, or any element is not a bare label (a malformed
+/// operand — the op then declines rather than reading a partial label set).
+pub(crate) fn record_op_labels(db: &Db, node: StructId) -> Option<Vec<Symbol>> {
+    let Struct::List(items) = db.ast.get(node) else {
+        return None;
+    };
+    let mut labels = Vec::with_capacity(items.len());
+    for &item in items {
+        labels.push(read_key(db, item)?);
+    }
+    Some(labels)
+}
+
 fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
     if let Some(n) = db.ast.as_name(node) {
         return Some(Symbol::plain(n));

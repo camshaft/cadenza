@@ -233,6 +233,14 @@ pub enum Prim {
     /// (x 1) (y 2))` does: each argument is a `(key value)` pair. VARIADIC over its fields; the record
     /// companion of `TupleNew`.
     RecordNew,
+    /// The RECORD ROW-PROJECTION operation — `(Record.project r (a c))` narrows `r` to exactly the named
+    /// fields, each bound to the value `r` holds for it (`type-system.md` §A Record Is Restricted To A
+    /// Named Set Of Its Fields). Its SECOND operand is a LITERAL field-name LIST `(a c)` — labels, not an
+    /// evaluated value (like a `record` literal's field names, read via [`crate::resolve::read_key`]) — so
+    /// the projection's result shape is fixed statically. Folds over a constant `Core::Record` to a new
+    /// `Core::Record` with only the named fields; a named field absent from the operand is CDZ0212. The
+    /// narrowing member of the record row-operation surface (`without`/`merge`/`with`/`pop`/`extend` follow).
+    RecordProject,
     /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
     /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
     /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
@@ -594,6 +602,7 @@ impl Prim {
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
             "record-new" => Some(Prim::RecordNew),
+            "record-project" => Some(Prim::RecordProject),
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),

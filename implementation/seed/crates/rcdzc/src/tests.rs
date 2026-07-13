@@ -10542,6 +10542,41 @@ mod match_engine {
     }
 
     #[test]
+    fn record_project_narrows_to_named_fields_absent_field_is_cdz0212() {
+        // 15-rows "projecting a record restricts it to the named fields" + "...onto an absent field is
+        // rejected": `(Record.project r (a c))` narrows `r` to EXACTLY the named fields, each carrying its
+        // value (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields). The SECOND operand
+        // `(a c)` is a LITERAL field-name list (labels, not evaluated). A well-formed projection compiles
+        // (the value case runs through the gate); a named field ABSENT from the operand record is CDZ0212.
+        // A projection onto present fields is well-formed — it compiles (no fault).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.project (record (a 1) (b 2) (c 3)) (a c))) (export main))"
+            ),
+            None,
+            "a projection onto present fields must be well-formed"
+        );
+        // A named field the operand does not hold → CDZ0212 (a STATIC label, never a runtime None).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a z))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0212"),
+            "projecting onto an absent field is CDZ0212"
+        );
+        // `Record` is STILL the record-TYPE constructor in type position — the module dual-shape did not
+        // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (: (record (a 1)) (Record (a Int64)))) (export main))"
+            ),
+            None,
+            "Record must still work as the record-type constructor in an annotation"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or

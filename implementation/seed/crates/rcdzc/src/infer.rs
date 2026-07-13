@@ -1736,6 +1736,26 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             };
         }
     }
+    // `Record.project r (a c)` — narrow `r` to the named fields. The result is a NEW closed record type
+    // whose fields are EXACTLY the named ones, each carrying the type it had in `r` (`type-system.md` §A
+    // Record Is Restricted To A Named Set Of Its Fields). The second operand is a LITERAL field-name list
+    // `(a c)` (labels via `record_op_labels`, not an evaluated value — not HM-unified, like `Qty.of`'s
+    // unit / `Wrap`'s width). A named field ABSENT from `r`'s record type has no type to carry — it is
+    // the CDZ0212 rejection (reported by `check_application`); here it is simply dropped from the result
+    // shape so the value column stays a sane record. A non-record operand → `Any` (faulted elsewhere).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordProject)
+        && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some(labels) = crate::resolve::record_op_labels(db, args[1])
+    {
+        let mut kept = std::collections::BTreeMap::new();
+        for label in &labels {
+            if let Some(ty) = fields.get(label) {
+                kept.insert(label.clone(), ty.clone());
+            }
+        }
+        return Ty::Record(std::sync::Arc::new(kept));
+    }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
     // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type
@@ -2717,6 +2737,15 @@ fn check_application(
             ));
         }
         collect(db, args[1], out);
+        return;
+    }
+    // `Record.project r (a c)` — has NO HM scheme (the label-list operand is not a typed value, and the
+    // result shape is computed row-polymorphically by `apply_type`), so SKIP the generic scheme-unify (it
+    // would fault the label list against a scheme). The absent-field CDZ0212 + operand descent are done in
+    // `collect_node`'s Apply arm; nothing to add here beyond stopping the generic path.
+    if args.len() == 2
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordProject)
+    {
         return;
     }
     // A COMPARISON between a MAP and a RECORD is a type error — they are DISTINCT KINDS (a record's field
@@ -4432,6 +4461,46 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             "a map entry is a (key value) pair",
                         ));
                     }
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordProject)
+            ) && args.len() == 2
+            {
+                // `Record.project r (a c)` — the FIRST operand `r` is an ordinary expression (descend it);
+                // the SECOND is a LITERAL field-name list `(a c)` — LABELS, not an expression, so descending
+                // it would resolve `a` as applied to `c`. Instead read its labels and check each names a
+                // field the operand record HOLDS: a named field ABSENT from `r`'s record type is CDZ0212
+                // (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields, 2nd sentence). A
+                // malformed label list (not a list, a non-label element) is CDZ0201.
+                collect(db, args[0], out);
+                match (
+                    type_of(db, args[0]),
+                    crate::resolve::record_op_labels(db, args[1]),
+                ) {
+                    (Ty::Record(fields), Some(labels)) => {
+                        for label in &labels {
+                            if !fields.contains_key(label) {
+                                out.push(
+                                    Reject::coded(
+                                        Code::AbsentField,
+                                        format!(
+                                            "record has no field `{}` to project onto",
+                                            label.name
+                                        ),
+                                    )
+                                    .at(args[1]),
+                                );
+                            }
+                        }
+                    }
+                    // A non-record operand, or a malformed label list — the operand's own fault (a non-record
+                    // type) surfaces via the `collect(args[0])` above; a malformed label list is CDZ0201.
+                    (_, None) => out.push(Reject::coded(
+                        Code::Malformed,
+                        "Record.project's second operand is a list of field names, e.g. `(a c)`",
+                    )),
+                    _ => {}
                 }
             } else if crate::eval::lambda_body(db, head).is_some() {
                 // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which
