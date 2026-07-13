@@ -4592,6 +4592,55 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_remainder_by_a_constant_bounds_its_result_range() {
+        // `(% v C)` (constant C) has a bounded result: `|v % C| < |C|`, so its range is `[-(|C|-1),
+        // |C|-1]` (tightened to `[0, |C|-1]` for a nonneg dividend). That lets a downstream checked op
+        // shed its guard when the bounded remainder keeps the result in type: `(* (% x 10) 5)` ∈ [-45,45]
+        // ⊆ Int8. A remainder whose consumer CAN still overflow keeps its guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let guards = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::IfUnreachableEnd)).count();
+        // `%10`∈[-9,9] → *5∈[-45,45] ⊆ Int8; `%100`∈[-99,99] → +1∈[-98,100] ⊆ Int8. No guard.
+        assert_eq!(guards(&lir("(: x Int8)", "(: (* (% x 10) 5) Int8)")), 0, "[-45,45] fits Int8");
+        assert_eq!(guards(&lir("(: x Int8)", "(: (+ (% x 100) 1) Int8)")), 0, "[-98,100] fits Int8");
+        // SOUNDNESS: `%100`∈[-99,99] → *5∈[-495,495] EXCEEDS Int8 → guard KEPT.
+        assert!(guards(&lir("(: x Int8)", "(: (* (% x 100) 5) Int8)")) > 0, "[-495,495] overflows Int8");
+
+        // VALUE + TRAP parity.
+        assert_eq!(run::<i8>("(: x Int8)", "(: (* (% x 10) 5) Int8)", &[Val::S8(27)]), 35); // 7*5
+        assert_eq!(run::<i8>("(: x Int8)", "(: (* (% x 10) 5) Int8)", &[Val::S8(-27)]), -35); // -7*5
+        assert_eq!(run::<i8>("(: x Int8)", "(: (+ (% x 100) 1) Int8)", &[Val::S8(99)]), 100);
+        // The kept-guard case traps on real overflow (99*5=495) and computes when in range.
+        assert!(traps("(: x Int8)", "(: (* (% x 100) 5) Int8)", &[Val::S8(99)]));
+        assert_eq!(run::<i8>("(: x Int8)", "(: (* (% x 100) 5) Int8)", &[Val::S8(100)]), 0); // 100%100=0
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound

@@ -7026,7 +7026,8 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
 /// the op is not range-tracked or an operand's range is unknown (→ the node falls back to its type). All
 /// arithmetic is `i128` (endpoints never wrap); each endpoint is clamped to `i64` (an out-of-i64 bound
 /// becomes `None` on that side = "unbounded there"). Covers: `&` (bounded by the smaller nonneg operand),
-/// `|`/`^` (bounded by `2^max(bits)` for nonneg operands), `<<`/`>>ᵤ` by a constant, and `+`/`-`/`*`
+/// `|`/`^` (bounded by `2^max(bits)` for nonneg operands), `<<`/`>>ᵤ` by a constant, `%` by a constant
+/// divisor (`[-(|C|-1), |C|-1]`, tightened to `[0, |C|-1]` for a nonneg dividend), and `+`/`-`/`*`
 /// interval arithmetic. Verified sound by exhaustive endpoint checks.
 fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i64, Option<i64>)> {
     let clamp = |lo: i128, hi: i128| -> (i64, Option<i64>) {
@@ -7090,6 +7091,21 @@ fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i
             };
             let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
             Some((0, Some(hi >> k)))
+        }
+        // `v % C` (constant divisor `C`): the truncated-toward-zero remainder has magnitude `< |C|`, so
+        // its range is `[-(|C|-1), |C|-1]` in general, tightened to `[0, |C|-1]` when the DIVIDEND is
+        // provably non-negative (a nonneg dividend yields a nonneg remainder). `(% x 10)` → `[-9,9]`, and
+        // `(% (& x 255) 10)` → `[0,9]`. Only a compile-time constant divisor (the common `% C` idiom); a
+        // runtime divisor's range is unknown here. `C = 0` never reaches this (a constant `÷0`/`%0` is a
+        // constant-trap poison in `lower`); `|C| = 1` folds to `0` (the `% 1` identity) before here.
+        Prim::Rem => {
+            let Core::ConstInt(c) = core_of(db, rhs) else {
+                return None;
+            };
+            let d = c.to_i64().map(|c| c.unsigned_abs()).filter(|&d| d >= 1)?;
+            let hi = (d - 1).min(i64::MAX as u64) as i64;
+            let lo = if value_provably_nonneg(db, lhs) { 0 } else { -hi };
+            Some((lo, Some(hi)))
         }
         // `+`/`-`/`*`: interval arithmetic over the operands' CLOSED ranges.
         Prim::Add | Prim::Sub | Prim::Mul => {
