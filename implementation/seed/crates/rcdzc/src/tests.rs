@@ -31483,22 +31483,17 @@ mod closure_host_resource {
             "distinct-signature closures alongside a plain export compile (distinct-sig mixed path)",
         );
 
-        // A SINGLE closure returning a byte-rope (Bytes/String) COMPILES (the compound-result `call` path);
-        // but TWO such closures sharing one `call` DECLINES with a SPECIFIC message (not the generic
-        // scalar-only one) — the multi-export list-returning `call` is a later slice.
+        // A SINGLE closure returning a byte-rope (Bytes/String) COMPILES (the compound-result `call` path),
+        // and now TWO such closures sharing one `call` COMPILE too (the multi-export list-returning `call`:
+        // N makes + one shared bytes-`call`).
         let one_bytes = "(do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) (export main))";
         crate::compile::compile_component(&crate::codec::encode(&parse(one_bytes)))
             .expect("a single Bytes-returning closure compiles (compound-result path)");
         let two_bytes = "(do (def (a) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) \
                          (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap n))))) \
                          (export a) (export b))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes)))
-            .expect_err("two Bytes-returning closures sharing one call must DECLINE (multi-export slice)");
-        assert!(
-            err.message.contains("MULTI-EXPORT") && err.message.contains("byte-rope"),
-            "expected the multi-export byte-rope-result decline, got: {}",
-            err.message
-        );
+        crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes)))
+            .expect("two Bytes-returning closures sharing one call compile (multi-export bytes path)");
     }
 
     /// The escape check is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose

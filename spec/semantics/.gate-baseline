@@ -1347,6 +1347,9 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+pass	two same-signature Bytes-returning closures share one call — first
+pass	two same-signature Bytes-returning closures share one call — second
+pass	two same-signature String-returning closures share one call
 pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two sets of different sizes are unequal, not a type error
