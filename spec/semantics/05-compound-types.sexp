@@ -1955,6 +1955,25 @@
   (call   main)
   (output (: (P 5 (Some 5)) W)))
 
+(case "a multi-payload variant with a scalar AND two recursive payloads escapes flat"
+  (doc    "The multi-way-recursive counterpart of the flat multi-payload list: a `Node` variant carries a
+           SCALAR and TWO recursive `T` payloads as separate payloads — `(Node Int64 T T)`, matched `(Node
+           v l r)` — NOT one `(Tuple Int64 T T)` payload. Built at run time and returned, it escapes with
+           each `Node`'s three payloads spread FLAT under the variant head: `(Node 2 (Node 1 (Leaf 0) (Leaf
+           1)) (Leaf 2))`, not `(Node (tuple 2 … …))`. Pins that the spread-flatten walk recurses into BOTH
+           recursive payload positions (each its own `T`) at every level, the tree analogue of the flat
+           cons-list — a walk that tuple-wrapped, or descended only one recursive child, would render a
+           wrong structure.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Leaf Int64) (Node Int64 T T))
+            (def (build (: n Int64)) (if (= n 0)
+                                         (T.Leaf n)
+                                         (T.Node n (build (- n 1)) (T.Leaf n))))
+            (def (main) (build 2)) (export main)))
+  (call   main)
+  (output (: (Node 2 (Node 1 (Leaf 0) (Leaf 1)) (Leaf 2)) T)))
+
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
 ; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
