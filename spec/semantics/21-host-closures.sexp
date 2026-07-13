@@ -143,6 +143,32 @@
                 (fn ((: x Int64)) (+ x (ask.ask))))) (export main)))
   (error  CDZ0406))
 
+; --- An exported closure's BODY is type-checked, like an ordinary def / an in-guest-applied lambda ------
+; A `(def (a) (fn …))` exported as a host closure crosses the boundary and is NEVER applied in-guest, so
+; its body is never β-reduced. An ill-typed body must still be a compile-time rejection — the same CDZ0203
+; an ordinary def `(def (main (: x Int64)) (: x Bool))` or an applied `((fn …) 5)` gives — not a silently-
+; emitted invalid component. (The closure-export lowering runs the body's type-error collection before emit;
+; the closure's params are bound, so an annotation/unification fault in the body surfaces exactly as in an
+; ordinary definition.)
+
+(case "an exported closure with an annotation-mismatched body is rejected, not emitted invalid"
+  (doc    "`(fn ((: x Int64)) (: x Bool))` — the body annotates an Int64 value as Bool, a type error. An
+           ordinary def / an in-guest applied `(fn …)` rejects it CDZ0203; exporting the SAME closure must
+           too, rather than skip the body's type-check and emit an invalid component. The closure-export
+           path runs the body's `type_errors` before emit.")
+  (input  (do (def (a) (fn ((: x Int64)) (: x Bool))) (export a)))
+  (error  CDZ0203))
+
+(case "an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled"
+  (doc    "`(fn ((: x Int8)) (: (+ x 100) Int64))` — the `(+ x 100)` over an Int8 param is Int8, annotated
+           Int64: an annotation mismatch (CDZ0203). Previously this ill-typed body ESCAPED the type-check
+           and emitted an INVALID component (the `call` body left an i32 where the result declared i64:
+           'type mismatch: expected i64, found i32'). Now the body is type-checked first, so it rejects
+           CDZ0203 — the ill-typed program is caught, not miscompiled. (A WELL-TYPED narrow-arg/wide-result
+           closure would use an explicit conversion, e.g. `(fn ((: x Int8)) (Int64.of x))`.)")
+  (input  (do (def (a) (fn ((: x Int8)) (: (+ x 100) Int64))) (export a)))
+  (error  CDZ0203))
+
 ; RICHER CAPTURING closures — the C-HOST-2 make-forwarding + captured-cell machinery is arity- and
 ; body-shape-agnostic, so a closure that captures SEVERAL values, drives control flow off a captured
 ; Bool, binds a `let` in its body, or calls a top-level helper all cross the boundary and are invoked

@@ -205,12 +205,20 @@ pub fn emit(
         // `encode()` walker would need to LOOP — a later increment). It is not a sum, and
         // `runtime_value_form_template` returns `None` for a list, so it falls through to the decline
         // below — an honest "runtime list return not yet supported", not a miscompile.
+        // Route the RUNTIME escape on the ERASED result type. A newtype-over-a-heap-type result is a
+        // `Ty::Nominal { inner }` whose runtime value IS its `inner` (the tag adds nothing), so a
+        // newtype-over-SUM (`(type Cached (Mk (Option Int64)))` returned at run time) must take the SUM
+        // escape by its inner sum, not fall through to the scalar decline below. `strip_nominal` peels the
+        // tag so a nominal-over-{sum,bytes,compound} routes exactly as the bare underlying type does. (The
+        // CONSTANT-value path above is type-agnostic, so this matters only for a RUNTIME newtype value —
+        // which used to DECLINE "a sum crosses the boundary only as a single nullary export's result".)
+        let result = e.result.strip_nominal().clone();
         // A SUM result crosses through the resource shape but its `encode()` SWITCHES on the runtime
         // discriminant (`sum-disc`) and renders the matching variant — a per-variant template, not a
         // single flat one. Route through the sum escape when the sum has a value-form (`None` — a
         // variant with a non-renderable payload — falls through to decline below).
-        if let crate::ty::Ty::Sum { .. } = &e.result {
-            if let Some(sum_tpl) = crate::lower::sum_form_template(db, &e.result) {
+        if let crate::ty::Ty::Sum { .. } = &result {
+            if let Some(sum_tpl) = crate::lower::sum_form_template(db, &result) {
                 return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl, spans);
             }
             // A RECURSIVE sum (a self-referential payload — a linked list, a tree) has no fixed
@@ -219,10 +227,10 @@ pub fn emit(
             // runtime `value-encode` op: the encode body bakes the descriptor as a heap Bytes, calls
             // `value-encode(rep, desc)` to get the value-form document, and copies it out
             // (`DESIGN-recursive-sum-escape-walker.md`, approach C).
-            if let Some(desc) = crate::lower::sum_shape_descriptor(db, &e.result) {
+            if let Some(desc) = crate::lower::sum_shape_descriptor(db, &result) {
                 return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
             }
-        } else if matches!(e.result, crate::ty::Ty::Bytes) {
+        } else if matches!(result, crate::ty::Ty::Bytes) {
             // A RUNTIME `Bytes` result (a `concat`/recursion-built sequence — not a compile-time constant)
             // crosses through the resource shape, but its value form is VARIABLE-length: `encode()` LOOPS,
             // writing the static prefix, the runtime `bytes-len` as a LEB, a `bytes-get` copy loop, then
@@ -230,7 +238,7 @@ pub fn emit(
             if let Some(form) = crate::lower::runtime_bytes_form(db) {
                 return emit_runtime_bytes_resource(db, layout, e.def, &form, spans);
             }
-        } else if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
+        } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
             // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
