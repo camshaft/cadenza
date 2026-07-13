@@ -1888,6 +1888,7 @@ pub fn roundtrip_resource_core_module(
     imports: &[&RtOp],
     makes: &[ClosureMake],
     consumers: &[ClosureConsume],
+    plain: &[PlainExport],
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
@@ -2029,7 +2030,19 @@ pub fn roundtrip_resource_core_module(
                 consume_abs_base + i as u32,
             ));
         }
-        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(nmk + ncons, &items))
+        // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, so just name each
+        // by its core-func index (the envelope aliases + lifts them as ordinary top-level component funcs).
+        for p in plain {
+            items.extend_from_slice(&export(
+                &p.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                p.body_abs,
+            ));
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(nmk + ncons + plain.len(), &items),
+        )
     };
 
     // ── Code section ── defined bodies, then make wrappers, then consumer wrappers.
@@ -2163,6 +2176,7 @@ pub fn distinct_sig_roundtrip_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     groups: &[RtSigGroup],
+    plain: &[PlainExport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
@@ -2323,9 +2337,13 @@ pub fn distinct_sig_roundtrip_core_module(
                 fi += 1;
             }
         }
+        // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, exported by index.
+        for p in plain {
+            items.extend_from_slice(&export(&p.export_name, p.body_abs));
+        }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(total_makes + total_cons, &items),
+            &wasm_vec(total_makes + total_cons + plain.len(), &items),
         )
     };
 

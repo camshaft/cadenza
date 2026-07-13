@@ -582,6 +582,8 @@ pub enum Ty {
     //# A map MUST associate keys of one type with values of one type.
     //= spec/capabilities/collections-and-text.md#a-map-associates-keys-with-values
     //# A map MUST contain each key at most once.
+    //= spec/capabilities/collections-and-text.md#keys-are-compared-by-value-not-representation
+    //# Whether a map contains a key, and which entry a lookup or removal names, MUST be decided by the key's value under *core-semantics.md §Equality Is Structural* — two keys that are equal as values name the same entry regardless of how each was constructed or stored.
     Map(Box<Ty>, Box<Ty>),
     /// A SET: a persistent UNORDERED collection of UNIQUE ELEMENTS of one type (`collections-and-text.md`
     /// §A Set Is A Collection Of Unique Elements). PARAMETRIC in ONE element type (like `List`, unlike

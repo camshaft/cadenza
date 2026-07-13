@@ -2202,6 +2202,19 @@ fn emit_roundtrip_resource(
                 .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
         })
         .collect();
+    // PLAIN exports: neither a producer (closure RESULT) nor a consumer (a closure PARAM). They ride
+    // alongside the round trip as ordinary top-level funcs — WITHOUT this they were silently dropped.
+    let plain_exports: Vec<&crate::layout::ExportPlan> = layout
+        .exports
+        .iter()
+        .filter(|e| {
+            !matches!(e.result, crate::ty::Ty::Fn(_, _))
+                && !e
+                    .params
+                    .iter()
+                    .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+        })
+        .collect();
     // An export that is BOTH a producer (closure RESULT) and a consumer (closure PARAM) — a closure
     // TRANSFORMER `(-> (-> A B) … (-> C D))`, e.g. `(def (twice (: g …)) (fn (x) (g (g x))))` — is out of
     // scope: the host would hand a closure IN and get one OUT of the same call, which needs the param to
@@ -2403,6 +2416,37 @@ fn emit_roundtrip_resource(
             result_byte: consumer_result_byte,
         });
     }
+    // Per PLAIN export: source name (core + kebab boundary name), param bytes, scalar result byte.
+    struct PlainSpec {
+        def: usize,
+        name: String,
+        param_bytes: Vec<u8>,
+        result_byte: u8,
+    }
+    let mut plain_specs: Vec<PlainSpec> = Vec::new();
+    for e in &plain_exports {
+        let param_bytes: Vec<u8> = e
+            .params
+            .iter()
+            .map(|(_, t)| {
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            })
+            .collect::<Result<_, _>>()?;
+        let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
+            Reject::decline(format!(
+                "a plain export `{}` returning {} has no scalar host-boundary representation — a \
+                 compound result alongside a round-trip closure is a later widening",
+                e.name,
+                e.result.render_name()
+            ))
+        })?;
+        plain_specs.push(PlainSpec {
+            def: e.def,
+            name: e.name.clone(),
+            param_bytes,
+            result_byte,
+        });
+    }
 
     // Lifted-body ops (a capturing producer closure reads its env in the lifted body).
     let lifted_bodies: Vec<crate::ast::StructId> = layout
@@ -2467,11 +2511,23 @@ fn emit_roundtrip_resource(
         })
         .collect::<Result<_, Reject>>()?;
 
+    let ser_plain: Vec<serialize::PlainExport> = plain_specs
+        .iter()
+        .map(|p| {
+            Ok(serialize::PlainExport {
+                export_name: p.name.clone(),
+                body_abs: layout.abs(p.def).ok_or_else(|| {
+                    Reject::decline("a plain export is not in the emission order")
+                })?,
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
     let main_core = serialize::roundtrip_resource_core_module(
         &funcs,
         &imports,
         &ser_makes,
         &ser_consumers,
+        &ser_plain,
         lifted_type_idx,
         &layout,
     )
@@ -2493,14 +2549,23 @@ fn emit_roundtrip_resource(
             result_byte: c.result_byte,
         })
         .collect();
-    Ok(envelope::assemble_roundtrip_resource(
+    let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
+        .iter()
+        .map(|p| envelope::PlainExportAbi {
+            name: p.name.clone(),
+            core_name: p.name.clone(),
+            param_bytes: p.param_bytes.clone(),
+            result_byte: p.result_byte,
+        })
+        .collect();
+    Ok(envelope::assemble_roundtrip_resource_mixed(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
         &abi_makes,
         &abi_consumers,
-        None,
+        &abi_plain,
     ))
 }
 
@@ -2609,8 +2674,15 @@ fn emit_distinct_sig_roundtrip_resource(
         ret_vt: crate::backend::wasm::lir::ValType,
         result_byte: u8,
     }
+    struct PlainS {
+        def: usize,
+        name: String,
+        param_bytes: Vec<u8>,
+        result_byte: u8,
+    }
     let mut makes: Vec<MakeS> = Vec::new();
     let mut cons: Vec<ConsS> = Vec::new();
+    let mut plains: Vec<PlainS> = Vec::new();
     for e in &layout.exports {
         if let Some(s) = producer_sig(e) {
             let group = sigs.iter().position(|x| *x == s).unwrap();
@@ -2635,13 +2707,31 @@ fn emit_distinct_sig_roundtrip_resource(
                 param_vts,
                 param_bytes,
             });
+        } else if consumer_sigs(e).is_empty() {
+            // A PLAIN (non-closure) export — rides alongside the round trip as an ordinary top-level func.
+            let param_bytes: Vec<u8> = e
+                .params
+                .iter()
+                .map(|(_, t)| {
+                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                })
+                .collect::<Result<_, _>>()?;
+            let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
+                Reject::decline(format!(
+                    "a plain export `{}` returning {} has no scalar host-boundary representation — a \
+                     compound result alongside a round-trip closure is a later widening",
+                    e.name,
+                    e.result.render_name()
+                ))
+            })?;
+            plains.push(PlainS {
+                def: e.def,
+                name: e.name.clone(),
+                param_bytes,
+                result_byte,
+            });
         } else {
             let cs = consumer_sigs(e);
-            if cs.is_empty() {
-                return Err(Reject::decline(
-                    "a distinct-signature round-trip export is neither a producer nor a consumer",
-                ));
-            }
             let group = sigs.iter().position(|x| *x == cs[0]).unwrap();
             let mut params = Vec::new();
             let mut abi_params = Vec::new();
@@ -2768,17 +2858,44 @@ fn emit_distinct_sig_roundtrip_resource(
         });
     }
 
-    let main_core =
-        serialize::distinct_sig_roundtrip_core_module(&funcs, &imports, &ser_groups, &layout)
-            .map_err(Reject::decline)?;
+    // Plain-export specs: resolve each body's core-func index post-build.
+    let ser_plain: Vec<serialize::PlainExport> = plains
+        .iter()
+        .map(|p| {
+            Ok(serialize::PlainExport {
+                export_name: p.name.clone(),
+                body_abs: layout.abs(p.def).ok_or_else(|| {
+                    Reject::decline("a plain export is not in the emission order")
+                })?,
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+    let abi_plain: Vec<envelope::PlainExportAbi> = plains
+        .iter()
+        .map(|p| envelope::PlainExportAbi {
+            name: p.name.clone(),
+            core_name: p.name.clone(),
+            param_bytes: p.param_bytes.clone(),
+            result_byte: p.result_byte,
+        })
+        .collect();
+    let main_core = serialize::distinct_sig_roundtrip_core_module(
+        &funcs,
+        &imports,
+        &ser_groups,
+        &ser_plain,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_distinct_sig_roundtrip_resource(
+    Ok(envelope::assemble_distinct_sig_roundtrip_resource_mixed(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
         &abi_groups,
+        &abi_plain,
     ))
 }
 

@@ -410,7 +410,13 @@ fn map_module(ast: &mut Arenas) -> StructId {
 /// an operator record whose `(meta t)` is a one-parameter `(fn (a) …)` type-lambda (like `List`). Realizes
 /// `of : ∀a. (List a) → (Set a)`, `contains : ∀a. (Set a) → a → Bool`, `len : ∀a. (Set a) → Int64`,
 /// `insert`/`remove : ∀a. (Set a) → a → (Set a)`, and `union`/`intersection`/`difference : ∀a. (Set a) →
-/// (Set a) → (Set a)`. Mirrors `list_module` (one type parameter, unlike `map_module`'s two).
+/// (Set a) → (Set a)`. Mirrors `list_module` (one type parameter, unlike `map_module`'s two). `contains`
+/// yields a plain `Bool` (total membership, never a trap); there is NO positional-access field (no `at`)
+/// — a set is unordered, so it has no element to address by position.
+//= spec/capabilities/collections-and-text.md#set-membership-is-total
+//# Testing whether a set contains an element MUST be total, yielding a boolean rather than trapping.
+//= spec/capabilities/collections-and-text.md#set-membership-is-total
+//# A set MUST NOT offer access to an element by position, because a set is unordered and has no positional element to address.
 fn set_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta apply)` = the `Set` TYPE constructor (`(Set Int64)` reduces to `Ty::Set(Int64)`).
@@ -698,6 +704,8 @@ fn string_module(ast: &mut Arenas) -> StructId {
     // `scalar-at : String → Int64 → (Option Char)` — the fallible read of the CHAR (single Unicode scalar)
     // at a scalar position (the char-typed companion of `at`, which yields a one-scalar String). In range
     // → `(Some #\c)`, out → `None`. Addresses SCALAR values, not bytes. A constant string FOLDS.
+    //= spec/capabilities/collections-and-text.md#a-string-s-scalars-are-addressable
+    //# Reading a string's scalar at a position MUST be total, yielding an optional char that is present when the position is in bounds and absent when it is out of bounds, so that scalar access is fallible in the same way list and byte indexing are rather than trapping.
     let scalar_at_ty = str_scalar_at_type(ast);
     let scalar_at_op = list_op_record(ast, "str-scalar-at", scalar_at_ty);
     let scalar_at_key = push_atom(ast, Leaf::Name("scalar-at".to_string()));
@@ -724,8 +732,13 @@ fn string_module(ast: &mut Arenas) -> StructId {
     children.push(push_list(ast, vec![to_bytes_key, to_bytes_op]));
     // `from-bytes : Bytes → (Option String)` — the TOTAL UTF-8 DECODE (the inverse of `to-bytes`): a
     // well-formed byte sequence → `Some string`, ill-formed (invalid/overlong/surrogate) → `None`, never
-    // a trap (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping). A constant
-    // `Bytes` FOLDS via strict UTF-8 validation.
+    // a trap. A constant `Bytes` FOLDS via strict UTF-8 validation. `Some`/`None` distinguishes a
+    // successful decode from ill-formed bytes (an ordinary value the program handles), and `from-bytes`
+    // is the inverse of `to-bytes` on a well-formed sequence (decode-then-re-encode yields those bytes).
+    //= spec/capabilities/collections-and-text.md#decoding-bytes-to-a-string-is-total-not-trapping
+    //# Decoding a byte sequence to a string MUST yield a result that distinguishes a successful decode from a byte sequence that is not well-formed UTF-8, rather than trapping on ill-formed input, so that ill-formed bytes are an ordinary value a program handles rather than a halt.
+    //= spec/capabilities/collections-and-text.md#decoding-bytes-to-a-string-is-total-not-trapping
+    //# Encoding a string to its UTF-8 byte sequence MUST be the inverse of decoding a well-formed byte sequence, so that a string decoded from bytes and re-encoded yields those same bytes.
     let from_bytes_ty = string_from_bytes_type(ast);
     let from_bytes_op = list_op_record(ast, "str-from-bytes", from_bytes_ty);
     let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".to_string()));

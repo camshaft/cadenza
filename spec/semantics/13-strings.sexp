@@ -8,6 +8,19 @@
   (input  (String.concat "hello" " world"))
   (output (: "hello world" String)))
 
+(case "a runtime-built string crosses the boundary as its value form"
+  (doc    "A String built at RUN TIME (a recursion over a live parameter, not a compile-time constant)
+           returns to the host as `(: \"…\" String)`. A runtime String is the same UTF-8 byte-rope heap
+           value as Bytes (String.concat is a byte-rope concat), so it escapes through the SAME looping
+           encoder that a runtime Bytes does — only the value-form frame differs (a String vs a Bytes
+           leaf). `rep` appends \"x\" `n` times to \"hi\"; with n=3 → \"hixxx\". Pins that a genuinely
+           runtime String (not a folded constant) has a component-boundary representation — it declined
+           before as \"String has no component boundary representation\".")
+  (input  (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+              (def (main) (rep "hi" 3))
+              (export main)))
+  (output (: "hixxx" String)))
+
 (case "string length"
   (input  (String.scalar-len "hello"))
   (output (: 5 Int64)))

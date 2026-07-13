@@ -1571,6 +1571,34 @@ type IfOfTuples = (
 /// back — folding through it would duplicate the computation), so a `Ref` to one stops the reduction;
 /// a single-use / propagated `Ref` and an `Annot` are followed. Mirrors `reduce_to_tuple_elems`'s
 /// ref/annot/kept handling.
+/// If `id` reduces to a runtime `match`, return its AST occurrence — the `(match scrutinee (pat body)…)`
+/// list — so the caller can push a surrounding operation into each arm body (the match analogue of
+/// [`reduce_to_if`]'s case-of-case). Returns the MATCH FORM's occurrence (not the destructured parts),
+/// because a rewrite must rebuild the arms with their PATTERN nodes intact (a pattern's binders are in
+/// scope for its rewritten body). Follows a `Ref`/annotation/β-reducible-call to the match, exactly as
+/// `reduce_to_if` does, so `((classify c) 5)` — a call returning a match of closures — is reached too.
+/// `None` for a kept (multi-use) binding, or anything that is not a match.
+pub fn reduce_to_match(db: &mut Db, id: StructId) -> Option<StructId> {
+    match resolved_of(db, id) {
+        Resolved::Match { .. } => Some(id),
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                None
+            } else {
+                reduce_to_match(db, value)
+            }
+        }
+        Resolved::Annot { expr, .. } => reduce_to_match(db, expr),
+        Resolved::Apply { head, args } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let reduced = apply_lambda(g, head, &args).ok().flatten()?;
+            reduce_to_match(g, reduced)
+        }
+        _ => None,
+    }
+}
+
 pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, StructId)> {
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => Some((cond, then_, else_)),
@@ -1651,19 +1679,23 @@ pub fn reduce_ctor(
                     if signed { "Int" } else { "UInt" }
                 ));
             }
-            // A width the compiler cannot resolve to a compile-time natural reduces to the invalid
-            // sentinel width 0, so the built module's type is `Ty::Int(Fixed(0))` — which
-            // `int_bounds`/`fits_width` reject as CDZ0302 exactly as an explicit `(UInt 0)` is (the bad
-            // width is rejected AT THE ANNOTATION, not silently dropped to the default Int64). This
-            // covers BOTH a MALFORMED concrete width (negative/over-u32/non-integer) AND a NON-CONSTANT
-            // one — a RUNTIME parameter, an unbound name, a non-constant computation: an integer type
-            // MUST be indexed by a compile-time width (numeric-model.md §An Integer Type Is Indexed By A
-            // Compile-Time Width), so a runtime value in width position is rejected, not accepted-and-
-            // ignored. (A width VARIABLE `(Int a)` inside an operator's `(meta t)` scheme never reaches
-            // here — it is read symbolically by `width_in_env` as `Width::Var`, not by `read_width`.)
+            // A width the compiler cannot resolve to a compile-time natural, OR a resolved one OUTSIDE the
+            // admitted range `1..=64`, reduces to the invalid sentinel width 0, so the built module's type
+            // is `Ty::Int(Fixed(0))` — which `int_bounds`/`fits_width` reject as CDZ0302 exactly as an
+            // explicit `(UInt 0)` is (the bad width is rejected AT THE ANNOTATION, not silently dropped to
+            // the default Int64, and not carried to a decline at emit). This covers a MALFORMED concrete
+            // width (negative/over-u32/non-integer), a NON-CONSTANT one (a RUNTIME parameter, an unbound
+            // name, a non-constant computation — an integer type MUST be indexed by a compile-time width,
+            // numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width), AND an OVER-CEILING
+            // one (`(UInt 65)`/`(UInt 128)` — a fixed-size integer wider than 64 bits is reserved to the
+            // opt-in big-integer layer, not the width-indexed constructor, options/numeric-model/ #Widths
+            // above 64 are reserved). This is the constructor's admitted-RANGE gate, the integer analogue
+            // of the `FloatCtor` arm's admitted-SET gate (`{32,64}`). (A width VARIABLE `(Int a)` inside an
+            // operator's `(meta t)` scheme never reaches here — it is read symbolically by `width_in_env`
+            // as `Width::Var`, not by `read_width`.)
             let width = match read_width(db, args[0]) {
-                WidthRead::Fixed(w) => w,
-                WidthRead::Malformed | WidthRead::NotConst => 0,
+                WidthRead::Fixed(w) if (1..=64).contains(&w) => w,
+                _ => 0,
             };
             // Build once per (ctor, width): the first demand appends the module, every later demand —
             // repeated on this occurrence, or another `(Int 64)` elsewhere — returns the same node, so

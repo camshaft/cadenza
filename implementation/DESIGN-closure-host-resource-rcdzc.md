@@ -439,6 +439,19 @@ the component type. The new work:
   `cdz-run` needs no change (the mixed dispatch already routes plain→bare-func, closure→make/call). +5
   corpus (distinct-sig Int64->Int64 + Int64->Bool beside a plain scalar, each closure + the plain driven;
   distinct-sig capturing closures beside a parameterized plain export). Gate 1310p/0f.
+- **✅ PLAIN exports alongside a ROUND-TRIP closure program COMPLETE `@0af24de1` — a latent MISCOMPILE fix.**
+  The round-trip path (producer + consumer exports) SILENTLY DROPPED a plain (non-closure) export — it
+  emitted a valid component MISSING that export's name; the distinct-sig round-trip DECLINED such a program
+  outright. Both now thread plain exports as ordinary top-level component funcs alongside the closure
+  interface, the same plain-export composition the multi-export mixed envelopes use. Pieces: (a)
+  `serialize::roundtrip_resource_core_module` + `distinct_sig_roundtrip_core_module` gain `plain:
+  &[PlainExport]` (each exported by its core-func index); (b) `envelope::assemble_roundtrip_resource_mixed`
+  + `assemble_distinct_sig_roundtrip_resource_mixed` (P=0 delegated by the existing entry points) alias each
+  plain body off the same program instance after the closure funcs, lift it, export it top-level; (c)
+  `emit_roundtrip_resource` collects plain exports (neither closure-result nor closure-param);
+  `emit_distinct_sig_roundtrip_resource`'s "neither a producer nor a consumer" decline now collects the
+  export as plain. cdz-run unchanged. +6 corpus (single-sig RT + plain, both driven + parameterized plain;
+  distinct-sig RT + plain, both signature sides + the plain driven). Gate 1329p/0f.
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
   into the value-heap escape's encode/decode); a compound-RESULT plain export alongside a closure (needs
   the memory/realloc lift shape); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
