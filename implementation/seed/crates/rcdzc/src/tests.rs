@@ -5870,6 +5870,65 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_right_shifts_collapse_to_a_single_shift() {
+        // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
+        // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
+        // A+B < width (a combined count ≥ width would be masked mod width by the machine shift). Pins the
+        // collapse at the Lir level (one shift) and the width guard (two shifts when A+B ≥ width).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let shifts = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64ShrS | Lir::I64ShrU | Lir::I32ShrS | Lir::I32ShrU))
+                .count()
+        };
+        // Int64 A+B=5 < 64 → one signed shift; UInt64 → one unsigned; triple nest → one.
+        assert_eq!(shifts(&lir("(: x Int64)", "(: (>> (>> x 2) 3) Int64)")), 1, "signed shr-shr → one");
+        assert_eq!(shifts(&lir("(: x UInt64)", "(: (>> (>> x 2) 3) UInt64)")), 1, "unsigned shr-shr → one");
+        assert_eq!(shifts(&lir("(: x Int64)", "(: (>> (>> (>> x 1) 2) 3) Int64)")), 1, "triple → one");
+        // A+B ≥ width does NOT combine (would be masked mod width): Int64 40+30=70, Int8 3+5=8.
+        assert_eq!(shifts(&lir("(: x Int64)", "(: (>> (>> x 40) 30) Int64)")), 2, "70 >= 64 → keep two");
+        assert_eq!(shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 5) Int8)")), 2, "8 >= 8 → keep two");
+        // Int8 3+4=7 < 8 combines.
+        assert_eq!(shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 4) Int8)")), 1, "7 < 8 → one");
+
+        // VALUE PARITY — signed sign-fill, unsigned zero-fill, negatives, and the un-combined saturating
+        // double shift.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(1024)]), 32);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1024)]), -32);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1)]), -1);
+        assert_eq!(run::<u64>("(: x UInt64)", "(: (>> (>> x 2) 3) UInt64)", &[Val::U64(1024)]), 32);
+        // The un-combined case still computes the saturating double-shift value.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 40) 30) Int64)", &[Val::S64(-1)]), -1);
+        assert_eq!(run::<i8>("(: x Int8)", "(: (>> (>> x 3) 5) Int8)", &[Val::S8(-1)]), -1);
+    }
+
+    #[test]
     fn a_mask_covering_a_shifted_values_range_is_elided() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;

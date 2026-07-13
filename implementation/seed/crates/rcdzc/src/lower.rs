@@ -5905,6 +5905,15 @@ fn arith_identity(
         Prim::BitAnd if let Some(folded) = nested_mask_collapse(db, lhs, lc, rhs, rc) => Some(folded),
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
+        // NESTED RIGHT-SHIFT COLLAPSE: `(>> (>> v A) B)` → `(>> v (A+B))` when A, B are constants and
+        // A+B < width. A right shift is TOTAL (never traps), and shifting right by A then B drops the same
+        // low A+B bits as one shift by A+B — for BOTH kinds (`>>ₛ` sign-fills, `>>ᵤ` zero-fills; the inner
+        // and outer `>>` on the same-typed value are the same kind, so composing is exact). Bounded by
+        // A+B < width: a combined count ≥ width would be masked mod width by the machine shift (wrong),
+        // whereas the double shift saturates to the sign / to zero — so only the in-range sum is
+        // value-identical. `v` keeps its traps (it stays the operand). Left shift is NOT combinable (it is
+        // CHECKED — `(v<<A)<<B` traps differently from `v<<(A+B)`). Guarded via `nested_shr_combine`.
+        Prim::Shr if let Some(folded) = nested_shr_combine(db, lhs, rc) => Some(folded),
         // `(>>ᵤ x k)` → 0 when the LOGICAL right shift drops ALL of `x`'s significant bits — its provable
         // bit-bound `B <= k`. E.g. `(x & 15) >>ᵤ 4`: `x & 15` fits 4 bits, `>>ᵤ 4` shifts them all out → 0.
         // DISCARDS `x`, so gated on `is_trap_free` (a trapping operand's trap must survive). `k` must be a
@@ -6002,6 +6011,48 @@ fn nested_mask_collapse(
         return Some(folded);
     }
     None
+}
+
+/// The NESTED RIGHT-SHIFT COLLAPSE for `(>> lhs rhs)`: when `lhs` is itself `(>> v A)` (A a constant
+/// count) and the outer count `rc` is a constant B with `A + B < width`, returns `(>> v (A+B))` — one
+/// shift instead of two. `None` otherwise (so later folds fire). A right shift is total; the inner and
+/// outer `>>` are the SAME kind on the same-typed value, so composing them drops the same low `A+B` bits
+/// as one shift by `A+B`. The `A+B < width` bound is essential: a combined count `≥ width` would be
+/// masked mod width by the machine shift, disagreeing with the saturating double shift. `v` keeps its
+/// traps (it stays the operand). The combined count `A+B` is a fresh `Leaf::Int` atom.
+fn nested_shr_combine(db: &mut Db, lhs: StructId, rc: &Core) -> Option<Core> {
+    // Outer count B must be a constant ≥ 1 (0 is handled by the `>> 0` identity).
+    let Core::ConstInt(b) = rc else { return None };
+    let b = b.to_i64().filter(|&b| b >= 1)?;
+    // `lhs` must be an inner right shift by a constant count A ≥ 1.
+    let Core::Arith {
+        op: Prim::Shr,
+        lhs: v,
+        rhs: inner_count,
+    } = core_of(db, lhs)
+    else {
+        return None;
+    };
+    let Core::ConstInt(a) = core_of(db, inner_count) else {
+        return None;
+    };
+    let a = a.to_i64().filter(|&a| a >= 1)?;
+    // Sound ONLY when the combined count stays in range for the SHIFTED VALUE's width (both shifts share
+    // it — binary-op unification). A `width` of 0 (deferred) fails the guard, so no fold.
+    let width = shift_width(db, v) as i64;
+    if width == 0 || a + b >= width {
+        return None;
+    }
+    let fc = db.push_atom(crate::ast::Leaf::Int {
+        value: IntValue::from_i64(a + b),
+        radix: crate::ast::Radix::Dec,
+    });
+    trace!(target: "rcdzc::fold", a, b, sum = a + b, "nested right-shift collapse (>> (>> v A) B) → (>> v (A+B))");
+    Some(Core::Arith {
+        op: Prim::Shr,
+        lhs: v,
+        rhs: fc,
+    })
 }
 
 /// Whether masking the value at `val` with the constant `mask_core` is a NO-OP — i.e. `val & M == val`.
