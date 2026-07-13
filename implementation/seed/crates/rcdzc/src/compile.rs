@@ -173,6 +173,9 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // binding, an unused argument). That is conformant (`core-semantics.md` §A Trap Occurs Only Where
     // Its Computation Is Observed) but almost always a defect, so warn — the build still succeeds.
     let mut diagnostics = collect_dead_trap_warnings(&mut db);
+    // Unused-binding warnings (a let binding / parameter / non-exported def nothing references, unless
+    // `_`-prefixed) ride alongside the artifact too — well-formed, just likely a defect (CDZ0306).
+    diagnostics.extend(collect_unused_binding_warnings(&mut db));
 
     // A run that emits BOTH a plain component (`Wasm`) AND a detached DWARF sidecar (`Dwarf`) links the
     // two: the component carries an `external_debug_info` custom section naming the sidecar file, so a
@@ -286,7 +289,13 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
     for f in &mut faults {
         sanitize_origin(db, f);
     }
-    faults.iter().map(Diagnostic::from_reject).collect()
+    let mut out: Vec<Diagnostic> = faults.iter().map(Diagnostic::from_reject).collect();
+    // WARNINGS ride alongside the faults so "diagnostics as you type" (`Query::Diagnostics` / `cdz
+    // check`) surfaces them too — an unused binding and a dead-trap are exactly the kind of thing an
+    // editor's inline lint should show. They are non-error severity, so they never deny an artifact.
+    out.extend(collect_dead_trap_warnings(db));
+    out.extend(collect_unused_binding_warnings(db));
+    out
 }
 
 /// Every fault across the program's definitions. Well-formedness — scope resolution and type
@@ -819,6 +828,160 @@ fn dropped_trap_anchor(db: &mut Db, id: StructId) -> Option<StructId> {
         Core::Poison(r) => r.at.or(Some(id)),
         _ => Some(id),
     }
+}
+
+/// Warn on a binding that is DECLARED but never referenced — a `let` binding, a `fn`/`def` parameter,
+/// or a non-exported top-level definition (CDZ0306). Suppressed when the name begins with `_` (the
+/// "intentionally unused" convention). A WARNING, never a rejection: an unused binding is well-formed.
+///
+/// The used-set is the same resolution-column read `UsesOf` performs: a reference resolves to
+/// `Resolved::Ref { value }` pointing at the binding's TARGET occurrence (a `let` binding's initializer,
+/// a parameter's own occurrence, a def's body). A binder whose target is not in that set is unused.
+/// One left-to-right walk of the user nodes collects both the binders (from `let`/scope forms) and the
+/// references (`Ref`), so the pass is O(nodes).
+fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
+    use crate::resolved::Resolved;
+
+    // The candidate binders: (name-occ to anchor the warning, TARGET occ a reference resolves to, a
+    // human label for the message). Collected across all user nodes.
+    struct Binder {
+        name_occ: StructId,
+        target: StructId,
+        name: String,
+        kind: &'static str,
+    }
+    let mut binders: Vec<Binder> = Vec::new();
+    // The occurrences that ARE referenced — every `Ref { value }` a user node resolves to.
+    let mut used: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    // DECLARATION sites are not uses. A def's NAME occurrence (the `helper` in `(def (helper) …)`)
+    // resolves to a `Ref` at its own body — but it is where the def is DECLARED, not a reference to it
+    // (the same exclusion `uses_of` makes). Skip a `Ref` originating at one so a def isn't marked used
+    // by its own signature.
+    let decl_sites: std::collections::HashSet<u32> = db
+        .defs
+        .iter()
+        .filter_map(|d| match db.ast.get(d.sig_occ) {
+            crate::ast::Struct::List(kids) => kids.first().map(|k| k.0),
+            _ => None,
+        })
+        .collect();
+
+    let node_count = db.ast.structure.len();
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if !db.is_user_node(id) {
+            continue;
+        }
+        if decl_sites.contains(&id.0) {
+            continue; // a declaration site's `Ref`-to-own-body is not a use
+        }
+        match crate::resolve::resolved_of(db, id) {
+            // A `let`: each `(name-occ, init-occ)` binding is a binder whose target is its initializer
+            // (what a reference resolves to). The binder is used iff some `Ref` points at that init.
+            Resolved::Let { bindings, .. } => {
+                for (name_occ, init) in bindings.iter() {
+                    if let Some(name) = db.ast.as_name(*name_occ) {
+                        binders.push(Binder {
+                            name_occ: *name_occ,
+                            target: *init,
+                            name: name.to_string(),
+                            kind: "binding",
+                        });
+                    }
+                }
+            }
+            // A reference: mark its target used. (A parameter used as a formal is `Param { binder }`
+            // at its OWN declaration — that is the declaration, not a use; only a `Ref` counts.)
+            Resolved::Ref { value } => {
+                used.insert(value.0);
+            }
+            _ => {}
+        }
+    }
+
+    // Function/def PARAMETERS: a parameter's target IS its own occurrence (a reference resolves to
+    // `Ref { value: param-occ }`). Enumerate every def's params (a `fn`'s params are the same shape,
+    // reached through `db.defs` for a top-level def; a nested `fn`'s params are covered when its scope
+    // form is walked — but the corpus's parameters are overwhelmingly def/fn signatures, and the
+    // per-scope binder index already indexes them).
+    for d in &db.defs {
+        for &p in &d.params {
+            // The parameter's NAME occurrence (a bare `a` or the inner name of `(: a T)`).
+            let name_occ = param_name_occ(db, p);
+            if let Some(name) = db.ast.as_name(name_occ) {
+                binders.push(Binder {
+                    name_occ,
+                    target: name_occ,
+                    name: name.to_string(),
+                    kind: "parameter",
+                });
+            }
+        }
+    }
+
+    // A non-exported top-level DEFINITION that nothing references is unused (an exported def is part of
+    // the interface — used by definition). A def's target is its body (a `Ref` to a nullary def points
+    // at the body) OR — for a def-with-params — the reference resolves to a `Lambda { body }`, which is
+    // not a plain `Ref`, so def-with-params usage is tracked via the body appearing... to keep this
+    // simple and avoid false "unused" on called functions, only flag NULLARY value defs here; a
+    // function's usage is subtle (Lambda) and better covered once needed.
+    let exported: std::collections::HashSet<&str> =
+        db.exports.iter().map(|e| e.name.as_str()).collect();
+    let def_binders: Vec<Binder> = db
+        .defs
+        .iter()
+        .filter(|d| d.params.is_empty()) // nullary value defs only (see note above)
+        .filter(|d| !exported.contains(d.name.as_str()))
+        .filter_map(|d| {
+            let body = d.body?;
+            // The def NAME occurrence — the signature's first child (for the warning anchor).
+            let name_occ = match db.ast.get(d.sig_occ) {
+                crate::ast::Struct::List(kids) => kids.first().copied()?,
+                _ => return None,
+            };
+            Some(Binder {
+                name_occ,
+                target: body,
+                name: d.name.clone(),
+                kind: "definition",
+            })
+        })
+        .collect();
+
+    // Emit a warning per unused, non-`_`-prefixed binder, anchored at its name occurrence.
+    let mut out = Vec::new();
+    for b in binders.into_iter().chain(def_binders) {
+        if b.name.starts_with('_') || used.contains(&b.target.0) {
+            continue;
+        }
+        if !db.is_user_node(b.name_occ) {
+            continue;
+        }
+        out.push(Diagnostic::warning(
+            Code::UnusedBinding,
+            format!(
+                "unused {}: `{}` is never used (prefix with `_` to silence)",
+                b.kind, b.name
+            ),
+            Some(b.name_occ),
+        ));
+    }
+    out
+}
+
+/// A parameter occurrence's NAME occurrence — the bare name, or the inner name of an annotated
+/// `(: name T)` binder. Mirrors `resolve::param_name` / `db::build_scope_binders` (kept in sync).
+fn param_name_occ(db: &Db, param: StructId) -> StructId {
+    if db.ast.as_name(param).is_some() {
+        return param;
+    }
+    if let Some(tail) = db.ast.as_form(param, ":")
+        && let Some(&name_occ) = tail.first()
+    {
+        return name_occ;
+    }
+    param
 }
 
 /// The program's name for artifact labelling — the first exported name, or "main". (A cosmetic label;

@@ -7110,13 +7110,18 @@ mod diagnostics {
             "(module m (def (main) (let ((t (/ 100 0))) 5)) (export main))",
             "(module m (def (f x y) x) (def (main) (f 7 (/ 100 0))) (export main))",
         ] {
-            let ws = warnings_of(src);
+            // Exactly one DEAD-TRAP warning (CDZ0305). Some shapes also carry an unused-binding warning
+            // (CDZ0306 — the dropped `let t`, the unused param `y`), which is a separate, correct signal;
+            // filter to the dead-trap code so this test pins the dead-trap behavior specifically.
+            let dead: Vec<_> = warnings_of(src)
+                .into_iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+                .collect();
             assert_eq!(
-                ws.len(),
+                dead.len(),
                 1,
-                "expected exactly one dead-trap warning for `{src}`, got {ws:?}"
+                "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
             );
-            assert_eq!(ws[0].code.as_deref(), Some("CDZ0305"), "for `{src}`");
         }
     }
 
@@ -7171,6 +7176,73 @@ mod diagnostics {
             )
             .is_empty(),
             "a runtime (unprovable) trap in a dropped position must NOT warn"
+        );
+    }
+
+    /// The CDZ0306 unused-binding warning messages from `src`. Uses `diagnostics()` directly (the
+    /// export-independent fault+warning set `cdz check` drives) rather than `warnings_of` — a program
+    /// exporting a parameterized function does not emit a component, but its diagnostics are still
+    /// defined (that is the point of the export-independent query).
+    fn unused_of(src: &str) -> Vec<String> {
+        let mut db = Db::load(parse(src));
+        crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0306"))
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn an_unused_let_binding_and_parameter_warn() {
+        // `b` (a let binding) and `q` (a parameter) are declared but never referenced → CDZ0306; `a`
+        // and `p` are used, so they do not warn.
+        let src = "(module m (def (f p q) (let ((a (: 1 Int64)) (b (: 2 Int64))) (+ a p))) \
+                   (export f))";
+        let u = unused_of(src);
+        assert_eq!(u.len(), 2, "exactly b and q are unused: {u:?}");
+        assert!(
+            u.iter().any(|m| m.contains("`b`") && m.contains("binding")),
+            "{u:?}"
+        );
+        assert!(
+            u.iter()
+                .any(|m| m.contains("`q`") && m.contains("parameter")),
+            "{u:?}"
+        );
+    }
+
+    #[test]
+    fn an_underscore_prefix_silences_the_unused_warning() {
+        // Rust's convention: a name beginning with `_` is intentionally unused — no warning.
+        let src = "(module m (def (f p _q) (let ((a (: 1 Int64)) (_b (: 2 Int64))) (+ a p))) \
+                   (export f))";
+        assert!(
+            unused_of(src).is_empty(),
+            "`_q`/`_b` are silenced: {:?}",
+            unused_of(src)
+        );
+    }
+
+    #[test]
+    fn an_unused_nonexported_definition_warns_but_a_used_or_exported_one_does_not() {
+        // A nullary def nothing references (and not exported) is unused.
+        let unused = "(module m (def (helper) (: 9 Int64)) (def (main) 42) (export main))";
+        let u = unused_of(unused);
+        assert_eq!(u.len(), 1, "helper is unused: {u:?}");
+        assert!(
+            u[0].contains("`helper`") && u[0].contains("definition"),
+            "{u:?}"
+        );
+        // A def that IS referenced does not warn.
+        assert!(
+            unused_of("(module m (def (helper) (: 9 Int64)) (def (main) helper) (export main))")
+                .is_empty(),
+            "a used def must not warn"
+        );
+        // An EXPORTED def is part of the interface — never flagged.
+        assert!(
+            unused_of("(module m (def (helper) (: 9 Int64)) (export helper))").is_empty(),
+            "an exported def must not warn"
         );
     }
 }

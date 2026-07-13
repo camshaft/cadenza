@@ -1243,3 +1243,38 @@ fn type_at_on_a_keyword_names_it_not_any() {
     assert!(!stdout.contains("Any"), "no misleading Any: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- `cdz check` surfaces unused-binding warnings (CDZ0306), with `_`-prefix opt-out ----
+
+#[test]
+fn check_warns_on_an_unused_binding_and_underscore_silences_it() {
+    let dir = scratch_dir("check_unused");
+    let f = dir.join("prog.sexp");
+    // `q` (param) and `b` (let) are unused; `p` and `a` are used.
+    std::fs::write(
+        &f,
+        "(module m (def (f p q) (let ((a (: 1 Int64)) (b (: 2 Int64))) (+ a p))) (export f))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok, "warnings do not fail the build (exit 0)");
+    assert!(stdout.contains("CDZ0306"), "an unused warning: {stdout}");
+    assert!(
+        stdout.contains("`q`") && stdout.contains("`b`"),
+        "both unused named: {stdout}"
+    );
+
+    // `_`-prefix silences both.
+    std::fs::write(
+        &f,
+        "(module m (def (f p _q) (let ((a (: 1 Int64)) (_b (: 2 Int64))) (+ a p))) (export f))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok);
+    assert!(
+        !stdout.contains("CDZ0306"),
+        "`_`-prefixed are silenced: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

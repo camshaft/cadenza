@@ -60,6 +60,12 @@ pub enum Code {
     /// could never have produced a value (almost always a defect). The error-severity companion is
     /// `ConstTrap` (CDZ0304), emitted when the same provable trap IS observed.
     DeadTrap,
+    /// A binding is DECLARED but never referenced — a `let` binding, a `fn`/`def` parameter, or a
+    /// top-level definition (not exported) that nothing uses. A WARNING (not a rejection): an unused
+    /// binding is well-formed, just likely a defect (a typo, a leftover, a forgotten use). Suppressed
+    /// when the name begins with `_` — the deliberate "intentionally unused" convention (as in Rust),
+    /// so `_x`/`_` never warn. The reference check is the same resolution-column read `UsesOf` uses.
+    UnusedBinding,
     /// An effect operation is reached at a point with NEITHER an enclosing handler for its effect NOR an
     /// enclosing host delegation of it — the merged "no home for a reached effect" check
     /// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). This single code
@@ -100,6 +106,7 @@ impl Code {
             Code::IntOutOfRange => "CDZ0302",
             Code::ConstTrap => "CDZ0304",
             Code::DeadTrap => "CDZ0305",
+            Code::UnusedBinding => "CDZ0306",
             Code::NonExhaustive => "CDZ0210",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
