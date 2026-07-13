@@ -36,6 +36,7 @@ pub fn canonicalize(arenas: &Arenas) -> std::borrow::Cow<'_, Arenas> {
         leaves: Vec::new(),
         leaf_map: FxHashMap::default(),
         structure: Vec::new(),
+        id_map: Vec::new(), // not tracked on this path — see `canonicalize_with_map`
     };
     let root = c.visit(arenas.root);
     std::borrow::Cow::Owned(Arenas {
@@ -110,11 +111,41 @@ fn is_canonical(arenas: &Arenas) -> bool {
     next_struct as usize == arenas.structure.len() && next_leaf as usize == arenas.leaves.len()
 }
 
+/// Canonicalize `arenas` AND return the OLD→NEW structure-id map — `map[old.0] == Some(new_id)` for
+/// every reachable node, `None` for an unreachable one (dropped by the normal form). A caller holding a
+/// side table keyed by the OLD ids (a SPAN TABLE) remaps it through this so its ids match the canonical
+/// arena — which is what [`crate::codec::encode`] serializes, so they then match the COMPILER's decoded
+/// node ids. This is the fix for the ML surface: `read_ml` builds nodes in a non-canonical order, so
+/// without the remap a span-table lookup by a compiler-reported node id lands on the wrong node
+/// (`ml-parser-node-order`). Always rebuilds (returns owned) — the map IS the point; an already-canonical
+/// arena just gets the identity map.
+pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>) {
+    let mut c = Canon {
+        src: arenas,
+        leaves: Vec::new(),
+        leaf_map: FxHashMap::default(),
+        structure: Vec::new(),
+        id_map: vec![None; arenas.structure.len()],
+    };
+    let root = c.visit(arenas.root);
+    (
+        Arenas {
+            leaves: c.leaves,
+            structure: c.structure,
+            root,
+        },
+        c.id_map,
+    )
+}
+
 struct Canon<'a> {
     src: &'a Arenas,
     leaves: Vec<Leaf>,
     leaf_map: FxHashMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
     structure: Vec<Struct>,
+    /// old structure id -> new id, recorded as each node is emitted (for span-table remap). Empty when
+    /// the caller does not need it (`canonicalize`), non-empty for `canonicalize_with_map`.
+    id_map: Vec<Option<StructId>>,
 }
 
 impl Canon<'_> {
@@ -122,7 +153,7 @@ impl Canon<'_> {
     /// Children are visited before the parent is appended, so the parent's `StructId` is always
     /// greater than its children's — a post-order layout, deterministic from the tree shape alone.
     fn visit(&mut self, old: StructId) -> StructId {
-        match self.src.get(old) {
+        let new = match self.src.get(old) {
             Struct::Atom(old_leaf) => {
                 let leaf = self.intern(*old_leaf);
                 self.push(Struct::Atom(leaf))
@@ -131,7 +162,12 @@ impl Canon<'_> {
                 let kids: Vec<StructId> = children.iter().map(|&ch| self.visit(ch)).collect();
                 self.push(Struct::List(kids))
             }
+        };
+        // Record old→new for a span-table remap (only when tracking; `canonicalize` leaves it empty).
+        if let Some(slot) = self.id_map.get_mut(old.0 as usize) {
+            *slot = Some(new);
         }
+        new
     }
 
     /// Intern a leaf by first-encounter order during the walk.
@@ -201,6 +237,30 @@ mod tests {
         // canonicalization must not change what the tree denotes.
         let a = sexpr::read("(f (+ a b) (g 1 2))").unwrap();
         assert!(canonicalize(&a).structurally_eq(&a));
+    }
+
+    #[test]
+    fn canonicalize_with_map_remaps_a_span_table_to_canonical_ids() {
+        // The ML-spans fix: `read_ml` builds `(+ a b)` operand-first (a, +, b in creation order) but the
+        // list's children are head-first `[+, a, b]`. Canonicalization renumbers by pre-order = child
+        // order, so the body `a`'s id shifts. `canonicalize_with_map` + `SpanTable::remap` must re-key the
+        // span table so a lookup by the CANONICAL id lands on the right node.
+        let parsed = parser::read_ml("def add(a, b) = a + b");
+        let (canon, id_map) = super::canonicalize_with_map(&parsed.arenas);
+        let spans = parsed.spans.remap(&id_map, canon.structure.len());
+        // In the CANONICAL arena, find the body `a` node (span 16..17 in the source) and confirm its span
+        // is preserved under its NEW id — i.e. `remap` moved it to the canonical index.
+        let body_a_old = "def add(a, b) = a + b".rfind("a").unwrap(); // byte 16
+        // The node whose canonical span starts at 16 must be an `a` atom.
+        let hit = (0..canon.structure.len() as u32)
+            .map(crate::ast::StructId)
+            .find(|&id| spans.get(id).map(|s| s.start) == Some(body_a_old));
+        let hit = hit.expect("a canonical node spans the body `a`");
+        assert_eq!(
+            canon.as_name(hit),
+            Some("a"),
+            "the canonical id whose span is the body `a` IS an `a` atom (not shifted to `+`)"
+        );
     }
 
     #[test]

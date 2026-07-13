@@ -1195,7 +1195,17 @@ fn load_program_spanned(
         for e in &parsed.errors {
             eprintln!("{PROG}: {file}: parse warning: {e:?}");
         }
-        Ok((source, parsed.arenas, parsed.spans))
+        // CANONICALIZE the ML arena + REMAP its span table to the canonical ids. The ML reader builds
+        // nodes in a non-canonical order (it parses an infix operand before the operator head), so a raw
+        // `codec::encode` (which canonicalizes — `canon.rs`) re-indexes the arena and the compiler's
+        // decoded node ids no longer match the pre-canonical span table. Every downstream query
+        // (`check`/`fix` fix byte-ranges, `type-at`, `def`, `scope`) maps a COMPILER node id through this
+        // table, so it must be keyed by the CANONICAL ids. Do it once here, at the load boundary, so both
+        // surfaces hand the rest of the tool canonical arenas + matching spans. (The s-expr reader already
+        // builds canonically, so its path is unchanged.)
+        let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&parsed.arenas);
+        let spans = parsed.spans.remap(&id_map, arenas.structure.len());
+        Ok((source, arenas, spans))
     } else {
         // Mirror the driver's root convention (`query::driver::load`): a SINGLE top-level form stays
         // BARE (so a lone `(module …)`/`(def …)` is the root the compiler scans), and only MULTIPLE
