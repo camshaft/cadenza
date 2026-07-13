@@ -559,6 +559,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A match over a scalar scrutinee — FOLD when the scrutinee is a constant (select the arm whose
         // probe it satisfies), else emit a `Core::Match` the backend lowers to a probe chain.
         Resolved::Match { scrutinee, arms } => lower_match(db, scrutinee, &arms),
+        // `nan` — the canonical NaN Float VALUE (a bare prim naming a value, not an operation). Lowers to
+        // `Core::ConstFloatNan`; folds in `=` by the canonical byte form.
+        Resolved::Prim(Prim::FloatNan) => Core::ConstFloatNan,
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(
@@ -789,6 +792,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(prim) if prim.is_conversion() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: conversion prim");
                     lower_conversion(db, id, prim, &args)
+                }
+                // `Qty.of x u` — attach a compile-time unit. The unit is CHECKED THEN ERASED
+                // (units-of-measure.md §Dimensions Are Checked Then Erased), so lowering is the value
+                // argument's lowering UNCHANGED — `(Qty.of 5.0 metre)` and the bare `5.0` produce the
+                // identical core (byte-identical emitted value). The unit lives only in the solved type.
+                Some(Prim::QtyOf) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.of erases to its value argument");
+                    core_of(db, args[0])
+                }
+                // `Qty.value q` — recover the numeric value, discarding the unit. Since a quantity ALREADY
+                // erases to its inner value, this is likewise the argument's lowering unchanged (the
+                // explicit exit from the dimensional layer is a no-op at runtime).
+                Some(Prim::QtyValue) if args.len() == 1 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.value erases to its argument");
+                    core_of(db, args[0])
                 }
                 // A sum VARIANT CONSTRUCTOR applied — `(Option.Some 5)`. The discriminant is read off
                 // the head's `(meta variant)` channel (the value the shared `sum-new` prim needs); the
@@ -3915,6 +3933,230 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
     Some(SumFormTemplate { variants: out })
 }
 
+// ─── Shape descriptor (for the runtime `value-encode` op) ────────────────────────────────────────
+//
+// The compiler-baked descriptor the runtime `value-encode` walker reads to render a RUNTIME value —
+// including a self-referential (recursive) sum, which has no fixed hole-template. A descriptor is a
+// TABLE of shapes + a root index; a child position references another entry by index, so a recursive
+// type closes as a finite cycle (a `Ref` back to the sum's entry). Wire format is documented on the
+// runtime side (`cdz-runtime` value-encode note); this is the ENCODER, kept in lock-step (a drift is
+// caught by the runtime's byte-exact `value_encode_form_matches_the_codec` cross-check + the corpus).
+//
+// Shape tags: 0 Int, 1 Bool, 2 Float, 3 Str, 4 Bytes, 5 Unit, 6 Tuple[n][idx…], 7 List[idx],
+// 8 Record[n](name,idx)…, 9 Sum[n](head,idx)…, 10 Named(name,idx), 11 Ref(idx).
+
+/// Build the shape descriptor bytes for a `Ty::Sum` result, wrapped in the outer `(: <value> <Type>)`
+/// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
+/// the table is referenced by index (`Ref`), closing the cycle. `None` if any payload type has no
+/// renderable shape yet (a Float/Str/Bytes payload — a later slice; the escape then declines cleanly).
+pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    let crate::ty::Ty::Sum { name, .. } = ty else {
+        return None;
+    };
+    let mut builder = ShapeTableBuilder::default();
+    let inner = builder.shape_of(db, ty)?;
+    // The outermost shape is `Named(<type name>, inner)` — the `(: <value> <Type>)` value-form frame.
+    let named = builder.push(ShapeNode::Named(name.clone(), inner));
+    Some(builder.encode(named))
+}
+
+/// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
+enum ShapeNode {
+    Int,
+    Bool,
+    Unit,
+    Tuple(Vec<u32>),
+    List(u32),
+    Record(Vec<(String, u32)>),
+    Sum(Vec<(String, u32)>),
+    Named(String, u32),
+    Ref(u32),
+}
+
+/// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
+/// reference reuses the same entry (a `Ref`) rather than expanding forever.
+#[derive(Default)]
+struct ShapeTableBuilder {
+    table: Vec<ShapeNode>,
+    /// sum decl → its table index (filled BEFORE the variants are built, so a self-reference resolves).
+    sums: std::collections::HashMap<StructId, u32>,
+}
+
+impl ShapeTableBuilder {
+    fn push(&mut self, node: ShapeNode) -> u32 {
+        self.table.push(node);
+        (self.table.len() - 1) as u32
+    }
+
+    /// The table index of a shape for `ty`, building it (and its sub-shapes) if new. A `Ty::Sum` already
+    /// in progress returns a `Ref` to its (reserved) entry, closing recursion. `None` for an
+    /// unrenderable leaf type (Float/Str/Bytes — a later slice).
+    fn shape_of(&mut self, db: &mut Db, ty: &crate::ty::Ty) -> Option<u32> {
+        use crate::ty::Ty;
+        Some(match ty {
+            Ty::Int(_) => self.push(ShapeNode::Int),
+            Ty::Bool => self.push(ShapeNode::Bool),
+            Ty::Unit => self.push(ShapeNode::Unit),
+            Ty::Tuple(elems) => {
+                if elems.is_empty() {
+                    return Some(self.push(ShapeNode::Unit));
+                }
+                let mut idxs = Vec::with_capacity(elems.len());
+                for e in elems.iter() {
+                    idxs.push(self.shape_of(db, e)?);
+                }
+                self.push(ShapeNode::Tuple(idxs))
+            }
+            Ty::List(elem) => {
+                let e = self.shape_of(db, elem)?;
+                self.push(ShapeNode::List(e))
+            }
+            Ty::Record(fields) => {
+                let mut out = Vec::with_capacity(fields.len());
+                for (name, t) in fields.iter() {
+                    let idx = self.shape_of(db, t)?;
+                    out.push((name.name.clone(), idx));
+                }
+                self.push(ShapeNode::Record(out))
+            }
+            Ty::Sum { decl, .. } => {
+                // Already building/built this sum → a Ref to its reserved entry (closes recursion).
+                if let Some(&existing) = self.sums.get(decl) {
+                    return Some(self.push(ShapeNode::Ref(existing)));
+                }
+                // Reserve THIS sum's entry index BEFORE building the variants (a variant payload that
+                // references the sum resolves to this index). Fill it in place once the variants are built.
+                let self_ix = self.push(ShapeNode::Unit); // placeholder, overwritten below
+                self.sums.insert(*decl, self_ix);
+                let variants = sum_variant_payload_types(db, ty)?;
+                let mut out = Vec::with_capacity(variants.len());
+                for (head, payload_tys) in variants {
+                    // A variant's payload shape: no payload → Unit; one → that type; many → a Tuple.
+                    let payload_ix = match payload_tys.len() {
+                        0 => self.push(ShapeNode::Unit),
+                        1 => self.shape_of(db, &payload_tys[0])?,
+                        _ => {
+                            let mut idxs = Vec::with_capacity(payload_tys.len());
+                            for pt in &payload_tys {
+                                idxs.push(self.shape_of(db, pt)?);
+                            }
+                            self.push(ShapeNode::Tuple(idxs))
+                        }
+                    };
+                    out.push((head, payload_ix));
+                }
+                self.table[self_ix as usize] = ShapeNode::Sum(out);
+                self_ix
+            }
+            // Float/Str/Bytes payload rendering is a later slice — decline (the escape falls through).
+            _ => return None,
+        })
+    }
+
+    /// Serialize the table + root to the descriptor wire format (all counts/lengths unsigned LEB128).
+    fn encode(&self, root: u32) -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(out: &mut Vec<u8>, s: &str) {
+            leb(out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut d = Vec::new();
+        leb(&mut d, self.table.len() as u64);
+        for node in &self.table {
+            match node {
+                ShapeNode::Int => d.push(0),
+                ShapeNode::Bool => d.push(1),
+                ShapeNode::Unit => d.push(5),
+                ShapeNode::Tuple(idxs) => {
+                    d.push(6);
+                    leb(&mut d, idxs.len() as u64);
+                    for &i in idxs {
+                        leb(&mut d, i as u64);
+                    }
+                }
+                ShapeNode::List(i) => {
+                    d.push(7);
+                    leb(&mut d, *i as u64);
+                }
+                ShapeNode::Record(fields) => {
+                    d.push(8);
+                    leb(&mut d, fields.len() as u64);
+                    for (k, i) in fields {
+                        name(&mut d, k);
+                        leb(&mut d, *i as u64);
+                    }
+                }
+                ShapeNode::Sum(variants) => {
+                    d.push(9);
+                    leb(&mut d, variants.len() as u64);
+                    for (h, i) in variants {
+                        name(&mut d, h);
+                        leb(&mut d, *i as u64);
+                    }
+                }
+                ShapeNode::Named(n, i) => {
+                    d.push(10);
+                    name(&mut d, n);
+                    leb(&mut d, *i as u64);
+                }
+                ShapeNode::Ref(i) => {
+                    d.push(11);
+                    leb(&mut d, *i as u64);
+                }
+            }
+        }
+        leb(&mut d, root as u64);
+        d
+    }
+}
+
+/// The variants of a `Ty::Sum` as `(head-name, payload-types)` pairs at this instantiation — the head
+/// spelled as the runtime template writes it (a BARE variant name; the value form renders variants bare,
+/// e.g. `(Cons …)`, `(None unit)`). Mirrors `sum_form_template`'s variant/payload recovery.
+fn sum_variant_payload_types(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+) -> Option<Vec<(String, Vec<crate::ty::Ty>)>> {
+    let crate::ty::Ty::Sum { decl, args, .. } = ty else {
+        return None;
+    };
+    let decl_ref = db.type_decl_by_occ(*decl)?;
+    let params = decl_ref.params.clone();
+    let variants: Vec<(String, Vec<StructId>)> = decl_ref
+        .variants
+        .iter()
+        .map(|v| (v.name.clone(), v.payloads.clone()))
+        .collect();
+    let mut out = Vec::with_capacity(variants.len());
+    for (head, payload_occs) in variants {
+        let mut payload_tys = Vec::with_capacity(payload_occs.len());
+        for &p in &payload_occs {
+            let pty = match db.ast.as_name(p) {
+                Some(n) if params.iter().any(|q| q == n) => {
+                    let idx = params.iter().position(|q| q == n).unwrap();
+                    args.get(idx).cloned()?
+                }
+                _ => crate::eval::typeval_of(db, p)?,
+            };
+            payload_tys.push(pty);
+        }
+        out.push((head, payload_tys));
+    }
+    Some(out)
+}
+
 /// One variant's value-form template: `(: <variant-head> payload…) SumType)`, payload leaves as holes
 /// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]). The
 /// variant HEAD is built by [`variant_head_ast`] (qualified `(. Type Variant)` for a user sum, a bare
@@ -4193,11 +4435,32 @@ fn variant_head_ast(
 /// order. `None` if the node is not a constant the escape path can bake.
 fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Option<StructId> {
     use crate::ast::{Leaf, Radix};
+    // A QUANTITY value renders its CONSTRUCTION form `(Qty.of <inner-value> <unit>)` — the unit is a
+    // compile-time value that erased from the core (a `Qty.of` node lowers to its inner value's core),
+    // so it is recovered from the SOLVED TYPE `Ty::Qty` and re-materialized as source structure. This is
+    // checked FIRST (before the core match) because the erased core is a bare scalar (`ConstFloat`),
+    // which would otherwise render as the bare number, losing the quantity the corpus records.
+    if let crate::ty::Ty::Qty { inner, unit } = crate::infer::type_of(db, id) {
+        // The inner VALUE: the erased core IS the inner value (Qty.of erases to it), so render it at the
+        // inner type by recursing on the SAME node with the quantity peeled — build a synthetic inner
+        // render by matching the core directly (the node's core is the inner numeric's core).
+        let inner_val = const_value_ast_at(db, b, id, &inner)?;
+        let unit_ast = unit_value_ast(b, &unit);
+        // `((. Qty of) <value> <unit>)` — the member-access form the reader normalizes `(Qty.of …)` to
+        // (a dotted name `Qty.of` desugars to `(. Qty of)`), so the baked value re-reads/re-prints to
+        // the SAME canonical shape the corpus records.
+        let qty_of = member_access(b, "Qty", "of");
+        return Some(b.list(vec![qty_of, inner_val, unit_ast]));
+    }
     match core_of(db, id) {
         Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
             value: v,
             radix: Radix::Dec,
         })),
+        // A constant float bakes as its exact decimal leaf — the codec encodes it (KIND_FLOAT), and the
+        // host reader renders it back. A quantity over a Float64 magnitude reaches here through
+        // `const_value_ast_at` (the inner-value render of `Qty.of`).
+        Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
@@ -4316,6 +4579,86 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
     }
 }
 
+/// Render the constant value at `id` treating it AS having type `expect` — the quantity-inner helper.
+/// A `Qty.of` node erases (in `core_of`) to its inner value's core, so rendering the INNER value means
+/// rendering that same core, but WITHOUT re-triggering the `Ty::Qty` branch of `const_value_ast` (which
+/// reads `type_of(id)` = the whole quantity type). `expect` is the inner numeric type; for a scalar
+/// (int/float/bool) the value form is the same as `const_value_ast`'s scalar arms, so match the core
+/// directly here. (A quantity over a COMPOUND inner type is not a Layer-1 case — the numeric core is
+/// scalar — so a non-scalar inner declines the escape by `None`.)
+fn const_value_ast_at(
+    db: &mut Db,
+    b: &mut crate::ast::Builder,
+    id: StructId,
+    expect: &crate::ty::Ty,
+) -> Option<StructId> {
+    use crate::ast::{Leaf, Radix};
+    let _ = expect; // the inner is a scalar in Layer 1; the core discriminates directly
+    match core_of(db, id) {
+        Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
+            value: v,
+            radix: Radix::Dec,
+        })),
+        Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
+        Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
+        // A non-scalar inner value is not a Layer-1 quantity magnitude — decline the escape.
+        _ => None,
+    }
+}
+
+/// Materialize a compile-time `Unit` value as SOURCE structure — the `<unit>` position of a rendered
+/// `(Qty.of <value> <unit>)` and of a `(Qty T <unit>)` type. The dimensionless unit renders `Unit.one`;
+/// a single base to the first power renders `(Unit.base #"name")`; a base to a power renders `(Unit.^
+/// (Unit.base #"name") k)`; a product of several renders a left-nested `(Unit.* …)`. Uses the `#"name"`
+/// SYMBOL leaf for each base dimension, so the rendered unit re-reads to the same `Unit` (the corpus
+/// surface `(Unit.base #"metre")`). Mirrors `ty::Unit::render` but builds real arena nodes.
+fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
+    use crate::ast::Leaf;
+    let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
+    if entries.is_empty() {
+        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)` the reader
+        // normalizes `Unit.one` to.
+        return member_access(b, "Unit", "one");
+    }
+    // Build each base factor: `((. Unit base) #"name")` or `(Unit.^ ((. Unit base) #"name") k)`. The
+    // `Unit.base` head is member access (an alphabetic segment desugars); `Unit.^`/`Unit.*` stay BARE
+    // names (the `^`/`*` segment is not alphabetic, so the reader does NOT desugar them).
+    let factor = |b: &mut crate::ast::Builder, name: &str, exp: i64| -> StructId {
+        let base_head = member_access(b, "Unit", "base");
+        let sym = b.atom_leaf(Leaf::Sym(name.to_string()));
+        let base = b.list(vec![base_head, sym]);
+        if exp == 1 {
+            base
+        } else {
+            let pow_head = b.name("Unit.^");
+            let n = b.atom_leaf(Leaf::Int {
+                value: crate::ast::IntValue::from_i64(exp),
+                radix: crate::ast::Radix::Dec,
+            });
+            b.list(vec![pow_head, base, n])
+        }
+    };
+    let mut it = entries.into_iter();
+    let (n0, e0) = it.next().unwrap();
+    let mut acc = factor(b, &n0, e0);
+    for (name, exp) in it {
+        let f = factor(b, &name, exp);
+        let mul_head = b.name("Unit.*");
+        acc = b.list(vec![mul_head, acc, f]);
+    }
+    acc
+}
+
+/// Build a member-access form `(. <operand-name> <key>)` — the canonical shape the reader normalizes a
+/// dotted name `Operand.key` to (an alphabetic-segment postfix desugar). Used to bake a unit/quantity
+/// value form so it re-reads to the same tree the corpus records (`(. Qty of)`, `(. Unit base)`).
+fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> StructId {
+    let dot = b.name(".");
+    let op = b.name(operand.to_string());
+    let k = b.name(key.to_string());
+    b.list(vec![dot, op, k])
+}
+
 /// Reconstruct a TYPE s-expression into `b`, matching `Ty::render_name`'s surface exactly so the host
 /// prints the recorded type: `Int64`/`UInt8`/… as a name atom, `Bool`/`Unit` likewise, a tuple as
 /// `(Tuple T…)`, a record as `(record (name T)…)`. `None` for a type with no value-form surface (a
@@ -4390,15 +4733,14 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // a compound value form (`(tuple 1.0 2.0)`) whose type annotation the escape bakes.
         Ty::Float(ft) => Some(b.name(format!("Float{}", ft.ground_width()))),
         // A quantity's type surface is `(Qty <inner> <unit>)` — matches `render_name`. The inner type is
-        // built recursively; the unit is built as its canonical written form (`Unit.one`, `(Unit.base
-        // #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), reusing `Unit::render` via a
-        // parse-free reconstruction: since the unit renders to a literal s-expression, build it as a name
-        // atom carrying that rendered text (the host re-reads it; a quantity value never crosses as a
-        // machine value, its inner erased value does — this surface is the recorded static type only).
+        // built recursively; the unit is built as REAL structure by `unit_value_ast` (`Unit.one`,
+        // `(Unit.base #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), so the rendered
+        // type re-reads to the same unit (a name atom carrying parens would not round-trip). The corpus
+        // surface `(Qty Float64 (Unit.base #"metre"))`.
         Ty::Qty { inner, unit } => {
             let head = b.name("Qty");
             let ity = type_ast(b, inner)?;
-            let uty = b.name(unit.render());
+            let uty = unit_value_ast(b, unit);
             Some(b.list(vec![head, ity, uty]))
         }
         // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
@@ -4871,17 +5213,46 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     let Some(m) = m.to_i64() else {
         return false;
     };
+    let Some(bits) = unsigned_value_bits(db, val) else {
+        return false; // not a provably-nonnegative value with a known ≤63-bit range.
+    };
+    let low = (1i64 << bits) - 1; // 2^bits - 1, all bits the value can possibly set
+    (m & low) == low
+}
+
+/// An upper bound `B` (in `1..=63`) on the number of LOW bits a runtime value can set — i.e. the value
+/// is provably in `[0, 2^B)`. `None` if no such bound is known (a signed/deferred type, a value that can
+/// be negative, or a width ≥ 64 whose mask is not i64-representable). Used to elide a redundant `& M`
+/// when `M` covers all `B` bits.
+///  - A resolved UNSIGNED width-N type: `B = N` (the value lives in `[0, 2^N)`).
+///  - A LOGICAL right shift `(>>ᵤ x k)` by a constant `k` of such a value: `B = N − k` (the shift drops
+///    the low `k` bits and zero-fills the top, so the result fits `N − k` bits). This is what makes the
+///    bit-extraction idiom `(& (>>ᵤ x k) mask)` shed its redundant mask.
+fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
+    // A logical right shift by a constant narrows the bound: `(>>ᵤ inner k)` fits `bits(inner) − k`.
+    if let Core::Arith {
+        op: Prim::Shr,
+        lhs: inner,
+        rhs: count,
+    } = core_of(db, val)
+        && let Core::ConstInt(k) = core_of(db, count)
+        && let Some(k) = k.to_i64()
+        && (0..64).contains(&k)
+        // `>>` is LOGICAL only for an UNSIGNED operand (a signed `>>ₛ` sign-extends, keeping high bits).
+        && let crate::ty::Ty::Int(it) = crate::infer::type_of(db, inner)
+        && it.sign == crate::ty::Sign::Fixed(false)
+        && let Some(inner_bits) = unsigned_value_bits(db, inner)
+    {
+        return Some(inner_bits.saturating_sub(k as u32).max(1));
+    }
+    // Otherwise the bound is the value's own resolved unsigned width.
     let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
-        return false;
+        return None;
     };
     let (crate::ty::Sign::Fixed(false), crate::ty::Width::Fixed(n)) = (it.sign, it.width) else {
-        return false; // only a resolved UNSIGNED type; signed/deferred must not fold.
+        return None; // only a resolved UNSIGNED type; signed/deferred is not provably nonnegative.
     };
-    if n >= 64 {
-        return false; // 2^64 - 1 is not i64-representable here.
-    }
-    let low = (1i64 << n) - 1; // 2^N - 1, all value bits of an unsigned N
-    (m & low) == low
+    (n < 64).then_some(n) // 2^64 - 1 is not i64-representable here.
 }
 
 /// Whether the node at `id` lowers to a core that CANNOT TRAP at run time — so discarding it (an
@@ -5082,6 +5453,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FloatCtor
         | Prim::FloatOfInt
         | Prim::FloatOf
+        | Prim::FloatNan
         | Prim::MapCtor
         | Prim::MapNew
         | Prim::MapEmpty
@@ -5093,7 +5465,17 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapTake
         | Prim::CharTy
         | Prim::CharToInt
-        | Prim::CharFromInt => {
+        | Prim::CharFromInt
+        // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
+        // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
+        // is reduced away by `eval`), so they never reach this integer fold.
+        | Prim::UnitOne
+        | Prim::UnitBase
+        | Prim::UnitMul
+        | Prim::UnitDiv
+        | Prim::UnitPow
+        | Prim::QtyOf
+        | Prim::QtyValue => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -5261,6 +5643,31 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             let r = compare_ord(op, (a as u32).cmp(&(b as u32)));
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
+        }
+        // NaN under the CANONICAL BYTE FORM (core-semantics.md #Floating-Point Equality Follows The
+        // Canonical Byte Form): every NaN shares one canonical byte form, so `(= nan nan)` is TRUE (NOT
+        // IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float (distinct byte
+        // forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as the finite-pair
+        // path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair.
+        (Core::ConstFloatNan, Core::ConstFloatNan) => {
+            if matches!(op, Prim::Eq) {
+                trace!(target: "rcdzc::fold", "folded nan = nan → true (canonical byte form)");
+                Core::ConstBool(true)
+            } else {
+                Core::Poison(Reject::decline(
+                    "an ordering comparison with a NaN operand has no defined result",
+                ))
+            }
+        }
+        (Core::ConstFloatNan, Core::ConstFloat(_)) | (Core::ConstFloat(_), Core::ConstFloatNan) => {
+            if matches!(op, Prim::Eq) {
+                trace!(target: "rcdzc::fold", "folded nan = finite → false (distinct byte forms)");
+                Core::ConstBool(false)
+            } else {
+                Core::Poison(Reject::decline(
+                    "an ordering comparison with a NaN operand has no defined result",
+                ))
+            }
         }
         // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
         // form.md #Numeric Values Serialize Deterministically — floats equal under structural equality
@@ -5492,10 +5899,16 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         // Two chars: equal iff their scalar values match.
         (Core::ConstChar(x), Core::ConstChar(y)) => Some(x == y),
         // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
-        // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false) and a nested NaN equals a nested NaN (identical
-        // bits under the canonical byte form; contracts/deterministic-value-form.md). By-bits, NOT
-        // `f64` `==`, precisely so `-0.0`/`0.0` differ and NaN self-equals — the structural byte-form rule.
+        // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false). By-bits, NOT `f64` `==`, precisely so `-0.0`/
+        // `0.0` differ — the structural byte-form rule.
         (Core::ConstFloat(x), Core::ConstFloat(y)) => Some(x.to_f64_bits() == y.to_f64_bits()),
+        // A nested NaN under the canonical byte form: every NaN equals every NaN (`(= (tuple nan) (tuple
+        // nan))` → true, `(= (Some nan) (Some nan))` → true), and `nan` is unequal to any finite float —
+        // the SAME rule the scalar `=` fold applies, recursed through a compound.
+        (Core::ConstFloatNan, Core::ConstFloatNan) => Some(true),
+        (Core::ConstFloatNan, Core::ConstFloat(_)) | (Core::ConstFloat(_), Core::ConstFloatNan) => {
+            Some(false)
+        }
         (Core::Unit, Core::Unit) => Some(true),
         // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
         // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same
@@ -6715,18 +7128,20 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
         // A `(bytes b)` splice whose `b` is not a compile-time-visible constant Bytes — spliced at run
         // time via `bytes-concat`. (`bin_const_scrutinee` = Some only for a visible `Core::BytesOf`.)
         SegKind::Bytes { .. } => bin_const_scrutinee(db, s.slot).is_none(),
-        SegKind::Bits { .. } => false,
+        // A runtime bit-field value (a param, not a `ConstInt`) — the run packs at run time.
+        SegKind::Bits { .. } => !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_)),
     });
     if any_runtime {
         // Build the `bin` as a sequence of PIECES concatenated at run time (`Core::BytesConcat`): each
-        // maximal RUN of fixed-width int segments is one `Core::BinBuild` piece, and each `(bytes b)`
-        // SPLICE segment contributes `b` directly. A runtime BIT-FIELD (`bits`) is sub-byte and can't be a
-        // standalone concat piece — decline a runtime bin containing one (a later slice). This composes an
-        // int header with a runtime bytes body — the length-prefixed frame — via `bytes-concat`.
+        // maximal RUN of fixed-width int segments is one `Core::BinBuild` piece, each maximal RUN of
+        // bit-fields is one `Core::BinBitsBuild` piece (byte-aligned — CDZ0220 closes a `bits` run to a
+        // whole byte before any int/bytes segment and at the end), and each `(bytes b)` SPLICE segment
+        // contributes `b` directly. Composes headers/bit-flags with a runtime bytes body via `bytes-concat`.
         let mut pieces: Vec<StructId> = Vec::new();
-        let mut run: Vec<crate::core::BinSeg> = Vec::new();
+        let mut int_run: Vec<crate::core::BinSeg> = Vec::new();
+        let mut bits_run: Vec<crate::core::BinBitsField> = Vec::new();
         // Flush the current int-run as a `Core::BinBuild` piece (synthesized, so it emits standalone).
-        let flush_run =
+        let flush_ints =
             |db: &mut Db, run: &mut Vec<crate::core::BinSeg>, pieces: &mut Vec<StructId>| {
                 if !run.is_empty() {
                     let piece = synth_core(
@@ -6739,12 +7154,28 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     pieces.push(piece);
                 }
             };
+        // Flush the current bit-field run as a `Core::BinBitsBuild` piece (byte-aligned per CDZ0220).
+        let flush_bits =
+            |db: &mut Db, run: &mut Vec<crate::core::BinBitsField>, pieces: &mut Vec<StructId>| {
+                if !run.is_empty() {
+                    let piece = synth_core(
+                        db,
+                        Core::BinBitsBuild {
+                            fields: std::mem::take(run),
+                        },
+                        crate::ty::Ty::Bytes,
+                    );
+                    pieces.push(piece);
+                }
+            };
         for seg in segs {
             match &seg.kind {
                 SegKind::Int { width, signed } => {
                     if let Core::Poison(r) = core_of(db, seg.slot) {
                         return Core::Poison(r);
                     }
+                    // An int segment is byte-aligned — close any open bit-field run first (order-preserving).
+                    flush_bits(db, &mut bits_run, &mut pieces);
                     // A CONSTANT sibling still range-checks (a provable misfit fails the build).
                     if let Core::ConstInt(v) = core_of(db, seg.slot)
                         && !v.fits_width(*signed, (*width as u32) * 8)
@@ -6754,14 +7185,41 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                             "binary value does not fit segment",
                         ));
                     }
-                    run.push(crate::core::BinSeg {
+                    int_run.push(crate::core::BinSeg {
                         width: *width,
                         signed: *signed,
                         little_endian: seg.little_endian,
                         value: seg.slot,
                     });
                 }
-                // A `(bytes b)` splice: flush the int-run, then splice `b` (a Bytes value). A dependent
+                // A `(bits v k)` bit-field: close any open int-run first, then extend the bit-field run.
+                // The run is byte-aligned as a whole (CDZ0220), so it flushes to a `Core::BinBitsBuild`.
+                SegKind::Bits { k } => {
+                    if let Core::Poison(r) = core_of(db, seg.slot) {
+                        return Core::Poison(r);
+                    }
+                    let k = *k;
+                    // `k` must be a usable runtime field width (the u64 pack accumulator carries ≤ 7 open
+                    // bits between flushes, so `7 + k <= 64` keeps the `acc << k` shift lossless). A wider
+                    // runtime bit-field declines (the constant path still handles k ≤ 63).
+                    if k == 0 || k > 56 {
+                        return Core::Poison(Reject::decline(
+                            "a runtime bin bit-field wider than 56 bits is not yet built",
+                        ));
+                    }
+                    // A CONSTANT bit-field sibling still range-checks (a k-bit UNSIGNED field; misfit → trap).
+                    if let Core::ConstInt(v) = core_of(db, seg.slot)
+                        && !v.fits_width(false, k)
+                    {
+                        return Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "binary value does not fit segment",
+                        ));
+                    }
+                    flush_ints(db, &mut int_run, &mut pieces);
+                    bits_run.push(crate::core::BinBitsField { k, value: seg.slot });
+                }
+                // A `(bytes b)` splice: flush both runs, then splice `b` (a Bytes value). A dependent
                 // size `(bytes b n)` on CONSTRUCTION is a length constraint the const path checks; a
                 // RUNTIME sized splice (a runtime `b`/`n`) is not checked yet — decline it.
                 SegKind::Bytes { size } => {
@@ -6778,18 +7236,14 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                             "a bin bytes splice operand is not a Bytes value",
                         ));
                     }
-                    flush_run(db, &mut run, &mut pieces);
+                    flush_ints(db, &mut int_run, &mut pieces);
+                    flush_bits(db, &mut bits_run, &mut pieces);
                     pieces.push(seg.slot);
-                }
-                // A runtime bit-field is sub-byte — not a concat piece; decline (a later slice).
-                SegKind::Bits { .. } => {
-                    return Core::Poison(Reject::decline(
-                        "a runtime bin with a bit-field segment is not yet built",
-                    ));
                 }
             }
         }
-        flush_run(db, &mut run, &mut pieces);
+        flush_ints(db, &mut int_run, &mut pieces);
+        flush_bits(db, &mut bits_run, &mut pieces);
         // Concatenate the pieces left-to-right. Zero pieces = the empty bin (empty Bytes); one piece is
         // itself; else fold to a chain of `Core::BytesConcat`.
         let mut iter = pieces.into_iter();
@@ -7504,6 +7958,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",
+        Prim::FloatNan => "nan",
         Prim::MapCtor => "Map",
         Prim::MapNew => "map-new",
         Prim::MapEmpty => "map-empty",
@@ -7513,6 +7968,13 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::MapSize => "map-size",
         Prim::MapSwap => "map-swap",
         Prim::MapTake => "map-take",
+        Prim::UnitOne => "unit-one",
+        Prim::UnitBase => "unit-base",
+        Prim::UnitMul => "unit-mul",
+        Prim::UnitDiv => "unit-div",
+        Prim::UnitPow => "unit-pow",
+        Prim::QtyOf => "qty-of",
+        Prim::QtyValue => "qty-value",
     }
 }
 

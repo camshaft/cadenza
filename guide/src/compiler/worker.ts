@@ -15,6 +15,7 @@ import init, {
   emit_rust as wasmEmitRust,
   core_module as wasmCoreModule,
   repl_eval as wasmReplEval,
+  defined_names as wasmDefinedNames,
   render_syntax as wasmRenderSyntax,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
@@ -146,6 +147,12 @@ const api = {
     const r = wasmReplEval(buffer, expr, from);
     const component = r.component ? new Uint8Array(r.component) : null;
     return { component, diagnostics: r.diagnostics.map(toDiag) };
+  },
+
+  /// The names of every top-level definition the buffer declares — for the REPL's autocomplete.
+  async definedNames(buffer: string, from: Surface): Promise<string[]> {
+    await ensureReady();
+    return wasmDefinedNames(buffer, from);
   },
 
   async runtimeHash(): Promise<string> {

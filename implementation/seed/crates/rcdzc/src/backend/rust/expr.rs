@@ -752,6 +752,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::ListAt { .. }
         | Core::ConstStr(_)
         | Core::ConstChar(_)
+        | Core::ConstFloatNan
         | Core::BytesOf { .. }
         | Core::BytesLen { .. }
         | Core::BytesAt { .. }
@@ -764,6 +765,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::MapRemove { .. }
         | Core::MapSize { .. }
         | Core::BinBuild { .. }
+        | Core::BinBitsBuild { .. }
         | Core::BinIntRead { .. }
         | Core::BinRestRead { .. }
         | Core::Closure { .. }

@@ -610,3 +610,30 @@
               (export main)))
   (call   main (: 7 Int64))
   (output (: 0 Int64)))
+
+(case "a runtime bit-field packs a runtime value into a nibble"
+  (doc    "`(bin (bits (UInt8.wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n` into
+           the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field
+           first). n=10 → (10<<4)|5 = 0xA5 = 165. Reads byte 0 back. Pins runtime bit-field packing — the
+           companion of the constant `(bits 1 1)(bits 2 3)(bits 5 4)` case over a runtime value.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64))
+                (match (Bytes.at (bin (bits (UInt8.wrap n) 4) (bits 5 4)) 0)
+                  ((Some b) b) ((None _) -1)))
+              (export main)))
+  (call   main (: 10 Int64))
+  (output (: 165 Int64)))
+
+(case "a runtime bit-field run spans two bytes and composes with an int segment"
+  (doc    "A runtime bit-field RUN that spans a byte boundary and is followed by a byte-aligned int
+           segment: `(bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)` packs the low nibble of `n` and the
+           constant 1 into byte 0 = (n<<4)|1, then writes 42 as byte 1. n=3 → byte 1 = 42. Pins that a
+           runtime bit-field run closes to a whole byte before the int segment (CDZ0220 byte-alignment)
+           and the int byte follows immediately.")
+  (needs  binary-matching)
+  (input  (do (def (main (: n Int64))
+                (match (Bytes.at (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 1)
+                  ((Some b) b) ((None _) -1)))
+              (export main)))
+  (call   main (: 3 Int64))
+  (output (: 42 Int64)))

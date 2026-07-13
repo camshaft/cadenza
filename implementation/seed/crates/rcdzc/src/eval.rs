@@ -1826,6 +1826,65 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
     }
 }
 
+/// Reduce an occurrence to the compile-time UNIT it denotes, or `None` if it is not a unit expression.
+/// A unit is a value in the free abelian group over base dimensions (`ty::Unit`), BUILT by the unit
+/// prims: `Unit.one` (empty map), `(Unit.base #"metre")` (a single base), `(Unit.* a b)` / `(Unit./ a
+/// b)` / `(Unit.^ u n)` (the group operations). This is the units analogue of `read_width` — it reads a
+/// compile-time value off the argument, since a unit is not an HM-typed value the scheme machinery
+/// tracks. Recurses through `Ref` (a binding) and the applied unit prims. The base-dimension NAME comes
+/// from a `Leaf::Sym` (resolved to a `Str`, Layer 1). `Unit.one` may appear either bare (a nullary
+/// `Resolved::Prim(UnitOne)` via its `(meta apply)`) or applied to no args.
+pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
+    use crate::ty::Unit;
+    match resolved_of(db, id) {
+        Resolved::Ref { value } => unit_of(db, value),
+        // `Unit.one` used BARE — the member access `(. Unit one)` resolves to the builder record; its
+        // `(meta apply)` is `UnitOne`, so reducing it (no args) is the dimensionless unit.
+        Resolved::Record { .. } | Resolved::Member { .. } => match meta_apply_of(db, id) {
+            Some(Prim::UnitOne) => Some(Unit::one()),
+            _ => None,
+        },
+        Resolved::Prim(Prim::UnitOne) => Some(Unit::one()),
+        // An APPLICATION of a unit builder: dispatch on the head's `(meta apply)` prim.
+        Resolved::Apply { head, args } => {
+            let prim = meta_apply_of(db, head)?;
+            match prim {
+                Prim::UnitOne => Some(Unit::one()),
+                Prim::UnitBase => {
+                    // `(Unit.base #"metre")` — the base-dimension name is the symbol's text (a `Str` in
+                    // Layer 1). A non-symbol argument is not a well-formed base unit.
+                    let name = match resolved_of(db, *args.first()?) {
+                        Resolved::Str(s) => s,
+                        _ => return None,
+                    };
+                    Some(Unit::base(name))
+                }
+                Prim::UnitMul => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let b = unit_of(db, *args.get(1)?)?;
+                    Some(a.mul(&b))
+                }
+                Prim::UnitDiv => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let b = unit_of(db, *args.get(1)?)?;
+                    Some(a.div(&b))
+                }
+                Prim::UnitPow => {
+                    let a = unit_of(db, *args.first()?)?;
+                    // The exponent is a compile-time integer literal (may be negative).
+                    let n = match resolved_of(db, *args.get(1)?) {
+                        Resolved::Int(v) => v.to_i64()?,
+                        _ => return None,
+                    };
+                    Some(a.pow(n))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// How a `(Int W)`/`(UInt W)` width argument reads. A concrete non-negative natural that fits `u32` is
 /// `Fixed`. A concrete but NON-NATURAL width — a negative or over-`u32` integer, or a bool/float/type-
 /// value in width position — is `Malformed`. A width that is not a concrete value at all — an unbound

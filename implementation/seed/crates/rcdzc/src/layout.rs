@@ -469,6 +469,11 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
                 collect_closure_codes(db, s.value, out);
             }
         }
+        Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_closure_codes(db, f.value, out);
+            }
+        }
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_closure_codes(db, bytes, out)
         }
@@ -491,6 +496,7 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
         | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
+        | Core::ConstFloatNan
         | Core::Unit
         | Core::Param { .. }
         | Core::Captured { .. }
@@ -633,6 +639,11 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, s.value, out);
             }
         }
+        crate::core::Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_call_callees(db, f.value, out);
+            }
+        }
         crate::core::Core::BinIntRead { bytes, .. }
         | crate::core::Core::BinRestRead { bytes, .. } => collect_call_callees(db, bytes, out),
         crate::core::Core::Proj { operand, .. }
@@ -690,6 +701,7 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::ConstStr(_)
         | crate::core::Core::ConstChar(_)
         | crate::core::Core::ConstFloat(_)
+        | crate::core::Core::ConstFloatNan
         | crate::core::Core::Unit
         | crate::core::Core::Param { .. }
         | crate::core::Core::Captured { .. }

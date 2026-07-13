@@ -39,13 +39,15 @@ interface Props {
   surface: Surface;
   /** Evaluate a REPL expression against the current buffer (see `ReplPanel`). */
   onReplEval: (expr: string) => Promise<ReplEntry["result"]>;
+  /** The names the REPL can complete (the buffer's definitions); fetched on demand. */
+  onReplNames: () => Promise<string[]>;
   /** Jump the editor to a diagnostic's source range. */
   onJumpTo: (from: number, to: number) => void;
   /** Ask the page to compute a Compiled sub-view (WAT / Rust / Rust-async) on demand. */
   onNeedCompiledView: (view: CompiledView) => void;
 }
 
-export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEval, onJumpTo, onNeedCompiledView }: Props) {
+export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEval, onReplNames, onJumpTo, onNeedCompiledView }: Props) {
   const [tab, setTab] = useState<Tab>("result");
   const errorCount = diagnostics.filter((d) => d.error).length;
 
@@ -83,7 +85,7 @@ export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEv
           `overflow-auto`); the static views share the scrolling, padded wrapper. */}
       {tab === "repl" ? (
         <div className="min-h-0 flex-1 p-3 font-mono text-[13px]">
-          <ReplPanel surface={surface} onEval={onReplEval} />
+          <ReplPanel surface={surface} onEval={onReplEval} onNames={onReplNames} />
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[13px]">

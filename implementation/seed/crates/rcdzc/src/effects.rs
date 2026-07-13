@@ -903,6 +903,28 @@ fn body_has_unsound_abortive_perform(
             || body_has_unsound_abortive_perform(db, then_, ctx, tail, true)
             || body_has_unsound_abortive_perform(db, else_, ctx, tail, true);
     }
+    // A `(let ((n init)…) body)`: the let's VALUE is the BODY's value, so the body inherits THIS position's
+    // tail-ness + `under_cond` (a branch-tail abort in a tail-position let body folds like one in a bare
+    // `if` — the fold's `let` arm threads the body through `thread_bounded`, routing an inner `if` to the
+    // per-branch capture). Each INIT is a strict operand — NON-tail, but UNCONDITIONAL relative to the let
+    // (it always runs when the let runs), so it carries the let's `under_cond` (an abort in an init under
+    // no conditional is the sound E4-a collapse; under a conditional it is the flagged shape).
+    if let Some(form) = db.ast.as_form(node, "let")
+        && form.len() == 2
+    {
+        let (bindings_occ, body_occ) = (form[0], form[1]);
+        if let Struct::List(pairs) = db.ast.get(bindings_occ).clone() {
+            for pair in pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                    && body_has_unsound_abortive_perform(db, kv[1], ctx, false, under_cond)
+                {
+                    return true;
+                }
+            }
+        }
+        return body_has_unsound_abortive_perform(db, body_occ, ctx, tail, under_cond);
+    }
     // Generic descent: a strict OPERAND is NON-tail (its value feeds an enclosing op), so lower `tail` for
     // children while carrying `under_cond`. This keeps `(+ 1 (Bail 7))` sound (the abort is `!under_cond`,
     // never flagged) while `(if c (+ 1 (Bail 7)) 0)` flags it (`under_cond && !tail`). Descend children at

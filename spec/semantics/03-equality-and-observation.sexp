@@ -16,9 +16,9 @@
 
 (case "every not-a-number value is equal to every not-a-number value"
   (doc    "Witnesses core-semantics.md #Floating-Point Equality Follows The Canonical Byte Form:
-           all NaN values share one canonical byte form, so they compare equal. `nan` denotes the
-           canonical not-a-number value (options/code-shape/, deterministic-value-form.md).")
-  (input  (= nan nan))
+           all NaN values share one canonical byte form, so they compare equal. `Float64.nan` denotes the
+           canonical not-a-number value of that width (options/code-shape/, deterministic-value-form.md).")
+  (input  (= Float64.nan Float64.nan))
   (output (: true Bool)))
 
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
@@ -32,12 +32,12 @@
 ; equal). The seed's `cval_eq` recurses through `float_canonical_eq`, so it must match the scalar rule.
 
 (case "a NaN nested in a tuple compares equal under the canonical byte form"
-  (doc    "`(= (tuple nan) (tuple nan))` = true: structural equality compares the tuples component-wise
-           (core-semantics.md #Equality Is Structural), and the float component follows the
+  (doc    "`(= (tuple Float64.nan) (tuple Float64.nan))` = true: structural equality compares the tuples
+           component-wise (core-semantics.md #Equality Is Structural), and the float component follows the
            canonical-byte-form rule where every NaN equals every NaN — exactly as the scalar
-           `(= nan nan)` does. A recursion using wasm's f64.eq would answer false (nan ≠ nan); this pins
-           the canonical-byte-form rule holds for a float INSIDE a compound.")
-  (input  (= (tuple nan) (tuple nan)))
+           `(= Float64.nan Float64.nan)` does. A recursion using wasm's f64.eq would answer false (nan ≠
+           nan); this pins the canonical-byte-form rule holds for a float INSIDE a compound.")
+  (input  (= (tuple Float64.nan) (tuple Float64.nan)))
   (output (: true Bool)))
 
 (case "a negative zero nested in a tuple is distinct from positive zero"
@@ -57,20 +57,20 @@
   (output (: true Bool)))
 
 (case "a NaN nested in a list compares equal under the canonical byte form"
-  (doc    "The list companion: `(= (list nan 1.0) (list nan 1.0))` = true — element-wise equality
-           compares nan against nan (equal, canonical byte form) and 1.0 against 1.0 (equal), so the
+  (doc    "The list companion: `(= (list Float64.nan 1.0) (list Float64.nan 1.0))` = true — element-wise
+           equality compares nan against nan (equal, canonical byte form) and 1.0 against 1.0 (equal), so the
            lists are equal. Pins that the canonical-byte-form float rule recurses through list elements
            too, alongside an ordinary equal float element.")
   (needs  collections)
-  (input  (= (list nan 1.0) (list nan 1.0)))
+  (input  (= (list Float64.nan 1.0) (list Float64.nan 1.0)))
   (output (: true Bool)))
 
 (case "a NaN nested in a sum payload compares equal under the canonical byte form"
-  (doc    "The sum companion: `(= (Some nan) (Some nan))` = true — the variant tags match (both Some)
-           and the payloads compare by the canonical-byte-form rule where nan equals nan. Pins that
+  (doc    "The sum companion: `(= (Some Float64.nan) (Some Float64.nan))` = true — the variant tags match
+           (both Some) and the payloads compare by the canonical-byte-form rule where nan equals nan. Pins that
            structural equality applies the float rule to a Sum's payload, not only to tuple/list
            elements.")
-  (input  (= (Some nan) (Some nan)))
+  (input  (= (Some Float64.nan) (Some Float64.nan)))
   (output (: true Bool)))
 
 (case "a negative zero in a record field is distinct from positive zero"
