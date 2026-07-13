@@ -579,7 +579,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(
-            "a built-in operation used as a value needs runtime closures (not yet built)",
+            crate::diag::PRIM_AS_VALUE_DECLINE,
         )),
         // Application — the ONE path, dispatched by the head value's `(meta apply)` primitive. An
         // arithmetic prim folds (below); a type-constructor prim reduces via the evaluator to a built
@@ -1361,7 +1361,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Param { binder } => Core::Param { binder },
         // A TYPE VALUE is compile-time-only — no runtime core form (the erasure fence forbids one
         // reaching runtime), so lowering it as a runtime value declines.
-        Resolved::TypeVal(_) => Core::Poison(Reject::decline("a type value has no runtime form")),
+        Resolved::TypeVal(_) => Core::Poison(Reject::decline(crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE)),
         // A LAMBDA that survives to lowering as a RUNTIME value (it could not be β-reduced away — it is
         // passed to a recursive callee, or stored in a runtime cell). LIFT it to a standalone function
         // and produce a `Core::Closure` naming its table slot. Only a NO-CAPTURE (combinator) lambda
@@ -3697,7 +3697,7 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // multi-param closure (runtime currying) still declines at the application site, not here.
     if params.is_empty() {
         return Core::Poison(Reject::decline(
-            "a nullary lambda has no runtime closure form",
+            crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE,
         ));
     }
     let param_occs: Vec<StructId> = params

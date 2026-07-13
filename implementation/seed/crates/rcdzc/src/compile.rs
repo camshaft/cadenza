@@ -718,6 +718,27 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .collect();
     for (body, name, occ) in export_results {
         let ty = crate::infer::type_of(db, body);
+        // A TYPE-VALUED export — `(def (main) Int64)` exports a bare type name. A type is a COMPILE-TIME
+        // value with no runtime form (the erasure fence), so it cannot be an entrypoint's result. The emit
+        // path declines this through FOUR different downstream paths (type-value-has-no-runtime-form,
+        // nullary-lambda-no-closure, closure-param-no-repr, built-in-op-as-value) — a 4-error cascade for
+        // one root cause. Report it ONCE here, coded CDZ0201 at the export clause with a clear message;
+        // `dedup_faults` drops the downstream declines. `Ty::Type` is the type of a type-value — the
+        // authoritative signal (an ordinary runtime value never has it).
+        if matches!(ty, crate::ty::Ty::Type) {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}` is a TYPE, not a runtime value — a type is compile-time only \
+                         and cannot cross the component boundary (export a value of the type, or a \
+                         function, not the type itself)"
+                    ),
+                )
+                .at(occ),
+            );
+            continue;
+        }
         if arrow_has_unconstrained(&ty) {
             faults.push(
                 Reject::coded(
@@ -812,6 +833,14 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     let has_closure_boundary_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::CLOSURE_BOUNDARY_MARKER));
+    // Likewise: a TYPE-VALUED export is reported as the coded CDZ0201 "export `<name>` is a TYPE …" at the
+    // export clause. The emit path declines the SAME body through several no-runtime-form paths (type
+    // value / nullary lambda / bare prim / closure param) — all UNANCHORED, so neither the same-node rule
+    // nor node-keyed dedup collapses them. Drop the whole decline family program-wide when the CDZ0201 is
+    // present, keeping the coded reject as the ONE "no".
+    let has_type_export_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.contains(crate::diag::TYPE_EXPORT_MARKER));
     // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean
     // fix) AND the emit-side member fold, at two DIFFERENT nodes (the `.k` projection vs an enclosing
     // `(R.k …)` apply), is ONE fault shown twice. The messages are IDENTICAL up to the fix suffix, so key
@@ -887,6 +916,20 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
                 && matches!(
                     r.message.as_str(),
                     crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
+                        | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
+                )
+            {
+                return false;
+            }
+            if has_type_export_reject
+                && r.is_decline()
+                && matches!(
+                    r.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                        | crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE
                         | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
                         | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
                 )

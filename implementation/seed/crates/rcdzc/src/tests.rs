@@ -8310,6 +8310,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_type_valued_export_reports_one_coded_error_not_a_cascade() {
+        // Exporting a TYPE — `(def (main) Int64)` — is compile-time-only and can't cross the boundary.
+        // The emit path declined the same body through FOUR no-runtime-form paths (type-value / nullary
+        // lambda / bare prim / closure param) — a 4-error cascade for one root cause. `collect_faults` now
+        // reports ONE coded CDZ0201 "is a TYPE, not a runtime value" at the export clause, and
+        // `dedup_faults` drops the downstream declines. One clear, actionable error, not four "not built
+        // yet" declines an agent would flail on.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) Int64) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a type-valued export = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0].message.contains("is a TYPE, not a runtime value"),
+            "the surviving error names the real cause: {}",
+            errors[0].message
+        );
+        // None of the four downstream declines accompany it.
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                )
+            }),
+            "the no-runtime-form declines must not accompany the coded reject: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
