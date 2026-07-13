@@ -32281,6 +32281,7 @@ mod closure_host_resource {
                 arg_vts: vec![ValType::I64],
                 ret_vt: ValType::I64,
                 lifted_slot: 0, // lifted-inc is table slot 0
+                ret_is_bytes: false,
             },
             SigGroup {
                 makes: vec![ClosureMake {
@@ -32291,6 +32292,7 @@ mod closure_host_resource {
                 arg_vts: vec![ValType::I64],
                 ret_vt: ValType::I32, // Bool → i32
                 lifted_slot: 1,       // lifted-isz is table slot 1
+                ret_is_bytes: false,
             },
         ];
 

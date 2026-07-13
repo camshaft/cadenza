@@ -2219,6 +2219,12 @@ pub struct SigGroup {
     /// caller passes the slot rather than a pre-baked type index (the distinct-sig core's type layout
     /// differs from the multi-export one, so `layout.lifted_type_index` cannot be reused here).
     pub lifted_slot: usize,
+    /// True when this group's closure result is a byte-rope (`Bytes`/`String`) — its `call-<g>` returns an
+    /// i32 retptr into memory (a `list<u8>` at the canon boundary) instead of a scalar. `ret_vt` is `I32`
+    /// either way (a byte-rope handle IS an i32), so the core FUNCTYPE is identical; only the call BODY (a
+    /// `bytes-len`/`bytes-get` copy loop writing a `(ptr,len)` return area) and the envelope's list-lift
+    /// differ. When ANY group is byte-rope the core gains a memory + `cabi_realloc` (shared across groups).
+    pub ret_is_bytes: bool,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -2240,6 +2246,10 @@ pub fn distinct_sig_resource_core_module(
     let n = funcs.len();
     let g = groups.len();
     let total_makes: usize = groups.iter().map(|gr| gr.makes.len()).sum();
+    // Any byte-rope group makes the whole component need a memory + `cabi_realloc` (shared across groups —
+    // the compound `call-<g>` writes its `list<u8>` payload + `(ptr,len)` return area into linear memory,
+    // then the envelope lifts that group with the Memory/Realloc canon options).
+    let any_bytes = groups.iter().any(|gr| gr.ret_is_bytes);
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -2290,7 +2300,15 @@ pub fn distinct_sig_resource_core_module(
         call_type_idx.push(next_type as u32);
         next_type += 1;
     }
-    let total_types = defined_type_base + n + total_makes + g;
+    // If any group is byte-rope, one shared `cabi_realloc` functype `(i32×4)->i32` after the group functypes.
+    let realloc_type_idx = next_type as u32;
+    if any_bytes {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + total_makes + g + usize::from(any_bytes);
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops (each against its own `import_functype` at index i) + per group
@@ -2325,15 +2343,27 @@ pub fn distinct_sig_resource_core_module(
     for &ti in &call_type_idx {
         uleb128(ti as u64, &mut func_items);
     }
+    if any_bytes {
+        uleb128(realloc_type_idx as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + total_makes + g, &func_items),
+        &wasm_vec(n + total_makes + g + usize::from(any_bytes), &func_items),
     );
-    // Absolute core-func indices: defined bodies at import_count..; then makes; then calls.
+    // Absolute core-func indices: defined bodies at import_count..; then makes; then calls; then (if any
+    // byte-rope group) the shared cabi_realloc.
     let import_count = k + 2 * g;
     let defined_abs_base = import_count as u32;
     let make_abs_base = defined_abs_base + n as u32;
     let call_abs_base = make_abs_base + total_makes as u32;
+    let realloc_abs = call_abs_base + g as u32; // valid only when any_bytes
+
+    // ── Memory ── only when a byte-rope group needs to write its `list<u8>` payload.
+    let mem_sec = if any_bytes {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    } else {
+        Vec::new()
+    };
 
     // ── Table + Element ── the ONE funcref table from `layout.lifted` (all groups' lifteds share it).
     let n_lifted = layout.lifted.len();
@@ -2358,33 +2388,45 @@ pub fn distinct_sig_resource_core_module(
         (table_sec, elem_sec)
     };
 
-    // ── Export section ── per group: its makes (each `make-<name>`) + `call-<g>`.
+    // ── Export section ── per group: its makes (each `make-<name>`) + `call-<g>`; plus (when any byte-rope
+    // group) `memory` + `cabi_realloc` for the compound `call`'s canon lift.
     let export_sec = {
-        let export = |name: &str, idx: u32| {
+        let export = |name: &str, kind: u8, idx: u32| {
             let mut item = uleb_bytes(name.len() as u64);
             item.extend_from_slice(name.as_bytes());
-            item.push(wasm_abi::EXPORT_KIND_FUNC);
+            item.push(kind);
             let mut b = item;
             uleb128(idx as u64, &mut b);
             b
         };
+        let func_export = |name: &str, idx: u32| export(name, wasm_abi::EXPORT_KIND_FUNC, idx);
         let mut items = Vec::new();
         let mut make_i = 0u32;
         for (gi, gr) in groups.iter().enumerate() {
             for mk in &gr.makes {
-                items.extend_from_slice(&export(&mk.export_name, make_abs_base + make_i));
+                items.extend_from_slice(&func_export(&mk.export_name, make_abs_base + make_i));
                 make_i += 1;
             }
-            items.extend_from_slice(&export(&format!("call-g{gi}"), call_abs_base + gi as u32));
+            items.extend_from_slice(&func_export(
+                &format!("call-g{gi}"),
+                call_abs_base + gi as u32,
+            ));
         }
         // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, so just name each
         // by its core-func index (the envelope aliases + lifts them as ordinary top-level component funcs).
         for p in plain {
-            items.extend_from_slice(&export(&p.export_name, p.body_abs));
+            items.extend_from_slice(&func_export(&p.export_name, p.body_abs));
+        }
+        if any_bytes {
+            items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+            items.extend_from_slice(&func_export("cabi_realloc", realloc_abs));
         }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(total_makes + g + plain.len(), &items),
+            &wasm_vec(
+                total_makes + g + plain.len() + if any_bytes { 2 } else { 0 },
+                &items,
+            ),
         )
     };
 
@@ -2411,49 +2453,159 @@ pub fn distinct_sig_resource_core_module(
             code_items.extend_from_slice(&e);
         }
     }
-    // calls (one per group): resource.rep-g → cell → dispatch the group's lifted functype → drop the cell.
+    // calls (one per group): resource.rep-g → cell → dispatch the group's lifted functype. A SCALAR group
+    // returns the dispatched value directly (drop the cell after); a BYTE-ROPE group's lifted call yields a
+    // runtime Bytes/String handle, which the copy-loop writes out as a `list<u8>` `(ptr,len)` return area
+    // (identical body to the single/multi-export bytes `call`), returning an i32 retptr.
+    let imp = |name: &str| import_index[name] as u64;
     for (gi, gr) in groups.iter().enumerate() {
-        let cell_local = (1 + gr.arg_vts.len()) as u32;
+        let lifted_tyi = (defined_type_base + layout.order.len() + gr.lifted_slot) as u32;
+        let arity = gr.arg_vts.len() as u32;
         let mut inner = Vec::new();
-        inner.extend_from_slice(&wasm_vec(1, &{
-            let mut gl = uleb_bytes(1);
-            gl.push(wasm_abi::CORE_I32);
-            gl
-        }));
-        inner.push(op::LOCAL_GET);
-        uleb128(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(rrep_fn[gi] as u64, &mut inner);
-        inner.push(op::LOCAL_SET);
-        uleb128(cell_local as u64, &mut inner);
-        inner.push(op::LOCAL_GET);
-        uleb128(cell_local as u64, &mut inner);
-        for a in 0..gr.arg_vts.len() {
+        if gr.ret_is_bytes {
+            const OUT: i64 = 8;
+            let cell = 1 + arity;
+            let bh = cell + 1;
+            let nlen = bh + 1;
+            let iv = nlen + 1;
+            inner.extend_from_slice(&wasm_vec(1, &{
+                let mut gl = uleb_bytes(4);
+                gl.push(wasm_abi::CORE_I32);
+                gl
+            }));
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            let ci32 = |v: i64, out: &mut Vec<u8>| {
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(v, out);
+            };
+            get(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(rrep_fn[gi] as u64, &mut inner);
+            set(cell, &mut inner);
+            get(cell, &mut inner);
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
+            get(cell, &mut inner);
+            ci32(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("arr-get"), &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("get-int"), &mut inner);
+            inner.push(op::I32_WRAP_I64);
+            inner.push(op::CALL_INDIRECT);
+            uleb128(lifted_tyi as u64, &mut inner);
+            uleb128(0, &mut inner);
+            set(bh, &mut inner);
+            get(cell, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            get(bh, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-len"), &mut inner);
+            set(nlen, &mut inner);
+            ci32(0, &mut inner);
+            set(iv, &mut inner);
+            inner.push(op::BLOCK);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            inner.push(op::LOOP);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            get(iv, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_GE_U);
+            inner.push(op::BR_IF);
+            uleb128(1, &mut inner);
+            ci32(OUT, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::I32_ADD);
+            get(bh, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-get"), &mut inner);
+            inner.push(op::I32_STORE8);
+            inner.push(0x00);
+            inner.push(0x00);
+            get(iv, &mut inner);
+            ci32(1, &mut inner);
+            inner.push(op::I32_ADD);
+            set(iv, &mut inner);
+            inner.push(op::BR);
+            uleb128(0, &mut inner);
+            inner.push(op::END);
+            inner.push(op::END);
+            ci32(0, &mut inner);
+            ci32(OUT, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            ci32(4, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            get(bh, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            ci32(0, &mut inner);
+            inner.push(op::END);
+        } else {
+            let cell_local = 1 + arity;
+            inner.extend_from_slice(&wasm_vec(1, &{
+                let mut gl = uleb_bytes(1);
+                gl.push(wasm_abi::CORE_I32);
+                gl
+            }));
             inner.push(op::LOCAL_GET);
-            uleb128((1 + a) as u64, &mut inner);
+            uleb128(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(rrep_fn[gi] as u64, &mut inner);
+            inner.push(op::LOCAL_SET);
+            uleb128(cell_local as u64, &mut inner);
+            inner.push(op::LOCAL_GET);
+            uleb128(cell_local as u64, &mut inner);
+            for a in 0..arity {
+                inner.push(op::LOCAL_GET);
+                uleb128((1 + a) as u64, &mut inner);
+            }
+            inner.push(op::LOCAL_GET);
+            uleb128(cell_local as u64, &mut inner);
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(0, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("arr-get"), &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("get-int"), &mut inner);
+            inner.push(op::I32_WRAP_I64);
+            inner.push(op::CALL_INDIRECT);
+            // The group's lifted `call_indirect` functype index in THIS core: the lifted bodies are the
+            // trailing `funcs` after the `order` defs, so their functype sits at
+            // `defined_type_base + order.len() + slot` (NOT `layout.lifted_type_index`, which bakes in the
+            // multi-export `import_base`; the distinct-sig core has a different type layout).
+            uleb128(lifted_tyi as u64, &mut inner);
+            uleb128(0, &mut inner); // table 0
+            // C-HOST-5 release (own<t> consumed → drop the cell after dispatch).
+            inner.push(op::LOCAL_GET);
+            uleb128(cell_local as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            inner.push(op::END);
         }
-        inner.push(op::LOCAL_GET);
-        uleb128(cell_local as u64, &mut inner);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // cabi_realloc stub (only when a byte-rope group needs it).
+    if any_bytes {
+        let mut inner = uleb_bytes(0);
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);
-        inner.push(op::CALL);
-        uleb128(import_index["arr-get"] as u64, &mut inner);
-        inner.push(op::CALL);
-        uleb128(import_index["get-int"] as u64, &mut inner);
-        inner.push(op::I32_WRAP_I64);
-        inner.push(op::CALL_INDIRECT);
-        // The group's lifted `call_indirect` functype index in THIS core: the lifted bodies are the
-        // trailing `funcs` after the `order` defs, so their functype sits at
-        // `defined_type_base + order.len() + slot` (NOT `layout.lifted_type_index`, which bakes in the
-        // multi-export `import_base`; the distinct-sig core has a different type layout).
-        let lifted_tyi = (defined_type_base + layout.order.len() + gr.lifted_slot) as u32;
-        uleb128(lifted_tyi as u64, &mut inner);
-        uleb128(0, &mut inner); // table 0
-        // C-HOST-5 release (own<t> consumed → drop the cell after dispatch).
-        inner.push(op::LOCAL_GET);
-        uleb128(cell_local as u64, &mut inner);
-        inner.push(op::CALL);
-        uleb128(import_index["drop"] as u64, &mut inner);
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);
@@ -2461,7 +2613,7 @@ pub fn distinct_sig_resource_core_module(
     }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + total_makes + g, &code_items),
+        &wasm_vec(n + total_makes + g + usize::from(any_bytes), &code_items),
     );
 
     let mut core = Vec::new();
@@ -2470,6 +2622,7 @@ pub fn distinct_sig_resource_core_module(
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
