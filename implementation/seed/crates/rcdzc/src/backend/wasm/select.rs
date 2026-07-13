@@ -202,6 +202,18 @@ const OP_MAP_INSERT: &str = "map-insert";
 const OP_MAP_LOOKUP: &str = "map-lookup";
 const OP_MAP_REMOVE: &str = "map-remove";
 const OP_MAP_SIZE: &str = "map-size";
+/// Persistent CHAMP set ops (CHAMP-minus-value-column). `set-empty() -> handle`; `set-insert(s, elem) ->
+/// handle` (consumes s, elem); `set-contains(s, elem) -> bool` (BORROWS both); `set-remove(s, elem) ->
+/// handle` (consumes s; borrows elem); `set-size(s) -> u32` (borrows, O(1)); `set-union`/`set-intersection`/
+/// `set-difference(a, b) -> handle` (consume both). Elements cross as plain handles, compared structurally.
+const OP_SET_EMPTY: &str = "set-empty";
+const OP_SET_INSERT: &str = "set-insert";
+const OP_SET_CONTAINS: &str = "set-contains";
+const OP_SET_REMOVE: &str = "set-remove";
+const OP_SET_SIZE: &str = "set-size";
+const OP_SET_UNION: &str = "set-union";
+const OP_SET_INTERSECTION: &str = "set-intersection";
+const OP_SET_DIFFERENCE: &str = "set-difference";
 /// NULL — the absent-value handle `map-lookup` returns for a key the map does not contain (the runtime's
 /// canonical null handle, 0). `Map.lookup` tests the returned handle against it to build `None` vs `Some`.
 const NULL_HANDLE: i32 = 0;
@@ -215,9 +227,13 @@ const NULL_HANDLE: i32 = 0;
 /// list take the scalar `select` path and emit a module that failed wasm validation (i64/i32 mismatch).
 fn is_heap_type(ty: &Ty) -> bool {
     match ty {
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes => {
-            true
-        }
+        Ty::Tuple(_)
+        | Ty::Record(_)
+        | Ty::Sum { .. }
+        | Ty::List(_)
+        | Ty::Map(_, _)
+        | Ty::Set(_)
+        | Ty::Bytes => true,
         // A quantity ERASES to its inner numeric type before the backend (`lower` strips the `Qty`), so
         // a `Ty::Qty` should not reach selection. Defensively classify it by its inner type — a quantity
         // over a heap numeric would be heap, but Layer 1's numerics are all scalars (int/float).
@@ -328,6 +344,26 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         // `Map.size` BORROWS its map operand (`map-size` reads the root without consuming) — like `List.len`.
         Core::MapSize { map } => binding_escapes(db, map, binder, true),
+        // A set construction CONSUMES each element into the built set — a binding used as an element
+        // escapes into it (like a list element / a map key).
+        Core::SetOf { elems, .. } => elems.iter().any(|&e| binding_escapes(db, e, binder, false)),
+        // `Set.insert` CONSUMES the set and the element into the new set (persistent op takes ownership) —
+        // both escape if used here. `Set.remove` CONSUMES the set; its element is boxed into an owned
+        // temporary (consuming), dropped by the emit after the borrow-compare.
+        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+            binding_escapes(db, set, binder, false) || binding_escapes(db, elem, binder, false)
+        }
+        // `Set.contains` BORROWS the set (returns a bool; the boxed element is an owned temporary the emit
+        // drops), so a set bound here does NOT escape; the element flows into an owned temporary (consuming).
+        Core::SetContains { set, elem, .. } => {
+            binding_escapes(db, set, binder, true) || binding_escapes(db, elem, binder, false)
+        }
+        // `Set.len` BORROWS its set operand (`set-size` reads the root without consuming) — like `Map.size`.
+        Core::SetLen { set } => binding_escapes(db, set, binder, true),
+        // A set-algebra op CONSUMES both operand sets into the result — either escapes if used here.
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
         // A call CONSUMES its arguments; a host call likewise consumes its arguments across the boundary.
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
@@ -466,6 +502,7 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Sum { .. }
         | Ty::List(_)
         | Ty::Map(_, _)
+        | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
         | Ty::Fn(_, _) => Ok(None),
@@ -504,6 +541,7 @@ fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Sum { .. }
         | Ty::List(_)
         | Ty::Map(_, _)
+        | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
         | Ty::Fn(_, _) => Ok(None),
@@ -830,6 +868,61 @@ pub fn collect_used_ops(
         Core::MapSize { map } => {
             out.insert(OP_MAP_SIZE);
             collect_used_ops(db, map, out);
+        }
+        // A set construction is `set-empty` then a `set-insert` per element (each boxed by its type).
+        Core::SetOf { elems, elem_ty } => {
+            out.insert(OP_SET_EMPTY);
+            if !elems.is_empty() {
+                out.insert(OP_SET_INSERT);
+                if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+                    out.insert(op);
+                }
+            }
+            for &e in &elems {
+                collect_used_ops(db, e, out);
+            }
+        }
+        // `Set.contains` = `set-contains` (→ bool), boxing the element (an owned temporary the emit drops).
+        Core::SetContains { set, elem, elem_ty } => {
+            out.insert(OP_SET_CONTAINS);
+            out.insert(OP_DROP);
+            if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, set, out);
+            collect_used_ops(db, elem, out);
+        }
+        // `Set.insert`/`Set.remove` = `set-insert`/`set-remove`, boxing the element by its type.
+        Core::SetInsert { set, elem, elem_ty } => {
+            out.insert(OP_SET_INSERT);
+            if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, set, out);
+            collect_used_ops(db, elem, out);
+        }
+        Core::SetRemove { set, elem, elem_ty } => {
+            out.insert(OP_SET_REMOVE);
+            if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, set, out);
+            collect_used_ops(db, elem, out);
+        }
+        // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
+        Core::SetLen { set } => {
+            out.insert(OP_SET_SIZE);
+            collect_used_ops(db, set, out);
+        }
+        // A set-algebra op = the matching runtime op (consumes both operand sets).
+        Core::SetAlgebra { op, lhs, rhs } => {
+            out.insert(match op {
+                crate::core::SetAlgebraOp::Union => OP_SET_UNION,
+                crate::core::SetAlgebraOp::Intersection => OP_SET_INTERSECTION,
+                crate::core::SetAlgebraOp::Difference => OP_SET_DIFFERENCE,
+            });
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
         }
         // A RUNTIME `Bytes.at`: `bytes-len` (bounds test) + `bytes-get` (the raw byte VALUE, in bounds),
         // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
@@ -2929,6 +3022,97 @@ fn emit(
             out.push(Lir::I64ExtendI32U); // → [size:i64] — Map.size : Int64
             Ok(())
         }
+        // A SET construction — `(Set.of (list …))`. `set-empty` leaves a fresh empty set; then for each
+        // element, box it by its type (a narrow int extended i32→i64 first) and `set-insert(set, elem)` —
+        // which CONSUMES the set + element and RETURNS the new set, threading the handle through (like a
+        // map insert). A duplicate element is a no-op at insert (the set dedups). Leaves the set handle.
+        Core::SetOf { elems, elem_ty } => {
+            out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
+            for &e in &elems {
+                emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
+                if let Some(op) = box_op_ty(&elem_ty)? {
+                    if let Some(m) = is_narrow_int(db, e) {
+                        out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    }
+                    out.push(Lir::CallImport(op)); // [set, elem-handle]
+                }
+                out.push(Lir::CallImport(OP_SET_INSERT)); // → [set'] (consumes set, elem)
+            }
+            Ok(()) // leaves [set] — the set handle
+        }
+        // `Set.insert(s, e)` — emit the set handle, the element boxed by its type, then `set-insert`
+        // (RETURNS the new set; consumes both). Mirrors `MapInsert` without the value column.
+        Core::SetInsert { set, elem, elem_ty } => {
+            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
+            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
+            if let Some(op) = box_op_ty(&elem_ty)? {
+                if let Some(m) = is_narrow_int(db, elem) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            out.push(Lir::CallImport(OP_SET_INSERT)); // → [set']
+            Ok(())
+        }
+        // `Set.remove(s, e)` — emit the set handle, the element boxed by its type, then `set-remove`
+        // (RETURNS the new set; consumes the set, borrows the element — the boxed element is dropped inside
+        // the op). Removing an absent element yields an equal set (total).
+        Core::SetRemove { set, elem, elem_ty } => {
+            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
+            emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
+            if let Some(op) = box_op_ty(&elem_ty)? {
+                if let Some(m) = is_narrow_int(db, elem) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set']
+            Ok(())
+        }
+        // `Set.len(s)` — emit the set handle, `set-size` (→ u32), extend to i64 (`Set.len : Int64`).
+        Core::SetLen { set } => {
+            emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
+            out.push(Lir::CallImport(OP_SET_SIZE)); // → [size:i32]
+            out.push(Lir::I64ExtendI32U); // → [size:i64]
+            Ok(())
+        }
+        // A runtime `Set.contains(s, e)` — the TOTAL membership predicate. Box the element, `set-contains(s,
+        // key)` (BORROWS both; returns a `bool` directly — UNLIKE `Map.lookup`'s NULL-or-handle → Option).
+        // The boxed element is an owned temporary the emit must `drop` after the borrow — stash it in a
+        // scratch slot, box, contains, then drop the stashed element. Leaves the bool on the stack.
+        Core::SetContains { set, elem, elem_ty } => {
+            let elem_slot = base;
+            if elem_slot + 1 > *high {
+                *high = elem_slot + 1;
+            }
+            scratch_ty.insert(elem_slot, ValType::I32);
+            emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
+            emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
+            if let Some(op) = box_op_ty(&elem_ty)? {
+                if let Some(m) = is_narrow_int(db, elem) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
+            out.push(Lir::CallImport(OP_SET_CONTAINS)); // [bool] (borrows set + elem)
+            // Drop the boxed element temporary now that the borrow-contains is done.
+            out.push(Lir::LocalGet(elem_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            Ok(()) // leaves [bool]
+        }
+        // A set-algebra op — emit both operand set handles, then the matching runtime op (consumes both,
+        // returns the result set). `Set.union`/`intersection`/`difference` share this shape.
+        Core::SetAlgebra { op, lhs, rhs } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            out.push(Lir::CallImport(match op {
+                crate::core::SetAlgebraOp::Union => OP_SET_UNION,
+                crate::core::SetAlgebraOp::Intersection => OP_SET_INTERSECTION,
+                crate::core::SetAlgebraOp::Difference => OP_SET_DIFFERENCE,
+            })); // → [result]
+            Ok(())
+        }
         // A runtime `Map.lookup(m, k)` — the fallible keyed read. Box the key, `map-lookup(m, key)` (BORROWS
         // both; returns the STORED VALUE HANDLE, or NULL when the key is absent). If the returned handle is
         // non-null build `Some(value)` — the value is a boxed handle used DIRECTLY as the `Some` payload,
@@ -4315,6 +4499,12 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         // string against a constant-string literal.
         | Core::ConstStr(_)
         | Core::BytesOf { .. }
+        // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
+        // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
+        | Core::SetOf { .. }
+        | Core::SetInsert { .. }
+        | Core::SetRemove { .. }
+        | Core::SetAlgebra { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),

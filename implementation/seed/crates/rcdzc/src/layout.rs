@@ -418,6 +418,22 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
             collect_closure_codes(db, key, out);
         }
         Core::MapSize { map } => collect_closure_codes(db, map, out),
+        Core::SetOf { elems, .. } => {
+            for &e in &elems {
+                collect_closure_codes(db, e, out);
+            }
+        }
+        Core::SetContains { set, elem, .. }
+        | Core::SetInsert { set, elem, .. }
+        | Core::SetRemove { set, elem, .. } => {
+            collect_closure_codes(db, set, out);
+            collect_closure_codes(db, elem, out);
+        }
+        Core::SetLen { set } => collect_closure_codes(db, set, out),
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            collect_closure_codes(db, lhs, out);
+            collect_closure_codes(db, rhs, out);
+        }
         Core::BytesAt { bytes, index, .. } => {
             collect_closure_codes(db, bytes, out);
             collect_closure_codes(db, index, out);
@@ -594,6 +610,22 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, key, out);
         }
         crate::core::Core::MapSize { map } => collect_call_callees(db, map, out),
+        crate::core::Core::SetOf { elems, .. } => {
+            for &e in &elems {
+                collect_call_callees(db, e, out);
+            }
+        }
+        crate::core::Core::SetContains { set, elem, .. }
+        | crate::core::Core::SetInsert { set, elem, .. }
+        | crate::core::Core::SetRemove { set, elem, .. } => {
+            collect_call_callees(db, set, out);
+            collect_call_callees(db, elem, out);
+        }
+        crate::core::Core::SetLen { set } => collect_call_callees(db, set, out),
+        crate::core::Core::SetAlgebra { lhs, rhs, .. } => {
+            collect_call_callees(db, lhs, out);
+            collect_call_callees(db, rhs, out);
+        }
         crate::core::Core::BytesAt { bytes, index, .. } => {
             collect_call_callees(db, bytes, out);
             collect_call_callees(db, index, out);

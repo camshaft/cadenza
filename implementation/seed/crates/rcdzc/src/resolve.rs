@@ -2236,6 +2236,15 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             let v = decode_ty(db, tail[1])?;
             Some(Ty::Map(Box::new(k), Box::new(v)))
         }
+        // A set type-value: `(Set T)` — one element type (the dual of `eval::encode_ty`'s `(Set T)`).
+        "Set" => {
+            let tail = db.ast.as_form(node, "Set")?;
+            if tail.len() != 1 {
+                return None;
+            }
+            let elem = decode_ty(db, tail[0])?;
+            Some(Ty::Set(Box::new(elem)))
+        }
         // A quantity type-value: `(Qty <inner-ty> (unit (base NAME EXP)…))` — the dual of
         // `eval::encode_ty`'s `Qty` arm. The inner numeric type then the unit as a `(unit …)` node whose
         // tail is `(base NAME EXP)` triples in canonical (sorted) order (the dimensionless unit is the

@@ -1128,6 +1128,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Core::MapSize { map },
                     }
                 }
+                // `Set.of` — construct a set from a LIST of elements (dedup). Emit `Core::SetOf` carrying
+                // the element occurrences + the solved element type; a constant list folds to a canonical
+                // set. `Set.contains`/`len`/`insert`/`remove` + the algebra ops each lower to their runtime
+                // `Core::Set*` (folding a constant operand). The element type comes from the RESULT node's
+                // solved `Ty::Set` (fully determined by unification, even for a bare `(Set.of (list))`).
+                Some(Prim::SetOf) if args.len() == 1 => lower_set_of(db, id, args[0]),
+                Some(Prim::SetContains) if args.len() == 2 => {
+                    lower_set_contains(db, args[0], args[1])
+                }
+                Some(Prim::SetLen) if args.len() == 1 => {
+                    let set = args[0];
+                    match core_of(db, set) {
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::SetLen { set },
+                    }
+                }
+                Some(prim @ (Prim::SetInsert | Prim::SetRemove)) if args.len() == 2 => {
+                    lower_set_insert_remove(db, prim, args[0], args[1])
+                }
+                Some(prim @ (Prim::SetUnion | Prim::SetIntersection | Prim::SetDifference))
+                    if args.len() == 2 =>
+                {
+                    lower_set_algebra(db, prim, args[0], args[1])
+                }
                 // `Map.swap` / `Map.take` — the value-yielding forms — reduce (via `reduce_ctor`) to the
                 // synthesized tuple `(tuple (Map.lookup m k) (Map.insert/remove m k v))`, then lower that.
                 // Going through `reduce_ctor` (not a direct build) means `reduce_to_tuple_elems` reduces
@@ -4582,6 +4606,37 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             }
             Some(b.list(children))
         }
+        // A CONSTANT set value — `(Set.of (list e1 e2 …))` — its elements rendered in CANONICAL (sorted)
+        // ORDER inside a `(list …)`, wrapped in a `(Set.of …)` form (collections-and-text.md §A Set …
+        // canonical written form is `(Set.of (list …))`). The constant set already has each element at
+        // most once (the `Set.of`/insert folds dedup by value); sort by `const_key_order` (reused — an
+        // element orders exactly like a map key). A non-orderable element declines the escape.
+        Core::SetOf { elems, .. } => {
+            let mut sorted: Vec<StructId> = elems.clone();
+            let mut orderable = true;
+            sorted.sort_by(|&x, &y| {
+                const_key_order(db, x, y).unwrap_or_else(|| {
+                    orderable = false;
+                    std::cmp::Ordering::Equal
+                })
+            });
+            if !orderable {
+                return None;
+            }
+            let list_head = b.name("list");
+            let mut list_children = vec![list_head];
+            for e in sorted {
+                list_children.push(const_value_ast(db, b, e)?);
+            }
+            let inner_list = b.list(list_children);
+            // `(Set.of <list>)` — a member-access `(. Set of)` applied to the list. The value form the
+            // corpus records is the `Set.of (list …)` application, so build it as `((. Set of) <list>)`.
+            let set_mod = b.name("Set");
+            let of_key = b.name("of");
+            let dot = b.name(".");
+            let set_of = b.list(vec![dot, set_mod, of_key]);
+            Some(b.list(vec![set_of, inner_list]))
+        }
         // A CONSTANT sum value — `(Some 5)`, `(None unit)`, `(Some (Some 5))`. Its canonical form is
         // `(VariantName payload…)` with the variant TAG present (`deterministic-value-form.md`;
         // core-semantics.md §A Constructor Applied To An Argument Is A Sum Value). This holds regardless
@@ -4793,6 +4848,12 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             let kty = type_ast(b, k)?;
             let vty = type_ast(b, v)?;
             Some(b.list(vec![head, kty, vty]))
+        }
+        // A set's type surface is `(Set Elem)` — one element type parameter (matches `render_name`).
+        Ty::Set(elem) => {
+            let head = b.name("Set");
+            let ety = type_ast(b, elem)?;
+            Some(b.list(vec![head, ety]))
         }
         // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
         // `render_name`; its VALUE renders `b"…"` (built in `const_value_ast` / the escape walker).
@@ -5619,6 +5680,15 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::MapSize
         | Prim::MapSwap
         | Prim::MapTake
+        | Prim::SetCtor
+        | Prim::SetOf
+        | Prim::SetContains
+        | Prim::SetLen
+        | Prim::SetInsert
+        | Prim::SetRemove
+        | Prim::SetUnion
+        | Prim::SetIntersection
+        | Prim::SetDifference
         | Prim::CharTy
         | Prim::CharToInt
         | Prim::CharFromInt
@@ -6158,6 +6228,21 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
             }
             Some(true)
         }
+        // Two constant SETS — equal iff same size AND every element of one is present in the other (by
+        // VALUE, order-independent — a set is unordered; collections-and-text.md §A Set Is A Collection Of
+        // Unique Elements: two sets are equal when they contain equal elements, independent of order). Both
+        // are already dedup'd (the `Set.of`/insert folds), so equal size + one-way containment suffices.
+        (Core::SetOf { elems: ea, .. }, Core::SetOf { elems: eb, .. }) => {
+            if ea.len() != eb.len() {
+                return Some(false);
+            }
+            for &x in &ea {
+                if !set_has_const_elem(db, &eb, x) {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
         // Any other pairing includes a runtime operand (not a constant compound) — decline the fold.
         _ => None,
     }
@@ -6276,6 +6361,15 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             let key_ok = matches!(k, Ty::Any) || ty_heap_walkable(db, &k, seen);
             let val_ok = matches!(v, Ty::Any) || ty_heap_walkable(db, &v, seen);
             key_ok && val_ok
+        }
+        // A SET handle is CANONICAL by construction (the same order-independent CHAMP as a map), so two
+        // runtime sets compare correctly by the `value-eq` walk — walkable iff its ELEMENT type is. An
+        // `Any` element is the deferred type of an EMPTY set (`(Set.of (list))` — no elements), a phantom
+        // like a map's `Any` key/value, so treat it as walkable (else `(= (Set.of (list)) (Set.of (list
+        // 1)))`, which MUST yield `false`, would decline). The map analogue, one axis instead of two.
+        Ty::Set(elem) => {
+            let elem = (**elem).clone();
+            matches!(elem, Ty::Any) || ty_heap_walkable(db, &elem, seen)
         }
         // A STRING is a flat UTF-8 byte LEAF, CANONICAL by construction — every runtime String rep is a
         // flat leaf (`str-new`, or the compiler's `bytes-alloc`+`bytes-set` build, both `alloc(Vec::new(),
@@ -6445,6 +6539,177 @@ fn map_kv_types(db: &mut Db, map: StructId) -> Option<(crate::ty::Ty, crate::ty:
     }
 }
 
+/// The solved ELEMENT type of a set operand — `T` from its `Ty::Set(T)`. `None` if not a solved set type.
+fn set_elem_type(db: &mut Db, set: StructId) -> Option<crate::ty::Ty> {
+    match crate::infer::type_of(db, set) {
+        crate::ty::Ty::Set(elem) => Some(*elem),
+        _ => None,
+    }
+}
+
+/// Whether the CONSTANT elements of a set (a `Core::SetOf`) contain one `const_compound_eq` to `elem`.
+/// Used by the const folds (contains / insert-dedup). Both must be compile-time-visible constants.
+fn set_has_const_elem(db: &mut Db, elems: &[StructId], elem: StructId) -> bool {
+    elems
+        .iter()
+        .any(|&e| const_compound_eq(db, e, elem) == Some(true))
+}
+
+/// Lower `(Set.of list)` — construct a set from a list, DEDUPLICATING. When the `list` operand is a
+/// compile-time-visible `Core::ListNew`, fold to a canonical constant `Core::SetOf` (dropping later
+/// duplicates by value — `const_compound_eq`), so it bakes/compares/renders as a constant set; a runtime
+/// list emits `Core::SetOf` over the list's elements (a later increment reads a runtime list — declines
+/// for now). The element type comes from the RESULT node's own solved `Ty::Set`. A poison propagates.
+fn lower_set_of(db: &mut Db, id: StructId, list: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, list) {
+        return Core::Poison(r);
+    }
+    let Some(elem_ty) = (match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Set(e) => Some(*e),
+        _ => None,
+    }) else {
+        return Core::Poison(Reject::decline("Set.of result is not a solved set type"));
+    };
+    match core_of(db, list) {
+        // A constant list → a canonical DEDUP'd constant set. Keep the FIRST occurrence of each element
+        // value (order-independent equality means which copy is kept is unobservable; the render sorts).
+        Core::ListNew { elems } => {
+            let mut deduped: Vec<StructId> = Vec::with_capacity(elems.len());
+            for &e in &elems {
+                if !set_has_const_elem(db, &deduped, e) {
+                    deduped.push(e);
+                }
+            }
+            trace!(target: "rcdzc::fold", node = id.0, elems = deduped.len(), "Set.of folds a constant list to a canonical set");
+            Core::SetOf {
+                elems: deduped,
+                elem_ty,
+            }
+        }
+        // A runtime list source — building a set from a runtime list needs a runtime dedup loop (a later
+        // increment); decline cleanly (a constant list is the corpus shape).
+        _ => Core::Poison(Reject::decline(
+            "Set.of over a runtime list is not yet built (a constant list literal only)",
+        )),
+    }
+}
+
+/// Lower `(Set.contains set elem)` — the total membership predicate. FOLD a constant set (`Core::SetOf`)
+/// with a constant element to `ConstBool` (by value, `const_compound_eq`), else emit the runtime
+/// `Core::SetContains` (a `bool`). A poison propagates.
+fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, set) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, elem) {
+        return Core::Poison(r);
+    }
+    if let Core::SetOf { elems, .. } = core_of(db, set)
+        && is_const_value(db, elem)
+    {
+        let present = set_has_const_elem(db, &elems, elem);
+        trace!(target: "rcdzc::fold", result = present, "Set.contains folds against a constant set");
+        return Core::ConstBool(present);
+    }
+    let Some(elem_ty) = set_elem_type(db, set) else {
+        return Core::Poison(Reject::decline("Set.contains operand is not a solved set type"));
+    };
+    Core::SetContains { set, elem, elem_ty }
+}
+
+/// Lower `(Set.insert set elem)` / `(Set.remove set elem)`. FOLD onto a constant set (`Core::SetOf`) when
+/// the element is constant: insert appends (no-op if already present, by value); remove drops the matching
+/// element (no-op if absent). Else emit the runtime `Core::SetInsert`/`Core::SetRemove`. The element type
+/// comes from the RESULT node's solved `Ty::Set`. A poison propagates.
+fn lower_set_insert_remove(
+    db: &mut Db,
+    prim: crate::resolved::Prim,
+    set: StructId,
+    elem: StructId,
+) -> Core {
+    use crate::resolved::Prim;
+    if let Core::Poison(r) = core_of(db, set) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, elem) {
+        return Core::Poison(r);
+    }
+    let is_insert = prim == Prim::SetInsert;
+    if let Core::SetOf { elems, elem_ty } = core_of(db, set)
+        && is_const_value(db, elem)
+    {
+        let mut out: Vec<StructId> = elems.to_vec();
+        if is_insert {
+            if !set_has_const_elem(db, &out, elem) {
+                out.push(elem); // add-if-absent (a present element is a no-op value)
+            }
+        } else {
+            out.retain(|&e| const_compound_eq(db, e, elem) != Some(true)); // drop the matching element
+        }
+        trace!(target: "rcdzc::fold", elems = out.len(), insert = is_insert, "Set.insert/remove folds onto a constant set");
+        return Core::SetOf { elems: out, elem_ty };
+    }
+    let Some(elem_ty) = set_elem_type(db, set) else {
+        return Core::Poison(Reject::decline("Set.insert/remove operand is not a solved set type"));
+    };
+    if is_insert {
+        Core::SetInsert { set, elem, elem_ty }
+    } else {
+        Core::SetRemove { set, elem, elem_ty }
+    }
+}
+
+/// Lower `(Set.union a b)` / `intersection` / `difference`. FOLD two constant sets (`Core::SetOf`) to a
+/// canonical constant result set (by-value element algebra, `const_compound_eq`); else emit the runtime
+/// `Core::SetAlgebra`. A poison propagates.
+fn lower_set_algebra(
+    db: &mut Db,
+    prim: crate::resolved::Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Core {
+    use crate::core::SetAlgebraOp;
+    use crate::resolved::Prim;
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let op = match prim {
+        Prim::SetUnion => SetAlgebraOp::Union,
+        Prim::SetIntersection => SetAlgebraOp::Intersection,
+        _ => SetAlgebraOp::Difference,
+    };
+    if let (Core::SetOf { elems: a, elem_ty }, Core::SetOf { elems: b, .. }) =
+        (core_of(db, lhs), core_of(db, rhs))
+    {
+        let out: Vec<StructId> = match op {
+            // union: a's elements, then b's elements not already present.
+            SetAlgebraOp::Union => {
+                let mut out = a.to_vec();
+                for &e in &b {
+                    if !set_has_const_elem(db, &out, e) {
+                        out.push(e);
+                    }
+                }
+                out
+            }
+            // intersection: a's elements that are also in b.
+            SetAlgebraOp::Intersection => {
+                a.iter().copied().filter(|&e| set_has_const_elem(db, &b, e)).collect()
+            }
+            // difference: a's elements NOT in b.
+            SetAlgebraOp::Difference => {
+                a.iter().copied().filter(|&e| !set_has_const_elem(db, &b, e)).collect()
+            }
+        };
+        trace!(target: "rcdzc::fold", ?op, elems = out.len(), "set-algebra folds two constant sets");
+        return Core::SetOf { elems: out, elem_ty };
+    }
+    Core::SetAlgebra { op, lhs, rhs }
+}
+
 /// Lower `(Map.insert map key val)` — add-or-replace, returning the new map. For M1 this emits the
 /// runtime `Core::MapInsert` on a runtime map operand (a constant-map fold is a later increment). The
 /// key/value types come from the map operand's `Ty::Map` (they choose the box ops). A poison propagates.
@@ -6575,6 +6840,7 @@ fn is_const_value(db: &mut Db, id: StructId) -> bool {
         Core::MapNew { entries, .. } => entries
             .iter()
             .all(|&(k, v)| is_const_value(db, k) && is_const_value(db, v)),
+        Core::SetOf { elems, .. } => elems.iter().all(|&e| is_const_value(db, e)),
         _ => false,
     }
 }
@@ -8161,6 +8427,15 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
         Prim::QtyCtor => "Qty",
+        Prim::SetCtor => "Set",
+        Prim::SetOf => "set-of",
+        Prim::SetContains => "set-contains",
+        Prim::SetLen => "set-len",
+        Prim::SetInsert => "set-insert",
+        Prim::SetRemove => "set-remove",
+        Prim::SetUnion => "set-union",
+        Prim::SetIntersection => "set-intersection",
+        Prim::SetDifference => "set-difference",
     }
 }
 

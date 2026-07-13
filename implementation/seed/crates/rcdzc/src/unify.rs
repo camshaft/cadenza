@@ -62,6 +62,8 @@ impl Subst {
             Ty::List(elem) => Ty::List(Box::new(self.apply(elem))),
             // A map substitutes into its key AND value types (a deferred `Map ?0 ?1` — the empty-map case).
             Ty::Map(k, v) => Ty::Map(Box::new(self.apply(k)), Box::new(self.apply(v))),
+            // A set substitutes into its element type (a deferred `Set ?0` — an empty set).
+            Ty::Set(elem) => Ty::Set(Box::new(self.apply(elem))),
             // A sum's identity is its `decl`, but a GENERIC instantiation carries type ARGS that may hold
             // unsolved variables (a deferred payload — `Option ?0`), so substitute into each arg. A
             // monomorphic sum has empty args, so this is a cheap clone of the name/decl.
@@ -186,6 +188,10 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             unify(subst, ka, kb)?;
             unify(subst, va, vb)
         }
+        // Two sets unify iff their ELEMENT types unify — `Set Int64` conflicts with `Set Bool`; solves a
+        // deferred element (an empty set `Set ?0` unified against `Set Int64`). Does NOT compare element
+        // sets (runtime data), so two sets with different elements unify (well-typed comparison → `false`).
+        (Ty::Set(a), Ty::Set(b)) => unify(subst, a, b),
         // Two sums unify iff they are the SAME declaration AND their type ARGS unify pairwise — a sum's
         // identity is its declaration OCCURRENCE (`type-system.md` §158/§160), NOT its name (two `(type
         // Foo …)` declared separately are DISTINCT types even with the same name), together with its
@@ -382,6 +388,8 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         Ty::List(elem) => occurs(subst, v, elem),
         // A map's key or value type may hold the variable (`Map ?0 ?1` — the empty map).
         Ty::Map(k, val) => occurs(subst, v, k) || occurs(subst, v, val),
+        // A set's element type may hold the variable (`Set ?0` — an empty set).
+        Ty::Set(elem) => occurs(subst, v, elem),
         // A quantity's INNER numeric type may hold the variable (`Qty ?0 u`); the unit never does.
         Ty::Qty { inner, .. } => occurs(subst, v, inner),
         Ty::Int(_)
@@ -539,6 +547,8 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
         Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| rename(t, m)).collect()),
         // A list scheme's element type may hold a bound variable (a `(fn (a) … (List a))` scheme) — rename.
         Ty::List(elem) => Ty::List(Box::new(rename(elem, m))),
+        // A set scheme's element type may hold a bound variable (a `(fn (a) … (Set a))` op scheme) — rename.
+        Ty::Set(elem) => Ty::Set(Box::new(rename(elem, m))),
         // A map scheme's key/value types may hold bound variables (a `(fn (k v) … (Map k v))` op scheme)
         // — rename each.
         Ty::Map(k, v) => Ty::Map(Box::new(rename(k, m)), Box::new(rename(v, m))),
@@ -647,6 +657,7 @@ fn freshen_free_go(
                 .collect(),
         ),
         Ty::List(elem) => Ty::List(Box::new(freshen_free_go(elem, fresh, map, wmap, smap))),
+        Ty::Set(elem) => Ty::Set(Box::new(freshen_free_go(elem, fresh, map, wmap, smap))),
         Ty::Map(k, v) => Ty::Map(
             Box::new(freshen_free_go(k, fresh, map, wmap, smap)),
             Box::new(freshen_free_go(v, fresh, map, wmap, smap)),

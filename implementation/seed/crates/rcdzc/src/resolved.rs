@@ -418,6 +418,35 @@ pub enum Prim {
     /// The `(meta apply)` of the `Qty` module — the quantity companion of `Int`/`List`/`Tuple`'s type
     /// constructors, so a `(Qty …)` annotation reduces through the ordinary `typeval_of` path.
     QtyCtor,
+    /// A SET TYPE CONSTRUCTOR — the `(meta apply)` of the `Set` prelude module. `(Set Int64)` in type
+    /// position builds `Ty::Set(elem)` (ONE parameter, like `List`). The set analogue of `ListCtor`.
+    SetCtor,
+    /// `Set.of` — construct a set from a LIST of its elements: `∀a. (List a) → (Set a)`, DEDUPLICATING
+    /// (each element at most once). Lowers to `set-empty` + a `set-insert` per list element (a constant
+    /// list folds to a canonical `Core::SetOf`). The one set CONSTRUCTOR (the set analogue of `Bytes.of`).
+    SetOf,
+    /// `Set.contains` — the TOTAL membership predicate `∀a. (Set a) → a → Bool` (never traps; no positional
+    /// access — a set is unordered). Lowers to the runtime `set-contains` op (returns a `bool` directly,
+    /// UNLIKE `Map.lookup`'s Option). A constant set + constant element folds to `ConstBool`.
+    SetContains,
+    /// `Set.len` — the count of DISTINCT elements, an `Int64` (`∀a. (Set a) → Int64`). Lowers to the
+    /// runtime `set-size` op (+ i32→i64 extend). The set analogue of `List.len`/`Map.size`.
+    SetLen,
+    /// `Set.insert` — add an element, returning the new set: `∀a. (Set a) → a → (Set a)` (functional
+    /// construction; inserting a present element is a no-op value). Lowers to the runtime `set-insert`.
+    SetInsert,
+    /// `Set.remove` — drop an element, returning the new set: `∀a. (Set a) → a → (Set a)` (total — removing
+    /// an absent element yields an equal set). Lowers to the runtime `set-remove`.
+    SetRemove,
+    /// `Set.union` — the set of elements in EITHER set: `∀a. (Set a) → (Set a) → (Set a)`. Lowers to the
+    /// runtime `set-union` op (consumes both). A constant pair folds.
+    SetUnion,
+    /// `Set.intersection` — the set of elements in BOTH sets: `∀a. (Set a) → (Set a) → (Set a)`. Lowers to
+    /// the runtime `set-intersection` op.
+    SetIntersection,
+    /// `Set.difference` — the set of elements in the first set but NOT the second: `∀a. (Set a) → (Set a)
+    /// → (Set a)`. Lowers to the runtime `set-difference` op.
+    SetDifference,
 }
 
 impl Prim {
@@ -510,6 +539,15 @@ impl Prim {
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
             "Qty" => Some(Prim::QtyCtor),
+            "Set" => Some(Prim::SetCtor),
+            "set-of" => Some(Prim::SetOf),
+            "set-contains" => Some(Prim::SetContains),
+            "set-len" => Some(Prim::SetLen),
+            "set-insert" => Some(Prim::SetInsert),
+            "set-remove" => Some(Prim::SetRemove),
+            "set-union" => Some(Prim::SetUnion),
+            "set-intersection" => Some(Prim::SetIntersection),
+            "set-difference" => Some(Prim::SetDifference),
             _ => None,
         }
     }

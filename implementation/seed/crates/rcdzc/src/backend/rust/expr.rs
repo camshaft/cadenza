@@ -764,6 +764,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::MapLookup { .. }
         | Core::MapRemove { .. }
         | Core::MapSize { .. }
+        | Core::SetOf { .. }
+        | Core::SetContains { .. }
+        | Core::SetInsert { .. }
+        | Core::SetRemove { .. }
+        | Core::SetLen { .. }
+        | Core::SetAlgebra { .. }
         | Core::BinBuild { .. }
         | Core::BinBitsBuild { .. }
         | Core::BinIntRead { .. }

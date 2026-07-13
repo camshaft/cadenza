@@ -358,6 +358,15 @@ pub enum Ty {
     /// `map-*` heap ops; keys are compared by VALUE under structural equality, and its canonical form
     /// renders entries in sorted key order.
     Map(Box<Ty>, Box<Ty>),
+    /// A SET: a persistent UNORDERED collection of UNIQUE ELEMENTS of one type (`collections-and-text.md`
+    /// §A Set Is A Collection Of Unique Elements). PARAMETRIC in ONE element type (like `List`, unlike
+    /// `Map`'s two). The set's element SET is runtime data, NOT part of its type: two sets with different
+    /// elements but the same element type are the SAME type `Set<T>` (the map analogue — the element set
+    /// is a runtime collection, not a shape), so comparing them is well-typed (yields `false`). `Set
+    /// Int64` and `Set Bool` are distinct. Backed at run time by the persistent CHAMP `set-*` heap ops
+    /// (CHAMP-minus-value-column); elements are compared by VALUE under structural equality, and its
+    /// canonical form renders `(Set.of (list …))` with elements in sorted order.
+    Set(Box<Ty>),
     /// A BYTES sequence: a homogeneous, variable-length sequence of BYTES (`collections-and-text.md` §A
     /// Byte Sequence Is A Sequence Of Bytes). NOT parametric — a byte is a byte, so unlike `List` it
     /// carries no element type (a LEAF in the type universe). Distinct from `List Int64`: a `Bytes` packs
@@ -533,6 +542,7 @@ impl Ty {
             Ty::Tuple(elems) => elems.iter().any(|t| t.has_free_var()),
             Ty::List(elem) => elem.has_free_var(),
             Ty::Map(k, v) => k.has_free_var() || v.has_free_var(),
+            Ty::Set(elem) => elem.has_free_var(),
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
             // A quantity's free variables are its INNER numeric type's — the unit is a concrete
@@ -607,6 +617,10 @@ impl Ty {
             // the contrast with `Record` above (whose field-name set IS its shape). Deferred key/value
             // types (an empty map) are compatible via the recursive `agrees_with`.
             (Ty::Map(ka, va), Ty::Map(kb, vb)) => ka.agrees_with(kb) && va.agrees_with(vb),
+            // Two sets agree iff their ELEMENT types agree — `Set Int64` ≠ `Set Bool`. The element SET is
+            // NOT compared (runtime data, like a map's key set): two sets with different elements but the
+            // same element type are the SAME type and agree (a well-typed comparison → `false`).
+            (Ty::Set(a), Ty::Set(b)) => a.agrees_with(b),
             // Bytes is a leaf — a bytes agrees only with another bytes (no element type to compare).
             (Ty::Bytes, Ty::Bytes) => true,
             // Two sums agree iff their DECLARATIONS match AND their type ARGS agree pairwise — a sum's
@@ -728,6 +742,9 @@ impl Ty {
             // Two agreeing lists join their element type — a deferred element (`List ?0`, the empty list)
             // is fixed by the other branch's `List Int64`, the list analogue of the sum-arg join above.
             (Ty::List(a), Ty::List(b)) if self.agrees_with(other) => Ty::List(Box::new(a.join(b))),
+            // Two agreeing sets join their element type — a deferred element (`Set ?0`, an empty set) is
+            // fixed by the other branch's `Set Int64`, the set analogue of the list join.
+            (Ty::Set(a), Ty::Set(b)) if self.agrees_with(other) => Ty::Set(Box::new(a.join(b))),
             // Two agreeing maps join their key type AND value type — a deferred key/value (`Map ?0 ?1`,
             // the empty map) is fixed by the other branch's `Map Int64 Int64`, the map analogue of the
             // list join above.
@@ -810,6 +827,9 @@ impl Ty {
             // A map renders as `(Map Key Value)` — its two type parameters, key first (the corpus `(:
             // (map (1 10) (2 20)) (Map Int64 Int64))` form). The key SET is runtime data, not the type.
             Ty::Map(k, v) => format!("(Map {} {})", k.render_name(), v.render_name()),
+            // A set renders as `(Set Elem)` — its one element type parameter (the corpus `(: (Set.of …)
+            // (Set Int64))` form).
+            Ty::Set(elem) => format!("(Set {})", elem.render_name()),
             // Bytes renders as the bare type name `Bytes` (its VALUES render `b"…"`, but the type
             // annotation is the name — the corpus `(: b"…" Bytes)` form).
             Ty::Bytes => "Bytes".to_string(),
