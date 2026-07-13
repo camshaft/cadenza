@@ -258,10 +258,19 @@ impl HandlerCtx {
             .collect();
         parts.sort();
         let key = parts.join(",");
-        // Single-state: exactly one arm ⇒ one state binder to thread. (The corpus's single-state
-        // recursive cases — countdown, range-sum — each have one arm; the two-effect nested case has two
-        // arms with distinct states, handled by a later increment.)
-        let single_state = if arms.len() == 1 {
+        // Single-state: all arms discharge ONE effect (one `decl`), so the handler threads ONE logical
+        // state — regardless of arm count. Each arm binds its OWN `state` occurrence, but they name the
+        // same threaded value, and a recursive fn under such a handler specializes with ONE trailing
+        // state param (each perform substitutes its arm's own state binder). Covers countdown/range-sum
+        // (1 arm) AND a 2-arm single-effect scalar handler. A context spanning TWO effects (two distinct
+        // decls — the two-nested case) needs a state STACK, a later increment, so it stays `None` here.
+        // The representative binder (used only as a presence gate downstream) is the first arm's.
+        let one_effect = {
+            let mut decls = arms.keys().map(|&(d, _)| d);
+            let first = decls.next();
+            first.is_some() && decls.all(|d| Some(d) == first)
+        };
+        let single_state = if one_effect {
             arms.values().next().map(|a| a.state)
         } else {
             None

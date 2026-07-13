@@ -8137,6 +8137,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_fn_under_a_two_arm_single_effect_handler_specializes() {
+        // E3-multi-arm: a handler with SEVERAL arms of ONE effect threads ONE logical state, so a
+        // recursive fn under it specializes with a single trailing state param (each perform substitutes
+        // its OWN arm's state binder). `St` has two ops — `get` (reads the counter) and `tick` (returns 1,
+        // threads `s-1`); `loop` recurses summing a `tick` per non-zero `get`. Seeded 3: `get` reads 3,2,1,0
+        // and `tick` returns 1 three times → `1+1+1+0` = 3. (The 1-arm case is countdown above; this pins
+        // that the arm-count no longer gates specialization — only the single-EFFECT property does.)
+        let src = "(do (effect St (op get (-> Unit Int64)) (op tick (-> Unit Int64))) \
+                   (def (loop) (if (= (St.get) 0) 0 (+ (St.tick) (loop)))) \
+                   (def (main) (handle 3 ((St.get (u) s (resume s s)) (St.tick (u) s (resume 1 (- s 1)))) \
+                     (loop))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a recursive fn under a 2-arm single-effect handler specializes and runs"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
