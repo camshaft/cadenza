@@ -176,8 +176,17 @@ pub fn validate(component_bytes: &[u8]) -> Result<()> {
 }
 
 /// Instantiate `component_bytes`, compose the value-heap runtime if imported, invoke the chosen
-/// export with the (coerced) arguments, and return the rendered outcome.
+/// export with the (coerced) arguments, and return the rendered outcome. The OBSERVED host calls are
+/// discarded; use [`run_capturing`] to also get the ordered list of host operations the run performed.
 pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
+    run_capturing(component_bytes, opts).map(|(o, _calls)| o)
+}
+
+/// [`run`], additionally returning the ordered list of HOST OPERATIONS the run performed (each a dotted
+/// `E.op`, in call order) — so a caller (the corpus gate) can verify the observed host-call sequence
+/// against a case's recorded `(host-calls …)`. Empty for a program that makes no host call.
+pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome, Vec<String>)> {
+    use std::sync::{Arc, Mutex};
     let engine = engine();
     let component =
         Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
@@ -194,12 +203,28 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
     }
 
     // Bind every HOST import (a delegated effect's operations, E2h) so a program's host calls are
-    // satisfied by the recorded responses, consumed in call order. Inert for a program with no host
-    // import (the common case).
-    bind_host_imports(&engine, &component, &mut linker, opts)?;
+    // satisfied by the recorded responses, consumed in call order. Each performed call APPENDS its
+    // dotted `E.op` to `observed`, so the caller can compare the observed sequence against the case's
+    // recorded `(host-calls …)`. Inert for a program with no host import (the common case).
+    let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    bind_host_imports(&engine, &component, &mut linker, opts, &observed)?;
 
+    let outcome = run_export(&engine, &component, &mut store, &linker, opts)?;
+    let calls = observed.lock().expect("observed calls mutex").clone();
+    Ok((outcome, calls))
+}
+
+/// Instantiate the linked component and invoke its chosen export (or the resource-escape path), returning
+/// the rendered outcome. Split out of [`run_capturing`] so the host-call observation wraps it.
+fn run_export(
+    engine: &Engine,
+    component: &Component,
+    store: &mut Store<()>,
+    linker: &Linker<()>,
+    opts: &RunOpts,
+) -> Result<Outcome> {
     let instance = linker
-        .instantiate(&mut store, &component)
+        .instantiate(&mut *store, component)
         .map_err(|e| anyhow!("instantiate: {e}"))?;
 
     // The RESOURCE ESCAPE (`DESIGN-value-heap-rcdzc.md` §3a): a program whose result is a COMPOUND
@@ -209,30 +234,34 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
     // a strongly-typed resource, rendered by the host (not spelled out in wasm). Taken when no explicit
     // `--call` names a bare function.
     if opts.export.is_none()
-        && sole_func_export(&engine, &component).is_none()
-        && has_run_instance(&engine, &component)
+        && sole_func_export(engine, component).is_none()
+        && has_run_instance(engine, component)
     {
-        return run_resource_escape(&mut store, &instance);
+        return run_resource_escape(&mut *store, &instance);
     }
 
     // Resolve the export to call: the named one, or the sole function export found by signature.
     let export_name = match &opts.export {
         Some(name) => name.clone(),
-        None => sole_func_export(&engine, &component).ok_or_else(|| {
+        None => sole_func_export(engine, component).ok_or_else(|| {
             anyhow!("no --call given and the component has no single function export to default to")
         })?,
     };
     let func = instance
-        .get_func(&mut store, &export_name)
+        .get_func(&mut *store, &export_name)
         .ok_or_else(|| anyhow!("component exports no function `{export_name}`"))?;
 
     // Coerce the raw argument strings to the export's declared parameter types.
-    let param_types: Vec<Type> = func.params(&store).iter().map(|(_, t)| t.clone()).collect();
+    let param_types: Vec<Type> = func
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
     let args = coerce_args(&opts.args, &param_types)?;
 
-    let result_count = func.results(&store).len();
+    let result_count = func.results(&*store).len();
     let mut results = vec![Val::Bool(false); result_count];
-    match func.call(&mut store, &args, &mut results) {
+    match func.call(&mut *store, &args, &mut results) {
         Ok(()) => {
             let rendered = match results.first() {
                 None => "unit".to_string(),
@@ -242,7 +271,7 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
                 Some(Val::String(s)) => s.clone(),
                 Some(other) => render_val(other),
             };
-            let _ = func.post_return(&mut store);
+            let _ = func.post_return(&mut *store);
             Ok(Outcome::Value(rendered))
         }
         Err(e) => Ok(Outcome::Trap(format!("{e}"))),
@@ -352,6 +381,7 @@ fn bind_host_imports(
     component: &Component,
     linker: &mut Linker<()>,
     opts: &RunOpts,
+    observed: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Result<()> {
     use std::sync::{Arc, Mutex};
     // The shared response cursor — every bound host func pops the next response in order. `Arc<Mutex>`
@@ -361,8 +391,11 @@ fn bind_host_imports(
     let responses = Arc::new(opts.host_responses.clone());
 
     // Enumerate the imported instances (host effect interfaces) off the component type. The runtime
-    // interface (if imported) is bound elsewhere — skip it here.
-    let imports: Vec<(String, Vec<(String, Type)>)> = component
+    // interface (if imported) is bound elsewhere — skip it here. EVERY func is bound (including a
+    // unit-result op like `log.emit`, which returns nothing) so a delegated call is always satisfied.
+    // One entry per imported instance: its interface name + its ops (each `(op-name, result-type?)`).
+    type HostIface = (String, Vec<(String, Option<Type>)>);
+    let imports: Vec<HostIface> = component
         .component_type()
         .imports(engine)
         .filter_map(|(name, item)| {
@@ -370,14 +403,13 @@ fn bind_host_imports(
                 return None;
             }
             if let ComponentItem::ComponentInstance(inst) = item {
-                let funcs: Vec<(String, Type)> = inst
+                let funcs: Vec<(String, Option<Type>)> = inst
                     .exports(engine)
                     .filter_map(|(fname, i)| match i {
+                        // The op's declared result type, if any — a unit-result op (`func()`) has none,
+                        // and consumes NO response (it is still bound + observed).
                         ComponentItem::ComponentFunc(f) => {
-                            // The op's declared result type (this increment supports a single scalar
-                            // result); a resultless (unit) op returns nothing.
-                            let ret = f.results().next();
-                            ret.map(|t| (fname.to_string(), t))
+                            Some((fname.to_string(), f.results().next()))
                         }
                         _ => None,
                     })
@@ -396,19 +428,29 @@ fn bind_host_imports(
         for (fname, ret_ty) in funcs {
             let cursor = Arc::clone(&cursor);
             let responses = Arc::clone(&responses);
-            let ret_ty = ret_ty.clone();
+            let observed = Arc::clone(observed);
             let op_label = format!("{iface_name}.{fname}");
             iface.func_new(&fname, move |_ctx, _params, results| {
-                // Pop the next recorded response, coerce it to the op's result type, and return it.
-                let mut idx = cursor.lock().expect("host response cursor mutex");
-                let resp = responses.get(*idx).ok_or_else(|| {
-                    anyhow!(
-                        "host call `{op_label}` has no recorded response (only {} response(s) supplied)",
-                        responses.len()
-                    )
-                })?;
-                *idx += 1;
+                // OBSERVE the call — append its dotted `E.op` in call order (so the gate can verify the
+                // sequence against `(host-calls …)`).
+                observed
+                    .lock()
+                    .expect("observed calls mutex")
+                    .push(op_label.clone());
+                // A unit-result op returns nothing and consumes no response. A scalar-result op pops the
+                // next recorded response, coerces it to the result type, and returns it.
                 if let Some(slot) = results.get_mut(0) {
+                    let ret_ty = ret_ty
+                        .clone()
+                        .expect("a result slot implies a declared result type");
+                    let mut idx = cursor.lock().expect("host response cursor mutex");
+                    let resp = responses.get(*idx).ok_or_else(|| {
+                        anyhow!(
+                            "host call `{op_label}` has no recorded response (only {} supplied)",
+                            responses.len()
+                        )
+                    })?;
+                    *idx += 1;
                     *slot = coerce_one(&scalar_of_value_form(&resp.value), &ret_ty)?;
                 }
                 Ok(())

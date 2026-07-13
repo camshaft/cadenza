@@ -176,7 +176,15 @@ function CompiledBody({
           </p>
         </div>
       )}
-      {view === "wat" && <pre className="whitespace-pre text-slate-400">{pending(compiled.wat)}</pre>}
+      {view === "wat" && (
+        <>
+          <p className="mb-2 text-[11px] text-slate-500">
+            The executed WebAssembly core module — unwrapped from the component and stripped of debug
+            info, so you see just the code.
+          </p>
+          <pre className="whitespace-pre text-slate-400">{pending(compiled.wat)}</pre>
+        </>
+      )}
       {view === "rust" && <pre className="whitespace-pre text-slate-400">{pending(compiled.rustSync)}</pre>}
       {view === "rustAsync" && <pre className="whitespace-pre text-slate-400">{pending(compiled.rustAsync)}</pre>}
     </div>

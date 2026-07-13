@@ -1807,19 +1807,55 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
 
 /// Build a fixed-width FLOAT MODULE record for `width` — the constructor-side twin of
 /// `prelude::float_module_record` (the two MUST build the same shape so `(Float N)` and the named-width
-/// `Float64` are one module). Carries `(meta t)` = the concrete float type-value + an `of-int`
-/// `unrealized` field (realized in F5). A `width` of 0 (the sentinel a NON-admitted `(Float N)` reduces
-/// to) yields `Ty::Float(Fixed(0))`, which the annotation check rejects CDZ0302.
+/// `Float64` are one module). Carries `(meta t)` = the concrete float type-value + the `of-int`
+/// operation (`Int64 → (Float width)`, the `float-of-int` intrinsic). A `width` of 0 (the sentinel a
+/// NON-admitted `(Float N)` reduces to) yields `Ty::Float(Fixed(0))`, which the annotation check rejects
+/// CDZ0302.
 pub fn build_float_module(db: &mut Db, width: u32) -> StructId {
     let ty = crate::ty::Ty::Float(crate::ty::FloatTy::fixed(width));
     let ty_node = encode_typeval(db, &ty);
-    let fields = vec![meta_field(db, "t", ty_node), unrealized_field(db, "of-int")];
+    let of_int = float_of_int_field(db, width);
+    let fields = vec![meta_field(db, "t", ty_node), of_int];
     let head = db.push_str("record");
     let mut children = vec![head];
     for f in fields {
         children.push(f);
     }
     db.push_list(children)
+}
+
+/// The module's `of-int` field, appended on `&mut Db` — the constructor-side twin of
+/// `prelude::float_of_int_type` + its op record (the two MUST build the same shape so `(Float N).of-int`
+/// and `Float64.of-int` are one operation). `(of-int (record ((meta t) (fn () (-> Int64 (Float width))))
+/// ((meta apply) (intrinsic float-of-int))))`.
+fn float_of_int_field(db: &mut Db, width: u32) -> StructId {
+    // `(fn () (-> Int64 (Float width)))` — the zero-param scheme wrapper (so `scheme_of` reads a SCHEME,
+    // not a bare type-value).
+    let int64 = db.push_name("Int64");
+    let target = {
+        let ctor = db.push_name("Float");
+        let w = db.push_atom(Leaf::Int {
+            value: IntValue::from_i64(width as i64),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![ctor, w])
+    };
+    let arr = db.push_name("->");
+    let body = db.push_list(vec![arr, int64, target]);
+    let fn_head = db.push_name("fn");
+    let params = db.push_list(vec![]);
+    let scheme = db.push_list(vec![fn_head, params, body]);
+    let t_field = meta_field(db, "t", scheme);
+    let apply = {
+        let head = db.push_name("intrinsic");
+        let who = db.push_name("float-of-int");
+        db.push_list(vec![head, who])
+    };
+    let apply_field = meta_field(db, "apply", apply);
+    let rec_head = db.push_str("record");
+    let rec = db.push_list(vec![rec_head, t_field, apply_field]);
+    let k = db.push_name("of-int");
+    db.push_list(vec![k, rec])
 }
 
 /// The module's `wrap` field, appended on `&mut Db` — the constructor-side twin of `prelude::wrap_field`

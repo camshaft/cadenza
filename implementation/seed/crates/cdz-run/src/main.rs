@@ -116,7 +116,14 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         host_responses,
     };
 
-    match cdz_run::run(&component_bytes, &opts)? {
+    let (outcome, observed) = cdz_run::run_capturing(&component_bytes, &opts)?;
+    // Emit the OBSERVED host calls to stderr as `host-call\t<op>` lines, in call order — the corpus gate
+    // reads them to verify a case's `(host-calls …)` sequence. On stderr (not stdout) so the value on
+    // stdout stays clean; absent for a program that makes no host call.
+    for op in &observed {
+        eprintln!("host-call\t{op}");
+    }
+    match outcome {
         cdz_run::Outcome::Value(text) => {
             println!("{text}");
             Ok(ExitCode::SUCCESS)

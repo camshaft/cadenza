@@ -70,6 +70,8 @@ pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a function value and applies it through a recursive HOF
+pass	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
+pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
@@ -401,6 +403,7 @@ pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime greater-than compares by signed order
+pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
@@ -577,6 +580,7 @@ pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an expect of a list index result is an integer usable in arithmetic
+pass	an explicit conversion makes the operation well-typed
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an imported helper reaches its own file's private definition when inlined
@@ -762,6 +766,8 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	negating a runtime Int64 near the boundary is exact just above the min
+pass	negating a runtime narrow integer just above its min is exact
 pass	negation inverts a boolean
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
@@ -1067,7 +1073,6 @@ todo	an empty quote is rejected, not a crash
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an explicit annotation overrides the default-integer pragma
-todo	an explicit conversion makes the operation well-typed
 todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
@@ -1140,6 +1145,8 @@ todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
+todo	negating a runtime Int64 overflows at Int64.min
+todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	negative integer to byte uses two's complement
 todo	ordering a string against an integer is a type error regardless of operand order
 todo	ordering an integer against a string is a type error

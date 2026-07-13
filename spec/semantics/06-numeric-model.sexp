@@ -422,6 +422,16 @@
   (call   main (: 1.0 Float64) (: 3.0 Float64))
   (output (: 0.3333333333333333 Float64)))
 
+(case "a runtime integer converts to a float with the machine convert"
+  (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
+           The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point
+           Type Is Explicit) is TOTAL — an integer always has a float image (a large magnitude rounds to
+           the nearest representable float, it does not trap). Pins the emitted int→float convert path,
+           the runtime dual of the folded `(Float64.of-int 1)` inside the `(+. …)` case above.")
+  (input  (do (def (main (: n Int64)) (Float64.of-int n)) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42.0 Float64)))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias

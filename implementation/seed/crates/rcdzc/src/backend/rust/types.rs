@@ -26,6 +26,16 @@ use crate::ty::{IntTy, Sign, Ty, Width};
 pub fn rust_type(ty: &Ty) -> Option<String> {
     match ty {
         Ty::Int(it) => int_type(*it).map(String::from),
+        // A float maps to Rust's native `f64`/`f32` by its width — the admitted {32,64} are exactly
+        // Rust's two IEEE float types. (A non-admitted width never reaches here — it is CDZ0302.)
+        Ty::Float(ft) => Some(
+            if ft.ground_width() == 32 {
+                "f32"
+            } else {
+                "f64"
+            }
+            .to_string(),
+        ),
         Ty::Bool => Some("bool".to_string()),
         Ty::Unit => Some("()".to_string()),
         // A tuple is Rust's native tuple: `(T0, T1, …)` — each element mapped recursively (so a nested

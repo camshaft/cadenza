@@ -12,7 +12,7 @@ import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx"
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { compile, renderSyntax, emitRust, type Diag, type Surface } from "../compiler/client.ts";
+import { compile, renderSyntax, emitRust, coreModule, type Diag, type Surface } from "../compiler/client.ts";
 import { toWat } from "./wat.ts";
 import type { CompiledView } from "./OutputPanel.tsx";
 import { run as runComponent } from "../runner/client.ts";
@@ -55,6 +55,11 @@ export default function PlaygroundPage() {
   const viewRef = useRef<EditorView | null>(null);
   // The last successfully-emitted component bytes, kept for lazily rendering the WAT view.
   const lastComponent = useRef<Uint8Array | null>(null);
+  // The exact `(text, surface)` of the last successful compile. The Compiled views (WAT/Rust) recompile
+  // from source, so they must use the SAME inputs the run did — not the live `text`/`shownSurface`,
+  // which can drift from what produced `lastComponent` (e.g. `shownSurface` briefly lags the reactive
+  // surface right after a share-hash seed, so the buffer's real surface and the ref disagree).
+  const lastRun = useRef<{ text: string; surface: Surface }>({ text: initial.src, surface: initial.surface });
   // The surface the current `text` is written in — so a toggle re-renders the buffer (preserving
   // edits) rather than trying to parse it in the wrong surface.
   const shownSurface = useRef(surface);
@@ -131,6 +136,7 @@ export default function PlaygroundPage() {
     // WAT / Rust sub-views are filled lazily (onNeedCompiledView) when the reader opens them.
     const marker = new TextEncoder().encode("cadenza:runtime/heap");
     lastComponent.current = out.component;
+    lastRun.current = { text, surface }; // the exact inputs the Compiled views recompile from
     setCompiled({
       bytes: out.component.length,
       importsRuntime: indexOfBytes(out.component, marker) >= 0,
@@ -159,20 +165,28 @@ export default function PlaygroundPage() {
   // opens it, so a run doesn't pay for views nobody looks at.
   const needCompiledView = useCallback(
     async (view: CompiledView) => {
+      // The Compiled views recompile from the EXACT inputs the run used (`lastRun`), so they can't drift
+      // from what `lastComponent` was built from (see `lastRun`'s note re: the share-hash surface race).
+      const { text: src, surface: srf } = lastRun.current;
       if (view === "wat") {
-        const comp = lastComponent.current;
-        if (!comp) return;
-        const wat = await toWat(comp);
+        // Show the executed CORE MODULE, not the component wrapper — and DWARF-free (the debug info is
+        // for the browser debugger, just noise in human-readable WAT). `coreModule` recompiles the
+        // program to a plain (no-DWARF) component and unwraps it to the embedded core module bytes,
+        // which we then print. Falls back to the run's component only if the unwrap declines.
+        const core = await coreModule(src, srf).catch(() => null);
+        const bytes = core ?? lastComponent.current;
+        if (!bytes) return;
+        const wat = await toWat(bytes);
         setCompiled((c) => (c ? { ...c, wat } : c));
       } else if (view === "rust") {
-        const rustSync = await emitRust(text, shownSurface.current, false).catch((e) => `// error: ${e}`);
+        const rustSync = await emitRust(src, srf, false).catch((e) => `// error: ${e}`);
         setCompiled((c) => (c ? { ...c, rustSync } : c));
       } else if (view === "rustAsync") {
-        const rustAsync = await emitRust(text, shownSurface.current, true).catch((e) => `// error: ${e}`);
+        const rustAsync = await emitRust(src, srf, true).catch((e) => `// error: ${e}`);
         setCompiled((c) => (c ? { ...c, rustAsync } : c));
       }
     },
-    [text],
+    [],
   );
 
   // ⌘/Ctrl-Enter runs.

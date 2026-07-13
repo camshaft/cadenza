@@ -56,6 +56,12 @@ export function emitRust(text: string, from: Surface, isAsync: boolean): Promise
   return client().emitRust(text, from, isAsync);
 }
 
+/// The program's DWARF-free core module bytes, unwrapped from the component — for the WAT view. Null
+/// if the program declines.
+export function coreModule(text: string, from: Surface): Promise<Uint8Array | null> {
+  return client().coreModule(text, from);
+}
+
 export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }

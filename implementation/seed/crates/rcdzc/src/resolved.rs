@@ -124,6 +124,15 @@ pub enum Prim {
     /// width (its `(meta t) = (Float N)` type-value + `of-int`/… fields). The float analogue of `IntCtor`;
     /// a width outside the admitted set reduces to the sentinel width 0 → CDZ0302, exactly as `(UInt 65)`.
     FloatCtor,
+    /// `Float64.of-int` / `Float32.of-int` — the explicit INT→FLOAT conversion `Int64 → Float N` (the
+    /// `(meta apply)` of a float module's `of-int` field). The float analogue of the integer `T.of`, but
+    /// TOTAL (an integer always has a float image; a large magnitude ROUNDS to the nearest representable
+    /// float under the fixed mode, it does not trap). A CONSTANT integer FOLDS to a `Core::ConstFloat`
+    /// (the value as f64/f32); a runtime integer emits `f64.convert_i64_s`/`f32.convert_i64_s`. The
+    /// TARGET width is the module's own, read off the application's solved `Ty::Float`. No implicit
+    /// promotion — the conversion is always written (numeric-model.md §A Conversion Involving A
+    /// Floating-Point Type Is Explicit).
+    FloatOfInt,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
     /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
@@ -326,6 +335,7 @@ impl Prim {
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
             "Float" => Some(Prim::FloatCtor),
+            "float-of-int" => Some(Prim::FloatOfInt),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),
             "Record" => Some(Prim::RecordCtor),

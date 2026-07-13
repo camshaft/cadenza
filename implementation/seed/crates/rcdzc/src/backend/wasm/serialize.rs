@@ -118,6 +118,8 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
         Lir::F32Ne => out.push(op::F32_NE),
         Lir::F32DemoteF64 => out.push(op::F32_DEMOTE_F64),
         Lir::F64PromoteF32 => out.push(op::F64_PROMOTE_F32),
+        Lir::F64ConvertI64S => out.push(op::F64_CONVERT_I64_S),
+        Lir::F32ConvertI64S => out.push(op::F32_CONVERT_I64_S),
         Lir::LocalGet(idx) => {
             out.push(op::LOCAL_GET);
             uleb128(*idx as u64, out);

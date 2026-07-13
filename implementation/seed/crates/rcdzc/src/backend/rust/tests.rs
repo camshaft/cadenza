@@ -877,3 +877,29 @@ fn main() {
         assert_eq!(out, "15 true true", "async run:\n{module}");
     }
 }
+
+#[test]
+fn rustc_roundtrip_float_arithmetic_and_of_int() {
+    // The Rust backend renders floats natively: `Ty::Float` → f64/f32, `+.`/`-.`/`*.`/`/.` → the Rust
+    // operators (IEEE, no trap), `Float64.of-int` → `as f64`. A runtime `(+. a b)` over f64 params
+    // computes the same non-exact IEEE sum the wasm backend does (0.1+0.2 = 0.30000000000000004) —
+    // Rust's `{}` for an f64 prints the shortest round-tripping decimal, matching the value form.
+    let add = compile_rust("(module m (def (f (: a Float64) (: b Float64)) (+. a b)) (export f))");
+    if let Some(out) = rustc_run(&add, "f(0.1, 0.2)") {
+        assert_eq!(out, "0.30000000000000004");
+    }
+    let mul = compile_rust("(module m (def (f (: a Float64) (: b Float64)) (*. a b)) (export f))");
+    if let Some(out) = rustc_run(&mul, "f(6.0, 7.0)") {
+        assert_eq!(out, "42");
+    }
+    // A constant float folds to a Rust `f64::from_bits(..)` literal, crossing exactly.
+    let konst = compile_rust("(module m (def (f) (+. 1.5 2.0)) (export f))");
+    if let Some(out) = rustc_run(&konst, "f()") {
+        assert_eq!(out, "3.5");
+    }
+    // `Float64.of-int` over a runtime integer → `as f64` (total).
+    let ofint = compile_rust("(module m (def (f (: n Int64)) (Float64.of-int n)) (export f))");
+    if let Some(out) = rustc_run(&ofint, "f(42)") {
+        assert_eq!(out, "42");
+    }
+}
