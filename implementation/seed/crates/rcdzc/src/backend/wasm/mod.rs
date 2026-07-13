@@ -936,14 +936,15 @@ fn resource_escape_dwarf(
         let export_abs = layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping bytes export is not in the emission order")
         })?;
-        // MUST match Mode E's `emit_runtime_bytes_resource` (with_len=true — the Bytes resource carries
-        // `t-len`), or the sidecar's code offsets diverge from the embedded component's (VM-1).
+        // MUST match Mode E's `emit_runtime_bytes_resource` method set (`[Len, ToBytes]` — the Bytes
+        // resource carries `t-len` + `t-to-bytes`), or the sidecar's code offsets diverge from the
+        // embedded component's (VM-1/VM-3).
         let main_core = serialize::runtime_resource_core_module_form_ex(
             &funcs,
             &imports,
             export_abs,
             serialize::EscapeForm::RuntimeBytes(&form),
-            true,
+            &[serialize::CoreMethod::Len, serialize::CoreMethod::ToBytes],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -2740,15 +2741,17 @@ fn emit_runtime_bytes_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
 
-    // VM-1: a Bytes result crosses as a resource carrying make + encode + a scalar `len : borrow<t> ->
-    // u32` (= `bytes-len(rep)`). The core emits `t-len` (with_len=true; `bytes-len` is already in the
-    // imports for the encode walker), and the envelope lifts the third method.
+    // VM-1/VM-3: a Bytes result crosses as a resource carrying make + encode + `len : borrow<t> -> u32`
+    // (= `bytes-len(rep)`) + `to-bytes : borrow<t> -> list<u8>` (the RAW payload). The core emits `t-len`
+    // + `t-to-bytes` (`bytes-len`/`bytes-get` are already imported for the encode walker), and the
+    // envelope lifts both extra methods (a scalar + a list result).
+    let core_methods = [serialize::CoreMethod::Len, serialize::CoreMethod::ToBytes];
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RuntimeBytes(form),
-        true, // with_len — a Bytes resource exposes `len`
+        &core_methods,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -2757,11 +2760,23 @@ fn emit_runtime_bytes_resource(
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
-    Ok(envelope::assemble_runtime_resource_with_len(
+    Ok(envelope::assemble_runtime_resource_with_scalar_methods(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
+        &[
+            envelope::ScalarMethod {
+                boundary_name: "len",
+                core_export: "t-len",
+                result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_U32),
+            },
+            envelope::ScalarMethod {
+                boundary_name: "to-bytes",
+                core_export: "t-to-bytes",
+                result: envelope::MethodResult::ListU8,
+            },
+        ],
     ))
 }
 

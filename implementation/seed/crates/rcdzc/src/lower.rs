@@ -313,7 +313,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             crate::eval::Member::Field(value) => core_of(db, value),
             crate::eval::Member::NoField => Core::Poison(Reject::coded(
                 Code::Malformed,
-                format!("record has no field `{}`", key.name),
+                format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
             )),
             // The operand did not reduce to a compile-time-visible record. MEMBER-INTO-IF: if it is an
             // `(if c R S)` whose BOTH branches are visible records carrying the field →
@@ -1494,6 +1494,19 @@ pub fn match_nonexhaustive_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 /// finite literal set exhausts the integers. A FINITE type is exhausted by its literals instead: a Bool
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
 /// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
+/// Whether `ty` is the EMPTY SUM — a `Ty::Sum` whose declaration has ZERO variants (an uninhabited
+/// `Void`/`Never`, `type-system.md §Never Is The Empty Sum`). Such a type has no value, so a zero-arm
+/// match on it is vacuously exhaustive. Reads the sum's declaration by its `decl` occurrence and checks
+/// the variant count; a non-sum (or a sum with variants) is `false`.
+fn is_empty_sum_ty(db: &mut Db, ty: &crate::ty::Ty) -> bool {
+    if let crate::ty::Ty::Sum { decl, .. } = ty.strip_nominal() {
+        return db
+            .type_decl_by_occ(*decl)
+            .is_some_and(|d| d.variants.is_empty());
+    }
+    false
+}
+
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
     // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
@@ -1503,6 +1516,16 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // scrutinee, exactly as `(match (never-returns))` traps). A zero-arm match on an INHABITED scrutinee
     // is genuinely non-exhaustive (`Code::NonExhaustive`), NOT the malformed "no arms" it was before.
     if arms.is_empty() {
+        // The scrutinee's TYPE is the EMPTY SUM (zero variants) — an uninhabited `Void`/`Never`, e.g. a
+        // parameter `(: v Void)`. `type-system.md §Never Is The Empty Sum` (4th sentence): "A match on a
+        // scrutinee of the empty sum type MUST be exhaustive with zero arms." No value of that type can
+        // exist, so the match is unreachable: emit `Core::Trap` (the scrutinee still evaluates — reading
+        // it is itself the divergence — but no arm is needed). Distinct from the diverging-EXPRESSION case
+        // below (a scrutinee that folds to a trap): here the scrutinee's static TYPE proves uninhabited.
+        let scrut_ty = crate::infer::type_of(db, scrutinee);
+        if is_empty_sum_ty(db, &scrut_ty) {
+            return Core::Trap;
+        }
         return match core_of(db, scrutinee) {
             c @ (Core::Trap | Core::Poison(_)) => c,
             _ => Core::Poison(Reject::coded(

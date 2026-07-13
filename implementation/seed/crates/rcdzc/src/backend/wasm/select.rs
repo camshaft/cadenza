@@ -6598,6 +6598,8 @@ fn emit_checked_arith_to(
     //# An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
     //= spec/capabilities/numeric-model.md#overflow-is-defined
     //# The compiler MUST NOT emit an integer operation whose overflow behavior is undefined.
+    //= constitution.md#iii-the-compiler-introduces-no-undeclared-nondeterminism
+    //# The compiler MUST emit each numeric operation with a fully specified result so that the operation does not vary between conforming runtimes.
     emit_machine_overflow_guard(op, m, sa, sb, sr, out);
     // Step 2: the narrow-width range-check on the exact result in `$r`. For a narrow signed `± const`
     // the exact result moves in ONE direction from an in-range operand, so only that bound is reachable

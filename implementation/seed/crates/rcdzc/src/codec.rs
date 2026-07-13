@@ -55,6 +55,12 @@
 //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
 //# Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
 //!
+//! This binary serialization of the AST IS the program's canonical form — one canonical byte form
+//! independent of any textual rendering:
+//!
+//= constitution.md#x-programs-are-readable-by-agents-and-humans
+//# The canonical form of a program MUST be a stable binary serialization of its abstract syntax tree, such that a program has one canonical byte form independent of any textual rendering.
+//!
 //! `decode` is TOTAL: it verifies the header and refuses (returns `None`) on a wrong header, malformed
 //! length/tag, out-of-range id, or trailing bytes — it never panics and never returns a wrong tree.
 //! Determinism ("equal programs -> identical bytes") is a property of CANONICAL arenas (see `canon.rs`),

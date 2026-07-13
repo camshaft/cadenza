@@ -1134,21 +1134,31 @@ pub fn assemble_runtime_resource_with_len(
         &[ScalarMethod {
             boundary_name: LEN_BOUNDARY_NAME,
             core_export: LEN_CORE_EXPORT,
-            result_prim: wasm_abi::COMP_U32,
+            result: MethodResult::Scalar(wasm_abi::COMP_U32),
         }],
     )
 }
 
-/// A scalar-result value-resource METHOD beyond make+encode: its boundary name (e.g. `"len"`), the core
-/// module's export name for its body (e.g. `"t-len"`), and its result primitive valtype byte (e.g.
-/// `COMP_U32`). All scalar methods are `borrow<t>` (repeatable) and take NO Memory/Realloc canon options
-/// (nothing crosses through linear memory). A LIST/STRING-result method (`to-bytes`/`to-string`) is a
-/// later increment — it needs the Memory/Realloc plumbing `encode` carries, so it is not a `ScalarMethod`.
+/// The RESULT shape of a value-resource method — what the boundary form + canon-lift options are.
+#[derive(Clone, Copy)]
+pub enum MethodResult {
+    /// A primitive scalar (e.g. `u32` for `len`) — crosses by value, NO Memory/Realloc canon options.
+    Scalar(u8),
+    /// A `list<u8>` (e.g. `to-bytes`) — crosses through linear memory by the canonical ABI, so its lift
+    /// carries Memory 0 + Realloc, exactly like `encode`. Reuses encode's `borrow<t>` + `list<u8>` defined
+    /// types (both identity-free), so it lays only its own functype.
+    ListU8,
+}
+
+/// A value-resource METHOD beyond make+encode: its boundary name (e.g. `"len"`/`"to-bytes"`), the core
+/// module's export name for its body (e.g. `"t-len"`/`"t-to-bytes"`), and its result shape. All methods
+/// are `borrow<t>` (repeatable). A `Scalar` result needs no Memory/Realloc; a `ListU8` result does (like
+/// encode). (Kept named `ScalarMethod` historically — now carries a `MethodResult` for both kinds.)
 #[derive(Clone, Copy)]
 pub struct ScalarMethod {
     pub boundary_name: &'static str,
     pub core_export: &'static str,
-    pub result_prim: u8,
+    pub result: MethodResult,
 }
 
 /// Assemble a runtime-resource component carrying make + encode + N extra SCALAR borrow methods (VM-1/VM-2).
@@ -1302,20 +1312,25 @@ pub fn assemble_runtime_resource_with_scalar_methods(
             &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
         ),
     ));
-    // Per scalar method `i`: a functype `(self: borrow<t>) -> <prim>` (component type 7+i) REUSING the
-    // `borrow<t>` defined type 4 laid for encode (identity-free — the oracle reuses it), then a scalar
-    // `canon lift` of its core func (k+6+i) against that functype → component func k+2+i. No
-    // Memory/Realloc options (scalar result).
+    // Per method `i`: a functype `(self: borrow<t>) -> <result>` (component type 7+i) REUSING the
+    // `borrow<t>` defined type 4 (+ the `list<u8>` type 5 for a list result) laid for encode
+    // (identity-free — the oracle reuses them), then a `canon lift` of its core func (k+6+i) against that
+    // functype → component func k+2+i. A SCALAR result lifts plainly (no options); a `list<u8>` result
+    // carries Memory 0 + Realloc (core func k+5, the shared `cabi_realloc`), exactly like encode.
     for (i, m) in methods.iter().enumerate() {
         let ty_idx = 7 + i as u32;
-        out.extend_from_slice(&section(
-            sec::COMPONENT_TYPE,
-            &wasm_vec(1, &self_borrow_to_scalar_functype(4, m.result_prim)),
-        ));
-        out.extend_from_slice(&section(
-            sec::CANON,
-            &wasm_vec(1, &canon_lift_item((k + 6 + i) as u32, ty_idx)),
-        ));
+        let functype = match m.result {
+            MethodResult::Scalar(prim) => self_borrow_to_scalar_functype(4, prim),
+            MethodResult::ListU8 => self_borrow_to_list_functype(4, 5),
+        };
+        out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &functype)));
+        let lift = match m.result {
+            MethodResult::Scalar(_) => canon_lift_item((k + 6 + i) as u32, ty_idx),
+            MethodResult::ListU8 => {
+                canon_lift_list_item((k + 6 + i) as u32, 0, (k + 5) as u32, ty_idx)
+            }
+        };
+        out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &lift)));
     }
     // sec 4: the nested re-export component with make/encode + each scalar method.
     out.extend_from_slice(&component_section(
@@ -3214,12 +3229,17 @@ fn resource_inner_component_scalar_methods(methods: &[ScalarMethod]) -> Vec<u8> 
         &wasm_vec(1, &import_func_item("import-func-encode", 5)),
     ));
     // Per method i (IMPORT side): borrow<0> (type 6+2i) + method functype (type 7+2i), then import
-    // `import-func-<name>` : that functype → func 2+i.
+    // `import-func-<name>` : that functype → func 2+i. A `list<u8>` result reuses the encode `list u8`
+    // type 4 (identity-free); a scalar uses its primitive byte.
     for (i, meth) in methods.iter().enumerate() {
         let bt = 6 + 2 * i as u32;
+        let ft = match meth.result {
+            MethodResult::Scalar(prim) => self_borrow_to_scalar_functype(bt, prim),
+            MethodResult::ListU8 => self_borrow_to_list_functype(bt, 4),
+        };
         out.extend_from_slice(&{
             let mut items = borrow_item(0);
-            items.extend_from_slice(&self_borrow_to_scalar_functype(bt, meth.result_prim));
+            items.extend_from_slice(&ft);
             section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
         });
         out.extend_from_slice(&section(
@@ -3263,12 +3283,17 @@ fn resource_inner_component_scalar_methods(methods: &[ScalarMethod]) -> Vec<u8> 
         ),
     ));
     // Per method i (EXPORT side): borrow<E> (type E+6+2i) + method functype re-typed (type E+7+2i), then
-    // export `<name>` (func 2+i) ascribed to that functype.
+    // export `<name>` (func 2+i) ascribed to that functype. A `list<u8>` result reuses the export-side
+    // `list u8` type E+4.
     for (i, meth) in methods.iter().enumerate() {
         let bt = e + 6 + 2 * i as u32;
+        let ft = match meth.result {
+            MethodResult::Scalar(prim) => self_borrow_to_scalar_functype(bt, prim),
+            MethodResult::ListU8 => self_borrow_to_list_functype(bt, e + 4),
+        };
         out.extend_from_slice(&{
             let mut items = borrow_item(e);
-            items.extend_from_slice(&self_borrow_to_scalar_functype(bt, meth.result_prim));
+            items.extend_from_slice(&ft);
             section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
         });
         out.extend_from_slice(&section(

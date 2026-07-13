@@ -11552,6 +11552,29 @@ mod match_engine {
             "(: b\"\\xe5\\x8e&\" Bytes)",
             "encode still renders after the repeated len calls"
         );
+        // VM-3: `to-bytes` returns the RAW payload (no value-form framing) — the exact 3 bytes E5 8E 26.
+        // Repeatable (borrow), so call it after len + encode; the handle is still live.
+        let to_bytes = get(&mut rt, "to-bytes");
+        let mut out = [Val::Bool(false)];
+        to_bytes
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("to-bytes");
+        to_bytes.post_return(&mut rt.store).expect("to-bytes post");
+        let raw: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("to-bytes expected list<u8>: {o:?}"),
+        };
+        assert_eq!(
+            raw,
+            vec![0xe5, 0x8e, 0x26],
+            "to-bytes returns the RAW payload (uleb 624485), not the value form"
+        );
         if let Val::Resource(r) = handle[0] {
             let r: ResourceAny = r;
             r.resource_drop(&mut rt.store).expect("resource drop");
@@ -13223,6 +13246,27 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0502"),
             "a conflicting unit redeclaration must reject CDZ0502"
+        );
+    }
+
+    #[test]
+    fn a_unit_conflict_anchors_to_a_user_node() {
+        // CDZ0502 must carry a source location, not print an unanchored `cdz:` prefix. The unit-conflict
+        // rejects (built-in redecl + duplicate declaration) now `.at()` the offending declaration's
+        // base-unit occurrence, so the error maps to `file:line:col`.
+        let src = "(module m (Unit.define #\"foot\" (Unit.of #\"metre\") 2 1) \
+                   (def (main) 0) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0502"))
+            .expect("a CDZ0502 diagnostic");
+        let node = d
+            .node
+            .expect("CDZ0502 must carry a node, not be unanchored");
+        assert!(
+            db.is_user_node(crate::ast::StructId(node)),
+            "node {node} must be a user node so it maps to a source location"
         );
     }
 
@@ -15085,6 +15129,45 @@ mod stage1 {
             d.message
         );
         assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+    }
+
+    #[test]
+    fn a_misspelled_field_call_head_reports_one_error_not_a_dup() {
+        // A misspelled field access used as a CALL HEAD (`((. r fld-typo) 5)`) is checked by BOTH the
+        // infer member-check (which adds the did-you-mean fix) AND the emit-side member fold — at two
+        // DIFFERENT nodes (the `.fld-typo` projection vs the enclosing apply), so it used to surface the
+        // SAME "record has no field" fault TWICE. `dedup_faults` now drops the fix-less emit-side copy
+        // when the fix-carrying infer copy of the same field-fault is present → ONE error, WITH the fix.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. (record (compute 1)) computee) 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let field_errs: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == crate::abi::Severity::Error
+                    && d.message.contains("record has no field")
+            })
+            .collect();
+        assert_eq!(
+            field_errs.len(),
+            1,
+            "one no-field error, not the infer+lower duplicate: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            field_errs[0].fix.is_some()
+                && field_errs[0].message.contains("did you mean `compute`?"),
+            "the surviving copy is the RICH one (with the did-you-mean fix): {}",
+            field_errs[0].message
+        );
     }
 
     #[test]
@@ -21031,6 +21114,49 @@ mod stage1 {
             (def (main) (let ((o (Some 100))) \
               (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3))) (export main))";
         assert_eq!(run_closure_nullary(sum).unwrap(), "306");
+    }
+
+    #[test]
+    fn an_inner_lambda_captures_an_enclosing_match_arm_binder() {
+        // OVER-REJECTION regression: a match-arm binder captured by a DIRECTLY-APPLIED inner lambda in the
+        // same arm was rejected CDZ0101 "unbound name". A match-arm binder resolves to a `SumPayload`
+        // (reading the arm's scrutinee), but `pin_free_vars`'s `ref_binder` returned None for a
+        // `SumPayload` — so the capture was never pinned, and β-reducing the inner lambda copied the
+        // reference fresh into the reduced orphan where it re-resolved unbound. Fixed by `ref_binder`
+        // returning the SumPayload's scrutinee as the capture representative → the occurrence is pinned →
+        // `beta_reduce`'s SumPayload capture-share exception shares it, preserving the resolution.
+        // `(match (A 7) ((A m) ((fn (x) (+ x m)) 3)) …)` = 3 + 7 = 10.
+        let sum = "(module m (type C (A Int64) (B)) \
+            (def (main) (match (A 7) ((A m) ((fn (x) (+ x m)) 3)) ((B) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(sum))).expect("compile"),
+                "main"
+            ),
+            10,
+            "a sum-arm binder captured by a directly-applied inner lambda must resolve (was CDZ0101)"
+        );
+        // A TUPLE-pattern binder captured the same way (the binder is an `Elem`-path SumPayload).
+        let tup = "(module m \
+            (def (main) (match (tuple 7 9) ((tuple a b) ((fn (x) (+ x a)) 3)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(tup))).expect("compile"),
+                "main"
+            ),
+            10
+        );
+        // NO REGRESSION of the working companions: the same binder used DIRECTLY, and captured through a
+        // TUPLE, still resolve (they took different paths and always worked).
+        let direct = "(module m (type C (A Int64) (B)) \
+            (def (main) (match (A 7) ((A m) (+ m 3)) ((B) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(direct))).expect("compile"),
+                "main"
+            ),
+            10
+        );
     }
 
     #[test]
