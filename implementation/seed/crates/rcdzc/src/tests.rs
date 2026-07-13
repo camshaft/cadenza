@@ -22576,6 +22576,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_perform_in_a_match_scrutinee_and_an_arm_declines_the_distribution() {
+        // ADVERSARIAL: match distribution needs a STRONGLY-PURE scrutinee. `(match (Amb.flip) (0 5) (_ (+ 1
+        // (Amb.flip))))` performs in BOTH the scrutinee and an arm — distribution must not fire (a two-hole
+        // shape); declines cleanly (never a mis-fold).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a perform in the scrutinee AND an arm must decline (distribution needs a pure scrutinee)"
+        );
+    }
+
+    #[test]
+    fn a_multishot_arm_over_a_match_arm_body_hole_folds() {
+        // A MULTI-shot arm (resumes TWICE) over a match-arm-body hole — each distributed arm's sub-handle
+        // duplicates its pure continuation safely. `(match 1 (0 5) (_ (Amb.flip)))` → arm `_` is the identity
+        // slice; arm `(* (resume 1 s) (resume 2 s))` dups → `(* 1 2)` = 2.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (match 1 (0 5) (_ (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a multi-shot arm over a distributed match-arm hole folds"),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
@@ -22635,16 +22665,21 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_in_a_match_arm_body_declines() {
-        // The E5 BOUNDARY (still): a perform in a `match` ARM BODY — `(match c (true (Amb.flip)) (false 2))`
-        // — is a NON-UNIFORM continuation (the perform runs only on the taken arm, its continuation differs
-        // by arm), so `pure_hole` returns Impure and the fold declines. Contrast the scrutinee-hole case
-        // above, which folds. (Needs the captured-continuation frame machinery, a later increment.)
+    fn a_non_tail_resume_in_a_match_arm_body_folds_by_distribution() {
+        // A perform in a `match` ARM BODY under a PURE scrutinee folds by HANDLER DISTRIBUTION (the `match`
+        // analogue of the `if`-branch distribution): `(handle E s arms (match k (p b)…))` ≡ `(match k (p
+        // (handle E s arms b))…)`. `(match (< 3 5) (true (Amb.flip)) (false 2))` — scrutinee `(< 3 5)` is
+        // pure → true, arm `true` → sub-handle `(handle … (Amb.flip))` = identity slice → `(resume 10 s)` =
+        // 10, arm `(+ 1 (resume 10 s))` = `(+ 1 10)` = 11. (Was declined before distribution.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (< 3 5) (true (Amb.flip)) (false 2)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume in a match arm body must decline (needs E5 frame capture)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a non-tail resume in a match arm body folds by distribution"),
+                "main"
+            ),
+            11
         );
     }
 
@@ -22721,6 +22756,36 @@ mod stage1 {
                 "main"
             ),
             12
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_a_match_arm_body_folds_by_handler_distribution() {
+        // The same commuting conversion over a `match` with a pure SCRUTINEE: `(handle E s arms (match k (p
+        // b)…))` ≡ `(match k (p (handle E s arms b))…)`. The scrutinee runs once (pure); each arm body is a
+        // smaller handle body. `(match 1 (0 5) (_ (+ 1 (Amb.flip))))` → scrutinee 1 selects `_` → sub-handle
+        // `(+ 1 (+ 1 10))` = 12.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 1 (0 5) (_ (+ 1 (Amb.flip)))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a perform in a match arm body folds by handler distribution"),
+                "main"
+            ),
+            12
+        );
+        // A PATTERN BINDER used in the performing arm body must re-resolve inside the pushed handle: `(match
+        // 7 (n (+ n (Amb.flip))))` → `n` binds 7, sub-handle `C = (+ 7 □)`, arm `(+ 1 (+ 7 10))` = 18.
+        let binder = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 7 (n (+ n (Amb.flip)))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(binder)))
+                    .expect("a match arm binder re-resolves inside the distributed handle"),
+                "main"
+            ),
+            18
         );
     }
 

@@ -1253,21 +1253,22 @@ pub fn reduce_handle(
     // hoist requires every preceding sibling pure. Runs to a fixpoint (bounded). A shape it cannot lift
     // (a perform under a conditional the hoist could not raise to tail) is left as-is and declines below.
     let body = hoist_resumptive_conditional(db, body, &ctx);
-    // E5 HANDLER DISTRIBUTION over a pure-conditioned tail `if` (a commuting conversion). When the handle
-    // BODY is an `if` whose CONDITION is strongly pure but a BRANCH performs a discharged op, the pure
-    // one-hole fold below declines (a branch perform is a NON-uniform continuation — it runs only on the
-    // taken path). But the `if` IS the whole handle body (tail position), so the handler distributes into
-    // each branch — `(handle E s arms (if c t e))` ≡ `(if c (handle E s arms t) (handle E s arms e))`: the
-    // condition runs exactly ONCE (it is pure, evaluated before either branch, advancing no state), and
-    // each branch becomes a SMALLER handle body the fold already serves (only one branch runs at runtime,
-    // seeing the seed state — nothing advanced it). Recurse `reduce_handle` on each branch and rebuild the
-    // `if`; if either branch is a shape the fold cannot serve, the whole distribution declines (`?`) and we
-    // fall through to the ordinary decline. GATED to the NON-tail-resumptive regime (all arms non-tail,
-    // none abortive) — a tail-resumptive branch perform is already handled by the threading path, and an
-    // abortive one by `hoist_conditional_abort`; distributing there would only duplicate working paths.
+    // E5 HANDLER DISTRIBUTION over a pure-conditioned tail conditional (a commuting conversion). When the
+    // handle BODY is an `if`/`match` whose CONDITION/SCRUTINEE is strongly pure but a BRANCH / ARM BODY
+    // performs a discharged op, the pure one-hole fold below declines (a branch perform is a NON-uniform
+    // continuation — it runs only on the taken path). But the conditional IS the whole handle body (tail
+    // position), so the handler distributes into each branch — `(handle E s arms (if c t e))` ≡ `(if c
+    // (handle E s arms t) (handle E s arms e))`, `(handle E s arms (match k (p b)…))` ≡ `(match k (p (handle
+    // E s arms b))…)`: the condition/scrutinee runs exactly ONCE (pure, evaluated first, advancing no
+    // state), and each branch becomes a SMALLER handle body the fold already serves (only one runs at
+    // runtime, seeing the seed state — nothing advanced it). Recurse `reduce_handle` on each; if any branch
+    // is a shape the fold cannot serve, the whole distribution declines (`?`) and we fall through to the
+    // ordinary decline. GATED to the NON-tail-resumptive regime (all arms non-tail, none abortive) — a
+    // tail-resumptive branch perform is already handled by the threading path, and an abortive one by
+    // `hoist_conditional_abort`; distributing there would only duplicate working paths.
     if ctx.abortive.is_empty()
         && ctx.arms.values().all(|a| tail_resume(db, a.body).is_none())
-        && let Some(distributed) = distribute_handler_over_if(db, init, arms, body, &ctx)
+        && let Some(distributed) = distribute_handler_over_conditional(db, init, arms, body, &ctx)
     {
         return Some(distributed);
     }
@@ -1364,49 +1365,100 @@ pub fn reduce_handle(
 /// (else an outer-param body over-declines with a spurious unbound-name fault). A no-op if `body` is the
 /// arena root (no parent) — a top-level handle body has no enclosing scope to reach anyway.
 fn reparent_under_handle_site(db: &mut Db, folded: StructId, body: StructId) {
-    if let Some(parent) = db.parent_of(body) {
-        db.reparent(folded, Some(parent), db.child_ix_of(body) as u32);
+    let Some(parent) = db.parent_of(body) else {
+        return; // a top-level handle body — no enclosing scope to reach
+    };
+    // When the handle body being reduced is the SECOND child of a 2-element `(x body)` pair — a `match`
+    // ARM `(pattern body)` (the distribution case) or a `let` binding `(name init)` — the binder scope
+    // check (`resolve::match_arm_binds`) reads the pair's RECORDED body child (`pb[1]`) and demands the
+    // reference ascend from THAT node. Parenting `folded` directly under the pair leaves `pb[1]` as the
+    // ORIGINAL body, so the ascended-from child (`folded`) would not match and a binder-referencing arm
+    // body would over-decline. Rebuild a fresh `(x folded)` pair in the original pair's slot so `folded`
+    // IS the recorded body child — then the binder resolves against the reduced body. (A non-pair parent —
+    // the `handle` node itself, or an `if` node in a distributed branch — is reached by ascending THROUGH
+    // it to the enclosing binder form, so it needs no rebuild: parent `folded` directly.)
+    if let Struct::List(children) = db.ast.get(parent).clone()
+        && children.len() == 2
+        && children[1] == body
+        && let Some(grandparent) = db.parent_of(parent)
+    {
+        let fresh_pair = db.push_list(vec![children[0], folded]);
+        db.reparent(fresh_pair, Some(grandparent), db.child_ix_of(parent) as u32);
+        return;
     }
+    db.reparent(folded, Some(parent), db.child_ix_of(body) as u32);
 }
 
-/// HANDLER DISTRIBUTION over a pure-conditioned tail `if` (a commuting conversion). If `body` is an `(if c
-/// t e)` whose CONDITION `c` is strongly pure (advances no state, so it need not thread through the
-/// handler) but whose fold otherwise declines because a BRANCH performs a discharged op, distribute the
-/// handler into each branch: `(handle E s arms (if c t e))` ≡ `(if c (handle E s arms t) (handle E s arms
-/// e))`. Each branch is re-`reduce_handle`d with the SAME init/arms (only one branch runs at runtime,
-/// seeing the seed state — the condition advanced nothing). Returns the rebuilt `if`, or `None` if the
-/// body is not such an `if`, the condition is not strongly pure, or either branch's fold declines (so the
-/// caller falls through to the ordinary decline — never a partial rewrite). The branch handles are
-/// synthesized with fresh `(handle E seed (arm…) branch)` nodes carrying the ORIGINAL arm/init occurrences
-/// (a structural copy so each branch owns its subtree), then reduced; a reduced branch's free names
-/// re-parent under the rebuilt `if` by the caller's `reparent` at the lowering site.
-fn distribute_handler_over_if(
+/// HANDLER DISTRIBUTION over a pure-conditioned tail conditional (a commuting conversion). If `body` is an
+/// `(if c t e)` or a `(match scrut arms…)` whose CONDITION/SCRUTINEE is strongly pure (runs once, advances
+/// no state, so it need not thread through the handler) but whose fold otherwise declines because a
+/// BRANCH / ARM BODY performs a discharged op, distribute the handler into each branch:
+///   `(handle E s arms (if c t e))`     ≡ `(if c (handle E s arms t) (handle E s arms e))`
+///   `(handle E s arms (match k (p b)…))` ≡ `(match k (p (handle E s arms b))…)`
+/// Each branch / arm body is re-`reduce_handle`d with the SAME init/arms (only one runs at runtime, seeing
+/// the seed state — the condition/scrutinee advanced nothing). Returns the rebuilt conditional, or `None`
+/// if the body is neither shape, the condition/scrutinee is not strongly pure, or any branch's fold
+/// declines (so the caller falls through to the ordinary decline — never a partial rewrite). A `match`
+/// PATTERN is reused verbatim in the rebuilt arm, so its binder still scopes the (re-anchored) reduced arm
+/// body — `reduce_handle`'s `reparent_under_handle_site` anchors the reduced body under the ORIGINAL arm
+/// pair while it type-checks, so a binder-referencing arm body resolves; the final rebuild then re-parents
+/// each reduced body under its new arm pair.
+fn distribute_handler_over_conditional(
     db: &mut Db,
     init: StructId,
     arms: &[HandleArm],
     body: StructId,
     ctx: &HandlerCtx,
 ) -> Option<StructId> {
-    let Resolved::If { cond, then_, else_ } = resolved_of(db, body) else {
-        return None;
-    };
-    // The condition must be strongly pure — it runs once, before either branch, and must not itself
-    // perform (a performing condition is the `pure_hole` if-cond case, handled by the fold below, or a
-    // shape the threading path serves; distributing it would duplicate nothing useful and risk moving a
-    // perform). Only distribute when a BRANCH performs (else the fold already serves the body directly).
-    if !strongly_pure(db, cond, ctx) {
-        return None;
+    match resolved_of(db, body) {
+        Resolved::If { cond, then_, else_ } => {
+            // The condition must be strongly pure — it runs once, before either branch. A performing
+            // condition is the `pure_hole` if-cond case (folds below) or a threading shape; distributing it
+            // would risk moving a perform. Only distribute when a BRANCH performs (else the fold serves the
+            // body directly).
+            if !strongly_pure(db, cond, ctx) {
+                return None;
+            }
+            if !subtree_performs(db, then_, ctx) && !subtree_performs(db, else_, ctx) {
+                return None;
+            }
+            // Reduce each branch as its own handle body (init/arm occurrences are only READ + copied on
+            // substitution, so sharing them across the branch reductions is safe). Either branch declining
+            // makes the whole distribution decline — no partial rewrite.
+            let then_r = reduce_handle(db, init, arms, then_)?;
+            let else_r = reduce_handle(db, init, arms, else_)?;
+            let if_head = db.push_name("if");
+            Some(db.push_list(vec![if_head, cond, then_r, else_r]))
+        }
+        Resolved::Match {
+            scrutinee,
+            arms: match_arms,
+        } => {
+            // The SCRUTINEE must be strongly pure (evaluated once, before any arm). Only distribute when an
+            // ARM BODY performs. A pattern is a binder position (no perform), so `subtree_performs` on the
+            // arm bodies is the trigger.
+            if !strongly_pure(db, scrutinee, ctx) {
+                return None;
+            }
+            if !match_arms
+                .iter()
+                .any(|&(_, arm_body)| subtree_performs(db, arm_body, ctx))
+            {
+                return None;
+            }
+            // Rebuild `(match scrutinee (pat body')…)`: reduce each arm body under the same init/arms, reuse
+            // each pattern verbatim (its binder scopes the reduced body — see `reparent_under_handle_site`).
+            // Any arm's fold declining declines the whole distribution.
+            let match_head = db.push_name("match");
+            let mut children = vec![match_head, scrutinee];
+            for &(pat, arm_body) in match_arms.iter() {
+                let reduced = reduce_handle(db, init, arms, arm_body)?;
+                children.push(db.push_list(vec![pat, reduced]));
+            }
+            Some(db.push_list(children))
+        }
+        _ => None,
     }
-    if !subtree_performs(db, then_, ctx) && !subtree_performs(db, else_, ctx) {
-        return None;
-    }
-    // Reduce each branch as its own handle body with the same init + arms (the init/arm occurrences are
-    // only READ and are copied when substituted, so sharing them across the two branch reductions is
-    // safe). A branch the fold cannot serve makes the whole distribution decline — no partial rewrite.
-    let then_r = reduce_handle(db, init, arms, then_)?;
-    let else_r = reduce_handle(db, init, arms, else_)?;
-    let if_head = db.push_name("if");
-    Some(db.push_list(vec![if_head, cond, then_r, else_r]))
 }
 
 /// Whether applying `head` (a non-perform application head) reaches an abortive operation through the

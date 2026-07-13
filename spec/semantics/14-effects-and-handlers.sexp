@@ -384,6 +384,21 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main)))
   (output (: 12 Int64)))
 
+(case "a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution"
+  (doc    "The commuting conversion of the preceding case, over a `match` with a pure SCRUTINEE:
+           `(handle E s arms (match k (p b)…))` is equivalent to `(match k (p (handle E s arms b))…)`. The
+           scrutinee runs exactly once (pure, evaluated before any arm, advancing no state), and each arm
+           body becomes a smaller handle body the pure one-hole fold serves — only the matched arm runs. A
+           pattern binder still scopes its (reduced) arm body. Here `(match 1 (0 5) (_ (+ 1 (Amb.flip))))`
+           distributes: scrutinee `1` selects the `_` arm → `(handle … (+ 1 (Amb.flip)))` has `C = (+ 1 [])`,
+           so `(resume 10 s)` = 11 and the arm `(+ 1 (resume 10 s))` = 12. A perform in the SCRUTINEE itself
+           (not pure) still declines — that needs the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 1 (0 5) (_ (+ 1 (Amb.flip)))))) (export main)))
+  (output (: 12 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
