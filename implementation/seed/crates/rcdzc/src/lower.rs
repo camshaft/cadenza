@@ -4610,7 +4610,9 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 // caught by the runtime's byte-exact `value_encode_form_matches_the_codec` cross-check + the corpus).
 //
 // Shape tags: 0 Int, 1 Bool, 2 Float, 3 Str, 4 Bytes, 5 Unit, 6 Tuple[n][idx…], 7 List[idx],
-// 8 Record[n](name,idx)…, 9 Sum[n](head,idx)…, 10 Named(name,idx), 11 Ref(idx).
+// 8 Record[n](name,idx)…, 9 Sum[n](head,idx)…, 10 Named(name,idx), 11 Ref(idx), 12 Set[idx],
+// 13 Map(k,v), 14 Float32, 15 Framed(head,[arg…],idx), 16 Spread[n][idx…] (a multi-payload variant's
+// tuple payload, rendered FLAT under the variant head).
 
 /// Build the shape descriptor bytes for a `Ty::Sum` result, wrapped in the outer `(: <value> <Type>)`
 /// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
@@ -4716,6 +4718,12 @@ enum ShapeNode {
     /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
     /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
     Framed(String, Vec<String>, u32),
+    /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
+    /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
+    /// reads it exactly like a `Tuple` (each element via `arr-get`) but renders the elements DIRECTLY as
+    /// the variant's children rather than wrapping them in a `tuple` form. Only a `Sum` variant references
+    /// a `Spread` (it is the multi-payload variant payload); a genuine tuple VALUE stays a `Tuple`.
+    Spread(Vec<u32>),
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4810,7 +4818,15 @@ impl ShapeTableBuilder {
                 let variants = sum_variant_payload_types(db, ty)?;
                 let mut out = Vec::with_capacity(variants.len());
                 for (head, payload_tys) in variants {
-                    // A variant's payload shape: no payload → Unit; one → that type; many → a Tuple.
+                    // A variant's payload shape: no payload → Unit; one → that type; MANY → a SPREAD.
+                    // A MULTI-payload variant `(Cons Int64 L)` boxes its payloads as a tuple handle at run
+                    // time, but its CANONICAL value form is FLAT — `(Cons h t)`, matching both the surface
+                    // construction `(L.Cons h t)` and the non-recursive `sum_form_template` render
+                    // (`(Variant p0 p1 …)`). So it uses `Spread` (the runtime renders the variant head
+                    // followed by each tuple ELEMENT, no `tuple` wrapper) — NOT `Tuple` (which would render
+                    // `(Cons (tuple h t))`, exposing the internal boxing). A SINGLE tuple-typed payload
+                    // `(Cons (Tuple Int64 L))` is a genuine one-payload variant whose payload IS a tuple, so
+                    // it takes the `1 =>` arm and renders `(Cons (tuple h t))` correctly.
                     let payload_ix = match payload_tys.len() {
                         0 => self.push(ShapeNode::Unit),
                         1 => self.shape_of(db, &payload_tys[0])?,
@@ -4819,7 +4835,7 @@ impl ShapeTableBuilder {
                             for pt in &payload_tys {
                                 idxs.push(self.shape_of(db, pt)?);
                             }
-                            self.push(ShapeNode::Tuple(idxs))
+                            self.push(ShapeNode::Spread(idxs))
                         }
                     };
                     out.push((head, payload_ix));
@@ -4935,6 +4951,13 @@ impl ShapeTableBuilder {
                         name(&mut d, a);
                     }
                     leb(&mut d, *i as u64);
+                }
+                ShapeNode::Spread(idxs) => {
+                    d.push(16); // matches the runtime `decode_shape` tag 16 = Spread
+                    leb(&mut d, idxs.len() as u64);
+                    for &i in idxs {
+                        leb(&mut d, i as u64);
+                    }
                 }
             }
         }

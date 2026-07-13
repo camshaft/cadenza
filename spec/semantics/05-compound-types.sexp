@@ -1902,6 +1902,29 @@
                 (Node (tuple (Leaf 0) (Leaf 0)))
                 (Node (tuple (Leaf 0) (Leaf 0))))) Tree)))
 
+(case "a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT"
+  (doc    "The two cases above use a SINGLE tuple-typed payload `(Cons (Tuple Int64 IntList))`, matched
+           `(Cons (tuple h t))` — the tuple IS the one payload, so it renders `(Cons (tuple h t))`. THIS
+           case uses a MULTI-payload variant `(Cons Int64 L)` — TWO separate payloads, matched `(Cons h
+           t)` — whose canonical value form is FLAT: `(Cons 3 (Cons 2 (Cons 1 (Nil unit))))`, matching
+           both the surface construction `(L.Cons n rest)` and the NON-recursive multi-payload render
+           (`(Pair 5 5)`, not `(Pair (tuple 5 5))`). The multi-payload variant boxes its payloads as a
+           tuple handle at run time, but the recursive-sum escape walker must SPREAD that tuple's elements
+           directly under the variant head, not expose the internal `tuple` wrapper. A generation that
+           rendered `(Cons (tuple 3 …))` — the boxing surfacing — is a FAIL (the value's canonical form is
+           observable at the boundary; the flat form is the one the constructor and the non-recursive
+           render agree on). Pins that a multi-payload RECURSIVE variant escapes flattened, distinct from a
+           single-tuple-payload one (both build a tuple handle; only the render arity differs).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (build (: n Int64)) (if (= n 0)
+                                         (L.Nil)
+                                         (L.Cons n (build (- n 1)))))
+            (def (main) (build 3)) (export main)))
+  (call   main)
+  (output (: (Cons 3 (Cons 2 (Cons 1 (Nil unit)))) L)))
+
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
 ; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
