@@ -465,10 +465,10 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // so the OUTCOME is unchanged; only the message stops misleading.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
-        let hint = match crate::diag::suggest::nearest(&head, &defined_names) {
-            Some(near) => format!(" — did you mean `{near}`?"),
-            None => String::new(),
-        };
+        // A two-tier "did you mean?": a confident single suggestion for a plausible typo, else the closest
+        // few defined names (never nothing when defs exist) — a message-only hint (no fix here, unlike the
+        // export-name site which carries a single-replace fix and so keeps the confident-only `nearest`).
+        let hint = crate::diag::suggest::did_you_mean(&head, &defined_names, 3);
         faults.push(
             Reject::decline(format!(
                 "unbound name `{head}` at the top level{hint} (if `{head}` is meant as a declaration, \
