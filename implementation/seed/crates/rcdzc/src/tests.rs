@@ -3876,6 +3876,92 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_narrow_signed_division_of_a_nonneg_dividend_elides_its_range_check() {
+        // The narrow-signed-div range-check exists SOLELY for `MIN_N / -1` (the one over-type quotient).
+        // `MIN_N` is NEGATIVE, so a NON-NEGATIVE dividend can never be it: for `a ≥ 0` and any `d ≠ 0`,
+        // `|a/d| ≤ a ≤ MAX_N`, so the quotient always fits — the check is dead EVEN with a runtime `-1`
+        // divisor (`a / -1 = -a ∈ [-MAX_N, 0]`, still in type). Complements the divisor-≠-(-1) elision.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // A masked (nonneg) dividend divided by a RUNTIME divisor: the range-check is dead (even though
+        // the divisor could be -1), but the ÷0 native trap stays in the bare `div_s`.
+        let masked = lir("(: x Int8) (: d Int8)", "(/ (& x 7) d)");
+        assert!(
+            masked.contains(&Lir::I32DivS)
+                && !masked.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a nonneg dividend needs no MIN/-1 range-check; got {masked:?}"
+        );
+        // SAFETY: an unknown-sign dividend with a runtime divisor KEEPS the check.
+        let bare = lir("(: x Int8) (: d Int8)", "(/ x d)");
+        assert!(
+            bare.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "an unknown-sign dividend keeps the range-check; got {bare:?}"
+        );
+        // VALUE/TRAP PARITY. Nonneg dividend: correct quotients, ÷0 still traps, and `a / -1 = -a` fits.
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(/ (& x 7) d)",
+                &[Val::S8(7), Val::S8(2)]
+            ),
+            3
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(/ (& x 7) d)",
+                &[Val::S8(7), Val::S8(-1)]
+            ),
+            -7 // 7 / -1 = -7, fits Int8 — no spurious trap from the elided check
+        );
+        assert!(traps(
+            "(: x Int8) (: d Int8)",
+            "(/ (& x 7) d)",
+            &[Val::S8(7), Val::S8(0)]
+        )); // ÷0 native trap survives
+        // SAFETY: the unknown-sign div still traps at MIN_8 / -1.
+        assert!(traps(
+            "(: x Int8) (: d Int8)",
+            "(/ x d)",
+            &[Val::S8(-128), Val::S8(-1)]
+        ));
+        // A flow-refined nonneg dividend elides too.
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(if (> x 0) (/ x d) 0)",
+                &[Val::S8(10), Val::S8(3)]
+            ),
+            3
+        );
+    }
+
+    #[test]
     fn divisibility_by_a_power_of_two_becomes_a_mask_test() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
