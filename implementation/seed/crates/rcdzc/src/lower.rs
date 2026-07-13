@@ -2666,13 +2666,6 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // reference OCCURRENCE (unique per use), so it never collides with an ordinary ref elsewhere.
     for (ref_occ, index) in capture_refs {
         let ty = crate::infer::type_of(db, captures[index]);
-        if std::env::var("DBG_CAP").is_ok() {
-            let already = matches!(db.core.get(ref_occ), Slot::Filled(_));
-            eprintln!(
-                "DBG record capture ref_occ={} index={} ty={:?} ALREADY-LOWERED={}",
-                ref_occ.0, index, ty, already
-            );
-        }
         db.captured_ref.insert(ref_occ, (index, ty));
     }
     // Register the lift (dedup by body occurrence); its position in `db.lifted` is its table slot.

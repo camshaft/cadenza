@@ -41,7 +41,8 @@ export default function Numbers() {
       <P>
         This is a running theme in Cadenza: an operation the compiler can't carry out correctly{" "}
         <em>declines</em> with a diagnostic instead of guessing. You'll see the same discipline in the
-        type system and in pattern matching.
+        type system and in pattern matching — and, next, in how integers and floating-point numbers
+        refuse to blur together.
       </P>
     </article>
   );

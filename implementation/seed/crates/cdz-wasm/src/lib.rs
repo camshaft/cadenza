@@ -42,6 +42,15 @@ pub struct Diagnostic {
     /// The JS side converts these UTF-8 byte offsets to the editor's UTF-16 offsets for a squiggle.
     pub from: u32,
     pub to: u32,
+    /// A proposed structural repair (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+    /// A Fix), surfaced to the guide's quick-fix affordance. `fix_replacement` is empty when the
+    /// diagnostic carries no fix; otherwise it is the surface spelling to splice over `[fix_from,
+    /// fix_to)` (the target node's byte range, mapped from the fix's node id here). `fix_verified`
+    /// distinguishes a machine-applicable fix from a heuristic the user should confirm.
+    pub fix_replacement: String,
+    pub fix_from: u32,
+    pub fix_to: u32,
+    pub fix_verified: bool,
 }
 
 /// The outcome of a compile: on success `component` holds the WebAssembly component bytes and
@@ -71,11 +80,22 @@ fn to_js_diag(
     spans: Option<&cadenza_syntax::spans::SpanTable>,
 ) -> Diagnostic {
     let node = d.node.unwrap_or(u32::MAX);
-    let (from, to) = d
-        .node
-        .and_then(|n| spans?.get(cadenza_syntax::ast::StructId(n)))
-        .map(|s| (s.start as u32, s.end as u32))
-        .unwrap_or((0, 0));
+    let span_of = |n: u32| -> (u32, u32) {
+        spans
+            .and_then(|s| s.get(cadenza_syntax::ast::StructId(n)))
+            .map(|s| (s.start as u32, s.end as u32))
+            .unwrap_or((0, 0))
+    };
+    let (from, to) = d.node.map(span_of).unwrap_or((0, 0));
+    // Carry the structural fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+    // Fix) through to the guide's quick-fix affordance — its target node mapped to a byte range here.
+    let (fix_replacement, fix_from, fix_to, fix_verified) = match &d.fix {
+        Some(f) => {
+            let (ff, ft) = span_of(f.node);
+            (f.replacement.clone(), ff, ft, f.verified)
+        }
+        None => (String::new(), 0, 0, false),
+    };
     Diagnostic {
         error: d.severity == rcdzc::Severity::Error,
         code: d.code.clone().unwrap_or_default(),
@@ -83,6 +103,10 @@ fn to_js_diag(
         node,
         from,
         to,
+        fix_replacement,
+        fix_from,
+        fix_to,
+        fix_verified,
     }
 }
 
@@ -157,6 +181,10 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
                     node: u32::MAX,
                     from: 0,
                     to: 0,
+                    fix_replacement: String::new(),
+                    fix_from: 0,
+                    fix_to: 0,
+                    fix_verified: false,
                 }],
             });
         }
@@ -252,35 +280,67 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
                 node: u32::MAX,
                 from: 0,
                 to: 0,
+                fix_replacement: String::new(),
+                fix_from: 0,
+                fix_to: 0,
+                fix_verified: false,
             }]);
         }
     };
     // Ride the first-class `Diagnostics` sidecar query (the same one `cdz check` runs) — a total fault
-    // read that needs no export. Its result is one fault per line: `severity<TAB>code<TAB>node<TAB>msg`
-    // (`code`/`node` are `-` when absent). We resolve each fault's node id to a byte span here.
+    // read that needs no export. Its result is one fault per line, TAB-separated:
+    // `severity  code  node  fix-node  fix-replacement  fix-verified  message` (each of code / node /
+    // the three fix columns is `-` when absent). We resolve each fault's node id — and its fix's node
+    // id — to a byte span here.
     let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Diagnostics)?;
+    let span_of = |field: &str| -> (u32, u32) {
+        field
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| spans.as_ref()?.get(cadenza_syntax::ast::StructId(n)))
+            .map(|s| (s.start as u32, s.end as u32))
+            .unwrap_or((0, 0))
+    };
     let mut out = Vec::new();
     for line in text_out.lines() {
         if line.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(4, '\t');
+        let mut parts = line.splitn(7, '\t');
         let severity = parts.next().unwrap_or("error");
         let code = parts.next().unwrap_or("-");
         let node_field = parts.next().unwrap_or("-");
+        let fix_node_field = parts.next().unwrap_or("-");
+        let fix_replacement = parts.next().unwrap_or("-");
+        let fix_verified = parts.next().unwrap_or("-");
         let message = parts.next().unwrap_or("").to_string();
         let node = node_field.parse::<u32>().ok();
-        let (span_from, span_to) = node
-            .and_then(|n| spans.as_ref()?.get(cadenza_syntax::ast::StructId(n)))
-            .map(|s| (s.start as u32, s.end as u32))
-            .unwrap_or((0, 0));
+        let (span_from, span_to) = span_of(node_field);
+        let has_fix = fix_node_field != "-";
+        let (fix_from, fix_to) = if has_fix {
+            span_of(fix_node_field)
+        } else {
+            (0, 0)
+        };
         out.push(Diagnostic {
             error: severity != "warning",
-            code: if code == "-" { String::new() } else { code.to_string() },
+            code: if code == "-" {
+                String::new()
+            } else {
+                code.to_string()
+            },
             message,
             node: node.unwrap_or(u32::MAX),
             from: span_from,
             to: span_to,
+            fix_replacement: if has_fix {
+                fix_replacement.to_string()
+            } else {
+                String::new()
+            },
+            fix_from,
+            fix_to,
+            fix_verified: fix_verified == "verified",
         });
     }
     Ok(out)
@@ -365,7 +425,11 @@ pub fn define_at(text: &str, from: &str, byte_offset: u32) -> Result<Option<Defi
     // this node to its defining occurrence's node id (following `Ref`/`Lambda`), or an empty result for
     // a non-navigable token or a span-less binding. One node id, or empty.
     let text_out = run_query_text(&ast_bytes, &rcdzc::Query::ResolveOf { node: node.0 })?;
-    let Some(target_id) = text_out.lines().next().and_then(|l| l.trim().parse::<u32>().ok()) else {
+    let Some(target_id) = text_out
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+    else {
         return Ok(None); // not a navigable reference
     };
     let target = cadenza_syntax::ast::StructId(target_id);
@@ -409,7 +473,11 @@ pub fn references_at(text: &str, from: &str, byte_offset: u32) -> Result<Vec<u32
     let mut db = rcdzc::db::Db::load(arenas);
     // The name at the cursor. Only a bare-name occurrence has references to find; anything else yields
     // an empty set. (`as_name` returns the source spelling of a name leaf.)
-    let Some(name) = db.ast.as_name(rcdzc::ast::StructId(node.0)).map(|s| s.to_string()) else {
+    let Some(name) = db
+        .ast
+        .as_name(rcdzc::ast::StructId(node.0))
+        .map(|s| s.to_string())
+    else {
         return Ok(Vec::new());
     };
     // The `UsesOf` sidecar query returns the referencing node ids (declaration sites + the definition
@@ -491,13 +559,16 @@ pub fn emit_rust(text: &str, from: &str, is_async: bool) -> Result<String, JsErr
         rcdzc::Target::Rust
     };
     let out = rcdzc::compile(
-        &[rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes)],
+        &[rcdzc::Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            "main",
+            ast_bytes,
+        )],
         &[target],
     );
     match out.artifact(target.artifact_kind()) {
-        Some(bytes) => {
-            String::from_utf8(bytes.to_vec()).map_err(|_| JsError::new("Rust output was not valid UTF-8"))
-        }
+        Some(bytes) => String::from_utf8(bytes.to_vec())
+            .map_err(|_| JsError::new("Rust output was not valid UTF-8")),
         None => {
             let msg = out
                 .diagnostics
