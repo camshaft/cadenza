@@ -1519,6 +1519,78 @@ pub(crate) fn payload_ty_at_instantiation(
     Some(subst.apply(&payload))
 }
 
+/// The integer TEXT a FLOAT LITERAL denotes when it is integer-valued AND fits the `expected` integer
+/// type — the replacement for the mirror of the `of-int` coercion: an `Int`-expected position given a
+/// float literal (`(+ 2 2.0)`). A reader-normalized `Decimal` is integer-valued exactly when its base-10
+/// `exponent` is ≥ 0 (its significand carries no trailing zeros — `2.0` → `{[2], exp:0}`, `300.0` →
+/// `{[3], exp:2}`, but `2.5` → `{[25], exp:-1}`). We reconstruct the integer as `significand · 10^exp`,
+/// then REJECT it unless the value fits `expected`'s `(signed, width)` — so the suggested `2.0` → `2`
+/// type-checks in ONE shot (the D7/D9 one-shot rule: never suggest a spelling that just cascades to the
+/// next mismatch, here a CDZ0302 out-of-range). No prelude float→int conversion exists, so a NON-integer
+/// float (`2.5`) or an out-of-range one gets `None` — an honest "no clean fix" rather than a wrong one
+/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Returns the minus-signed
+/// decimal text (`-0.0` → `0`, since the integer zero has no sign).
+fn integer_text_of_float_literal(d: &crate::ast::Decimal, expected: crate::ty::IntTy) -> Option<String> {
+    // Only a non-negative exponent is a whole number (a normalized `Decimal` has no trailing-zero
+    // significand, so a fractional value keeps a negative exponent).
+    if d.exponent < 0 {
+        return None;
+    }
+    // Base-256 significand → base-10 digit string (Horner, little-endian digits printed reversed), the
+    // same conversion `Decimal::to_f64_bits` performs. An empty significand is zero.
+    let mut digits: Vec<u8> = vec![0];
+    for &byte in &d.significand {
+        let mut carry = byte as u32;
+        for dig in digits.iter_mut() {
+            let v = (*dig as u32) * 256 + carry;
+            *dig = (v % 10) as u8;
+            carry = v / 10;
+        }
+        while carry > 0 {
+            digits.push((carry % 10) as u8);
+            carry /= 10;
+        }
+    }
+    let mut s: String = digits.iter().rev().map(|d| (b'0' + d) as char).collect();
+    let trimmed = s.trim_start_matches('0');
+    s = if trimmed.is_empty() { "0".to_string() } else { trimmed.to_string() };
+    // Multiply by 10^exponent = append that many zeros (unless the value is zero).
+    if s != "0" {
+        for _ in 0..d.exponent {
+            s.push('0');
+        }
+    }
+    // Build the value to range-check it against the expected width. Parse the decimal digit string into a
+    // big-endian magnitude (Horner: acc = acc*10 + digit), then apply the sign — the inverse of the digit
+    // build above, reused so the width check sees the exact integer.
+    let mut mag: Vec<u8> = Vec::new(); // little-endian base-256 during build
+    for ch in s.bytes() {
+        let mut carry = (ch - b'0') as u32;
+        for byte in mag.iter_mut() {
+            let v = (*byte as u32) * 10 + carry;
+            *byte = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        while carry > 0 {
+            mag.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    while mag.last() == Some(&0) {
+        mag.pop();
+    }
+    mag.reverse();
+    let negative = d.negative && !mag.is_empty(); // zero is never negative
+    let value = crate::ast::IntValue {
+        negative,
+        magnitude: mag,
+    };
+    if !value.fits_width(expected.ground_signed(), expected.ground_width()) {
+        return None;
+    }
+    Some(if negative { format!("-{s}") } else { s })
+}
+
 /// If `expected` is a SUM type with a SINGLE-payload variant whose payload type (at `expected`'s
 /// instantiation) agrees with `actual`, the variant's constructor NAME — the "try wrapping the
 /// expression in `Some`" suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
@@ -2512,6 +2584,27 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                             ")",
                             format!("convert to {int_name} with `{int_name}.of` (checked)"),
                         )));
+                    } else if let (Ty::Int(expected), Ty::Float(_)) = (&sparam, &sat)
+                        && let crate::ast::Struct::Atom(lid) = db.ast.get(arg)
+                        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+                        && let Some(int_text) = integer_text_of_float_literal(&dec, *expected)
+                    {
+                        // The MIRROR of the `of-int` coercion above: an INTEGER is expected but a FLOAT
+                        // LITERAL is supplied (`(+ 2 2.0)`) — CDZ0301, no silent promotion. Unlike the
+                        // int→float direction there is NO prelude float→int conversion op to wrap with, so
+                        // a fix is possible ONLY for an integer-VALUED literal (`2.0`, `300.0`), whose
+                        // clean repair is to drop the fractional form: REPLACE `2.0` with `2`. A
+                        // non-integer literal (`2.5`) or an out-of-range one yields no `int_text` and falls
+                        // through to the plain reject — honest, since truncating/rounding is a semantic
+                        // choice the compiler must not make for the author (`spec/capabilities/
+                        // diagnostics.md` §A Diagnostic Carries A Route To A Fix). The replacement is
+                        // integer-valued and range-checked against the expected width, so it type-checks in
+                        // ONE shot. HEURISTIC, not verified — like the sibling `of-int` wrap: the edit
+                        // resolves the mismatch, but WHICH way the author meant to resolve it is a guess
+                        // (drop `.0` to keep integers, vs. make the whole expression float `(+. 2.0 2.0)`).
+                        // `--verify-fixes` upgrades it to verified on the recompile, so an agent still gets
+                        // the machine-applicable signal without the compiler claiming intent it can't know.
+                        out.push(reject.with_fix(Fix::replace_heuristic(arg, int_text)));
                     } else {
                         out.push(reject);
                     }

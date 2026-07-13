@@ -1289,6 +1289,45 @@ fn fix_dry_run_previews_without_writing() {
 }
 
 #[test]
+fn fix_all_drops_a_fractional_form_from_an_integer_valued_float_in_an_int_context() {
+    // The MIRROR of the `of-int` coercion fix: an INTEGER position is given a FLOAT literal (`(+ 2
+    // 2.0)`), CDZ0301. There is no float→int prelude op to wrap with, so the repair for an
+    // integer-VALUED literal is to drop the fractional form (`2.0` → `2`). `--all` verifies it
+    // (recompiles clean) and applies it; the repaired file re-checks clean.
+    let dir = scratch_dir("fix_floatlit");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) (+ 2 2.0)) (export main))\n").unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(+ 2 2)") && !repaired.contains("2.0"),
+        "the float literal became the integer: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_offers_no_fix_for_a_non_integer_float_in_an_int_context() {
+    // Honesty boundary: a NON-integer float (`2.5`) in an int position has no clean repair (rounding
+    // or truncating is a semantic choice the compiler must not make), so the diagnostic carries the
+    // CDZ0301 message but NO structured fix — not a wrong one.
+    let dir = scratch_dir("nofix_frac");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) (+ 2 2.5)) (export main))\n").unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(!ok, "still an error");
+    assert!(stdout.contains("CDZ0301"), "the mismatch is reported: {stdout}");
+    assert!(
+        !stdout.contains("help"),
+        "no fix is offered for a fractional literal: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_without_all_leaves_a_heuristic_only_file_untouched() {
     // Default `fix` applies only COMPILER-verified (rule) fixes; a file whose only fix is heuristic
     // (a did-you-mean) is left untouched and reports no applicable fixes.
