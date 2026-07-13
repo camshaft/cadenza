@@ -1133,3 +1133,38 @@
   (input  (do (def (main) (fn ((: n Int64)) "")) (export main)))
   (call   main (: 0 Int64))
   (output ()))
+
+; MULTI-EXPORT byte-rope-result closures: N same-signature closures each returning a `Bytes`/`String` share
+; ONE `call` that returns `list<u8>` — the multi-export shape (N `make-<name>` + one shared `call`) extended
+; to the compound-result `call` (memory + cabi_realloc + the bytes copy loop). The shared `call` recovers the
+; code slot from the rep, dispatches whichever closure the handle names, then copies its byte-rope result out.
+
+(case "two same-signature Bytes-returning closures share one call — first"
+  (doc    "`a : () -> (-> Int64 Bytes)` (1 byte) and `b` (2 bytes), same signature → ONE resource type + one
+           shared list-returning `call`. `make-a()` → a handle; `call(handle, 5)` copies a's `[5]` out. Pins
+           the multi-export byte-rope `call` (N makes, one shared memory/realloc list-`call`).")
+  (input  (do (def (a) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)))))
+              (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (export a) (export b)))
+  (call   a (: 5 Int64))
+  (output (5)))
+
+(case "two same-signature Bytes-returning closures share one call — second"
+  (doc    "The same program, driving `b`: `make-b()` → a handle; `call(handle, 5)` = `[5, 6]`. The SHARED
+           `call` dispatches whichever closure the rep names (b's 2-byte body here), proving the shared
+           list-`call` is not fixed to one make.")
+  (input  (do (def (a) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)))))
+              (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (export a) (export b)))
+  (call   b (: 5 Int64))
+  (output (5 6)))
+
+(case "two same-signature String-returning closures share one call"
+  (doc    "`greet` and `bye` both `() -> (-> Int64 String)` share one resource type + list-`call`. Driving
+           `bye`: `call(handle, 0)` → the UTF-8 bytes of \"by\" = `[98, 121]`. Confirms the multi-export
+           byte-rope `call` is agnostic to Bytes-vs-String (both are byte-rope handles).")
+  (input  (do (def (greet) (fn ((: n Int64)) "hi"))
+              (def (bye) (fn ((: n Int64)) "by"))
+              (export greet) (export bye)))
+  (call   bye (: 0 Int64))
+  (output (98 121)))

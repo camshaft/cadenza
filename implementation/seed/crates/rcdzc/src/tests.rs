@@ -7702,6 +7702,130 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_xor_by_the_same_value_twice_cancels_to_the_operand() {
+        // XOR CANCELLATION: `(^ (^ v w) w)` → `v` — the two XORs by the SAME `w` cancel (`w ^ w == 0`).
+        // Covers a CONSTANT `w` (`(^ (^ x 5) 5)` → x, which the nested-collapse alone left as `(^ x 0)`) and
+        // a RUNTIME `w` (`(^ (^ x y) y)` → x), both operand orders, and a commuted inner XOR. Pins the fold
+        // at the Lir level (no `xor`) AND value parity; a TRAPPING `w` (`(/ 100 z)`) must NOT fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let xors = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor))
+                .count()
+        };
+        // Runtime `w`, constant `w`, commuted inner, and outer order — ALL cancel to zero xors.
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (^ (: (^ x y) Int64) y) Int64)"
+            )),
+            0,
+            "runtime w cancels"
+        );
+        assert_eq!(
+            xors(&lir("(: x Int64)", "(: (^ (: (^ x 5) Int64) 5) Int64)")),
+            0,
+            "constant w cancels"
+        );
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (^ (: (^ y x) Int64) y) Int64)"
+            )),
+            0,
+            "commuted inner cancels"
+        );
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (^ y (: (^ x y) Int64)) Int64)"
+            )),
+            0,
+            "outer order cancels"
+        );
+        // A masked (trap-free, non-constant) `w` cancels too — the whole `(& y 15)` drops.
+        let masked = lir(
+            "(: x Int64) (: y Int64)",
+            "(: (^ (: (^ x (: (& y 15) Int64)) Int64) (: (& y 15) Int64)) Int64)",
+        );
+        assert_eq!(xors(&masked), 0, "masked w cancels");
+        assert!(
+            !masked.iter().any(|i| matches!(i, Lir::I64And)),
+            "the discarded masked w drops entirely"
+        );
+        // A DIFFERENT second operand does NOT cancel: `(^ (^ x y) z)` keeps both xors.
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(: (^ (: (^ x y) Int64) z) Int64)"
+            )),
+            2,
+            "distinct w does not cancel"
+        );
+
+        // VALUE PARITY.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (^ (: (^ x y) Int64) y) Int64)",
+                &[Val::S64(12345), Val::S64(6789)]
+            ),
+            12345
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (^ (: (^ x 5) Int64) 5) Int64)",
+                &[Val::S64(999)]
+            ),
+            999
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (^ y (: (^ x y) Int64)) Int64)",
+                &[Val::S64(-7), Val::S64(42)]
+            ),
+            -7
+        );
+        // TRAP SAFETY: a trapping `w = (/ 100 z)` is discarded by the fold — must NOT be dropped, still ÷0.
+        assert!(
+            traps(
+                "(: x Int64) (: z Int64)",
+                "(^ (: (^ x (: (/ 100 z) Int64)) Int64) (: (/ 100 z) Int64))",
+                &[Val::S64(5), Val::S64(0)]
+            ),
+            "a trapping xor operand must keep its trap (not cancelled)"
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
@@ -10824,6 +10948,41 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0101"),
             "an unbound splice operand keeps its own CDZ0101, not a non-list CDZ0201"
+        );
+    }
+
+    #[test]
+    fn record_project_narrows_to_named_fields_absent_field_is_cdz0212() {
+        // 15-rows "projecting a record restricts it to the named fields" + "...onto an absent field is
+        // rejected": `(Record.project r (a c))` narrows `r` to EXACTLY the named fields, each carrying its
+        // value (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields). The SECOND operand
+        // `(a c)` is a LITERAL field-name list (labels, not evaluated). A well-formed projection compiles
+        // (the value case runs through the gate); a named field ABSENT from the operand record is CDZ0212.
+        // A projection onto present fields is well-formed — it compiles (no fault).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.project (record (a 1) (b 2) (c 3)) (a c))) (export main))"
+            ),
+            None,
+            "a projection onto present fields must be well-formed"
+        );
+        // A named field the operand does not hold → CDZ0212 (a STATIC label, never a runtime None).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.project (record (a 1) (b 2)) (a z))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0212"),
+            "projecting onto an absent field is CDZ0212"
+        );
+        // `Record` is STILL the record-TYPE constructor in type position — the module dual-shape did not
+        // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (: (record (a 1)) (Record (a Int64)))) (export main))"
+            ),
+            None,
+            "Record must still work as the record-type constructor in an annotation"
         );
     }
 
@@ -15917,6 +16076,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix() {
+        // `(: 3.0 Int64)` / `(: 100.0 Int8)` — an integer-valued FLOAT literal annotated an INTEGER type —
+        // is CDZ0203, repaired by DROPPING the fractional form: REPLACE `3.0` with `3` (the annotation-
+        // position mirror of the arg-position float-literal fix, `(+ 2 3.0)` → `3`). Range-checked, so it
+        // type-checks in one shot.
+        for (src, want) in [
+            ("(module m (def (f) (: 3.0 Int64)) (export f))", "3"),
+            ("(module m (def (f) (: 100.0 Int8)) (export f))", "100"),
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("a drop-the-fraction fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(fix.replacement, want, "drops the `.0`: {}", d.message);
+            assert!(
+                !fix.verified,
+                "keep-int vs make-float is the author's call → heuristic"
+            );
+        }
+        // NO fix for a NON-integer float (`2.5`) or an OUT-OF-RANGE one (`500.0` : Int8) — truncating /
+        // narrowing is the author's semantic choice, not the compiler's to make.
+        for src in [
+            "(module m (def (f) (: 2.5 Int64)) (export f))",
+            "(module m (def (f) (: 500.0 Int8)) (export f))",
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.fix.is_none(),
+                "no drop-fraction fix for a non-integer / out-of-range float: {src} → {:?}",
+                d.fix
+            );
+        }
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
@@ -19434,6 +19629,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_effect_handler_compiles_and_dispatches_the_performed_op() {
+        // A handler over a WIDE effect (many ops, many arms) compiles + runs correctly — the behaviour the
+        // `program_delegates_effect` memo (in `effects::perform_host_target`) must preserve. That routing
+        // fallback walks every export body per residual host-perform; recomputing it per op made an N-op
+        // handler O(N²) (an 800-op handler spent ~86% of the compile in `body_has_host_delegating`). The
+        // memo makes it linear. Here 12 ops; the body performs op p3 (arm resumes 3), so `(+ (p3) 1) = 4`
+        // — a wrong dispatch (or a memo that returned the wrong delegation verdict) would give a wrong value.
+        let n = 12;
+        let ops: String = (0..n)
+            .map(|i| format!(" (op p{i} (-> Unit Int64))"))
+            .collect();
+        let arms: String = (0..n)
+            .map(|i| format!(" (p{i} () s (resume {i} s))"))
+            .collect();
+        let src = format!(
+            "(do (effect E{ops}) (def (main) (handle E unit ({arms}) (+ ((. E p3)) 1))) (export main))"
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&src)))
+                    .expect("a wide-effect handler compiles"),
+                "main"
+            ),
+            4,
+            "the performed op p3 resumes 3, so (+ (p3) 1) = 4"
+        );
+    }
+
+    #[test]
     fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
         // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
         // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).
@@ -20503,17 +20727,109 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_under_a_conditional_continuation_declines() {
-        // The E5 BOUNDARY (still): a non-tail resume whose perform sits under a CONDITIONAL —
-        // `(if (< (Amb.flip) 5) 1 2)` — has a NON-UNIFORM continuation (the perform's result flows into a
-        // branch selector, not one downstream computation), so `pure_hole` returns Impure and the fold
-        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
-        // (defunctionalized frames), a later increment. Contrast the pure one-hole case above, which folds.
+    fn a_pure_one_hole_in_a_match_scrutinee_folds() {
+        // The perform may sit in a `match` SCRUTINEE — a STRICT, always-evaluated-first position (like an
+        // `if` condition), so its continuation `C = (match [] (0 100) (_ 2))` is uniform (the arms run only
+        // AFTER the scrutinee and are pure). `(resume 10 s)` → `C[10]` = the `_` arm → 2, arm
+        // `(+ 1 (resume 10 s))` → `(+ 1 2)` = 3; a resume of 0 selects the literal arm → 100 → `(+ 1 100)`
+        // = 101. Every arm body must be strongly pure (copied into `C`, duplicated by a multi-shot resume).
+        let wild = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(wild)))
+                    .expect("a hole in a match scrutinee folds"),
+                "main"
+            ),
+            3
+        );
+        let literal = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 0 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(literal)))
+                    .expect("the resume value selects the matching arm"),
+                "main"
+            ),
+            101
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_in_an_and_lhs_folds() {
+        // The perform may sit in a short-circuit connective's LHS — a STRICT, always-evaluated-first
+        // position. `C = (and (< □ 5) true)`, arm `(not (resume 10 s))` produces Bool: `(resume 10 s)` →
+        // `(and (< 10 5) true)` = false, `(not false)` = true. The rhs `true` is pure (copied into `C`).
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main))";
+                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a hole in an and lhs folds"),
+                "main"
+            ),
+            "resume 10 → (and (< 10 5) true)=false → (not false)=true"
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_a_match_arm_body_declines() {
+        // The E5 BOUNDARY (still): a perform in a `match` ARM BODY — `(match c (true (Amb.flip)) (false 2))`
+        // — is a NON-UNIFORM continuation (the perform runs only on the taken arm, its continuation differs
+        // by arm), so `pure_hole` returns Impure and the fold declines. Contrast the scrutinee-hole case
+        // above, which folds. (Needs the captured-continuation frame machinery, a later increment.)
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (< 3 5) (true (Amb.flip)) (false 2)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume under a conditional continuation must decline (needs E5 frame capture)"
+            "a non-tail resume in a match arm body must decline (needs E5 frame capture)"
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_in_an_if_condition_folds() {
+        // The perform may sit in an `if` CONDITION — a STRICT, always-evaluated-first position, so its
+        // continuation `C = (if (< □ 5) 1 2)` is a uniform pure one-hole context (the branches are pure and
+        // run only AFTER the condition). `(resume 10 s)` → `C[10] = (if (< 10 5) 1 2)` = 2; arm
+        // `(+ 1 (resume 10 s))` → `(+ 1 2)` = 3. Both branches must be strongly pure (they are copied into
+        // `C` and a multi-shot resume duplicates them); a perform in a BRANCH still declines (below).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a hole in an if condition folds"),
+                "main"
+            ),
+            3
+        );
+        // A MULTI-shot arm over a condition-hole context duplicates the whole `if` (pure) safely:
+        //   `C = (if (< □ 5) 100 2)`, arm `(* (resume 1 s) (resume 2 s))`
+        //     → `(* (if (< 1 5) 100 2) (if (< 2 5) 100 2))` = `(* 100 100)` = 10000.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (if (< (Amb.flip) 5) 100 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot condition-hole context folds"),
+                "main"
+            ),
+            10000
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_an_if_branch_declines() {
+        // The E5 BOUNDARY (still): a non-tail resume whose perform sits in an `if` BRANCH —
+        // `(if c (+ 1 (Amb.flip)) 0)` — has a NON-UNIFORM continuation (the perform runs only on the taken
+        // branch, and its continuation differs by branch), so `pure_hole` returns Impure and the fold
+        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
+        // (defunctionalized frames), a later increment. Contrast the condition-hole case above, which folds.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail resume in an if branch must decline (needs E5 frame capture)"
         );
     }
 
@@ -31873,9 +32189,9 @@ mod closure_host_resource {
             "distinct-signature closures alongside a plain export compile (distinct-sig mixed path)",
         );
 
-        // A SINGLE closure returning a byte-rope (Bytes/String) COMPILES (the compound-result `call` path);
-        // but TWO such closures sharing one `call` DECLINES with a SPECIFIC message (not the generic
-        // scalar-only one) — the multi-export list-returning `call` is a later slice.
+        // A SINGLE closure returning a byte-rope (Bytes/String) COMPILES (the compound-result `call` path),
+        // and now TWO such closures sharing one `call` COMPILE too (the multi-export list-returning `call`:
+        // N makes + one shared bytes-`call`).
         let one_bytes =
             "(do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) (export main))";
         crate::compile::compile_component(&crate::codec::encode(&parse(one_bytes)))
@@ -31883,14 +32199,8 @@ mod closure_host_resource {
         let two_bytes = "(do (def (a) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) \
                          (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap n))))) \
                          (export a) (export b))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes)))
-            .expect_err(
-                "two Bytes-returning closures sharing one call must DECLINE (multi-export slice)",
-            );
-        assert!(
-            err.message.contains("MULTI-EXPORT") && err.message.contains("byte-rope"),
-            "expected the multi-export byte-rope-result decline, got: {}",
-            err.message
+        crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes))).expect(
+            "two Bytes-returning closures sharing one call compile (multi-export bytes path)",
         );
     }
 

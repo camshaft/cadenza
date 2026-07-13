@@ -406,7 +406,19 @@ fn guide_wasm(paths: &Paths, store: Option<PathBuf>) {
     println!("== xtask: building the guide compiler wasm (wasm-pack --target web) ==");
     {
         let _pushed = sh.push_dir(&crate_dir);
-        if let Err(e) = cmd!(sh, "wasm-pack build --target web --release").run() {
+        // Raise the wasm linear-memory STACK from LLVM's ~1 MB default to 16 MB. The compiler's
+        // recursive-descent passes recurse one frame per nesting level and rely on reaching the semantic
+        // depth guard (`rcdzc::db::DESCENT_DEPTH_LIMIT`) before the stack is exhausted. Natively
+        // `rcdzc::host::run_with_compiler_stack` spawns a 64 MB-stack thread to guarantee that, but on
+        // wasm32 that path runs INLINE (a thread-per-compile leaks the long-lived instance's memory), so
+        // the wasm stack ITSELF must be large enough. At 1 MB a moderately nested program (e.g. a
+        // `(module …)` inside a `def` body) overflows and traps `memory access out of bounds`; 16 MB
+        // clears the guide's inputs with wide margin while staying far below the 4 GiB wasm32 address
+        // space. The wasm-correct analogue of the native 64 MB thread — keep the two in lockstep.
+        if let Err(e) = cmd!(sh, "wasm-pack build --target web --release")
+            .env("RUSTFLAGS", "-C link-arg=-zstack-size=16777216")
+            .run()
+        {
             eprintln!(
                 "wasm-pack build failed for cdz-wasm: {e}\n\
                  (install it with `cargo install wasm-pack`; needs the wasm32-unknown-unknown target)"

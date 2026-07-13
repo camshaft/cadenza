@@ -94,6 +94,27 @@ impl std::fmt::Display for ConvertError {
 }
 impl std::error::Error for ConvertError {}
 
+/// Rewrite a trailing `at byte N` in an s-expr reader error message to `at LINE:COL`, using `src` to map
+/// the offset — so a multi-line s-expr parse error points at a place a user/editor can navigate to
+/// (`(module …\n  )))` → "at 4:3", not "at byte 40"). The reader bakes the byte offset into its
+/// `ReadError` string (it has no line:col at the recursive-descent site); the callers that HOLD the
+/// source (this module, `cdz`'s loader) map it here. A message with no `at byte N` tail (e.g.
+/// "unterminated list", "unexpected end of input") is returned unchanged.
+pub fn locate_byte_in_message(msg: &str, src: &str) -> String {
+    const MARKER: &str = " at byte ";
+    // The reader only ever appends ` at byte N` at the END, so the last marker is the one to rewrite.
+    let Some(marker_at) = msg.rfind(MARKER) else {
+        return msg.to_string();
+    };
+    let (prefix, tail) = msg.split_at(marker_at);
+    let num = &tail[MARKER.len()..];
+    let Ok(byte) = num.parse::<usize>() else {
+        return msg.to_string(); // not a bare trailing integer — leave untouched
+    };
+    let (line, col) = crate::query::driver::line_col(src, byte);
+    format!("{prefix} at {line}:{col}")
+}
+
 /// Read `input` (bytes) in `from` format into arenas.
 ///
 /// Text formats decode `input` as UTF-8 first; the binary format uses the bytes directly. A text
@@ -106,7 +127,12 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
         }
         Format::Sexpr => {
             let text = utf8(input)?;
-            sexpr::read(text).map_err(|e| ConvertError(format!("s-expr parse error: {}", e.0)))
+            sexpr::read(text).map_err(|e| {
+                ConvertError(format!(
+                    "s-expr parse error: {}",
+                    locate_byte_in_message(&e.0, text)
+                ))
+            })
         }
         Format::Ml => {
             let text = utf8(input)?;
@@ -201,6 +227,35 @@ fn utf8(input: &[u8]) -> Result<&str, ConvertError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locate_byte_in_message_maps_a_trailing_byte_offset_to_line_col() {
+        // A multi-line s-expr parse error's trailing `at byte N` becomes `at line:col`.
+        let src = "(module m\n  (def (main)\n    (+ 1 2)))\n  )))";
+        let out = locate_byte_in_message("unexpected ')' at byte 40", src);
+        assert_eq!(out, "unexpected ')' at 4:3", "byte 40 is line 4, col 3");
+        // A message with no `at byte N` tail is returned unchanged.
+        assert_eq!(
+            locate_byte_in_message("unterminated list", src),
+            "unterminated list"
+        );
+        // A trailing non-integer after `at byte ` (shouldn't happen, but be robust) is untouched.
+        assert_eq!(
+            locate_byte_in_message("weird at byte xyz", src),
+            "weird at byte xyz"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_sexpr_parse_error_reports_line_col() {
+        // End-to-end through `read`: trailing input on line 4 reports 4:3, not a byte offset.
+        let err = read("(module m)\n\n\n  )))".as_bytes(), Format::Sexpr).unwrap_err();
+        assert!(
+            err.0.contains(" at 4:") && !err.0.contains("byte"),
+            "expected a line:col position, no raw byte; got {}",
+            err.0
+        );
+    }
 
     #[test]
     fn an_ml_parse_error_renders_line_col_not_a_byte_offset() {

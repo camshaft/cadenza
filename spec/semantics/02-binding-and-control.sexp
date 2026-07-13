@@ -2003,7 +2003,6 @@
            `Mk` payload — the same binding a `(match (Id.Mk 42) ((Id.Mk n) n))` arm makes, written at the
            binder. Pins that a one-variant sum destructures in a binding position (a MULTI-variant sum
            there is refutable → CDZ0210, the rejection below), the sum companion of the tuple destructure.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Id (Mk Int64))
             (def (main) (let (((Id.Mk n) (Id.Mk 42))) n))
@@ -2015,7 +2014,6 @@
            two payloads of the single-variant `P.Mk` (its payloads box as one tuple, matched positionally,
            exactly as a `(P.Mk a b)` match arm does). Pins that a single-variant binding pattern binds each
            payload position, not only a one-payload newtype.")
-  (needs  sum-type-declaration)
   (input  (do
             (type P (Mk Int64 Int64))
             (def (main) (let (((P.Mk a b) (P.Mk 5 6))) (+ a b)))
@@ -2026,7 +2024,6 @@
   (doc    "A single-variant pattern nests, like a tuple one: `(let (((W.Wrap (Id.Mk n)) (W.Wrap (Id.Mk 9))))
            …)` destructures the outer `Wrap` then the inner `Mk`, binding `n` two payload levels deep
            (core-semantics.md #Patterns Compose). `n + 1` = 10.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Id (Mk Int64))
             (type W (Wrap Id))
@@ -2040,7 +2037,6 @@
            — so it is rejected (CDZ0210), not accepted. `(let (((C.A n) (C.A 5))) n)` over `(type C (A
            Int64) B)` leaves `B` uncovered. Only a single-variant sum earns the binding-position exemption;
            a many-variant sum's destructure must be a `match`. Pins the refutability boundary.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (main) (let (((C.A n) (C.A 5))) n))

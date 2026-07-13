@@ -806,14 +806,22 @@ pub fn perform_host_target(
 /// ancestor was erased by a `reduce_handle` node synthesis. Memoized-free but cheap (a handful of
 /// exports, walked once per residual host perform).
 fn program_delegates_effect(db: &mut Db, decl: crate::ast::StructId) -> bool {
+    // Memoized per `decl`: the delegation set is a pure function of the export bodies, but this is a
+    // FALLBACK consulted once per residual host-perform — recomputing the O(export-body) walk per perform
+    // was O(N²) for a program with N performs / a wide N-op effect handler. First query computes, rest hit.
+    if let Some(&hit) = db.delegates_effect_cache.get(&decl) {
+        return hit;
+    }
     let export_bodies: Vec<StructId> = db
         .exports
         .iter()
         .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
         .collect();
-    export_bodies
+    let delegates = export_bodies
         .into_iter()
-        .any(|b| body_has_host_delegating(db, b, decl, 0))
+        .any(|b| body_has_host_delegating(db, b, decl, 0));
+    db.delegates_effect_cache.insert(decl, delegates);
+    delegates
 }
 
 /// Whether the subtree at `node` contains a `(host (E…) …)` delegating the effect `decl`. A structural
@@ -2859,15 +2867,53 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
     // user/recursive call are all NON-uniform or effect-shielding — decline (Impure) if they carry an
     // effect, else they are pure and fall through to the strongly-pure check below.
     match resolved_of(db, node) {
-        // A conditional / short-circuit connective / match: if a discharged perform is anywhere inside, the
-        // continuation is non-uniform (branch-dependent, or the perform may not run) → Impure. If none, the
-        // whole form is pure and admissible as opaque context (handled by the strongly-pure fall-through).
-        Resolved::If { .. }
-        | Resolved::And { .. }
-        | Resolved::Match { .. }
-        | Resolved::Let { .. }
-        | Resolved::Handle { .. }
-        | Resolved::Resume { .. } => {
+        // An `if`: the CONDITION is a STRICT, always-evaluated-first position, so a hole there has a
+        // UNIFORM continuation `C = (if <cond[□]> then else)` — foldable (`(if (< (Amb.flip) 5) 1 2)` →
+        // resume 10 gives `(if (< 10 5) 1 2)`). The BRANCHES run CONDITIONALLY after the condition; a
+        // perform in a branch is a NON-uniform continuation (it may not run, or its continuation differs by
+        // branch) — NOT this fold (the resumptive-conditional hoist lifts a branch-performing conditional
+        // in a strict position elsewhere; a branch perform the hoist can't lift declines). So: admit a hole
+        // in `cond` only when BOTH branches are strongly pure (they are copied verbatim into `C`, and a
+        // multi-shot resume duplicates them — safe iff effect-free); a branch that is not strongly pure →
+        // Impure. When `cond` has no hole and both branches are pure, the whole `if` is Pure.
+        Resolved::If { cond, then_, else_ } => {
+            if !strongly_pure(db, then_, ctx) || !strongly_pure(db, else_, ctx) {
+                return PureHole::Impure;
+            }
+            pure_hole(db, cond, ctx)
+        }
+        // A `match`: the SCRUTINEE is a STRICT, always-evaluated-first position (like an `if` condition), so
+        // a hole there has a UNIFORM continuation `C = (match <scrut[□]> (pat body)…)` — the arms run only
+        // AFTER the scrutinee. Admit a hole in `scrutinee` only when EVERY arm BODY is strongly pure (they
+        // are copied verbatim into `C`, and a multi-shot resume duplicates them — safe iff effect-free); an
+        // arm body that performs is a non-uniform continuation → Impure. A pattern is a binder position (not
+        // a value), so it holds no discharged perform. When the scrutinee has no hole and every arm body is
+        // pure, the whole `match` is Pure.
+        Resolved::Match { scrutinee, arms } => {
+            if !arms.iter().all(|&(_, body)| strongly_pure(db, body, ctx)) {
+                return PureHole::Impure;
+            }
+            pure_hole(db, scrutinee, ctx)
+        }
+        // A short-circuit connective `(and lhs rhs)`/`(or lhs rhs)`: the LHS is a STRICT, always-evaluated-
+        // first position, so a hole there has a UNIFORM continuation `C = (and <lhs[□]> rhs)`. The RHS runs
+        // only CONDITIONALLY on `lhs`, so admit a hole in `lhs` only when `rhs` is strongly pure (it is
+        // copied verbatim into `C` and runs on the taken path, possibly duplicated by a multi-shot resume —
+        // safe iff effect-free); an `rhs` that performs is a non-uniform continuation → Impure. A hole in
+        // the RHS (a conditionally-run position) is NOT this fold — declines. When `lhs` has no hole and
+        // `rhs` is pure, the whole connective is Pure.
+        Resolved::And { lhs, rhs, .. } => {
+            if !strongly_pure(db, rhs, ctx) {
+                return PureHole::Impure;
+            }
+            pure_hole(db, lhs, ctx)
+        }
+        // A `let` / nested handle / resume: if a discharged perform is anywhere inside, the continuation is
+        // non-uniform (sequenced through a binding, or a nested control effect) → Impure; else the whole
+        // form is pure and admissible as opaque context (the strongly-pure fall-through). (A `let` INIT is a
+        // strict-first position too, but a hole there binds a name a multi-shot resume would re-bind per
+        // splice — deferred; it conservatively declines now, an over-decline, never a mis-fold.)
+        Resolved::Let { .. } | Resolved::Handle { .. } | Resolved::Resume { .. } => {
             if strongly_pure(db, node, ctx) {
                 PureHole::Pure
             } else {

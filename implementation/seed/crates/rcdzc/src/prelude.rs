@@ -68,10 +68,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // `Tuple` — the tuple-type constructor, VARIADIC over its element types: `(Tuple Int64 Bool)` builds
     // the tuple type-value. Same `(meta apply)` mechanism as `->`; only the builder differs.
     names.insert("Tuple".to_string(), ctor_record(ast, "Tuple"));
-    // `Record` — the record-type constructor, VARIADIC over `(name type)` field pairs: `(Record (a
-    // Int64) (b Bool))` builds the record type-value. Same `(meta apply)` mechanism as `Tuple`; the
-    // builder reads each arg as a `(name type)` pair.
-    names.insert("Record".to_string(), ctor_record(ast, "Record"));
+    // `Record` — BOTH the record-type constructor (`(meta apply)` = the `Record` builder: `(Record (a
+    // Int64) (b Bool))` builds the record type-value, reading each arg as a `(name type)` pair) AND a
+    // module of record ROW OPERATIONS reached by member access (`(. Record project)`). Same dual shape as
+    // `List`/`Map` (a type ctor + operation fields on one record).
+    let record_mod = record_module(ast);
+    names.insert("Record".to_string(), record_mod);
 
     // The compound-VALUE constructors as SHADOWABLE aliases. The primitive is a symbol head (`(,)`
     // builds a tuple, `{}` builds a record — dispatched structurally in `resolve`), but the ordinary
@@ -313,6 +315,44 @@ fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
     push_list(ast, vec![head, apply_field])
+}
+
+/// The `Record` module record — carrying BOTH `(meta apply)` = the `Record` TYPE constructor (so
+/// `(Record (a Int64) (b Bool))` in type position builds `Ty::Record`) AND a field per record ROW
+/// OPERATION (reached by member access `(. Record project)`). The dual shape `list_module`/`map_module`
+/// use: a type ctor + op fields on one record. This increment realizes `project` — narrowing a record to
+/// a named field set (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields); `without`/
+/// `merge`/`with`/`pop`/`extend` follow. A row op's SECOND operand is a LITERAL field-name list `(a c)`
+/// (labels, not a value), and its result shape is row-polymorphic, so it has no ordinary HM `(meta t)`
+/// arrow — `infer::apply_type` computes the result type and `check_application`/`collect_node` special-
+/// case the label operand, bypassing the scheme. The `(meta t)` is thus a PERMISSIVE placeholder
+/// (`∀a. a → a`) present only so `project` resolves as an applyable op; it is never unified.
+fn record_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta apply)` = the `Record` TYPE constructor (`(Record (a Int64) …)` builds the record type-value).
+    let builder = intrinsic_node(ast, "Record");
+    let apply_field = meta_field(ast, "apply", builder);
+    // `project` — the narrowing op. Its `(meta t)` is the permissive `∀a. a → a` placeholder (bypassed).
+    let project_lambda = row_op_placeholder_type(ast);
+    let project = list_op_record(ast, "record-project", project_lambda);
+    let project_key = push_atom(ast, Leaf::Name("project".to_string()));
+    let project_field = push_list(ast, vec![project_key, project]);
+    push_list(ast, vec![head, apply_field, project_field])
+}
+
+/// The permissive placeholder type-lambda `(fn (a) (-> a a))` a record row operation carries as its
+/// `(meta t)`. A row op (`Record.project`) has no ordinary HM arrow — its label-list operand is not a
+/// typed value and its result is row-polymorphic — so `infer::apply_type` computes the result type and
+/// `check_application` skips the generic scheme-unify. This scheme exists ONLY so member access resolves
+/// the op as applyable; it is NEVER unified against, so `∀a. a → a` (the identity arrow) suffices.
+fn row_op_placeholder_type(ast: &mut Arenas) -> StructId {
+    let a1 = push_atom(ast, Leaf::Name("a".to_string()));
+    let a2 = push_atom(ast, Leaf::Name("a".to_string()));
+    let body = arrow_type(ast, a1, a2); // (-> a a)
+    let param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The `List` module record — a record carrying BOTH `(meta apply)` = the `List` type constructor (so

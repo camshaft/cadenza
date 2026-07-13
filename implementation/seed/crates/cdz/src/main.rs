@@ -1558,8 +1558,16 @@ fn load_program_spanned(
         // compiler's top-level scan would then see the module as one opaque item and find no defs.
         let (raw_arenas, raw_spans) = match cadenza_syntax::sexpr::read_spanned(&source) {
             Ok(pair) => pair,
-            Err(_) => cadenza_syntax::sexpr::read_all_spanned(&source)
-                .map_err(|e| format!("{file}: {}", e.0))?,
+            // `read_spanned` errors on trailing input (a multi-form file), so fall back to
+            // `read_all_spanned`. Its error's trailing `at byte N` is mapped to `at line:col` so a
+            // multi-line s-expr parse error points at a navigable place (matching the ML/`check`
+            // rendering), not a raw byte offset.
+            Err(_) => cadenza_syntax::sexpr::read_all_spanned(&source).map_err(|e| {
+                format!(
+                    "{file}: {}",
+                    cadenza_syntax::convert::locate_byte_in_message(&e.0, &source)
+                )
+            })?,
         };
         // CANONICALIZE + REMAP the span table to canonical ids — the SAME step the ML branch does, and
         // for the same reason: `run_sidecar`/`compile` feed the arena through `codec::encode`, which

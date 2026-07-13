@@ -29,19 +29,27 @@ export type EditorOutcome =
 ///   2. Already complete — has a top-level `export` (ML) / is a `(do …)` (s-expr) — left untouched. NOT
 ///      merely "contains a `;`": a `;` can be an internal `do`-sequence separator inside `def main() =
 ///      (…; …)`, which still needs an export.
-///   3. DEFINITIONS (leads with a top-level declaration keyword — `def`/`type`/`effect`) — a `main` is
-///      among them; append an `export`. `effect` matters: an effects snippet leads with `(effect …)`,
-///      and mis-classifying it as a bare expression wraps the WHOLE multi-form snippet as
-///      `(def (main) …)`, which is malformed (`def`(main(), effect …, def main() …)).
+///   3. DEFINITIONS / TOP-LEVEL STATEMENTS (leads with a top-level keyword — `def`/`type`/`effect`, or a
+///      top-level statement like `Unit.define`) — a `main` is among them; append an `export`. `effect`
+///      matters: an effects snippet leads with `(effect …)`, and mis-classifying it as a bare expression
+///      wraps the WHOLE multi-form snippet as `(def (main) …)`, which is malformed (`def`(main(),
+///      effect …, def main() …)). `Unit.define` (declare a custom unit) is the same shape: it MUST be
+///      top-level (it declines inside a def body), so a `(Unit.define …) (def (main) …)` pair is a
+///      definitions block, not a bare expression.
 ///   4. A bare EXPRESSION — becomes `def main() = <expr>` plus the export.
 /// In s-expr the top-level forms must be gathered under one `(do …)` (s-expr has no bare multi-form
 /// top level); in ML they are newline-separated (the surface's native top-level form).
 const DECL_HEAD = "def|type|effect";
+// A top-level STATEMENT that isn't a `def`/`type`/`effect` but still sits at top level (never wrapped as
+// `(def (main) …)`) and needs an `export` appended. `Unit.define` declares a custom unit of measure and
+// only resolves at top level. Escaped for a RegExp (the `.` is literal). Treated like a defs block.
+const STMT_HEAD = "Unit\\.define";
 export function wrapModule(src: string, surface: Surface): string {
   const trimmed = src.trim();
   if (surface === "sexpr") {
     if (/^\(module\b/.test(trimmed) || /^\(do\b/.test(trimmed)) return trimmed;
-    if (new RegExp(`^\\((${DECL_HEAD})\\b`).test(trimmed)) return `(do ${trimmed} (export main))`;
+    if (new RegExp(`^\\((${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed))
+      return `(do ${trimmed} (export main))`;
     return `(do (def (main) ${trimmed}) (export main))`;
   }
   // Already complete — a full `module …`, or a program that already declares an `export` — is left
@@ -49,7 +57,7 @@ export function wrapModule(src: string, surface: Surface): string {
   // `def main() = (module M { … }; M.f x)`), which still needs an `export` appended. Only a real
   // top-level `export` marks a snippet the author already made whole.
   if (/^module\b/.test(trimmed) || /(^|\n)\s*export\b/.test(trimmed)) return trimmed;
-  if (new RegExp(`^(${DECL_HEAD})\\b`).test(trimmed)) return `${trimmed}\nexport { main }`;
+  if (new RegExp(`^(${DECL_HEAD}|${STMT_HEAD})\\b`).test(trimmed)) return `${trimmed}\nexport { main }`;
   return `def main() = ${trimmed}\nexport { main }`;
 }
 
