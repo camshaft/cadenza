@@ -2840,7 +2840,27 @@ fn collect_captures(
         }
         _ => {}
     }
-    // Descend into the AST children (a form's operands, an if's branches, a nested lambda's body).
+    // A NESTED LAMBDA `(fn (inner-params) inner-body)` in the body — its OWN params are bound WITHIN it,
+    // so they are neither captures of the outer lambda nor self-captures; only its FREE variables (which,
+    // if bound outside the OUTER lambda, are the outer's captures too) matter. Descend into the inner
+    // BODY with the inner params ADDED to the excluded set, and SKIP the inner param list (whose binder
+    // occurrences would otherwise trip the `binder == node` self-capture guard, spuriously declining any
+    // lifted lambda containing a nested lambda). This keeps a nested applied lambda `((fn (y) …) x)`
+    // analyzable so it β-reduces at lowering rather than declining here.
+    if let Some(tail) = db.ast.as_form(node, "fn")
+        && let (Some(&inner_params_occ), Some(&inner_body)) = (tail.first(), tail.get(1))
+        && let crate::ast::Struct::List(inner_params) = db.ast.get(inner_params_occ)
+    {
+        let inner_param_occs: Vec<StructId> = inner_params
+            .clone()
+            .iter()
+            .map(|&p| crate::eval::param_name_occ(db, p))
+            .collect();
+        let mut combined = params.to_vec();
+        combined.extend_from_slice(&inner_param_occs);
+        return collect_captures(db, inner_body, &combined, lam_id, captures, capture_refs);
+    }
+    // Descend into the AST children (a form's operands, an if's branches, a `let`'s bindings).
     match db.ast.get(node) {
         crate::ast::Struct::List(children) => {
             let children: Vec<StructId> = children.clone();

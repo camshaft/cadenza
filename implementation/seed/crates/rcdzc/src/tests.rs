@@ -12947,41 +12947,32 @@ mod stage1 {
     }
 
     #[test]
-    fn a_fn_capture_of_an_inlined_lambda_declines_rather_than_miscompiling() {
-        // REJECT-DON'T-MISCOMPILE. The companion of the case above, but the outer HOF `twice` is
-        // NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by the concrete lambda.
-        // The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it must survive as a
-        // runtime closure — but the inline+capture interaction leaves a degenerate SELF-CAPTURE: the
-        // argument-lambda was `resolve_subtree`-pinned at the `sumapply` call site, and when `twice` is
-        // inlined a pinned own-param body reference is shared into the copy while the param list is copied
-        // fresh, so a body occurrence resolves to the ORIGINAL param binder (`binder == the reference
-        // node` — a self-loop). Emitting that produced an INVALID MODULE (`local.get 0` in a no-env
-        // context). `collect_captures` now detects the self-capture and DECLINES; a sound α-renaming fix
-        // to the copy machinery is a separate, larger change. This test PINS that the program declines
-        // cleanly (a Todo) rather than emitting a broken component.
+    fn a_lambda_forwarding_to_a_substituted_fn_param_runs_through_a_recursive_hof() {
+        // The outer HOF `twice` is NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by
+        // `main`'s concrete lambda. The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it
+        // must survive as a runtime closure. This case DECLINED for several ticks (a spurious "self-capture"
+        // — `collect_captures` tripped its `binder == node` guard on the inner lambda's OWN param binder,
+        // reached while descending a nested `(fn …)` in the lifted body). Now `collect_captures` handles a
+        // nested lambda explicitly (descends its body with the inner params EXCLUDED, skipping the param
+        // list), so the inner applied lambda β-reduces during lowering and the program RUNS. `sumapply
+        // (fn (b) (g b)) 3` with `g = (+1)`: g(3)+g(2)+g(1) = 4+3+2 = 9.
         let src = "(module m \
             (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
             (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g b)) 3)) \
             (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a degenerate self-capture must DECLINE, not miscompile");
-        assert!(
-            err.message
-                .contains("captures a value with no runtime representation"),
-            "expected a capture decline, got: {}",
-            err.message
-        );
-        // The `(g (g b))` double-apply form triggers the same artifact and must likewise decline.
+        let Some(r) = run_closure_nullary(src) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "9"); // (3+1)+(2+1)+(1+1)
+        // The `(g (g b))` double-apply form runs too: `h(b) = g(g(b)) = b+2`, so h(3)+h(2)+h(1) = 5+4+3 = 12.
         let src2 = "(module m \
             (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
             (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3)) \
             (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src2))).is_err(),
-            "the double-apply self-capture must also decline"
-        );
+        assert_eq!(run_closure_nullary(src2).unwrap(), "12"); // (3+2)+(2+2)+(1+2)
     }
 
     #[test]

@@ -455,6 +455,28 @@
   (call   main (: 100 Int64))
   (output (: 205 Int64)))
 
+; A NESTED LAMBDA inside a lifted closure body. `g = (fn (x) ((fn (y) (+ y k)) x))` is a runtime closure
+; (passed to the recursive `ap`) whose body applies an inner lambda `(fn (y) (+ y k))` in place. The inner
+; application must β-REDUCE during lowering — `((fn (y) (+ y k)) x)` → `(+ x k)` — so the lifted body is a
+; simple capturing closure over `k`, NOT a body carrying an un-lowered nested lambda. (Analyzing the outer
+; body must descend a nested lambda with its OWN params excluded — the inner `y` is bound locally, neither
+; a capture of the outer nor a self-reference — so the nested lambda does not spuriously decline the lift.)
+; `ap g 2` with k=10 = (2+10)+(1+10) = 23.
+
+(case "a closure whose body applies a nested lambda in place runs through a recursive HOF"
+  (doc    "`(fn (x) ((fn (y) (+ y k)) x))` is a runtime closure over `k` whose body applies an inner
+           lambda to `x`; the inner application β-reduces to `(+ x k)` during lowering, so the lifted body
+           is a plain capturing closure. `ap g 2` with k=10 = (2+10)+(1+10) = 23. Pins that a nested lambda
+           inside a lifted closure body reduces rather than declining the lift.")
+  (input  (do
+            (def (ap (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1)))))
+            (def (main (: k Int64))
+              (ap (fn ((: x Int64)) ((fn ((: y Int64)) (+ y k)) x)) 2))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 23 Int64)))
+
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
 ; ONLY inside the LIFTED closure body, never in a top-level def, so the module's import set (which is
