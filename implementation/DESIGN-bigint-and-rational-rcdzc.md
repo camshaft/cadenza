@@ -9,16 +9,16 @@ plan."* This is the design + increment plan.
 > (`cdz-runtime/src/bigint.rs`: add/sub/mul/divmod/gcd/cmp + boundary encodings) is being built in
 > PARALLEL by separate cron-driven agents (landed `05dbcc46`/`cbda83a0`/`4e577d7c`).
 >
-> ⚠ **B2 (`Ty::Rational`) is PAUSED pending a cross-track sync (operator-directed).** Rationals need
-> bignum, and there are TWO bignum layers with DIFFERENT owners: the RUNTIME `Big` (the crons' crate,
-> for runtime-valued rationals) and a COMPILER-SIDE bignum for constant folding. `rcdzc`'s own
-> `IntValue` (`ast.rs`) has NO mul/div/gcd — so B2's normalization needs either (a) reach-through to
-> `num_bigint::BigInt` (already a transitive dep via `cadenza-syntax`) or (b) new arithmetic on
-> `IntValue`. Building the compile-time-fold layer now risks DUPLICATING / conflicting with whatever the
-> BigInt track intends to provide compiler-side. **Open question for the sync: does the BigInt track
-> plan a shared compiler-side rational/bignum-arithmetic surface, or should the units track build B2's
-> `num-bigint`-backed constant fold independently?** Resolve before resuming B2. (There is NO live
-> channel between the tracks — coordination is via `spec` commits + this doc.)
+> ✅ **B2 (`Ty::Rational`) OWNERSHIP: handed to the BigInt track (operator decision, 2026-07-13).**
+> Rational is fundamentally a bignum feature — a normalized pair of big-integers, whose constant fold
+> needs compiler-side bignum arithmetic (mul/div/gcd) that `rcdzc`'s own `IntValue` lacks and that the
+> BigInt track is best placed to provide alongside its `BigInt` work. So **`Ty::Rational` is owned
+> end-to-end by the BigInt track** (compiler-side constant fold + the runtime rational over the `Big`
+> limbs + the `{num,den}` boundary), NOT by the units track. The **units track does NOT build Rational**
+> — it only CONSUMES it: the units layer is already generic over the inner numeric `T`, so once
+> `Ty::Rational` is an admissible inner type, `(Qty Rational u)` works and the 9 remaining units `todo`
+> cases (all constant-Rational magnitudes) flip with NO units-track code. §7 below is the reference for
+> whoever builds it. (No live channel between the tracks — this note IS the handoff, seen on rebase.)
 
 ## §0 — Why, and what this unblocks
 
@@ -236,12 +236,16 @@ directly):
   ConstBigInt`, the checked narrowing extending `CheckedOf`. Constant `(BigInt.of 42)` folds; `(Int64.of
   (BigInt.of 42))` folds; out-of-range narrowing traps. NO runtime ops yet (all constant). This alone may
   clear several units cases if their Rationals are constant (they are).
-- **B2 — `Ty::Rational` + `Rational.of`/`of-int` + constant folding + zero-denom trap.** The normalized
-  pair over `num-bigint`; `Qty` becomes generic over `Rational` as inner (the units layer is ALREADY
-  generic over `T` — `(Qty Rational u)` just needs `Rational` to be an admissible inner `Ty`). **This is
-  the increment that flips the 9 units todos → pass** (their magnitudes are constant Rationals; the unit
-  scale arithmetic is already exact). Constant Rational arithmetic (`+`/`/`/compare) folds in the
-  compiler.
+- **B2 — `Ty::Rational` + `Rational.of`/`of-int` + constant folding + zero-denom trap. → OWNED BY THE
+  BIGINT TRACK** (handoff above). The normalized pair over compiler-side bignum; `Qty` becomes generic
+  over `Rational` as inner (the units layer is ALREADY generic over `T` — `(Qty Rational u)` just needs
+  `Rational` to be an admissible inner `Ty`). **This is the increment that flips the 9 units todos → pass**
+  (their magnitudes are constant Rationals; the unit scale arithmetic is already exact). Constant Rational
+  arithmetic (`+`/`/`/compare) folds in the compiler. The units track does NOT build this — it consumes
+  the BigInt track's `Ty::Rational`. (The reverted units-track B2 spike: `Ty::Rational` mirrors B0's
+  `Ty::BigInt` closed-universe threading + `Prim::RationalTy/RationalOf/RationalOfInt` +
+  `Core::ConstRational(num,den)`; the only open decision was which bignum backs the gcd-normalization —
+  now the BigInt track's call.)
 - **B3 — runtime `bigint.rs` limb library + the `bigint-*` WIT ops.** For RUNTIME-valued BigInts (a
   BigInt parameter, a loop accumulator). Differential-tested against num-bigint. Appends WIT ops,
   re-derives the runtime hash.
