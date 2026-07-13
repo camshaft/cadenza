@@ -1172,6 +1172,38 @@ pub(crate) fn payload_ty_at_instantiation(
     Some(subst.apply(&payload))
 }
 
+/// If `expected` is a SUM type with a SINGLE-payload variant whose payload type (at `expected`'s
+/// instantiation) agrees with `actual`, the variant's constructor NAME — the "try wrapping the
+/// expression in `Some`" suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+/// A Fix). Derives the name GENERICALLY from the sum's declaration (which variant's payload fits),
+/// never a hard-coded `Some`/`Ok` (the no-keys-outside-the-prelude rule). `None` when `expected` is not
+/// a sum, or no variant's single payload matches — so a wrap is offered only when it would actually
+/// resolve the mismatch. Variants are scanned in declaration order → deterministic.
+fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
+    let Ty::Sum { decl, .. } = expected else {
+        return None;
+    };
+    // Snapshot (name, ctor) pairs first — `payload_ty_at_instantiation` borrows `db` mutably, so we
+    // cannot hold a `&TypeDecl` across the calls.
+    let variants: Vec<(String, StructId)> = db
+        .type_decl_by_occ(*decl)?
+        .variants
+        .iter()
+        .filter_map(|v| v.ctor.map(|c| (v.name.clone(), c)))
+        .collect();
+    for (name, ctor) in variants {
+        // A single-payload variant whose payload agrees with `actual` → wrapping the value in it yields
+        // the expected sum. (A multi-payload variant's payload is a tuple, which a bare value never
+        // matches, so it is naturally excluded.)
+        if let Some(payload) = payload_ty_at_instantiation(db, ctor, expected)
+            && payload.agrees_with(actual)
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
 /// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive
 /// call by its scheme. Follows a `Ref` to a `Lambda` whose body matches a def's body occurrence. (The
 /// infer-side sibling of `lower::callee_def_index`; kept here so infer does not depend on lower.)
@@ -1686,7 +1718,11 @@ fn no_field_reject(
 fn is_direct_literal_key(db: &mut Db, key: StructId) -> bool {
     matches!(
         resolved_of(db, key),
-        Resolved::Int(_) | Resolved::Str(_) | Resolved::Bool(_) | Resolved::Float(_) | Resolved::Unit
+        Resolved::Int(_)
+            | Resolved::Str(_)
+            | Resolved::Bool(_)
+            | Resolved::Float(_)
+            | Resolved::Unit
     )
 }
 
@@ -2237,14 +2273,37 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        out.push(Reject::coded(
-                            Code::TypeMismatch,
-                            format!(
-                                "annotation type {} does not match value type {}",
-                                annot_ty.render_name(),
-                                expr_ty.render_name()
+                        // "try wrapping the expression in `Some`": if the expected sum has a single-payload
+                        // variant whose payload IS the value's type, wrapping the value in that ctor makes
+                        // it type-check. Derived generically from the sum's declaration.
+                        let wrap = wrap_variant_for(db, &annot_ty, &expr_ty);
+                        let mut reject = match &wrap {
+                            Some(ctor) => Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "annotation type {} does not match value type {} — wrap the value in `{ctor}`",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name()
+                                ),
                             ),
-                        ));
+                            None => Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "annotation type {} does not match value type {}",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name()
+                                ),
+                            ),
+                        };
+                        if let Some(ctor) = wrap {
+                            reject = reject.with_fix(Fix::wrap_heuristic(
+                                expr,
+                                format!("({ctor} "),
+                                ")",
+                                format!("wrap in `({ctor} …)`"),
+                            ));
+                        }
+                        out.push(reject);
                     }
                 }
             } else if !runtime_width {

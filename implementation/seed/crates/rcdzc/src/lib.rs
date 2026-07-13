@@ -89,7 +89,7 @@ pub mod host;
 // a host-boundary module — NOT ported to the self-host.
 pub mod cli;
 
-pub use abi::{Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity};
+pub use abi::{Artifact, CompileOutput, Diagnostic, DiagnosticFix, FixKind, Severity, WRAP_HOLE};
 pub use backend::Target;
 pub use compile::{compile, compile_component, diagnostics};
 pub use host::run_with_compiler_stack;

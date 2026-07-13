@@ -1626,7 +1626,9 @@ pub fn reduce_ctor(
                 return Ok(cached);
             }
             if args.len() < 2 {
-                return Err("Map.swap/Map.take takes a map, a key (and a value for swap)".to_string());
+                return Err(
+                    "Map.swap/Map.take takes a map, a key (and a value for swap)".to_string(),
+                );
             }
             let (map, k) = (args[0], args[1]);
             // `(. Map lookup)` applied to `(m k)` — the prior/removed value optional.

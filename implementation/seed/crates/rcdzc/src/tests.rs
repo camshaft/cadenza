@@ -4822,6 +4822,65 @@ mod match_engine {
     }
 
     #[test]
+    fn an_annotation_mismatch_to_a_sum_offers_a_wrap_in_variant_fix() {
+        // "try wrapping the expression in `Some`" (`spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix): `(: n Option)` where `n : Int64` and `Option`'s `Some` carries an
+        // Int64 → name + a WRAP fix. The `…` (WRAP_HOLE) marks where the original `n` goes.
+        let d = reject_full(
+            "(module m (type Option (Some Int64) None) \
+               (def (f (: n Int64)) (: n Option)) (export f))",
+        )
+        .expect("annotation mismatch must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("wrap the value in `Some`"),
+            "names the variant: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Some {})", crate::abi::WRAP_HOLE),
+            "wraps the original in the Some ctor"
+        );
+        assert!(!fix.verified, "a wrap is a heuristic (intent guess)");
+    }
+
+    #[test]
+    fn the_wrap_variant_is_derived_generically_from_the_user_sum_not_hardcoded() {
+        // The ctor name comes from the DECLARATION, not a built-in `Some`/`Ok` — a user sum `Box` with a
+        // single `Int64`-payload variant `Wrap` yields "wrap in `Wrap`" (no-keys-outside-the-prelude).
+        let d = reject_full(
+            "(module m (type Box (Wrap Int64)) (def (f (: n Int64)) (: n Box)) (export f))",
+        )
+        .expect("mismatch must reject");
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Wrap {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn an_annotation_mismatch_with_no_fitting_variant_carries_no_wrap() {
+        // A sum whose variants are all NULLARY (or whose payloads don't match the value type) offers no
+        // wrap — a wrap is suggested only when it would actually resolve the mismatch. `Flag` = On | Off.
+        let d = reject_full(
+            "(module m (type Flag On Off) (def (f (: n Int64)) (: n Flag)) (export f))",
+        )
+        .expect("mismatch must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("wrap"),
+            "no wrap suggestion: {}",
+            d.message
+        );
+        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+    }
+
+    #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
         // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),

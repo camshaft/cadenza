@@ -591,6 +591,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             };
             let action = match fix_kind {
                 "insert" => format!("add `{fix_repl}`"),
+                "wrap" => format!("wrap in `{fix_repl}`"),
                 _ => format!("replace with `{fix_repl}`"),
             };
             println!("{}: help{marker}: {action}", loc_of(fix_node));
