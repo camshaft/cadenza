@@ -2068,9 +2068,41 @@ pub(crate) fn check_binding_pattern(
     // A compound pattern `(head arg…)`. A `tuple` head is the one accepted destructuring shape in
     // Increment A; a constructor head is classified by variant count; a record/list head declines.
     if is_tuple_pattern(db, pat) {
-        // Linearity across the WHOLE pattern (CDZ0102), then shape/arity against the value's type
-        // (CDZ0201) + recursion into element sub-patterns — reusing the match-arm machinery verbatim.
+        // Linearity across the WHOLE pattern (CDZ0102).
         check_pattern_linear(db, pat)?;
+        let elems: Vec<StructId> = db
+            .ast
+            .as_form(pat, "tuple")
+            .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+            .unwrap_or(&[])
+            .to_vec();
+        // A binding position is IRREFUTABLE: each tuple ELEMENT sub-pattern must itself be irrefutable.
+        // Recurse `check_binding_pattern` into each element with the element's own type, so a literal
+        // element (int/bool/STRING/float) → CDZ0210, a multi-variant-ctor element → CDZ0210, a
+        // single-variant/record/list element → DECLINE, and a bare-binder / nested-irrefutable-tuple
+        // element → Ok — exactly the classification the TOP-LEVEL binder gets, at any nesting depth. The
+        // BUG was that the tuple case called the MATCH-ARM collector `pattern_constraints` (where a
+        // literal element is a runtime probe and a variant element a discriminant test — both legitimate
+        // in a `match` arm) and then DISCARDED its result with a plain `Ok(())`, so a refutable
+        // `(tuple 0 b)` / `(tuple (Some x) b)` binder slipped through and ran, silently dropping the
+        // refutable sub-pattern. Recursing FIRST (before the arity check below) also gives a nested string/
+        // float literal the same CDZ0210 the top-level binder emits, rather than the codeless
+        // "malformed sum match pattern" decline `pattern_constraints`' atom fall-through produced.
+        //
+        // Element types from the value type when it is a matching-arity tuple; else `Any` (the permissive
+        // treatment for an unsolved/`Any` or wrong-arity payload — a genuine arity mismatch is faulted
+        // CDZ0201 by `pattern_constraints` below; classifying the elements against `Any` first is
+        // harmless, since refutability is a property of the pattern shape, not the value type).
+        let elem_tys: Vec<crate::ty::Ty> = match value_ty {
+            crate::ty::Ty::Tuple(ts) if ts.len() == elems.len() => ts.to_vec(),
+            _ => vec![crate::ty::Ty::Any; elems.len()],
+        };
+        for (i, &elem) in elems.iter().enumerate() {
+            check_binding_pattern(db, elem, &elem_tys[i])?;
+        }
+        // Shape/arity against the value's type (CDZ0201) + nested-literal-TYPE agreement — reusing the
+        // match-arm machinery verbatim. Runs AFTER the element refutability check so a refutable element's
+        // CDZ0210 wins over this collector's shape decline; a well-shaped irrefutable pattern passes both.
         let mut lit_tests = Vec::new();
         pattern_constraints(db, pat, value_ty, Vec::new(), &mut lit_tests)?;
         return Ok(());

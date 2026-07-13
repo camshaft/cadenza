@@ -11212,8 +11212,34 @@ mod stage1 {
             code("(let (((tuple x x) (tuple 1 2))) x)").as_deref(),
             Some("CDZ0102")
         );
-        // NO OVER-REJECTION: a well-formed destructuring binding compiles.
+        // Refutability is checked RECURSIVELY: a refutable sub-pattern NESTED in a tuple binding element
+        // is CDZ0210, exactly as the top-level one — the check does not stop at the top level. A literal
+        // element, a multi-variant constructor element, a deeply-nested literal, and a nested string
+        // literal all fault (the last was previously a codeless "malformed sum match pattern" decline).
+        assert_eq!(
+            code("(let (((tuple 0 b) (tuple 0 9))) b)").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((tuple (Some x) b) (tuple (Some 5) 9))) x)").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((tuple a (tuple 0 b)) (tuple 1 (tuple 0 3)))) (+ a b))").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((tuple \"hi\" b) (tuple \"hi\" 9))) b)").as_deref(),
+            Some("CDZ0210")
+        );
+        // NO OVER-REJECTION: a well-formed destructuring binding compiles — flat, and nested to any depth
+        // (every element irrefutable), and with a wildcard element.
         assert_eq!(code("(let (((tuple a b) (tuple 3 4))) (+ a b))"), None);
+        assert_eq!(
+            code("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"),
+            None
+        );
+        assert_eq!(code("(let (((tuple a _) (tuple 3 9))) a)"), None);
     }
 
     #[test]
