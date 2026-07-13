@@ -5247,40 +5247,149 @@ fn lower_quantity_combine(
     let rc = core_of(db, rhs);
     if inner_is_float {
         // FLOAT: convert each to the reference by `v * num / den` (rounding), then run the op.
-        let (lv, rv) = match (float_of_core(&lc), float_of_core(&rc)) {
+        if let (Some(lv), Some(rv)) = (float_of_core(&lc), float_of_core(&rc)) {
+            // CONSTANT operands — fold exactly at compile time.
+            let l = lv * (ln as f64) / (ld as f64);
+            let r = rv * (rn as f64) / (rd as f64);
+            return fold_float_combine(op, l, r);
+        }
+        // RUNTIME operand(s) — synthesize the scale conversion as real float arithmetic and lower it.
+        return lower_runtime_combine(db, op, lhs, (ln, ld), rhs, (rn, rd), true);
+    }
+    // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
+    // non-whole ratio, per opting into integer math).
+    if let (Some(lv), Some(rv)) = (int_of_core(&lc), int_of_core(&rc)) {
+        // CONSTANT operands — fold.
+        let conv = |v: i128, n: i128, d: i128| -> Option<i128> { v.checked_mul(n).map(|x| x / d) };
+        let (l, r) = match (conv(lv, ln, ld), conv(rv, rn, rd)) {
             (Some(l), Some(r)) => (l, r),
             _ => {
-                return Core::Poison(Reject::decline(
-                    "mixed-unit combine over a runtime float operand (not yet emitted)",
+                return Core::Poison(Reject::coded(
+                    Code::ConstTrap,
+                    "mixed-unit conversion overflows the machine range",
                 ));
             }
         };
-        let l = lv * (ln as f64) / (ld as f64);
-        let r = rv * (rn as f64) / (rd as f64);
-        return fold_float_combine(op, l, r);
+        let _ = id;
+        return fold_int_combine(op, l, r);
     }
-    // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
-    // non-whole ratio, per opting into integer math). A non-constant operand declines.
-    let (lv, rv) = match (int_of_core(&lc), int_of_core(&rc)) {
-        (Some(l), Some(r)) => (l, r),
-        _ => {
+    // RUNTIME operand(s) — synthesize the scale conversion as real integer arithmetic and lower it.
+    lower_runtime_combine(db, op, lhs, (ln, ld), rhs, (rn, rd), false)
+}
+
+/// The runtime path of a mixed-unit combine: synthesize `(op (convert lhs) (convert rhs))` as ordinary
+/// arithmetic over the operands' ERASED magnitudes and lower it — the scale multiply the source denotes
+/// by naming two units, emitted as real code (units-of-measure.md §A Unit Conversion Is The Arithmetic
+/// The Source Denotes: "the scale multiply reaches the emitted component only when a magnitude is a
+/// runtime value"). Each operand converts to the reference by `value * num / den` (float: `*.`/`/.`;
+/// int: `*`/`/`), built from the quantity's value occurrence + synthesized constant factors. A
+/// non-`Qty.of` operand (no reusable value occurrence) declines.
+#[allow(clippy::too_many_arguments)]
+fn lower_runtime_combine(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    (ln, ld): (i128, i128),
+    rhs: StructId,
+    (rn, rd): (i128, i128),
+    is_float: bool,
+) -> Core {
+    let lconv = match convert_operand_ast(db, lhs, ln, ld, is_float) {
+        Some(n) => n,
+        None => {
             return Core::Poison(Reject::decline(
-                "mixed-unit combine over a runtime integer operand (not yet emitted)",
+                "runtime mixed-unit combine over a non-Qty.of operand (not yet emitted)",
             ));
         }
     };
-    let conv = |v: i128, n: i128, d: i128| -> Option<i128> { v.checked_mul(n).map(|x| x / d) };
-    let (l, r) = match (conv(lv, ln, ld), conv(rv, rn, rd)) {
-        (Some(l), Some(r)) => (l, r),
-        _ => {
-            return Core::Poison(Reject::coded(
-                Code::ConstTrap,
-                "mixed-unit conversion overflows the machine range",
+    let rconv = match convert_operand_ast(db, rhs, rn, rd, is_float) {
+        Some(n) => n,
+        None => {
+            return Core::Poison(Reject::decline(
+                "runtime mixed-unit combine over a non-Qty.of operand (not yet emitted)",
             ));
         }
     };
-    let _ = id;
-    fold_int_combine(op, l, r)
+    // Build `(op-name lconv rconv)` with the ORDINARY numeric operator (float ops for a float inner) so
+    // it lowers through the ordinary arith/comparison path — the converted operands are bare numerics.
+    let op_name = combine_op_name(op, is_float);
+    let head = db.push_name(op_name);
+    let app = db.push_list(vec![head, lconv, rconv]);
+    core_of(db, app)
+}
+
+/// Synthesize an arena node for a quantity operand's magnitude CONVERTED to the reference: `value * num
+/// / den`, using the ordinary numeric operators (float `*.`/`/.` for a float inner, int `*`/`/`
+/// otherwise). `value` is the quantity's `Qty.of` value occurrence (reused, not re-synthesized). When
+/// the scale is 1/1 the value passes through unconverted. `None` if the operand has no reusable value
+/// occurrence (not a literal `Qty.of`).
+fn convert_operand_ast(
+    db: &mut Db,
+    operand: StructId,
+    num: i128,
+    den: i128,
+    is_float: bool,
+) -> Option<StructId> {
+    let value = crate::eval::qty_value_occ(db, operand)?;
+    // Scale 1/1 — no conversion, use the value as-is.
+    if num == 1 && den == 1 {
+        return Some(value);
+    }
+    let (mul, div) = if is_float { ("*.", "/.") } else { ("*", "/") };
+    // `(* value num)` — multiply by the scale numerator (a `num.0` float literal for a float inner).
+    let mut node = value;
+    if num != 1 {
+        let n_lit = num_literal(db, num, is_float);
+        let mul_head = db.push_name(mul);
+        node = db.push_list(vec![mul_head, node, n_lit]);
+    }
+    // `(/ … den)` — divide by the denominator.
+    if den != 1 {
+        let d_lit = num_literal(db, den, is_float);
+        let div_head = db.push_name(div);
+        node = db.push_list(vec![div_head, node, d_lit]);
+    }
+    Some(node)
+}
+
+/// A synthesized numeric literal node for a machine integer `v` — a float decimal `v.0` when `is_float`,
+/// else an integer literal. Used for the constant scale factors a runtime conversion multiplies by.
+fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
+    if is_float {
+        // Build the exact decimal for `v` (a whole number, always finite).
+        match crate::ast::Decimal::from_f64(v as f64) {
+            Some(d) => db.push_atom(crate::ast::Leaf::Float(d)),
+            // Unreachable for a whole scale factor; fall back to an integer literal.
+            None => db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i128(v),
+                radix: crate::ast::Radix::Dec,
+            }),
+        }
+    } else {
+        db.push_atom(crate::ast::Leaf::Int {
+            value: IntValue::from_i128(v),
+            radix: crate::ast::Radix::Dec,
+        })
+    }
+}
+
+/// The ordinary numeric operator NAME for a mixed-unit combine `op` at the inner type — the float
+/// operators (`+.`/`-.`/`<`/…) for a float inner, the integer ones otherwise. Comparisons share one
+/// spelling across inners (they are polymorphic over the operand type).
+fn combine_op_name(op: Prim, is_float: bool) -> &'static str {
+    match op {
+        Prim::Add if is_float => "+.",
+        Prim::Add => "+",
+        Prim::Sub if is_float => "-.",
+        Prim::Sub => "-",
+        Prim::Lt => "<",
+        Prim::Gt => ">",
+        Prim::Le => "<=",
+        Prim::Ge => ">=",
+        Prim::Eq => "=",
+        // Only additive/comparison ops reach a mixed-unit combine.
+        _ => "+",
+    }
 }
 
 /// The `f64` a constant float/int core holds (a quantity's erased inner), for the float conversion fold.
@@ -5319,31 +5428,7 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
         crate::infer::type_of(db, q),
         crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Float(_))
     );
-    let qc = core_of(db, q);
-    if inner_is_float {
-        let v = match float_of_core(&qc) {
-            Some(v) => v,
-            None => {
-                return Core::Poison(Reject::decline(
-                    "Unit.in over a runtime float magnitude (not yet emitted)",
-                ));
-            }
-        };
-        let converted = v * (qn as f64) * (td as f64) / ((qd as f64) * (tn as f64));
-        return match crate::ast::Decimal::from_f64(converted) {
-            Some(d) => Core::ConstFloat(d),
-            None => Core::Poison(Reject::decline("Unit.in float result has no finite form")),
-        };
-    }
-    let v = match int_of_core(&qc) {
-        Some(v) => v,
-        None => {
-            return Core::Poison(Reject::decline(
-                "Unit.in over a runtime integer magnitude (not yet emitted)",
-            ));
-        }
-    };
-    // Integer: `v * (qn*td) / (qd*tn)` (exact when the ratio divides, truncates otherwise).
+    // The conversion factor is `q.scale / target.scale` = `(qn*td) / (qd*tn)` — one combined ratio.
     let num = match qn.checked_mul(td) {
         Some(n) => n,
         None => {
@@ -5362,11 +5447,32 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
             ));
         }
     };
-    match v.checked_mul(num) {
-        Some(scaled) => Core::ConstInt(IntValue::from_i128(scaled / den)),
-        None => Core::Poison(Reject::coded(
-            Code::ConstTrap,
-            "Unit.in conversion overflows",
+    let qc = core_of(db, q);
+    if inner_is_float {
+        if let Some(v) = float_of_core(&qc) {
+            // CONSTANT float magnitude — fold the conversion.
+            let converted = v * (num as f64) / (den as f64);
+            return match crate::ast::Decimal::from_f64(converted) {
+                Some(d) => Core::ConstFloat(d),
+                None => Core::Poison(Reject::decline("Unit.in float result has no finite form")),
+            };
+        }
+    } else if let Some(v) = int_of_core(&qc) {
+        // CONSTANT int magnitude — fold `v * num / den` (exact/truncating).
+        return match v.checked_mul(num) {
+            Some(scaled) => Core::ConstInt(IntValue::from_i128(scaled / den)),
+            None => Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "Unit.in conversion overflows",
+            )),
+        };
+    }
+    // RUNTIME magnitude — synthesize `value * num / den` as real arithmetic over q's value occurrence
+    // and lower it (the same scale-multiply the constant path folds, emitted as code).
+    match convert_operand_ast(db, q, num, den, inner_is_float) {
+        Some(node) => core_of(db, node),
+        None => Core::Poison(Reject::decline(
+            "Unit.in over a runtime non-Qty.of magnitude (not yet emitted)",
         )),
     }
 }

@@ -272,6 +272,7 @@ pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
+pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of records with different field sets is a type error
 pass	a list of tuples with different arities is a type error
 pass	a list with a runtime element is returned as a program result
@@ -475,6 +476,7 @@ pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
+pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match dispatches on a literal tag across arms
@@ -505,6 +507,7 @@ pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
+pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime multiplication that overflows traps
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
@@ -704,6 +707,7 @@ pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
 pass	an empty map is unequal to a non-empty map, not a type error
+pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
@@ -1162,7 +1166,6 @@ todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never
 todo	a list built by a recursive push-loop is then iterated by index
-todo	a list of maps with different keys is homogeneous, not a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
@@ -1231,7 +1234,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
-todo	an empty quote is rejected, not a crash
 todo	an explicit annotation overrides the default-integer pragma
 todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
