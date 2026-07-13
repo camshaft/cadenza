@@ -16655,6 +16655,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_map_renders_via_the_value_encode_walker() {
+        // A recursive sum carrying a MAP (a `MapList` — a tree of maps, nested config/JSON) now COMPILES
+        // its value-encode escape. `shape_of` emits `ShapeNode::Map` (descriptor tag 13) for a
+        // SCALAR-KEY map (the value may be any encodable shape), and the runtime `value-encode` iterates
+        // the CHAMP + SORTS entries into canonical KEY order, rendering `(map (k v)…)` (guarded byte-exact
+        // + canonical-order in cdz-runtime's `value_encode_renders_a_map_in_canonical_key_order`). A
+        // non-scalar-KEY map still declines.
+        use crate::testkit::parse;
+        let src = "(module m (type MapList (Cons (Tuple (Map String Int64) MapList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (MapList.Nil ()) \
+                        (MapList.Cons (tuple (map (\"k\" n)) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Map compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the map-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive

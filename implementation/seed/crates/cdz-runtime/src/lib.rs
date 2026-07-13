@@ -1005,6 +1005,11 @@ enum Shape {
     /// in hash order, so the walk SORTS by the element's canonical scalar value (matching the compiler's
     /// `const_key_order`), NOT by hash or raw bytes. Only a SCALAR element shape is orderable-and-encodable.
     Set(u32),
+    /// A MAP from a key shape to a value shape — rendered `(map (k1 v1) … (kn vn))` with entries in
+    /// CANONICAL KEY order (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order),
+    /// NOT hash order. Only a SCALAR KEY shape is orderable-and-encodable; the VALUE may be any encodable
+    /// shape (the walk recurses on it). `(key_shape, value_shape)` table indices.
+    Map(u32, u32),
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -1081,6 +1086,11 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         }
         11 => Shape::Ref(desc_leb(d, pos)? as u32),
         12 => Shape::Set(desc_leb(d, pos)? as u32),
+        13 => {
+            let key = desc_leb(d, pos)? as u32;
+            let val = desc_leb(d, pos)? as u32;
+            Shape::Map(key, val)
+        }
         _ => return None,
     })
 }
@@ -1352,6 +1362,37 @@ fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Optio
     Some(elems)
 }
 
+/// Collect a MAP's entries into a Vec of (borrowed) `(key, value)` handle pairs, SORTED into canonical
+/// KEY-value order under the KEY shape `key_ix` (resolved through `Named`/`Ref`). The CHAMP iterates
+/// hash order, so this re-sorts to the canonical render order (`collections-and-text.md §A Map Renders
+/// As Its Entries In Canonical Key Order`). `None` (the encode declines) when the KEY shape is not a
+/// canonically-orderable SCALAR — matching the compiler's `const_key_order`. The VALUE may be any
+/// encodable shape (the walk recurses on it). Handles are BORROWED (the map owns them); no dup/drop.
+fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<Vec<(Handle, Handle)>> {
+    let key_shape = resolve_shape(desc, key_ix)?;
+    // Only a canonically-orderable scalar KEY is encodable (a nested-compound key declines, as const does).
+    if !matches!(key_shape, Shape::Int | Shape::Bool | Shape::Unit | Shape::Str) {
+        return None;
+    }
+    let mut entries: Vec<(Handle, Handle)> = Vec::new();
+    let mut cur = op_map_iter(map);
+    loop {
+        let k = op_map_iter_key(cur);
+        if k == Handle::NULL {
+            break; // exhausted
+        }
+        let v = op_map_iter_val(cur);
+        entries.push((k, v));
+        cur = op_map_iter_next(cur);
+    }
+    op_drop(cur); // release the final (exhausted) cursor
+    // Sort by canonical KEY order. Keys are distinct (a map has each key once) → total order here.
+    entries.sort_by(|&(ka, _), &(kb, _)| {
+        canonical_scalar_order(key_shape, ka, kb).unwrap_or(core::cmp::Ordering::Equal)
+    });
+    Some(entries)
+}
+
 /// The NON-PROGRESS cap on the value walk — bounds a MALFORMED descriptor whose `Ref`/`Named` chain
 /// cycles WITHOUT ever consuming a heap node (e.g. `Ref → Ref`, or `Named → Ref → Named …`), which would
 /// otherwise spin the iterative walk forever building nothing. It counts only CONSECUTIVE non-consuming
@@ -1388,6 +1429,12 @@ enum EncodeWork<'d> {
     /// `(list …)` under the pre-emitted `list_head_s`, and applies the `(. Set of)` member-access head
     /// (whose atoms are emitted HERE, AFTER the elements — matching the recursive oracle's build order).
     SetOf { list_head_s: u32, nelems: usize },
+    /// Assemble one MAP entry: the key result is directly below the value result on `out` (key Visited
+    /// before value). Pop value then key, build `list([key, value])` — the `(key value)` pair.
+    MapPair,
+    /// Assemble `(map (k1 v1) … (kn vn))` — the canonical Map value form. Pops the top `nentries` pair
+    /// results (already in canonical KEY order), under the pre-emitted `map` `head_s`.
+    MapOf { head_s: u32, nentries: usize },
 }
 
 /// Walk the runtime value `root_h` under table entry `root_shape`, appending its value-form structs to
@@ -1538,6 +1585,27 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                             work.push(EncodeWork::Visit { h: e, shape_ix: elem, refs: 0 });
                         }
                     }
+                    Shape::Map(key, val) => {
+                        // A Map renders `(map (k1 v1) … (kn vn))` with entries in CANONICAL KEY order. The
+                        // CHAMP iterates hash order, so collect + SORT by the key's canonical scalar value.
+                        // Only a SCALAR KEY is orderable/encodable; the VALUE may be any encodable shape.
+                        // Emit the `map` head EAGERLY (pre-order, like `list`/`tuple`); each entry becomes a
+                        // `(key value)` pair via `MapPair`, all gathered by `MapOf` (matching the oracle).
+                        let (key, val) = (*key, *val);
+                        let entries = map_entries_canonical(desc, h, key)?;
+                        let map_head = b.name_leaf("map");
+                        let head_s = b.atom(map_head);
+                        work.push(EncodeWork::MapOf { head_s, nentries: entries.len() });
+                        // Push entries in REVERSE (so canonical order on `out`); within an entry push the
+                        // pair assembler first, then value, then KEY — so the LIFO stack encodes key BEFORE
+                        // value (key directly below value on `out`, which `MapPair` relies on). Each key and
+                        // value is a DISTINCT heap node → progress → reset `refs`.
+                        for &(k, v) in entries.iter().rev() {
+                            work.push(EncodeWork::MapPair);
+                            work.push(EncodeWork::Visit { h: v, shape_ix: val, refs: 0 });
+                            work.push(EncodeWork::Visit { h: k, shape_ix: key, refs: 0 });
+                        }
+                    }
                 }
             }
             EncodeWork::VisitField { h, shape_ix, key } => {
@@ -1584,6 +1652,21 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                 let of_key = b.atom(of_l);
                 let set_of = b.list(vec![dot, set_mod, of_key]);
                 out.push(b.list(vec![set_of, inner_list]));
+            }
+            EncodeWork::MapPair => {
+                // Key was Visited before value, so on `out` the value is on top, key directly below.
+                let val = out.pop()?;
+                let key = out.pop()?;
+                out.push(b.list(vec![key, val]));
+            }
+            EncodeWork::MapOf { head_s, nentries } => {
+                // The top `nentries` results are the `(key value)` pairs in canonical KEY order.
+                let base = out.len().checked_sub(nentries)?;
+                let mut children = Vec::with_capacity(nentries + 1);
+                children.push(head_s);
+                children.extend_from_slice(&out[base..]);
+                out.truncate(base);
+                out.push(b.list(children));
             }
         }
     }
@@ -5880,6 +5963,19 @@ mod tests {
                 let set_of = b.list(vec![dot_s, set_s, of_s]);
                 b.list(vec![set_of, inner_list])
             }
+            S::Map(key, val) => {
+                let (key, val) = (*key, *val);
+                let entries = map_entries_canonical(desc, h, key)?;
+                let head = b.name_leaf("map");
+                let head_s = b.atom(head);
+                let mut children = vec![head_s];
+                for (k, v) in entries {
+                    let ks = encode_value_recursive(desc, b, k, key, depth + 1)?;
+                    let vs = encode_value_recursive(desc, b, v, val, depth + 1)?;
+                    children.push(b.list(vec![ks, vs]));
+                }
+                b.list(children)
+            }
         })
     }
 
@@ -6424,6 +6520,68 @@ mod tests {
              CHAMP hash order or little-endian byte order the elements were inserted in"
         );
         op_drop(s);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// `value-encode` renders a Map (`Shape::Map`) as `(map (k1 v1) … (kn vn))` with entries in CANONICAL
+    /// KEY order — NOT the CHAMP hash order. The walk collects (key,value) pairs + sorts by the key's
+    /// canonical scalar value (matching `const_key_order`). Verifies the structure + canonical INT-key
+    /// order (numeric, not raw-byte) + differential vs the recursive oracle.
+    #[test]
+    fn value_encode_renders_a_map_in_canonical_key_order() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: [0]=Int (key), [1]=Int (val), [2]=Map(→0,→1), root = 2. Tag 13 = Map.
+        let desc: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02]; // len 3; [0]Int [1]Int [2]Map(k0,v1); root 2
+
+        // Insert keys out of numeric order incl. 256 (whose LE bytes disagree with numeric order vs 1).
+        // Value = key * 10 so the pairing is checkable: (1 10)(2 20)(3 30)(256 2560).
+        let mut m = op_map_empty();
+        for &k in &[256i64, 1, 3, 2] {
+            m = op_map_insert(m, op_box_int(k), op_box_int(k * 10));
+        }
+        let doc = op_value_encode_form(m, desc).expect("encode a Map");
+
+        // Differential: the recursive oracle must produce byte-identical output.
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0).expect("recursive");
+        let rec_doc = b.finish(root);
+        assert_eq!(doc, rec_doc, "iterative and recursive Map encode must agree");
+
+        // Collect the int-leaf magnitudes in emission order — they are the keys+values interleaved in
+        // canonical KEY order: k1 v1 k2 v2 … = 1 10 2 20 3 30 256 2560.
+        // 10=[0x0a], 20=[0x14], 30=[0x1e], 256=[1,0], 2560=[0x0a,0x00].
+        let mut mags: Vec<Vec<u8>> = Vec::new();
+        let leaf_count = doc[8] as usize;
+        let mut i = 9;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            if kind == 0 {
+                let len = doc[i] as usize;
+                i += 1;
+                mags.push(doc[i..i + len].to_vec());
+                i += len;
+            } else if kind == 10 {
+                let len = doc[i] as usize;
+                i += 1 + len;
+            } else {
+                panic!("unexpected leaf kind {kind} in a Map-of-Int document");
+            }
+        }
+        assert_eq!(
+            mags,
+            vec![
+                vec![1u8], vec![0x0au8],       // (1 10)
+                vec![2u8], vec![0x14u8],       // (2 20)
+                vec![3u8], vec![0x1eu8],       // (3 30)
+                vec![1u8, 0u8], vec![0x0au8, 0u8], // (256 2560)
+            ],
+            "entries appear in NUMERIC KEY order 1,2,3,256 (256=big-endian [1,0]); each key paired with \
+             its value (key*10) — NOT the CHAMP hash order the keys were inserted in"
+        );
+        op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
     }
 
