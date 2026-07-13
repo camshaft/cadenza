@@ -1188,6 +1188,60 @@ fn check_json_emits_a_machine_readable_diagnostic_with_a_structured_fix() {
 }
 
 #[test]
+fn check_json_splits_a_wrap_fix_into_prefix_and_suffix_without_the_hole_sentinel() {
+    // A `wrap` fix in the machine channel must NOT leak the internal `…` (U+2026) HOLE sentinel: an agent
+    // that spliced `(host (E) …)` raw would write a literal `…` and corrupt the file. `--json` splits a
+    // wrap into `prefix`/`suffix` so the agent applies `prefix + source[from..to] + suffix` — unambiguous
+    // and sentinel-free. (CDZ0401 is a wrap: `(host (E) <body>)`.)
+    let dir = scratch_dir("check_json_wrap");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(do (effect E (op get (-> Unit Int64))) (def (main) (+ 1 (E.get unit))) (export main))\n",
+    )
+    .unwrap();
+    let (_, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    let line = stdout.lines().find(|l| l.contains("CDZ0401")).unwrap_or("");
+    assert!(
+        line.contains("\"kind\":\"wrap\"")
+            && line.contains("\"prefix\":\"(host (E) \"")
+            && line.contains("\"suffix\":\")\""),
+        "a wrap carries prefix/suffix: {line}"
+    );
+    assert!(
+        !line.contains('…') && !line.contains("\"replacement\""),
+        "no HOLE sentinel and no ambiguous single `replacement` for a wrap: {line}"
+    );
+    // Applying prefix + the node's existing text + suffix over [from,to) yields valid source.
+    let source = std::fs::read_to_string(&f).unwrap();
+    let from: usize = extract_json_num(line, "from");
+    let to: usize = extract_json_num(line, "to");
+    let repaired = format!(
+        "{}(host (E) {}){}",
+        &source[..from],
+        &source[from..to],
+        &source[to..]
+    );
+    assert!(
+        repaired.contains("(host (E) (+ 1 (E.get unit)))"),
+        "the wrap applies cleanly: {repaired}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Read the integer value of a top-level `"key":<n>` from a one-line JSON string (test helper — the fix
+/// object's `from`/`to` are the innermost occurrences, which is what a wrap's range uses).
+fn extract_json_num(line: &str, key: &str) -> usize {
+    let pat = format!("\"{key}\":");
+    let start = line.rfind(&pat).expect("key present") + pat.len();
+    let rest = &line[start..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().expect("a number")
+}
+
+#[test]
 fn check_json_on_a_clean_program_emits_nothing_and_exits_zero() {
     let dir = scratch_dir("check_json_clean");
     let f = dir.join("prog.sexp");

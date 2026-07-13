@@ -88,6 +88,7 @@ pass	a capturing closure with a let binding in its body
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
+pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
 pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
@@ -174,6 +175,9 @@ pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
+pass	a distinct-signature round-trip applies the Int64->Bool closure
+pass	a distinct-signature round-trip applies the Int64->Int64 closure
+pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
@@ -1241,7 +1245,6 @@ todo	a build-time delegated effect whose result a returned closure captures does
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
-todo	a checked integer conversion that fits succeeds
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type

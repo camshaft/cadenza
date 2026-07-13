@@ -844,9 +844,17 @@ fn run_check(args: &CheckArgs) -> ExitCode {
 
         if args.json {
             // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. An
-            // agent reads `fix.kind` + `fix.from`/`fix.to` + `fix.replacement` and applies the edit
-            // directly (span-mapped here, so it never re-derives positions). `verified` says whether to
-            // apply blind.
+            // agent reads `fix.kind` + `fix.from`/`fix.to` and applies the edit directly (span-mapped
+            // here, so it never re-derives positions). `verified` says whether to apply blind.
+            //
+            // How to APPLY, by kind (all over the byte range `[from, to)` of the source):
+            //   • replace / insert — `source[from..to] := replacement`.
+            //   • delete           — `source[from..to] := ""` (+ the tool trims one separator space).
+            //   • wrap             — `source[from..to] := prefix + source[from..to] + suffix`. The wrap
+            //     splits into `prefix`/`suffix` here rather than a single `replacement`: the compiler's
+            //     internal wrap form carries a `…` (U+2026) HOLE sentinel marking where the original text
+            //     goes, and an agent that spliced that raw string would write a literal `…` and CORRUPT the
+            //     file. Emitting `prefix`/`suffix` makes the wrap unambiguous and sentinel-free.
             use cadenza_syntax::query::json;
             let mut obj = json::Object::new();
             obj.string("severity", severity);
@@ -862,8 +870,23 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             }
             if fix_node != "-" {
                 let mut fix = json::Object::new();
-                fix.string("kind", fix_kind); // "replace" | "insert" | "wrap"
-                fix.string("replacement", fix_repl);
+                fix.string("kind", fix_kind); // "replace" | "insert" | "wrap" | "delete"
+                if fix_kind == "wrap" {
+                    // Reshape for the target SURFACE first — the compiler renders a wrap s-expr `(ctor …)`,
+                    // but on an ML file it must be `ctor(…)` (D18); an agent splicing the s-expr prefix into
+                    // ML would write invalid syntax. THEN split the surface form on the HOLE sentinel into
+                    // the two literal sides the agent wraps the existing node text with (`prefix + text +
+                    // suffix`) — never leaking the `…` sentinel.
+                    let surface = render_wrap_for_surface(fix_repl, is_ml_source(&args.file));
+                    let (prefix, suffix) = surface
+                        .split_once(rcdzc::WRAP_HOLE)
+                        .map(|(p, s)| (p.to_string(), s.to_string()))
+                        .unwrap_or((surface.clone(), String::new()));
+                    fix.string("prefix", &prefix);
+                    fix.string("suffix", &suffix);
+                } else {
+                    fix.string("replacement", fix_repl);
+                }
                 fix.raw("verified", if verified_flag { "true" } else { "false" });
                 if let Some((_, _, from, to)) = span_of(fix_node) {
                     fix.raw("from", &from.to_string());

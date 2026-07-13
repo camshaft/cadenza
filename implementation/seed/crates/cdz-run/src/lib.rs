@@ -615,7 +615,7 @@ fn run_roundtrip_closure(
     instance: &wasmtime::component::Instance,
     iface: &wasmtime::component::ComponentExportIndex,
     consumer_name: &str,
-    producer_name: &str,
+    iface_funcs: &[String],
     arg_strs: &[String],
 ) -> Result<Outcome> {
     let get = |store: &mut Store<()>, name: &str| -> Result<wasmtime::component::Func> {
@@ -628,31 +628,55 @@ fn run_roundtrip_closure(
             .get_func(&mut *store, idx)
             .ok_or_else(|| anyhow!("round-trip closure: `{name}` is not a function"))
     };
-    let producer = get(&mut *store, producer_name)?;
     let consumer = get(&mut *store, consumer_name)?;
     // The consumer's params, in SOURCE ORDER — each is either a CLOSURE the host threads a produced handle
-    // into (`Type::Own`/`Type::Borrow` — the resource `t`) or a SCALAR taken from the arg strings. A
-    // closure param may sit anywhere and there may be several (each gets its OWN fresh handle, since
-    // `own<t>` is consumed per call).
+    // into (`Type::Own`/`Type::Borrow` — a resource) or a SCALAR taken from the arg strings. A closure param
+    // may sit anywhere and there may be several; each gets its OWN fresh handle from the PRODUCER whose
+    // RESULT resource type MATCHES that param (a distinct-sig round trip has several producers, one per
+    // resource type — the first non-consumer func with a matching own<t> result).
     let cons_params: Vec<Type> = consumer
         .params(&*store)
         .iter()
         .map(|(_, t)| t.clone())
         .collect();
+    // The producer func matching a given resource type — a func (≠ the consumer) whose sole result is
+    // `own<rt>`/`borrow<rt>`. Returns (func, its param types).
+    let find_producer = |store: &mut Store<()>,
+                         want: &wasmtime::component::ResourceType|
+     -> Result<(wasmtime::component::Func, Vec<Type>)> {
+        for name in iface_funcs {
+            if name == consumer_name {
+                continue;
+            }
+            let f = get(&mut *store, name)?;
+            let matches_res = matches!(
+                f.results(&*store).first(),
+                Some(Type::Own(rt)) | Some(Type::Borrow(rt)) if rt == want
+            );
+            if matches_res {
+                let params = f.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+                return Ok((f, params));
+            }
+        }
+        Err(anyhow!(
+            "round-trip closure: no producer mints the resource `{consumer_name}` expects"
+        ))
+    };
+    // The corpus supplies the producer args for EACH closure param (in param order), then the consumer's
+    // scalar args. Walk the consumer params: a closure param consumes its producer's arity from the front;
+    // scalars come after all producer args.
     let n_closure_params = cons_params
         .iter()
         .filter(|t| matches!(t, Type::Own(_) | Type::Borrow(_)))
         .count();
-    // Split the flat arg list: the PRODUCER's args are supplied ONCE per produced handle (a fresh
-    // production per closure param), the remaining strings are the consumer's scalar args. The corpus
-    // convention: `(call <consumer> <producer-args…×n_closure> <consumer-scalar-args…>)`.
-    let prod_params: Vec<Type> = producer
-        .params(&*store)
-        .iter()
-        .map(|(_, t)| t.clone())
-        .collect();
-    let n_prod = prod_params.len();
-    let n_prod_args_total = n_prod * n_closure_params;
+    // Compute total producer-arg count (sum over each closure param's matching producer arity).
+    let mut prod_specs: Vec<(wasmtime::component::Func, Vec<Type>)> = Vec::new();
+    for t in &cons_params {
+        if let Type::Own(rt) | Type::Borrow(rt) = t {
+            prod_specs.push(find_producer(&mut *store, rt)?);
+        }
+    }
+    let n_prod_args_total: usize = prod_specs.iter().map(|(_, p)| p.len()).sum();
     if arg_strs.len() < n_prod_args_total {
         return Err(anyhow!(
             "round-trip closure: producing {n_closure_params} closure(s) needs {n_prod_args_total} \
@@ -660,10 +684,12 @@ fn run_roundtrip_closure(
             arg_strs.len()
         ));
     }
-    // Produce one handle per closure param (each from the next `n_prod` args).
+    // Produce one handle per closure param, each from the next slice of producer args.
     let mut handles: Vec<Val> = Vec::new();
-    for i in 0..n_closure_params {
-        let prod_args = coerce_args(&arg_strs[i * n_prod..(i + 1) * n_prod], &prod_params)?;
+    let mut arg_off = 0usize;
+    for (producer, prod_params) in &prod_specs {
+        let prod_args = coerce_args(&arg_strs[arg_off..arg_off + prod_params.len()], prod_params)?;
+        arg_off += prod_params.len();
         let mut handle = [Val::Bool(false)];
         if let Err(e) = producer.call(&mut *store, &prod_args, &mut handle) {
             return Ok(Outcome::Trap(format!("{e}")));
@@ -671,8 +697,8 @@ fn run_roundtrip_closure(
         let _ = producer.post_return(&mut *store);
         handles.push(handle[0].clone());
     }
-    // Build the consumer's args IN ORDER: a closure param → the next produced handle; a scalar param → the
-    // next scalar arg string (coerced to that param's declared type).
+    // Build the consumer's args IN ORDER: a closure param → the next produced handle; a scalar → the next
+    // scalar arg string.
     let scalar_strs = &arg_strs[n_prod_args_total..];
     let mut cons_args: Vec<Val> = Vec::new();
     let mut next_handle = 0usize;
@@ -735,14 +761,14 @@ fn run_closure_resource(
         let consumer = export.ok_or_else(|| {
             anyhow!("round-trip closure: no --call given (name the CONSUMER export)")
         })?;
-        let producer = iface_funcs
-            .iter()
-            .find(|f| f.as_str() != consumer)
-            .ok_or_else(|| {
-                anyhow!("round-trip closure: no producer export found alongside `{consumer}`")
-            })?
-            .clone();
-        return run_roundtrip_closure(&mut *store, instance, &iface, consumer, &producer, arg_strs);
+        return run_roundtrip_closure(
+            &mut *store,
+            instance,
+            &iface,
+            consumer,
+            &iface_funcs,
+            arg_strs,
+        );
     }
     // DISTINCT-SIGNATURE multi-export: no bare `call`, but per-signature `call-g<n>` functions (each bound
     // to its own resource type). The corpus `(call <name> …)` names a closure export → `make-<name>`; the
