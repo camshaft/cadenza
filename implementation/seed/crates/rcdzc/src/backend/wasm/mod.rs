@@ -944,7 +944,11 @@ fn resource_escape_dwarf(
             &imports,
             export_abs,
             serialize::EscapeForm::RuntimeBytes(&form),
-            &[serialize::CoreMethod::Len, serialize::CoreMethod::ToBytes],
+            &[
+                serialize::CoreMethod::Len,
+                serialize::CoreMethod::IsEmpty,
+                serialize::CoreMethod::ToBytes,
+            ],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -2809,10 +2813,14 @@ fn emit_runtime_bytes_resource(
         .ok_or_else(|| Reject::decline("the escaping bytes export is not in the emission order"))?;
 
     // VM-1/VM-3: a Bytes result crosses as a resource carrying make + encode + `len : borrow<t> -> u32`
-    // (= `bytes-len(rep)`) + `to-bytes : borrow<t> -> list<u8>` (the RAW payload). The core emits `t-len`
-    // + `t-to-bytes` (`bytes-len`/`bytes-get` are already imported for the encode walker), and the
-    // envelope lifts both extra methods (a scalar + a list result).
-    let core_methods = [serialize::CoreMethod::Len, serialize::CoreMethod::ToBytes];
+    // (= `bytes-len(rep)`) + `is-empty : borrow<t> -> bool` (= `bytes-len == 0`) + `to-bytes : borrow<t>
+    // -> list<u8>` (the RAW payload). The core emits `t-len`/`t-is-empty`/`t-to-bytes` (`bytes-len`/
+    // `bytes-get` already imported for the encode walker), and the envelope lifts the three extra methods.
+    let core_methods = [
+        serialize::CoreMethod::Len,
+        serialize::CoreMethod::IsEmpty,
+        serialize::CoreMethod::ToBytes,
+    ];
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
@@ -2837,6 +2845,11 @@ fn emit_runtime_bytes_resource(
                 boundary_name: "len",
                 core_export: "t-len",
                 result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_U32),
+            },
+            envelope::ScalarMethod {
+                boundary_name: "is-empty",
+                core_export: "t-is-empty",
+                result: envelope::MethodResult::Scalar(crate::backend::wasm::wasm_abi::COMP_BOOL),
             },
             envelope::ScalarMethod {
                 boundary_name: "to-bytes",

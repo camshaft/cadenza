@@ -6947,26 +6947,65 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let shls = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Shl | Lir::I32Shl)).count();
+        let shls = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Shl | Lir::I32Shl))
+                .count()
+        };
         // A+B=5 < 64 → one shl; triple nest → one; Int8 3+4=7 < 8 → one.
-        assert_eq!(shls(&lir("(: x Int64)", "(: (<< (<< x 2) 3) Int64)")), 1, "shl-shl → one");
-        assert_eq!(shls(&lir("(: x Int64)", "(: (<< (<< (<< x 1) 2) 3) Int64)")), 1, "triple shl → one");
-        assert_eq!(shls(&lir("(: x Int8)", "(: (<< (<< x 3) 4) Int8)")), 1, "Int8 7 < 8 → one");
+        assert_eq!(
+            shls(&lir("(: x Int64)", "(: (<< (<< x 2) 3) Int64)")),
+            1,
+            "shl-shl → one"
+        );
+        assert_eq!(
+            shls(&lir("(: x Int64)", "(: (<< (<< (<< x 1) 2) 3) Int64)")),
+            1,
+            "triple shl → one"
+        );
+        assert_eq!(
+            shls(&lir("(: x Int8)", "(: (<< (<< x 3) 4) Int8)")),
+            1,
+            "Int8 7 < 8 → one"
+        );
         // A+B ≥ width does NOT combine: Int8 3+5=8, Int64 40+30=70.
-        assert_eq!(shls(&lir("(: x Int8)", "(: (<< (<< x 3) 5) Int8)")), 2, "8 >= 8 → keep two");
-        assert_eq!(shls(&lir("(: x Int64)", "(: (<< (<< x 40) 30) Int64)")), 2, "70 >= 64 → keep two");
+        assert_eq!(
+            shls(&lir("(: x Int8)", "(: (<< (<< x 3) 5) Int8)")),
+            2,
+            "8 >= 8 → keep two"
+        );
+        assert_eq!(
+            shls(&lir("(: x Int64)", "(: (<< (<< x 40) 30) Int64)")),
+            2,
+            "70 >= 64 → keep two"
+        );
         // MIXED direction (`(<< (>> x 2) 3)`) is NOT collapsed — one of each stays.
         let mixed = lir("(: x Int64)", "(: (<< (>> x 2) 3) Int64)");
         assert_eq!(shls(&mixed), 1, "mixed shr-then-shl keeps its one shl");
 
         // VALUE PARITY: 3<<5 = 96 (Int64 and in-range Int8); negatives shift correctly.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(3)]), 96);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(-1)]), -32);
-        assert_eq!(run::<i8>("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(3)]), 96);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(3)]),
+            96
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(-1)]),
+            -32
+        );
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(3)]),
+            96
+        );
         // OVERFLOW-TRAP PARITY: Int8 8<<5 = 256 overflows — the collapsed `<< 5` traps exactly as the
         // single-shift form does (the double-shift and single-shift agree on the trap set).
-        assert!(traps("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(8)]), "collapsed overflow traps");
-        assert!(traps("(: x Int8)", "(: (<< x 5) Int8)", &[Val::S8(8)]), "single-shift overflow traps");
+        assert!(
+            traps("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(8)]),
+            "collapsed overflow traps"
+        );
+        assert!(
+            traps("(: x Int8)", "(: (<< x 5) Int8)", &[Val::S8(8)]),
+            "single-shift overflow traps"
+        );
     }
 
     #[test]
@@ -9411,13 +9450,15 @@ mod match_engine {
         // (3) A wrong-ARITY unquote (≠1 operand) is CDZ0201 (malformed), checked before the context — so
         //     `(quasiquote (unquote 1 2))` is the arity error, not the context error.
         assert_eq!(
-            reject_code("(module m (def (main) (quasiquote (unquote 1 2))) (export main))").as_deref(),
+            reject_code("(module m (def (main) (quasiquote (unquote 1 2))) (export main))")
+                .as_deref(),
             Some("CDZ0201")
         );
         // (4) A WELL-FORMED unquote genuinely inside a quasiquote MUST evaluate its operand — so an unbound
         //     name in it is the ordinary CDZ0101, NOT swallowed by the quasiquote's own decline.
         assert_eq!(
-            reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))").as_deref(),
+            reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))")
+                .as_deref(),
             Some("CDZ0101")
         );
     }
@@ -11641,6 +11682,19 @@ mod match_engine {
             cadenza_syntax::sexpr::print(&arenas).trim(),
             "(: b\"\\xe5\\x8e&\" Bytes)",
             "encode still renders after the repeated len calls"
+        );
+        // VM-3c: `is-empty` returns bool — a non-empty (3-byte) Bytes → false. Another repeatable scalar
+        // method coexisting with len/encode.
+        let is_empty = get(&mut rt, "is-empty");
+        let mut out = [Val::Bool(true)];
+        is_empty
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("is-empty");
+        is_empty.post_return(&mut rt.store).expect("is-empty post");
+        assert!(
+            matches!(out[0], Val::Bool(false)),
+            "is-empty on a 3-byte Bytes → false, got {:?}",
+            out[0]
         );
         // VM-3: `to-bytes` returns the RAW payload (no value-form framing) — the exact 3 bytes E5 8E 26.
         // Repeatable (borrow), so call it after len + encode; the handle is still live.
@@ -21217,19 +21271,34 @@ mod stage1 {
         let sum = "(module m (type C (A Int64) (B)) \
             (def (main) (match (A 7) ((A m) ((fn (x) (+ x m)) 3)) ((B) 0))) (export main))";
         assert_eq!(
-            run_returns::<i64>(&compile_component(&crate::codec::encode(&parse(sum))).expect("compile"), "main"),
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(sum))).expect("compile"),
+                "main"
+            ),
             10,
             "a sum-arm binder captured by a directly-applied inner lambda must resolve (was CDZ0101)"
         );
         // A TUPLE-pattern binder captured the same way (the binder is an `Elem`-path SumPayload).
         let tup = "(module m \
             (def (main) (match (tuple 7 9) ((tuple a b) ((fn (x) (+ x a)) 3)))) (export main))";
-        assert_eq!(run_returns::<i64>(&compile_component(&crate::codec::encode(&parse(tup))).expect("compile"), "main"), 10);
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(tup))).expect("compile"),
+                "main"
+            ),
+            10
+        );
         // NO REGRESSION of the working companions: the same binder used DIRECTLY, and captured through a
         // TUPLE, still resolve (they took different paths and always worked).
         let direct = "(module m (type C (A Int64) (B)) \
             (def (main) (match (A 7) ((A m) (+ m 3)) ((B) 0))) (export main))";
-        assert_eq!(run_returns::<i64>(&compile_component(&crate::codec::encode(&parse(direct))).expect("compile"), "main"), 10);
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(direct))).expect("compile"),
+                "main"
+            ),
+            10
+        );
     }
 
     #[test]
