@@ -17917,6 +17917,61 @@ mod debug_info {
     }
 
     #[test]
+    fn a_nominal_newtype_scalar_param_gets_a_formal_parameter_die() {
+        // D3 for a NOMINAL NEWTYPE over a scalar: `(type UserId (Mk Int64))` is erased to a runtime i64,
+        // so a `UserId` parameter is a scalar the runtime holds in a wasm local — it must earn a
+        // `DW_TAG_formal_parameter` with the UNDERLYING scalar's base type (`i64`, the value the runtime
+        // actually holds), exactly like a bare `Int64`. (Before this, `base_type_of`/`select`'s scalar
+        // guards didn't peel the nominal tag, so a nominal-scalar param got NO DIE.)
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (type UserId (Mk Int64)) \
+                     (def (idof (: u UserId)) (match u ((Mk n) n))) \
+                     (export idof))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3nom-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump reported an error:\n{stdout}"
+        );
+        // The nominal param `u` is described via its erased i64 base type + a wasm-local location.
+        assert!(
+            stdout.contains("DW_TAG_formal_parameter") && stdout.contains("\"u\""),
+            "the nominal-scalar param u must have a formal_parameter DIE:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"i64\"") && stdout.contains("DW_ATE_signed"),
+            "the nominal param must reference its underlying i64 base type:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x0"),
+            "the nominal param must sit at local slot 0:\n{stdout}"
+        );
+    }
+
+    #[test]
     fn wasm_plus_dwarf_links_the_component_to_the_sidecar() {
         // When a run emits BOTH a lean component and a detached DWARF sidecar, the component carries an
         // `external_debug_info` custom section naming the sidecar file — so a debugger auto-loads it.

@@ -1100,7 +1100,7 @@ pub fn select_function_of(
         slot_of.insert(*binder, i as u32);
         param_vts.push(vt);
         param_slots.push(i as u32);
-        if matches!(ty, Ty::Int(_) | Ty::Bool | Ty::Float(_))
+        if matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
             && let Some(name) = db.ast.as_name(*binder)
         {
             locals.push(LocalVar {
@@ -1749,7 +1749,7 @@ fn emit_tail(
                 // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. The
                 // binder key is the initializer occurrence, so recover the name from its `(name init)`
                 // pair (`let_binding_name`), not from the binder itself.
-                if matches!(ty, Ty::Int(_) | Ty::Bool | Ty::Float(_))
+                if matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
                     && let Some(name) = db.let_binding_name(*binder)
                 {
                     out.binding_local(slot, name.to_string(), ty.clone());
@@ -3294,7 +3294,7 @@ fn emit(
                 // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. (A heap
                 // binding is a handle DWARF can't walk (§3), so only scalars are recorded.) The binder key
                 // is the initializer occurrence, so recover the name from its `(name init)` pair.
-                if matches!(ty, Ty::Int(_) | Ty::Bool | Ty::Float(_))
+                if matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
                     && let Some(name) = db.let_binding_name(*binder)
                 {
                     out.binding_local(slot, name.to_string(), ty.clone());
@@ -3930,7 +3930,7 @@ fn emit_match_arms_tailable(
             let mut vars = Vec::new();
             for arm in arms {
                 let ty = type_of(db, arm.body);
-                if !matches!(ty, Ty::Int(_) | Ty::Bool | Ty::Float(_)) {
+                if !matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_)) {
                     continue;
                 }
                 if let Some(name) = db.match_arm_binder_name(arm.body)
