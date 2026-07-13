@@ -455,18 +455,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             // Carries A Route To A Fix). The candidate pool is the registry itself, so a suggestion can
             // never name a key the validator would then reject.
             Some(other) => {
+                // Name a near-miss registry key IN THE MESSAGE too (not only as a fix) — the same "did
+                // you mean?" phrasing an unbound name / absent field / undeclared handler op carries, so
+                // the human report is consistent and the suggestion is visible without `--json`.
+                let candidate =
+                    crate::diag::suggest::nearest(other, PRAGMA_REGISTRY.iter().copied());
+                let hint = match &candidate {
+                    Some(near) => format!(" — did you mean `{near}`?"),
+                    None => String::new(),
+                };
                 let mut reject = Reject::coded(
                     Code::UnknownDirective,
                     format!(
                         "`{other}` is not a module directive this specification defines (the pragma \
-                         registry is a fixed set; an unknown key is rejected, not ignored)"
+                         registry is a fixed set; an unknown key is rejected, not ignored){hint}"
                     ),
                 )
                 .at(form);
-                if let Some(candidate) =
-                    crate::diag::suggest::nearest(other, PRAGMA_REGISTRY.iter().copied())
-                    && let Some(&key_occ) = ptail.first()
-                {
+                if let (Some(candidate), Some(&key_occ)) = (candidate, ptail.first()) {
                     reject =
                         reject.with_fix(crate::diag::Fix::replace_heuristic(key_occ, candidate));
                 }

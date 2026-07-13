@@ -9562,13 +9562,25 @@ mod match_engine {
         assert_eq!(fix.kind, crate::abi::FixKind::Replace);
         assert_eq!(fix.replacement, "default-integer");
         assert!(!fix.verified, "a nearest-key guess is heuristic");
-        // A FAR key gets no misleading suggestion (the plain reject).
+        // The suggestion is ALSO named in the human message (not only in the structured fix), matching
+        // every other did-you-mean site — visible without `--json`.
+        assert!(
+            d.message.contains("did you mean `default-integer`?"),
+            "the message must name the suggestion; got: {}",
+            d.message
+        );
+        // A FAR key gets no misleading suggestion (the plain reject, no message hint).
         let far =
             reject_full("(do (pragma frobnicate 3) (def (main) 1) (export main))").expect("reject");
         assert!(
             far.fix.is_none(),
             "no suggestion for an unrelated key: {:?}",
             far.fix
+        );
+        assert!(
+            !far.message.contains("did you mean"),
+            "no message hint for an unrelated key: {}",
+            far.message
         );
     }
 
