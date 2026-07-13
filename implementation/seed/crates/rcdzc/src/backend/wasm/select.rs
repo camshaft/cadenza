@@ -7416,8 +7416,14 @@ fn emit_wrap(
     // N bits already encode it and the high slot bits are the correct sign extension, so masking/
     // sign-extending changes nothing. `UInt8.wrap(& x 255)` (operand ∈ [0,255], Int64-typed) and a wrap of
     // a flow-refined value shed the mask. Consults the same lattice as the guard-elision checks.
-    let (min_n, max_n) = dst.bounds();
-    let operand_fits = dst.narrow() && crate::lower::value_range_within(db, operand, min_n, max_n);
+    //
+    // `bounds()` is only defined for a NARROW width (`1u64 << 64` overflows), so it is consulted STRICTLY
+    // behind the `dst.narrow()` guard — a full-width `wrap` (`UInt64.wrap`, `Int64.wrap`) never masks and
+    // never queries the range.
+    let operand_fits = dst.narrow() && {
+        let (min_n, max_n) = dst.bounds();
+        crate::lower::value_range_within(db, operand, min_n, max_n)
+    };
     if dst.narrow() && !truncation_is_identity && !operand_fits {
         let slot_bits = dst.slot_bits();
         if dst.signed {
