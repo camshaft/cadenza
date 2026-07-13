@@ -11740,14 +11740,16 @@ mod stage1 {
 
     #[test]
     fn division_by_zero_fails_the_build() {
-        // (/ 5 0) — a compile-provable trap fails the build (CDZ0304), not a shipped runtime trap.
-        assert!(expect_decline("(/ 5 0)").contains("defined value"));
+        // (/ 5 0) — a compile-provable trap fails the build (CDZ0304), not a shipped runtime trap. The
+        // message names the SPECIFIC cause (divide by zero), not a list of every possible trap.
+        assert!(expect_decline("(/ 5 0)").contains("divide by zero"));
     }
 
     #[test]
     fn division_of_min_by_minus_one_overflows() {
-        // (/ MIN -1) overflows Int64 (the result 2^63 doesn't fit) — CDZ0304.
-        assert!(expect_decline("(/ -9223372036854775808 -1)").contains("defined value"));
+        // (/ MIN -1) overflows Int64 (the result 2^63 doesn't fit) — CDZ0304, named as an overflow (NOT
+        // a divide-by-zero: the divisor is -1, and the fold distinguishes the two Div traps).
+        assert!(expect_decline("(/ -9223372036854775808 -1)").contains("overflows Int64"));
     }
 
     #[test]
@@ -11774,19 +11776,21 @@ mod stage1 {
     #[test]
     fn left_shift_that_overflows_fails_the_build() {
         // (<< 4611686018427387904 1) overflows Int64 — traps like `*`, so CDZ0304, not a silent wrap.
-        assert!(expect_decline("(<< 4611686018427387904 1)").contains("defined value"));
+        // The message names it as an overflow (in-range count, but the shifted result doesn't fit).
+        assert!(expect_decline("(<< 4611686018427387904 1)").contains("overflows Int64"));
     }
 
     #[test]
     fn shift_by_the_width_or_more_fails_the_build() {
-        // (<< 1 64) — a shift count ≥ width traps rather than masking (CDZ0304).
-        assert!(expect_decline("(<< 1 64)").contains("defined value"));
+        // (<< 1 64) — a shift count ≥ width traps rather than masking (CDZ0304); named as an
+        // out-of-range count (not an overflow — the count itself is the fault).
+        assert!(expect_decline("(<< 1 64)").contains("shift count 64 is out of range"));
     }
 
     #[test]
     fn negative_shift_count_fails_the_build() {
-        // (<< 1 -1) — a negative shift count traps rather than masking (CDZ0304).
-        assert!(expect_decline("(<< 1 -1)").contains("defined value"));
+        // (<< 1 -1) — a negative shift count traps rather than masking (CDZ0304), named as out-of-range.
+        assert!(expect_decline("(<< 1 -1)").contains("shift count -1 is out of range"));
     }
 
     // ── comparisons: ∀a. a → a → Bool, folded to a boolean, generic over the operand type ────────

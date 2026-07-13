@@ -6143,11 +6143,37 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
             Core::Poison(Reject::coded(
                 Code::ConstTrap,
                 format!(
-                    "constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)",
-                    intrinsic_name(op)
+                    "constant {} traps: {}",
+                    intrinsic_name(op),
+                    const_trap_cause(op, y),
                 ),
             ))
         }
+    }
+}
+
+/// The SPECIFIC cause of a provable constant-integer trap (CDZ0304) for op `op` with right operand `y`
+/// — the compiler proved the trap, so it knows which of the three defined causes fired and names THAT
+/// ("divide by zero" / "overflows Int64" / "shift count N out of range 0..64") rather than listing all
+/// three. The evaluation is over the Stage-default `i64`, so overflow is against `Int64`; a later width
+/// stage would name the solved width. Only called when the fold returned `None` (a genuine trap), so a
+/// default arm is a defensive fallback, not a reachable case. (The left operand doesn't disambiguate a
+/// cause — every trap is decided by the op and the divisor/shift-count `y`.)
+fn const_trap_cause(op: Prim, y: i64) -> String {
+    match op {
+        Prim::Div | Prim::Rem if y == 0 => "divide by zero".to_string(),
+        // The only non-zero-divisor `Div` trap is `Int64.min / -1` (the quotient overflows Int64).
+        Prim::Div => "the quotient overflows Int64 (Int64.min / -1)".to_string(),
+        Prim::Add | Prim::Sub | Prim::Mul => "the result overflows Int64".to_string(),
+        Prim::Shl | Prim::Shr => {
+            if !(0..64).contains(&y) {
+                format!("shift count {y} is out of range 0..64")
+            } else {
+                // An in-range Shl whose exact result overflows the width.
+                "the shifted result overflows Int64".to_string()
+            }
+        }
+        _ => "the operation has no defined value on these operands".to_string(),
     }
 }
 
