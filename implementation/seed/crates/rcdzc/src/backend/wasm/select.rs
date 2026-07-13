@@ -214,10 +214,16 @@ const NULL_HANDLE: i32 = 0;
 /// listed here, and `valtype_of` already agrees it is an i32 handle; omitting it let an `if` over a
 /// list take the scalar `select` path and emit a module that failed wasm validation (i64/i32 mismatch).
 fn is_heap_type(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes
-    )
+    match ty {
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes => {
+            true
+        }
+        // A quantity ERASES to its inner numeric type before the backend (`lower` strips the `Qty`), so
+        // a `Ty::Qty` should not reach selection. Defensively classify it by its inner type — a quantity
+        // over a heap numeric would be heap, but Layer 1's numerics are all scalars (int/float).
+        Ty::Qty { inner, .. } => is_heap_type(inner),
+        _ => false,
+    }
 }
 
 /// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
@@ -448,6 +454,9 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
             Ok(None)
         }
+        // A quantity erases to its inner numeric type (`lower` strips the `Qty`), so box it by that inner
+        // type — a `(Qty Int64 u)` element boxes exactly as an `Int64` element.
+        Ty::Qty { inner, .. } => box_op_ty(inner),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -476,6 +485,8 @@ fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
             Ok(None)
         }
+        // A quantity erases to its inner numeric type — unbox by that inner type (the dual of `box_op_ty`).
+        Ty::Qty { inner, .. } => get_op_ty(inner),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()

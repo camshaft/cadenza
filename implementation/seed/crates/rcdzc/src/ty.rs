@@ -188,6 +188,125 @@ impl FloatTy {
     }
 }
 
+/// A UNIT — an element of the free abelian group over named base dimensions (`units-of-measure.md` §A
+/// Dimension Groups Interconvertible Units; `options/units-of-measure/`). A unit is a canonical map from
+/// a base-dimension NAME to a signed integer EXPONENT, with every zero-exponent base DROPPED, so the
+/// group identity `Unit.one` (a dimensionless quantity) is the EMPTY map and two units are the SAME
+/// DIMENSION exactly when their maps are EQUAL — a finite, order-independent, solver-free compile-time
+/// comparison (the F#-units model, `options/units-of-measure/erased-compile-time-quantity.md`). Held in
+/// a `BTreeMap` so the canonical order is the key order (making `==` decide dimensional equality and the
+/// render order deterministic) and cloning is cheap for the small maps units are.
+///
+/// The base-dimension name is a `String` in Layer 1 (the erasure-only dimensional core): the corpus
+/// names base dimensions with a symbol literal `#"metre"`, read as its text. When the `Symbol` type
+/// lands (Layer 2, families/prefixes), this key becomes a `resolved::Symbol`; nothing else about the
+/// group algebra changes. A unit is a COMPILE-TIME value: it indexes `Ty::Qty` and is ERASED before
+/// emission, so it never reaches the backend (`units-of-measure.md` §Dimensions Are Checked Then Erased).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct Unit(std::collections::BTreeMap<String, i64>);
+
+impl Unit {
+    /// The dimensionless unit — the group identity (the EMPTY exponent map). `Unit.one`.
+    pub fn one() -> Unit {
+        Unit(std::collections::BTreeMap::new())
+    }
+
+    /// A base dimension named `name`, to the first power — the single-entry map `{name: 1}`. `(Unit.base
+    /// #"metre")`.
+    pub fn base(name: impl Into<String>) -> Unit {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(name.into(), 1);
+        Unit(m)
+    }
+
+    /// Whether this is the dimensionless unit (the empty map) — a `(Qty T Unit.one)` scaled result, or a
+    /// ratio of like quantities that cancelled to no dimension.
+    pub fn is_dimensionless(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The PRODUCT of two units — pointwise exponent ADD, dropping any base whose combined exponent is
+    /// zero (the drop-zeros canonicalization). `(Unit.* metre metre)` = `{metre: 2}`; a base times its
+    /// inverse cancels to `Unit.one`. The `*`/`/` dimensional rule (`units-of-measure.md` §An Operation
+    /// That Derives A Dimension).
+    pub fn mul(&self, other: &Unit) -> Unit {
+        let mut m = self.0.clone();
+        for (k, e) in &other.0 {
+            let entry = m.entry(k.clone()).or_insert(0);
+            *entry += e;
+            if *entry == 0 {
+                m.remove(k);
+            }
+        }
+        Unit(m)
+    }
+
+    /// The QUOTIENT of two units — pointwise exponent SUBTRACT, dropping zeros. `(Unit./ metre second)` =
+    /// `{metre: 1, second: -1}` (a velocity); `(Unit./ metre metre)` = `Unit.one` (a ratio of like
+    /// quantities is dimensionless, decided by the exponent map going to all-zero).
+    pub fn div(&self, other: &Unit) -> Unit {
+        let mut m = self.0.clone();
+        for (k, e) in &other.0 {
+            let entry = m.entry(k.clone()).or_insert(0);
+            *entry -= e;
+            if *entry == 0 {
+                m.remove(k);
+            }
+        }
+        Unit(m)
+    }
+
+    /// This unit raised to a compile-time integer power `n` (may be negative) — each exponent scaled by
+    /// `n`, dropping zeros. `n = 0` yields `Unit.one` (any dimension to the zeroth power is dimensionless).
+    /// `(Unit.^ metre 2)` = `{metre: 2}` (area), `(Unit.^ second -1)` = `{second: -1}` (frequency).
+    pub fn pow(&self, n: i64) -> Unit {
+        if n == 0 {
+            return Unit::one();
+        }
+        let mut m = std::collections::BTreeMap::new();
+        for (k, e) in &self.0 {
+            let scaled = e * n;
+            if scaled != 0 {
+                m.insert(k.clone(), scaled);
+            }
+        }
+        Unit(m)
+    }
+
+    /// The base→exponent pairs in canonical (sorted) order — for encoding the unit into an arena subtree
+    /// and for rendering.
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &i64)> {
+        self.0.iter()
+    }
+
+    /// Render the unit for a `(Qty T <unit>)` type annotation — the canonical written form. The
+    /// dimensionless unit renders `Unit.one`; a single base to the first power renders `(Unit.base
+    /// #"name")`; a base to a power renders `(Unit.^ (Unit.base #"name") n)`; a product of several
+    /// renders a left-nested `(Unit.* …)`. This mirrors the corpus surface so a rendered quantity type
+    /// re-reads to the same unit.
+    pub fn render(&self) -> String {
+        if self.0.is_empty() {
+            return "Unit.one".to_string();
+        }
+        let mut factors: Vec<String> = Vec::new();
+        for (name, &exp) in &self.0 {
+            let base = format!("(Unit.base #\"{name}\")");
+            if exp == 1 {
+                factors.push(base);
+            } else {
+                factors.push(format!("(Unit.^ {base} {exp})"));
+            }
+        }
+        // Left-nested product of the factors (a single factor is itself).
+        let mut it = factors.into_iter();
+        let mut acc = it.next().unwrap();
+        for f in it {
+            acc = format!("(Unit.* {acc} {f})");
+        }
+        acc
+    }
+}
+
 /// A solved type — the closed variant set inference determines and every pass below reads.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Ty {
@@ -259,6 +378,21 @@ pub enum Ty {
     /// of different width are DISTINCT (no silent promotion), and an integer never unifies with a float
     /// (`(+ 2 2.0)` → CDZ0301). Backed at the boundary by the component-model `f64`/`f32`.
     Float(FloatTy),
+    /// A QUANTITY: an underlying numeric value of type `inner` carried with a COMPILE-TIME `unit`
+    /// (`units-of-measure.md`; `options/units-of-measure/erased-compile-time-quantity.md`). `(Qty T u)`
+    /// is an ordinary type-constructor application exactly as `(Int N)` is the integer constructor
+    /// applied to a compile-time width — a quantity type is the same shape indexed by a compile-time
+    /// UNIT instead of a natural. The unit tracks the DIMENSION and gates compatibility (`+`/`-`/
+    /// comparison require equal units; `*`/`/` compose them by the free-abelian-group operation); the
+    /// numeric core is untouched — `inner` keeps its width/overflow/no-promotion rules and the running
+    /// arithmetic is the plain `inner` operation. Two quantities are the SAME type iff their `inner`
+    /// types unify AND their units are EQUAL (a metre never unifies with a bare number nor with a
+    /// second). The whole apparatus is CHECKED THEN ERASED before emission (`§Dimensions Are Checked
+    /// Then Erased`): a `Ty::Qty` lowers to its `inner` (`lower` strips it), so it NEVER reaches the
+    /// backend and `(Qty.of 5.0 metre)` is byte-identical to the bare `5.0`. The one piece of earlier
+    /// Cadenza's identity that survives the clean room, buying verified dimensional correctness for zero
+    /// runtime cost.
+    Qty { inner: Box<Ty>, unit: Unit },
     /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
     /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
     /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
@@ -354,6 +488,9 @@ impl Ty {
             Ty::Map(k, v) => k.has_free_var() || v.has_free_var(),
             Ty::Record(fields) => fields.values().any(|t| t.has_free_var()),
             Ty::Sum { args, .. } => args.iter().any(|t| t.has_free_var()),
+            // A quantity's free variables are its INNER numeric type's — the unit is a concrete
+            // compile-time value (a canonical exponent map), never a variable.
+            Ty::Qty { inner, .. } => inner.has_free_var(),
             // Bytes, String, and Char are leaves — no inner type, so no free variable.
             Ty::Int(_)
             | Ty::Bool
@@ -448,6 +585,20 @@ impl Ty {
                 (Width::Fixed(wa), Width::Fixed(wb)) => wa == wb,
                 _ => true,
             },
+            // Two quantities agree iff their INNER numeric types agree AND their UNITS are EQUAL — a
+            // metre and a second (same inner `Float64`, different dimension) do NOT agree, and a metre and
+            // a bare `Float64` do not agree (no implicit dimensionless coercion). A quantity never agrees
+            // with a non-quantity; that falls to the `_ => false` below.
+            (
+                Ty::Qty {
+                    inner: ia,
+                    unit: ua,
+                },
+                Ty::Qty {
+                    inner: ib,
+                    unit: ub,
+                },
+            ) => ua == ub && ia.agrees_with(ib),
             _ => false,
         }
     }
@@ -520,6 +671,19 @@ impl Ty {
             (Ty::Map(ka, va), Ty::Map(kb, vb)) if self.agrees_with(other) => {
                 Ty::Map(Box::new(ka.join(kb)), Box::new(va.join(vb)))
             }
+            // Two agreeing quantities (same unit, guaranteed by `agrees_with`) join their INNER numeric
+            // type — a deferred inner width in one `if` branch is fixed by the other, carrying the shared
+            // unit through the conditional.
+            (
+                Ty::Qty {
+                    inner: ia,
+                    unit: ua,
+                },
+                Ty::Qty { inner: ib, .. },
+            ) if self.agrees_with(other) => Ty::Qty {
+                inner: Box::new(ia.join(ib)),
+                unit: ua.clone(),
+            },
             _ => self.clone(),
         }
     }
@@ -592,6 +756,11 @@ impl Ty {
                 }
             }
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
+            // A quantity renders as `(Qty <inner> <unit>)` — the corpus form `(: (Qty.of 5.0 metre) (Qty
+            // Float64 (Unit.base #"metre")))`. The inner type renders as its ordinary name; the unit
+            // renders via `Unit::render` (the canonical written form so the type re-reads to the same
+            // unit).
+            Ty::Qty { inner, unit } => format!("(Qty {} {})", inner.render_name(), unit.render()),
             Ty::Type => "Type".to_string(),
             Ty::Var(n) => format!("?{n}"),
             Ty::Any => "Any".to_string(),

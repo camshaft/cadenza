@@ -7984,6 +7984,56 @@ mod match_engine {
     }
 
     #[test]
+    fn a_quantity_type_round_trips_through_encode_and_decode() {
+        // L1-0 SAFETY (the DESIGN doc §9 mandatory test): a `Ty::Qty` MUST survive the `Ty → type-value
+        // AST → Ty` round-trip that every constructor scheme takes (`eval::encode_typeval` /
+        // `resolve::decode_ty`, reached via `typeval_of`). A MISSING `encode_ty`/`decode_ty` arm would
+        // silently encode a quantity as `Unit` (the catch-all) — the exact hole that mis-typed `Bytes`
+        // and `String` before their arms landed — so a `(-> T (Qty T u))` scheme would round-trip to
+        // `(-> T Unit)` and every quantity op would mis-type. This pins the round-trip for the
+        // dimensionless unit, a base unit, a derived (velocity) unit, and a squared unit.
+        use crate::db::Db;
+        use crate::eval::{encode_typeval, typeval_of};
+        use crate::testkit::parse;
+        use crate::ty::{Ty, Unit};
+        let ast = parse("(module m (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let cases = vec![
+            // A dimensionless quantity over Int64 — the empty unit map.
+            Ty::Qty {
+                inner: Box::new(Ty::int64()),
+                unit: Unit::one(),
+            },
+            // A base-unit quantity over Float64 — `{metre: 1}`.
+            Ty::Qty {
+                inner: Box::new(Ty::float64()),
+                unit: Unit::base("metre"),
+            },
+            // A DERIVED unit (velocity) over Float64 — metre·second⁻¹, `{metre: 1, second: -1}`.
+            Ty::Qty {
+                inner: Box::new(Ty::float64()),
+                unit: Unit::base("metre").div(&Unit::base("second")),
+            },
+            // A SQUARED unit (area) over Float64 — `{metre: 2}`.
+            Ty::Qty {
+                inner: Box::new(Ty::float64()),
+                unit: Unit::base("metre").pow(2),
+            },
+        ];
+        for ty in cases {
+            let node = encode_typeval(&mut db, &ty);
+            let decoded = typeval_of(&mut db, node)
+                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            assert_eq!(
+                decoded,
+                ty,
+                "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
+                ty.render_name()
+            );
+        }
+    }
+
+    #[test]
     fn a_generic_sum_with_a_type_param_in_a_tuple_or_record_payload_is_not_nullary() {
         // REGRESSION: a GENERIC sum whose variant carries a TUPLE or RECORD payload MENTIONING a type
         // parameter — `(type Box (B (Tuple a Int64)) N)` / `(type Box (B (Record (val a))) N)` — must
