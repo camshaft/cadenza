@@ -13178,6 +13178,27 @@ mod match_engine {
     }
 
     #[test]
+    fn a_unit_conflict_anchors_to_a_user_node() {
+        // CDZ0502 must carry a source location, not print an unanchored `cdz:` prefix. The unit-conflict
+        // rejects (built-in redecl + duplicate declaration) now `.at()` the offending declaration's
+        // base-unit occurrence, so the error maps to `file:line:col`.
+        let src = "(module m (Unit.define #\"foot\" (Unit.of #\"metre\") 2 1) \
+                   (def (main) 0) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0502"))
+            .expect("a CDZ0502 diagnostic");
+        let node = d
+            .node
+            .expect("CDZ0502 must carry a node, not be unanchored");
+        assert!(
+            db.is_user_node(crate::ast::StructId(node)),
+            "node {node} must be a user node so it maps to a source location"
+        );
+    }
+
+    #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
         // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
         // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT

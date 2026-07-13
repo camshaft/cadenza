@@ -2444,20 +2444,32 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
             if let Some(builtin) = u.scaled(bnum, bden)
                 && builtin != this_unit
             {
-                out.push(Reject::coded(
-                    Code::UnitConflict,
-                    format!("unit `{name}` is already a built-in unit with a different conversion"),
-                ));
+                // Anchor at the declaration's base-unit occurrence (`base_occ` = `(Unit.of #"…")`), the
+                // one node of this `(Unit.define …)` the scan kept — so the conflict carries a
+                // `file:line:col` at the offending declaration instead of an unanchored `cdz:`/`file:`
+                // prefix.
+                out.push(
+                    Reject::coded(
+                        Code::UnitConflict,
+                        format!(
+                            "unit `{name}` is already a built-in unit with a different conversion"
+                        ),
+                    )
+                    .at(*base_occ),
+                );
                 continue;
             }
         }
         // Compare against an EARLIER declaration of the same name.
         match seen.get(name) {
             Some(prior) if *prior != this_unit => {
-                out.push(Reject::coded(
-                    Code::UnitConflict,
-                    format!("unit `{name}` is declared twice with different conversions"),
-                ));
+                out.push(
+                    Reject::coded(
+                        Code::UnitConflict,
+                        format!("unit `{name}` is declared twice with different conversions"),
+                    )
+                    .at(*base_occ),
+                );
             }
             _ => {
                 seen.insert(name.clone(), this_unit);
