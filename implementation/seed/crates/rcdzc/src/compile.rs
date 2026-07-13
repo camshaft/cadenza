@@ -550,6 +550,20 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     let has_over_application_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::OVER_APPLICATION_MARKER));
+    // Likewise: a MALFORMED handler (an arm naming an undeclared op — CDZ0403 — or one not discharging
+    // every operation — CDZ0405) cannot fold, so `lower` returns the uncoded "not yet reducible by the
+    // tail-resumptive fold" DECLINE alongside the coded reject. The decline is a CONSEQUENCE of the very
+    // defect the coded reject reports (with its fix), not an independent limitation — drop it so a
+    // misspelled/missing arm yields ONE primary `error:` carrying the actionable fix, not a coded reject
+    // shadowed by an emit-path decline. Only suppressed WHEN such a reject exists — a WELL-FORMED handler
+    // that is genuinely not-yet-reducible (a real cross-function / non-tail resume) keeps its honest
+    // decline (there is no coded reject to defer to).
+    let has_malformed_handler_reject = faults.iter().any(|r| {
+        matches!(
+            r.code,
+            Some(Code::HandlerUndeclaredOp) | Some(Code::HandlerNotExhaustive)
+        )
+    });
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -581,6 +595,12 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_over_application_reject
                 && r.is_decline()
                 && r.message == crate::diag::OVER_APPLICATION_DECLINE
+            {
+                return false;
+            }
+            if has_malformed_handler_reject
+                && r.is_decline()
+                && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
             {
                 return false;
             }

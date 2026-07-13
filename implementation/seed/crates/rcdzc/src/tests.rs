@@ -13951,6 +13951,45 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_handler_reports_one_error_not_a_shadowing_reducibility_decline() {
+        // A misspelled handler op is CDZ0403 (with a `did you mean` fix). The malformed handler ALSO fails
+        // to fold, so `lower` returns the uncoded "not yet reducible by the tail-resumptive fold" DECLINE —
+        // a CONSEQUENCE of the misspelling, not an independent limitation. `dedup_faults` drops that
+        // decline when a CDZ0403/CDZ0405 is present, so the fault is ONE primary `error:` carrying the fix
+        // (an agent that applies the fix does not then face a second, confusing error). `guess` is
+        // undeclared (only `pick` exists).
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle Choose 0 ((guess (u) s (resume s s))) 42)) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a malformed handler = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0403"));
+        // The shadowing reducibility decline is gone specifically.
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "the not-reducible decline must not accompany the coded handler reject"
+        );
+    }
+
+    #[test]
     fn a_handler_arm_for_an_undeclared_operation_is_cdz0403() {
         // E2a: a handler arm naming an operation its effect does not declare is a closed-set violation —
         // CDZ0403 (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares).

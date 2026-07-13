@@ -1317,8 +1317,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     core_of(db, rewritten)
                 }
                 None => Core::Poison(Reject::decline(
-                    "this handler is not yet reducible by the tail-resumptive fold (cross-function \
-                 or non-tail resume arrives in a later increment)",
+                    crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                 )),
             }
         }
