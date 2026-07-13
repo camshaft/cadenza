@@ -107,9 +107,10 @@ pub enum Query {
     /// WITHOUT requiring the program to export anything or emit. This is the "diagnostics as you type"
     /// primitive: the same faults `compile` reports (type mismatch, unbound name, duplicate def/field,
     /// non-linear binder, …), but not gated on `layout`/export, so a mid-edit buffer that declares no
-    /// export still gets its diagnostics. Answered as one fault per line, `severity<TAB>code<TAB>node-id
-    /// <TAB>message` (node-id-keyed like `UsesOf` — the consumer maps the node to a source range). Total:
-    /// a clean program yields the empty result.
+    /// export still gets its diagnostics. Answered as one fault per line, TAB-separated: `severity  code
+    ///   node-id  fix-node  fix-replacement  fix-verified  message` (node-id-keyed like `UsesOf` — the
+    /// consumer maps each node to a source range; the three fix columns carry the structural repair and
+    /// are `-` when absent). Total: a clean program yields the empty result.
     Diagnostics,
     /// The BINDINGS VISIBLE at a node, by its `StructId` — "variable scope tracking" (the operator's
     /// original motivating example). Walks the lexical scope (`db.parent_of`, the same substrate
@@ -310,9 +311,17 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::Diagnostics => {
             // Every well-formedness fault, WITHOUT gating on export/layout — the "diagnostics as you
-            // type" set (`compile::diagnostics`, which runs `collect_faults` alone). One fault per
-            // line: `severity<TAB>code<TAB>node-id<TAB>message`. `code` is the `CDZ####` or `-` for an
-            // uncoded decline; `node-id` is the anchor (`-` if unanchored) the consumer maps to a span.
+            // type" set (`compile::diagnostics`, which runs `collect_faults` alone). One fault per line,
+            // TAB-separated: `severity  code  node-id  fix-node  fix-replacement  fix-verified  message`.
+            //   - `code` is the `CDZ####` or `-` for an uncoded decline;
+            //   - `node-id` is the anchor (`-` if unanchored) the consumer maps to a span;
+            //   - the THREE fix columns carry the structural repair
+            //     (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix): the node
+            //     to replace, its replacement surface spelling, and `verified`/`heuristic` — all `-`
+            //     when the diagnostic proposes no fix;
+            //   - `message` is LAST so it stays a free-text remainder (a consumer splits on the first six
+            //     tabs). A rendered replacement is tab-free (names / s-expressions), so the fix columns
+            //     never collide with the message split.
             let mut text = String::new();
             for d in crate::diagnostics(db) {
                 let severity = match d.severity {
@@ -321,9 +330,19 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 };
                 let code = d.code.as_deref().unwrap_or("-");
                 let node = d.node.map_or_else(|| "-".to_string(), |n| n.to_string());
+                let (fix_node, fix_repl, fix_verified) = match &d.fix {
+                    Some(f) => (
+                        f.node.to_string(),
+                        f.replacement.replace(['\n', '\t'], " "),
+                        if f.verified { "verified" } else { "heuristic" }.to_string(),
+                    ),
+                    None => ("-".to_string(), "-".to_string(), "-".to_string()),
+                };
                 // Newlines in a message would break the one-line-per-fault framing — collapse them.
                 let message = d.message.replace('\n', " ");
-                text.push_str(&format!("{severity}\t{code}\t{node}\t{message}\n"));
+                text.push_str(&format!(
+                    "{severity}\t{code}\t{node}\t{fix_node}\t{fix_repl}\t{fix_verified}\t{message}\n"
+                ));
             }
             QueryResult {
                 kind: KIND_DIAGNOSTICS,

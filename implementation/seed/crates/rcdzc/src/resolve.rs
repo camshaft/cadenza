@@ -33,7 +33,7 @@
 use crate::arena::Slot;
 use crate::ast::{Leaf, Struct, StructId};
 use crate::db::Db;
-use crate::diag::{Code, Reject};
+use crate::diag::{Code, Fix, Reject};
 use crate::resolved::{HandleArm, Prim, Resolved, Symbol};
 use std::collections::BTreeMap;
 use tracing::trace;
@@ -435,10 +435,231 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         ));
     }
     trace!(target: "rcdzc::resolve", node = id.0, %name, "name UNBOUND (CDZ0101)");
-    Resolved::Poison(Reject::coded(
-        Code::Unbound,
-        format!("unbound name `{name}`"),
-    ))
+    // The rustc-gold-standard "did you mean?": if a name in scope is a near-miss for the unbound one
+    // (a typo — one insertion/deletion/substitution/transposition away), name it in the message AND
+    // carry a structural fix an agent applies directly (`spec/capabilities/diagnostics.md` §A Diagnostic
+    // Carries A Route To A Fix). Heuristic applicability: the nearest name is a guess at intent, not a
+    // proof. No near candidate → the bare unbound-name reject, unchanged.
+    match nearest_name_suggestion(db, id, name) {
+        Some(candidate) => Resolved::Poison(
+            Reject::coded(
+                Code::Unbound,
+                format!("unbound name `{name}` — did you mean `{candidate}`?"),
+            )
+            .at(id)
+            .with_fix(Fix::replace_heuristic(id, candidate)),
+        ),
+        None => Resolved::Poison(Reject::coded(
+            Code::Unbound,
+            format!("unbound name `{name}`"),
+        )),
+    }
+}
+
+/// The nearest in-scope name to an unbound `name` referenced at `id`, if one is close enough to be a
+/// plausible typo — the candidate a "did you mean?" suggestion names. Enumerates every name a reference
+/// at this point COULD have resolved to (the same four lookup tiers `resolve_name` walks: lexical
+/// binders, this module's defs, its `(type …)`/`(effect …)`/variant declarations, and the prelude),
+/// then picks the closest by edit distance under a length-relative threshold. `None` when the nearest
+/// candidate is too far to be a typo (so a genuinely-unknown name gets the plain "unbound" message, not
+/// a misleading suggestion).
+///
+/// Determinism (`spec/capabilities/diagnostics.md` §A Fix Is A Deterministic Function Of The Source):
+/// candidates are considered in a fixed order and ties break on the lexicographically-smaller name, so
+/// the suggestion is a pure function of the program — never dependent on hash-map iteration order.
+fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> {
+    // A one-char name has no meaningful "typo" neighbour; skip the search (avoids `x`→`a` noise).
+    if name.chars().count() < 2 {
+        return None;
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
+    // pattern binders), gathered by the shared scope walk.
+    for (n, _occ) in visible_bindings(db, id) {
+        candidates.push(n);
+    }
+    // Tier 2 — this module's top-level value definitions.
+    for d in &db.defs {
+        candidates.push(d.name.clone());
+    }
+    // Tier 3 — `(type …)` names + their variant constructors, and `(effect …)` names (the same
+    // declarations `resolve_name` consults before the prelude).
+    for t in &db.type_decls {
+        candidates.push(t.name.clone());
+        for v in &t.variants {
+            candidates.push(v.name.clone());
+        }
+    }
+    for e in &db.effect_decls {
+        candidates.push(e.name.clone());
+    }
+    // Tier 4 — the prelude's built-in names.
+    for key in db.prelude.keys() {
+        candidates.push(key.clone());
+    }
+    nearest_candidate(name, candidates)
+}
+
+/// Every lexical binding visible where node `id` sits, as `(name, binder-occurrence)` pairs,
+/// innermost-first. A focused parent-walk covering the binder forms a typo'd reference is most likely to
+/// have meant: `let` bindings, `fn`/`def` parameters, and a match arm's bare binder. It deliberately does
+/// NOT model the rarer binder shapes (variant-payload, guard, handle-arm) — a reference near one of those
+/// simply gets no lexical candidate and falls back to defs/prelude, or to the plain "unbound" message;
+/// missing a rare candidate degrades gracefully, it never mis-suggests. (The exhaustive scope walk that
+/// backs `cdz scope` lives in `sidecar::scope_at`; this stays in `resolve` to keep the layering — the
+/// query API depends on resolve, not the reverse.)
+fn visible_bindings(db: &Db, id: StructId) -> Vec<(String, StructId)> {
+    let mut out: Vec<(String, StructId)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !db.is_user_node(id) {
+        return out;
+    }
+    let mut push = |n: &str, occ: StructId, out: &mut Vec<(String, StructId)>| {
+        if seen.insert(n.to_string()) {
+            out.push((n.to_string(), occ));
+        }
+    };
+    let mut from = id;
+    let mut cursor = db.parent_of(id);
+    while let Some(form) = cursor {
+        match db.ast.head_name(form) {
+            // A `let` ascended from its BODY → every binding.
+            Some("let") => {
+                if let Some(tail) = db.ast.as_form(form, "let")
+                    && let Some(bindings_occ) = tail.first().copied()
+                    && Some(from) == tail.get(1).copied()
+                    && let Struct::List(pairs) = db.ast.get(bindings_occ)
+                {
+                    for &pair in pairs {
+                        if let Struct::List(kv) = db.ast.get(pair)
+                            && kv.len() == 2
+                            && let Some(n) = db.ast.as_name(kv[0])
+                        {
+                            push(n, kv[0], &mut out);
+                        }
+                    }
+                }
+            }
+            // A `fn`/`def` ascended from its BODY → its parameters (the precomputed binder index).
+            Some("fn") | Some("def") => {
+                let body_occ = db
+                    .ast
+                    .as_form(form, "fn")
+                    .or_else(|| db.ast.as_form(form, "def"))
+                    .and_then(|t| t.get(1).copied());
+                if Some(from) == body_occ {
+                    // Sorted for determinism (the binder index is a hash map).
+                    let mut params: Vec<(String, StructId)> = db
+                        .scope_binders_of(form)
+                        .map(|(n, occ)| (n.to_string(), occ))
+                        .collect();
+                    params.sort();
+                    for (n, occ) in params {
+                        push(&n, occ, &mut out);
+                    }
+                }
+            }
+            _ => {
+                // A let's BINDINGS-LIST ascended from a pair → the bindings BEFORE it (sequential scope).
+                // `form` IS the bindings-list; `let_of_bindings_list` confirms it (returns the enclosing
+                // `let`, which we only need for the shape check).
+                if let_of_bindings_list(db, form).is_some()
+                    && let Struct::List(pairs) = db.ast.get(form)
+                {
+                    let end = db.child_ix_of(from).min(pairs.len());
+                    for &pair in &pairs[..end] {
+                        if let Struct::List(kv) = db.ast.get(pair)
+                            && kv.len() == 2
+                            && let Some(n) = db.ast.as_name(kv[0])
+                        {
+                            push(n, kv[0], &mut out);
+                        }
+                    }
+                }
+                // A match ARM `(pattern body)` ascended from `body`, pattern a bare binder → it binds.
+                if let Struct::List(arm) = db.ast.get(form)
+                    && arm.len() == 2
+                    && Some(from) == arm.get(1).copied()
+                    && let Some(n) = db.ast.as_name(arm[0])
+                    && n != "_"
+                    && db
+                        .parent_of(form)
+                        .and_then(|p| db.ast.as_form(p, "match"))
+                        .is_some()
+                {
+                    push(n, arm[0], &mut out);
+                }
+            }
+        }
+        from = form;
+        cursor = db.parent_of(form);
+    }
+    out
+}
+
+/// Pick the closest of `candidates` to `name` under a length-relative edit-distance cutoff, or `None`
+/// if none is close enough. The cutoff (max(1, len/3), rustc's `find_best_match_for_name` heuristic)
+/// keeps a suggestion only when the candidate is a plausible typo: a 3-char name tolerates 1 edit, a
+/// 9-char name up to 3. Ties break on the smaller distance, then the lexicographically-smaller name, so
+/// the result is deterministic regardless of candidate order.
+fn nearest_candidate(name: &str, candidates: Vec<String>) -> Option<String> {
+    let name_len = name.chars().count();
+    let max_dist = (name_len / 3).max(1);
+    let mut best: Option<(usize, String)> = None;
+    for cand in candidates {
+        // Never suggest the name itself (a shadowed/out-of-scope exact match is not a typo), and skip
+        // the wildcard.
+        if cand == name || cand == "_" {
+            continue;
+        }
+        let d = edit_distance(name, &cand);
+        if d > max_dist {
+            continue;
+        }
+        let better = match &best {
+            None => true,
+            Some((bd, bn)) => d < *bd || (d == *bd && cand < *bn),
+        };
+        if better {
+            best = Some((d, cand));
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
+/// Levenshtein–Damerau edit distance (insertions, deletions, substitutions, and ADJACENT
+/// TRANSPOSITIONS) between two names, in Unicode scalar values. Transpositions count as one edit so a
+/// `fodl`→`fold` swap reads as a single typo. O(a·b) time, O(b) space — names are short, so this is
+/// negligible and only runs on the unbound-name path.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    // Two rolling rows would suffice for plain Levenshtein; the transposition rule needs the row two
+    // back, so keep three rows.
+    let mut prev2: Vec<usize> = vec![0; b.len() + 1];
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur: Vec<usize> = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            let mut v = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            // Adjacent transposition: `a[i-1] a[i-2]` swapped matches `b[j-2] b[j-1]`.
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(prev2[j - 2] + 1);
+            }
+            cur[j] = v;
+        }
+        std::mem::swap(&mut prev2, &mut prev);
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 /// Walk parents from `id` to the nearest enclosing binding of `name`, returning the value occurrence

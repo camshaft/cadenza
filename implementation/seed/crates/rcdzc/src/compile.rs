@@ -268,6 +268,7 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
                 code: None,
                 message: "compilation produced no component".into(),
                 node: None,
+                fix: None,
             }))
         }
     }

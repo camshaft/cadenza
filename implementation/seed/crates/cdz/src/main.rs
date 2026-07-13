@@ -540,17 +540,28 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
-    // Each line is `severity<TAB>code<TAB>node-id<TAB>message` (`code`/`node-id` may be `-`).
+    // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-node<TAB>fix-replacement<TAB>fix-verified
+    // <TAB>message` — the last six columns split on the first six tabs, message is the free-text
+    // remainder. `code`/`node-id`/the three fix columns may be `-` (absent).
     for line in text.lines() {
-        let mut cols = line.splitn(4, '\t');
-        let (severity, code, node, message) =
-            match (cols.next(), cols.next(), cols.next(), cols.next()) {
-                (Some(s), Some(c), Some(n), Some(m)) => (s, c, n, m),
-                _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
-            };
+        let mut cols = line.splitn(7, '\t');
+        let (severity, code, node, fix_node, fix_repl, fix_verified, message) = match (
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+            cols.next(),
+        ) {
+            (Some(s), Some(c), Some(n), Some(fn_), Some(fr), Some(fv), Some(m)) => {
+                (s, c, n, fn_, fr, fv, m)
+            }
+            _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
+        };
         any_error |= severity == "error";
-        // Map the node id to a source location; an unanchored fault (`-`) reports at the file.
-        let loc = match node
+        // Map a node id to a source location; an unanchored fault (`-`) reports at the file.
+        let loc_of = |node: &str| match node
             .parse::<u32>()
             .ok()
             .and_then(|n| spans.get(cadenza_syntax::StructId(n)))
@@ -566,7 +577,21 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         } else {
             format!(" [{code}]")
         };
-        println!("{loc}: {severity}{code_part}: {message}");
+        println!("{}: {severity}{code_part}: {message}", loc_of(node));
+        // A structural fix, if the diagnostic carries one — the rustc-style `help:` line an agent (or
+        // an editor's quick-fix) applies directly: replace the named node with the suggested spelling.
+        // The applicability marker rides along so a consumer branches (`verified` = apply blind).
+        if fix_node != "-" {
+            let marker = if fix_verified == "verified" {
+                "" // machine-applicable — no caveat
+            } else {
+                " (heuristic)"
+            };
+            println!(
+                "{}: help{marker}: replace with `{fix_repl}`",
+                loc_of(fix_node)
+            );
+        }
     }
     if any_error {
         ExitCode::FAILURE

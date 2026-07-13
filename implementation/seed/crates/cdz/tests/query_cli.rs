@@ -1124,6 +1124,31 @@ fn check_reports_a_fault_without_an_export_and_exits_nonzero() {
 }
 
 #[test]
+fn check_prints_a_did_you_mean_help_line_for_a_misspelled_name() {
+    // The rustc-gold-standard suggestion, surfaced end-to-end: an unbound name that is a near-miss for
+    // an in-scope name (`compute` → `computee`) reports the fault AND a `help:` line an agent applies
+    // directly — the structural "route to a fix" (`spec/capabilities/diagnostics.md`).
+    let dir = scratch_dir("check_dym");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(!ok, "the unbound name is an error (exit non-zero)");
+    assert!(
+        stdout.contains("CDZ0101") && stdout.contains("did you mean `compute`?"),
+        "the fault names the candidate: {stdout}"
+    );
+    assert!(
+        stdout.contains("help (heuristic): replace with `compute`"),
+        "a heuristic help line carries the structural fix: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");

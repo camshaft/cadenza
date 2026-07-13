@@ -116,6 +116,76 @@ impl Code {
     }
 }
 
+/// How confident the compiler is that a proposed [`Fix`] is the RIGHT edit — the branch an agent
+/// reads before applying it blind (`spec/capabilities/diagnostics.md` §An Unconfirmed Fix Carries An
+/// Applicability Marker). This is the rustc `Applicability` distinction, minus `Unspecified`: a fix
+/// the compiler recompiled clean is `Verified` (apply it without review); a fix derived by a heuristic
+/// — the nearest-name "did you mean", a wrapping suggestion — is `Heuristic` (an agent may apply it but
+/// should confirm it matches intent, and a batch tool should default to leaving it for a human).
+///
+/// The default is `Heuristic`: a producer must positively PROVE a fix correct (by recompiling with it
+/// applied) to mark it `Verified`, so an unproven fix never masquerades as machine-applicable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Applicability {
+    /// The compiler confirmed applying this fix recompiles the program clean and clears the diagnostic
+    /// — apply it without review (`spec/capabilities/diagnostics.md` §A Confirmed Fix Is Marked
+    /// Verified). Machine-applicable.
+    Verified,
+    /// A best-effort suggestion the compiler could NOT so confirm — a nearest-name replacement, a
+    /// wrapping edit. Likely right, but an agent should confirm it matches intent before applying.
+    Heuristic,
+}
+
+/// A proposed repair for a rejection, expressed as a STRUCTURAL edit of the program's AST rather than a
+/// textual patch (`spec/capabilities/diagnostics.md` §A Rejection Carries A Structural Fix). This is the
+/// rustc "suggestion" — the thing that makes a diagnostic actionable rather than merely descriptive: an
+/// agent (or the front-end's fix-it UI) applies the named edit directly instead of re-deriving the
+/// repair from prose.
+///
+/// The edit targets a NODE (`at`, a `StructId` — the same span-free identity a [`Reject`] anchors on),
+/// so the consumer that holds the span table maps it to a text region; the compiler never emits a
+/// source offset. The `replacement` is the SURFACE spelling of the node to put there (e.g. the
+/// suggested name for a "did you mean", the wrapped form for a coercion) — a rendered s-expression the
+/// front-end splices over the target node's span, which keeps the fix a tree edit at the point of
+/// application while remaining a compact, printable payload here.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Fix {
+    /// A one-line human label for the edit (`replace with `foo``, `wrap in `(Some …)``) — what an
+    /// editor shows in its lightbulb menu. The machine-actionable part is `edit`, not this.
+    pub label: String,
+    /// The concrete structural edit. One variant today (replace a node's surface spelling); the enum
+    /// leaves room for insert/delete/wrap edits as later checks gain fixes.
+    pub edit: Edit,
+    /// Whether the compiler proved this fix correct (`Verified`) or offers it as a heuristic.
+    pub applicability: Applicability,
+}
+
+/// The structural edit a [`Fix`] carries. A tree operation keyed on a node identity — never a textual
+/// diff (`spec/capabilities/diagnostics.md` §A Rejection Carries A Structural Fix).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Edit {
+    /// Replace the node `at` with the surface spelling `replacement` — the "did you mean `foo`?"
+    /// edit (swap the misspelled reference for the candidate) and, later, a wrap/coerce edit whose
+    /// `replacement` embeds the original as a sub-form.
+    ReplaceNode {
+        at: crate::ast::StructId,
+        replacement: String,
+    },
+}
+
+impl Fix {
+    /// A heuristic node-replacement fix — the "did you mean `replacement`?" repair. Heuristic because
+    /// the nearest-name match is a guess at intent, not a proof; an agent confirms it before applying.
+    pub fn replace_heuristic(at: crate::ast::StructId, replacement: impl Into<String>) -> Fix {
+        let replacement = replacement.into();
+        Fix {
+            label: format!("replace with `{replacement}`"),
+            edit: Edit::ReplaceNode { at, replacement },
+            applicability: Applicability::Heuristic,
+        }
+    }
+}
+
 /// A produced "no": either a coded rejection or an uncoded decline, each carrying a human message and
 /// the AST node it is about. The `code` is `Some` for a rejection/poison (an ill-formed program) and
 /// `None` for a decline (a construct the compiler does not yet realize) — the branch a downstream sink
@@ -138,6 +208,12 @@ pub struct Reject {
     pub message: String,
     /// The AST node this "no" is about — the front-end maps it to a text region. `None` if unstamped.
     pub at: Option<crate::ast::StructId>,
+    /// A proposed structural repair, if the producer knows one — the "route to a fix"
+    /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). `None` when the
+    /// compiler has no actionable suggestion (most declines, and rejections whose repair is not
+    /// mechanical). Carried alongside the message so a consumer applies the edit rather than parsing
+    /// prose.
+    pub fix: Option<Fix>,
 }
 
 impl Reject {
@@ -149,6 +225,7 @@ impl Reject {
             code: Some(code),
             message: message.into(),
             at: None,
+            fix: None,
         }
     }
 
@@ -160,7 +237,15 @@ impl Reject {
             code: None,
             message: message.into(),
             at: None,
+            fix: None,
         }
+    }
+
+    /// Attach a proposed structural fix — the fluent form a producer uses when, alongside the "no", it
+    /// can name the repair: `Reject::coded(..).at(id).with_fix(Fix::replace_heuristic(id, "foo"))`.
+    pub fn with_fix(mut self, fix: Fix) -> Reject {
+        self.fix = Some(fix);
+        self
     }
 
     /// Attach (or replace) the node this "no" is about — the fluent form a producer uses when it holds
