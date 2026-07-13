@@ -21117,10 +21117,11 @@ mod closure_host_resource {
     }
 
     /// MULTI-EXPORT end-to-end ORACLE: two closure exports (`make-inc`, `make-triple`) of the same
-    /// signature share ONE `call`, and the host drives each — `make-inc()` + `call(_, 5)` = 6, `make-triple()`
-    /// + `call(_, 5)` = 15. Proves that a single shared `call` correctly dispatches whichever closure a given
-    /// handle names (the code slot travels in the resource rep). This is the byte anchor licensing the
-    /// compiler's multi-export envelope (the hand-emitted production path is the next increment).
+    /// signature share ONE `call`, and the host drives each (`make-inc()` then `call(_, 5)` yields 6;
+    /// `make-triple()` then `call(_, 5)` yields 15). Proves that a single shared `call` correctly
+    /// dispatches whichever closure a given handle names (the code slot travels in the resource rep).
+    /// This is the byte anchor licensing the compiler's multi-export envelope (the hand-emitted
+    /// production path is the next increment).
     #[test]
     fn multi_export_closures_share_one_call_and_the_host_drives_each() {
         use wasmtime::component::{Component, Linker, Val};
