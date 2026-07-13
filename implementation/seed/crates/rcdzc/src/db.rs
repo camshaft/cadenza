@@ -1539,12 +1539,16 @@ fn is_binding_candidate(
     }
     // A HANDLE ARM binds the operation's params + the state binder in its body (`binder_in`'s Case 7).
     // The arm's parent `p` is the handle's ARMS-LIST (the handle's 2nd tail element), so `form` is an arm
-    // iff `p`'s own parent is a `(handle …)` whose arms-list is `p` and `p` holds `form`. Without the arm
-    // as a candidate the scope-skip index would hop PAST it and Case 7 would never fire, so an arm-body
-    // reference to a param/state binder would be spuriously unbound (the `is_binding_candidate` trap:
-    // every binding form MUST be listed here).
+    // iff `p`'s own parent is a `(handle-internal …)` whose arms-list is `p` and `p` holds `form`. This
+    // runs AFTER `effects::desugar_handles` (the scope index is built post-desugar), so the head is the
+    // internal spelling. Without the arm as a candidate the scope-skip index would hop PAST it and Case 7
+    // would never fire, so an arm-body reference to a param/state binder would be spuriously unbound (the
+    // `is_binding_candidate` trap: every binding form MUST be listed here).
     if let Some(pp) = parent.get(p.0 as usize).copied().flatten()
-        && ast.as_form(pp, "handle").and_then(|t| t.get(1).copied()) == Some(p)
+        && ast
+            .as_form(pp, crate::effects::HANDLE_INTERNAL)
+            .and_then(|t| t.get(1).copied())
+            == Some(p)
     {
         return true;
     }

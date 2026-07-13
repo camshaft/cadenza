@@ -4493,9 +4493,9 @@
         codes; `codes->diagnostics` turns them into `diagnostic` records; `compile-program` emits the bytes.
         Success and rejection are the SAME record shape — the diagnostics list is empty iff well-typed.")
   (let ((funcs (resolve-module (read-module b))))
-    (handle (list)
-       ((Diag.emit (v) s (resume unit (List.push s v)))
-        (Diag.collect (u) s (resume s s)))
+    (handle Diag (list)
+       ((emit (v) s (resume unit (List.push s v)))
+        (collect (u) s (resume s s)))
        (do (check-funcs funcs (build-ktab funcs))
            (let ((codes (Diag.collect unit)))
              (record (artifacts (list (record (bytes (compile-program funcs)) (kind "component"))))

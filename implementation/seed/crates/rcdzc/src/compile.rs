@@ -688,6 +688,16 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             Some(Code::HandlerUndeclaredOp) | Some(Code::HandlerNotExhaustive)
         )
     });
+    // Likewise: a NON-CANONICAL handle (the retired effect-name-less shape) is rejected at resolve time
+    // (`resolve_noncanonical_handle`, a CDZ0201). Because the handle never resolved as a handler, its
+    // body's perform is seen by the entrypoint no-home walk as reached with NO enclosing handler → a
+    // CONSEQUENT CDZ0401. That misdirects (the author DID write a handler — it is just not canonical), so
+    // drop the CDZ0401 whenever the non-canonical reject is present, keeping the CDZ0201 that says how to
+    // fix the handle as the ONE primary error. Matched by message prefix (the reject reuses `Malformed`).
+    let has_noncanonical_handle_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
+    });
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -737,6 +747,11 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
             {
+                return false;
+            }
+            // A CDZ0401 (no home) that is the CONSEQUENCE of a non-canonical handle failing to resolve as
+            // a handler — drop it in favor of the CDZ0201 that reports the real, fixable defect.
+            if has_noncanonical_handle_reject && r.code == Some(Code::EffectNoHome) {
                 return false;
             }
             // An unanchored fault that also appears ANCHORED (same code + message) is that fault minus

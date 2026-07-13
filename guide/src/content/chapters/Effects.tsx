@@ -91,8 +91,8 @@ export default function Effects() {
       <Runnable
         source={`(effect Bail (op bail (-> Int64 Int64)))
 (def (main)
-  (handle 0
-    ((Bail.bail (n) s n))
+  (handle Bail 0
+    ((bail (n) s n))
     (+ (Bail.bail 7) 100)))`}
       />
       <P>
@@ -132,13 +132,13 @@ export default function Effects() {
         prompt={<>Finish the <C>bail</C> arm so it hands its argument out, making the answer <C>5</C> (not <C>15</C>).</>}
         starter={`(effect Bail (op bail (-> Int64 Int64)))
 (def (main)
-  (handle 0
-    ((Bail.bail (n) s ?))
+  (handle Bail 0
+    ((bail (n) s ?))
     (+ (Bail.bail 5) 10)))`}
         solution={`(effect Bail (op bail (-> Int64 Int64)))
 (def (main)
-  (handle 0
-    ((Bail.bail (n) s n))
+  (handle Bail 0
+    ((bail (n) s n))
     (+ (Bail.bail 5) 10)))`}
         expected="5"
         hint={<>Return <C>n</C> from the arm without <C>resume</C> — that bails out, skipping the <C>+ 10</C>.</>}

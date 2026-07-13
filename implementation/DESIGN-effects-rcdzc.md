@@ -210,8 +210,8 @@ Arm **never resumes**: its body's value *becomes the handle's value*, discarding
 sub-computation. This is a typed early-exit / "bail and catch at the top":
 
 ```
-(handle 0                                   ; default if we bail
-  ((Fail.fail (msg) s msg))                 ; no resume → abortive: the handle yields `msg`
+(handle Fail 0                              ; effect named in the head; 0 = default if we bail
+  ((fail (msg) s msg))                       ; arm op written bare; no resume → abortive: yields `msg`
   (do (check-a) (Fail.fail 7) (check-b)))   ; performing Fail.fail abandons the body, handle = 7
 ```
 
