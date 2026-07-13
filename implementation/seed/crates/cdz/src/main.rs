@@ -408,6 +408,11 @@ struct FixArgs {
     /// clean is applied (the `check --verify-fixes` bar). A fix that does not verify is NEVER applied.
     #[arg(long)]
     all: bool,
+    /// Report the applied fixes as JSON (one object per fix: `code`, `message`, `kind`) instead of the
+    /// human "applied N fix(es)" line — so an agent driving `fix` learns exactly WHICH faults were
+    /// repaired, not just how many. The file is still written (unless `--diff`/`--dry-run`).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -1123,6 +1128,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     let mut current_arenas = arenas;
     let mut applied = 0usize;
     let mut considered_any = false;
+    // Each applied fix's `(code, kind, message)` — for the `--json` report so an agent learns WHICH
+    // faults were repaired (not just the count).
+    let mut applied_fixes: Vec<(String, String, String)> = Vec::new();
     for _ in 0..64 {
         let out = run_sidecar(
             &current_arenas,
@@ -1145,8 +1153,8 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             if cols.len() < 8 {
                 continue;
             }
-            let (code, fix_kind, fix_node, fix_repl, fix_verified) =
-                (cols[1], cols[3], cols[4], cols[5], cols[6]);
+            let (code, fix_kind, fix_node, fix_repl, fix_verified, message) =
+                (cols[1], cols[3], cols[4], cols[5], cols[6], cols[7]);
             if fix_node == "-" || code == "-" {
                 continue;
             }
@@ -1174,6 +1182,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             current = edited;
             current_arenas = next_arenas;
             applied += 1;
+            applied_fixes.push((code.to_string(), fix_kind.to_string(), message.to_string()));
             applied_this_pass = true;
             break;
         }
@@ -1183,6 +1192,39 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     }
 
     let repaired = current;
+
+    // The applied-fixes report, as a JSON array of `{code, kind, message}` (empty when nothing applied) —
+    // so an agent driving `fix` sees exactly WHICH faults were repaired. Emitted to stdout REGARDLESS of
+    // the write mode; `--diff`/`--dry-run` still preview the text below, `--json` just replaces the human
+    // "applied N" line. Printed here (before the write) so a write failure doesn't suppress the report.
+    let emit_json_report = || {
+        use cadenza_syntax::query::json;
+        let mut arr = json::Array::new();
+        for (code, kind, message) in &applied_fixes {
+            let mut o = json::Object::new();
+            o.string("code", code);
+            o.string("kind", kind);
+            o.string("message", message);
+            arr.raw(&o.finish());
+        }
+        println!("{}", arr.finish());
+    };
+
+    // `--json` selects the machine report as the OUTPUT SHAPE (over `--diff`'s unified diff / `--dry-run`'s
+    // full text / the human "applied N" line). It still respects the WRITE MODE: with `--diff`/`--dry-run`
+    // the file is not written (a preview), otherwise the repaired text is written back — the report just
+    // says what changed either way.
+    if args.json {
+        if !args.diff && !args.dry_run && applied > 0
+            && let Err(e) = std::fs::write(&args.file, &repaired)
+        {
+            eprintln!("{PROG}: writing {}: {e}", args.file);
+            return ExitCode::FAILURE;
+        }
+        emit_json_report();
+        return ExitCode::SUCCESS;
+    }
+
     if applied == 0 {
         eprintln!(
             "{PROG}: {}: no applicable fixes ({} candidate fix(es) considered)",

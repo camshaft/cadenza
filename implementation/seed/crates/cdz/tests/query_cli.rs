@@ -1338,6 +1338,66 @@ fn fix_all_applies_a_verified_did_you_mean_and_the_result_compiles_clean() {
 }
 
 #[test]
+fn fix_json_reports_each_applied_fix() {
+    // `cdz fix --json` tells an agent WHICH faults were repaired — a JSON array of `{code, kind, message}`
+    // — not just the human "applied N" count. Two independent faults (a did-you-mean + an out-of-range
+    // widen) → two report objects, and the file is still written.
+    let dir = scratch_dir("fix_json");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (compute x) x) (def (main) (+ (computee 1) (: 999 Int8))) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["fix", "--all", "--json", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds");
+    assert!(
+        stdout.trim_start().starts_with('[') && stdout.trim_end().ends_with(']'),
+        "a JSON array report: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"code\":\"CDZ0101\"") && stdout.contains("\"code\":\"CDZ0302\""),
+        "both repaired faults are reported by code: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"kind\":\"replace\""),
+        "each fix names its kind: {stdout}"
+    );
+    // The file was actually repaired (JSON report does not imply dry-run).
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(compute 1)") && repaired.contains("Int16"),
+        "the file was written: {repaired}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_json_dry_run_reports_without_writing_and_empty_when_nothing_applies() {
+    // `--json --dry-run` emits the report but leaves the file untouched; a clean-of-fixes file reports an
+    // empty array `[]` (the honest "nothing applied" for a machine consumer).
+    let dir = scratch_dir("fix_json_dry");
+    let f = dir.join("prog.sexp");
+    let original = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n";
+    std::fs::write(&f, original).unwrap();
+    let (ok, stdout, _) = run(&["fix", "--all", "--json", "--dry-run", f.to_str().unwrap()], "");
+    assert!(ok);
+    assert!(stdout.contains("\"code\":\"CDZ0101\""), "reports the fix: {stdout}");
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "--dry-run leaves the file untouched"
+    );
+    // A file with no applicable fix → empty array.
+    let g = dir.join("clean.sexp");
+    std::fs::write(&g, "(module m (def (main) 0) (export main))\n").unwrap();
+    let (ok2, stdout2, _) = run(&["fix", "--all", "--json", g.to_str().unwrap()], "");
+    assert!(ok2);
+    assert_eq!(stdout2.trim(), "[]", "nothing applied → empty report: {stdout2}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_dry_run_previews_without_writing() {
     // `--dry-run` prints the repaired program but leaves the file untouched.
     let dir = scratch_dir("fix_dry");
