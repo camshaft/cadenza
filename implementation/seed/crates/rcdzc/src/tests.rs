@@ -14753,6 +14753,53 @@ mod stage1 {
     }
 
     #[test]
+    fn a_perform_threads_through_strict_one_operand_forms() {
+        // E-fold arms for `not` / projection / member / annotation — STRICT one-operand forms that had no
+        // thread arm (a perform inside declined, though `if`/`match` fold). Each threads its operand:
+        //   `(not (= (Get.next) 0))` seed 0 → Get reads 0, `= 0` true, `not` → false → arm 2.
+        //   `(. (tuple (Get.next) (Get.next)) 1)` seed 10 → second Get reads 11 → projects 11.
+        let neg = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (if (not (= (Get.next) 0)) 1 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(neg))).expect("not threads"),
+                "main"
+            ),
+            2
+        );
+        let proj = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 10 ((Get.next (u) s (resume s (+ s 1)))) (. (tuple (Get.next) (Get.next)) 1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(proj)))
+                    .expect("projection threads"),
+                "main"
+            ),
+            11
+        );
+    }
+
+    #[test]
+    fn a_short_circuit_connective_with_a_perform_preserves_short_circuit() {
+        // E-fold `and`/`or` arm: a connective's rhs runs only conditionally, so threading it strictly would
+        // evaluate rhs's perform even when `lhs` short-circuits. The arm DESUGARS to `if` (`(or lhs rhs)` ≡
+        // `(if lhs true rhs)`), so rhs is a branch run only on the taken path. Here `(or true (= (Get.next)
+        // 99))` short-circuits on `true`, so the rhs `Get.next` does NOT advance state — the following
+        // `(Get.next)` then reads 0 (not 1). Pins that the desugar preserves short-circuit evaluation.
+        let src = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (if (or true (= (Get.next) 99)) (Get.next) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a short-circuit connective with a perform folds"),
+                "main"
+            ),
+            0,
+            "the short-circuited rhs did not advance state, so the branch Get reads 0"
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a

@@ -1990,6 +1990,60 @@ fn thread_bounded(
             }
             Some((db.push_list(children), cur))
         }
+        // A short-circuit connective `(and lhs rhs)` / `(or lhs rhs)` whose rhs runs only conditionally on
+        // `lhs`. Threading it as a strict two-operand form would evaluate rhs's perform even when `lhs`
+        // short-circuits — an observable-effect change. Instead DESUGAR to the equivalent `if` (`(and lhs
+        // rhs)` ≡ `(if lhs rhs false)`, `(or lhs rhs)` ≡ `(if lhs true rhs)`) and re-thread, so rhs is a
+        // branch (threaded under the post-`lhs` state, run only on the taken path). `lhs` becomes the `if`
+        // condition — evaluated exactly once either way. Only reached when a perform is inside (a pure
+        // connective is copied wholesale by the pure-subtree arm below).
+        Resolved::And { lhs, rhs, is_and } => {
+            let if_head = db.push_atom(Leaf::Name("if".to_string()));
+            let (then_, else_) = if is_and {
+                let f = db.push_atom(Leaf::Bool(false));
+                (rhs, f)
+            } else {
+                let t = db.push_atom(Leaf::Bool(true));
+                (t, rhs)
+            };
+            let desugared = db.push_list(vec![if_head, lhs, then_, else_]);
+            thread_bounded(db, desugared, states, ctx, inline_depth)
+        }
+        // A negation `(not operand)` — a STRICT one-operand form. Thread the operand (a perform there
+        // reads/threads state, `(not (= (Get.next) 0))`), then rebuild `(not roperand)`.
+        Resolved::Not { operand } => {
+            let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
+            let not_head = db.push_atom(Leaf::Name("not".to_string()));
+            Some((db.push_list(vec![not_head, roperand]), cur))
+        }
+        // A tuple PROJECTION `(. operand index)` — STRICT one-operand. Thread the operand (a perform there
+        // reads/threads state, `(. (tuple (Get.next) (Get.next)) 1)`), rebuild the same projection. The
+        // index is a literal (copied structurally). `push_list` with the same `.`-head + index re-forms it.
+        Resolved::Proj { operand, index } => {
+            let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
+            let dot = db.push_atom(Leaf::Name(".".to_string()));
+            let idx_atom = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(index as i64),
+                radix: Radix::Dec,
+            });
+            Some((db.push_list(vec![dot, roperand, idx_atom]), cur))
+        }
+        // Member access `(. operand key)` — STRICT one-operand (the key is a label, not a value). Thread
+        // the operand; rebuild `(. roperand key)` with the key copied as a bare name atom.
+        Resolved::Member { operand, key } => {
+            let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
+            let dot = db.push_atom(Leaf::Name(".".to_string()));
+            let key_atom = db.push_atom(Leaf::Name(key.name.clone()));
+            Some((db.push_list(vec![dot, roperand, key_atom]), cur))
+        }
+        // An annotation `(: expr T)` — STRICT one-operand (the type is not runtime code). Thread `expr`,
+        // rebuild `(: rexpr T)` with the type expression copied structurally.
+        Resolved::Annot { expr, ty_expr } => {
+            let (rexpr, cur) = thread_bounded(db, expr, states, ctx, inline_depth)?;
+            let colon = db.push_atom(Leaf::Name(":".to_string()));
+            let rty = copy_pure(db, ty_expr);
+            Some((db.push_list(vec![colon, rexpr, rty]), cur))
+        }
         // A `(let ((n init)…) body)` — thread state through each initializer in order, then the body.
         // This is what threads range-sum's `(let ((i (Idx.next))) (if (= i 0) …))`: the init `(Idx.next)`
         // performs (reads state, threads next), and `i` binds that resume value. Rebuild the `let` with
