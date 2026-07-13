@@ -18,19 +18,22 @@ use crate::ty::{IntTy, Ty};
 pub enum ValType {
     I64,
     I32,
+    /// A 32-bit IEEE float — the machine slot a `(Float 32)` (Float32) value occupies.
+    F32,
     /// A 64-bit IEEE float — the machine slot a `Ty::Float` (Float64) value occupies. Added for float
     /// literals crossing the boundary; float arithmetic (f64.add/…) builds on it.
     F64,
 }
 
 impl ValType {
-    /// The core-wasm valtype byte (`0x7E` i64, `0x7F` i32, `0x7C` f64) — from the generated `wasm_abi`
-    /// table (extracted from `wasm-encoder`'s `ValType`), not a hand-typed byte. The raw encoding lives
-    /// here (the serializer's concern), but its VALUE is the spec's.
+    /// The core-wasm valtype byte (`0x7E` i64, `0x7F` i32, `0x7D` f32, `0x7C` f64) — from the generated
+    /// `wasm_abi` table (extracted from `wasm-encoder`'s `ValType`), not a hand-typed byte. The raw
+    /// encoding lives here (the serializer's concern), but its VALUE is the spec's.
     pub fn byte(self) -> u8 {
         match self {
             ValType::I64 => wasm_abi::CORE_I64,
             ValType::I32 => wasm_abi::CORE_I32,
+            ValType::F32 => wasm_abi::CORE_F32,
             ValType::F64 => wasm_abi::CORE_F64,
         }
     }
@@ -272,9 +275,13 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // CONSTANT string folds (no runtime slot); a runtime string handle lives here (its runtime ops
         // arrive with the byte-rope heap ops).
         Ty::String => Some(ValType::I32),
-        // A Float64 occupies an f64 machine slot — a float literal that crosses the boundary (or, later,
-        // a float arithmetic result) lives here.
-        Ty::Float => Some(ValType::F64),
+        // A float occupies its width's machine slot: `Float32` → f32, `Float64` → f64. A float literal
+        // that crosses the boundary (or a float arithmetic result) lives here.
+        Ty::Float(ft) => Some(if ft.ground_width() == 32 {
+            ValType::F32
+        } else {
+            ValType::F64
+        }),
         // A runtime FUNCTION VALUE (a closure) is a funcref-TABLE SLOT — an i32, like a heap handle. A
         // no-capture closure IS that slot directly; a capturing closure (later) is an i32 handle to a
         // heap cell holding the slot + captures. Either way the value occupies an i32 machine slot, so a
@@ -355,8 +362,13 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A string escapes as the canonical binary value form via the resource `encode()` path, like a
         // list/record/sum — no primitive boundary valtype. (Constant string escape is a later increment.)
         Ty::String => None,
-        // A Float64 crosses the component boundary as the `f64` primitive.
-        Ty::Float => Some(wasm_abi::COMP_F64),
+        // A float crosses the component boundary as its width's primitive: `Float32` → `f32`, `Float64`
+        // → `f64`. Both admitted widths ({32,64}) have a faithful component-model float primitive.
+        Ty::Float(ft) => Some(if ft.ground_width() == 32 {
+            wasm_abi::COMP_F32
+        } else {
+            wasm_abi::COMP_F64
+        }),
         // A function value does not cross the boundary (generics/functions monomorphize away or
         // decline); no boundary valtype.
         Ty::Fn(_, _) => None,
