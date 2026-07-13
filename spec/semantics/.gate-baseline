@@ -20,6 +20,7 @@ pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a BigInt operation does not silently promote a fixed-width operand
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
@@ -416,6 +417,7 @@ pass	a multi-parameter closure keeps its captured environment distinct from its 
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
+pass	a multi-payload variant whose spread element is itself a compound escapes correctly
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
@@ -1418,7 +1420,6 @@ todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
 todo	Type is a first-class value
-todo	a BigInt operation does not silently promote a fixed-width operand
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a build-time delegated effect whose result a returned closure captures does not escape

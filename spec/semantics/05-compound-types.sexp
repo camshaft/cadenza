@@ -1925,6 +1925,22 @@
   (call   main)
   (output (: (Cons 3 (Cons 2 (Cons 1 (Nil unit)))) L)))
 
+(case "a multi-payload variant whose spread element is itself a compound escapes correctly"
+  (doc    "The flattening `Spread` recurses into each element's own shape, so a multi-payload variant one
+           of whose payloads is a COMPOUND renders that element by its own value form UNDER the flattened
+           variant. `(P Int64 (Option Int64))` escapes `(P 5 (Some 5))` — the second payload keeps its
+           `(Some …)` sum form while the two payloads are spread flat under `P` (not `(P (tuple 5 (Some
+           5)))`). Pins that spread-flattening composes with a nested sum/tuple/record element (the element
+           is walked by its shape; only the variant-level tuple boxing is elided), distinct from the
+           scalar-only multi-payload case above.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (P Int64 (Option Int64)) (E))
+            (def (mk (: b Int64)) (if (> b 0) (W.P b (Some b)) (W.E)))
+            (def (main) (mk 5)) (export main)))
+  (call   main)
+  (output (: (P 5 (Some 5)) W)))
+
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
 ; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
