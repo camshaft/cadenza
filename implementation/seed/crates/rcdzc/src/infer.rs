@@ -1231,6 +1231,20 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 }
 
 fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // A `do` SEQUENCING block resolves to a `Ref` to its LAST form (its value), so the `Resolved::Ref`
+    // arm below descends only into that. But the INTERMEDIATE forms are still evaluated (their value
+    // discarded), so an ill-typed or provably-trapping intermediate must be caught — descend into EVERY
+    // form here (the last one is also covered by the `Ref` descent, harmlessly). Read off the raw AST
+    // head since the resolved form has already collapsed to the last form's `Ref`.
+    if db.ast.head_name(id) == Some("do")
+        && let Some(forms) = db.ast.as_form(id, "do")
+    {
+        let forms: Vec<StructId> = forms.to_vec();
+        for f in forms {
+            collect(db, f, out);
+        }
+        return;
+    }
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => {
             let cond_ty = type_of(db, cond);

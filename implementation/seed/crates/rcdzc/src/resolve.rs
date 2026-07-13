@@ -194,6 +194,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("resume") => resolve_resume(db, id),
                 Some("host") => resolve_host(db, id),
                 Some("let") => resolve_let(db, id),
+                Some("do") => resolve_do(db, id),
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
                 Some(":") => resolve_annot(db, id),
@@ -997,6 +998,40 @@ fn binding_pairs(db: &Db, bindings_occ: StructId) -> Vec<(StructId, StructId)> {
         }
     }
     out
+}
+
+/// Resolve `(do f1 f2 … fn)` in EXPRESSION position — a SEQUENCING block whose value is its LAST form
+/// (`core-semantics.md` §A Sequencing Block Yields Its Last Form). This increment realizes the
+/// VALUE-ONLY block: every non-last form is a pure value expression, EVALUATED for its (discarded)
+/// value and the block's value is `fn`. Since the compiler folds constants and has no effects yet, a
+/// pure discarded intermediate contributes nothing — so the resolved form is simply the LAST form's
+/// resolved value (a `Ref` to `fn`), and the intermediates are still type-checked / trap-walked via the
+/// fault pass reaching them through this node's descent. A block containing an in-block `(def …)`
+/// DECLINES for now (the def-in-do binding-scope is a follow-up increment) rather than silently dropping
+/// the declaration; an empty `(do)` is malformed.
+fn resolve_do(db: &Db, id: StructId) -> Resolved {
+    let forms = db.ast.as_form(id, "do").unwrap_or(&[]);
+    let Some((&last, intermediates)) = forms.split_last() else {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "an empty `do` block has no value",
+        ));
+    };
+    // An in-block declaration (`(def …)`) needs its name scoped to the following forms — a later
+    // increment. Until then, a `do` block carrying a declaration declines cleanly (not a silent drop).
+    for &f in forms {
+        if db.ast.head_name(f) == Some("def") {
+            return Resolved::Poison(Reject::decline(
+                "a `def` inside a `do` block (binding the following forms) is not yet supported",
+            ));
+        }
+    }
+    // The block's value IS the last form's value — a `Ref` to it (the same shape a bare name takes to its
+    // binding). The intermediates are pure (no effect model yet); their values are discarded, but the
+    // fault walk still reaches them through this node so an ill-typed or provably-trapping intermediate
+    // is caught (a `do`-node descent in `type_errors`/`collect_reached_poisons`).
+    let _ = intermediates;
+    Resolved::Ref { value: last }
 }
 
 /// Resolve `(if COND THEN ELSE)`.

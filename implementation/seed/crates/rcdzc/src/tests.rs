@@ -6480,6 +6480,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_do_sequencing_block_yields_its_last_form() {
+        // 02-binding-and-control: `(do f1 … fn)` in EXPRESSION position is a sequencing block — its value
+        // is the LAST form, the non-final (pure) forms evaluated for their discarded value. `(do 1 2 3)` =
+        // 3; a discarded compound intermediate `(do (tuple 1 2) 42)` = 42; nested in a `let` body works.
+        assert_eq!(run_main("(do 1 2 3)"), 3);
+        assert_eq!(run_main("(do (tuple 1 2) 42)"), 42);
+        assert_eq!(run_main("(let ((x 4)) (do (+ x 1) x))"), 4);
+    }
+
+    #[test]
+    fn a_do_block_with_an_ill_typed_intermediate_is_still_caught() {
+        // A non-final `do` form is EVALUATED (value discarded), so an ill-typed intermediate must still be
+        // rejected — the fault walk descends into EVERY form, not only the last. `(if 5 1 2)` (a non-Bool
+        // condition) in a non-final position is caught even though its value is discarded.
+        let msg = expect_decline("(do (if 5 1 2) 42)");
+        assert!(
+            msg.contains("condition must be Bool"),
+            "an ill-typed do intermediate must be caught though discarded; got: {msg}"
+        );
+    }
+
+    #[test]
     fn a_local_binding_shadows_a_same_named_top_level_def() {
         // A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent
         // of its scope: `resolve_name` consults the lexical scope FIRST and the top-level def index
@@ -8137,6 +8159,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_fn_under_a_two_arm_single_effect_handler_specializes() {
+        // E3-multi-arm: a handler with SEVERAL arms of ONE effect threads ONE logical state, so a
+        // recursive fn under it specializes with a single trailing state param (each perform substitutes
+        // its OWN arm's state binder). `St` has two ops — `get` (reads the counter) and `tick` (returns 1,
+        // threads `s-1`); `loop` recurses summing a `tick` per non-zero `get`. Seeded 3: `get` reads 3,2,1,0
+        // and `tick` returns 1 three times → `1+1+1+0` = 3. (The 1-arm case is countdown above; this pins
+        // that the arm-count no longer gates specialization — only the single-EFFECT property does.)
+        let src = "(do (effect St (op get (-> Unit Int64)) (op tick (-> Unit Int64))) \
+                   (def (loop) (if (= (St.get) 0) 0 (+ (St.tick) (loop)))) \
+                   (def (main) (handle 3 ((St.get (u) s (resume s s)) (St.tick (u) s (resume 1 (- s 1)))) \
+                     (loop))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect(
+                    "a recursive fn under a 2-arm single-effect handler specializes and runs"
+                ),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
@@ -9369,6 +9414,51 @@ mod stage1 {
                 assert_eq!(s, "3", "find(0) searches up to n where N.I n = N.I 3")
             }
             cdz_run::Outcome::Trap(t) => panic!("value-eq-in-loop run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_guarded_wildcard_arm_falling_through_to_a_tail_call_iterates_the_loop() {
+        // REGRESSION (two composed fixes): a `match` whose first arm is a GUARDED WILDCARD and whose
+        // fall-through arm SELF-TAIL-CALLS, compiled as a wasm LOOP. Two independent pre-existing bugs
+        // both broke this:
+        //  (1) TAIL DEPTH — a guarded wildcard emits `if <guard> body else <fall-through>` with NO probe
+        //      `if` (a wildcard needs no test), yet the emitter counted one, so the fall-through's
+        //      self-tail-call `br`'d one level too far, PAST the loop → `expected i64 but nothing on
+        //      stack`. Hit even by a SCALAR guard (no heap handle).
+        //  (2) BRANCH SCRATCH — when the guard produces an i32 heap handle (`value-eq`/`MatchSum`), its
+        //      scratch slot must sit above the fall-through's i64 iteration arithmetic.
+        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). `find(0)` = 3 either way.
+        use crate::testkit::parse;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping guarded-wildcard-loop run");
+            return;
+        };
+        for (label, src) in [
+            (
+                "scalar guard",
+                "(module m (def (find (: n Int64)) \
+                   (match n ((guard x (> x 2)) x) (_ (find (+ n 1))))) (export find))",
+            ),
+            (
+                "value-eq guard",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find))",
+            ),
+        ] {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile guarded-wildcard-loop ({label}): {e:?}"));
+            let opts = cdz_run::RunOpts {
+                export: Some("find".to_string()),
+                args: vec!["0".to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "find(0) = 3 ({label})"),
+                cdz_run::Outcome::Trap(t) => panic!("guarded-wildcard-loop trapped ({label}): {t}"),
+            }
         }
     }
 
