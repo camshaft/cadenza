@@ -225,6 +225,24 @@ pub struct EffectDecl {
     pub synth: Option<StructId>,
 }
 
+/// A `(module NAME def…)` declaration reachable in a `do`-block — a namespace binding `NAME` to a record
+/// of its exported definitions (`core-semantics.md` §A Module Groups Definitions Under A Name). Its
+/// members are reached by member access `(. NAME field)`, exactly like a sum's variants or an effect's
+/// operations. Identity is the declaration occurrence (like `TypeDecl`/`EffectDecl`); two `(module Foo …)`
+/// declared separately are distinct.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ModuleDecl {
+    /// The module's name (`m` in `(module m …)`).
+    pub name: String,
+    /// The declaration occurrence — the module's identity + the anchor for a declaration-level diagnostic.
+    pub occ: StructId,
+    /// The SYNTHESIZED record occurrence — the record whose fields are the module's exported defs (a value
+    /// def's body, a function def's lambda). `None` until `modules::synthesize` runs during `Db::load`;
+    /// ALWAYS `Some` once the `Db` exists. The module NAME resolves to a `Ref` to it, reached by the
+    /// ordinary scope→lookup order like a `def`/`type` — no separate name map, nothing privileged by name.
+    pub synth: Option<StructId>,
+}
+
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
 /// (a call whose callee transitively references itself declines before any inlining — see
 /// `eval::is_recursive`), so this only guards a non-recursive fold that nests unexpectedly deep. Kept
@@ -295,6 +313,11 @@ pub struct Db {
     /// well-formedness time — a duplicate operation name is CDZ0201). The effect analogue of
     /// `type_decls`; identity is the declaration occurrence.
     pub effect_decls: Vec<EffectDecl>,
+    /// The nested `(module NAME …)` declarations reachable in a `do`-block, from the scan. Each is
+    /// synthesized (`crate::modules`) to a record whose fields are its exported defs, so `NAME` resolves
+    /// to that record (a `Ref` to it) and `(. NAME field)` is ordinary member access — the module analogue
+    /// of `type_decls`/`effect_decls`, identity the declaration occurrence, nothing privileged by name.
+    pub modules: Vec<ModuleDecl>,
 
     /// For each ERASABLE nominal NEWTYPE declaration (a single-variant sum whose box is erased), its
     /// UNDERLYING structural type — the `inner` of the `Ty::Nominal` its `decl` denotes. Precomputed
@@ -665,7 +688,7 @@ impl Db {
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let mut prelude = crate::prelude::install(&mut ast);
-        let (defs, exports, mut type_decls, effect_decls) = scan_top_level(&ast);
+        let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
         // corpus surface). They scan exactly like a user declaration; a user `(type Option …)` shadows
@@ -687,6 +710,10 @@ impl Db {
         // (which must index the synthesized nodes so a name inside a synthesized op type resolves).
         let mut effect_decls = effect_decls;
         crate::effects::synthesize(&mut ast, &mut effect_decls);
+        // Synthesize each nested `(module …)` as a record (fields = its exported defs), the module analogue
+        // of the sum/effect synthesis — AFTER the scan (it reads the module declarations) and BEFORE the
+        // parent index (which must index the synthesized nodes so a member reference resolves by the walk).
+        crate::modules::synthesize(&mut ast, &mut modules);
         // Desugar every CANONICAL handler `(handle E seed (bare-op-arm…) body)` — effect + seed promoted
         // into the head, arms written bare — into the INTERNAL `(handle seed ((. E op)-arm…) body)` the
         // resolver/effects/infer/lower/compile consume. Runs BEFORE the parent index so the rewritten
@@ -754,6 +781,7 @@ impl Db {
             exports,
             type_decls,
             effect_decls,
+            modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
             parent,
             child_ix,
@@ -1217,6 +1245,18 @@ impl Db {
             .and_then(|t| t.synth)
     }
 
+    /// The synthesized RECORD occurrence of the nested `(module …)` at declaration occurrence `occ`, if
+    /// `occ` is a known module declaration. How a do-local module NAME resolves — `do_local_binds` holds
+    /// the `(module …)` form (the declaration occurrence) and returns a `Ref` to this record, so `(. m
+    /// field)` is ordinary member access. `None` if `occ` names no module (a `(module …)` that failed to
+    /// scan, or a non-module occurrence).
+    pub fn module_synth_by_occ(&self, occ: StructId) -> Option<StructId> {
+        self.modules
+            .iter()
+            .find(|m| m.occ == occ)
+            .and_then(|m| m.synth)
+    }
+
     /// The constructor-field occurrence a BARE variant name denotes — `NLit` for `(type Node (NLit …) …)`,
     /// the same field a qualified `(. Node NLit)` projects. A nullary variant used as a VALUE may be
     /// written bare (`NNil`, not `(. Node NNil)` — `core-semantics.md` §A Sum Type Constructor Is A
@@ -1349,16 +1389,19 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
     {
         return true;
     }
-    // A NESTED `(do …)` block whose forms include a `(def …)` declaration binds that name for the
-    // following forms (`resolve::binder_in`'s Case 8). Without the `do` as a candidate the scope-skip
-    // index would hop PAST it and Case 8 would never fire, so a reference to a do-local declaration would
-    // be spuriously unbound (the `is_binding_candidate` trap: every binding form MUST be listed here). A
-    // `do` with NO declaration binds nothing, so it need not be a candidate — a plain value-sequencing
-    // block stays on the fast non-binding spine. The PROGRAM ROOT do is EXCLUDED: its defs are the
-    // top-level scan's (resolved file-scoped by name), not a lexical do-scope (see `do_local_binds`).
+    // A NESTED `(do …)` block whose forms include a `(def …)` declaration OR a `(module …)` declaration
+    // binds that name for the following forms (`resolve::binder_in`'s Case 8 / `do_local_binds`). Without
+    // the `do` as a candidate the scope-skip index would hop PAST it and the do-case would never fire, so
+    // a reference to a do-local declaration would be spuriously unbound (the `is_binding_candidate` trap:
+    // every binding form MUST be listed here). A `do` with NO declaration binds nothing, so it need not be
+    // a candidate — a plain value-sequencing block stays on the fast non-binding spine. The PROGRAM ROOT
+    // do is EXCLUDED: its defs are the top-level scan's (resolved file-scoped by name), not a lexical
+    // do-scope (see `do_local_binds`).
     if form != ast.root
         && let Some(forms) = ast.as_form(form, "do")
-        && forms.iter().any(|&f| ast.head_name(f) == Some("def"))
+        && forms
+            .iter()
+            .any(|&f| matches!(ast.head_name(f), Some("def") | Some("module")))
     {
         return true;
     }
@@ -1515,14 +1558,25 @@ fn build_scope_binders(
     out
 }
 
+/// The declarations `scan_top_level` gathers: definitions, export requests, sum/effect/module
+/// declarations. A named tuple (factored out to keep the return type legible).
+type TopScan = (
+    Vec<Def>,
+    Vec<Export>,
+    Vec<TypeDecl>,
+    Vec<EffectDecl>,
+    Vec<ModuleDecl>,
+);
+
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
 /// from the top form only, without entering any body. Recognizes `(module NAME item…)`, a bare
 /// `(do item…)`, or a lone item.
-fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>, Vec<EffectDecl>) {
+fn scan_top_level(ast: &Arenas) -> TopScan {
     let mut defs: Vec<Def> = Vec::new();
     let mut exports: Vec<Export> = Vec::new();
     let mut types: Vec<TypeDecl> = Vec::new();
     let mut effects: Vec<EffectDecl> = Vec::new();
+    let mut modules: Vec<ModuleDecl> = Vec::new();
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
@@ -1581,7 +1635,7 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>, Vec<Ef
     // why the declaration must be gathered at load rather than resolved on demand.
     let top: std::collections::HashSet<StructId> = top_items(ast).into_iter().collect();
     for &body in defs.iter().filter_map(|d| d.body.as_ref()) {
-        collect_nested_decls(ast, body, &top, &mut types, &mut effects);
+        collect_nested_decls(ast, body, &top, &mut types, &mut effects, &mut modules);
     }
 
     // Resolve each export's target index by name against the gathered defs (a signature read, not a
@@ -1599,7 +1653,7 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>, Vec<Ef
         e.def = def_of_name.get(e.name.as_str()).copied();
     }
 
-    (defs, exports, types, effects)
+    (defs, exports, types, effects, modules)
 }
 
 /// Scan an `(effect NAME (op f (-> A B)) …)` declaration at `item` into an [`EffectDecl`] — the effect
@@ -1754,6 +1808,7 @@ fn collect_nested_decls(
     top: &std::collections::HashSet<StructId>,
     types: &mut Vec<TypeDecl>,
     effects: &mut Vec<EffectDecl>,
+    modules: &mut Vec<ModuleDecl>,
 ) {
     let Some(forms) = ast.as_form(body, "do") else {
         return;
@@ -1770,14 +1825,34 @@ fn collect_nested_decls(
             if let Some(decl) = scan_effect_decl(ast, form) {
                 effects.push(decl);
             }
+        } else if let Some(mod_tail) = ast.as_form(form, "module") {
+            // A do-local `(module NAME def…)` — record it (its record is synthesized after the scan by
+            // `modules::synthesize`) so its NAME binds in the enclosing scope. Its members may themselves
+            // carry nested declarations (a def body with a `(type …)`), so descend each member's def body.
+            if let Some(&name) = mod_tail.first()
+                && let Some(name_str) = ast.as_name(name)
+            {
+                modules.push(ModuleDecl {
+                    name: name_str.to_string(),
+                    occ: form,
+                    synth: None,
+                });
+            }
+            for &member in mod_tail.get(1..).unwrap_or(&[]) {
+                if let Some(def_tail) = ast.as_form(member, "def")
+                    && let Some(&def_body) = def_tail.get(1)
+                {
+                    collect_nested_decls(ast, def_body, top, types, effects, modules);
+                }
+            }
         } else if let Some(def_tail) = ast.as_form(form, "def") {
             // A do-local `(def sig body)` whose body may itself be a `(do …)` carrying declarations.
             if let Some(&def_body) = def_tail.get(1) {
-                collect_nested_decls(ast, def_body, top, types, effects);
+                collect_nested_decls(ast, def_body, top, types, effects, modules);
             }
         } else {
             // Any other form may itself be (or contain) a nested `(do …)` — descend it directly.
-            collect_nested_decls(ast, form, top, types, effects);
+            collect_nested_decls(ast, form, top, types, effects, modules);
         }
     }
 }

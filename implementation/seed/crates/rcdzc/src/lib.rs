@@ -43,6 +43,9 @@ pub mod sums;
 // `(effect …)` synthesis — an effect declaration realized as an ordinary record (fields = operation
 // values), the effect analogue of `sums`. So `E.op` is member access and a perform is application.
 pub mod effects;
+// `(module …)` synthesis — a nested module declaration realized as an ordinary record (fields = exported
+// defs), the module analogue of `sums`/`effects`. So `(. m field)` is member access, nothing privileged.
+pub mod modules;
 
 // The query engine: the single `Db` is PURE DATA (the AST + the columns); each query is a free
 // function in its own module over `&mut Db`, and each module owns exactly one column's fills —

@@ -5802,26 +5802,65 @@ fn emit_branch(
 }
 
 /// The flow-sensitive range REFINEMENT a branch of `if <cond> …` establishes for a variable — the frame
-/// [`crate::db::Db::push_range_refinements`] pushes while that branch is emitted. When `cond` is a SIGNED
-/// comparison of a variable against a compile-time constant (`(< n 2)`, `(>= n 1)`, either operand order),
-/// the branch KNOWS a one-sided bound on that variable: in the `then` branch the comparison holds, in the
-/// `else` its negation. Merges that bound INTO the parent frame (`base`) keyed by the variable's binder,
-/// so nested `if`s accumulate (`if (> n 0) … if (< n 10) …` bounds `n` to `[1,9]` in the inner body). A
-/// condition that is not a var-vs-const signed comparison contributes NOTHING (returns `base` unchanged) —
-/// conservative, so no guard is ever wrongly elided. UNSIGNED comparisons are skipped (the wrap-around
-/// order needs its own reasoning); `Eq`/`Ne` are skipped (they pin a point/hole, not an interval that
-/// helps a `±c` guard). The refinement is a SOUND narrowing — the branch genuinely guarantees it — so a
-/// guard the narrowed range proves dead is safe to drop.
+/// [`crate::db::Db::push_range_refinements`] pushes while that branch is emitted. Dispatches on the
+/// condition SHAPE, merging every bound the taken branch guarantees into the parent frame (`base`):
+///   • a SIGNED var-vs-const comparison (`(< n 2)`, `(>= n 1)`, either operand order) → its one-sided
+///     bound (negated in the `else` branch);
+///   • `(and a b)` in the THEN branch → BOTH operands hold, so apply both (the range-check idiom
+///     `(and (> n 0) (< n 100))` bounds `n` to `[1,99]`); in the else, De Morgan gives a disjunction — no
+///     clean single-variable bound, so skip;
+///   • `(or a b)` in the ELSE branch → `!(a or b) = !a and !b`, so apply BOTH operands negated; in the
+///     then, skip;
+///   • `(not a)` → refine `a` with the opposite polarity.
+/// Nested `if`s accumulate (each frame merges the parent's). A shape this does not model contributes
+/// NOTHING (returns `base`) — conservative, so no guard is ever wrongly elided. UNSIGNED comparisons and
+/// `Eq`/`Ne` are skipped (no sound one-sided interval). The refinement is a narrowing the branch
+/// GUARANTEES, so a guard the narrowed range proves dead is safe to drop.
 fn refined_frame_for_branch(
     db: &mut Db,
     cond: StructId,
     then_branch: bool,
     base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
 ) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
-    let Core::Compare { op, lhs, rhs } = core_of(db, cond) else {
-        return base;
-    };
-    // Identify `(<var> <op> <const>)` or `(<const> <op> <var>)`, normalizing to `var <op'> const`.
+    match core_of(db, cond) {
+        Core::Compare { op, lhs, rhs } => {
+            refine_from_comparison(db, op, lhs, rhs, then_branch, base)
+        }
+        // `(and a b)` holds in the THEN branch iff BOTH hold — apply each. `(or a b)` fails in the ELSE
+        // branch iff BOTH fail — apply each operand NEGATED (pass `then_branch=false` down). The other
+        // polarity (an `and`'s else, an `or`'s then) is a disjunction of the operands' negations/holds,
+        // which does not yield a single-variable interval — skip it (returns `base` unchanged).
+        Core::And { lhs, rhs, is_and } => {
+            let apply_both = (is_and && then_branch) || (!is_and && !then_branch);
+            if !apply_both {
+                return base;
+            }
+            // Each operand is itself a condition establishing its own bound in this branch's polarity: an
+            // `and`'s THEN wants both operands HELD (then_branch=true), an `or`'s ELSE wants both operands
+            // FAILED (then_branch=false). Recurse so a nested `(and …)`/comparison in either operand is
+            // handled uniformly.
+            let after_lhs = refined_frame_for_branch(db, lhs, is_and, base);
+            refined_frame_for_branch(db, rhs, is_and, after_lhs)
+        }
+        // `(not a)` in this branch's polarity = `a` in the OPPOSITE polarity.
+        Core::Not { operand } => refined_frame_for_branch(db, operand, !then_branch, base),
+        _ => base,
+    }
+}
+
+/// Merge into `base` the one-sided bound a single SIGNED var-vs-const comparison `(op lhs rhs)` guarantees
+/// in the given branch polarity — the atom [`refined_frame_for_branch`] composes for `and`/`or`/`not`.
+/// `(op var C)` / `(op C var)` (flipped) → in the `then` branch `var op C` holds, in the `else` its
+/// negation; the resulting `[lo, hi]` bound is intersected with any existing refinement for `var`. A
+/// non-comparison, an unsigned variable, or `Eq`/`Ne` contributes nothing (returns `base`).
+fn refine_from_comparison(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+    then_branch: bool,
+    base: crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)>,
+) -> crate::fxhash::FxHashMap<StructId, (i64, Option<i64>)> {
     let binder_of = |db: &mut Db, id: StructId| -> Option<StructId> {
         match core_of(db, id) {
             Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
@@ -5838,7 +5877,6 @@ fn refined_frame_for_branch(
     let (var, cmp, c) = if let (Some(v), Some(k)) = (binder_of(db, lhs), const_of(db, rhs)) {
         (v, op, k)
     } else if let (Some(k), Some(v)) = (const_of(db, lhs), binder_of(db, rhs)) {
-        // flip: `C < var`  ≡ `var > C`; `C <= var` ≡ `var >= C`; and the mirror for `>`/`>=`.
         let flipped = match op {
             Prim::Lt => Prim::Gt,
             Prim::Gt => Prim::Lt,
@@ -5850,17 +5888,12 @@ fn refined_frame_for_branch(
     } else {
         return base;
     };
-    // SIGNED integer variable only — an unsigned comparison's order wraps differently, and only the
-    // signed `[lo, hi]` interval feeds the guard reasoning soundly here.
+    // SIGNED integer variable only — an unsigned comparison's order wraps differently.
     let signed = matches!(type_of(db, var), Ty::Int(it) if it.ground_signed());
     if !signed {
         return base;
     }
-    // The bound the taken branch establishes. In the `then` branch the comparison `var cmp c` holds; in
-    // the `else`, its negation. Each is a ONE-SIDED bound (`lo` or `hi`); the other side stays open.
-    // `< c` → `hi = c-1`; `<= c` → `hi = c`; `> c` → `lo = c+1`; `>= c` → `lo = c`. The else negates:
-    // `!(< c)` = `>= c`, `!(<= c)` = `> c`, `!(> c)` = `<= c`, `!(>= c)` = `< c`. All in `i128` to avoid
-    // overflow at the extremes, then clamped back (an out-of-i64 bound = no refinement on that side).
+    // The bound the taken branch establishes; the `else` branch negates the op.
     let effective = if then_branch {
         cmp
     } else {
@@ -5873,23 +5906,21 @@ fn refined_frame_for_branch(
         }
     };
     let c = c as i128;
-    let clamp_lo = |lo: i128| -> Option<i64> {
-        if lo > i64::MAX as i128 || lo < i64::MIN as i128 {
+    let clamp = |x: i128| -> Option<i64> {
+        if x > i64::MAX as i128 || x < i64::MIN as i128 {
             None
         } else {
-            Some(lo as i64)
+            Some(x as i64)
         }
     };
-    let clamp_hi = clamp_lo;
     let (new_lo, new_hi): (Option<i64>, Option<i64>) = match effective {
-        Prim::Lt => (None, clamp_hi(c - 1)),
-        Prim::Le => (None, clamp_hi(c)),
-        Prim::Gt => (clamp_lo(c + 1), None),
-        Prim::Ge => (clamp_lo(c), None),
+        Prim::Lt => (None, clamp(c - 1)),
+        Prim::Le => (None, clamp(c)),
+        Prim::Gt => (clamp(c + 1), None),
+        Prim::Ge => (clamp(c), None),
         _ => return base, // Eq/Ne/compare — no interval bound
     };
     let mut frame = base;
-    // Merge with any existing refinement for this var (a tighter parent bound wins on each side).
     let (mut lo, mut hi) = frame
         .get(&var)
         .copied()

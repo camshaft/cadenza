@@ -1824,3 +1824,35 @@ fn check_prints_a_verified_help_line_for_an_unused_binding() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn compile_locates_a_source_error_instead_of_leaking_a_node_id() {
+    // `cdz compile foo.sexp` on a program with a semantic error used to report `error [CDZ0101] (node
+    // 6): unbound name ...` — a raw internal node id, no source position — while `cdz check` on the same
+    // file gave `foo.sexp:1:22: error [CDZ0101]: ...`. A source-file compile now attaches spans and the
+    // CLI reporter maps the diagnostic to `path:line:col`, so `compile` locates errors like `check`.
+    let dir = scratch_dir("compile_loc");
+    let file = dir.join("bad.sexp");
+    std::fs::write(&file, "(do (def (main) (+ 1 nope)) (export main))\n").unwrap();
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args([
+            "compile",
+            file.to_str().unwrap(),
+            "-o",
+            dir.join("out.wasm").to_str().unwrap(),
+        ])
+        .output()
+        .expect("run cdz compile");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(!out.status.success(), "an unbound name fails the compile");
+    assert!(
+        stderr.contains("bad.sexp:1:") && stderr.contains("CDZ0101"),
+        "compile locates the error as path:line:col with its code: {stderr}"
+    );
+    assert!(
+        !stderr.contains("(node "),
+        "compile must NOT leak a raw internal node id: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

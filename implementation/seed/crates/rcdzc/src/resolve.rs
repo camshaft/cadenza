@@ -983,6 +983,16 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
         if let Some(binder) = do_def_binds(db, f, name) {
             return Some(binder);
         }
+        // A do-local `(module NAME …)` binds `NAME` to its synthesized record (fields = its exported defs,
+        // built at load by `modules::synthesize`) — a `Ref` to the record, so `(. NAME field)` is ordinary
+        // member access. The module analogue of a do-local `def` binding, resolved off the occurrence-keyed
+        // `modules` index (no name special-case).
+        if let Some(tail) = db.ast.as_form(f, "module")
+            && tail.first().and_then(|&n| db.ast.as_name(n)) == Some(name)
+            && let Some(record) = db.module_synth_by_occ(f)
+        {
+            return Some(Resolved::Ref { value: record });
+        }
     }
     None
 }

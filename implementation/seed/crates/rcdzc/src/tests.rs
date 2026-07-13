@@ -4292,6 +4292,117 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
+        // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
+        // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its
+        // underflow guard AND `(+ n 1)` (in [2,100]) sheds its overflow guard. `(or (< n 1) (> n 99))`
+        // FAILS in the ELSE branch iff BOTH disjuncts fail — `!(<1) and !(>99)` = n in [1,99] — so the
+        // else-branch refines the same way. The OTHER polarity (an `and`'s else, an `or`'s then) is a
+        // disjunction with no single-variable bound and must NOT refine (soundness).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `and` THEN branch: both bounds apply → n in [1,99] → `(- n 1)` (and `(+ n 1)`) have NO guard.
+        let and_sub = select(
+            "(module m (def (f (: n Int64)) (if (and (> n 0) (< n 100)) (- n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !and_sub.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "n in [1,99] proves (- n 1) cannot underflow — guard elided, got: {and_sub:?}"
+        );
+        let and_add = select(
+            "(module m (def (f (: n Int64)) (if (and (> n 0) (< n 100)) (+ n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !and_add.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "n in [1,99] proves (+ n 1) cannot overflow — guard elided, got: {and_add:?}"
+        );
+        // `or` ELSE branch refines the same way (De Morgan).
+        let or_else = select(
+            "(module m (def (f (: n Int64)) (if (or (< n 1) (> n 99)) 0 (- n 1))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !or_else.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the else of (or (< n 1)(> n 99)) knows n in [1,99] — guard elided, got: {or_else:?}"
+        );
+        // SOUNDNESS — the WRONG polarity does NOT refine: `(or (> n 0) (< n -100))` in the THEN branch is
+        // a disjunction (n could be very negative via the 2nd disjunct), so `(- n 1)`'s guard is KEPT.
+        let or_then = select(
+            "(module m (def (f (: n Int64)) (if (or (> n 0) (< n -100)) (- n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            or_then.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "an or in the THEN branch gives no single-variable bound — guard MUST be kept, got: {or_then:?}"
+        );
+        // VALUE + TRAP parity. Bounded-range cases compute; the wrong-polarity case still traps at MIN.
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(if (and (> n 0) (< n 100)) (- n 1) 0)",
+                &[Val::S64(50)]
+            ),
+            49
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(if (and (> n 0) (< n 100)) (+ n 1) 0)",
+                &[Val::S64(99)]
+            ),
+            100
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(if (or (< n 1) (> n 99)) 0 (- n 1))",
+                &[Val::S64(50)]
+            ),
+            49
+        );
+        // Two DIFFERENT variables both refined by an `and`.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (and (> a 0) (> b 0)) (+ (- a 1) (- b 1)) 0)",
+                &[Val::S64(5), Val::S64(3)]
+            ),
+            6
+        );
+        // The wrong-polarity `or` still traps at MIN (the 2nd disjunct admits it; the guard is live).
+        assert!(traps(
+            "(: n Int64)",
+            "(if (or (> n 0) (< n -100)) (- n 1) 0)",
+            &[Val::S64(i64::MIN)]
+        ));
+    }
+
+    #[test]
     fn a_branch_refinement_folds_a_redundant_nested_comparison_and_eliminates_its_dead_branch() {
         // FLOW-SENSITIVE COMPARISON FOLD + DEAD-BRANCH ELIMINATION: when an enclosing branch has refined a
         // variable so a NESTED comparison against a constant is already decided, the inner `if` collapses
@@ -6830,6 +6941,32 @@ mod match_engine {
                 .iter()
                 .any(|d| d.message.contains("runtime string")),
             "the misleading 'runtime string' decline must not accompany the type error"
+        );
+    }
+
+    #[test]
+    fn a_nested_module_value_def_projects_through_member_access() {
+        // 11-modules "a module value definition registers a reachable export field": a do-local `(module m
+        // (def v 7))` binds `m` to a synthesized record of its exports (`modules::synthesize`), so `(. m
+        // v)` is ordinary member access folding to the def's value — 7. The module analogue of a sum's
+        // variants / an effect's operations, nothing privileged by name.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def v 7)) (. m v))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // Projecting a NON-export member (an effect declared in the module) is the closed-record rejection
+        // CDZ0201 — an effect is not an export field, so `(. m log)` has no such field.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit)))) (. m log))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
         );
     }
 
