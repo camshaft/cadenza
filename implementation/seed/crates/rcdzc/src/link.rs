@@ -220,9 +220,18 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
     let entry_ix = match files.iter().position(|(name, _)| name == entry) {
         Some(i) => i,
         None => {
-            return Err(Reject::decline(format!(
-                "package entry `{entry}` names no supplied `ast` file"
-            )));
+            // A did-you-mean over the SUPPLIED file names — a mistyped `--entry app`→`apps` is the
+            // closed-set-suggestion case (like a typoed import path, M27, or an unbound name): the
+            // candidate pool IS the package's files, so the suggestion always names a real one. Uses the
+            // shared `suggest::nearest` (its 1-char/empty guards apply).
+            let names = files.iter().map(|(n, _)| n.as_str());
+            let msg = match crate::diag::suggest::nearest(entry, names) {
+                Some(near) => format!(
+                    "package entry `{entry}` names no supplied `ast` file — did you mean `{near}`?"
+                ),
+                None => format!("package entry `{entry}` names no supplied `ast` file"),
+            };
+            return Err(Reject::decline(msg));
         }
     };
 
@@ -870,6 +879,27 @@ mod tests {
                 .any(|d| d.message.contains("unknown package file `lipb`")
                     && d.message.contains("did you mean `lib`?")),
             "expected a did-you-mean suggestion for the module path; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// A mistyped `--entry NAME` that near-misses a supplied file carries a did-you-mean — the same
+    /// closed-set suggestion a typoed import path gets, over the package's own file names.
+    #[test]
+    fn a_typoed_package_entry_suggests_the_nearest_file() {
+        let out = compile_files(
+            &[
+                ("lib", "(do (def (helper) 1) (export helper))"),
+                ("app", "(do (def (main) 2) (export main))"),
+            ],
+            "apps", // a typo of `app`
+        );
+        assert!(
+            out.diagnostics.iter().any(|d| d
+                .message
+                .contains("package entry `apps` names no supplied `ast` file")
+                && d.message.contains("did you mean `app`?")),
+            "expected a did-you-mean for the mistyped entry; got {:?}",
             out.diagnostics
         );
     }
