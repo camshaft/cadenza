@@ -468,6 +468,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // ungranted escape. (Reported cleanly rather than leaking the op's `(intrinsic perform)` marker
             // as an "unknown intrinsic".)
             if crate::eval::effect_op_of(db, head).is_some() {
+                // A perform DELEGATED to the host by an enclosing `(host (E…) …)` lowers to a HOST CALL —
+                // the operation is a component-level import the boundary resolves (E2). If no enclosing
+                // `host` delegates this effect, the perform is unhandled here: a DECLINE (a library def
+                // performing an effect whose home is its callers), and the entrypoint `check_no_home`
+                // reports a genuine ungranted escape as CDZ0401.
+                if let Some((effect, op, result)) =
+                    crate::effects::perform_host_target(db, id, head)
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall");
+                    return Core::HostCall {
+                        effect,
+                        op,
+                        args: args.to_vec(),
+                        result,
+                    };
+                }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
                 return Core::Poison(Reject::decline(
                     "this effect operation is performed with no enclosing handler here; its home is \
@@ -943,9 +959,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 )),
             }
         }
-        Resolved::Host { .. } => Core::Poison(Reject::decline(
-            "a host delegation is not yet lowered (the boundary import arrives in E2)",
-        )),
+        // A `(host (E…) body)` DELEGATES its listed effects to the component boundary (an entrypoint's
+        // routing decision). The delegation itself carries no runtime value — its VALUE is the body's
+        // value — so lower the BODY; a perform of a delegated effect inside it becomes a `Core::HostCall`
+        // (the perform arm resolves the enclosing `host` via `perform_host_target`). The manifest
+        // contribution (the escaping effect row) is handled at serialization.
+        Resolved::Host { body, .. } => core_of(db, body),
         Resolved::Resume { .. } => Core::Poison(Reject::decline(
             "resume outside a lowered handler arm is not yet realized",
         )),

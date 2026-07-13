@@ -453,6 +453,23 @@ pub enum Core {
         closure: StructId,
         args: Vec<StructId>,
     },
+    /// A HOST CALL — a perform of an effect operation DELEGATED to the component boundary by an enclosing
+    /// `(host (E…) …)` (`capabilities-and-effects.md` §Host-Binding Is A Routing Decision Made At The
+    /// Entrypoint). The operation is a component-level WIT import: its declaring effect is an interface,
+    /// the operation a function in it (a dotted `E.op` is never a top-level extern — the component model
+    /// forbids the dot, so the boundary encoder maps it to `interface E` + `func op`). The backend emits
+    /// each arg then a call to the imported function; `effect`/`op` name it symbolically (like
+    /// `Lir::CallImport` for a runtime op), and the serializer resolves the pair to the import's core
+    /// function index once the whole host-import set is laid out. `result` is the op's declared result
+    /// type (the value the host returns). This increment lowers the SCALAR boundary (a scalar/unit arg and
+    /// a scalar/unit result); a string/compound arg or result is a later increment (the old seed's
+    /// `HostString` (ptr,len) shape).
+    HostCall {
+        effect: String,
+        op: String,
+        args: Vec<StructId>,
+        result: crate::ty::Ty,
+    },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

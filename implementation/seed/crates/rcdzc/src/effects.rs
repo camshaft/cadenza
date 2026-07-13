@@ -474,6 +474,70 @@ fn effect_decl_of_value(db: &mut Db, id: StructId) -> Option<u32> {
     }
 }
 
+/// If the perform at `perform` (an application whose head is an effect operation) is DELEGATED to the host
+/// by an enclosing `(host (E…) …)`, its host-call target: the declaring effect's NAME, the operation's
+/// NAME, and its declared RESULT type. `None` if the perform is not enclosed by a `host` delegating its
+/// effect (then it is handled in-program, or unhandled). Walks PARENTS from the perform to the nearest
+/// enclosing `host` whose effect list names the op's declaring effect — the routing decision is the
+/// nearest enclosing router (`capabilities-and-effects.md` §Host-Binding Is A Routing Decision Made At The
+/// Entrypoint), and a nearer `handle` for the SAME effect would have reduced the perform away before
+/// lowering, so reaching here means no such handler intervenes.
+pub fn perform_host_target(
+    db: &mut Db,
+    perform: StructId,
+    head: StructId,
+) -> Option<(String, String, crate::ty::Ty)> {
+    // The op's declaring effect + its name — the op head is a member access `(. E op)`.
+    let (decl, _idx) = crate::eval::effect_op_of(db, head)?;
+    let op_name = match resolved_of(db, head) {
+        Resolved::Member { key, .. } => key.name.clone(),
+        _ => return None,
+    };
+    let eff = db.effect_decl_by_occ(decl)?;
+    let effect_name = eff.name.clone();
+    // Walk PARENTS to find an enclosing `(host (E…) body)` whose effect list names this effect.
+    let mut cur = perform;
+    while let Some(parent) = db.parent_of(cur) {
+        if let Resolved::Host { effects, .. } = resolved_of(db, parent)
+            && effects
+                .iter()
+                .any(|&e| effect_decl_of_host_name(db, e) == Some(decl))
+        {
+            // The op's declared RESULT type — peel its `(meta t)` scheme's arrow to the final result.
+            let result = op_result_type(db, head)?;
+            return Some((effect_name, op_name, result));
+        }
+        cur = parent;
+    }
+    None
+}
+
+/// The effect-declaration occurrence a `host`'s effect-list ENTRY names — a bare effect name occurrence
+/// `E` that resolves to an effect record; recover its decl from the record's `(meta t)`. `None` if it does
+/// not resolve to an effect.
+fn effect_decl_of_host_name(db: &mut Db, name_occ: StructId) -> Option<crate::ast::StructId> {
+    // The name resolves to a Ref to the effect record's value; read the record's effect decl.
+    let value = match resolved_of(db, name_occ) {
+        Resolved::Ref { value } => value,
+        _ => name_occ,
+    };
+    effect_decl_of_value(db, value).map(crate::ast::StructId)
+}
+
+/// The declared RESULT type of the operation whose op-value projection is `head` — instantiate its
+/// `(meta t)` scheme `(fn () (-> P… Result))` and peel to the final arrow result. `None` if malformed.
+fn op_result_type(db: &mut Db, head: StructId) -> Option<crate::ty::Ty> {
+    let mut fresh = crate::unify::Fresh::new();
+    let scheme = crate::eval::scheme_of(db, head, &mut fresh)?;
+    let mut result = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut peeled = false;
+    while let crate::ty::Ty::Fn(_, r) = result {
+        result = *r;
+        peeled = true;
+    }
+    if peeled { Some(result) } else { None }
+}
+
 /// Report CDZ0401 for every effect operation reached from ENTRYPOINT body `node` with no home — neither
 /// an enclosing handler discharging its effect nor a host delegation of it
 /// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). Walks the resolved tree

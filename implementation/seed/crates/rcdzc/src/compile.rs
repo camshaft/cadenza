@@ -594,6 +594,13 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, arg, out);
             }
         }
+        // A host call unconditionally evaluates its arguments before crossing the boundary — descend into
+        // each (the call itself is a boundary import, not a def whose body could fault).
+        Core::HostCall { args, .. } => {
+            for arg in args {
+                collect_reached_poisons(db, arg, out);
+            }
+        }
         // A match: the scrutinee is unconditionally evaluated (descend), but each arm BODY is guarded
         // (only the matching arm runs) — so a provable trap inside an arm is NOT a build failure, the
         // same reachability rule as an `if`'s branches. Do not descend into the arm bodies.
