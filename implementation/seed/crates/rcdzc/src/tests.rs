@@ -12786,18 +12786,22 @@ mod stage1 {
             "expected CDZ0405 (non-exhaustive handler), got: {}",
             err.message
         );
-        // The message NAMES the missing op AND spells the arm to add (the "route to a fix" — a
-        // structural fix is not attached because the desugared arms-list is span-less; see infer.rs).
+        // The message NAMES the omitted operation AND spells the arm to add inline; AND a machine-
+        // applicable "add the missing arm" fix carries the same template arm (`collect` is nullary → empty
+        // params, a `(resume unit s)` placeholder body the author fills). The structural fix is possible
+        // because the in-place desugar preserved the arms-list's source span.
         assert!(
-            err.message.contains("missing: collect"),
-            "names the missing op: {}",
+            err.message.contains("`collect`")
+                && err.message.contains("add (collect () s (resume unit s))"),
+            "names the omitted op AND spells the arm to add: {}",
             err.message
         );
-        assert!(
-            err.message.contains("add (collect (v) s (resume v s))"),
-            "spells the arm to add: {}",
-            err.message
+        let fix = err.fix.expect("a missing-arm fix is carried");
+        assert_eq!(
+            fix.replacement, "(collect () s (resume unit s))",
+            "the fix appends a template arm for the missing op"
         );
+        assert!(!fix.verified, "a template-body arm is heuristic");
     }
 
     #[test]
