@@ -6549,6 +6549,30 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     (m & low) == low
 }
 
+/// For a `BitAnd` at emit time, whether the constant mask on ONE side covers the WHOLE provable range of
+/// the value on the other side — so `v & M == v` and the `&` is redundant. Returns the VALUE operand to
+/// emit alone (`Some(v)`), or `None` when neither side is such a redundant mask. This is the EMIT-TIME
+/// sibling of the `is_full_mask_for` lower fold: identical soundness (a nonneg `v ∈ [0, 2^B)` whose bits
+/// `M` all covers), but it consults `value_range` HERE — where the flow-refinement stack is populated — so
+/// it fires on a refined value the lower fold could not see (`(if (and (>= x 0) (< x 256)) (& x 255) …)`:
+/// under the branch `x ∈ [0,255]`, `x & 255 == x`). Both operand orders are tried. The `&` is TOTAL, so
+/// eliding it drops no trap; returning the value operand preserves its own evaluation (and any trap in it).
+pub(crate) fn redundant_and_mask_value(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<StructId> {
+    let rc = core_of(db, rhs);
+    if is_full_mask_for(db, lhs, &rc) {
+        return Some(lhs); // `(& v M)` with M covering v's range → v
+    }
+    let lc = core_of(db, lhs);
+    if is_full_mask_for(db, rhs, &lc) {
+        return Some(rhs); // `(& M v)` → v
+    }
+    None
+}
+
 /// Whether the dividend `val` is provably in `[0, divisor − 1]` for a positive `divisor` — so a truncating
 /// `val / divisor` is `0` and `val % divisor` is `val` (the divisor is too large to divide `val` even
 /// once). True iff `value_range(val)` is a NONNEGATIVE closed interval `[lo, hi]` with `lo >= 0` and

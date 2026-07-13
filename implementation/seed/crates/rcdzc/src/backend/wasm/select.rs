@@ -4100,6 +4100,17 @@ fn emit(
                 }
                 Prim::BitAnd | Prim::BitOr | Prim::BitXor => {
                     let ot = IntTy::fixed(m.signed, m.width);
+                    // REDUNDANT-MASK ELISION (flow-sensitive): `(& v M)` where the constant `M` covers `v`'s
+                    // whole provable range is just `v` — emit the value alone, drop the mask. This is the
+                    // emit-time sibling of the `is_full_mask_for` lower fold; it fires where `lower` cannot,
+                    // on a value the branch REFINEMENT bounds (`(if (and (>= x 0) (< x 256)) (& x 255) …)` →
+                    // `x & 255 == x` under `x ∈ [0,255]`). `&` is total (no trap dropped) and the value
+                    // operand is emitted so its own evaluation/traps stay.
+                    if op == Prim::BitAnd
+                        && let Some(v) = crate::lower::redundant_and_mask_value(db, lhs, rhs)
+                    {
+                        return emit_operand(db, v, ot, slots, base, high, scratch_ty, layout, out);
+                    }
                     emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     out.push(m.bitwise(op));

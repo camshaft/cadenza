@@ -5323,6 +5323,69 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_refinement_elides_a_redundant_and_mask() {
+        // FLOW-SENSITIVE REDUNDANT-MASK ELISION: inside `(if (and (>= x 0) (< x 256)) (& x 255) …)` the
+        // then-branch KNOWS `x ∈ [0,255]`, so `x & 255 == x` — the mask covers x's whole refined range and
+        // is dropped, emitting just `x`. The `is_full_mask_for` lower fold could not see this (it runs with
+        // the refinement stack empty AND requires an unsigned TYPE); the emit-time `redundant_and_mask_value`
+        // consults the refined range. Pins the elision at the Lir level (no `& 255` in the then-branch) AND
+        // value parity; an UNREFINED signed mask must be KEPT.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And)).count();
+        // Under `x ∈ [0,255]`, the `& 255` is redundant — dropped. Only the two guard bitwise ops of the
+        // `and` condition are i32 (`I32And`), so NO `I64And` remains (the mask was the only one).
+        let elided = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 255) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(ands(&elided), 0, "the redundant `& 255` under x∈[0,255] is elided, got: {elided:?}");
+        // CONTRAST: an UNREFINED signed `(& x 255)` (x full-range Int64) KEEPS the mask — it really narrows.
+        let kept = select(
+            "(module m (def (f (: x Int64)) (& x 255)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(ands(&kept), 1, "an unrefined signed mask must be kept, got: {kept:?}");
+        // A mask that only PARTIALLY covers the refined range is NOT redundant — `(& x 15)` under x∈[0,255]
+        // (x can set bits above bit 3) must stay.
+        let partial = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 15) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(ands(&partial), 1, "a partial mask (& 15) under x∈[0,255] is NOT redundant, got: {partial:?}");
+
+        // VALUE PARITY: the elided-mask path returns x in range; out of range takes the else; the partial
+        // mask still masks.
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 255) x)", &[Val::S64(200)]), 200);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 255) x)", &[Val::S64(1000)]), 1000);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 255) x)", &[Val::S64(0)]), 0);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 15) x)", &[Val::S64(200)]), 8); // 200&15
+    }
+
+    #[test]
     fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
         // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
         // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its
