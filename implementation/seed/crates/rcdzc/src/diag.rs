@@ -17,7 +17,7 @@
 ///
 //= spec/capabilities/diagnostics.md#every-diagnostic-has-a-stable-code
 //# Every diagnostic the compiler emits MUST carry a machine-readable code that is stable across changes to unrelated diagnostics.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Code {
     /// A LEXICAL well-formedness defect the READER detected but cannot itself report through the
     /// artifact channel (the front-end's stderr is not the diagnostic surface) — an unrecognized string

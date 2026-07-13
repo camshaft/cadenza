@@ -510,7 +510,29 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for body in export_bodies {
         crate::effects::check_no_home(db, body, &mut faults);
     }
+    dedup_faults(faults)
+}
+
+/// Collapse duplicate faults — the SAME issue reported by more than one collection pass. A fault is
+/// keyed by `(code, anchor node)`: the type-check walk and the reached-poison walk both visit an
+/// unconditionally-evaluated position, so an unbound name (or any fault) in a REACHABLE spot is found
+/// by both and would otherwise be reported twice at the same spot. Two faults with the same code AND
+/// the same anchor are the one issue bubbling up along two paths — keep the first (stable order),
+/// drop the rest. DISTINCT occurrences (same code, DIFFERENT node — e.g. two separate unbound uses)
+/// are NOT duplicates and both survive. An UNANCHORED fault (`at == None`) dedups by code+message, so
+/// two different unanchored declines still both show.
+fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
+    let mut seen: std::collections::HashSet<(Option<Code>, Option<u32>, Option<String>)> =
+        std::collections::HashSet::new();
     faults
+        .into_iter()
+        .filter(|r| {
+            // An anchored fault is identified by (code, node); an unanchored one by (code, message)
+            // so distinct declines with no node still both appear.
+            let msg_key = r.at.is_none().then(|| r.message.clone());
+            seen.insert((r.code, r.at.map(|s| s.0), msg_key))
+        })
+        .collect()
 }
 
 /// Collect poisons reached UNCONDITIONALLY from `id`. Descends the core form into positions a value is

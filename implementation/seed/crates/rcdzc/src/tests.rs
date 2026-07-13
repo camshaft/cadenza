@@ -7070,6 +7070,38 @@ mod diagnostics {
     }
 
     #[test]
+    fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
+        // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
+        // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
+        let unbound: Vec<_> = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) nope) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+        .collect();
+        assert_eq!(
+            unbound.len(),
+            1,
+            "one unbound-name fault, not two: {unbound:?}"
+        );
+
+        // But two DISTINCT occurrences of the same unbound name (different nodes) are NOT duplicates —
+        // both survive (each has its own source location).
+        let two: Vec<_> = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) (+ nope nope)) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0101"))
+        .collect();
+        assert_eq!(
+            two.len(),
+            2,
+            "two distinct `nope` uses each reported once: {two:?}"
+        );
+        assert_ne!(two[0].node, two[1].node, "at different nodes");
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.
