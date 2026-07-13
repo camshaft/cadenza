@@ -105,6 +105,14 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     if is_builtin_std_sum(db, &decl) {
         return Err(Reject::decline("built-in Option/Result maps to Rust's own"));
     }
+    // An erasable NEWTYPE emits NO enum — its runtime value IS the underlying payload (the tag adds
+    // nothing), so `types::rust_type` maps a `Ty::Nominal` THROUGH to its `inner` Rust type and no boxed
+    // enum is needed. (Both monomorphic and generic newtypes: a use `(: b UserId)` → the inner type
+    // directly. Without this skip a dead `enum UserId { Mk(i64) }` was emitted — harmless `#[allow(dead_code)]`
+    // clutter for the monomorphic case, but the value never uses it, so drop it uniformly.)
+    if db.newtype_inner.contains_key(&decl.occ) {
+        return Err(Reject::decline("an erased newtype has no boxed enum"));
+    }
     let name = types::sum_ident(&decl.name);
     // The type parameters, `<T0, T1, …>` for a generic sum (empty for a monomorphic one). Their order is
     // `decl.params`' first-appearance order — the SAME order `Ty::Sum::args` and `types::rust_type`'s

@@ -429,7 +429,14 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         // position `head_ctor` dispatches `list`/`tuple` structurally) AND the name is a same-name newtype,
         // resolve to the variant CTOR instead. A non-head occurrence keeps the type. Position-based, not a
         // name special-case (`prelude-and-resolution.md` §Nothing Is Privileged By Name).
+        // Only fire on a USER node — a real program `(Box 42)`. A SYNTHESIZED node (id ≥
+        // `user_node_count`) heading a list is the sum's OWN ctor-result type expression `(Box a)` that
+        // `sums::sum_applied` builds for a GENERIC same-name sum, where `Box` MUST stay the type record
+        // (re-applied in type position via `(meta apply)` = `sum-ctor`). Firing there resolved `Box` to
+        // the ctor and corrupted the arrow → the variant looked nullary. The value-vs-type-position
+        // distinction the head-position rule alone can't see is supplied by the user/synth boundary.
         if db.child_ix_of(id) == 0
+            && db.is_user_node(id)
             && let Some(ctor) = db.same_name_newtype_ctor(name)
         {
             trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = ctor.0, "name → same-name newtype ctor (head position)");
@@ -2292,20 +2299,12 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 args.push(decode_ty(db, a)?);
             }
             let decl = StructId(decl);
-            // NEWTYPE NORMALIZATION: an erasable single-variant sum is a NOMINAL type — its runtime box
-            // is erased, so it decodes to `Ty::Nominal { inner }` (the underlying structural type
-            // precomputed at load), NOT a boxed `Ty::Sum`. This is the ONE chokepoint every monomorphic
-            // sum type flows through (a sum record's `(meta t)`, a ctor's result, a `(: x T)`
-            // annotation), so the `Sum`↔`Nominal` choice is uniform. A non-erasable decl (multi-variant /
-            // recursive / sum-carrying) is absent from the map and stays a boxed `Ty::Sum`.
-            if let Some(inner) = db.newtype_inner.get(&decl) {
-                return Some(Ty::Nominal {
-                    decl,
-                    name,
-                    inner: Box::new(inner.clone()),
-                });
-            }
-            Some(Ty::Sum { decl, name, args })
+            // NEWTYPE NORMALIZATION via the shared `Db::normalize_sum` — the ONE place the `Sum`↔`Nominal`
+            // decision + generic template substitution lives, so this wire-decode path agrees with
+            // `eval::reduce_sum_ctor` (the generic ctor `(Box Int64)` type-application path). An erasable
+            // newtype decl decodes to `Ty::Nominal { inner }` (its stored template with `args` substituted
+            // for the param vars); a non-erasable decl stays a boxed `Ty::Sum`.
+            Some(db.normalize_sum(decl, name, args))
         }
         // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the dual of `eval::encode_ty`'s
         // `Nominal` arm. Carries its own encoded `inner`, so it round-trips independently of

@@ -6824,6 +6824,73 @@ mod match_engine {
     }
 
     #[test]
+    fn a_generic_newtype_erases_and_matches() {
+        // A GENERIC single-variant sum `(type Box (Mk a))` is an erasable newtype: its inner type is
+        // computed PER-INSTANTIATION (the template `Var(0)` with the instantiation's arg substituted at
+        // `decode_ty`). `(Mk 42)` erases to the raw i64 (no `sum-new`), and `(Mk n)` binds it.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Mk a)) \
+                       (def (main) (match (Mk 42) ((Mk n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_generic_same_name_newtype_constructs_and_matches() {
+        // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
+        // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;
+        // the synthesized `(Box a)` ctor-result stays the type.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Box a)) \
+                       (def (main) (match (Box 42) ((Box n) (+ n 1)))) (export main))"
+                ),
+                "main"
+            ),
+            43
+        );
+    }
+
+    #[test]
+    fn a_generic_newtype_at_two_instantiations_stays_distinct() {
+        // `Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing
+        // them across the boundary is a type error — the nominal-over-generic analogue of `Option Int64 ≠
+        // Option Bool`. (Confirms the per-instantiation `inner` keeps instantiations apart.)
+        assert_eq!(
+            reject_code(
+                "(module m (type Box (Mk a)) \
+                   (def (main) (= (Mk 1) (Mk true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn a_generic_newtype_nested_at_another_instantiation_erases() {
+        // A generic newtype whose payload is ITSELF at another instantiation — `(Mk (Mk 5)) : Box (Box
+        // Int64)` — erases both layers (each `Ty::Nominal` erases to its inner), so the doubly-wrapped 5
+        // reads back through two `(Mk …)` matches. Exercises a nominal inner (the template is sum-free —
+        // `Var(0)` — but the instantiation substitutes a `Ty::Nominal`, which still erases).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Box (Mk a)) \
+                       (def (main) (match (Mk (Mk 5)) ((Mk inner) (match inner ((Mk n) (+ n 1)))))) (export main))"
+                ),
+                "main"
+            ),
+            6
+        );
+    }
+
+    #[test]
     fn a_newtype_over_a_record_reads_a_field_at_runtime() {
         // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
         // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
@@ -16323,14 +16390,27 @@ mod stage1 {
             "a recursive single-variant sum stays boxed"
         );
 
-        // A GENERIC single-variant sum stays boxed for now (erasure is monomorphic-only this increment).
+        // A GENERIC single-variant sum IS erasable — its underlying template carries the param as
+        // `Ty::Var(0)` (the positional slot `decode_ty` substitutes the instantiation's arg into). So
+        // `(type Box (Mk a))` erases with template `Var(0)`; at `Box Int64` the inner is `Int64`.
         let ast = parse("(module m (type Box (Mk a)) (def (main) 0) (export main))");
         let mut db = Db::load(ast);
         let occ = decl_of(&db, "Box");
         assert_eq!(
             newtype_underlying(&mut db, occ),
-            None,
-            "a generic single-variant sum stays boxed (monomorphic-only erasure)"
+            Some(Ty::Var(0)),
+            "a generic single-variant sum erases with a param-var template"
+        );
+
+        // A generic newtype over a COMPOUND param position keeps the param var at its slot: `(type Wrap
+        // (Mk (List a)))` → template `(List Var(0))`.
+        let ast = parse("(module m (type Wrap (Mk (List a))) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Wrap");
+        assert_eq!(
+            newtype_underlying(&mut db, occ),
+            Some(Ty::List(Box::new(Ty::Var(0)))),
+            "a generic newtype's template keeps the param var at its nested position"
         );
     }
 

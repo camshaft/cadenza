@@ -724,21 +724,60 @@ fn a_user_sum_emits_a_rust_enum_declaration() {
 
 #[test]
 fn a_generic_user_sum_emits_a_generic_enum() {
-    // A generic sum's params become the enum's type parameters (`T0`…), a param-typed payload renders as
-    // its `T{k}`, and a use at a concrete type instantiates them via `types::rust_type`.
-    // The type parameter `a` appears in the variant payload (`(Wrap a)`); the declaration is `(type Box
-    // (Wrap a))` — the params come from the lowercase names in the variant payloads, first-appearance order.
+    // A generic MULTI-variant sum's params become the enum's type parameters (`T0`…), a param-typed
+    // payload renders as its `T{k}`, and a use at a concrete type instantiates them via
+    // `types::rust_type`. Two variants keep it a boxed sum (a SINGLE-variant generic sum is a NEWTYPE that
+    // ERASES — see `a_generic_newtype_erases_to_its_underlying_rust_type`), so this covers the enum path.
     let rs = compile_rust(
-        "(module m (type Box (Wrap a)) \
-           (def (unwrap (: b (Box Int64))) (match b (((. Box Wrap) x) x))) (export unwrap))",
+        "(module m (type Box (Wrap a) Empty) \
+           (def (unwrap (: b (Box Int64))) (match b (((. Box Wrap) x) x) (((. Box Empty) _) 0))) (export unwrap))",
     );
     assert!(
-        rs.contains("pub enum Box<T0> { Wrap(T0) }"),
+        rs.contains("pub enum Box<T0>") && rs.contains("Wrap(T0)"),
         "generic enum decl:\n{rs}"
     );
     assert!(
         rs.contains("unwrap(b: Box<i64>)"),
         "instantiated use:\n{rs}"
+    );
+}
+
+#[test]
+fn a_monomorphic_newtype_erases_and_emits_no_enum() {
+    // A monomorphic newtype `(type UserId (Mk Int64))` erases: NO `enum UserId` is emitted (its value IS
+    // the i64), and a param typed by it maps to the underlying `i64`. (Regression: before the enum-skip,
+    // a dead `enum UserId { Mk(i64) }` was emitted — harmless but wrong; the value reads through the tag.)
+    let rs = compile_rust(
+        "(module m (type UserId (Mk Int64)) \
+           (def (unwrap (: b UserId)) (match b ((Mk x) x))) (export unwrap))",
+    );
+    assert!(
+        !rs.contains("enum UserId"),
+        "an erased newtype emits no enum:\n{rs}"
+    );
+    assert!(
+        rs.contains("unwrap(b: i64)"),
+        "the newtype param maps to its underlying i64:\n{rs}"
+    );
+}
+
+#[test]
+fn a_generic_newtype_erases_to_its_underlying_rust_type() {
+    // A GENERIC single-variant sum is an erasable NEWTYPE: it emits NO enum, and a use at a concrete
+    // instantiation maps to the underlying (substituted) Rust type — `(Box Int64)` → `i64`. The runtime
+    // value IS the payload (the tag adds nothing), so the Rust backend reads through it, exactly as the
+    // wasm backend does. The monomorphic sibling is `a_monomorphic_newtype_erases_and_emits_no_enum`.
+    let rs = compile_rust(
+        "(module m (type Box (Wrap a)) \
+           (def (unwrap (: b (Box Int64))) (match b ((Wrap x) x))) (export unwrap))",
+    );
+    assert!(
+        !rs.contains("enum Box"),
+        "an erased generic newtype emits no enum:\n{rs}"
+    );
+    assert!(
+        rs.contains("unwrap(b: i64)"),
+        "the newtype param maps to its underlying i64:\n{rs}"
     );
 }
 

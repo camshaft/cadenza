@@ -1727,25 +1727,27 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
 /// uncached for types) avoids seeding any scheme with a soon-to-be-stale result, and the sum-free
 /// restriction makes the result independent of which other decls are already cached.
 pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
-    let (payload_count, payloads) = {
+    let (payload_count, payloads, params) = {
         let td = db.type_decl_by_occ(decl)?;
-        // (1) exactly one variant, (2) monomorphic.
-        if td.variants.len() != 1 || !td.params.is_empty() {
+        // (1) exactly one variant. GENERICS are now IN scope — a generic newtype's template carries its
+        // params as `Ty::Var(i)` (positional), substituted per-instantiation at `decode_ty`.
+        if td.variants.len() != 1 {
             return None;
         }
         let v = &td.variants[0];
-        (v.payloads.len(), v.payloads.clone())
+        (v.payloads.len(), v.payloads.clone(), td.params.clone())
     };
     // A NULLARY single variant is a nominal Unit (`(type Marker (The))`).
     if payload_count == 0 {
         return Some(Ty::Unit);
     }
-    // Decode each payload TYPE occurrence directly to a `Ty` (no `scheme_of` — see the doc comment). A
-    // single payload's type IS the underlying type; multiple payloads box as one tuple (the shape a
-    // multi-payload variant already builds), so the underlying type is their `Ty::Tuple`.
+    // Decode each payload TYPE occurrence directly to a template `Ty` (no `scheme_of` — see the doc
+    // comment), mapping a declaration PARAM name to `Ty::Var(its index)`. A single payload's type IS the
+    // underlying template; multiple payloads box as one tuple (the shape a multi-payload variant already
+    // builds), so the underlying type is their `Ty::Tuple`.
     let mut tys = Vec::with_capacity(payload_count);
     for p in payloads {
-        tys.push(crate::eval::typeval_of(db, p)?);
+        tys.push(decode_payload_template(db, p, &params)?);
     }
     let inner = if tys.len() == 1 {
         tys.pop().unwrap()
@@ -1754,11 +1756,55 @@ pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
     };
     // (3) + (4): a self-reference decodes to a `Ty::Sum` naming this decl, and any other sum/nominal
     // payload is also a `Ty::Sum` here (nothing is normalized yet during the load-time precompute) — the
-    // single sum-free check covers BOTH the recursion guard and the nested-sum restriction.
+    // single sum-free check covers BOTH the recursion guard and the nested-sum restriction. A param
+    // `Ty::Var` is sum-free, so a generic `(Box a)` PASSES (its inner is erasable); a `(Box (Option a))`
+    // correctly STAYS BOXED (its `Option` payload decodes to a `Ty::Sum`).
     if ty_contains_sum(&inner) {
         return None;
     }
     Some(inner)
+}
+
+/// Decode a newtype payload TYPE occurrence to a template `Ty`, mapping a declaration PARAMETER name
+/// (`params[i]`) to `Ty::Var(i)` — the positional slot `decode_ty` later substitutes the instantiation's
+/// arg into. A NON-param type occurrence (a concrete `Int64`, `(List Int64)`, a self-reference `Box`,
+/// another sum `(Option …)`) decodes via the ordinary `typeval_of` (a self-reference / sum yields a
+/// `Ty::Sum`, which the sum-free guard then rejects). Descends the structural type forms so a param
+/// NESTED in the payload — `(List a)`, `(Tuple a Int64)` — becomes a `Var` at its position while the rest
+/// decodes concretely. This is the load-time, `scheme_of`-free dual of the substitution `decode_ty` does.
+fn decode_payload_template(db: &mut Db, occ: StructId, params: &[String]) -> Option<Ty> {
+    // A bare name that IS a param → its positional `Ty::Var`.
+    if let Some(name) = db.ast.as_name(occ)
+        && let Some(i) = params.iter().position(|p| p == name)
+    {
+        return Some(Ty::Var(i as u32));
+    }
+    // A compound type form whose ARGUMENTS may mention params — descend the shapes that carry element
+    // types, mapping each child through this template decoder. A head we don't special-case (a concrete
+    // scalar, a sum/self-ref) falls through to `typeval_of` below.
+    if let crate::ast::Struct::List(children) = db.ast.get(occ) {
+        let children = children.clone();
+        match children.first().and_then(|&h| db.ast.as_name(h)) {
+            Some("Tuple") => {
+                let mut elems = Vec::with_capacity(children.len() - 1);
+                for &c in &children[1..] {
+                    elems.push(decode_payload_template(db, c, params)?);
+                }
+                return Some(Ty::Tuple(elems.into()));
+            }
+            Some("List") if children.len() == 2 => {
+                return Some(Ty::List(Box::new(decode_payload_template(
+                    db,
+                    children[1],
+                    params,
+                )?)));
+            }
+            _ => {}
+        }
+    }
+    // A concrete type occurrence with no free param — decode normally. (A self-reference or another sum
+    // yields a `Ty::Sum` here, which `newtype_underlying`'s sum-free guard rejects — staying boxed.)
+    crate::eval::typeval_of(db, occ)
 }
 
 /// Whether `ty` contains a `Ty::Sum` or `Ty::Nominal` anywhere (the newtype-erasure sum-free guard) — a
