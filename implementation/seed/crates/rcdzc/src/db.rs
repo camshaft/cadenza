@@ -1826,10 +1826,25 @@ fn collect_nested_decls(
                 effects.push(decl);
             }
         } else if let Some(mod_tail) = ast.as_form(form, "module") {
-            // A do-local `(module NAME def…)` — record it (its record is synthesized after the scan by
-            // `modules::synthesize`) so its NAME binds in the enclosing scope. Its members may themselves
-            // carry nested declarations (a def body with a `(type …)`), so descend each member's def body.
-            if let Some(&name) = mod_tail.first()
+            // A do-local `(module NAME member…)` — record it (its record is synthesized after the scan by
+            // `modules::synthesize`) so its NAME binds in the enclosing scope. A `(def …)` member becomes a
+            // field; an `(effect …)`/`(op …)`/`(type …)`/`(module …)` member is a legitimate NON-export
+            // (correctly ABSENT from the record, so projecting it — `(. m log)` for an effect — is the
+            // closed-record CDZ0201 the corpus wants). But a member the compiler does NOT model as either a
+            // field or a benign non-export — a `(pragma …)` (a validation OBLIGATION: a malformed pragma
+            // must be rejected CDZ0602, which is not yet built) — would be silently DROPPED, letting the
+            // program run as if the obligation were absent (a decline-don't-miscompile violation). So an
+            // UNMODELED-obligation member blocks registration → the module name stays unbound → the program
+            // DECLINES. The modeled set is closed; anything outside it (today just `pragma`) blocks.
+            let modeled = |member: StructId| {
+                matches!(
+                    ast.head_name(member),
+                    Some("def" | "effect" | "op" | "type" | "module" | "doc")
+                )
+            };
+            let all_modeled = mod_tail.get(1..).unwrap_or(&[]).iter().all(|&m| modeled(m));
+            if all_modeled
+                && let Some(&name) = mod_tail.first()
                 && let Some(name_str) = ast.as_name(name)
             {
                 modules.push(ModuleDecl {
