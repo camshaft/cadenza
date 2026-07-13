@@ -2968,6 +2968,22 @@ fn emit(
         // A runtime boolean NEGATION `!operand` — emit the operand (a Bool i32), then `i32.eqz` (1 if 0,
         // else 0 = logical NOT). From the `(if c false true)` fold.
         Core::Not { operand } => {
+            // COMPARISON NEGATION: `(not (CMP a b))` folds into the single COMPLEMENT comparison — `(not
+            // (< a b))` → `a >=ₛ b`, `(not (= a b))` → `a ≠ b` — instead of emitting the comparison and an
+            // `i32.eqz`. Every comparison over a total order has an exact complement (`compare_op_negated`),
+            // dropping one instruction from the ubiquitous negated-predicate. Emit the operands exactly as
+            // the `Core::Compare` arm does (same width grounding + RHS-above-high-water discipline), but
+            // with the inverted op and no trailing `eqz`. The `= 0` operand is NOT special-cased to `eqz`
+            // here: `(not (= x 0))` is `x ≠ 0`, i.e. `i64.ne` against a zero — the general compare path,
+            // which for a zero operand is as cheap (`eqz` would need its own inversion anyway).
+            if let Core::Compare { op, lhs, rhs } = core_of(db, operand) {
+                let it = operand_int_ty(db, lhs, rhs);
+                emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
+                let rhs_base = base.max(*high);
+                emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
+                out.push(compare_op_negated(op, it));
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::I32Eqz);
             Ok(())
@@ -5762,6 +5778,30 @@ fn compare_op(op: Prim, it: IntTy) -> Lir {
     }
 }
 
+/// The machine op for the LOGICAL NEGATION of a comparison — used to fold `(not (CMP a b))` into a single
+/// inverted comparison instead of `compare ; i32.eqz`. Every comparison over a TOTAL order has an exact
+/// complement: `= ↔ ≠`, `< ↔ ≥`, `> ↔ ≤`. Integer order (signed and unsigned) and `Bool` order (a bool
+/// is a total 0/1) are total, and these are the only operand types a `Core::Compare` carries (a compound
+/// takes `Core::ValueEq`), so the complement holds for every case `compare_op` handles.
+fn compare_op_negated(op: Prim, it: IntTy) -> Lir {
+    let negated = match op {
+        Prim::Eq => {
+            return if it.ground_width() <= 32 {
+                Lir::I32Ne
+            } else {
+                Lir::I64Ne
+            };
+        }
+        Prim::Lt => Prim::Ge,
+        Prim::Gt => Prim::Le,
+        Prim::Le => Prim::Gt,
+        Prim::Ge => Prim::Lt,
+        // Not a comparison — unreachable, as in `compare_op`.
+        _ => return Lir::I64Ne,
+    };
+    compare_op(negated, it)
+}
+
 /// The integer type governing a runtime comparison's operands — read off whichever operand solves to
 /// an integer (they unify to one type). A boolean comparison has no integer operand, so it grounds to
 /// the ≤32-bit path via the default `i64`… (a bool is compared as an i32 — see `Compare` selection,
@@ -6232,6 +6272,58 @@ mod tests {
         assert!(
             f.code.contains(&Lir::I64DivS),
             "a runtime-operand multiply keeps the div_s guard, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn not_over_a_comparison_folds_to_the_complement_op() {
+        // (def (f (: a Int64) (: b Int64)) (not (< a b))) — the negation folds into the complement
+        // comparison `a >=ₛ b`: get a ; get b ; i64.ge_s — NO i32.eqz.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (not (< a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64GeS],
+            "not(<) is the single complement ge_s, no eqz"
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "the eqz is folded away into the complement comparison"
+        );
+    }
+
+    #[test]
+    fn not_over_equality_folds_to_ne() {
+        // (not (= a b)) → i64.ne (not i64.eq ; i32.eqz).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (not (= a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(f.code, vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64Ne]);
+    }
+
+    #[test]
+    fn not_over_an_unsigned_comparison_uses_the_unsigned_complement() {
+        // (not (< a b)) over UInt64 → i64.ge_U (the unsigned complement, not the signed ge_s).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a UInt64) (: b UInt64)) (not (< a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::I64GeU) && !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "unsigned not(<) is ge_u, no eqz, got: {:?}",
             f.code
         );
     }
