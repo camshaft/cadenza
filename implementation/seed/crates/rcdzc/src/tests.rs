@@ -5518,6 +5518,64 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_or_then_mask_with_a_covered_mask_absorbs_to_the_constant() {
+        // OR-THEN-MASK ABSORPTION: `(& (| v C1) C2)` → `C2` when `C2 ⊆ C1` (`C2 & C1 == C2`). The inner OR
+        // forces every bit of C2 (all in C1) to 1, the outer mask keeps only those bits → exactly C2,
+        // regardless of `v`. `(& (| x 15) 15)` → 15, `(& (| x 255) 15)` → 15. A mask NOT covered by the OR
+        // constant (`(& (| x 15) 240)`) does NOT fold. Pins the fold at the Lir level (no `or`/`and`, a
+        // `const`) AND value + trap parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let bitops = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Or | Lir::I64And | Lir::I32Or | Lir::I32And))
+                .count()
+        };
+        // `(& (| x 15) 15)` and `(& (| x 255) 15)` both absorb to the constant `15` — no bit ops.
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 15) Int64)")), 0, "C2==C1 → absorbed");
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (| x 255) Int64) 15) Int64)")), 0, "C2 ⊂ C1 → absorbed");
+        // Constant on the LEFT of the outer `&` works too.
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (& 15 (: (| x 15) Int64)) Int64)")), 0, "left-const → absorbed");
+        // A mask NOT covered (`240 ⊄ 15`) is NOT absorbed — both ops stay.
+        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 240) Int64)")), 2, "C2 ⊄ C1 → kept");
+
+        // VALUE PARITY: absorbed cases → the constant; the non-covered case computes the real result.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& (: (| x 15) Int64) 15) Int64)", &[Val::S64(12345)]), 15);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& (: (| x 255) Int64) 15) Int64)", &[Val::S64(12345)]), 15);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& (: (| x 15) Int64) 240) Int64)", &[Val::S64(12345)]), (12345 | 15) & 240);
+        // TRAP PRESERVATION: the fold DISCARDS `v`, so a trapping `(/ 100 z)` keeps its ÷0 trap.
+        assert!(
+            traps("(: z Int64)", "(& (: (| (: (/ 100 z) Int64) 15) Int64) 15)", &[Val::S64(0)]),
+            "the or-then-mask absorption must not drop a trapping operand"
+        );
+    }
+
+    #[test]
     fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
         // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
         // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its

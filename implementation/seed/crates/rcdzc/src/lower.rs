@@ -6382,6 +6382,27 @@ fn arith_identity(
         // constant — `(& x M)` returns `lc` (x) when `rc` (M) masks x's whole width; symmetric for `(& M x)`.
         Prim::BitAnd if is_full_mask_for(db, lhs, rc) => Some(lc.clone()),
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
+        // OR-THEN-MASK ABSORPTION: `(& (| v C1) C2)` → `C2` when `C2 ⊆ C1` (`C2 & C1 == C2`). The inner OR
+        // sets every bit of C1 (⊇ C2), the outer mask keeps only C2's bits — all of which are 1 — so the
+        // result is exactly the constant C2, independent of `v`. `(& (| x 15) 15)` → 15. DISCARDS `v`, so
+        // gated on `is_trap_free`. `C2` is the constant operand of the outer `&`; the inner `(| v C1)` is
+        // the other. Both operand orders of the outer `&` are tried.
+        Prim::BitAnd
+            if let Core::ConstInt(c2) = rc
+                && let Some(c2v) = c2.to_i64()
+                && let Some(v) = or_then_mask_absorbs(db, lhs, c2v)
+                && is_trap_free(db, v) =>
+        {
+            Some(rc.clone())
+        }
+        Prim::BitAnd
+            if let Core::ConstInt(c2) = lc
+                && let Some(c2v) = c2.to_i64()
+                && let Some(v) = or_then_mask_absorbs(db, rhs, c2v)
+                && is_trap_free(db, v) =>
+        {
+            Some(lc.clone())
+        }
         // `x | M` / `M | x` → M when the constant `M` covers ALL of `x`'s value bits — the OR-SATURATION
         // dual of the `&`-mask elision. `x | M` sets every bit of M plus x's bits; if M already has all the
         // bits x could set (`is_full_mask_for`: x nonneg in `[0, 2^B)`, M's low B bits all 1), the OR adds
@@ -6614,6 +6635,32 @@ fn nested_shift_combine(db: &mut Db, op: Prim, lhs: StructId, rc: &Core) -> Opti
         lhs: v,
         rhs: fc,
     })
+}
+
+/// OR-THEN-MASK ABSORPTION: for an outer `(& inner C2)` whose `inner` is `(| v C1)` (C1 a constant on
+/// either side), return `C2` when `C2`'s set bits are a SUBSET of `C1`'s (`C2 & C1 == C2`) — because
+/// `(v | C1) & C2` forces every bit of `C2` to 1 (they are all in `C1`, which the OR sets) and clears the
+/// rest, so the result is exactly `C2`, regardless of `v`. `(& (| x 15) 15)` → 15, `(& (| x 255) 15)` →
+/// 15. Returns the CONSTANT `C2` occurrence (the outer mask, `c2_occ`) to reuse as the folded value.
+/// `None` when the shape does not match or `C2 ⊄ C1`. The fold DISCARDS `v`, so the caller gates it on
+/// `is_trap_free(v)` — the returned `Some` reports `v` so the caller can check it.
+fn or_then_mask_absorbs(db: &mut Db, inner: StructId, c2: i64) -> Option<StructId> {
+    let Core::Arith {
+        op: Prim::BitOr,
+        lhs: il,
+        rhs: ir,
+    } = core_of(db, inner)
+    else {
+        return None;
+    };
+    // The inner OR's constant C1 (on either side); the other operand is `v`.
+    let (v, c1) = match (core_of(db, il), core_of(db, ir)) {
+        (Core::ConstInt(c), _) => (ir, c.to_i64()?),
+        (_, Core::ConstInt(c)) => (il, c.to_i64()?),
+        _ => return None,
+    };
+    // `C2 ⊆ C1` — every bit the outer mask keeps is one the inner OR already set to 1.
+    if (c2 & c1) == c2 { Some(v) } else { None }
 }
 
 /// Whether masking the value at `val` with the constant `mask_core` is a NO-OP — i.e. `val & M == val`.
