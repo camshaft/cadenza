@@ -24,6 +24,41 @@ export default function RecordsTuples() {
 (def (main) (area (record (w 4) (h 5))))`}
       />
 
+      <H2>Updating a field</H2>
+      <P>
+        Records are immutable, so you never <em>change</em> a field — you produce a new record that
+        differs in one place. <C>Record.with</C> does exactly that: give it a record and a{" "}
+        <C>(field value)</C> pair, and it hands back a copy with that field replaced. Here a price of{" "}
+        <C>2</C> becomes <C>9</C>:
+      </P>
+      <Runnable source={`(. (Record.with (record (item 1) (price 2)) (price 9)) price)`} />
+      <P>
+        "Hands back a copy" is the important part — the original is untouched. Bind a record, make an
+        updated version, then read the <em>original</em> back and you'll see it never moved:
+      </P>
+      <Runnable
+        source={`(let ((base (record (hp 5) (mp 3))))
+  (. (Record.with base (hp 99)) hp))`}
+      />
+      <P>
+        That reads <C>99</C> — but swap <C>Record.with base (hp 99)</C> for plain <C>base</C> and Run
+        again: <C>5</C>, the original, still there. Two records, sharing everything but the one field.
+      </P>
+      <P>
+        <C>Record.with</C> is for a field that already exists; to <em>add</em> a new one, use{" "}
+        <C>Record.extend</C>. Keeping them separate is deliberate — it means a typo'd field name can't
+        silently create a new field where you meant to update an old one:
+      </P>
+      <Runnable source={`(. (Record.extend (record (x 1) (y 2)) (z 3)) z)`} />
+      <P>
+        And the compiler holds the line: use <C>Record.with</C> on a field that isn't there and it
+        won't guess — it tells you to reach for <C>Record.extend</C> instead.
+      </P>
+      <Runnable
+        source={`(. (Record.with (record (a 1)) (z 5)) z)`}
+        expect="error"
+      />
+
       <H2>Nesting</H2>
       <P>
         Records and tuples nest freely — a field can hold another record, a tuple can hold a record,
@@ -85,6 +120,25 @@ export default function RecordsTuples() {
 (def (main) (third (tuple 5 6 7)))`}
         expected="7"
         hint={<>Tuple indices start at 0, so the third element is index <C>2</C>.</>}
+      />
+
+      <Exercise
+        id="records-tuples:3"
+        prompt={
+          <>
+            Use <C>Record.with</C> to set the <C>y</C> field of <C>(record (x 10) (y 20))</C> to <C>50</C>,
+            then read <C>y</C> back — the answer is <C>50</C>.
+          </>
+        }
+        starter={`(. (Record.with (record (x 10) (y 20)) (y ?)) y)`}
+        solution={`(. (Record.with (record (x 10) (y 20)) (y 50)) y)`}
+        expected="50"
+        hint={
+          <>
+            The second argument is a <C>(field value)</C> pair — here <C>(y 50)</C> — and <C>y</C> already
+            exists, so <C>Record.with</C> is the right tool (not <C>Record.extend</C>).
+          </>
+        }
       />
     </article>
   );

@@ -690,9 +690,12 @@ pub enum Core {
     /// each arg then a call to the imported function; `effect`/`op` name it symbolically (like
     /// `Lir::CallImport` for a runtime op), and the serializer resolves the pair to the import's core
     /// function index once the whole host-import set is laid out. `result` is the op's declared result
-    /// type (the value the host returns). This increment lowers the SCALAR boundary (a scalar/unit arg and
-    /// a scalar/unit result); a string/compound arg or result is a later increment (the old seed's
-    /// `HostString` (ptr,len) shape).
+    /// type (the value the host returns) — the expression evaluated for the host call yields exactly that
+    /// value, which is the unit value when the op's WIT signature returns unit. This increment lowers the
+    /// SCALAR boundary (a scalar/unit arg and a scalar/unit result); a string/compound arg or result is a
+    /// later increment (the old seed's `HostString` (ptr,len) shape).
+    //= spec/capabilities/core-semantics.md#an-expression-evaluated-only-for-its-effect-yields-the-unit-value
+    //# An expression evaluated only for the host call it makes MUST yield the value that host call returns, which is the unit value when the call's WIT signature returns unit.
     HostCall {
         effect: String,
         op: String,

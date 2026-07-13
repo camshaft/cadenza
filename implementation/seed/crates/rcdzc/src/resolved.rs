@@ -283,6 +283,22 @@ pub enum Prim {
     /// is a BARE field NAME (a label). An absent field is CDZ0212 — a record field name is a static label,
     /// never a runtime `None` (contrast `List.at` on a runtime index).
     RecordPop,
+    /// The TUPLE positional CONCATENATE — `(Tuple.cat a b)` appends `b`'s elements after `a`'s, yielding
+    /// a tuple of the combined arity, each element keeping its source position's type (`type-system.md`
+    /// §Two Tuples Are Concatenated Into One Of Their Combined Length). Both operands are tuple VALUES (no
+    /// disjointness — positions are anonymous). Folds two constant `Core::Tuple`s to their concatenation.
+    TupleCat,
+    /// The TUPLE positional SPLIT — `(Tuple.split-at t k)` splits `t` at compile-time literal position `k`
+    /// into a PAIR `(tuple <prefix> <suffix>)` (`type-system.md` §A Tuple Is Split At A Position Into A
+    /// Prefix And A Suffix): the prefix is a tuple of the first `k` elements, the suffix a tuple of the
+    /// rest. `k=0` → the empty-tuple prefix IS `unit` (core-semantics.md §The Empty Tuple Is The Unit
+    /// Value). `k` outside `0..=arity` is CDZ0201 (the static-bounds rule `(. x N)` uses). The second
+    /// operand is a compile-time integer LITERAL (like a tuple index).
+    TupleSplitAt,
+    /// The TUPLE positional POP — `(Tuple.pop t)` takes element 0 off, yielding `(tuple (. t 0) <rest>)`
+    /// — the positional analogue of `Record.pop`, `(Tuple.split-at t 1)` with the singleton prefix
+    /// unwrapped to its element. A one-operand op over a tuple of arity ≥ 1.
+    TuplePop,
     /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
     /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
     /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
@@ -652,6 +668,9 @@ impl Prim {
             "record-extend" => Some(Prim::RecordExtend),
             "record-with" => Some(Prim::RecordWith),
             "record-pop" => Some(Prim::RecordPop),
+            "tuple-cat" => Some(Prim::TupleCat),
+            "tuple-split-at" => Some(Prim::TupleSplitAt),
+            "tuple-pop" => Some(Prim::TuplePop),
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),

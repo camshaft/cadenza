@@ -519,12 +519,31 @@ the component type. The new work:
   call. The pure multi-export bytes path passes `&[]`. `cdz-run` unchanged (mixed dispatch already routes
   plain→bare-func, closure→make/call). +4 corpus (Bytes closure + plain `two` both driven; String closure +
   parameterized `dbl` both driven).
+- **✅ DISTINCT-SIG byte-rope-result closure COMPLETE `@3d628337`.** Closures of DIFFERENT signatures each
+  returning a `Bytes`/`String` now cross as G distinct resource types, each with its OWN `list<u8>`-returning
+  `call-<g>` (memory + `cabi_realloc` shared across groups). Extends the byte-rope compound `call` from the
+  single/multi/mixed shapes to the N-resource-type (distinct-sig) shape; a byte-rope group can coexist with a
+  SCALAR group in one component (the scalar `call-<g>` returns by value; the byte-rope one via the copy loop).
+  Pieces: (1) `serialize::SigGroup.ret_is_bytes` + `distinct_sig_resource_core_module` — when any group is
+  byte-rope, add a shared memory + `cabi_realloc` functype/func/export; a byte-rope group's `call-<g>` emits
+  the `bytes-len`/`bytes-get` copy-loop body writing a `(ptr,len)` return area (the group's core `call`
+  functype `(i32 self, args…) -> i32` is UNCHANGED — a bytes handle IS an i32 — so only the BODY + the shared
+  memory/realloc differ). (2) `envelope::SigGroupAbi.ret_is_bytes` + `assemble_distinct_sig_resource_mixed` —
+  alias the shared memory/realloc (after the closure fns, before plain), lift each byte-rope call with
+  Memory/Realloc against `(…) -> list<u8>` (own<t> + list<u8> + functype = 3 comp types vs a scalar call's 2).
+  (3) `resource_inner_component_distinct_sig` converted to a RUNNING type counter (a byte-rope call consumes 3
+  types, not 2, breaking the fixed `g + 2f` formula — in both import and export phases). (4)
+  `emit_distinct_sig_resource` computes per-group `ret_is_bytes` (byte-rope skips the scalar-boundary-byte
+  check; `bytes-len`/`bytes-get` added to the used-op set). The instantiate item is index-by-name so it was
+  unchanged. +7 corpus (Int64/Bool/String distinct sigs; a byte-rope group coexisting with a scalar group both
+  driven; byte-rope distinct-sig + a plain export). Gate 102p/1todo on 21-host-closures.
 - **REMAINING (all optional, none blocking):** a tuple/list/record closure RESULT (needs the escape's
   `encode` walker + value-form framing instead of the raw byte copy — the render would then be the typed
-  `(: … T)` form, not a bare byte list); a byte-rope result on the DISTINCT-sig path; a compound closure ARG
-  (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a closure TRANSFORMER
-  (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle.
-  Everything else DONE.
+  `(: … T)` form, not a bare byte list); a byte-rope result on the DISTINCT-sig ROUND-TRIP path (a produced
+  closure handed back to a consumer that returns Bytes/String — the round-trip envelopes not yet extended); a
+  compound closure ARG (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a
+  closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>`
+  repeated-call handle. Everything else DONE.
 
 ## Risks / open questions
 
