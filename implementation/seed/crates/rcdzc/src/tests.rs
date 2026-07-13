@@ -15037,6 +15037,104 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_with_a_value_and_its_negation_folds_to_a_constant() {
+        // BOOLEAN COMPLEMENT LAWS: `(and a (not a))` → false, `(or a (not a))` → true — a boolean and its
+        // negation are exclusive+exhaustive. The `and`/`or` analogue of the bitwise `x & ~x`/`x | ~x` fold.
+        // DISCARDS both operands, so gated on `is_trap_free`. Pins the fold at the Lir level (no and/or/eqz)
+        // AND value/trap parity. Both operand orders and a comparison operand.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let ops = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::I32Eqz | Lir::If(_)))
+                .count()
+        };
+        // `(and a (not a))` / `(or a (not a))` fold to a constant — no connective/eqz/if.
+        assert_eq!(
+            ops(&lir("(: a Bool)", "(: (and a (not a)) Bool)")),
+            0,
+            "and a !a → false"
+        );
+        assert_eq!(
+            ops(&lir("(: a Bool)", "(: (or a (not a)) Bool)")),
+            0,
+            "or a !a → true"
+        );
+        // Reverse operand order and a comparison operand.
+        assert_eq!(
+            ops(&lir("(: a Bool)", "(: (and (not a) a) Bool)")),
+            0,
+            "and !a a → false"
+        );
+        assert_eq!(
+            ops(&lir("(: x Int64)", "(: (and (< x 5) (not (< x 5))) Bool)")),
+            0,
+            "and (<x5) !(<x5) → false"
+        );
+        // A DISTINCT negated operand does NOT fold.
+        let distinct = lir("(: a Bool) (: b Bool)", "(: (and a (not b)) Bool)");
+        assert!(
+            distinct
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I32Eqz | Lir::If(_))),
+            "(and a (not b)) is not folded, got: {distinct:?}"
+        );
+
+        // VALUE PARITY over both truth values: `and a !a` is always false, `or a !a` always true.
+        use wasmtime::component::Val;
+        let fb = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        for a in [true, false] {
+            assert!(
+                !run_returns_with::<bool>(&fb("(and a (not a))"), "f", &[Val::Bool(a)]),
+                "and a !a @{a}"
+            );
+            assert!(
+                run_returns_with::<bool>(&fb("(or a (not a))"), "f", &[Val::Bool(a)]),
+                "or a !a @{a}"
+            );
+        }
+        // TRAP SAFETY: a trapping operand in `(and a (not a))` — the fold discards it, so it must still trap.
+        let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (not (> (/ 10 n) 0))) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&gb, "f", &[Val::S64(0)]),
+            "a trapping operand in the complement-law fold keeps its trap"
+        );
+        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 0);
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
@@ -15674,6 +15772,27 @@ mod match_engine {
                 ty.render_name()
             );
         }
+    }
+
+    #[test]
+    fn a_bigint_fixed_int_mix_is_the_numeric_no_promotion_error_cdz0301() {
+        // `(+ (BigInt.of n) 1)` mixes a BigInt with a fixed Int64 — the numeric model's no-silent-
+        // promotion rule, so CDZ0301 "no implicit conversion between numeric types", NOT the generic
+        // CDZ0203 "type mismatch". `BigInt` must count as numeric in `unify::mismatch` (the `unify`
+        // BigInt arm's own comment says it "falls to mismatch … CDZ0301"). This is the 15-rows/BigInt
+        // corpus case `(+ (BigInt.of 1) 1)` → CDZ0301.
+        assert_eq!(
+            reject_code("(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))")
+                .as_deref(),
+            Some("CDZ0301"),
+            "a BigInt/fixed-int mix is the numeric no-promotion error"
+        );
+        // A non-numeric conflict is still the generic CDZ0203 (BigInt did not widen the numeric net).
+        assert_eq!(
+            reject_code("(module m (def (f (: b Bool)) (+ b 1)) (export f))").as_deref(),
+            Some("CDZ0203"),
+            "a Bool/Int mix stays the generic type mismatch"
+        );
     }
 
     #[test]
@@ -16888,6 +17007,51 @@ mod diagnostics {
             few.fix.is_none(),
             "nothing to delete for too-few: {:?}",
             few.fix
+        );
+    }
+
+    #[test]
+    fn a_wrong_type_constructor_payload_offers_the_same_coercion_fix_as_an_argument() {
+        // A VARIANT-CONSTRUCTOR payload mismatch (CDZ0201) now offers the SAME numeric/text coercion fix the
+        // argument position does (the D33 lesson, consolidated via `numeric_text_coercion_fix`): an int-width
+        // `(Mk a)` a:Int8 payload Int64 → `(Int64.of a)`; an int-valued-float `(Mk 3.0)` payload Int64 → `3`;
+        // a `String` payload `Bytes` → `(String.to-bytes s)`. Each is CDZ0201 (the ctor-payload code) + a fix.
+        let intw =
+            first_error("(module m (type P (Mk Int64)) (def (f (: a Int8)) (Mk a)) (export f))");
+        assert_eq!(
+            intw.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            intw.message
+        );
+        assert_eq!(
+            intw.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Int64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "ctor payload int-width coercion: {}",
+            intw.message
+        );
+        let flt = first_error("(module m (type P (Mk Int64)) (def (f) (Mk 3.0)) (export f))");
+        assert_eq!(
+            flt.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "3")),
+            "ctor payload int-valued-float drop: {}",
+            flt.message
+        );
+        let byt =
+            first_error("(module m (type P (Mk Bytes)) (def (f (: s String)) (Mk s)) (export f))");
+        assert_eq!(
+            byt.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(String.to-bytes {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "ctor payload String→Bytes coercion: {}",
+            byt.message
+        );
+        // NO coercion (a Bool payload where Int64 is declared) → the bare CDZ0201, no fix.
+        let no = first_error("(module m (type P (Mk Int64)) (def (f) (Mk true)) (export f))");
+        assert_eq!(no.code.as_deref(), Some("CDZ0201"), "got: {}", no.message);
+        assert!(
+            no.fix.is_none(),
+            "no coercion Bool→Int64 payload: {:?}",
+            no.fix
         );
     }
 

@@ -951,12 +951,13 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
         return Some(Resolved::Ref { value: binder });
     }
     // Case 8: `form` is a `(do f0 … fn)` SEQUENCING block, ascended from one of its forms `from` → a
-    // do-local `(def …)` DECLARATION appearing BEFORE `from` binds `name` for `from` (`core-semantics.md`
-    // §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow It). Sequential, backward-
-    // only scope like a `let` bindings-list: a form sees the declarations before it, last-wins (a later
-    // `def` of the same name shadows an earlier one), and a declaration does NOT see itself or the forms
-    // after it. The bound value is resolved by `do_def_binds` (a `Ref`/`Lambda`, exactly a top-level
+    // do-local `(def …)` DECLARATION appearing BEFORE `from` binds `name` for `from`. Sequential,
+    // backward-only scope like a `let` bindings-list: a form sees the declarations before it, last-wins (a
+    // later `def` of the same name shadows an earlier one), and a declaration does NOT see itself or the
+    // forms after it. The bound value is resolved by `do_def_binds` (a `Ref`/`Lambda`, exactly a top-level
     // def's shape) — so a later reference / call resolves and folds by the ordinary paths.
+    //= spec/capabilities/core-semantics.md#a-declaration-in-a-sequencing-block-is-scoped-to-the-forms-that-follow-it
+    //# A declaration form in a sequencing block MUST bind its name for the forms that follow it in that block, so that a name a declaration introduces is in scope without a separate binding form.
     if let Some(binder) = do_local_binds(db, form, from, name) {
         return Some(binder);
     }
@@ -1118,7 +1119,12 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
         // A do-local `(module NAME …)` binds `NAME` to its synthesized record (fields = its exported defs,
         // built at load by `modules::synthesize`) — a `Ref` to the record, so `(. NAME field)` is ordinary
         // member access. The module analogue of a do-local `def` binding, resolved off the occurrence-keyed
-        // `modules` index (no name special-case).
+        // `modules` index (no name special-case) — so the module's name is bound in its enclosing scope by
+        // its own declaration, and a reference resolves to that record under the ordinary lexical rules.
+        //= spec/capabilities/core-semantics.md#a-module-binds-its-name-in-its-enclosing-scope
+        //# Evaluating a module MUST bind the module's declared name in the enclosing scope to the record of the module's exports, so that a module is named by its declaration without a separate binding form.
+        //= spec/capabilities/core-semantics.md#a-module-binds-its-name-in-its-enclosing-scope
+        //# A reference to a module's name in its enclosing scope MUST resolve to that export record under the same lexical scope and shadowing rules as any other binding.
         if let Some(tail) = db.ast.as_form(f, "module")
             && tail.first().and_then(|&n| db.ast.as_name(n)) == Some(name)
             && let Some(record) = db.module_synth_by_occ(f)
