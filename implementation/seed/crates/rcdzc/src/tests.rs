@@ -16112,6 +16112,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_float64_renders_via_the_value_encode_walker() {
+        // A recursive sum whose payload carries a FLOAT64 (a `FloatList` — a numeric tree) now COMPILES its
+        // value-encode escape. This required TWO gaps to close together: (1) `box_op_ty`/`get_op_ty` now
+        // box a Float64 element via `box-float`/`get-float` (coercion-free — an f64 slot IS box-float's
+        // arg), so a Float64 can live in a compound at all; (2) `shape_of` emits `ShapeNode::Float`
+        // (descriptor tag 2) and the runtime `value-encode` renders a KIND_FLOAT decimal leaf (guarded
+        // byte-exact + round-trip in cdz-runtime). Float32 still declines at the box layer (needs a
+        // promote/demote), so this uses Float64.
+        use crate::testkit::parse;
+        let src = "(module m (type FloatList (Cons (Tuple Float64 FloatList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (FloatList.Nil ()) \
+                        (FloatList.Cons (tuple 1.5 (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Float64 compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the float-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive

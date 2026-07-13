@@ -4554,6 +4554,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
 enum ShapeNode {
     Int,
     Bool,
+    Float,
     Str,
     Bytes,
     Unit,
@@ -4588,6 +4589,11 @@ impl ShapeTableBuilder {
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
+            // A FLOAT64 payload is renderable (`box_op_ty`/`get_op_ty` box it via `box-float`/`get-float`,
+            // and the runtime `value-encode` renders a KIND_FLOAT decimal leaf). A FLOAT32 payload still
+            // declines at the box layer (an f32-slot needs a promote/demote coercion), so it falls through
+            // to the `_ => None` decline below — its recursive-sum escape is a later slice.
+            Ty::Float(ft) if ft.ground_width() == 64 => self.push(ShapeNode::Float),
             Ty::String => self.push(ShapeNode::Str),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
@@ -4692,6 +4698,7 @@ impl ShapeTableBuilder {
             match node {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
+                ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes
                 ShapeNode::Unit => d.push(5),
