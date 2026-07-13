@@ -115,6 +115,13 @@ mod bindings;
 #[cfg(target_arch = "wasm32")]
 use bindings::exports::cadenza::runtime::heap::Guest;
 
+// Arbitrary-precision signed integers (DESIGN-bigint-and-rational-rcdzc.md §5). A pure `no_std` limb
+// library, not yet wired to any WIT op — `#[allow(dead_code)]` so it is DCE'd from the shipped wasm
+// (hash-neutral) until the `bigint-*` ops land. Independently unit-tested (differential vs `num-bigint`,
+// a dev-dependency) as the safety net for the hand-written arithmetic.
+#[allow(dead_code)]
+mod bigint;
+
 /// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
 /// `no_std` (the shipped wasm build) without pulling in `std`. A component instance is
 /// single-threaded, so a plain `static` behind an `UnsafeCell` is sound: there is no other thread to
