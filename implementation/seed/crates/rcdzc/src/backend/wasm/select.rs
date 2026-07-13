@@ -3032,7 +3032,11 @@ fn emit(
                 emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
                 if let Some(op) = box_op_ty(&elem_ty)? {
                     if let Some(m) = is_narrow_int(db, e) {
-                        out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
                     }
                     out.push(Lir::CallImport(op)); // [set, elem-handle]
                 }
@@ -3047,7 +3051,11 @@ fn emit(
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_ty(&elem_ty)? {
                 if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -3062,7 +3070,11 @@ fn emit(
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_ty(&elem_ty)? {
                 if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -3090,7 +3102,11 @@ fn emit(
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_ty(&elem_ty)? {
                 if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -7985,6 +8001,30 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, Lir::IfUnreachableEnd)),
             "an over-range narrow add keeps its range-check; got {narrow_over:?}"
+        );
+        // CHAINED: the range PROPAGATES through nested arith — the inner `(+ (& x 15) (& y 15))` bounds to
+        // [0,30], so the OUTER `(+ … (& z 15))` sees [0,30]+[0,15]=[0,45] and BOTH adds elide their guard
+        // (zero xor across the whole body).
+        let chained = select(
+            "(module m (def (f (: x Int64) (: y Int64) (: z Int64)) \
+               (+ (+ (& x 15) (& y 15)) (& z 15))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !chained.iter().any(|i| matches!(i, Lir::I64Xor)),
+            "both adds in a chain elide their guard via range propagation; got {chained:?}"
+        );
+        // A chain where a middle operand is UNBOUNDED (`y`) keeps BOTH guards.
+        let chained_open = select(
+            "(module m (def (f (: x Int64) (: y Int64) (: z Int64)) \
+               (+ (+ (& x 15) y) (& z 15))) (def (main) 0) (export main))",
+        );
+        assert!(
+            chained_open
+                .iter()
+                .filter(|i| matches!(i, Lir::I64Xor))
+                .count()
+                >= 2,
+            "an unbounded operand in the chain keeps the guards; got {chained_open:?}"
         );
     }
 

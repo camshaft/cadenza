@@ -5393,69 +5393,17 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     (m & low) == low
 }
 
-/// An upper bound `B` (in `1..=63`) on the number of LOW bits a runtime value can set — i.e. the value
-/// is provably in `[0, 2^B)`. `None` if no such bound is known (a signed/deferred type, a value that can
-/// be negative, or a width ≥ 64 whose mask is not i64-representable). Used to elide a redundant `& M`
-/// when `M` covers all `B` bits.
-///  - A resolved UNSIGNED width-N type: `B = N` (the value lives in `[0, 2^N)`).
-///  - A LOGICAL right shift `(>>ᵤ x k)` by a constant `k` of such a value: `B = N − k` (the shift drops
-///    the low `k` bits and zero-fills the top, so the result fits `N − k` bits). This is what makes the
-///    bit-extraction idiom `(& (>>ᵤ x k) mask)` shed its redundant mask.
+/// An upper bound (in `1..=63`) on the number of LOW bits a runtime value can set — i.e. the value is
+/// provably in `[0, 2^B)`. Derived from `value_range`: a value whose range is `[0, hi]` (nonnegative,
+/// `hi` a nonneg i64) fits `bits(hi)` bits. `None` when the value is not provably nonnegative or has no
+/// i64 upper bound. Drives the mask-elision (`& fullmask`) and shift-out (`>>ᵤ` all bits) folds.
 fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
-    // A logical right shift by a constant narrows the bound: `(>>ᵤ inner k)` fits `bits(inner) − k`.
-    if let Core::Arith {
-        op: Prim::Shr,
-        lhs: inner,
-        rhs: count,
-    } = core_of(db, val)
-        && let Core::ConstInt(k) = core_of(db, count)
-        && let Some(k) = k.to_i64()
-        && (0..64).contains(&k)
-        // `>>` is LOGICAL only for an UNSIGNED operand (a signed `>>ₛ` sign-extends, keeping high bits).
-        && let crate::ty::Ty::Int(it) = crate::infer::type_of(db, inner)
-        && it.sign == crate::ty::Sign::Fixed(false)
-        && let Some(inner_bits) = unsigned_value_bits(db, inner)
-    {
-        return Some(inner_bits.saturating_sub(k as u32).max(1));
+    match value_range(db, val) {
+        // A nonnegative closed range `[0, hi]` → the significant-bit count of `hi` (≥ 1). `hi` is a
+        // nonnegative i64, so `bits(hi) ∈ 1..=63`.
+        Some((0, Some(hi))) if hi >= 0 => Some((64 - (hi as u64).leading_zeros()).max(1)),
+        _ => None,
     }
-    // A bitwise AND with a NON-NEGATIVE constant mask `M` caps the result at `M`'s significant-bit count:
-    // `v & M` sets no bit above `M`'s highest set bit, so it fits `⌈log2(M+1)⌉` bits regardless of `v`'s
-    // range. This narrows `(& x 15)` to 4 bits even when `x` is a full UInt8, so a following `>>ᵤ 4` sees
-    // an all-bits-shifted-out value. (A negative `M` — all high slot bits set — is not a narrowing.)
-    if let Core::Arith {
-        op: Prim::BitAnd,
-        lhs: a,
-        rhs: b,
-    } = core_of(db, val)
-    {
-        // Each operand's bit-bound: a NON-NEGATIVE constant contributes its own significant-bit count
-        // (`⌈log2(v+1)⌉`), a runtime operand its `unsigned_value_bits`. `v & M` sets no bit above ANY
-        // bounded operand's highest possible set bit, so the AND fits the MIN of whatever bounds are
-        // known — a nonneg constant mask on EITHER side alone caps the result, even when the OTHER
-        // operand (a signed `x`) has no bound. `(& x:Int64 15)` → 4 (the mask caps it to `[0,15]`
-        // regardless of `x`'s sign, since masking clears the high/sign bits).
-        let operand_bits = |db: &mut Db, o: StructId| -> Option<u32> {
-            match core_of(db, o) {
-                Core::ConstInt(v) => v
-                    .to_i64()
-                    .filter(|&x| x >= 0)
-                    .map(|x| (64 - (x as u64).leading_zeros()).max(1)),
-                _ => unsigned_value_bits(db, o),
-            }
-        };
-        let (ab, bb) = (operand_bits(db, a), operand_bits(db, b));
-        if let Some(bound) = ab.into_iter().chain(bb).min() {
-            return Some(bound.max(1));
-        }
-    }
-    // Otherwise the bound is the value's own resolved unsigned width.
-    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
-        return None;
-    };
-    let (crate::ty::Sign::Fixed(false), crate::ty::Width::Fixed(n)) = (it.sign, it.width) else {
-        return None; // only a resolved UNSIGNED type; signed/deferred is not provably nonnegative.
-    };
-    (n < 64).then_some(n) // 2^64 - 1 is not i64-representable here.
 }
 
 /// The language WIDTH `N` of `val`'s resolved integer type — the range a shift COUNT is guarded to
@@ -6133,17 +6081,21 @@ fn fold_comparison_at_type_bound(
 /// `[0, 2^B − 1]`, tighter than its type) and falls back to the value's declared-type bounds. Feeds the
 /// range-vs-constant comparison fold.
 fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
-    // A CONSTANT's range is exactly itself — `[v, v]` (the tightest possible). This gives interval
-    // arithmetic a precise endpoint for a constant operand (`(* (& x 15) 3)`: `[0,15] × [3,3] = [0,45]`).
+    // A CONSTANT's range is exactly itself — `[v, v]` (the tightest possible).
     if let Core::ConstInt(v) = core_of(db, id)
         && let Some(v) = v.to_i64()
     {
         return Some((v, Some(v)));
     }
-    // A derived nonnegative bit-bound gives the tightest range `[0, 2^B − 1]`. `B < 64` (the helper caps
-    // it), so `2^B − 1` fits i64.
-    if let Some(b) = unsigned_value_bits(db, id) {
-        return Some((0, Some((1i64 << b) - 1)));
+    // An ARITHMETIC / BITWISE / SHIFT node's range PROPAGATES from its operands' ranges — this is the
+    // dataflow layer that lets a bounded sub-expression bound its enclosing op (`(+ (& x 15) (& y 15))`
+    // → [0,30], and a further `(+ … (& z 15))` → [0,45]). All interval math is in `i128` so endpoints
+    // never wrap; the result is clamped back to `i64` range (a bound outside i64 becomes "unbounded" on
+    // that side). A `None` operand range makes the whole node unbounded (falls through to the type).
+    if let Core::Arith { op, lhs, rhs } = core_of(db, id)
+        && let Some(r) = arith_range(db, op, lhs, rhs)
+    {
+        return Some(r);
     }
     // Else the declared integer type's bounds. `min` must be i64-representable (it always is: signed MIN
     // and unsigned 0 both fit); `max` may be absent (unsigned-64).
@@ -6152,6 +6104,94 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
             Some((Some(lo), hi)) => Some((lo, hi)),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The range of a `Core::Arith { op, lhs, rhs }` result, propagated from the operand ranges. `None` when
+/// the op is not range-tracked or an operand's range is unknown (→ the node falls back to its type). All
+/// arithmetic is `i128` (endpoints never wrap); each endpoint is clamped to `i64` (an out-of-i64 bound
+/// becomes `None` on that side = "unbounded there"). Covers: `&` (bounded by the smaller nonneg operand),
+/// `|`/`^` (bounded by `2^max(bits)` for nonneg operands), `<<`/`>>ᵤ` by a constant, and `+`/`-`/`*`
+/// interval arithmetic. Verified sound by exhaustive endpoint checks.
+fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i64, Option<i64>)> {
+    let clamp = |lo: i128, hi: i128| -> (i64, Option<i64>) {
+        let lo = lo.max(i64::MIN as i128) as i64;
+        let hi = if hi <= i64::MAX as i128 {
+            Some(hi as i64)
+        } else {
+            None
+        };
+        (lo, hi)
+    };
+    // Significant-bit count of a NON-NEGATIVE constant (`⌈log2(v+1)⌉`), for the bitwise-op bounds.
+    let const_nonneg_bits = |db: &mut Db, o: StructId| -> Option<u32> {
+        match core_of(db, o) {
+            Core::ConstInt(v) => v
+                .to_i64()
+                .filter(|&x| x >= 0)
+                .map(|x| 64 - (x as u64).leading_zeros()),
+            _ => None,
+        }
+    };
+    match op {
+        // `v & M`: a nonneg operand (constant mask OR a value with a known `[0,hi]`) caps the result at
+        // its significant-bit count; the AND fits the MIN of whatever bounds are known. A nonneg mask on
+        // either side alone bounds it — `(& x:Int64 15)` → [0,15] regardless of `x`'s sign.
+        Prim::BitAnd => {
+            let bits = |db: &mut Db, o: StructId| -> Option<u32> {
+                const_nonneg_bits(db, o).or_else(|| unsigned_value_bits(db, o))
+            };
+            let (a, b) = (bits(db, lhs), bits(db, rhs));
+            let bound = a.into_iter().chain(b).min()?;
+            Some((0, Some((1i64 << bound.min(62)) - 1)))
+        }
+        // `v | w` / `v ^ w`: a nonneg result sets no bit above `max` of the operands' bit counts. BOTH
+        // operands must be provably nonnegative (a negative operand's high bits would set the sign bit).
+        Prim::BitOr | Prim::BitXor => {
+            let a = const_nonneg_bits(db, lhs).or_else(|| unsigned_value_bits(db, lhs))?;
+            let b = const_nonneg_bits(db, rhs).or_else(|| unsigned_value_bits(db, rhs))?;
+            Some((0, Some((1i64 << a.max(b).min(62)) - 1)))
+        }
+        // `v <<ᵤ k` (constant `k`): a nonneg `v ∈ [0,hi]` shifts to `[0, hi << k]` (in i128, clamped).
+        Prim::Shl => {
+            let (0, Some(hi)) = value_range(db, lhs)? else {
+                return None;
+            };
+            let Core::ConstInt(k) = core_of(db, rhs) else {
+                return None;
+            };
+            let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
+            Some(clamp(0, (hi as i128) << k))
+        }
+        // `v >>ᵤ k` (constant `k`, LOGICAL — an unsigned/nonneg operand): a nonneg `v ∈ [0,hi]` → `[0, hi
+        // >> k]`. Only for a value proven nonnegative (`value_range` gives `[0, …]`); a signed `>>ₛ`
+        // sign-extends and is excluded because a negative operand's range would not start at 0.
+        Prim::Shr => {
+            let (0, Some(hi)) = value_range(db, lhs)? else {
+                return None;
+            };
+            let Core::ConstInt(k) = core_of(db, rhs) else {
+                return None;
+            };
+            let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
+            Some((0, Some(hi >> k)))
+        }
+        // `+`/`-`/`*`: interval arithmetic over the operands' CLOSED ranges.
+        Prim::Add | Prim::Sub | Prim::Mul => {
+            let (alo, ahi) = closed_range(db, lhs)?;
+            let (blo, bhi) = closed_range(db, rhs)?;
+            let (alo, ahi, blo, bhi) = (alo as i128, ahi as i128, blo as i128, bhi as i128);
+            let (lo, hi) = match op {
+                Prim::Add => (alo + blo, ahi + bhi),
+                Prim::Sub => (alo - bhi, ahi - blo),
+                _ => {
+                    let c = [alo * blo, alo * bhi, ahi * blo, ahi * bhi];
+                    (*c.iter().min().unwrap(), *c.iter().max().unwrap())
+                }
+            };
+            Some(clamp(lo, hi))
+        }
         _ => None,
     }
 }
@@ -6678,7 +6718,9 @@ fn lower_set_contains(db: &mut Db, set: StructId, elem: StructId) -> Core {
         return Core::ConstBool(present);
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
-        return Core::Poison(Reject::decline("Set.contains operand is not a solved set type"));
+        return Core::Poison(Reject::decline(
+            "Set.contains operand is not a solved set type",
+        ));
     };
     Core::SetContains { set, elem, elem_ty }
 }
@@ -6713,10 +6755,15 @@ fn lower_set_insert_remove(
             out.retain(|&e| const_compound_eq(db, e, elem) != Some(true)); // drop the matching element
         }
         trace!(target: "rcdzc::fold", elems = out.len(), insert = is_insert, "Set.insert/remove folds onto a constant set");
-        return Core::SetOf { elems: out, elem_ty };
+        return Core::SetOf {
+            elems: out,
+            elem_ty,
+        };
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
-        return Core::Poison(Reject::decline("Set.insert/remove operand is not a solved set type"));
+        return Core::Poison(Reject::decline(
+            "Set.insert/remove operand is not a solved set type",
+        ));
     };
     if is_insert {
         Core::SetInsert { set, elem, elem_ty }
@@ -6762,16 +6809,23 @@ fn lower_set_algebra(
                 out
             }
             // intersection: a's elements that are also in b.
-            SetAlgebraOp::Intersection => {
-                a.iter().copied().filter(|&e| set_has_const_elem(db, &b, e)).collect()
-            }
+            SetAlgebraOp::Intersection => a
+                .iter()
+                .copied()
+                .filter(|&e| set_has_const_elem(db, &b, e))
+                .collect(),
             // difference: a's elements NOT in b.
-            SetAlgebraOp::Difference => {
-                a.iter().copied().filter(|&e| !set_has_const_elem(db, &b, e)).collect()
-            }
+            SetAlgebraOp::Difference => a
+                .iter()
+                .copied()
+                .filter(|&e| !set_has_const_elem(db, &b, e))
+                .collect(),
         };
         trace!(target: "rcdzc::fold", ?op, elems = out.len(), "set-algebra folds two constant sets");
-        return Core::SetOf { elems: out, elem_ty };
+        return Core::SetOf {
+            elems: out,
+            elem_ty,
+        };
     }
     Core::SetAlgebra { op, lhs, rhs }
 }

@@ -4864,6 +4864,24 @@ mod runtime_ops {
             ),
             -7 // 3 - 10
         );
+        // CHAINED (range propagates through nested arith): (+ (+ (& x 15) (& y 15)) (& z 15)) ∈ [0,45],
+        // both adds guardless — value must still be exact.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(+ (+ (& x 15) (& y 15)) (& z 15))",
+                &[Val::S64(255), Val::S64(255), Val::S64(255)]
+            ),
+            45 // 15+15+15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(+ (+ (& x 15) (& y 15)) (& z 15))",
+                &[Val::S64(1), Val::S64(2), Val::S64(4)]
+            ),
+            7 // 1+2+4
+        );
     }
 }
 
