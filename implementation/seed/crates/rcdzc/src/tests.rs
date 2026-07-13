@@ -10266,6 +10266,14 @@ mod diagnostics {
         // makes the program type-check.
         let d = first_error("(module m (def (f (: x Int64)) (+. x 2.0)) (export f))");
         assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        // The message names the no-silent-promotion RULE and the two types, not a bare unifier dump.
+        assert!(
+            d.message.contains("no implicit conversion")
+                && d.message.contains("Float64")
+                && d.message.contains("Int64"),
+            "CDZ0301 names the rule + both numeric types: {}",
+            d.message
+        );
         let fix = d.fix.expect("a coercion fix is carried");
         assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
         assert_eq!(
@@ -13141,6 +13149,45 @@ mod stage1 {
             Some("CDZ0401"),
             "expected CDZ0401 (no home for a reached effect), got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_no_home_effect_reports_one_error_not_a_shadowing_decline() {
+        // One ungranted effect must yield ONE primary `error:` — the coded CDZ0401 — NOT the coded
+        // rejection PLUS the emit path's uncoded "performed with no enclosing handler here" DECLINE for
+        // the same op (both were surfaced as `error:`, reading as two errors for one root cause).
+        // `dedup_faults` drops the standalone-perform decline when a CDZ0401 is present
+        // (`reference-compiler.md` §Outcomes Are Ordered By Safety — the coded rejection is the stronger
+        // report). Assert exactly ONE error-severity diagnostic, and it is CDZ0401.
+        let src = "(do (effect Ask (op ask (-> Unit Int64))) \
+                   (def (main) (+ ((. Ask ask)) 1)) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "one ungranted effect = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0401"));
+        // The shadowing decline is gone specifically.
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::NO_HOME_STANDALONE_DECLINE),
+            "the standalone-perform no-home decline must not accompany the CDZ0401"
         );
     }
 

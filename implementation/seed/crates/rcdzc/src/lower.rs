@@ -601,10 +601,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     };
                 }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unhandled perform at standalone lowering → decline (entrypoint check reports CDZ0401)");
-                return Core::Poison(Reject::decline(
-                    "this effect operation is performed with no enclosing handler here; its home is \
-                     determined by the handler or delegation enclosing its callers",
-                ));
+                return Core::Poison(Reject::decline(crate::diag::NO_HOME_STANDALONE_DECLINE));
             }
             // CASE-OF-CASE (commuting conversion): a head that reduces to a runtime `if` —
             // `((if c a b) args…)` — pushes the application into each branch: `(if c (a args…)
