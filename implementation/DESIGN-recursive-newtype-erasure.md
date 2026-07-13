@@ -57,20 +57,29 @@ DECISION: implement a **custom `PartialEq for Ty`** comparing nominals by `decl 
 `inner` from equality) as the single source of truth, so `agrees_with`/`unify` are consistent with it.
 No `Hash` to keep in sync. This is CLEANER than the doc's worst case (no map-key breakage).
 
-### Phase 1 — representation refactor, BYTE-NEUTRAL on the current (non-recursive) corpus
-- [ ] Add `args: Vec<Ty>` to `Ty::Nominal`; thread through every construction (via `normalize_sum`).
-- [ ] Comparators compare by `decl + args`, not `inner`: `unify` (unify.rs), `agrees_with` (ty.rs),
-  `join` (ty.rs), `occurs` (unify.rs — check args for the var, not inner).
-- [ ] Custom `PartialEq`/`Eq`/`Hash` for `Ty` if Phase 0 says so.
-- [ ] GATE: byte-neutral — same gate count, generic distinctness (`Box Int64 ≠ Box Bool`) preserved
-  via `args`, all existing newtype tests green. This is a correctness improvement even pre-recursion.
+### Phase 1 — representation refactor, BYTE-NEUTRAL — ✅ DONE (`spec`@Phase1)
+- [x] Added `args: Vec<Ty>` to `Ty::Nominal`; threaded through every construction (via `normalize_sum`).
+- [x] Comparators compare by `decl + args`, not `inner`: `unify`, `agrees_with`, `join`, `occurs`,
+  `has_free_var` (all walk `args` like `Ty::Sum`).
+- [x] Hand-written `PartialEq for Ty` (dropped the derive) — nominal by `decl + args`; `Eq` marker; no
+  `Hash` needed. `encode_ty`/`decode_ty` wire form gained the `(args …)` group.
+- [x] GATE: byte-neutral (no regressions, 970 tests). Generic distinctness preserved via `args`.
 
-### Phase 2 — flip recursion on
-- [ ] Remove the `reaches_decl` box-guard in `infer::newtype_underlying` (recursive decls erase).
-- [ ] Add the `Ty::Nominal` arms to `box_op_ty`/`get_op_ty` (the spike's two).
-- [ ] Confirm `valtype_of`/`comp_valtype_of`/`rust_type` read through `inner` and terminate on the
-  `Ty::Sum` leaf.
-- [ ] GATE: `(: (Mk …) Lst)`, direct traversal, MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))`,
+### Phase 2 — flip recursion on — ✅ DONE (`spec`@Phase2)
+- [x] Removed the `reaches_decl` box-guard (deleted the fn) — every single-variant sum erases.
+- [x] Added the `Ty::Nominal` arms to `box_op_ty`/`get_op_ty`.
+- [x] `valtype_of`/`rust_type` read through `inner` and terminate on the `Ty::Sum` leaf (finite).
+- [x] ⚠ FIXED A CACHE-POLLUTION BUG the recursion exposed: the load-time `newtype_underlying` walk
+  called `typeval_of` on a recursive self-reference BEFORE `newtype_inner` was populated, memoizing
+  `Resolved::TypeVal(Ty::Sum{decl})` (the PRE-normalization boxed form) on the shared sum-record
+  `(meta t)` node — so a later annotation `(: x Lst)` read that stale `Ty::Sum` and failed to unify with
+  the value's `Ty::Nominal` ("type Lst does not match type Lst"). FIX: `db.resolved`/`db.types` reset to
+  empty after the precompute (it is the only thing that touched them in `load`; re-decoded on demand).
+- [x] GATE: `(: (Mk …) Lst)`, direct traversal, MUTUAL recursion, let-bound recursive — all pass; escape
+  still declines cleanly. Gate 1271/0.
+
+### Phase 2 (original gate line, kept for the record):
+- GATE: `(: (Mk …) Lst)`, direct traversal, MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))`,
   recursive+generic all pass. No unify mismatch. Escape still declines cleanly (Phase 3).
 
 ### Phase 3 — recursive-newtype HOST-ESCAPE walker (separate, hardest; defer until needed)

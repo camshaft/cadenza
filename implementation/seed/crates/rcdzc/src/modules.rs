@@ -5,6 +5,15 @@
 //! `Ref` to that record and `(. NAME field)` is ORDINARY member access, exactly as a sum's variants or an
 //! effect's operations are reached. Nothing about a module is privileged by name.
 //!
+//= spec/capabilities/core-semantics.md#a-module-evaluates-to-a-record-of-its-exports
+//# Evaluating a module MUST produce a record whose fields are the names its definitions export bound to their values.
+//!
+//= spec/capabilities/core-semantics.md#a-module-evaluates-to-a-record-of-its-exports
+//# Each definition in a module MUST register its name and value as a field of the module's record.
+//!
+//= spec/capabilities/core-semantics.md#a-module-evaluates-to-a-record-of-its-exports
+//# A module's exported definition MUST be reachable by member access on the module's record.
+//!
 //! A field's VALUE mirrors [`crate::resolve::do_def_binds`] (the do-local `def` binder): a VALUE
 //! declaration `(def x V)` or a nullary `(def (x) V)` binds its body `V`; a FUNCTION declaration `(def
 //! (f p…) BODY)` binds the lambda `(fn (p…) BODY)` (a fresh arena node, applied by the ordinary path). So
