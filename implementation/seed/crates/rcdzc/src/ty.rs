@@ -581,6 +581,18 @@ pub enum Ty {
     /// order of its scalar value. A `#\a` literal is a `Char` constant; `Char.to-int`/`from-int` convert
     /// to/from `Int64` totally. This increment realizes the CONSTANT char (literal + equality/ordering).
     Char,
+    /// A SYMBOL: an interned NAME value with O(1) equality (`options/symbol-interning/`; 17-symbols) — a
+    /// NOMINAL wrapper over a `String`. `(Symbol.of s)` maps a String to a Symbol, and two Symbols are
+    /// equal exactly when their underlying strings are equal (String equality lifted through the Symbol
+    /// tag). A monomorphic LEAF type (no parameter, like `String`/`Char`); its IDENTITY is content-derived
+    /// — a deterministic function of its text, NEVER allocation order (deterministic-value-form.md §A Value
+    /// Has One Canonical Byte Form) — so interning is a pure representation optimization the runtime MAY
+    /// perform invisibly. A `Symbol` never unifies with the `String` it wraps (a distinct `Ty` variant, so
+    /// a String cannot be passed where a Symbol is required nor vice versa — the nominal boundary). This
+    /// increment realizes the CONSTANT symbol: `Symbol.of`/`to-string` fold, and equality reuses the
+    /// underlying string's constant equality (a constant symbol shares the `Core::ConstStr` rep; only the
+    /// static type differs). The runtime symbol handle + `#"…"` reader-sugar equivalence arrive later.
+    Symbol,
     /// A FLOATING-POINT number, indexed by its bit WIDTH (`numeric-model.md` §A Floating-Point Type Is
     /// Indexed By A Compile-Time Width) — the float analogue of [`Ty::Int`], carrying a [`FloatTy`]
     /// (a possibly-deferred [`FloatWidth`]) rather than a fixed name. `Float64` is the signed 64-bit
@@ -745,7 +757,7 @@ impl Ty {
             // A nominal's free variables are its underlying type's — a generic `Box a` at an
             // unsolved instantiation carries the free var in `inner`.
             Ty::Nominal { inner, .. } => inner.has_free_var(),
-            // Bytes, String, and Char are leaves — no inner type, so no free variable.
+            // Bytes, String, Char, and Symbol are leaves — no inner type, so no free variable.
             Ty::Int(_)
             | Ty::Bool
             | Ty::Unit
@@ -754,6 +766,7 @@ impl Ty {
             | Ty::Bytes
             | Ty::String
             | Ty::Char
+            | Ty::Symbol
             | Ty::Float(_) => false,
         }
     }
@@ -849,6 +862,9 @@ impl Ty {
             (Ty::String, Ty::String) => true,
             // `Char` is monomorphic — the one char type agrees only with itself.
             (Ty::Char, Ty::Char) => true,
+            // `Symbol` is monomorphic — the one symbol type agrees only with itself (and NOT with the
+            // `String` it wraps: the nominal boundary, handled by the `_ => false` fallthrough).
+            (Ty::Symbol, Ty::Symbol) => true,
             // Two floats agree iff their WIDTHS agree — `Float32` ≠ `Float64` (no silent promotion), a
             // deferred/variable width is compatible (not yet fixed). A float never agrees with an integer
             // (numeric-model.md §Numeric Types Do Not Silently Promote). Mirrors the `Ty::Int` width check.
@@ -991,6 +1007,7 @@ impl Ty {
             Ty::String => "String".to_string(),
             // A char renders as `Char` — one monomorphic type (its VALUES render `#\c`).
             Ty::Char => "Char".to_string(),
+            Ty::Symbol => "Symbol".to_string(),
             // A float renders as its aliased width name — `Float32`/`Float64`. Every admitted float
             // width ({32, 64}) has an alias, so an observed float type is always a concrete `FloatN`
             // (an unresolved width grounds to `Float64`), mirroring the integer `IntN`/`UIntN` render.

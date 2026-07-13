@@ -1778,6 +1778,7 @@ fn ty_contains_sum(ty: &Ty) -> bool {
         | Ty::Bytes
         | Ty::String
         | Ty::Char
+        | Ty::Symbol
         | Ty::Float(_)
         | Ty::Type
         | Ty::Var(_)

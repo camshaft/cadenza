@@ -182,6 +182,18 @@ pub enum Prim {
     /// for a value that is a Unicode scalar, `None` for a surrogate / out-of-range integer. Folds a
     /// constant integer to `Some`/`None`.
     CharFromInt,
+    /// The ground `Symbol` type-value — held in the `Symbol` module record's `(meta t)`, so bare `Symbol`
+    /// in type position reduces to `Ty::Symbol` (a NULLARY type, like `String`/`Char`; the `Symbol` module
+    /// also carries `of`/`to-string` operation fields, but its type role is this).
+    SymbolTy,
+    /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
+    /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
+    /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
+    /// constant-string equality. A runtime string interns at run time (a later increment).
+    SymbolOf,
+    /// `Symbol.to-string` — recover a Symbol's underlying content String (`Symbol → String`, the inverse
+    /// of `Symbol.of`). A constant symbol FOLDS to its `Core::ConstStr` content (retyped `String`).
+    SymbolToString,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -521,6 +533,9 @@ impl Prim {
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
+            "Symbol" => Some(Prim::SymbolTy),
+            "symbol-of" => Some(Prim::SymbolOf),
+            "symbol-to-string" => Some(Prim::SymbolToString),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
@@ -646,6 +661,7 @@ impl Prim {
             Prim::BytesTy => Some(crate::ty::Ty::Bytes),
             Prim::StringTy => Some(crate::ty::Ty::String),
             Prim::CharTy => Some(crate::ty::Ty::Char),
+            Prim::SymbolTy => Some(crate::ty::Ty::Symbol),
             _ => None,
         }
     }

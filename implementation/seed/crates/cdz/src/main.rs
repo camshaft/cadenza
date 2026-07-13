@@ -675,14 +675,21 @@ fn program_error_keys(text: &str, is_ml: bool) -> Option<Vec<(String, String)>> 
     );
     let bytes = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)?; // no artifact → failed at entry
     let text_out = String::from_utf8_lossy(bytes);
-    // The wire is one fault per line: `severity<TAB>code<TAB>node<TAB>…`. Keep the ERROR lines' (code, node).
+    // The wire is one fault per line: `severity<TAB>code<TAB>node<TAB>fix-kind<TAB>fix-node<TAB>
+    // fix-repl<TAB>fix-verified<TAB>message` (8 cols). Key each ERROR by `(code, MESSAGE)` — NOT the node
+    // id. A fix that RENUMBERS nodes (a wrap/insert shifts every following node's id) would make an
+    // untouched, still-present error land at a different id and look "new", failing the no-regression
+    // check spuriously (`cdz fix --all` would then decline a valid fix when a SECOND independent fault
+    // survives). The message text is invariant under renumbering, so it identifies "the same fault"
+    // faithfully; two genuinely-distinct faults of one code differ in their message (they name different
+    // variants / spots), so they stay distinct keys.
     let mut keys: Vec<(String, String)> = text_out
         .lines()
         .filter_map(|line| {
-            let mut cols = line.splitn(4, '\t');
-            match (cols.next(), cols.next(), cols.next()) {
-                (Some("error"), Some(code), Some(node)) => {
-                    Some((code.to_string(), node.to_string()))
+            let cols: Vec<&str> = line.splitn(8, '\t').collect();
+            match (cols.first(), cols.get(1), cols.get(7)) {
+                (Some(&"error"), Some(code), Some(msg)) => {
+                    Some((code.to_string(), msg.to_string()))
                 }
                 _ => None,
             }
