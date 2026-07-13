@@ -417,19 +417,30 @@ fn copy_structural(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     }
 }
 
-/// Whether `id` is a name occurrence in a BINDER POSITION — the name slot of a `let` binding pair, or a
-/// match-arm pattern binder. Such an occurrence NAMES a binding; it is not a value reference, so
-/// β-reduction must copy it structurally rather than substitute an argument for it (else a binder that
-/// shadows a same-named parameter would be replaced by the argument, destroying the binding). Detected
-/// structurally by the parent chain, so no name-specific knowledge is needed:
+/// Whether `id` is a name occurrence in a BINDER POSITION — the name slot of a `let` binding pair, a
+/// match-arm pattern binder, or a `fn`/`def` PARAMETER (bare or the name of a `(: name T)` binder). Such
+/// an occurrence NAMES a binding; it is not a value reference, so β-reduction must copy it structurally
+/// rather than substitute an argument for it (else a binder that shadows a same-named parameter would be
+/// replaced by the argument, destroying the binding). Detected structurally by the parent chain, so no
+/// name-specific knowledge is needed:
 ///
 ///  - `id` is the FIRST child of a `(name init)` pair whose grandparent is a `let`'s bindings-list.
 ///  - `id` is the FIRST child (the pattern) of a `(pattern body)` arm whose grandparent is a `match`.
+///  - `id` is a `fn`/`def` PARAMETER — a bare name directly in the param list, or the name slot of a
+///    `(: name T)` param binder. (Without this, β-COPYING a lambda whose param is annotated `(: p T)`
+///    treated the param name as a value reference and copied it detached from its `(: …)` annotation, so
+///    the copy's param lost its declared type — an eta-expanded runtime-currying residual, whose awaited
+///    param IS annotated `(: $eta (typeval T))`, then declined "parameter type has no machine rep".)
 fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     let Some(pair) = db.parent_of(id) else {
         return false;
     };
-    // `id` must be the pattern/name slot — the pair's/arm's first child.
+    // A `fn`/`def` PARAM whose parent is the param LIST directly (a bare-name param): the param list is a
+    // `fn`'s first tail element, or a `def`'s signature list `(name p…)` (params after the def name).
+    if is_param_list(db, pair, id) {
+        return true;
+    }
+    // `id` must be the pattern/name slot — the pair's/arm's/binder's first child.
     let crate::ast::Struct::List(pair_children) = db.ast.get(pair) else {
         return false;
     };
@@ -453,6 +464,38 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
         && tail.iter().skip(1).any(|&arm| arm == pair)
     {
         return true;
+    }
+    // An ANNOTATED `fn`/`def` param `(: name T)`: `id` is the name (first child), `pair` is the `(: …)`
+    // binder, and the binder sits in a param list. (The bare-name case is caught above; this is the
+    // annotated companion — the name inside `(: name T)` is still a binder, not a reference.)
+    if db.ast.as_form(pair, ":").is_some() && is_param_list(db, grandparent, pair) {
+        return true;
+    }
+    false
+}
+
+/// Whether `list` is a `fn`/`def` PARAMETER LIST that contains `child` as one of its parameters. A `fn`'s
+/// param list is its FIRST tail element `(fn (p…) body)`; a `def`'s is its signature `(def (name p…)
+/// body)` where the params follow the def name (so `child` is any element except the name at position 0).
+fn is_param_list(db: &Db, list: StructId, child: StructId) -> bool {
+    let Some(form) = db.parent_of(list) else {
+        return false;
+    };
+    if let Some(tail) = db.ast.as_form(form, "fn")
+        && tail.first() == Some(&list)
+    {
+        // A `fn` param list — `child` is one of its params (any position).
+        if let crate::ast::Struct::List(ps) = db.ast.get(list) {
+            return ps.contains(&child);
+        }
+    }
+    if let Some(tail) = db.ast.as_form(form, "def")
+        && tail.first() == Some(&list)
+    {
+        // A `def` signature `(name p…)` — `child` is a param iff it is present and NOT the name (pos 0).
+        if let crate::ast::Struct::List(sig) = db.ast.get(list) {
+            return sig.first() != Some(&child) && sig.contains(&child);
+        }
     }
     false
 }
@@ -732,6 +775,11 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
     // match, which would only see the collapsed `Ref{last}` and miss the intermediates.)
     if let Some(items) = db.ast.as_form(node, "do") {
         for &item in items.to_vec().iter() {
+            // A do-local `(type …)` / `(effect …)` is a DECLARATION with no callees — skip it (descending
+            // would resolve its `type`/`effect` head as an unbound value). Every other form runs.
+            if matches!(db.ast.head_name(item), Some("type") | Some("effect")) {
+                continue;
+            }
             collect_callees(db, item, out);
         }
         return;

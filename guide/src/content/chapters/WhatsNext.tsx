@@ -19,7 +19,8 @@ export default function WhatsNext() {
 
       <H2>What you've learned</H2>
       <P>
-        You can bind values and write functions (<Ch to="/basics">Values &amp; functions</Ch>), branch
+        You can bind values and write functions (<Ch to="/basics">Values &amp; functions</Ch>), pipe
+        and compose them (<Ch to="/functions">Composing functions</Ch>), branch
         and recurse (<Ch to="/control-flow">Control flow</Ch>), compare and order
         (<Ch to="/ordering">Comparison &amp; ordering</Ch>), bundle data into tuples and records and
         take it apart (<Ch to="/data">Tuples &amp; records</Ch>,{" "}
@@ -27,7 +28,8 @@ export default function WhatsNext() {
         <Ch to="/pattern-matching">pattern matching</Ch>, work with <Ch to="/lists">lists</Ch> and{" "}
         <Ch to="/strings">strings</Ch>, handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
-        Cadenza's <Ch to="/numbers">numbers</Ch> behave.
+        Cadenza's <Ch to="/numbers">integers</Ch> and <Ch to="/floats">floating-point numbers</Ch>{" "}
+        behave.
       </P>
       <P>
         More importantly, you've seen the ideas underneath — the{" "}

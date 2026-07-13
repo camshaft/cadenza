@@ -268,6 +268,7 @@ pub fn compile_component(ast_bytes: &[u8]) -> Result<Vec<u8>, Diagnostic> {
                 code: None,
                 message: "compilation produced no component".into(),
                 node: None,
+                fix: None,
             }))
         }
     }
@@ -555,6 +556,11 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // trap is reached through the reference site (the value is inlined there), so it is caught
             // there. So a def-form is skipped here; only a pure STATEMENT form is unconditional.
             if db.ast.head_name(f) == Some("def") {
+                continue;
+            }
+            // A do-local `(type …)` / `(effect …)` is a DECLARATION (its record is synthesized at load),
+            // not an evaluated statement — skip it like a `def` (resolving it as a value would decline).
+            if matches!(db.ast.head_name(f), Some("type") | Some("effect")) {
                 continue;
             }
             collect_reached_poisons(db, f, out);

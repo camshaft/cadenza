@@ -8295,6 +8295,98 @@ mod stage1 {
         assert!(expect_decline("nope").contains("unbound name"));
     }
 
+    // ── "did you mean?" — the rustc-gold-standard fix suggestion for an unbound name ─────────────────
+
+    /// The full error `Diagnostic` for `(module m (def (main) BODY) (export main))` — like
+    /// `expect_decline`, but keeps the whole record (code + message + the structural fix) so a test can
+    /// assert on the proposed repair, not just the message text.
+    fn expect_error(body: &str) -> crate::abi::Diagnostic {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        compile_component(&crate::codec::encode(&parse(&src))).expect_err("must decline/reject")
+    }
+
+    #[test]
+    fn an_unbound_name_close_to_a_def_suggests_it_with_a_heuristic_fix() {
+        // A typo of a top-level def (`compute` → `computee`) is CDZ0101, but the diagnostic now NAMES
+        // the near candidate AND carries a structural fix an agent applies directly
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+        let src = "(module m (def (compute x) x) (def (main) (computee 1)) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert!(
+            d.message.contains("did you mean `compute`?"),
+            "message should name the candidate: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a fix is carried");
+        assert_eq!(fix.replacement, "compute");
+        assert!(
+            !fix.verified,
+            "a nearest-name guess is heuristic, not verified"
+        );
+        // The fix's node is the faulting reference itself — the diagnostic anchors there too, so an
+        // editor highlights and rewrites the same span.
+        assert_eq!(Some(fix.node), d.node, "fix targets the faulting node");
+    }
+
+    #[test]
+    fn an_unbound_name_close_to_a_let_binding_suggests_the_binding() {
+        // A lexical binder in scope is a suggestion candidate too — `counter` bound by an enclosing
+        // `let`, referenced as `countr`.
+        let d = expect_error("(let ((counter 5)) (+ countr 1))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("counter"),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn an_unbound_name_close_to_a_prelude_builtin_suggests_it() {
+        // The prelude's names are candidates — `List` misspelled `Lst` (a module head).
+        let d = expect_error("(Lst.push (list 1 2) 3)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("List"),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_genuinely_unknown_name_carries_no_misleading_suggestion() {
+        // No in-scope name is within the edit-distance cutoff of `frobnicate`, so the diagnostic stays
+        // the plain "unbound name" — no fix, no misleading "did you mean". (A false suggestion is worse
+        // than none: an agent would apply the wrong edit.)
+        let d = expect_error("frobnicate");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("did you mean"),
+            "no suggestion: {}",
+            d.message
+        );
+        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+    }
+
+    #[test]
+    fn the_suggestion_is_deterministic_across_equidistant_candidates() {
+        // Two defs equidistant (1 edit) from the reference `ab`: `ac` and `xb`. The tie breaks on the
+        // lexicographically-smaller candidate, so the suggestion is a pure function of the source
+        // (`spec/capabilities/diagnostics.md` §A Fix Is A Deterministic Function Of The Source), never
+        // dependent on def/hash iteration order.
+        let src = "(module m (def (ac) 1) (def (xb) 2) (def (main) (+ (ab) 0)) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("ac"),
+            "lexicographically-smaller candidate wins the tie: {}",
+            d.message
+        );
+    }
+
     #[test]
     fn a_malformed_digit_led_token_is_a_malformed_literal_not_an_unbound_name() {
         // A digit-led token that fails numeric parsing (`0o17` octal, `0x`/`0b` empty radix body,
@@ -9777,6 +9869,61 @@ mod stage1 {
         assert_eq!(
             code("(def (f (tuple a b)) (+ a b)) (def (g) (f (tuple 1 2)))"),
             None
+        );
+    }
+
+    #[test]
+    fn a_sum_type_may_be_declared_inside_a_do_block() {
+        // A `(type …)` declaration nested in a `do` block — a LOCAL sum, not a top-level item. `top_items`
+        // sees only the root's direct children, so `db::collect_nested_decls` descends def bodies + nested
+        // `do`s to gather these and synthesize their sum records; the do-form walks (resolve/infer/compile/
+        // eval) skip a `(type …)` form as a declaration (like a `def`), so its `type` head is not resolved
+        // as an unbound value. The type name + variant names then resolve program-wide (nominal identity).
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            run_returns::<i64>(&bytes, "main")
+        };
+        // A nullary enum and a payload variant, both declared inside `main`'s `do`, with CONSTANT
+        // scrutinees that fold at compile time (so the run needs no value-heap runtime — the recursive-
+        // heap case is covered by the corpus, which links the runtime). The names `C`/`R`/`G`/`Bx`
+        // resolve although the type is declared locally, not at top level.
+        assert_eq!(
+            run(
+                "(module m (def (main) (do (type C R G B) (match R (R 1) (G 2) (B 3)))) (export main))"
+            ),
+            1
+        );
+        assert_eq!(
+            run(
+                "(module m (def (main) (do (type Box (Bx Int64)) (match (Bx 5) ((Bx x) x)))) (export main))"
+            ),
+            5
+        );
+        // A trailing `(type …)` (nothing to yield) is malformed, like a trailing `def`.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        assert_eq!(
+            code("(def (main) (do (type C R G)))").as_deref(),
+            Some("CDZ0201")
         );
     }
 
@@ -12631,6 +12778,58 @@ mod stage1 {
               (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
         assert_eq!(run_closure(src2, 4).unwrap(), "10"); // 4+3+2+1
+    }
+
+    #[test]
+    fn a_partially_applied_function_escapes_as_a_value_and_runs_through_a_recursive_hof() {
+        // A PARTIAL APPLICATION escaping short of full arity, run as a runtime closure. `(g n)` where `g`
+        // is `main`'s statically-known two-parameter lambda applied to ONE arg PARTIALLY APPLIES at compile
+        // time into the residual `(fn (b) (+ 5 b))`; that residual escapes as a VALUE into the recursive
+        // `sumapply`, which cannot inline it, so it runs as a runtime closure via `call_indirect`. The
+        // partial-application fold + the runtime-closure lift compose: `sumapply (g 5) 2 = (5+2)+(5+1) =
+        // 13`. Regression guard for the fix that made the residual's parameter annotation survive the
+        // β-copy that carries it into the recursive callee (before it, the awaited param lost its declared
+        // type — `is_binder_occurrence` now recognizes a `fn`/`def` param so a `(: p T)` binder copies with
+        // its annotation intact).
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (g n) 2)) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 5) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "13"); // (5+2)+(5+1)
+        // A `(*)` variant proves the residual dispatches the right code: sumapply (g 5) 2 = (5*2)+(5*1) = 15.
+        let src2 = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (g n) 2)) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
+        assert_eq!(run_closure(src2, 5).unwrap(), "15"); // (5*2)+(5*1)
+    }
+
+    #[test]
+    fn a_lambda_with_an_annotated_param_keeps_its_type_across_beta_copy() {
+        // Focused regression for the `is_binder_occurrence` fix. β-COPYING a lambda whose parameter is
+        // ANNOTATED `(: p T)` must preserve the annotation: the param name is a BINDER, not a value
+        // reference, so it copies structurally as part of the `(: …)` binder — before the fix it was
+        // treated as a reference and copied detached, so the copy's param lost its declared type. Exercised
+        // by a lambda that is copied (a partial application curries `(add 5)` into a residual carrying the
+        // annotated remaining param) then applied through a recursive HOF (which forces the copy). If the
+        // annotation were lost the residual's param would type `Any` and the closure would decline; that it
+        // RUNS pins the annotation survived. `apply-sum (add 5) 3 = (5+3)+(5+2)+(5+1) = 21`.
+        let src = "(module m \
+            (def (add (: a Int64) (: b Int64)) (+ a b)) \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (add 5) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "21"); // (5+3)+(5+2)+(5+1)
     }
 
     #[test]

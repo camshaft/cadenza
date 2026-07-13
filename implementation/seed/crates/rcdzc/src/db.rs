@@ -1444,6 +1444,20 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>, Vec<Ef
         }
     }
 
+    // NESTED type/effect declarations — a `(type …)` / `(effect …)` written inside a `do` block that is
+    // NOT a top-level item (`(def (main) (do (type Color …) …))`, a local sum). `top_items` sees only the
+    // root's direct children, so descend the def bodies + any nested `do` blocks to gather these too.
+    // Their identity is nominal (the declaration occurrence), so a synthesized nested sum resolves through
+    // the same occurrence-keyed `type_decls` / `def_by_name` paths as a top-level one — a nested type is
+    // brought into scope program-wide (well-formed local declarations do not collide by name, so global
+    // visibility is a safe over-approximation of "scoped to its `do`"). A do-local `(def …)` is bound
+    // lazily by `resolve`'s do-case; a nested `(type …)` needs the sum RECORD synthesized here, which is
+    // why the declaration must be gathered at load rather than resolved on demand.
+    let top: std::collections::HashSet<StructId> = top_items(ast).into_iter().collect();
+    for &body in defs.iter().filter_map(|d| d.body.as_ref()) {
+        collect_nested_decls(ast, body, &top, &mut types, &mut effects);
+    }
+
     // Resolve each export's target index by name against the gathered defs (a signature read, not a
     // body read).
     // Resolve each export to the def it names. A per-export `defs.iter().position(|d| d.name == …)`
@@ -1601,6 +1615,47 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
 
 /// The top-level item occurrences: the tail of `(module NAME …)` (past the name), the tail of
 /// `(do …)`, or the root as a single item.
+/// Gather `(type …)` / `(effect …)` declarations nested inside a `do` block reachable from `body` —
+/// the local-declaration companion of `scan_top_level`'s top-item loop. A declaration only appears as a
+/// FORM of a `do` block, so descend `do` blocks (and the bodies of any do-local `(def …)`), collecting
+/// each `(type …)`/`(effect …)` form. `top` is the set of top-level items already scanned (skip them so a
+/// top-level type in a `(do …)` root is not counted twice). Bounded to declaration-bearing structure
+/// (`do` forms + def bodies), not arbitrary expressions, so a future quoted `(type …)` datum is not
+/// mistaken for a declaration.
+fn collect_nested_decls(
+    ast: &Arenas,
+    body: StructId,
+    top: &std::collections::HashSet<StructId>,
+    types: &mut Vec<TypeDecl>,
+    effects: &mut Vec<EffectDecl>,
+) {
+    let Some(forms) = ast.as_form(body, "do") else {
+        return;
+    };
+    for &form in forms {
+        if top.contains(&form) {
+            continue; // a top-level item (the root `do`'s own child) — already scanned
+        }
+        if ast.as_form(form, "type").is_some() {
+            if let Some(decl) = scan_type_decl(ast, form) {
+                types.push(decl);
+            }
+        } else if ast.as_form(form, "effect").is_some() {
+            if let Some(decl) = scan_effect_decl(ast, form) {
+                effects.push(decl);
+            }
+        } else if let Some(def_tail) = ast.as_form(form, "def") {
+            // A do-local `(def sig body)` whose body may itself be a `(do …)` carrying declarations.
+            if let Some(&def_body) = def_tail.get(1) {
+                collect_nested_decls(ast, def_body, top, types, effects);
+            }
+        } else {
+            // Any other form may itself be (or contain) a nested `(do …)` — descend it directly.
+            collect_nested_decls(ast, form, top, types, effects);
+        }
+    }
+}
+
 fn top_items(ast: &Arenas) -> Vec<StructId> {
     let root = ast.root;
     if let Some(tail) = ast.as_form(root, "module") {

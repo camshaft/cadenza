@@ -557,6 +557,32 @@
   (call   main (: 3 Int64))
   (output (: 9 Int64)))
 
+; A PARTIAL APPLICATION that escapes short of full arity, then runs as a runtime closure. Here `g` is
+; `main`'s statically-known two-parameter lambda, so `(g n)` — applied to ONE arg — PARTIALLY APPLIES at
+; compile time (`core-semantics.md` §Functions Are Single-Arity: applying a curried function to fewer args
+; returns a closure awaiting the rest) into a residual `(fn (b) (+ 5 b))`. That residual then escapes as a
+; VALUE passed to the recursive `sumapply`, which cannot inline it — so it survives as a genuine runtime
+; closure applied via `call_indirect` at each step. The partial-application fold + the runtime-closure lift
+; compose: `sumapply (partial) 2 = (5+2)+(5+1) = 13`. (Pins the fix that made a partially-applied residual's
+; parameter annotation survive the β-copy that carries it into the recursive callee — before it, the
+; residual's awaited parameter lost its declared type and the closure declined.)
+
+(case "a partially-applied function escapes as a value and runs through a recursive HOF"
+  (doc    "`(g n)` where `g` is `main`'s two-parameter lambda applied to ONE arg partially applies to the
+           residual `(fn (b) (+ 5 b))`, which escapes as a value into the recursive `sumapply` (applied at
+           2 and 1) and runs as a runtime closure via call_indirect. `sumapply (g 5) 2 = (5+2)+(5+1) = 13`.
+           Pins that a partial application escaping short of full arity survives as a runtime closure when
+           it crosses into a recursive HOF.")
+  (input  (do
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1)))))
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64))
+              (sumapply (g n) 2))
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 13 Int64)))
+
 ; A closure RETURNED from a RECURSIVE function, then applied through a recursive HOF — two runtime
 ; function paths composed. `core-semantics.md` §A Function Is A First-Class Value lists both "returned
 ; as a result" and "passed as an argument"; here they meet at run time. Because `pick` is RECURSIVE it
