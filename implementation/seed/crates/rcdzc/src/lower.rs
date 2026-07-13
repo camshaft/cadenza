@@ -3918,6 +3918,230 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
     Some(SumFormTemplate { variants: out })
 }
 
+// ─── Shape descriptor (for the runtime `value-encode` op) ────────────────────────────────────────
+//
+// The compiler-baked descriptor the runtime `value-encode` walker reads to render a RUNTIME value —
+// including a self-referential (recursive) sum, which has no fixed hole-template. A descriptor is a
+// TABLE of shapes + a root index; a child position references another entry by index, so a recursive
+// type closes as a finite cycle (a `Ref` back to the sum's entry). Wire format is documented on the
+// runtime side (`cdz-runtime` value-encode note); this is the ENCODER, kept in lock-step (a drift is
+// caught by the runtime's byte-exact `value_encode_form_matches_the_codec` cross-check + the corpus).
+//
+// Shape tags: 0 Int, 1 Bool, 2 Float, 3 Str, 4 Bytes, 5 Unit, 6 Tuple[n][idx…], 7 List[idx],
+// 8 Record[n](name,idx)…, 9 Sum[n](head,idx)…, 10 Named(name,idx), 11 Ref(idx).
+
+/// Build the shape descriptor bytes for a `Ty::Sum` result, wrapped in the outer `(: <value> <Type>)`
+/// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
+/// the table is referenced by index (`Ref`), closing the cycle. `None` if any payload type has no
+/// renderable shape yet (a Float/Str/Bytes payload — a later slice; the escape then declines cleanly).
+pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    let crate::ty::Ty::Sum { name, .. } = ty else {
+        return None;
+    };
+    let mut builder = ShapeTableBuilder::default();
+    let inner = builder.shape_of(db, ty)?;
+    // The outermost shape is `Named(<type name>, inner)` — the `(: <value> <Type>)` value-form frame.
+    let named = builder.push(ShapeNode::Named(name.clone(), inner));
+    Some(builder.encode(named))
+}
+
+/// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
+enum ShapeNode {
+    Int,
+    Bool,
+    Unit,
+    Tuple(Vec<u32>),
+    List(u32),
+    Record(Vec<(String, u32)>),
+    Sum(Vec<(String, u32)>),
+    Named(String, u32),
+    Ref(u32),
+}
+
+/// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
+/// reference reuses the same entry (a `Ref`) rather than expanding forever.
+#[derive(Default)]
+struct ShapeTableBuilder {
+    table: Vec<ShapeNode>,
+    /// sum decl → its table index (filled BEFORE the variants are built, so a self-reference resolves).
+    sums: std::collections::HashMap<StructId, u32>,
+}
+
+impl ShapeTableBuilder {
+    fn push(&mut self, node: ShapeNode) -> u32 {
+        self.table.push(node);
+        (self.table.len() - 1) as u32
+    }
+
+    /// The table index of a shape for `ty`, building it (and its sub-shapes) if new. A `Ty::Sum` already
+    /// in progress returns a `Ref` to its (reserved) entry, closing recursion. `None` for an
+    /// unrenderable leaf type (Float/Str/Bytes — a later slice).
+    fn shape_of(&mut self, db: &mut Db, ty: &crate::ty::Ty) -> Option<u32> {
+        use crate::ty::Ty;
+        Some(match ty {
+            Ty::Int(_) => self.push(ShapeNode::Int),
+            Ty::Bool => self.push(ShapeNode::Bool),
+            Ty::Unit => self.push(ShapeNode::Unit),
+            Ty::Tuple(elems) => {
+                if elems.is_empty() {
+                    return Some(self.push(ShapeNode::Unit));
+                }
+                let mut idxs = Vec::with_capacity(elems.len());
+                for e in elems.iter() {
+                    idxs.push(self.shape_of(db, e)?);
+                }
+                self.push(ShapeNode::Tuple(idxs))
+            }
+            Ty::List(elem) => {
+                let e = self.shape_of(db, elem)?;
+                self.push(ShapeNode::List(e))
+            }
+            Ty::Record(fields) => {
+                let mut out = Vec::with_capacity(fields.len());
+                for (name, t) in fields.iter() {
+                    let idx = self.shape_of(db, t)?;
+                    out.push((name.name.clone(), idx));
+                }
+                self.push(ShapeNode::Record(out))
+            }
+            Ty::Sum { decl, .. } => {
+                // Already building/built this sum → a Ref to its reserved entry (closes recursion).
+                if let Some(&existing) = self.sums.get(decl) {
+                    return Some(self.push(ShapeNode::Ref(existing)));
+                }
+                // Reserve THIS sum's entry index BEFORE building the variants (a variant payload that
+                // references the sum resolves to this index). Fill it in place once the variants are built.
+                let self_ix = self.push(ShapeNode::Unit); // placeholder, overwritten below
+                self.sums.insert(*decl, self_ix);
+                let variants = sum_variant_payload_types(db, ty)?;
+                let mut out = Vec::with_capacity(variants.len());
+                for (head, payload_tys) in variants {
+                    // A variant's payload shape: no payload → Unit; one → that type; many → a Tuple.
+                    let payload_ix = match payload_tys.len() {
+                        0 => self.push(ShapeNode::Unit),
+                        1 => self.shape_of(db, &payload_tys[0])?,
+                        _ => {
+                            let mut idxs = Vec::with_capacity(payload_tys.len());
+                            for pt in &payload_tys {
+                                idxs.push(self.shape_of(db, pt)?);
+                            }
+                            self.push(ShapeNode::Tuple(idxs))
+                        }
+                    };
+                    out.push((head, payload_ix));
+                }
+                self.table[self_ix as usize] = ShapeNode::Sum(out);
+                self_ix
+            }
+            // Float/Str/Bytes payload rendering is a later slice — decline (the escape falls through).
+            _ => return None,
+        })
+    }
+
+    /// Serialize the table + root to the descriptor wire format (all counts/lengths unsigned LEB128).
+    fn encode(&self, root: u32) -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(out: &mut Vec<u8>, s: &str) {
+            leb(out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut d = Vec::new();
+        leb(&mut d, self.table.len() as u64);
+        for node in &self.table {
+            match node {
+                ShapeNode::Int => d.push(0),
+                ShapeNode::Bool => d.push(1),
+                ShapeNode::Unit => d.push(5),
+                ShapeNode::Tuple(idxs) => {
+                    d.push(6);
+                    leb(&mut d, idxs.len() as u64);
+                    for &i in idxs {
+                        leb(&mut d, i as u64);
+                    }
+                }
+                ShapeNode::List(i) => {
+                    d.push(7);
+                    leb(&mut d, *i as u64);
+                }
+                ShapeNode::Record(fields) => {
+                    d.push(8);
+                    leb(&mut d, fields.len() as u64);
+                    for (k, i) in fields {
+                        name(&mut d, k);
+                        leb(&mut d, *i as u64);
+                    }
+                }
+                ShapeNode::Sum(variants) => {
+                    d.push(9);
+                    leb(&mut d, variants.len() as u64);
+                    for (h, i) in variants {
+                        name(&mut d, h);
+                        leb(&mut d, *i as u64);
+                    }
+                }
+                ShapeNode::Named(n, i) => {
+                    d.push(10);
+                    name(&mut d, n);
+                    leb(&mut d, *i as u64);
+                }
+                ShapeNode::Ref(i) => {
+                    d.push(11);
+                    leb(&mut d, *i as u64);
+                }
+            }
+        }
+        leb(&mut d, root as u64);
+        d
+    }
+}
+
+/// The variants of a `Ty::Sum` as `(head-name, payload-types)` pairs at this instantiation — the head
+/// spelled as the runtime template writes it (a BARE variant name; the value form renders variants bare,
+/// e.g. `(Cons …)`, `(None unit)`). Mirrors `sum_form_template`'s variant/payload recovery.
+fn sum_variant_payload_types(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+) -> Option<Vec<(String, Vec<crate::ty::Ty>)>> {
+    let crate::ty::Ty::Sum { decl, args, .. } = ty else {
+        return None;
+    };
+    let decl_ref = db.type_decl_by_occ(*decl)?;
+    let params = decl_ref.params.clone();
+    let variants: Vec<(String, Vec<StructId>)> = decl_ref
+        .variants
+        .iter()
+        .map(|v| (v.name.clone(), v.payloads.clone()))
+        .collect();
+    let mut out = Vec::with_capacity(variants.len());
+    for (head, payload_occs) in variants {
+        let mut payload_tys = Vec::with_capacity(payload_occs.len());
+        for &p in &payload_occs {
+            let pty = match db.ast.as_name(p) {
+                Some(n) if params.iter().any(|q| q == n) => {
+                    let idx = params.iter().position(|q| q == n).unwrap();
+                    args.get(idx).cloned()?
+                }
+                _ => crate::eval::typeval_of(db, p)?,
+            };
+            payload_tys.push(pty);
+        }
+        out.push((head, payload_tys));
+    }
+    Some(out)
+}
+
 /// One variant's value-form template: `(: <variant-head> payload…) SumType)`, payload leaves as holes
 /// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]). The
 /// variant HEAD is built by [`variant_head_ast`] (qualified `(. Type Variant)` for a user sum, a bare

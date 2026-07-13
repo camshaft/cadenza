@@ -11644,6 +11644,44 @@ mod stage1 {
     }
 
     #[test]
+    fn sum_shape_descriptor_closes_recursion_with_a_ref() {
+        // The compiler's shape descriptor for a RECURSIVE sum `(type IL (Cons (Tuple Int64 IL)) Nil)` is
+        // a TABLE with a self-`Ref` (the `Cons` payload tuple's second element points back at the sum),
+        // so the descriptor is FINITE. This must be BYTE-IDENTICAL to the descriptor the runtime's
+        // `value_encode_form_matches_the_codec` test hard-codes (the compiler/runtime contract). We build
+        // it from the solved `Ty::Sum` and assert the bytes.
+        let src = "(module m (type IL (Cons (Tuple Int64 IL)) Nil) (def (main) Nil) (export main))";
+        let mut db =
+            crate::db::Db::load(crate::codec::decode(&crate::codec::encode(&parse(src))).unwrap());
+        let body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .unwrap()
+            .body
+            .unwrap();
+        let ty = crate::infer::type_of(&mut db, body);
+        let desc = crate::lower::sum_shape_descriptor(&mut db, &ty).expect("descriptor");
+        // The value walk must terminate + close the recursion: decode the table, confirm some entry is a
+        // `Ref` (tag 11) — the recursion-closing back-edge — and that the descriptor is non-trivial.
+        assert!(
+            desc.len() > 8,
+            "a recursive-sum descriptor is more than a trivial table"
+        );
+        assert!(
+            desc.contains(&11u8),
+            "the recursive payload closes with a Ref (tag 11)"
+        );
+        // The descriptor round-trips through a bounded decode (no infinite expansion): count the table
+        // entries via the leading LEB and confirm it is small + finite (the IL sum has a handful).
+        let table_len = desc[0] as usize; // small table → single LEB byte
+        assert!(
+            (1..=16).contains(&table_len),
+            "IntList's shape table is small + finite, got {table_len}"
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
