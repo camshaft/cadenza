@@ -1140,6 +1140,19 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
     {
         return true;
     }
+    // A NESTED `(do …)` block whose forms include a `(def …)` declaration binds that name for the
+    // following forms (`resolve::binder_in`'s Case 8). Without the `do` as a candidate the scope-skip
+    // index would hop PAST it and Case 8 would never fire, so a reference to a do-local declaration would
+    // be spuriously unbound (the `is_binding_candidate` trap: every binding form MUST be listed here). A
+    // `do` with NO declaration binds nothing, so it need not be a candidate — a plain value-sequencing
+    // block stays on the fast non-binding spine. The PROGRAM ROOT do is EXCLUDED: its defs are the
+    // top-level scan's (resolved file-scoped by name), not a lexical do-scope (see `do_local_binds`).
+    if form != ast.root
+        && let Some(forms) = ast.as_form(form, "do")
+        && forms.iter().any(|&f| ast.head_name(f) == Some("def"))
+    {
+        return true;
+    }
     // By parent shape: a `let` bindings-list (parent is a `let`, `form` its first tail element), or a
     // `match` arm (parent is a `match`, `form` a tail element after the scrutinee at tail position 0).
     let Some(p) = parent.get(form.0 as usize).copied().flatten() else {

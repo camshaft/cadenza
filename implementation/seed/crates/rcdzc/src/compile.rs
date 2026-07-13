@@ -517,6 +517,15 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     {
         let forms: Vec<StructId> = forms.to_vec();
         for f in forms {
+            // A do-local `(def …)` is a BINDING, not an unconditionally-evaluated statement: its value is
+            // computed only where the name is used, so a provable trap in an UNUSED declaration is not a
+            // build failure (it is the CDZ0305 "always traps but never used" warning a `let` binding
+            // gets, raised by the DCE pass — not a `collect_reached_poisons` fault). A USED declaration's
+            // trap is reached through the reference site (the value is inlined there), so it is caught
+            // there. So a def-form is skipped here; only a pure STATEMENT form is unconditional.
+            if db.ast.head_name(f) == Some("def") {
+                continue;
+            }
             collect_reached_poisons(db, f, out);
         }
         return;

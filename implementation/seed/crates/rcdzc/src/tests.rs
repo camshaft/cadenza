@@ -6601,6 +6601,61 @@ mod stage1 {
     }
 
     #[test]
+    fn a_do_local_declaration_binds_the_following_forms() {
+        // 02-binding-and-control §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow
+        // It: a `(def …)` form of a `do` binds its name for the LATER forms — a VALUE declaration
+        // `(def x 5)` and a FUNCTION declaration `(def (f n) …)` alike, each resolved like a top-level
+        // def (a `Ref` / a lambda). A later declaration sees an earlier one (`y` = `(+ x 1)`).
+        assert_eq!(run_main("(do (def x 5) (+ x 1))"), 6);
+        assert_eq!(run_main("(do (def (f n) (+ n 1)) (f 9))"), 10);
+        assert_eq!(run_main("(do (def x 5) (def y (+ x 1)) y)"), 6);
+    }
+
+    #[test]
+    fn a_do_local_declaration_shadows_last_wins_and_an_outer_binding() {
+        // A repeated do-local declaration shadows the earlier one for what follows (last-wins, like a
+        // repeated `let` binding): `(def x 5) (def x (+ x 10))` → the second `x` sees the first → 15.
+        assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
+        // A do-local declaration shadows an OUTER lexical binding for the forms that follow it: the inner
+        // `(def x 99)` shadows the enclosing `let ((x 1))`, so the block yields 99.
+        assert_eq!(run_main("(let ((x 1)) (do (def x 99) x))"), 99);
+    }
+
+    #[test]
+    fn a_do_local_declaration_scope_is_backward_only() {
+        // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
+        // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
+        let msg = expect_decline("(do (def y (+ x 1)) (def x 5) y)");
+        assert!(
+            msg.contains("unbound") && msg.contains('x'),
+            "a forward reference to a later do-local declaration must be unbound; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_do_block_ending_in_a_declaration_is_malformed() {
+        // A sequencing block YIELDS its last form's value, so it must end in a value form: a TRAILING
+        // declaration `(do (def x 5))` leaves the block valueless.
+        let msg = expect_decline("(do (def x 5))");
+        assert!(
+            msg.contains("must end in a value form"),
+            "a do block ending in a declaration must be malformed; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_unused_do_local_declaration_with_an_ill_typed_value_is_still_caught() {
+        // A VALUE declaration's value is type-checked EAGERLY (like a `let` binding value) — a fault
+        // whether or not the name is later used. `(def x (if 5 1 2))` is ill-typed (non-Bool condition)
+        // and caught even though the block yields the unrelated `42`.
+        let msg = expect_decline("(do (def x (if 5 1 2)) 42)");
+        assert!(
+            msg.contains("condition must be Bool"),
+            "an ill-typed do-local value declaration must be caught though unused; got: {msg}"
+        );
+    }
+
+    #[test]
     fn a_local_binding_shadows_a_same_named_top_level_def() {
         // A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent
         // of its scope: `resolve_name` consults the lexical scope FIRST and the top-level def index

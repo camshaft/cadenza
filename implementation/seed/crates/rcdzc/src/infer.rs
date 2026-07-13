@@ -1339,6 +1339,18 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     {
         let forms: Vec<StructId> = forms.to_vec();
         for f in forms {
+            // A do-local `(def …)` is a DECLARATION, not a value expression — resolving it as one would
+            // decline. A VALUE declaration `(def x V)` (or nullary `(def (x) V)`) has its value `V`
+            // type-checked eagerly, exactly like a `let` binding's value (a value binding is a fault
+            // whether or not the name is used). A FUNCTION declaration `(def (f p…) BODY)` is a lambda:
+            // its body is checked on CALL (β-reduced at a reference), like a `let`-bound lambda, so it is
+            // not descended into here.
+            if db.ast.head_name(f) == Some("def") {
+                if let Some(value) = crate::resolve::do_value_def_value(db, f) {
+                    collect(db, value, out);
+                }
+                continue;
+            }
             collect(db, f, out);
         }
         return;
