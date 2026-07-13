@@ -154,6 +154,14 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 if is_param_occurrence(db, id) {
                     trace!(target: "rcdzc::resolve", node = id.0, %n, "name → parameter (formal)");
                     Resolved::Param { binder: id }
+                } else if is_list_pattern_element_occurrence(db, id) {
+                    // A `(list a b)` match-pattern element binder IN THE PATTERN position — it names a
+                    // binding, not a value. It carries nothing on its own (a body reference resolves to a
+                    // `SumPayload` reading the scrutinee element, `binder_in` Case 6l); resolving the
+                    // pattern occurrence to `Unit` keeps it INERT, so walking the arm's pattern (e.g.
+                    // `resolve_subtree`) never reports it as a spurious unbound name.
+                    trace!(target: "rcdzc::resolve", node = id.0, %n, "name → list-pattern element binder (inert)");
+                    Resolved::Unit
                 } else {
                     resolve_name(db, id, &n)
                 }
@@ -503,9 +511,9 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             let bindings_occ = tail.first().copied()?;
             let body_occ = tail.get(1).copied();
             if Some(from) == body_occ {
-                // The body sees EVERY binding — no `stop_before`.
-                return last_binder_named(db, bindings_occ, name, None)
-                    .map(|v| Resolved::Ref { value: v });
+                // The body sees EVERY binding — no `stop_before`. A bare-name binder resolves to a
+                // `Ref`, a destructuring tuple-pattern binder to a `SumPayload` (handled inside).
+                return last_binder_named(db, bindings_occ, name, None);
             }
             return None;
         }
@@ -551,7 +559,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // has NO head name (it is a bare list of pairs), so this is only reached for a headless/other-headed
     // form — its own parent-shape check (`let_of_bindings_list`) confirms it.
     if let_of_bindings_list(db, form).is_some() {
-        return last_binder_named(db, form, name, Some(from)).map(|v| Resolved::Ref { value: v });
+        return last_binder_named(db, form, name, Some(from));
     }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
@@ -579,6 +587,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             scrutinee,
             steps: steps.into(),
             heads: heads.into(),
+        });
+    }
+    // Case 6l: `form` is a MATCH ARM `((list a b …) body)` (ascended from `body`) whose FIXED-ARITY list
+    // pattern binds `name` at element position `i`. Reading element `i` of the (list) scrutinee is the
+    // SAME `Elem(i)` access a tuple-payload binder uses, so it reuses `SumPayload` with a bare `[Elem(i)]`
+    // path (no `Payload` step, no head). Its type is the list's element type; a constant scrutinee folds
+    // the element (`fold_sum_path`'s `ListNew` arm). Scoped to this arm. (A REST binder binds a SUBLIST,
+    // not one element — a later increment; `list_pattern_element_binds` declines a pattern with `..`.)
+    if let Some((scrutinee, index)) = list_pattern_element_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            steps: vec![crate::core::PathStep::Elem(index)].into(),
+            heads: vec![].into(),
         });
     }
     // Case 6g: `form` is a GUARD `(guard <variant-pattern> <cond>)`, ascended from `<cond>` → a payload
@@ -614,7 +635,65 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(binder) = do_local_binds(db, form, from, name) {
         return Some(binder);
     }
+    // Case B: `form` is a MATCH ARM `(pattern body)` whose pattern is a `(bin <seg>…)` binary pattern that
+    // binds `name` at one of its segments — `(match b ((bin (u16 n)) n) …)`, the `n` in the body. The
+    // binder decodes that segment from the scrutinee; it resolves to a `BinField` (the binary analogue of
+    // Case 6's `SumPayload`). Scoped to this arm. An integer segment binder types `Ty::Int`, a bytes
+    // segment binder `Ty::Bytes`; lowering decodes it from the scrutinee (const-fold / BN4 runtime read).
+    if let Some((scrutinee, segs, seg_index)) = match_arm_bin_binds(db, form, from, name) {
+        return Some(Resolved::BinField {
+            scrutinee,
+            segs: segs.into(),
+            seg_index,
+        });
+    }
     None
+}
+
+/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a `(bin <seg>…)`
+/// binary pattern binding `name` at one of its segments, return `(scrutinee, segs, seg_index)` — the
+/// enclosing match's scrutinee, the parsed segment list, and which segment's binder `name` is. `None`
+/// otherwise. A segment's slot is a BINDER iff it is a bare name (not a literal — that is a match probe);
+/// so `(bin (u32 0x89504E47) (bytes rest))` binds `rest` at index 1 but the literal at 0 is a probe. The
+/// binary companion of [`match_arm_binds`]/[`match_arm_variant_binds`].
+fn match_arm_bin_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::resolved::Segment>, usize)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    let (pattern, body) = (pb[0], pb[1]);
+    if from != body {
+        return None;
+    }
+    // The pattern must be a `(bin …)` form. Re-parse its segment list via `resolve_bin` (pure over `&Db`,
+    // so this is exactly the `Resolved::Bin` the pattern position resolves to).
+    if db.ast.head_name(pattern) != Some("bin") {
+        return None;
+    }
+    let Resolved::Bin { segs } = resolve_bin(db, pattern) else {
+        return None;
+    };
+    // Which segment's slot is the bare name `name`? A literal slot is a probe, not a binder.
+    let seg_index = segs.iter().position(|s| {
+        db.ast
+            .as_name(s.slot)
+            .is_some_and(|nm| nm == name && nm != "_")
+    })?;
+    // `form`'s parent must be a `(match scrutinee arm…)` and `form` an arm (not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    Some((scrutinee, segs, seg_index))
 }
 
 /// If `form` is a `(do …)` block ascended from its child `from`, and a do-local `(def …)` before `from`
@@ -816,6 +895,75 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     Some(scrutinee)
 }
 
+/// If `form` is a match arm `((list a b …) body)` ascended from `body`, and the FIXED-ARITY list pattern
+/// binds `name` at element position `i`, return `(scrutinee, i)`. Only a fixed-arity `(list …)` (no `..`)
+/// is handled — a rest binder binds a sublist, not one element (a later increment), so a pattern with
+/// `..` returns `None`. Element sub-patterns are bare names. `None` if not a fixed-arity `(list …)` arm
+/// binding `name`.
+fn list_pattern_element_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, usize)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[1] != from {
+        return None; // must be `(pattern body)` ascended from the body
+    }
+    let elems = db
+        .ast
+        .as_ctor_form(pb[0], "list")
+        .or_else(|| db.ast.as_form(pb[0], "list"))?;
+    if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+        return None; // a REST pattern is a later increment — decline the whole list-match
+    }
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    // The FIRST element position bound to `name` (a bare name, not `_`).
+    elems
+        .iter()
+        .position(|&e| db.ast.as_name(e) == Some(name) && name != "_")
+        .map(|i| (scrutinee, i))
+}
+
+/// Whether `id` is a NAME occurrence that is a FIXED-ARITY `(list …)` match-pattern element — a binder in
+/// the PATTERN position, which must resolve INERT (not a looked-up value) so walking the arm's pattern
+/// never reports it unbound. Only a fixed-arity list pattern (no `..`); a rest pattern is a later
+/// increment. Mirrors the arm/scrutinee shape `list_pattern_element_binds` requires.
+fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
+    let Some(list) = db.parent_of(id) else {
+        return false;
+    };
+    let Some(elems) = db.ast.as_form(list, "list") else {
+        return false;
+    };
+    if !elems.contains(&id) || elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+        return false; // not an element, or a rest pattern (handled later)
+    }
+    let Some(arm) = db.parent_of(list) else {
+        return false;
+    };
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return false;
+    };
+    if pb.len() != 2 || pb[0] != list {
+        return false; // the list must be the arm's PATTERN (first element)
+    }
+    let Some(matchf) = db.parent_of(arm) else {
+        return false;
+    };
+    match db.ast.as_form(matchf, "match") {
+        Some(mtail) => mtail.first().copied() != Some(arm) && mtail.contains(&arm),
+        None => false,
+    }
+}
+
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern binds `name` at a
 /// variant PAYLOAD — possibly NESTED — return `(scrutinee, path, innermost_variant_head)`. The scrutinee
 /// is the enclosing match's; the path is the `Payload`/`Elem` steps from the scrutinee down to the
@@ -863,6 +1011,12 @@ fn match_arm_variant_binds(
     // root, no `Payload` step. A variant pattern descends via `find_binder_in_pattern` as before. (A
     // top-level RECORD pattern is a later increment; a tuple scrutinee is the common structural-match
     // shape — `(match (tuple a b) ((tuple x y) …))`.)
+    // A `(bin …)` binary pattern is NOT a variant pattern — its binders bind DECODED segments, resolved
+    // by Case B (`match_arm_bin_binds` → `BinField`), not a `SumPayload` path. Excluded here so a segment
+    // binder is not mis-descended as a variant/tuple payload (which would give it a spurious `Elem` path).
+    if db.ast.head_name(pattern) == Some("bin") {
+        return None;
+    }
     let mut path = Vec::new();
     let mut heads = Vec::new();
     let found = if is_tuple_pattern(db, pattern) {
@@ -899,8 +1053,16 @@ fn find_binder_in_pattern(
         return false; // a nullary variant pattern binds nothing; a lone head has no payload.
     }
     let head = app[0];
-    // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME.
-    let head_ok = db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some();
+    // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME. But the
+    // compound-VALUE constructor names (`list`/`tuple`/`record`/`map`) are NOT variant heads: a `(list a
+    // b)` / `(tuple a b)` pattern is a COLLECTION/tuple destructure, handled by its own binder case — so
+    // exclude them here, or this would mis-bind `(list a b)`'s elements at a `[Payload]` variant path.
+    let is_compound_ctor = db
+        .ast
+        .as_name(head)
+        .is_some_and(|h| matches!(h, "list" | "tuple" | "record" | "map"));
+    let head_ok = !is_compound_ctor
+        && (db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some());
     if !head_ok {
         return false;
     }
@@ -1024,7 +1186,7 @@ fn last_binder_named(
     bindings_occ: StructId,
     name: &str,
     stop_before: Option<StructId>,
-) -> Option<StructId> {
+) -> Option<Resolved> {
     let Struct::List(pairs) = db.ast.get(bindings_occ) else {
         return None;
     };
@@ -1050,9 +1212,30 @@ fn last_binder_named(
     for &pair in pairs[..end].iter().rev() {
         if let Struct::List(kv) = db.ast.get(pair)
             && kv.len() == 2
-            && db.ast.as_name(kv[0]) == Some(name)
         {
-            return Some(kv[1]);
+            // A bare-name binding `(x V)` binds `name` directly to the value occurrence `V` — a `Ref`,
+            // the common case (an allocation-free early return, the hot path).
+            if db.ast.as_name(kv[0]) == Some(name) {
+                return Some(Resolved::Ref { value: kv[1] });
+            }
+            // A DESTRUCTURING binding `((tuple a b) V)` — the LHS is a tuple PATTERN. A reference to one
+            // of its element binders resolves to a `SumPayload` reading that element from the value `V`
+            // (path `[Elem(i)]`, possibly nested), EXACTLY as a `(match V ((tuple a b) …))` arm binder
+            // does (`match_arm_variant_binds` Case 6). The binding position IS a single-arm irrefutable
+            // match; reusing `find_binder_in_tuple` gives the desugar with zero new IR. (Refutability +
+            // linearity are enforced when the `let` is lowered, so an ill-formed binding still faults —
+            // this lookup only routes an in-scope binder to its value.)
+            if is_tuple_pattern(db, kv[0]) {
+                let mut path = Vec::new();
+                let mut heads = Vec::new();
+                if find_binder_in_tuple(db, kv[0], name, &mut path, &mut heads) {
+                    return Some(Resolved::SumPayload {
+                        scrutinee: kv[1],
+                        steps: path.into(),
+                        heads: heads.into(),
+                    });
+                }
+            }
         }
     }
     None
@@ -1600,10 +1783,10 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             })?;
             Some(Ty::Int(IntTy::fixed(head == "Int", w)))
         }
-        // A float type-value: `(Float N)` for an admitted width N ∈ {32,64} — the dual of `encode_ty`'s
-        // float arm and the width-indexed form `Float32`/`Float64` alias. A non-admitted width has no
-        // decoded type here (the `prelude::build_float_ty` constructor is where CDZ0302 is raised for a
-        // source annotation; this backend-side decoder just declines an unknown width).
+        // A float type-value: `(Float N)` — the dual of `encode_ty`'s `(Float N)` head form. Decodes
+        // FAITHFULLY for ANY width, INCLUDING the sentinel 0 a non-admitted `(Float 16)` reduces to, so
+        // the width round-trips and the admitted-set check (`infer`'s Annot arm / `reduce_ctor`) is the
+        // ONE place a non-admitted float width is rejected — this decoder never drops or remaps a width.
         "Float" => {
             let tail = db.ast.as_form(node, "Float")?;
             let w = tail.first().and_then(|&s| match db.ast.get(s) {
@@ -1613,11 +1796,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => None,
             })?;
-            if crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w) {
-                Some(Ty::Float(crate::ty::FloatTy::fixed(w)))
-            } else {
-                None
-            }
+            Some(Ty::Float(crate::ty::FloatTy::fixed(w)))
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;

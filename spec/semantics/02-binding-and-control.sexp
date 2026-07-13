@@ -1984,3 +1984,88 @@
             (def (top b) (match (dn b 0) ((tuple ast pos) ast)))
             (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main)))
   (output (: 42 Int64)))
+
+; --- A binding position accepts an irrefutable pattern ---------------------------------------
+; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
+; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
+; corresponding sub-values of the bound value — exactly as the same pattern would in a single match arm
+; over that value. A bare name and a wildcard are the trivial irrefutable patterns; a tuple pattern whose
+; every element is irrefutable is irrefutable, recursively to any depth (#Patterns Compose). This is the
+; ergonomic form of the bind-then-rematch idiom the decoder cases above pay by hand — `(let ((r v)) (match
+; r ((tuple a b) …)))` becomes `(let (((tuple a b) v)) …)`.
+
+(case "a let binder may be a tuple pattern that destructures the value"
+  (doc    "`(let (((tuple a b) (tuple 3 4))) (+ a b))` binds `a` and `b` to the two elements of the bound
+           pair (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern) — the same binding a
+           `(match (tuple 3 4) ((tuple a b) (+ a b)))` arm makes, written at the binder. Pins that a tuple
+           pattern in a `let` binder position destructures the value rather than requiring a bind-then-match.")
+  (input  (let (((tuple a b) (tuple 3 4))) (+ a b)))
+  (output (: 7 Int64)))
+
+(case "a tuple binding pattern nests to any depth"
+  (doc    "`(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) …)` — a tuple pattern whose second element
+           is itself a tuple pattern, bound recursively (core-semantics.md #A Binding Position Accepts An
+           Irrefutable Pattern / #Patterns Compose: a binder position admits any pattern). Pins that a
+           binding pattern composes to any depth, exactly as a match-arm pattern does.")
+  (input  (let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c))))
+  (output (: 6 Int64)))
+
+(case "a later let binding sees an earlier pattern's binders"
+  (doc    "`(let (((tuple a b) (tuple 3 4)) (c (+ a b))) c)` — the second binding's initializer `(+ a b)`
+           references `a` and `b`, the binders the first (destructuring) binding introduced
+           (core-semantics.md #The Bindings Of One `let` Take Effect In Order: each initializer observes the
+           bindings written before it). Pins that a destructuring binder is in scope for the bindings that
+           follow, the multi-binding-let idiom the decoder threads.")
+  (input  (let (((tuple a b) (tuple 3 4)) (c (+ a b))) c))
+  (output (: 7 Int64)))
+
+(case "a destructuring let over a runtime value binds its parts"
+  (doc    "`(def (f p) (let (((tuple a b) p)) (+ a b)))` destructures the RUNTIME parameter `p` (not a
+           literal tuple) at the binder, then `(f (tuple 10 20))` = 30 (core-semantics.md #A Binding
+           Position Accepts An Irrefutable Pattern). Pins that the destructure reads the bound value at run
+           time, not only when it folds to a constant.")
+  (input  (do (def (f p) (let (((tuple a b) p)) (+ a b))) (def (main) (f (tuple 10 20))) (export main)))
+  (output (: 30 Int64)))
+
+; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
+; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
+; Position Accepts An Irrefutable Pattern).
+
+(case "a refutable constructor pattern in a let binder is rejected"
+  (doc    "`(let (((Some x) (Some 5))) x)` — a `Some` pattern is refutable (the `None` variant is
+           uncovered), and a binding position has no alternative arm, so it is the non-exhaustive error the
+           equivalent single-arm `(match (Some 5) ((Some x) x))` raises: CDZ0210 (core-semantics.md #A
+           Binding Position Accepts An Irrefutable Pattern / #Matching Is Exhaustive Or Rejected). Pins that
+           a multi-variant constructor cannot bind a value in a `let`.")
+  (input  (let (((Some x) (Some 5))) x))
+  (error  CDZ0210))
+
+(case "a literal in a let binder is refutable and rejected"
+  (doc    "`(let ((0 5)) 42)` — a literal pattern matches one value, not every value of its type, so it is
+           refutable and rejected in a binding position (CDZ0210, core-semantics.md #A Binding Position
+           Accepts An Irrefutable Pattern). Pins that a literal cannot stand where a binder is expected.")
+  (input  (do (def (main) (let ((0 5)) 42)) (export main)))
+  (error  CDZ0210))
+
+(case "a wrong-arity tuple binding pattern is a shape error"
+  (doc    "`(let (((tuple a b c) (tuple 1 2))) a)` — a three-element tuple pattern cannot match a
+           two-element value: a static shape mismatch (CDZ0201, core-semantics.md #A Binding Position
+           Accepts An Irrefutable Pattern), the same code the wrong-arity tuple MATCH arm gets. Pins that a
+           binding pattern's arity is checked against the bound value's type.")
+  (input  (let (((tuple a b c) (tuple 1 2))) a))
+  (error  CDZ0201))
+
+(case "a tuple binding pattern against a non-tuple value is a shape error"
+  (doc    "`(let (((tuple a b) 5)) a)` — a tuple pattern cannot match a scalar `Int64` value: a kind
+           mismatch (CDZ0201, core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). Pins
+           that a tuple binding pattern requires a tuple value.")
+  (input  (let (((tuple a b) 5)) a))
+  (error  CDZ0201))
+
+(case "a non-linear tuple binding pattern is rejected"
+  (doc    "`(let (((tuple x x) (tuple 1 2))) x)` binds `x` twice in one binding pattern — not linear, so it
+           is the same CDZ0102 error a non-linear MATCH pattern gets (core-semantics.md #A Binding Position
+           Accepts An Irrefutable Pattern / #Bindings Introduced By A Pattern Are Scoped To Its Branch).
+           Pins that linearity is enforced in binding position, not only in a match arm.")
+  (input  (let (((tuple x x) (tuple 1 2))) x))
+  (error  CDZ0102))

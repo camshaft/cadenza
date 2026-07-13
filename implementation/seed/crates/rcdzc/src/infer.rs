@@ -75,6 +75,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
+        // A `bin` PATTERN binder: an integer segment decodes an `Int`, a `bytes` segment a `Bytes`.
+        Resolved::BinField {
+            segs, seg_index, ..
+        } => match segs.get(seg_index).map(|s| &s.kind) {
+            Some(crate::resolved::SegKind::Int { .. } | crate::resolved::SegKind::Bits { .. }) => {
+                Ty::int()
+            }
+            Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
+            None => Ty::Any,
+        },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         Resolved::Float(_) => Ty::float(),
@@ -186,6 +196,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                             Some(t) => t.clone(),
                             None => return Ty::Any,
                         },
+                        // A list-pattern element binder — every element of a `List T` has type `T`
+                        // (homogeneous), regardless of the index.
+                        Ty::List(elem) => (**elem).clone(),
                         _ => return Ty::Any,
                     },
                 };
@@ -1691,7 +1704,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // Descend into the new binding/aggregate forms for their own faults.
         Resolved::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (lhs, value) in bindings {
+                // A binding LHS may be an irrefutable PATTERN (`(tuple a b)`), not just a bare name. It is
+                // a BINDING POSITION — no alternative arm — so it must be irrefutable, and its shape must
+                // agree with the value's type. Validate it against the value's type (a refutable pattern →
+                // CDZ0210, a wrong-arity/non-tuple shape → CDZ0201, a non-linear pattern → CDZ0102, a
+                // not-yet-supported record/single-variant/list pattern → decline). A bare-name LHS is the
+                // trivial irrefutable pattern and validates cheaply. (The binder REFERENCES resolve to a
+                // `SumPayload` reading the element out of `value`; this only ensures the binding is
+                // well-formed so an ill-formed one faults instead of silently miscompiling.)
+                let value_ty = type_of(db, value);
+                if let Err(r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
+                    out.push(r);
+                }
                 collect(db, value, out);
             }
             collect(db, body, out);
@@ -1783,6 +1808,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 ));
             }
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
+                // A FLOAT type annotating with a NON-ADMITTED width reduces (via the `Float` constructor)
+                // to the sentinel `Ty::Float(Fixed(0))` — a `(: 1.5 (Float 16))` / `(: 1.5 (Float 48))`.
+                // A float width outside {32,64} is rejected CDZ0302 (numeric-model.md §A Floating-Point
+                // Type Is Indexed By A Compile-Time Width), the float analogue of an out-of-range integer
+                // width; caught here at the annotation, before the grounding/unify below (which would
+                // otherwise let the sentinel slip through against a deferred literal).
+                if let Ty::Float(ft) = &annot_ty
+                    && let crate::ty::Width::Fixed(w) = ft.width
+                    && !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w)
+                {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: float width not in the admitted set (CDZ0302)");
+                    out.push(Reject::coded(
+                        Code::IntOutOfRange,
+                        "a floating-point width must be one of the admitted IEEE widths (32 or 64)",
+                    ));
+                }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the
                 // annotation fixes its type (`(: 200 UInt8)` : UInt8) subject only to a RANGE CHECK —
@@ -1937,6 +1978,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Prim(_)
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
+        | Resolved::BinField { .. }
         | Resolved::Param { .. }
         | Resolved::Bool(_)
         | Resolved::Str(_)

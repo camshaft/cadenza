@@ -42,6 +42,12 @@ struct Cli {
     /// [default: <repo>/target/cadenza-store]
     #[arg(long)]
     store: Option<PathBuf>,
+
+    /// A recorded HOST-CALL RESPONSE, repeatable, in call order — `op=value` (e.g.
+    /// `--host-response ask.ask=10`). A program that delegates an effect to the host consumes these in
+    /// order when it performs an operation. The value is coerced to the operation's boundary result type.
+    #[arg(long = "host-response", value_name = "OP=VALUE")]
+    host_responses: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -85,11 +91,29 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         None
     };
 
+    // Parse each `--host-response op=value` into a `HostResponse`. A missing `=` takes the whole string
+    // as the value with an empty op label (the ordered-consume model does not yet match on the op).
+    let host_responses = cli
+        .host_responses
+        .iter()
+        .map(|s| match s.split_once('=') {
+            Some((op, value)) => cdz_run::HostResponse {
+                op: op.to_string(),
+                value: value.to_string(),
+            },
+            None => cdz_run::HostResponse {
+                op: String::new(),
+                value: s.clone(),
+            },
+        })
+        .collect();
+
     let opts = cdz_run::RunOpts {
         export: cli.call.clone(),
         args: cli.args.clone(),
         runtime,
         runtime_cache_dir,
+        host_responses,
     };
 
     match cdz_run::run(&component_bytes, &opts)? {

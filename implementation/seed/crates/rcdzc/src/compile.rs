@@ -839,6 +839,7 @@ fn walk_for_dead_traps(
         | Resolved::TypeVal(_)
         | Resolved::Lambda { .. }
         | Resolved::SumPayload { .. }
+        | Resolved::BinField { .. }
         | Resolved::Poison(_) => {}
     }
 }
@@ -878,6 +879,10 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         target: StructId,
         name: String,
         kind: &'static str,
+        // True when unused-ness is ALREADY decided (params, via `param_is_used`) — reported directly,
+        // bypassing the `used`-occ-set gate (a param's occ can spuriously enter `used` when a same-named
+        // inner `let` binding's name resolves to it). False for let/def binders (gated on `used`).
+        precomputed_unused: bool,
     }
     let mut binders: Vec<Binder> = Vec::new();
     // The occurrences that ARE referenced — every `Ref { value }` a user node resolves to.
@@ -916,6 +921,7 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
                             target: *init,
                             name: name.to_string(),
                             kind: "binding",
+                            precomputed_unused: false,
                         });
                     }
                 }
@@ -929,21 +935,34 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         }
     }
 
-    // Function/def PARAMETERS: a parameter's target IS its own occurrence (a reference resolves to
-    // `Ref { value: param-occ }`). Enumerate every def's params (a `fn`'s params are the same shape,
-    // reached through `db.defs` for a top-level def; a nested `fn`'s params are covered when its scope
-    // form is walked — but the corpus's parameters are overwhelmingly def/fn signatures, and the
-    // per-scope binder index already indexes them).
-    for d in &db.defs {
-        for &p in &d.params {
+    // Function/def PARAMETERS. A parameter is NOT checked via the `used`-occ set: for a RECURSIVE
+    // function, resolving the body freshens the parameter binder, so a reference resolves to a
+    // SYNTHESIZED (non-user) param COPY rather than the original occurrence — the `used` set would miss
+    // it and flag a genuinely-used param as unused (the `sm(n)` false positive). Instead a parameter is
+    // used iff its NAME appears as a reference IN the def's body that lexically resolves to a parameter
+    // — a synthesis-independent, scope-correct check (`param_is_used`).
+    for di in 0..db.defs.len() {
+        let params = db.defs[di].params.clone();
+        let body = db.defs[di].body;
+        for p in params {
             // The parameter's NAME occurrence (a bare `a` or the inner name of `(: a T)`).
             let name_occ = param_name_occ(db, p);
-            if let Some(name) = db.ast.as_name(name_occ) {
+            let Some(name) = db.ast.as_name(name_occ).map(str::to_string) else {
+                continue;
+            };
+            // A `_`-prefixed param never warns — skip the usage scan (the shared loop also filters `_`,
+            // but skipping here avoids the scan cost).
+            if name.starts_with('_') {
+                continue;
+            }
+            let used_in_body = body.is_some_and(|b| param_is_used(db, b, name_occ, &name));
+            if !used_in_body {
                 binders.push(Binder {
                     name_occ,
                     target: name_occ,
-                    name: name.to_string(),
+                    name,
                     kind: "parameter",
+                    precomputed_unused: true, // decided by `param_is_used`, not the `used` set
                 });
             }
         }
@@ -974,6 +993,7 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 target: body,
                 name: d.name.clone(),
                 kind: "definition",
+                precomputed_unused: false,
             })
         })
         .collect();
@@ -981,7 +1001,9 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
     // Emit a warning per unused, non-`_`-prefixed binder, anchored at its name occurrence.
     let mut out = Vec::new();
     for b in binders.into_iter().chain(def_binders) {
-        if b.name.starts_with('_') || used.contains(&b.target.0) {
+        // A precomputed-unused binder (a param) is emitted directly; others are gated on the used set.
+        let is_used = !b.precomputed_unused && used.contains(&b.target.0);
+        if b.name.starts_with('_') || is_used {
             continue;
         }
         if !db.is_user_node(b.name_occ) {
@@ -1011,6 +1033,83 @@ fn param_name_occ(db: &Db, param: StructId) -> StructId {
         return name_occ;
     }
     param
+}
+
+/// Whether the parameter named `name` (declared at `param_occ`) is REFERENCED anywhere in the def
+/// body subtree at `body`. Walks the body's USER nodes for a name occurrence equal to `name` (other
+/// than the parameter's own declaration) that lexically resolves to a `Param` — confirming it is a
+/// use OF THIS parameter, not a same-named inner binding that shadows it. This is synthesis-INDEPENDENT
+/// (it keys on the reference's own resolution kind, not the resolved-to occurrence id), so it is not
+/// fooled by a recursive function freshening the parameter binder into a synthesized copy.
+fn param_is_used(db: &mut Db, body: StructId, param_occ: StructId, name: &str) -> bool {
+    // The body subtree's node range: a def body and everything under it. The arena is built so a
+    // subtree's descendants are not contiguous by id, so walk structurally.
+    fn walk(db: &mut Db, id: StructId, param_occ: StructId, name: &str) -> bool {
+        // A matching name occurrence (not the declaration) that is a genuine REFERENCE — not itself a
+        // BINDER position (a `let` binding's name resolves to the outer param too, but it is a
+        // declaration, not a use — so a param shadowed by a same-named inner `let` is NOT "used"). A
+        // reference resolves to a `Param` (its own) or a `Ref`-to-`Param` (recursion may freshen the
+        // binder → the KIND, not the target occ, is the signal).
+        if id != param_occ
+            && db.ast.as_name(id) == Some(name)
+            && !is_let_binding_name(db, id)
+            && resolves_to_param(db, id)
+        {
+            return true;
+        }
+        // Recurse into children (a user node's subtree). Clone the child list to avoid holding a
+        // borrow across the recursive `&mut` call.
+        if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+            for c in kids.clone() {
+                if walk(db, c, param_occ, name) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(db, body, param_occ, name)
+}
+
+/// Whether `id` resolves to a parameter — its own `Param`, or a `Ref` to one (a body reference is a
+/// `Ref`; recursion may freshen the binder, so the resolution KIND is the signal, not the target occ).
+fn resolves_to_param(db: &mut Db, id: StructId) -> bool {
+    match crate::resolve::resolved_of(db, id) {
+        crate::resolved::Resolved::Param { .. } => true,
+        crate::resolved::Resolved::Ref { value } => {
+            matches!(
+                crate::resolve::resolved_of(db, value),
+                crate::resolved::Resolved::Param { .. }
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Whether `id` is a `let` binding's NAME position — the first element of a 2-element `(name init)`
+/// pair whose parent is a `let`'s bindings-list. Such an occurrence is a BINDER (a declaration), not a
+/// reference, so it must not count as a use of an outer same-named parameter.
+fn is_let_binding_name(db: &Db, id: StructId) -> bool {
+    let Some(pair) = db.parent_of(id) else {
+        return false;
+    };
+    // `id` is the pair's first child.
+    let is_first =
+        matches!(db.ast.get(pair), crate::ast::Struct::List(kv) if kv.first() == Some(&id));
+    if !is_first {
+        return false;
+    }
+    // The pair's parent is a bindings-list; that list's parent is a `let` whose first tail element it is.
+    let Some(list) = db.parent_of(pair) else {
+        return false;
+    };
+    db.parent_of(list)
+        .and_then(|lt| {
+            db.ast
+                .as_form(lt, "let")
+                .map(|t| t.first().copied() == Some(list))
+        })
+        .unwrap_or(false)
 }
 
 /// The program's name for artifact labelling — the first exported name, or "main". (A cosmetic label;

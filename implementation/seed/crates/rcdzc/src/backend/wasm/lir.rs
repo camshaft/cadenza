@@ -108,6 +108,13 @@ pub enum Lir {
     /// the name to that index against the import order it lays. Distinct from `Call` (a defined-function
     /// index) so the two index spaces do not collide.
     CallImport(&'static str),
+    /// `call <host-import-index>` — call a HOST-DELEGATED effect operation by its position in the
+    /// program's host-import set (`0..h`). A host import is a component-level WIT function (the effect is
+    /// an interface, the op a func) the boundary resolves; its core-func index is its position in the
+    /// host-import set, which `emit` fixes BEFORE selection (like the runtime-op set). Distinct from
+    /// `CallImport` (a value-heap runtime op) and `Call` (a defined func) so the three index spaces stay
+    /// separate — the serializer lays host imports first, then runtime ops, then defined funcs.
+    CallHostImport(usize),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
     /// `block <blocktype>` — open a forward block; a `Br` targeting it jumps FORWARD to its `end` (the

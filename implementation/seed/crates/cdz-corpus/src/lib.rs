@@ -47,6 +47,11 @@ pub struct Record {
     pub trials: Vec<Trial>,
     /// Capabilities the case declares via `(needs …)` — documentation only (the gate runs every case).
     pub needs: Vec<String>,
+    /// The recorded HOST-CALL RESPONSES (E2h) — `(op, value-form)` pairs from a `(host-responses (respond
+    /// E.op (: v T)) …)` clause, in call order. A case whose program delegates an effect to the host
+    /// consumes these when it performs an operation; the gate driver passes each to `cdz-run
+    /// --host-response`. Empty for a case that makes no host call.
+    pub host_responses: Vec<(String, String)>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -176,6 +181,15 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(cap);
             out.push('\n');
         }
+        // HOST-CALL RESPONSES (E2h): one `host-response\t<op>\t<value>` line each, in call order. The
+        // gate driver forwards each to `cdz-run --host-response op=value`. Absent for a non-host case.
+        for (op, value) in &r.host_responses {
+            out.push_str("host-response\t");
+            out.push_str(op);
+            out.push('\t');
+            out.push_str(value);
+            out.push('\n');
+        }
         out.push_str("---\n");
     }
     out
@@ -201,6 +215,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut input: Option<StructId> = None;
     let mut needs: Vec<String> = Vec::new();
     let mut modules: Vec<Module> = Vec::new();
+    let mut host_responses: Vec<(String, String)> = Vec::new();
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -320,7 +335,25 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     needs.push(cap.to_string());
                 }
             }
-            // `doc`, `host-calls`, `host-responses` — not needed to run + compare a scalar case yet.
+            // `(host-responses (respond E.op (: v T)) …)` — the values the host returns to the program's
+            // delegated host calls, in call order. Each `respond` names its operation (`E.op`, rendered
+            // dotted) and carries the value form; the gate driver passes each `(op, value)` to
+            // `cdz-run --host-response op=value`. E2h.
+            Some("host-responses") => {
+                if let Some(tail) = a.as_form(clause, "host-responses") {
+                    for &r in tail {
+                        if let Some(rtail) = a.as_form(r, "respond")
+                            && let Some(&op_id) = rtail.first()
+                            && let Some(&val_id) = rtail.get(1)
+                        {
+                            let op = sexpr::print_from(a, op_id);
+                            let value = value_of(a, val_id);
+                            host_responses.push((op, value));
+                        }
+                    }
+                }
+            }
+            // `doc`, `host-calls` — not needed to run + compare a scalar case yet.
             _ => {}
         }
     }
@@ -338,6 +371,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         modules,
         trials,
         needs,
+        host_responses,
     })
 }
 

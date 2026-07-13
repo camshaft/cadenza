@@ -96,6 +96,18 @@ pub enum Prim {
     /// matching `Ordering` variant (a `Core::SumNew` at the Ordering discs, like `List.at` builds Option);
     /// a compound or runtime operand declines (as the comparison prims do).
     Compare,
+    /// The FLOATING-POINT arithmetic operators `+.` `-.` `*.` `/.` — each `∀a. (Float a) → (Float a) →
+    /// (Float a)`, the width-generic float analogue of the integer `Add`/`Sub`/`Mul`/`Div`. Spelled
+    /// distinctly from the integer operators (OCaml-style dot suffix) so no operator silently mixes an
+    /// integer and a float operand (numeric-model.md §A Floating-Point Operation Uses A Floating-Point
+    /// Operator): an integer operand to `+.` fails to unify with `Float` → CDZ0301. UNLIKE the integer
+    /// arithmetic these NEVER trap on overflow — an IEEE result that leaves the finite range is an
+    /// infinity, division by zero is ±inf/NaN. A constant pair FOLDS (round-to-nearest-even at the width);
+    /// a runtime operand emits the machine `f64.add`/… (F4).
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
     /// The TRUNCATING integer conversion `T.wrap : ∀(w,s). Int^s_w → T` — keeps the low `N` bits of the
     /// source's two's-complement value and interprets them at the TARGET width `N` and signedness. The
     /// source is a fully-polymorphic integer (any width/sign, via the operator record's type-lambda); the
@@ -108,6 +120,10 @@ pub enum Prim {
     IntCtor,
     /// `UInt : Nat → Module` — the unsigned integer module builder.
     UIntCtor,
+    /// `Float : Nat → Module` — applied to an ADMITTED width ({32,64}), builds the float module of that
+    /// width (its `(meta t) = (Float N)` type-value + `of-int`/… fields). The float analogue of `IntCtor`;
+    /// a width outside the admitted set reduces to the sentinel width 0 → CDZ0302, exactly as `(UInt 65)`.
+    FloatCtor,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
     /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
@@ -302,9 +318,14 @@ impl Prim {
             ">=" => Some(Prim::Ge),
             "=" => Some(Prim::Eq),
             "compare" => Some(Prim::Compare),
+            "+." => Some(Prim::FAdd),
+            "-." => Some(Prim::FSub),
+            "*." => Some(Prim::FMul),
+            "/." => Some(Prim::FDiv),
             "wrap" => Some(Prim::Wrap),
             "Int" => Some(Prim::IntCtor),
             "UInt" => Some(Prim::UIntCtor),
+            "Float" => Some(Prim::FloatCtor),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),
             "Record" => Some(Prim::RecordCtor),
@@ -622,6 +643,19 @@ pub enum Resolved {
     /// matching). `Ty::Bytes` in value position (`binary-syntax`). A well-formedness fault (mis-aligned
     /// bit-fields, non-final unsized `(bytes …)`, non-const `bits` width) is CDZ0220, checked from `segs`.
     Bin { segs: Vec<Segment> },
+    /// A reference to a `bin` PATTERN binder — the value a segment binder decodes from the matched Bytes
+    /// scrutinee (the binary analogue of `SumPayload`, resolve Case B). `(match b ((bin (u16 n)) n) …)`:
+    /// the `n` in the body resolves here, carrying the enclosing match's `scrutinee` and the segment whose
+    /// binder it is. An INTEGER segment binder has type `Ty::Int` (decoded value); a `Bytes` segment
+    /// binder has type `Ty::Bytes`. Lowered by decoding the segment from the scrutinee (const-folded when
+    /// the scrutinee is a visible `Core::BytesOf`; the runtime cursor read is BN4). `seg_index` is the
+    /// segment's position; `segs` the whole pattern's segments (so the decoder knows each preceding
+    /// segment's width to compute this one's byte offset).
+    BinField {
+        scrutinee: StructId,
+        segs: std::sync::Arc<[Segment]>,
+        seg_index: usize,
+    },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),

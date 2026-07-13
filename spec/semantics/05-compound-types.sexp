@@ -3378,10 +3378,9 @@
 ; each name at most once; a pattern that binds the same name more than once MUST be a compile-time
 ; error (CDZ0102)." So `(tuple x x)` — binding `x` twice — is rejected, rather than silently letting
 ; the second binder shadow the first (which would make `(tuple x x)` bind `x` to the second element)
-; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). The
-; case carries `(needs linear-patterns)`: the seed does not yet enforce pattern linearity — it accepts
-; the pattern and lets the second binder shadow — so it SKIPS this case until a generation realizes the
-; check; a later generation runs it and produces the CDZ0102 rejection.
+; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). A core
+; case (no `(needs …)` gate): the seed enforces pattern linearity, rejecting the repeated binder with
+; CDZ0102.
 
 (case "a pattern that binds the same name twice is rejected"
   (doc    "`(match (tuple 1 2) ((tuple x x) x) (_ 0))` binds `x` twice in one pattern — not a linear
@@ -3389,7 +3388,6 @@
            Pattern Are Scoped To Its Branch), rather than shadowing (which would yield 2) or imposing an
            equality constraint (which would fall through to 0). Pins linearity: a repeated binder is an
            error, not a silent shadow or a hidden equality test.")
-  (needs  linear-patterns)
   (input  (match (tuple 1 2) ((tuple x x) x) (_ 0)))
   (error  CDZ0102))
 
@@ -3398,10 +3396,9 @@
 ; across the whole pattern, so that a name appearing in more than one sub-pattern is the same CDZ0102
 ; error as one appearing twice in a flat pattern." So `(tuple x (tuple x y))` — `x` bound once at the
 ; outer position and again inside the nested tuple pattern — is a repeated binder across the composition,
-; CDZ0102, exactly as the flat `(tuple x x)` is. This is the nested companion of the flat case above; it
-; carries the same `(needs linear-patterns)` gate (the seed does not yet enforce linearity, so it SKIPS —
-; and without an explicit nested case a linearity check written only for a flat pattern's immediate binders
-; would still accept the cross-sub-pattern repeat, silently shadowing the outer `x`).
+; CDZ0102, exactly as the flat `(tuple x x)` is. This is the nested companion of the flat case above; a
+; core case (no gate) — the seed's linearity check descends into sub-patterns, so it catches the
+; cross-sub-pattern repeat (a check scanning only a flat pattern's immediate binders would miss it).
 
 (case "a pattern that binds the same name across nested sub-patterns is rejected"
   (doc    "`(match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) (_ 0))` binds `x` at the outer tuple's
@@ -3410,9 +3407,7 @@
            whole pattern, a name in more than one sub-pattern is the same error as one twice in a flat
            pattern). Pins that the linearity check descends into sub-patterns, not only the immediate
            binders of one pattern node — a check that scans only a flat pattern's binders would accept this
-           and silently shadow the outer `x` (yielding 2). Same `(needs linear-patterns)` gate as the flat
-           case; a generation realizing linearity must catch the nested repeat too.")
-  (needs  linear-patterns)
+           and silently shadow the outer `x` (yielding 2). The seed's check catches the nested repeat too.")
   (input  (match (tuple 1 (tuple 2 3)) ((tuple x (tuple x y)) x) (_ 0)))
   (error  CDZ0102))
 

@@ -144,6 +144,27 @@ pub struct RunOpts {
     /// and a `deserialize` failure falls back to a fresh compile — so a version/config mismatch can
     /// never load an incompatible artifact.
     pub runtime_cache_dir: Option<std::path::PathBuf>,
+    /// The HOST-CALL RESPONSES (E2h) — the values the host returns to a program's delegated host calls,
+    /// in call order. A program that delegates an effect to the host (`(host (E…) …)`) imports each
+    /// operation as a boundary func; when it performs one, the bound host func returns the next response
+    /// here (`capabilities-and-effects.md` §A Run Is A Deterministic Function Of Its Input And
+    /// Responses). Empty for a program that makes no host call. Coerced to each call's declared result
+    /// type at binding. The corpus `(host-responses …)` fixture supplies these.
+    pub host_responses: Vec<HostResponse>,
+}
+
+/// One recorded host-call RESPONSE — the operation it answers and the value the host returns. The
+/// operation name (`E.op`, dotted) pairs a response with its call for the ordered-consume model; the
+/// value is a raw text form (`(: 10 Int64)`) coerced to the op's boundary result type at binding.
+#[derive(Debug, Clone)]
+pub struct HostResponse {
+    /// The dotted operation name the response answers (e.g. `ask.ask`) — for the ordered model + a
+    /// mismatch diagnostic. This increment consumes responses purely in ORDER (the op name is recorded
+    /// for the diagnostic, not yet matched).
+    pub op: String,
+    /// The response value in canonical text form (`(: 10 Int64)` or a bare `10`) — coerced to the op's
+    /// declared boundary result type when the host func is bound.
+    pub value: String,
 }
 
 /// Validate `component_bytes` as a well-formed component — the cheap structural check before a run.
@@ -171,6 +192,11 @@ pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
     if let Some(req) = find_runtime_req(&engine, &component) {
         compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
     }
+
+    // Bind every HOST import (a delegated effect's operations, E2h) so a program's host calls are
+    // satisfied by the recorded responses, consumed in call order. Inert for a program with no host
+    // import (the common case).
+    bind_host_imports(&engine, &component, &mut linker, opts)?;
 
     let instance = linker
         .instantiate(&mut store, &component)
@@ -312,6 +338,105 @@ fn compose_runtime(
         })?;
     }
     Ok(())
+}
+
+/// Bind every HOST-effect import the component declares (E2h) so its delegated operations resolve to the
+/// recorded responses, consumed in call order. A host effect is imported as an INSTANCE (the interface);
+/// each function in it is a delegated operation. We enumerate the imported instances OFF THE COMPONENT
+/// TYPE (never a hard-coded list — `host-interface-binding.md` §Which Host Functions Exist Is The
+/// Target's Concern), skipping the value-heap runtime instance (bound by `compose_runtime`), and bind
+/// each func via a dynamic closure that pops the next response and coerces it to the func's declared
+/// result type. Responses are shared through an `Rc<RefCell<_>>` cursor (a one-shot single-threaded run).
+fn bind_host_imports(
+    engine: &Engine,
+    component: &Component,
+    linker: &mut Linker<()>,
+    opts: &RunOpts,
+) -> Result<()> {
+    use std::sync::{Arc, Mutex};
+    // The shared response cursor — every bound host func pops the next response in order. `Arc<Mutex>`
+    // (not `Rc`) because wasmtime requires the host closure be `Send + Sync`; a run is single-threaded,
+    // so the mutex is uncontended.
+    let cursor = Arc::new(Mutex::new(0usize));
+    let responses = Arc::new(opts.host_responses.clone());
+
+    // Enumerate the imported instances (host effect interfaces) off the component type. The runtime
+    // interface (if imported) is bound elsewhere — skip it here.
+    let imports: Vec<(String, Vec<(String, Type)>)> = component
+        .component_type()
+        .imports(engine)
+        .filter_map(|(name, item)| {
+            if is_runtime_import_name(name) {
+                return None;
+            }
+            if let ComponentItem::ComponentInstance(inst) = item {
+                let funcs: Vec<(String, Type)> = inst
+                    .exports(engine)
+                    .filter_map(|(fname, i)| match i {
+                        ComponentItem::ComponentFunc(f) => {
+                            // The op's declared result type (this increment supports a single scalar
+                            // result); a resultless (unit) op returns nothing.
+                            let ret = f.results().next();
+                            ret.map(|t| (fname.to_string(), t))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                Some((name.to_string(), funcs))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (iface_name, funcs) in imports {
+        let mut iface = linker
+            .instance(&iface_name)
+            .map_err(|e| anyhow!("linker instance {iface_name}: {e}"))?;
+        for (fname, ret_ty) in funcs {
+            let cursor = Arc::clone(&cursor);
+            let responses = Arc::clone(&responses);
+            let ret_ty = ret_ty.clone();
+            let op_label = format!("{iface_name}.{fname}");
+            iface.func_new(&fname, move |_ctx, _params, results| {
+                // Pop the next recorded response, coerce it to the op's result type, and return it.
+                let mut idx = cursor.lock().expect("host response cursor mutex");
+                let resp = responses.get(*idx).ok_or_else(|| {
+                    anyhow!(
+                        "host call `{op_label}` has no recorded response (only {} response(s) supplied)",
+                        responses.len()
+                    )
+                })?;
+                *idx += 1;
+                if let Some(slot) = results.get_mut(0) {
+                    *slot = coerce_one(&scalar_of_value_form(&resp.value), &ret_ty)?;
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Extract the bare scalar text from a response value form: `(: 10 Int64)` → `10`, or a bare `10` → `10`.
+/// The corpus records a response as a typed `(: value Type)` form; the runner coerces the value to the
+/// op's declared boundary result type, so only the value text is needed here.
+fn scalar_of_value_form(form: &str) -> String {
+    let t = form.trim();
+    if let Some(inner) = t.strip_prefix("(:").and_then(|s| s.strip_suffix(')')) {
+        // `(: <value> <Type>)` — the value is the first whitespace-delimited token after `:`.
+        let mut it = inner.split_whitespace();
+        if let Some(v) = it.next() {
+            return v.to_string();
+        }
+    }
+    t.to_string()
+}
+
+/// Whether `name` is the value-heap runtime import (recognized by the fixed interface prefix) — bound by
+/// `compose_runtime`, so `bind_host_imports` skips it.
+fn is_runtime_import_name(name: &str) -> bool {
+    name.starts_with(RUNTIME_IFACE)
 }
 
 /// The names of the functions the runtime's `cadenza:runtime/heap` interface exports, read off the
@@ -497,5 +622,21 @@ mod tests {
     #[test]
     fn non_runtime_import_is_not_matched() {
         assert!(!import_is_runtime("cadenza:host/emit-event"));
+    }
+
+    #[test]
+    fn host_response_scalar_extracted_from_value_form() {
+        // A `(: v T)` form yields the bare value; a bare value passes through; whitespace is tolerated.
+        assert_eq!(scalar_of_value_form("(: 10 Int64)"), "10");
+        assert_eq!(scalar_of_value_form("(: 42 Int64)"), "42");
+        assert_eq!(scalar_of_value_form("7"), "7");
+        assert_eq!(scalar_of_value_form("  3  "), "3");
+    }
+
+    #[test]
+    fn runtime_import_name_recognized() {
+        // The host-import binder skips the value-heap runtime instance (bound elsewhere).
+        assert!(is_runtime_import_name("cadenza:runtime/heap@0.0.0+abc"));
+        assert!(!is_runtime_import_name("ask"));
     }
 }

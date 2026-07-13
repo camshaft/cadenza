@@ -14,6 +14,7 @@
 pub mod dwarf;
 pub mod encode;
 pub mod envelope;
+pub mod host;
 pub mod lir;
 // The GENERATED value-heap runtime-ABI table (`cargo xtask codegen`, from the runtime WIT + the built
 // runtime's content hash) — the structured op signatures + typed `OPS` accessor the per-program import
@@ -141,11 +142,34 @@ pub fn emit(
         })
         .collect::<Result<_, _>>()?;
 
-    // The layout with the import base fixed to the used-set size — a defined function's absolute index
-    // is `import_base + its emission position` (imports occupy `0..import_base`). `layout` is otherwise
-    // as computed; clone-with-base so `abs` (read by both the export section and every `Lir::Call`)
-    // accounts for the shift.
-    let layout = layout.with_import_base(imports.len() as u32);
+    // The per-program HOST-import set (E2h-2) — every host-delegated operation a reachable body performs
+    // (a `Core::HostCall`), in first-encountered order. Like the runtime set, it must be fixed BEFORE
+    // selection (it fixes the host-op call index a `Core::HostCall` resolves to) and it shifts the
+    // defined-func index space. This increment supports HOST-ONLY programs: a program mixing host + value-
+    // heap runtime imports declines below (the two index spaces compose in a later increment).
+    let mut host_imports: Vec<host::HostImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_host_imports(db, body, &mut host_imports);
+    }
+    if !host_imports.is_empty() && !imports.is_empty() {
+        return Err(Reject::decline(
+            "a program that both delegates a host effect AND uses the value-heap runtime is not yet \
+             emitted (the host + runtime import index spaces compose in a later increment)",
+        ));
+    }
+
+    // The layout with the import base fixed to the total import count (host + runtime) — a defined
+    // function's absolute index is `import_base + its emission position` (imports occupy `0..import_base`).
+    // The host-import ORDER (its `(effect, op)` name pairs) is recorded so a `Core::HostCall` resolves its
+    // call index. Both are empty for an import-free program (byte-identical to before).
+    let host_order: Vec<(String, String)> = host_imports
+        .iter()
+        .map(|h| (h.effect.clone(), h.op.clone()))
+        .collect();
+    let layout = layout
+        .with_import_base((imports.len() + host_imports.len()) as u32)
+        .with_host_order(host_order);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
@@ -194,7 +218,15 @@ pub fn emit(
 
     // Serialize the embedded core module (multi-export core module, functions in emission order). The
     // `name` + `.debug_*` sections are appended by `append_debug_sections` below (both paths, one place).
-    let mut core = serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?;
+    // A HOST-delegating program threads its host imports through the core module's import section (from
+    // module `"host"`, ahead of any runtime op); an ordinary program takes the runtime-only path
+    // (byte-identical to before).
+    let mut core = if host_imports.is_empty() {
+        serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?
+    } else {
+        serialize::core_module_with_host(&funcs, &imports, &host_imports, layout)
+            .map_err(Reject::decline)?
+    };
 
     // DEBUG (Mode E, D2): append the `.debug_*` DWARF custom sections to the embedded core module, so a
     // debugger can STEP through Cadenza source. Function-granularity: one line row + one subprogram DIE
@@ -285,12 +317,56 @@ pub fn emit(
         });
     }
 
+    // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a
+    // component INTERFACE, its operations imported funcs the boundary resolves. This increment delegates a
+    // SINGLE effect (every host import shares one effect name); a program delegating two distinct effects
+    // declines (the multi-interface shape composes in a later increment).
+    if !host_imports.is_empty() {
+        let iface = host_imports[0].effect.clone();
+        if host_imports.iter().any(|h| h.effect != iface) {
+            return Err(Reject::decline(
+                "delegating more than one host effect is not yet emitted (one interface per envelope; \
+                 the multi-interface host shape is a later increment)",
+            ));
+        }
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .map(|h| envelope::HostFn {
+                op: h.op.clone(),
+                comp_functype: host_op_comp_functype(h),
+                core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
+            })
+            .collect();
+        return Ok(envelope::assemble_host(&core, &boundary, &iface, &host_fns));
+    }
+
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
     // component is imported under, carrying the content-address suffix `cdz-run` resolves it by. Unused
     // when `imports` is empty (the bare envelope). Built here (not in `envelope`) so the envelope stays
     // ABI-agnostic; the ABI identity lives in the generated `runtime_abi` table.
     let import_name = runtime_import_name();
     Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
+}
+
+/// The component functype item (`0x40 <params> <result>`) for a host op — its parameter and result
+/// COMPONENT valtype bytes (`AbiValType::comp_byte`, the faithful boundary primitives). Params are NAMED
+/// (`p0`, `p1`, …) as the component model requires; a `Unit` domain/result was already elided when the
+/// `HostImport` was collected, so `params`/`result` hold only scalar slots.
+fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    for (i, p) in h.params.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&(pname.len() as u8).to_le_bytes());
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(p.comp_byte());
+    }
+    item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
+    match h.result {
+        Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
+        None => item.extend_from_slice(&[0x01, 0x00]),
+    }
+    item
 }
 
 /// Append the `.debug_*` DWARF custom sections to an already-serialized core module `core`, when a
