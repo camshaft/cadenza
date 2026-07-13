@@ -99,6 +99,8 @@ pub enum Code {
     /// value a shared field takes and `extend` never silently overwrites (the author means `Record.with`
     /// to replace). The row-operation companion of the duplicate-field literal `(record (a 1) (a 2))`
     /// (CDZ0201); in the CDZ021x types-and-patterns band with its dual, `AbsentField`.
+    //= spec/capabilities/type-system.md#two-records-are-combined-only-when-their-field-sets-are-disjoint
+    //# A combination of two records whose field sets share a name MUST be rejected at compile time with the machine-readable code for a field that is already present, so that a combined record never has to choose which operand's value a shared field takes and the fixed-field-set invariant is preserved.
     PresentField,
     /// A record ROW operation names a field the operand record DOES NOT CONTAIN — `Record.project` /
     /// `Record.without` / `Record.with` / `Record.pop` restricting to, dropping, updating, or popping a
@@ -109,6 +111,12 @@ pub enum Code {
     /// of an absent field stays distinct from `extend`. A record field name is a STATIC label (not a
     /// runtime index), so an absent one is this compile-time rejection, never a runtime `None`. The dual of
     /// `PresentField`.
+    //= spec/capabilities/type-system.md#a-record-is-restricted-to-a-named-set-of-its-fields
+    //# A projection that names a field the operand record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that a projection cannot silently produce a field the operand never held.
+    //= spec/capabilities/type-system.md#a-record-is-reduced-by-dropping-a-named-set-of-its-fields
+    //# A drop that names a field the operand record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that dropping a field the record never held is a static error rather than a no-op.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A field update whose named field is absent from the operand record MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that updating a field the record never held is a static error rather than an addition.
     AbsentField,
     /// A `match` ARM that can never be reached because an EARLIER arm already covers every value it would
     /// — a duplicate variant/literal arm, or any arm after a catch-all binder/wildcard. The DUAL of

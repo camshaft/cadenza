@@ -1827,6 +1827,16 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             };
         }
     }
+    // Each `Record.*` row operation below computes a NEW closed `Ty::Record` from the OPERANDS' record
+    // shapes alone (project keeps the named subset, without drops them, merge unions, extend/with insert)
+    // — it never mutates an operand type and never leaves a row variable open in the result, so the
+    // reshaped record is a fresh value with a statically-fixed field set and the emitted component carries
+    // no runtime field-set computation.
+    //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
+    //# A record row operation MUST yield a new record value and MUST NOT alter the operand records, consistent with the immutable value heap, so that reshaping a record is the derivation of a new value with a new shape and not a mutation of an existing one.
+    //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
+    //# The shape of a record row operation's result MUST be determined statically from the operands' shapes, so that the emitted component carries a concrete closed record shape and the operation introduces no runtime field set.
+    //
     // `Record.project r (a c)` — narrow `r` to the named fields. The result is a NEW closed record type
     // whose fields are EXACTLY the named ones, each carrying the type it had in `r` (`type-system.md` §A
     // Record Is Restricted To A Named Set Of Its Fields). The second operand is a LITERAL field-name list
@@ -1834,6 +1844,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // unit / `Wrap`'s width). A named field ABSENT from `r`'s record type has no type to carry — it is
     // the CDZ0212 rejection (reported by `check_application`); here it is simply dropped from the result
     // shape so the value column stays a sane record. A non-record operand → `Any` (faulted elsewhere).
+    //= spec/capabilities/type-system.md#a-record-is-restricted-to-a-named-set-of-its-fields
+    //# A program MUST be able to project a record onto a stated set of field names, yielding a record whose fields are exactly those names bound to the values the operand holds for them, so that narrowing a record to a sub-shape is an explicit operation rather than an overloaded equality.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordProject)
         && args.len() == 2
         && let Ty::Record(fields) = type_of(db, args[0])
@@ -1850,6 +1862,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // `Record.without r (b)` — `r` MINUS the named fields (the complement of `project`). The result is a
     // NEW record type keeping every field of `r` whose label is NOT named. Same literal field-name list;
     // an absent named field is CDZ0212 (`check_application`), not reflected in the shape.
+    //= spec/capabilities/type-system.md#a-record-is-reduced-by-dropping-a-named-set-of-its-fields
+    //# A program MUST be able to derive a record that drops a stated set of field names from an operand record, yielding a record whose fields are exactly the operand's remaining fields, so that removing a field is the complement of projecting the fields kept.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordWithout)
         && args.len() == 2
         && let Ty::Record(fields) = type_of(db, args[0])
@@ -1867,6 +1881,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // field of BOTH operands. The field sets MUST be disjoint (a shared name is CDZ0211, reported by
     // `check_application`); the type here is the union regardless (a shared field's fault fires there, and
     // last-writer here keeps the shape sane). A non-record operand → the generic path (Any).
+    //= spec/capabilities/type-system.md#two-records-are-combined-only-when-their-field-sets-are-disjoint
+    //# A program MUST be able to combine two records into one whose field set is the union of the operands' field sets, each field bound to the value its source record holds, so that merging records is the row analogue of forming a record from two groups of fields.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordMerge)
         && args.len() == 2
         && let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
@@ -1885,6 +1901,10 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // The presence/absence fault (extend→CDZ0211 if present, with→CDZ0212 if absent) is `check_application`'s;
     // the shape here is the same insert for both. The second operand is a `(name value)` pair read by
     // `record_op_pair`; `v` IS an evaluated value (its type is `typeof(v)`), unlike a label list.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A program MUST be able to derive a record that adds a field absent from an operand record, and a combination that adds a field the operand already contains MUST be rejected at compile time with the machine-readable code for a field that is already present, so that adding a field never silently overwrites an existing one.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A program MUST be able to derive a record that replaces a field present in an operand record with a new value of a possibly different type, so that updating a field is an explicit operation distinct from adding one and the replacement's type is whatever the new value holds.
     if matches!(
         crate::eval::meta_apply_of(db, head),
         Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
@@ -1916,9 +1936,22 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let rest_ty = Ty::Record(std::sync::Arc::new(rest));
         return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
     }
+    // Each `Tuple.*` positional row op below derives a NEW `Ty::Tuple` (or `Ty::Unit` for the empty
+    // prefix) from the OPERANDS' element types — cat sums the arities, split-at/pop partition — so the
+    // result arity is fixed statically from the operand arities, an operand tuple is never mutated, and
+    // the emitted component carries a concrete tuple shape rather than a runtime-length tuple.
+    //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
+    //# A program MUST be able to derive a new tuple from existing tuples by an explicit positional operation — concatenating two tuples or splitting one at a stated position — rather than by an implicit change of arity, consistent with a tuple being a fixed-size positional value whose length is part of its type.
+    //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
+    //# A tuple positional operation MUST yield a new tuple value and MUST NOT alter the operand tuples, consistent with the immutable value heap, so that reshaping a tuple is the derivation of a new value and not a mutation.
+    //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
+    //# The arity of a tuple positional operation's result MUST be determined statically from the operands' arities, so that the emitted component carries a concrete tuple shape and the operation introduces no runtime-length tuple.
+    //
     // `Tuple.cat a b` — the concatenation of two tuples' element types (`type-system.md` §Two Tuples Are
     // Concatenated Into One Of Their Combined Length). Result arity = the sum; each element keeps its
     // source position's type. A non-tuple operand → the generic path (Any).
+    //= spec/capabilities/type-system.md#two-tuples-are-concatenated-into-one-of-their-combined-length
+    //# A program MUST be able to concatenate two tuples into one whose elements are the first tuple's elements in order followed by the second tuple's elements in order, so that its arity is the sum of the operands' arities and each element keeps the type of its source position.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleCat)
         && args.len() == 2
         && let (Ty::Tuple(a), Ty::Tuple(b)) = (type_of(db, args[0]), type_of(db, args[1]))
@@ -1931,6 +1964,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // `(Tuple <prefix-tuple> <suffix-tuple>)`; `k=0` makes the empty prefix the UNIT value (the empty
     // tuple IS unit), so the prefix type is `Ty::Unit`, not a zero-arity tuple. `k` out of `0..=arity` is
     // CDZ0201 (`check_application`); here an out-of-range k falls through to the generic path (Any).
+    //= spec/capabilities/type-system.md#a-tuple-is-split-at-a-position-into-a-prefix-and-a-suffix
+    //# A program MUST be able to split a tuple at a stated position into a pair of tuples — a prefix holding the elements before the position and a suffix holding the elements from the position onward — so that partitioning a tuple positionally is an explicit operation yielding both parts.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleSplitAt)
         && args.len() == 2
         && let Ty::Tuple(elems) = type_of(db, args[0])
