@@ -6145,6 +6145,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
+        // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
+        // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
+        // two SAME-KIND-DIFFERENT-SHAPE compounds (records of different field sets, tuples of different
+        // arity — the field set / arity IS the type), is a MALFORMED list (CDZ0201). A cross-KIND SCALAR
+        // clash (Int64 vs Bool) keeps the generic structural mismatch (CDZ0203).
+        for src in [
+            "(module m (def (main) (list 1 2.5)) (export main))", // Int64 vs Float64 — distinct numeric
+            "(module m (def (main) (list (record (a 1)) (record (b 2)))) (export main))", // diff field sets
+            "(module m (def (main) (list (tuple 1 2) (tuple 1 2 3))) (export main))", // diff arity
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0201"),
+                "a list-homogeneity shape/numeric violation must be CDZ0201: {src}"
+            );
+        }
+        // Int64 vs Bool — a cross-KIND scalar clash — stays the generic CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (main) (list 1 true)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        // A HOMOGENEOUS list still compiles + runs (the guard fires only on a genuine mismatch).
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module m (def (main) ((. List len) (list 1 2 3))) (export main))"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
     fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
         // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
         // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text
