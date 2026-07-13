@@ -7177,6 +7177,18 @@ mod match_engine {
         ] {
             assert_eq!(reject_code(src).as_deref(), Some("CDZ0220"), "src: {src}");
         }
+        // The byte-alignment message names the CONCRETE bit total and how far it is from a byte boundary
+        // (rustc-gold "add N more bits to reach K bytes"), not just the rule. `(bits 1 1) (bits 0 3)` = 4
+        // bits → 4 short of 1 byte.
+        let d = reject_full("(module m (def (main) (bin (bits 1 1) (bits 0 3))) (export main))")
+            .expect("a 4-bit bin is ill-formed");
+        assert_eq!(d.code.as_deref(), Some("CDZ0220"), "got: {}", d.message);
+        assert!(
+            d.message.contains("total 4 bits")
+                && d.message.contains("add 4 more bits to reach 1 byte"),
+            "names the bit total + the padding to the next byte: {}",
+            d.message
+        );
     }
 
     #[test]
