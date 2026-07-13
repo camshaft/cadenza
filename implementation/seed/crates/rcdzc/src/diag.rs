@@ -441,6 +441,20 @@ impl Reject {
 pub const NO_HOME_STANDALONE_DECLINE: &str = "this effect operation is performed with no enclosing handler here; its home is \
      determined by the handler or delegation enclosing its callers";
 
+/// The message the emit path (`lower`) attaches to the UNCODED decline it returns when a head has no
+/// `(meta apply)` — a value applied as if it were a function. When the head is a DEFINITE non-function
+/// (`(5 3)`, `(true 1)`), `infer` reports the authoritative CDZ0201 `NOT_A_FUNCTION_PREFIX` reject at
+/// the same node; this decline then shadows it as a second `error:`. Shared as a const so
+/// `compile::dedup_faults` drops it whenever that reject is present — ONE primary "no" for one root
+/// cause. (A head whose non-function-ness `infer` can't prove — e.g. an unresolved type — keeps this
+/// honest decline: there is no coded reject to defer to.)
+pub const NOT_APPLYABLE_DECLINE: &str = "value is not applyable";
+
+/// The stable PREFIX of the coded CDZ0201 "applying a non-function" reject (`cannot apply a value of
+/// type <T> — it is not a function`). `dedup_faults` matches this prefix to recognize the reject that
+/// makes the [`NOT_APPLYABLE_DECLINE`] redundant, without pinning the whole (type-name-bearing) text.
+pub const NOT_A_FUNCTION_PREFIX: &str = "cannot apply a value of type";
+
 /// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
 /// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands

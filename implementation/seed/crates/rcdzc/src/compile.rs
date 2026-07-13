@@ -530,6 +530,12 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     // Safety). Only suppressed WHEN a CDZ0401 exists — a standalone perform with no entrypoint check
     // covering it (should not happen for an exported body, but defensively) keeps its decline.
     let has_no_home_reject = faults.iter().any(|r| r.code == Some(Code::EffectNoHome));
+    // Likewise: the emit path's uncoded "value is not applyable" DECLINE is redundant when `infer`
+    // proved the head a definite non-function (the coded `cannot apply a value of type … — it is not a
+    // function` reject). Drop the weaker decline so applying a non-function is ONE primary `error:`.
+    let has_not_a_function_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.starts_with(crate::diag::NOT_A_FUNCTION_PREFIX));
     let mut seen: std::collections::HashSet<(Option<Code>, Option<u32>, Option<String>)> =
         std::collections::HashSet::new();
     faults
@@ -538,6 +544,12 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_no_home_reject
                 && r.is_decline()
                 && r.message == crate::diag::NO_HOME_STANDALONE_DECLINE
+            {
+                return false;
+            }
+            if has_not_a_function_reject
+                && r.is_decline()
+                && r.message == crate::diag::NOT_APPLYABLE_DECLINE
             {
                 return false;
             }

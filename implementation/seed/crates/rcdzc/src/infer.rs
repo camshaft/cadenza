@@ -2530,7 +2530,8 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                     out.push(Reject::coded(
                         Code::Malformed,
                         format!(
-                            "cannot apply a value of type {} — it is not a function",
+                            "{} {} — it is not a function",
+                            crate::diag::NOT_A_FUNCTION_PREFIX,
                             ht.render_name()
                         ),
                     ));
@@ -2685,7 +2686,11 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                 trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
                 out.push(Reject::coded(
                     Code::TypeMismatch,
-                    format!("cannot apply a value of type {}", other.render_name()),
+                    format!(
+                        "{} {}",
+                        crate::diag::NOT_A_FUNCTION_PREFIX,
+                        other.render_name()
+                    ),
                 ));
                 return;
             }

@@ -6734,6 +6734,44 @@ mod match_engine {
     }
 
     #[test]
+    fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
+        // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
+        // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not
+        // applyable" decline for the same node (both surfaced as `error:`, reading as two errors).
+        // `dedup_faults` drops the weaker decline when the coded not-a-function reject is present.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) (5 3)) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "applying a non-function = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            errors[0].message.contains("it is not a function"),
+            "the surviving error is the coded not-a-function reject: {}",
+            errors[0].message
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::NOT_APPLYABLE_DECLINE),
+            "the 'value is not applyable' decline must not accompany the coded reject"
+        );
+    }
+
+    #[test]
     fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
         // The guard must NOT over-reject: a head that is applyable via a `(meta apply)` PRIMITIVE (the
         // `tuple`/`record`/`list` compound-value alias, a type ctor) has no type SCHEME but IS applyable,
