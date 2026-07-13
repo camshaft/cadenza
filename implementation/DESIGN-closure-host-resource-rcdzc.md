@@ -261,11 +261,22 @@ the component type. The new work:
   `make-triple()`+`call(_,5)`=15. Test fns: `multi_closure_core` (2 lifted bodies + 2 makes + shared
   call over a size-2 funcref table), `multi_inner_reexport_component` (2 make imports + shared call,
   re-exported vs the resource identity), `oracle_multi_closure_component`,
-  `multi_export_closures_share_one_call_and_the_host_drives_each`. NEXT (the hand-emitted production
-  path): (a) `serialize::closure_resource_core_module` → N `make-<name>` + 1 shared `call`; (b)
-  `envelope::assemble_closure_resource` + inner component → N make imports/exports; (c) `emit` routes a
-  same-signature multi-export set to a new `emit_multi_closure_resource` (distinct-signature = N resource
-  types, a later slice); (d) `cdz-run` dispatches `make-<name>` by `opts.export`.
+  `multi_export_closures_share_one_call_and_the_host_drives_each`.
+- **✅ MULTI-EXPORT HAND-EMIT COMPLETE `@<pending>` (all 4 seams, end-to-end).** A program exporting
+  SEVERAL closures of the SAME signature now compiles + runs: (a) `serialize` gained
+  `multi_closure_resource_core_module(makes: &[ClosureMake])` — N `make-<name>` funcs + 1 shared `call`;
+  the single-export `closure_resource_core_module` is now its N=1 wrapper (one code path). (b) `envelope`
+  gained `assemble_multi_closure_resource` + `resource_inner_component_multi_closure` +
+  `component_instantiate_multi_call_item` — N make imports/exports, 1 shared call, per-make own/functype
+  types. (c) `emit` routes a same-signature multi-export set → `emit_multi_closure_resource`; a
+  DIFFERENT-signature set and a closure-ALONGSIDE-non-closure export decline cleanly (later slices). (d)
+  `cdz-run::run_closure_resource` picks `make-<opts.export>` (falls back to bare `make` for single-export).
+  🔑 GOTCHA FIXED: the nested-component import names must be VALID KEBAB-CASE — `import-func-make-0`
+  (numeric segment) fails wasmtime's extern-name check ("not in kebab case"); use `import-func-<make-name>`
+  (`import-func-make-inc`, all-alpha). +3 corpus cases (21-host-closures →18p/1todo: inc, triple sharing
+  the call, + a 3-export parameterized-capturing set) + a multi-export serializer unit test + an
+  end-to-end `a_compiled_multi_closure_program_is_driven_by_the_host` (make-inc→6, make-triple→15 via the
+  shared call). Baseline 1318, gate 1146p/0f.
 - **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
   `cdz-run` threads a handle returned by one export back into another; inside, the param is
   `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.

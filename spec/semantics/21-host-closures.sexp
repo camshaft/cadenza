@@ -226,3 +226,46 @@
   (call   main (: 3 Int64))
   (host-responses (respond ask.ask (: 10 Int64)))
   (output (: 13 Int64)))
+
+; MULTI-EXPORT closures — a program that exports SEVERAL closures of the same signature crosses as ONE
+; resource type with a `make-<name>` per export (`make-inc`, `make-triple`) sharing ONE `call` method. The
+; shared `call` is the load-bearing realization: the closure's code slot rides in the resource rep, so
+; `resource.rep` → `call_indirect` at call time dispatches WHICHEVER closure the handle names, regardless
+; of which `make` built it. The corpus `(call <name> …)` picks which `make-<name>` the host invokes, then
+; drives the shared `call` — so `(call inc 5)` runs `make-inc()` then `call(5)`, and `(call triple 5)` runs
+; `make-triple()` then the SAME `call(5)`. (Distinct-signature multi-export — N resource types — and a
+; closure exported alongside a non-closure export are later increments; both decline cleanly.)
+
+(case "one of several same-signature closure exports is made and called by the host"
+  (doc    "Two closure exports `(def (inc) (fn (x) (+ x 1)))` and `(def (triple) (fn (x) (* x 3)))` cross
+           together as one resource with `make-inc`/`make-triple` + a shared `call`. Calling `inc` drives
+           `make-inc()` then `call(5)` = 6. Pins that several closures coexist as one resource and the
+           named `make` selects the right one.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (triple) (fn ((: x Int64)) (* x 3)))
+              (export inc) (export triple)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a second same-signature closure export shares the one call method"
+  (doc    "The SAME two-export program, now calling `triple`: `make-triple()` then the SHARED `call(5)` =
+           15. The single `call` dispatches `(* x 3)` here and `(+ x 1)` above — proving one `call` serves
+           every same-signature export (the code slot travels in the resource rep, recovered per call).")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (triple) (fn ((: x Int64)) (* x 3)))
+              (export inc) (export triple)))
+  (call   triple (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a multi-export set of parameterized capturing closures is driven per export"
+  (doc    "Three closure exports that each CAPTURE their param: `add` (+ x k), `mul` (* x k), `sub` (- x k),
+           all `(Int64) -> (-> Int64 Int64)`. Calling `mul` drives `make-mul(4)` (capturing k=4) then
+           `call(5)` = 20. Pins that make-forwarding (the captured param) composes with multi-export: each
+           `make-<name>` forwards its own export's parameter into its own cell, and the shared `call` reads
+           whichever capture the handle carries.")
+  (input  (do (def (add (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (mul (: k Int64)) (fn ((: x Int64)) (* x k)))
+              (def (sub (: k Int64)) (fn ((: x Int64)) (- x k)))
+              (export add) (export mul) (export sub)))
+  (call   mul (: 4 Int64) (: 5 Int64))
+  (output (: 20 Int64)))

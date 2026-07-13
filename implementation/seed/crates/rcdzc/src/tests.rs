@@ -1640,6 +1640,49 @@ impl ComposedRuntime {
         out[0].clone()
     }
 
+    /// Like [`closure_make_call`] but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
+    /// program, sharing the one `call`. Proves several closure exports coexist and the shared `call`
+    /// dispatches whichever the named `make` built.
+    fn closure_make_call_named(
+        &mut self,
+        make_name: &str,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), make_name)
+            .unwrap_or_else(|| panic!("closure `{make_name}` exported"));
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut full_call_args = vec![handle[0].clone()];
+        full_call_args.extend_from_slice(call_args);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut self.store, &full_call_args, &mut out)
+            .expect("call");
+        call.post_return(&mut self.store).expect("call post_return");
+        out[0].clone()
+    }
+
     /// Call a runtime HEAP op by name (e.g. `arr-get`, `get-int`, `arr-len`, `drop`) on the shared
     /// runtime instance — how a test reads back a handle the program returned (the "display function"),
     /// or releases it. Returns the op's single result, or `Val::Bool(false)` for a no-result op like
@@ -21614,6 +21657,43 @@ mod closure_host_resource {
         );
     }
 
+    /// MULTI-EXPORT end-to-end (the whole COMPILER pipeline): a program with TWO same-signature closure
+    /// exports (`inc`, `triple`) compiles to a component with `make-inc`/`make-triple` + a SHARED `call`,
+    /// and the host drives each — `make-inc()`+`call(5)`=6, `make-triple()`+`call(5)`=15. The production
+    /// analog of the `multi_export_closures_share_one_call` oracle: proves the hand-emitted multi-export
+    /// path (emit → `multi_closure_resource_core_module` → `assemble_multi_closure_resource`) composes
+    /// with the real value-heap runtime and dispatches the right closure per handle.
+    #[test]
+    fn a_compiled_multi_closure_program_is_driven_by_the_host() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&program).expect("valid").is_some(),
+            "a multi-export closure program imports the value-heap runtime (the cells are heap values)"
+        );
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make-inc() → a handle; the SHARED call dispatches (+ x 1): call(5) = 6.
+        assert_eq!(
+            rt.closure_make_call_named("make-inc", &[], &[Val::S64(5)]),
+            Val::S64(6),
+            "make-inc then the shared call(5) = 6"
+        );
+        // make-triple() → a handle; the SAME shared call dispatches (* x 3): call(5) = 15.
+        assert_eq!(
+            rt.closure_make_call_named("make-triple", &[], &[Val::S64(5)]),
+            Val::S64(15),
+            "make-triple then the shared call(5) = 15 — the same call dispatches the other closure"
+        );
+    }
+
     /// DIRECTION 2 (host hands a closure BACK) is NOT YET SUPPORTED — an export whose PARAMETER is a
     /// closure declines cleanly (reject-don't-miscompile) with a message naming the feature, rather than
     /// the internal "no matching function type" the select-time `Core::CallClosure` would otherwise
@@ -21670,29 +21750,42 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures are NOT YET SUPPORTED — a program exporting two closures (or a closure
-    /// alongside another export) declines cleanly with a message NAMING the feature, rather than falling
-    /// through to the scalar multi-export path's generic "type `(-> A B)` has no component boundary
-    /// representation" (which reads as a type error, not an honest not-yet-built Todo). The single-export
-    /// closure escape fires only on `[e]`; N closure exports need a multi-export envelope (one `make` per
-    /// closure export). Pins the honest Todo until that increment lands.
+    /// MULTI-EXPORT closures of the SAME signature now COMPILE (the emit path routes them to
+    /// `emit_multi_closure_resource`); the two REMAINING multi-export shapes still decline cleanly, naming
+    /// what is unsupported: (a) closure exports of DIFFERENT signatures (would need N resource types), and
+    /// (b) a closure exported ALONGSIDE a non-closure export (would need to compose two envelopes). Pins
+    /// both the newly-working case and the honest Todos for the later slices.
     #[test]
-    fn multiple_closure_exports_decline_naming_the_feature() {
+    fn multi_export_closures_compile_when_same_signature_else_decline() {
         use crate::testkit::parse;
-        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
-                   (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("two closure exports must DECLINE (multi-export closures not yet built)");
+        // Same signature → COMPILES.
+        let same = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                    (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(same)))
+            .expect("two same-signature closure exports compile (multi-export path)");
+
+        // DIFFERENT signatures (one `(-> Int64 Int64)`, one `(-> Int64 Bool)`) → decline naming the slice.
+        let diff = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                    (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
+            .expect_err("closure exports of different signatures must DECLINE");
         assert!(
-            err.message.contains("MORE THAN ONE closure")
-                && err.message.contains("multi-export closure envelope"),
-            "expected the multi-export-closures not-yet-supported message, got: {}",
+            err.message.contains("DIFFERENT signatures") && err.code.is_none(),
+            "expected the distinct-signature multi-export decline, got: {:?} / {}",
+            err.code,
             err.message
         );
+
+        // A closure ALONGSIDE a non-closure export → decline naming the slice.
+        let mixed = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                     (def (two) 2) (export inc) (export two))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
+            .expect_err("a closure alongside a non-closure export must DECLINE");
         assert!(
-            err.code.is_none(),
-            "a not-yet-built feature must DECLINE (uncoded), not carry a rejection code: {:?}",
-            err.code
+            err.message.contains("ALONGSIDE a non-closure") && err.code.is_none(),
+            "expected the closure-plus-scalar multi-export decline, got: {:?} / {}",
+            err.code,
+            err.message
         );
     }
 

@@ -254,7 +254,7 @@ fn run_export(
             .map(|name| instance.get_func(&mut *store, name).is_none())
             .unwrap_or(true)
     {
-        return run_closure_resource(&mut *store, &instance, &opts.args);
+        return run_closure_resource(&mut *store, &instance, opts.export.as_deref(), &opts.args);
     }
 
     // Resolve the export to call: the named one, or the sole function export found by signature.
@@ -578,14 +578,29 @@ fn has_closure_instance(engine: &Engine, component: &Component) -> bool {
 fn run_closure_resource(
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
+    export: Option<&str>,
     arg_strs: &[String],
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
         .ok_or_else(|| anyhow!("closure escape: no `{CLOSURE_INTERFACE}` instance export"))?;
+    // The make function to call: a single-export program publishes a bare `make`; a MULTI-EXPORT program
+    // publishes `make-<name>` per closure export, and the corpus `(call <name> …)` picks which. Try
+    // `make-<export>` first (multi), then the bare `make` (single) — so a single-export case with a `--call
+    // main` still resolves `make`.
+    let make_name = match export {
+        Some(name)
+            if instance
+                .get_export_index(&mut *store, Some(&iface), &format!("make-{name}"))
+                .is_some() =>
+        {
+            format!("make-{name}")
+        }
+        _ => "make".to_string(),
+    };
     let make_idx = instance
-        .get_export_index(&mut *store, Some(&iface), "make")
-        .ok_or_else(|| anyhow!("closure escape: `{CLOSURE_INTERFACE}` exports no `make`"))?;
+        .get_export_index(&mut *store, Some(&iface), &make_name)
+        .ok_or_else(|| anyhow!("closure escape: `{CLOSURE_INTERFACE}` exports no `{make_name}`"))?;
     let call_idx = instance
         .get_export_index(&mut *store, Some(&iface), "call")
         .ok_or_else(|| anyhow!("closure escape: `{CLOSURE_INTERFACE}` exports no `call`"))?;
