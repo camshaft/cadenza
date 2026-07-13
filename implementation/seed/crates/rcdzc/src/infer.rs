@@ -3440,6 +3440,58 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     out.extend(sub);
 }
 
+/// Walk the RAW AST subtree at `id` (a `quote`/`quasiquote`/`unquote`/`unquote-splicing` form) and report
+/// the coded SYNTAX rejection of every `(unquote …)`/`(unquote-splicing …)` occurrence inside it — the
+/// CDZ0003 (outside-a-quasiquote) / CDZ0201 (wrong-arity) checks `resolve::resolve_unquote` produces. The
+/// enclosing quote/quasiquote itself declines (its `Ast` value is not built), so these inner defects are
+/// invisible to the ordinary type walk; surfacing them here is the "check descends to leaves" discipline
+/// (a syntax defect is unconditional well-formedness, like an unbound name in an untaken branch). Walks
+/// the AST children directly (the resolved form is a decline, carrying no child structure). The `unquote`'s
+/// own OPERANDS are ordinary expressions (`,(+ x 1)`) but they too are inert data until the `Ast` vertical,
+/// so only the quoting-form structure is inspected here, not the operand values.
+fn collect_quote_body_syntax(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // An `(unquote e)` / `(unquote-splicing e)` node: either a SYNTAX/arity defect (report its coded
+    // reject), or a WELL-FORMED escape genuinely inside a quasiquote — which MUST evaluate its operand
+    // (`metaprogramming.md` §Quasiquote Constructs AST With Selective Evaluation), so the operand's own
+    // faults (an unbound name in `` `(a ,(+ b 1)) `` → CDZ0101) are collected NORMALLY. `resolved_of`
+    // decides which: a `Poison` with the syntax/arity code is the defect; anything else means it is a
+    // well-formed unquote whose operand should be type-checked.
+    if matches!(db.ast.head_name(id), Some("unquote" | "unquote-splicing")) {
+        match resolved_of(db, id) {
+            Resolved::Poison(r)
+                if matches!(
+                    r.code,
+                    Some(Code::UnquoteOutsideQuasiquote) | Some(Code::Malformed)
+                ) =>
+            {
+                let mut r = r;
+                r.set_origin_if_absent(id);
+                out.push(r);
+                return; // a malformed unquote — do not also type-check its (dropped) operands
+            }
+            // A well-formed unquote inside a quasiquote — its operand IS evaluated, so collect its faults.
+            _ => {
+                if let Some(&operand) = db
+                    .ast
+                    .as_form(id, db.ast.head_name(id).unwrap())
+                    .and_then(|t| t.first())
+                {
+                    collect(db, operand, out);
+                }
+                return;
+            }
+        }
+    }
+    // Descend into every child list — a nested `(unquote …)` / a `(quasiquote …)` deeper in the template.
+    if let crate::ast::Struct::List(children) = db.ast.get(id) {
+        for child in children.clone() {
+            if matches!(db.ast.get(child), crate::ast::Struct::List(_)) {
+                collect_quote_body_syntax(db, child, out);
+            }
+        }
+    }
+}
+
 fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form (its value), so the `Resolved::Ref`
     // arm below descends only into that. But the INTERMEDIATE forms are still evaluated (their value
@@ -3477,6 +3529,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             collect(db, f, out);
         }
+        return;
+    }
+    // A `quote`/`quasiquote`/`unquote`/`unquote-splicing` form resolves to a DECLINE (its `Ast` value is
+    // not yet built), so the ordinary `Resolved` arms below stop at that decline and never see the body.
+    // But a SYNTAX defect inside the quoted structure is UNCONDITIONAL well-formedness (like an unbound
+    // name in an untaken branch): an `unquote`/`,@` OUTSIDE a quasiquote (CDZ0003) or a wrong-arity one
+    // (CDZ0201) must be reported even though the enclosing quote/quasiquote itself declines. So descend
+    // into the RAW body subtree here, collecting each nested `(unquote …)`/`(unquote-splicing …)`'s coded
+    // reject (its own `collect` → the `Poison` arm reports the coded syntax/arity rejection). Walk the raw
+    // AST children (the resolved form collapsed to a decline, carrying no children).
+    if matches!(
+        db.ast.head_name(id),
+        Some("quote" | "quasiquote" | "unquote" | "unquote-splicing")
+    ) {
+        collect_quote_body_syntax(db, id, out);
         return;
     }
     match resolved_of(db, id) {

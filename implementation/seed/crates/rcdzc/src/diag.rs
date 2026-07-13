@@ -41,6 +41,14 @@ pub enum Code {
     /// marker into this coded rejection (`collections-and-text.md` §A Char Is A Single Unicode Scalar
     /// Value). The static companion of the dynamic `(Char.from-int 55296)` → None.
     BadChar,
+    /// An `unquote` (`,x`) or `unquote-splicing` (`,@x`) OUTSIDE any quasiquote context — a SYNTAX error
+    /// (`metaprogramming.md` §Quasiquote Constructs AST With Selective Evaluation: "Unquote and
+    /// unquote-splicing outside a quasiquote context MUST be a syntax error"). `,`/`,@` only mean
+    /// something inside a `` ` `` template; a bare `,x`, or one nested only under a PLAIN `(quote …)`
+    /// (quote's body is inert data, NOT a selective-evaluation template), has no template to insert into.
+    /// In the CDZ00xx reader/syntax band with `BadEscape`/`BadChar` — a structural defect in the quoting
+    /// forms, distinct from `EffectNoHome` (CDZ0401), which the corpus formerly reused for this by mistake.
+    UnquoteOutsideQuasiquote,
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
     /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
     Unbound,
@@ -198,6 +206,7 @@ impl Code {
         match self {
             Code::BadEscape => "CDZ0001",
             Code::BadChar => "CDZ0002",
+            Code::UnquoteOutsideQuasiquote => "CDZ0003",
             Code::Unbound => "CDZ0101",
             Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",
