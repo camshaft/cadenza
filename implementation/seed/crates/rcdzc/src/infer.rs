@@ -272,6 +272,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // uses; a still-`None` result means either a non-recursive param (typed `Any` — it inlines at
         // its call site, where the argument's type flows in via the fold) or an unconstrained one.
         Resolved::Param { binder } => param_annot_ty(db, binder)
+            .or_else(|| crate::effects::handle_arm_param_ty(db, binder))
             .or_else(|| solved_param_ty(db, binder))
             .unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value

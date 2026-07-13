@@ -13,6 +13,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
+pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Sign match missing two of three variants is non-exhaustive
@@ -89,6 +90,7 @@ pass	a curried function-type annotation checks its inner result type against the
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
+pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a delegation naming an effect that is never reached is rejected as latent authority
@@ -118,6 +120,7 @@ pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
 pass	a function chosen by a runtime condition is applied (false branch)
 pass	a function chosen by a runtime condition is applied (true branch)
+pass	a function declaration in a do block is callable by the following forms
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
 pass	a function open over a record's extra fields accepts any record with the used field
@@ -154,6 +157,7 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal with digit separators
 pass	a large whole-valued float renders its full value, not an integer saturation
+pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
@@ -201,6 +205,7 @@ pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
 pass	a module with two definitions of the same name is rejected
+pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
@@ -422,6 +427,7 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a value declaration in a do block is in scope for the following forms
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
@@ -777,7 +783,6 @@ todo	a LEB128 non-final byte composes mask, continuation bit, and to-byte
 todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
 todo	a NaN nested in a tuple compares equal under the canonical byte form
-todo	a RECURSIVE effectful walk accumulates into a list-state handler
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bare arithmetic keyword is rejected, not a crash
 todo	a bare equality keyword is rejected, not a crash
@@ -802,7 +807,6 @@ todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
-todo	a declaration in a do block shadows an outer binding
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
@@ -817,12 +821,10 @@ todo	a factorial that overflows the integer type traps through the recursion
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function declaration in a do block calls an earlier sibling declaration
-todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a header of packed nibbles and a length-prefixed body round-trips
 todo	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
-todo	a later declaration in a do block sees an earlier one
 todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a list built by a recursive push-loop is then iterated by index
@@ -945,7 +947,6 @@ todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 todo	a utf8-decoding bin match with no catch-all is non-exhaustive
-todo	a value declaration in a do block is in scope for the following forms
 todo	a value definition may carry a leading doc, like a function definition
 todo	a variant with a wrong-type payload as a direct match scrutinee is a type error
 todo	a whole rational carries a denominator of one

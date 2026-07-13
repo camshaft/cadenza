@@ -8573,22 +8573,27 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_effectful_case_the_fold_cannot_serve_declines_not_hangs() {
-        // E3 boundary: a recursive effectful walk the single-state fast path cannot serve (a 2-arm
-        // handler over a compound list state) must DECLINE cleanly — NOT hang. Regression guard for the
-        // unbounded-inline loop (a recursive callee β-reduced to a fresh non-self-referential copy each
-        // level would unroll forever without `THREAD_INLINE_LIMIT`). It compiles (declines) in bounded
-        // time; the point is the compiler returns rather than spinning.
+    fn a_recursive_effectful_walk_accumulates_into_a_list_state_handler() {
+        // E3 list-state: a recursive effectful walk over a 2-arm handler whose state is an empty-list
+        // seed `(list)`. `walk` performs `(Diag.emit n)` at each descent step and reads the accumulator
+        // back with `(Diag.collect)` at the base; the handler seeds `(list)` and threads `(List.push s v)`,
+        // so `(walk 3)` accumulates `(list 3 2 1)`, whose length is 3. The empty-list seed's element type
+        // is fixed by JOINING the seed type with each tail arm's next-state type — the growing arm's
+        // `(List.push s v)` reveals `List Int64` because the arm op param `v` types from the op's declared
+        // `(-> Int64 Unit)` signature (`handle_arm_param_ty`). Was the hang/decline boundary; now served.
+        // Also the regression guard for the unbounded-inline loop (`THREAD_INLINE_LIMIT`) — a served value
+        // still proves the fold TERMINATES.
         let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
                    (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
                    (def (main) (handle (list) \
                      ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
                      (List.len (walk 3)))) (export main))";
-        // Declines (not yet served) — but crucially TERMINATES (no hang). `is_err` = the decline; the
-        // test would time out (not fail) if the fold looped, so reaching this assertion IS the guard.
+        // The state lives on the value heap (`List.push`/`List.len`), so this needs the store runtime the
+        // in-process linker doesn't supply — assert it COMPILES (a well-formed component); the corpus gate
+        // (`14-effects-and-handlers.sexp`) verifies the runtime value is 3 against the real heap.
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a not-yet-served recursive effectful case must decline (and must terminate, not hang)"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "recursive effectful list-state walk must compile"
         );
     }
 

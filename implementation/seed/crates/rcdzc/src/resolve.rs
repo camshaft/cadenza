@@ -641,7 +641,7 @@ fn handle_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Opti
 
 /// Whether `arm` is a HANDLE ARM — its parent is a handle's arms-list (the handle's 2nd tail element).
 /// Used by `handle_arm_binds` and `is_binding_candidate` to confirm an arm's shape from a node up.
-fn is_handle_arm(db: &Db, arm: StructId) -> bool {
+pub(crate) fn is_handle_arm(db: &Db, arm: StructId) -> bool {
     let Some(arms_list) = db.parent_of(arm) else {
         return false;
     };

@@ -529,7 +529,22 @@ pub fn reduce_handle(
     // deferred/undetermined init type (e.g. a bare literal not yet grounded) is grounded to a definite
     // integer here via `type_of`; if still undetermined a recursive specialization declines.
     let state_ty = {
-        let t = crate::infer::type_of(db, init);
+        let init_t = crate::infer::type_of(db, init);
+        let mut t = init_t.clone();
+        // JOIN the seed type with each tail-arm's NEXT-STATE type. The seed of an accumulating handler is
+        // often an empty collection whose element is undetermined (`(list)` : `List ?`), while an arm that
+        // GROWS the state (`(resume unit (List.push s code))`) has a concrete element (`code` types from
+        // the op's declared parameter — `handle_arm_param_ty`). Joining fixes the empty seed's element from
+        // the growing arm; a read-out arm whose next-state is a bare `s` passthrough types as a var and
+        // `join` yields the other (more-defined) side, so it never poisons the element. This reads only the
+        // arm's NEXT-STATE (`resume`'s 2nd arg), never its resume VALUE, so a `Unit` resume value cannot
+        // bleed into the state element.
+        for arm in arms {
+            if let Some(next) = tail_resume_next_state_of(db, arm.body) {
+                let nt = crate::infer::type_of(db, next);
+                t = t.join(&nt);
+            }
+        }
         if matches!(t, crate::ty::Ty::Any) {
             None
         } else {
@@ -587,6 +602,57 @@ fn resume_result_type_ok(db: &mut Db, arm: &HandleArm) -> bool {
 fn tail_resume_value_of(db: &mut Db, node: StructId) -> Option<StructId> {
     match resolved_of(db, node) {
         Resolved::Resume { value, .. } => Some(value),
+        _ => None,
+    }
+}
+
+/// The declared type of a HANDLE-ARM operation parameter `binder` — read from the arm's operation
+/// signature (`capabilities-and-effects.md` §Performing An Operation Is Typed: an operation's args are
+/// typed against its declared parameter types). An arm `(E.op (p0 p1 …) state body)` binds `pk` to the
+/// op's k-th parameter type: instantiate the op value's `(meta t)` scheme `(fn () (-> P0 (-> P1 …
+/// Result)))` and peel to the k-th domain. `None` if `binder` is not a handle-arm op param (a bare param,
+/// a def/fn param, the state binder). This is what lets `(List.push s code)` in a `Diag.emit` arm type
+/// `code` as `Int64` (its declared param) rather than an unconstrained fresh variable.
+pub fn handle_arm_param_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::Ty> {
+    // `binder` sits in the arm's params list: binder → params-list → arm. The arm must be a handle arm
+    // `(op (params…) state body)` (4 elements), and `binder` its own occurrence in the params list.
+    let params_list = db.parent_of(binder)?;
+    let arm = db.parent_of(params_list)?;
+    if !crate::resolve::is_handle_arm(db, arm) {
+        return None;
+    }
+    let Struct::List(parts) = db.ast.get(arm).clone() else {
+        return None;
+    };
+    // The params list is the arm's 2nd element (index 1); confirm and find `binder`'s position in it.
+    if parts.get(1).copied() != Some(params_list) {
+        return None;
+    }
+    let Struct::List(params) = db.ast.get(params_list).clone() else {
+        return None;
+    };
+    let k = params.iter().position(|&p| p == binder)?;
+    // The op's declared arrow: instantiate the op value's `(meta t)` scheme, then peel `k` domains to
+    // reach the k-th parameter type. `(fn () (-> P0 (-> P1 Result)))` → peel k `Fn`s and take the domain.
+    let op = parts[0];
+    let mut fresh = crate::unify::Fresh::new();
+    let scheme = crate::eval::scheme_of(db, op, &mut fresh)?;
+    let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+    for _ in 0..k {
+        match cur {
+            crate::ty::Ty::Fn(_, r) => cur = *r,
+            _ => return None,
+        }
+    }
+    match cur {
+        crate::ty::Ty::Fn(p, _) => Some(*p),
+        _ => None,
+    }
+}
+
+fn tail_resume_next_state_of(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Resume { next_state, .. } => Some(next_state),
         _ => None,
     }
 }
