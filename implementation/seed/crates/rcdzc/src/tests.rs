@@ -14009,6 +14009,30 @@ mod stage1 {
     }
 
     #[test]
+    fn an_abort_in_a_compound_typed_body_declines_rather_than_miscompiles() {
+        // E4 abort-value / handle-body TYPE-CONSISTENCY (a MISCOMPILE regression). An abort makes its arm
+        // value the WHOLE handle's value, so the value must have the handle body's type. `(tuple 1
+        // (Bail.bail 7))` has a compound body `(Tuple Int64 Int64)` but the abort yields a scalar Int64 —
+        // they disagree. The two syntactic shapes even INFERRED different handle types (a bare tuple-operand
+        // abort typed the handle Int64 and collapsed to 7; the same via `(if true …)` typed it a tuple and
+        // MISCOMPILED to `(1,7)` — the abort value substituted into the tuple instead of abandoning it), and
+        // the hoist emitted an ill-typed `if` (invalid wasm). `reduce_handle` now declines when an abortive
+        // arm's value type differs from the handle body's type. Both shapes must decline.
+        let bare = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (tuple 1 (Bail.bail 7)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(bare))).is_err(),
+            "a scalar abort in a tuple-typed body must decline"
+        );
+        let cond = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (tuple 1 (if true (Bail.bail 7) 5)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(cond))).is_err(),
+            "a scalar abort in a conditional tuple operand must decline, not miscompile to (1,7)"
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a

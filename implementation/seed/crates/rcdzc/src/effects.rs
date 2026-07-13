@@ -1078,7 +1078,15 @@ pub fn reduce_handle(
     // ill-typed `if` (invalid wasm). The checker misses this gap, so guard it in the fold — decline when any
     // abortive arm's body type does not match its operation's result type. (A tail-resumptive arm is already
     // covered: `resume_result_type_ok` checked its resume value against the result type above.)
-    let undetermined = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Any | crate::ty::Ty::Var(_));
+    // The HANDLE BODY's type. An abort makes its arm value the WHOLE handle's value, so the abort value
+    // must have this type. When an abort sits inside a COMPOUND-typed body — `(tuple 1 (Bail.bail 7))` or
+    // `(tuple 1 (if c (Bail.bail 7) 5))` — a scalar abort value disagrees with the compound: the whole-
+    // collapse path types the handle as the scalar (Int64) while the hoist/threading path substitutes the
+    // scalar into the compound (a tuple `(1,7)`) — the two syntactic shapes even INFER different handle
+    // types, and the hoist emits an ill-typed `if` (invalid wasm). The type checker misses the gap (a
+    // perform types by its op result). Decline when an abortive arm's value type differs from the handle
+    // body's type — the abort value simply doesn't fit where the handle promises to return it.
+    let handle_body_ty = crate::infer::type_of(db, body);
     let abortive_keys: Vec<(u32, u32)> = ctx.abortive.iter().copied().collect();
     for (d, i) in abortive_keys {
         let arm_op = ctx.arms.get(&(d, i))?.op;
@@ -1087,11 +1095,18 @@ pub fn reduce_handle(
         let result_ty = op_result_type(db, arm_op);
         // Compare structurally; an undetermined side (an `Any`/var) does not disqualify (the abort value
         // then flows unconstrained, matching the E4-a strict cases that already work). Only a DEFINITE
-        // disagreement (two concrete, distinct ground types) declines.
+        // disagreement (two concrete, distinct ground types) declines. TWO checks: the abort value must
+        // match (a) its operation's declared RESULT type, and (b) the HANDLE BODY's type.
         if let Some(rt) = result_ty
-            && !undetermined(&body_ty)
-            && !undetermined(&rt)
+            && !undetermined_ty(&body_ty)
+            && !undetermined_ty(&rt)
             && body_ty != rt
+        {
+            return None;
+        }
+        if !undetermined_ty(&body_ty)
+            && !undetermined_ty(&handle_body_ty)
+            && body_ty != handle_body_ty
         {
             return None;
         }
@@ -1202,6 +1217,36 @@ fn subtree_has_abortive_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -
     }
 }
 
+/// Whether `t` is an UNDETERMINED type (an `Any` or a free `Var`) — an abort-type comparison over an
+/// undetermined side is inconclusive, so callers treat it as "allow" rather than a definite mismatch.
+fn undetermined_ty(t: &crate::ty::Ty) -> bool {
+    matches!(t, crate::ty::Ty::Any | crate::ty::Ty::Var(_))
+}
+
+/// The VALUE TYPE an abortive perform in `node` collapses to — the type of the abortive arm's BODY (which
+/// becomes the abort value). Returns `Some(ty)` when `node` contains exactly one abortive op whose arm
+/// body type is determinable; `None` if it finds none (or the arm/type is unavailable). Used by the hoist
+/// to check that distributing an enclosing op keeps the produced `if` branches type-consistent.
+fn abortive_perform_value_ty(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> Option<crate::ty::Ty> {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && ctx.abortive.contains(&id)
+    {
+        let arm_body = ctx.arms.get(&id)?.body;
+        return Some(crate::infer::type_of(db, arm_body));
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .find_map(|&c| abortive_perform_value_ty(db, c, ctx)),
+        Struct::Atom(_) => None,
+    }
+}
+
 /// Rewrite a NON-TAIL conditional abort into a branch-tail one by distributing the enclosing strict op
 /// into both `if` branches, to a fixpoint. `(+ 100 (if c (Bail.bail 7) 50))` → `(if c (+ 100 (Bail.bail
 /// 7)) (+ 100 50))`. Sound because an abort ABANDONS the enclosing computation (so pushing the op into
@@ -1254,7 +1299,22 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
                         .enumerate()
                         .all(|(j, &b)| j == i || !subtree_performs(db, b, ctx));
                     let cond_pure = !subtree_performs(db, cond, ctx);
-                    if others_pure && cond_pure {
+                    // TYPE-SAFE distribution. After the hoist, the aborting branch `(op … (Bail v) …)`
+                    // COLLAPSES to the abort value (its type = the abortive arm's body type), while the
+                    // other branch `(op … e …)` keeps the op's RESULT type. Those must AGREE or the produced
+                    // `if` is ill-typed → invalid wasm (`(tuple 1 (if c (Bail.bail 7) 5))`: op result is a
+                    // tuple, abort value is Int64). Only distribute when the op's result type equals the
+                    // abort value type; otherwise leave it (the guard declines). Undetermined either side →
+                    // allow (the scalar cases where inference hasn't ground both, matching prior behavior).
+                    let op_result = crate::infer::type_of(db, node);
+                    let abort_ty = abortive_perform_value_ty(db, a, ctx);
+                    let types_agree = match abort_ty {
+                        Some(at) => {
+                            undetermined_ty(&op_result) || undetermined_ty(&at) || op_result == at
+                        }
+                        None => true, // no single abort value type found — fall through, guard decides
+                    };
+                    if others_pure && cond_pure && types_agree {
                         // Build `(op a0 … <branch> … ak)` for each branch, then `(if cond then' else')`.
                         let rebuild = |db: &mut Db, branch: StructId| -> StructId {
                             let children: Vec<StructId> = std::iter::once(head)
