@@ -9425,23 +9425,42 @@ mod stage1 {
         //      stack`. Hit even by a SCALAR guard (no heap handle).
         //  (2) BRANCH SCRATCH — when the guard produces an i32 heap handle (`value-eq`/`MatchSum`), its
         //      scratch slot must sit above the fall-through's i64 iteration arithmetic.
-        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). `find(0)` = 3 either way.
+        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). This also covers the two
+        // sibling scratch seams a heap-op-in-a-loop hit: a value-eq as the match SCRUTINEE (its handle
+        // scratch vs the probe chain's arm-body arith), and a value-eq guard on a LITERAL-probe arm (its
+        // handle scratch in the THEN vs the probe-else's iteration arith). All must be valid modules.
         use crate::testkit::parse;
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping guarded-wildcard-loop run");
             return;
         };
-        for (label, src) in [
+        for (label, src, want) in [
             (
-                "scalar guard",
+                "scalar guard (tail depth)",
                 "(module m (def (find (: n Int64)) \
                    (match n ((guard x (> x 2)) x) (_ (find (+ n 1))))) (export find))",
+                "3",
             ),
             (
-                "value-eq guard",
+                "value-eq guard on wildcard (tail depth + scratch)",
                 "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
                    (def (find (: n Int64)) \
                      (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find))",
+                "3",
+            ),
+            (
+                "value-eq as match scrutinee (scrutinee scratch)",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match (= (mk n) (mk 3)) (true n) (false (find (+ n 1))))) (export find))",
+                "3",
+            ),
+            (
+                "value-eq guard on literal-probe arm (probe-else scratch)",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match n ((guard 3 (= (mk n) (mk 3))) 300) (_ (find (+ n 1))))) (export find))",
+                "300",
             ),
         ] {
             let bytes = compile_component(&crate::codec::encode(&parse(src)))
@@ -9453,7 +9472,7 @@ mod stage1 {
                 runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "find(0) = 3 ({label})"),
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "find(0) = {want} ({label})"),
                 cdz_run::Outcome::Trap(t) => panic!("guarded-wildcard-loop trapped ({label}): {t}"),
             }
         }

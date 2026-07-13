@@ -2842,10 +2842,14 @@ fn emit_match_arms_tailable(
         // full scratch region from `base`.
         Some(src) => (src, base),
         None => {
-            // Evaluate the scrutinee ONCE into scratch slot `base`, and run the probe chain from `base+1`
-            // so the arm bodies and later probes never clobber that live slot (it must survive every
-            // probe). The scrutinee's own emit uses `base+1` too (it is fully consumed into `base` before
-            // any probe runs). `slot` is at least `base`, so the high-water covers it.
+            // Evaluate the scrutinee ONCE into scratch slot `base`; the arm bodies and later probes run
+            // ABOVE that live slot (it must survive every probe). The scrutinee's own emit uses `base+1`
+            // as its floor, and may itself claim MORE scratch — a runtime `value-eq`/`MatchSum` scrutinee
+            // (`(match (= (mk n) (mk 3)) …)`) stashes i32 heap handles in slots the high-water records.
+            // So the probe chain starts at the high-water the scrutinee emit REACHED (`*high`), NOT a bare
+            // `base+1`: reusing a scrutinee-scratch slot the value-eq typed i32 for a branch's i64
+            // iteration arithmetic would force one wasm local to two types (invalid module). A scalar
+            // scrutinee leaves `*high == base+1`, so `chain_base == base+1` and the bytes are unchanged.
             let slot = base;
             if slot + 1 > *high {
                 *high = slot + 1;
@@ -2862,7 +2866,7 @@ fn emit_match_arms_tailable(
                 out,
             )?;
             out.push(Lir::LocalSet(slot));
-            (OperandSrc::Slot(slot), base + 1)
+            (OperandSrc::Slot(slot), *high)
         }
     };
     emit_probe_chain(
@@ -3047,9 +3051,18 @@ fn emit_probe_chain(
             db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
             out, inner,
         )?;
+        // The probe's ELSE (the fall-through probe chain) starts scratch ABOVE the high-water the THEN
+        // (a guarded body) reached, NOT at `base`. A guard in the THEN may stash an i32 HEAP HANDLE (a
+        // runtime `value-eq`/`MatchSum`) in a low slot, typing it i32 for the whole function; the ELSE's
+        // fall-through i64 iteration arithmetic reusing that slot number would force one wasm local to
+        // two types (invalid module). The two `if` branches are mutually exclusive at RUN time but share
+        // ONE function-global local declaration, so a slot used at two widths across them is illegal. A
+        // scalar guard/body leaves `*high` unchanged, so this is byte-identical for the common case. (The
+        // `src` scrutinee slot is below `base`-relative scratch and stays live regardless.)
+        let else_base = *high;
         out.push(Lir::Else);
         emit_probe_chain(
-            db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            db, src, rest, it, result_it, block_ty, slots, else_base, high, scratch_ty, layout, out,
             inner,
         )?;
         out.push(Lir::End);

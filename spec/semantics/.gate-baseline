@@ -323,6 +323,7 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
+pass	a runtime sum equality as a match SCRUTINEE drives a tail-recursive loop
 pass	a runtime sum equality drives a tail-recursive loop
 pass	a runtime sum match drives a tail-recursive loop
 pass	a runtime sum whose payload comes from recursion compares equal by a heap walk
@@ -345,12 +346,17 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
+pass	a sequencing block discards a pure compound intermediate
+pass	a sequencing block discards a pure list intermediate
+pass	a sequencing block whose last form is unit yields unit
+pass	a sequencing block yields the value of its last form
 pass	a shadowed-constructor application types at the binding's return type
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a single-form body admits a sequence by holding a do block
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
@@ -397,6 +403,7 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
@@ -889,16 +896,11 @@ todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a scalar element is projected from a let-bound runtime tuple
-todo	a sequencing block discards a pure compound intermediate
-todo	a sequencing block discards a pure list intermediate
-todo	a sequencing block whose last form is unit yields unit
-todo	a sequencing block yields the value of its last form
 todo	a set collapses a duplicate element
 todo	a set is constructed from a list of its elements
 todo	a set with elements of two different types is a type error
 todo	a signed i8 segment encodes as two's complement
 todo	a signed pattern segment reads a two's-complement integer as negative
-todo	a single-form body admits a sequence by holding a do block
 todo	a string compared to a symbol is a type error
 todo	a string literal
 todo	a string literal is normalized to the canonical text form
