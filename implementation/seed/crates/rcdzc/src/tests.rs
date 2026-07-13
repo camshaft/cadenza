@@ -6376,6 +6376,44 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_symbol_of_equality_and_to_string_fold() {
+        // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
+        // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying
+        // `Core::ConstStr` rep, so `=`/`to-string` fold with no new machinery.
+        let run_b = |src: &str| {
+            run_returns::<bool>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        let run_i = |src: &str| {
+            run_returns::<i64>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        // Idempotent: interning the same string twice is equal.
+        assert!(run_b(
+            "(= (Symbol.of \"map-insert\") (Symbol.of \"map-insert\"))"
+        ));
+        // Distinct strings → distinct symbols.
+        assert!(!run_b(
+            "(= (Symbol.of \"map-insert\") (Symbol.of \"map-lookup\"))"
+        ));
+        // Identity is content, not derivation: a concat-built symbol equals the literal-built one.
+        assert!(run_b(
+            "(= (Symbol.of (String.concat \"map\" \"-insert\")) (Symbol.of \"map-insert\"))"
+        ));
+        // The empty symbol equals itself.
+        assert!(run_b("(= (Symbol.of \"\") (Symbol.of \"\"))"));
+        // `to-string` recovers the content String — measurable via String.scalar-len (folds to Int64).
+        assert_eq!(
+            run_i("((. String scalar-len) (Symbol.to-string (Symbol.of \"abc\")))"),
+            3
+        );
+    }
+
+    #[test]
     fn an_empty_quote_is_cdz0201_not_an_unbound_name() {
         // 07-type-system "an empty quote is rejected, not a crash": `(quote)` with no operand is
         // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a

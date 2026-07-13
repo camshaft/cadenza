@@ -160,6 +160,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // fields project via member access `(. Char to-int)`.
     names.insert("Char".to_string(), char_module(ast));
 
+    // `Symbol` — an interned NAME value with O(1) equality (17-symbols), a nominal over `String`. The
+    // module record carries `(meta t) = Ty::Symbol` (so bare `Symbol` in type position IS the type) plus
+    // `of`/`to-string` operation fields. Like `Bytes`/`String`/`Char`, a `(meta t)` type-value and member
+    // access coexist.
+    names.insert("Symbol".to_string(), symbol_module(ast));
+
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
@@ -702,6 +708,51 @@ fn char_module(ast: &mut Arenas) -> StructId {
     let from_int_key = push_atom(ast, Leaf::Name("from-int".to_string()));
     children.push(push_list(ast, vec![from_int_key, from_int_op]));
     push_list(ast, children)
+}
+
+/// The `Symbol` module record (17-symbols) — a record whose `(meta t)` is the ground `Ty::Symbol`
+/// (`(intrinsic "Symbol")`), so bare `Symbol` in type position IS the type (a NULLARY type like
+/// `String`/`Char`), plus the operation fields reached by member access. `of : String → Symbol` interns
+/// a string into a symbol; `to-string : Symbol → String` recovers its content. Both FOLD on a constant
+/// operand (a constant symbol shares the underlying `Core::ConstStr` rep at type `Ty::Symbol`).
+fn symbol_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let ty_val = intrinsic_node(ast, "Symbol");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
+    // `of : String → Symbol` — intern a String into a Symbol.
+    let of_ty = symbol_of_type(ast);
+    let of_op = list_op_record(ast, "symbol-of", of_ty);
+    let of_key = push_atom(ast, Leaf::Name("of".to_string()));
+    children.push(push_list(ast, vec![of_key, of_op]));
+    // `to-string : Symbol → String` — recover a Symbol's content String.
+    let to_string_ty = symbol_to_string_type(ast);
+    let to_string_op = list_op_record(ast, "symbol-to-string", to_string_ty);
+    let to_string_key = push_atom(ast, Leaf::Name("to-string".to_string()));
+    children.push(push_list(ast, vec![to_string_key, to_string_op]));
+    push_list(ast, children)
+}
+
+/// The type `(fn () (-> String Symbol))` for `Symbol.of` — a ZERO-PARAM (monomorphic) `fn` wrapper so
+/// `scheme_of` reads a SCHEME. Both type positions are the `(intrinsic …)` type node (→ the ground
+/// `Ty`), not the module NAME.
+fn symbol_of_type(ast: &mut Arenas) -> StructId {
+    let string = intrinsic_node(ast, "String");
+    let symbol = intrinsic_node(ast, "Symbol");
+    let body = arrow_type(ast, string, symbol);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> Symbol String))` for `Symbol.to-string` — the inverse of `Symbol.of`.
+fn symbol_to_string_type(ast: &mut Arenas) -> StructId {
+    let symbol = intrinsic_node(ast, "Symbol");
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, symbol, string);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The `Unit` module record — the ground type `Ty::Unit` (via `(meta t) = (intrinsic Unit)`, so bare

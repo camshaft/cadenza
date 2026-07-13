@@ -324,6 +324,10 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // compute at compile time), so no `Char`-typed value reaches a real slot yet. A char at a runtime
         // slot (a param/local/boundary) declines cleanly until the scalar runtime rep arrives.
         Ty::Char => None,
+        // A symbol is a nominal over a String — at run time an i32 HANDLE to its interned byte leaf, the
+        // same slot a `String` uses. A CONSTANT symbol folds (no runtime slot this increment); this is
+        // the slot a runtime symbol handle would occupy.
+        Ty::Symbol => Some(ValType::I32),
         // A float occupies its width's machine slot: `Float32` → f32, `Float64` → f64. A float literal
         // that crosses the boundary (or a float arithmetic result) lives here.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
@@ -430,6 +434,10 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A char has no boundary valtype this increment — a constant char folds and never crosses; a char
         // value crossing the boundary is a later increment (declines cleanly until then).
         Ty::Char => None,
+        // A symbol has no primitive boundary valtype — it would cross as the canonical value form via the
+        // resource `encode()` path, like a String. (Constant symbol escape is a later increment; for now
+        // a Symbol crossing the boundary declines cleanly.)
+        Ty::Symbol => None,
         // A float crosses the component boundary as its width's primitive: `Float32` → `f32`, `Float64`
         // → `f64`. Both admitted widths ({32,64}) have a faithful component-model float primitive.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
