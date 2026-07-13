@@ -5,6 +5,10 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	Type.eq compares a reflected type against a written type
+pass	Type.eq distinguishes quantities by their unit
+pass	Type.eq is false for values of different types
+pass	Type.eq is true for two values of the same type
 pass	Type.of carries a quantity's unit into a same-type annotation
 pass	Type.of reflects a runtime parameter's type at compile time
 pass	Type.of reflects a value's type for use as an annotation
@@ -125,6 +129,7 @@ pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a comparison-predicate function returns its boolean result
+pass	a compile-time type branch reads a runtime parameter's static type
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
@@ -833,6 +838,7 @@ pass	an export whose name is not kebab-case crosses under a normalized extern na
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants
+pass	an if on Type.eq selects a branch at compile time
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an imported helper reaches its own file's private definition when inlined

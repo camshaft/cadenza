@@ -999,18 +999,22 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     push_list(ast, children)
 }
 
-/// The `Type` module record — carries one field, `of`, whose `(meta apply) = TypeOf`. `(Type.of e)`
-/// projects that channel and reduces (via `reduce_ctor`/`typeval_of`) to the type-VALUE of `e`'s
-/// inferred type, so a program can name a value's type and reuse it in a type position (`(: x (Type.of
-/// y))`). Unlike `Qty`, the module itself is NOT a type constructor (no top-level `(meta apply)`) — it
-/// is only a namespace for the `of` operation; `Type` in a bare type position is not a type (a value's
-/// type-of is `Ty::Type`, spelled only by reflection, not by a name).
+/// The `Type` module record — a namespace for the type-REFLECTION operations. `of` (`(meta apply) =
+/// TypeOf`) reduces `(Type.of e)` to the type-VALUE of `e`'s inferred type, so a program can name a
+/// value's type and reuse it in a type position (`(: x (Type.of y))`). `eq` (`(meta apply) = TypeEq`)
+/// folds `(Type.eq a b)` to the constant `Bool` of two type-values' exact structural equality, so a
+/// program can BRANCH on types at compile time (`(if (Type.eq (Type.of x) Int64) …)`). Unlike `Qty`, the
+/// module itself is NOT a type constructor (no top-level `(meta apply)`) — it is only a namespace; `Type`
+/// in a bare type position is not a type (a value's type-of is `Ty::Type`, spelled only by reflection).
 fn type_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let of_field = push_atom(ast, Leaf::Name("of".to_string()));
     let of_op = ctor_record(ast, "type-of");
     let of = push_list(ast, vec![of_field, of_op]);
-    push_list(ast, vec![head, of])
+    let eq_field = push_atom(ast, Leaf::Name("eq".to_string()));
+    let eq_op = ctor_record(ast, "type-eq");
+    let eq = push_list(ast, vec![eq_field, eq_op]);
+    push_list(ast, vec![head, of, eq])
 }
 
 /// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`

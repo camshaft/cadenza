@@ -491,6 +491,15 @@ pub enum Prim {
     /// is erased before the runtime boundary (like any type-value / a `Ty::Qty`), so `Type.of` is usable
     /// in TYPE positions (annotations, further type-level computation), never returned at runtime.
     TypeOf,
+    /// `Type.eq a b` — COMPILE-TIME TYPE EQUALITY: reduce both arguments to their `Ty` (each a type-value —
+    /// a `(Type.of e)` result OR a written type like `Int64`/`(Qty Float64 metre)`, via `typeval_of`) and
+    /// fold to the constant `Bool` of their EXACT STRUCTURAL equality (`Ty`'s `PartialEq`: `metre` ≠
+    /// `second`, `Int64` ≠ `Int32`, `(Qty T u)` compares inner AND unit). Because it folds to a constant,
+    /// `(if (Type.eq (Type.of x) Int64) …)` selects a branch AT COMPILE TIME — reflection that lets a
+    /// program branch on types. The `(meta apply)` of the `Type` module's `eq` field. Its result `Bool` is
+    /// an ordinary runtime value (unlike a `Type` value, which is erased); the type COMPARISON is what is
+    /// compile-time.
+    TypeEq,
     /// A SET TYPE CONSTRUCTOR — the `(meta apply)` of the `Set` prelude module. `(Set Int64)` in type
     /// position builds `Ty::Set(elem)` (ONE parameter, like `List`). The set analogue of `ListCtor`.
     SetCtor,
@@ -623,6 +632,7 @@ impl Prim {
             "qty-pow" => Some(Prim::QtyPow),
             "Qty" => Some(Prim::QtyCtor),
             "type-of" => Some(Prim::TypeOf),
+            "type-eq" => Some(Prim::TypeEq),
             "Set" => Some(Prim::SetCtor),
             "set-of" => Some(Prim::SetOf),
             "set-contains" => Some(Prim::SetContains),

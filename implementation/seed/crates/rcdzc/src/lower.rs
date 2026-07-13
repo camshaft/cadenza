@@ -919,6 +919,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.pow repeated multiply");
                     lower_qty_pow(db, args[0], args[1])
                 }
+                // `Type.eq a b` — compile-time type equality FOLDS to a constant `Bool`. Reduce each
+                // argument to its `Ty` (a type-value — a `(Type.of e)` result or a written type) and
+                // compare with `Ty`'s exact structural `==`. A constant result means `(if (Type.eq …) …)`
+                // selects its branch at compile time. A non-type argument declines (an ill-formed
+                // operand). A compile-time COMPARISON producing a runtime `Bool`; no `Type` value survives.
+                Some(Prim::TypeEq) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Type.eq compile-time type equality");
+                    match (
+                        crate::eval::typeval_of(db, args[0]),
+                        crate::eval::typeval_of(db, args[1]),
+                    ) {
+                        (Some(a), Some(b)) => Core::ConstBool(a == b),
+                        _ => Core::Poison(Reject::decline(
+                            "Type.eq requires two type-values (each a Type.of result or a type)",
+                        )),
+                    }
+                }
                 // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
                 // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
                 // units are already equal). Folds the constant case; a runtime operand declines.
@@ -6684,6 +6701,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::QtyPow
         | Prim::QtyCtor
         | Prim::TypeOf
+        | Prim::TypeEq
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
         | Prim::Trap => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -10224,6 +10242,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::QtyPow => "qty-pow",
         Prim::QtyCtor => "Qty",
         Prim::TypeOf => "type-of",
+        Prim::TypeEq => "type-eq",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",
         Prim::SetContains => "set-contains",

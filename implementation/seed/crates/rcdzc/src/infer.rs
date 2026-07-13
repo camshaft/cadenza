@@ -1595,6 +1595,15 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return Ty::Type;
     }
+    // `Type.eq a b` — compile-time type equality. Its result is an ordinary `Bool` (the type COMPARISON
+    // is compile-time — `lower` folds it to a constant — but the produced value is a runtime `Bool`, so
+    // it flows into an `if`/`and`/… and branches on types). The arguments are type-values, read (not
+    // HM-unified) by `lower`; a non-type argument is faulted where it fails to reduce there.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TypeEq)
+        && args.len() == 2
+    {
+        return Ty::Bool;
+    }
     // `Qty.value q` — recover the underlying numeric value, DISCARDING the unit. Its result is the
     // quantity's INNER type; a non-quantity argument yields `Any` (faulted elsewhere).
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyValue)
