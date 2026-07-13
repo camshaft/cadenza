@@ -19165,4 +19165,115 @@ mod closure_host_resource {
         assert_eq!(out2[0], Val::S64(42), "same closure applied to 41 = 42");
         // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
     }
+
+    /// C-HOST-1 (compiler serializer): `serialize::closure_resource_core_module` — the PRODUCTION core
+    /// module a closure-resource export emits — produces a structurally VALID core module. Unlike the
+    /// standalone oracle above (whose "cell" is the bare table slot), this is the real shape: the export
+    /// body builds a value-heap CELL (`arr-alloc`/`box-int`/`arr-set`), and `call` recovers it
+    /// (`resource.rep`) + reads the code slot (`arr-get`/`get-int`) + `call_indirect`s the lifted body. It
+    /// imports the heap ops + `resource-new`/`resource-rep`, and carries the funcref table from
+    /// `layout.lifted`. This pins the serializer's byte shape (validated by `wasmparser`) with real,
+    /// minimally-constructed `SelectedFunc`s — the runnable end-to-end path (wiring this core into the
+    /// production envelope + composing the runtime) is the next increment.
+    #[test]
+    fn closure_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        // The heap ops the core imports, in the SORTED order `collect_used_ops` (a BTreeSet) produces:
+        // arr-alloc, arr-get, arr-set, box-int, get-int. `call` uses arr-get/get-int; the export body's
+        // cell build uses arr-alloc/arr-set/box-int.
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.get_int,
+        ];
+        // Defined func 0 = the export body `main : () -> own<closure>` — its RESULT is the closure type,
+        // whose machine valtype is an i32 cell handle. Build a 1-slot cell holding box-int(0) (the
+        // closure's table slot 0, no captures), returning the cell handle. (Mirrors `Core::Closure`
+        // selection.) Uses arr-alloc/box-int/arr-set.
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(), // a closure result → an i32 cell handle in the type section
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Defined func 1 = the lifted closure `(env: i32, x: i64) -> i64` = x + 1.
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+
+        // Layout: one export (def 0), order [0, 1] (export then lifted-as-def), one lifted lambda in the
+        // table. The lifted lambda's `body`/`params` here are placeholder (StructId 0 / the arg types) —
+        // only its presence in `layout.lifted` matters for the table + `lifted_type_index`.
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone())),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2; // k ops + resource-new + resource-rep
+        // `order` is just the ONE export def; the lifted closure is appended to `funcs` AFTER the order
+        // defs (as the production path does), so its abs index + type index are `import_base +
+        // order.len() + slot`. `funcs = [export_body, lifted_body]` matches this layout.
+        let layout = Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+
+        // The export body is at emission position 0 → absolute core-func index `import_base + 0`.
+        let export_abs = import_base;
+        // The lifted functype index (env i32, x i64) -> i64 in the core type section.
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::closure_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("closure-resource core serializes");
+
+        // The emitted CORE MODULE must be structurally valid wasm (funcref table + call_indirect + the
+        // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; wiring it into
+        // a runnable component (production envelope + composed runtime) is the next increment.
+        let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("closure-resource core module validates");
+    }
 }
