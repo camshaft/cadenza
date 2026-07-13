@@ -2585,6 +2585,19 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     if matches!(resolved_of(db, init), Resolved::Lambda { .. }) {
         return false;
     }
+    // A binding whose value REDUCES to a lambda — a function returning a closure, `(mk n)` returning
+    // `(fn (x) (+ n x))` — is the SAME hazard one syntactic step removed: it is not a `Resolved::Lambda`
+    // (it is an `Apply`), so it slips past the check above, but `is_runtime_computation`'s `core_of` below
+    // would still LIFT it (`lower_lambda_value`) and pollute `db.captured_ref` with the returned closure's
+    // captured occurrences. Those occurrences are SHARED with the fold's reduced body — `(let ((f (mk n)))
+    // (f 3))` copy-propagates `f` and β-reduces `((mk n) 3)` to `(+ n 3)`, reusing the ORIGINAL `n`
+    // occurrence — so the stale `captured_ref` entry makes the FOLDED `n` lower to a `Core::Captured`
+    // env-read in the ENCLOSING scope (which has no env) → invalid wasm ("expected i32, found i64"). Detect
+    // it with `lambda_body` (which reduces but does NOT lower, so it does not pollute) and propagate, so the
+    // application folds inline exactly as the (working) `((mk n) 3)` and HOF-argument forms do.
+    if crate::eval::lambda_body(db, init).is_some() {
+        return false;
+    }
     // A value that folds to a constant / atom leaves no computation to share — always propagate.
     if !is_runtime_computation(db, init) {
         return false;

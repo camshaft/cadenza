@@ -11446,6 +11446,49 @@ mod stage1 {
     }
 
     #[test]
+    fn a_returned_capturing_closure_bound_by_let_and_applied_folds() {
+        use wasmtime::component::Val;
+        // A capturing closure RETURNED by a function, BOUND with `let`, then APPLIED — the discriminator
+        // that MISCOMPILED (invalid wasm, silently written at exit 0). `(mk n)` returns `(fn (x) (+ n x))`
+        // capturing the parameter `n`; `(let ((f (mk n))) (f 3))` binds that closure to `f` and applies it.
+        // Applying the SAME closure INLINE `((mk n) 3)` or through a higher-order function `(ap (mk n) 3)`
+        // always folded; only binding it with `let` mis-typed the local. Root cause: `should_keep_binding`
+        // short-circuits a syntactic `Resolved::Lambda` init to avoid a speculative `core_of` LIFT that
+        // pollutes `db.captured_ref`, but `(mk n)` is an `Apply` that REDUCES to a capturing lambda — it
+        // slipped past, was lifted, and recorded `n`'s occurrence as a capture. The copy-propagated
+        // `((mk n) 3)` then β-reduced to `(+ n 3)`, and the SHARED `n` occurrence lowered to a
+        // `Core::Captured` env-read in `main` (no env) → the i32/i64 slot mismatch. The fix extends the
+        // short-circuit to a binding whose value `lambda_body`-reduces to a lambda: it copy-propagates and
+        // folds inline exactly like the working `((mk n) 3)` form. With n = 10 → 10 + 3 = 13 (a pure fold,
+        // no runtime import).
+        let src = "(module m (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x))) \
+            (def (main (: n Int64)) (let ((f (mk n))) (f 3))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "the let-bound closure folds inline — no heap round-trip, no runtime import"
+        );
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(10)]), 13);
+        // Applied MORE THAN ONCE through the one binding — each application folds independently:
+        // (10+3) + (10+4) = 27.
+        let twice = "(module m (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x))) \
+            (def (main (: n Int64)) (let ((f (mk n))) (+ (f 3) (f 4)))) (export main))";
+        let b2 = compile_component(&crate::codec::encode(&parse(twice))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&b2, "main", &[Val::S64(10)]), 27);
+        // A MULTI-PARAM returned closure applied at full arity, both flat `(f 3 4)` and curried `((f 3) 4)`:
+        // 10 + 3 + 4 = 17.
+        for shape in [
+            "(module m (def (mk (: n Int64)) (fn (x y) (+ n (+ x y)))) \
+             (def (main (: n Int64)) (let ((f (mk n))) (f 3 4))) (export main))",
+            "(module m (def (mk (: n Int64)) (fn (x y) (+ n (+ x y)))) \
+             (def (main (: n Int64)) (let ((f (mk n))) ((f 3) 4))) (export main))",
+        ] {
+            let b = compile_component(&crate::codec::encode(&parse(shape))).expect("compile");
+            assert_eq!(run_returns_with::<i64>(&b, "main", &[Val::S64(10)]), 17);
+        }
+    }
+
+    #[test]
     fn a_closure_captures_another_closure_and_composes() {
         // A HIGHER-ORDER capture: `twice = (fn (y) (inc (inc y)))` closes over `inc` (itself a closure)
         // and applies it twice; `(twice 5)` = inc(inc(5)) = 7. A function value captured by another

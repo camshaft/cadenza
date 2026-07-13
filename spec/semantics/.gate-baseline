@@ -28,6 +28,9 @@ pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare nullary constructor is the nullary sum value
+pass	a bin arm whose fixed-width segment overruns the input falls through
+pass	a bin pattern binds an integer read from a fixed-width segment
+pass	a bin pattern must consume the whole scrutinee or it does not match
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
@@ -35,6 +38,7 @@ pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
 pass	a bit-field width that is not a compile-time constant is ill-formed
+pass	a bits pattern segment reads sub-byte fields back into integers
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
@@ -186,6 +190,7 @@ pass	a lambda captures an enclosing function parameter and is applied in its bod
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
+pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
@@ -199,6 +204,7 @@ pass	a let body of unit yields unit
 pass	a let shadowing a parameter whose initializer references that parameter computes
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
+pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable is in scope inside a boolean connective operand
@@ -215,6 +221,8 @@ pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
+pass	a literal segment before a binder dispatches then reads the payload
+pass	a literal segment matches a magic-number header by equality
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
@@ -225,6 +233,7 @@ pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
+pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match takes another match's result as its scrutinee
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
@@ -290,6 +299,7 @@ pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
+pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
 pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
@@ -352,6 +362,7 @@ pass	a recursive user sum type is built at run time and renders its variant name
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a reference to an unbound name is rejected before running
 pass	a repeated let binding shadows the earlier one for what follows
+pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
@@ -426,6 +437,7 @@ pass	a signed narrow if-branch opposite a bare literal computes at the narrow wi
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
+pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
 pass	a slice spanning a concatenation sees the logical bytes
@@ -456,6 +468,7 @@ pass	a top-level value definition binds a name usable by the program's functions
 pass	a top-level value definition binds a record projected by the program's functions
 pass	a top-level value definition binds a sum value matched by the program's functions
 pass	a top-level value definition may reference a value defined later in the module
+pass	a trailing bytes segment accepts the leftover the fixed segments leave
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
@@ -483,6 +496,7 @@ pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes
+pass	a u64 pattern segment reads eight big-endian bytes back into an integer
 pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
 pass	a unary constructor is a single-arity function
@@ -527,6 +541,7 @@ pass	an element is projected from a tuple returned by a nullary function
 pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
+pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
@@ -574,6 +589,7 @@ pass	an unquote of an expression with an unbound name is rejected, not quoted
 pass	an unrecognized string escape is rejected
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
+pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	applying a boolean is a type error
@@ -878,10 +894,6 @@ todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
 todo	a NaN nested in a tuple compares equal under the canonical byte form
 todo	a UInt32 addition that overflows the 32-bit width traps
-todo	a bin arm whose fixed-width segment overruns the input falls through
-todo	a bin pattern binds an integer read from a fixed-width segment
-todo	a bin pattern must consume the whole scrutinee or it does not match
-todo	a bits pattern segment reads sub-byte fields back into integers
 todo	a boolean connective with a non-boolean operand is a type error
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a bound name in a map key is used by its value, not the literal name
@@ -912,7 +924,6 @@ todo	a float annotation reaches the 32-bit width
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a header of packed nibbles and a length-prefixed body round-trips
-todo	a le pattern segment reads a fixed-width integer little-endian
 todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list mixing integer and float elements is a type error
@@ -922,8 +933,6 @@ todo	a list of tuples with different arities is a type error
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
-todo	a literal segment before a binder dispatches then reads the payload
-todo	a literal segment matches a magic-number header by equality
 todo	a literal subterm in a quote pattern matches by equality
 todo	a magic header and a length-prefixed chunk parse together
 todo	a map entry with no value expression is rejected, not a crash
@@ -941,7 +950,6 @@ todo	a map with values of two different types is a type error
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-todo	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
 todo	a module function is recursive
@@ -954,7 +962,6 @@ todo	a named float width alias and its width-indexed expansion name the same typ
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
-todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
@@ -996,7 +1003,6 @@ todo	a runtime symbol that differs from the interned constant does not match
 todo	a set collapses a duplicate element
 todo	a set is constructed from a list of its elements
 todo	a set with elements of two different types is a type error
-todo	a signed pattern segment reads a two's-complement integer as negative
 todo	a string compared to a symbol is a type error
 todo	a sum type can mix nullary and payload-carrying variants
 todo	a sum type is declared with named variants
@@ -1007,10 +1013,8 @@ todo	a symbol is constructed from a string
 todo	a symbol's identity is its content, not how the content was derived
 todo	a tag-length-value record round-trips through construct then match
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
-todo	a trailing bytes segment accepts the leftover the fixed segments leave
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
-todo	a u64 pattern segment reads eight big-endian bytes back into an integer
 todo	a unary variant applied to a wrong-type payload is a type error
 todo	a unit multiplied by its own inverse cancels to the dimensionless unit
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
@@ -1034,7 +1038,6 @@ todo	an association list is searched by key with a tuple-carrying Option match
 todo	an element pattern matches a list by its length and elements
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
-todo	an empty scrutinee matches an empty bin pattern
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an explicit annotation overrides the default-integer pragma
@@ -1048,7 +1051,6 @@ todo	an operation on mismatched types is rejected at compile time
 todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
-todo	an unsigned pattern segment reads the same byte as a non-negative integer
 todo	an unusual in-range width is a first-class type
 todo	an unusual-width value that overflows its computed range traps
 todo	annotating a quantity at a dimension the expression does not derive is an error
