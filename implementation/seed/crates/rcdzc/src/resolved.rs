@@ -644,6 +644,22 @@ pub enum Resolved {
     Map {
         entries: std::sync::Arc<[(StructId, StructId)]>,
     },
+    /// The SUB-VALUE a MAP PATTERN's binder binds. A map pattern `(map (k p) … .. rest)` is a KEY-DIRECTED
+    /// lookup (ask-61, core-semantics.md §A Map Is Matched By Key-Directed Patterns): a VALUE binder `p` at
+    /// key `k` binds the value the map holds at `k` (a `Map.lookup`), and the REST binder binds the map
+    /// with the named keys removed (a `Map.remove` per named key). `scrutinee` is the match scrutinee; a
+    /// value binder carries `key = Some(k)` (its type is the map's VALUE type), the rest binder `key =
+    /// None` (its type is the map type) with `named` the keys removed. Over a CONSTANT `Core::MapNew`
+    /// scrutinee both fold at lowering (`lower_match_map`): a value binder to the entry's value, the rest
+    /// binder to a `Core::MapNew` minus the named keys. Scoped to its arm (resolve Case M), the map analogue
+    /// of `SumPayload`/`BinField`.
+    MapField {
+        scrutinee: StructId,
+        /// `Some(key)`: a VALUE binder at `key`. `None`: the REST binder (scrutinee minus `named`).
+        key: Option<StructId>,
+        /// The keys the pattern NAMES — removed to form the rest map. Empty for a value binder.
+        named: std::sync::Arc<[StructId]>,
+    },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

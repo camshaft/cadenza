@@ -87,6 +87,19 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
             None => Ty::Any,
         },
+        // A MAP PATTERN binder: a VALUE binder (`key = Some`) has the map's VALUE type; the REST binder
+        // (`key = None`) has the whole MAP type (the scrutinee minus the named keys — same `Map<K,V>`).
+        // Both read off the scrutinee's solved `Ty::Map(k, v)`.
+        Resolved::MapField { scrutinee, key, .. } => match type_of(db, scrutinee) {
+            Ty::Map(k, v) => {
+                if key.is_some() {
+                    (*v).clone() // a value binder holds the value type
+                } else {
+                    Ty::Map(k, v) // the rest binder holds the map type
+                }
+            }
+            _ => Ty::Any,
+        },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         Resolved::Float(_) => Ty::float(),
@@ -2317,6 +2330,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
+        | Resolved::MapField { .. }
         | Resolved::Param { .. }
         | Resolved::Bool(_)
         | Resolved::Str(_)

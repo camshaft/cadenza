@@ -175,6 +175,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             segs,
             seg_index,
         } => decode_bin_field(db, scrutinee, &segs, seg_index),
+        // A MAP PATTERN binder reference — read FROM THE SCRUTINEE by key. Over a constant `Core::MapNew`
+        // scrutinee (the corpus shape): a VALUE binder (`key = Some k`) folds to the entry's value at `k`;
+        // the REST binder (`key = None`) folds to a `Core::MapNew` with the named keys removed. A runtime
+        // scrutinee declines (the runtime key-directed matcher is a later increment). See `lower_map_field`.
+        Resolved::MapField {
+            scrutinee,
+            key,
+            named,
+        } => lower_map_field(db, id, scrutinee, key, &named),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -1218,6 +1227,18 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::List(_)) {
         return lower_match_list(db, scrutinee, arms);
     }
+    // A MAP scrutinee whose arms use `(map …)` key-directed patterns → the map matcher (ask-61). A map
+    // pattern `(map (k p) … .. rest)` matches when the map HAS key `k` (bound to a value matching `p`),
+    // binding `rest` to the remaining map — a QUERY, not a structural shape. This increment folds a
+    // CONSTANT `Core::MapNew` scrutinee (the corpus shape). A scalar-only match over a map (only bare-
+    // binder/`_` arms — no `(map …)` pattern) falls through to the scalar path (a whole-value binder).
+    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::Map(_, _))
+        && arms.iter().any(|&(pat, _)| {
+            db.ast.head_ctor(pat) == Some("map") || db.ast.head_name(pat) == Some("map")
+        })
+    {
+        return lower_match_map(db, scrutinee, arms);
+    }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
     // `(guard <inner-pat> <cond>)` — the inner pattern gives the probe, `<cond>` the guard (a boolean the
     // arm's binder is in scope for, resolve Case 5). A pattern that is not a scalar literal, binder,
@@ -1510,6 +1531,76 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     }
     Core::Poison(Reject::decline(
         "list match: no arm matched the constant list (unreachable — a catch-all was required)",
+    ))
+}
+
+/// Lower a match over a MAP scrutinee by KEY-DIRECTED patterns (ask-61, core-semantics.md §A Map Is
+/// Matched By Key-Directed Patterns). A `(map (k p) …)` arm matches when the map HAS every named key `k`
+/// (each bound to a value the body reads via a `MapField`); a bare binder / `_` is a catch-all. This
+/// increment folds a CONSTANT `Core::MapNew` scrutinee: a named key is present iff some entry's key is
+/// `const_compound_eq` to it, so the first arm whose keys are all present is selected and its body
+/// lowered (the body's `MapField` binders then fold — the value at each key, the rest map). A map's key
+/// set is UNBOUNDED, so a `(map …)` arm covers no shape — the match needs a catch-all (else CDZ0210).
+/// A runtime map scrutinee, or a key-sub-pattern that is not a bare binder, declines (later increments).
+fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // The constant scrutinee's entries (the corpus shape: an inline `Map.insert` chain / `(map …)`).
+    let entries = match core_of(db, scrutinee) {
+        Core::MapNew { entries, .. } => entries,
+        Core::Poison(r) => return Core::Poison(r),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "matching a runtime map by key-directed patterns needs the runtime map matcher (constant maps only)",
+            ));
+        }
+    };
+    // A key is present in the constant map iff some entry's key compares equal to it (by value).
+    let key_present = |db: &mut Db, k: StructId, es: &[(StructId, StructId)]| -> bool {
+        es.iter()
+            .any(|&(ek, _)| const_compound_eq(db, ek, k) == Some(true))
+    };
+    // WELL-FORMEDNESS: a `(map …)` arm covers no shape (a map's key set is unbounded), so the arms must
+    // include a CATCH-ALL (a bare binder / `_`) or the match is non-exhaustive (CDZ0210).
+    let has_catch_all = arms
+        .iter()
+        .any(|&(pat, _)| db.ast.as_name(pat).is_some());
+    if !has_catch_all {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
+        ));
+    }
+    for &(pat, body) in arms {
+        // A bare binder / `_` is a catch-all — it always matches.
+        if db.ast.as_name(pat).is_some() {
+            return core_of(db, body);
+        }
+        // A `(map (k p) … .. rest)` pattern: matches iff EVERY named key is present in the constant map.
+        let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, pat) else {
+            return Core::Poison(Reject::decline(
+                "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
+            ));
+        };
+        // Each key sub-pattern must be a bare-binder value (`p`) — a nested value pattern is a later
+        // increment. The KEY itself is a value expression (a literal/scoped name), evaluated for presence.
+        if !pat_entries
+            .iter()
+            .all(|&(_, v)| db.ast.as_name(v).is_some())
+        {
+            return Core::Poison(Reject::decline(
+                "a map pattern value sub-pattern that is not a binder is not yet supported",
+            ));
+        }
+        let all_present = pat_entries
+            .iter()
+            .all(|&(k, _)| key_present(db, k, &entries));
+        if all_present {
+            // This arm matches — its body's `MapField` binders fold against the constant scrutinee.
+            return core_of(db, body);
+        }
+        // Else fall through to the next arm (the key-directed pattern is a genuine presence test).
+    }
+    Core::Poison(Reject::decline(
+        "map match: no arm matched the constant map (unreachable — a catch-all was required)",
     ))
 }
 
@@ -3379,6 +3470,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         // the whole value — like a projection operand, it is not a whole-value escape of `init`.
         Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
+        | Resolved::MapField { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
@@ -4225,11 +4317,11 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             }
             n
         }
-        // A `SumPayload`/`BinField` reads the scrutinee at run time (a payload / a decoded segment); if
-        // the scrutinee is `init`, that is a use of the binding.
-        Resolved::SumPayload { scrutinee, .. } | Resolved::BinField { scrutinee, .. } => {
-            usize::from(scrutinee == init) as u32
-        }
+        // A `SumPayload`/`BinField`/`MapField` reads the scrutinee at run time (a payload / a decoded
+        // segment / a keyed lookup); if the scrutinee is `init`, that is a use of the binding.
+        Resolved::SumPayload { scrutinee, .. }
+        | Resolved::BinField { scrutinee, .. }
+        | Resolved::MapField { scrutinee, .. } => usize::from(scrutinee == init) as u32,
         // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
         // resumption's value/next-state, or the handled/delegated body — count each position.
         Resolved::Handle {
@@ -5477,6 +5569,61 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
         val,
         key_ty,
         val_ty,
+    }
+}
+
+/// Lower a MAP PATTERN binder reference — read from the (constant) scrutinee by key. `key = Some(k)` is
+/// a VALUE binder at key `k` → the entry's value core; `key = None` is the REST binder → a `Core::MapNew`
+/// with the `named` keys removed. Only a CONSTANT `Core::MapNew` scrutinee folds (the corpus shape: an
+/// inline `Map.insert` chain); a runtime scrutinee declines (the runtime key-directed matcher is a later
+/// increment). The arm was already SELECTED by `lower_match_map` (which ran the same key-presence probe),
+/// so a value binder's key IS present here; a defensive miss declines rather than miscompiling.
+fn lower_map_field(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    key: Option<StructId>,
+    named: &[StructId],
+) -> Core {
+    let Core::MapNew { entries, .. } = core_of(db, scrutinee) else {
+        return Core::Poison(Reject::decline(
+            "a map pattern over a runtime map scrutinee is not yet matched (constant map only)",
+        ));
+    };
+    match key {
+        // A VALUE binder — the value at key `k` (keys compared by value, `const_compound_eq`).
+        Some(k) => {
+            for (ek, ev) in entries.iter() {
+                if const_compound_eq(db, *ek, k) == Some(true) {
+                    return core_of(db, *ev);
+                }
+            }
+            Core::Poison(Reject::decline(
+                "a map pattern value binder's key is absent from the constant map (arm mis-selected)",
+            ))
+        }
+        // The REST binder — the map with every `named` key removed. Its key/value types come from this
+        // binder node's own solved `Ty::Map` (the scrutinee's map type). Build a fresh constant `MapNew`.
+        None => {
+            let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Map(k, v) => (*k, *v),
+                _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
+            };
+            let rest: Vec<(StructId, StructId)> = entries
+                .iter()
+                .filter(|(ek, _)| {
+                    !named
+                        .iter()
+                        .any(|&nk| const_compound_eq(db, *ek, nk) == Some(true))
+                })
+                .copied()
+                .collect();
+            Core::MapNew {
+                entries: rest,
+                key_ty,
+                val_ty,
+            }
+        }
     }
 }
 
