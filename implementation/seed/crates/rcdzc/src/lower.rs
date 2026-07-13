@@ -6677,6 +6677,14 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
             op: Prim::Wrap,
             operand,
         } => is_trap_free(db, operand),
+        // A COLLECTION COUNT (`List.len`/`Bytes.len`/`Map.size`/`Set.len`) is a TOTAL O(1) borrowing read —
+        // it never traps — so it is trap-free when its collection operand is (a param/kept-local handle is;
+        // a count of a trapping construction stays tied to that trap). This lets a length feed a discarding
+        // fold (`(>= (List.len xs) 0)` → true drops the length) with its `[0, 2^32-1]` range from
+        // `value_range`. The operand is the container handle for each.
+        Core::ListLen { operand } | Core::BytesLen { operand } => is_trap_free(db, operand),
+        Core::MapSize { map } => is_trap_free(db, map),
+        Core::SetLen { set } => is_trap_free(db, set),
         // Everything else — checked arithmetic (+/-/*/shifts), div/rem, calls, control flow, heap
         // constructs, poison — is conservatively treated as possibly-trapping.
         _ => false,
@@ -7713,6 +7721,16 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
             {
                 return Some(r);
             }
+        }
+        // A COLLECTION COUNT — `List.len`/`Bytes.len`/`Map.size`/`Set.len` — is a NON-NEGATIVE `Int64`
+        // whose backend value is an i32 count zero-extended to i64 (`I64ExtendI32U`), so it lives in
+        // `[0, 2^32 − 1]`. This lets the range folds fire on a length: `(>= (List.len xs) 0)` → true,
+        // `(< (List.len xs) 0)` → false, a `(match (List.len xs) (-1 …) …)` drops the impossible arm, and
+        // a length used as a mask/shift/dividend operand sheds guards. The `2^32-1` upper bound is the true
+        // representable maximum (a count can't exceed the i32 the runtime returns); a tighter real cap
+        // (heap size) is unknown here, so `2^32-1` is the sound envelope.
+        Core::ListLen { .. } | Core::BytesLen { .. } | Core::MapSize { .. } | Core::SetLen { .. } => {
+            return Some((0, Some(u32::MAX as i64)));
         }
         _ => {}
     }

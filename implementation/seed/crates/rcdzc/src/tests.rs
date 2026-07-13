@@ -10654,6 +10654,94 @@ mod match_engine {
     }
 
     #[test]
+    fn a_collection_length_is_known_nonnegative_and_folds_range_comparisons() {
+        // A `List.len`/`Bytes.len`/`Map.size`/`Set.len` is a NON-NEGATIVE `Int64` (the backend zero-extends
+        // an i32 count), so `value_range` bounds it to `[0, 2^32-1]`. That lets the range folds fire on a
+        // length: `(>= (List.len xs) 0)` is a tautology (→ the taken branch, NO compare, NO vec-len call),
+        // `(< (List.len xs) 0)` is impossible, and a `(match (List.len xs) (-1 …) …)` drops the impossible
+        // negative arm. Pins the fold at the Lir level (no compare / no length call remains) AND runtime
+        // value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = |src: &str, name: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(>= (List.len xs) 0)` folds to `true` → the `if` takes the then-branch: no comparison, and the
+        // whole `List.len` (a trap-free, discarded operand) drops — no `vec-len` call at all.
+        let taut = code(
+            "(module m (def (f (: xs (List Int64))) (if (>= (List.len xs) 0) 111 222)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !taut.iter().any(|i| matches!(i, Lir::I64GeS | Lir::I64LtS)),
+            "a length `>= 0` tautology folds — no comparison, got: {taut:?}"
+        );
+        assert!(
+            taut.iter().any(|i| matches!(i, Lir::ConstI64(111))),
+            "the tautology takes the then-branch (111), got: {taut:?}"
+        );
+        assert!(
+            !taut.iter().any(|i| matches!(i, Lir::ConstI64(222))),
+            "the impossible else-branch (222) is dead, got: {taut:?}"
+        );
+        // A `match` on the length drops the impossible `-1` arm (a length is never negative): no `const -1`.
+        let m = code(
+            "(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !m.iter().any(|i| matches!(i, Lir::ConstI64(-1) | Lir::ConstI64(999))),
+            "the impossible negative-length arm is dropped, got: {m:?}"
+        );
+
+        // RUNTIME VALUE PARITY (needs the runtime wasm to execute the length call in the surviving arms).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping length-fold run");
+            return;
+        };
+        let run_f = |src: &str, want: &str| {
+            let bytes = component(src);
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want),
+                cdz_run::Outcome::Trap(t) => panic!("length-fold run trapped: {t}"),
+            }
+        };
+        // The tautology returns the then-branch value regardless of the (built, then measured) list.
+        run_f("(module m (def (f (: xs (List Int64))) (if (>= (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))", "111");
+        run_f("(module m (def (f (: xs (List Int64))) (if (< (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))", "222");
+        // The match: len 0 hits the `0` arm, len 1 the wildcard; the `-1` arm never (and was dropped).
+        run_f("(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list))) (export main))", "111");
+        run_f("(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list 5))) (export main))", "222");
+    }
+
+    #[test]
     fn a_runtime_list_literal_bulk_builds_via_vec_of_arr() {
         // A runtime list literal `(list …)` builds in ONE bulk call: a flat `arr` (`arr-alloc` + a boxed
         // `arr-set` per element) then a single `vec-of-arr` — NOT `vec-empty` + N× consuming `vec-push`.
