@@ -26,7 +26,9 @@ export type EditorOutcome =
 /// what's missing, at TOP LEVEL (no `module m { … }` shell — a wrapper compiles byte-identically to
 /// bare top-level forms, so the shell was pure ceremony). Four shapes:
 ///   1. Already a full `module` / `(module …)` — the author wrote it; left untouched.
-///   2. Already a top-level sequence (a `;` in ML / `(do …)` in s-expr) — assumed complete; untouched.
+///   2. Already complete — has a top-level `export` (ML) / is a `(do …)` (s-expr) — left untouched. NOT
+///      merely "contains a `;`": a `;` can be an internal `do`-sequence separator inside `def main() =
+///      (…; …)`, which still needs an export.
 ///   3. DEFINITIONS (leads with a top-level declaration keyword — `def`/`type`/`effect`) — a `main` is
 ///      among them; append an `export`. `effect` matters: an effects snippet leads with `(effect …)`,
 ///      and mis-classifying it as a bare expression wraps the WHOLE multi-form snippet as
@@ -42,7 +44,11 @@ export function wrapModule(src: string, surface: Surface): string {
     if (new RegExp(`^\\((${DECL_HEAD})\\b`).test(trimmed)) return `(do ${trimmed} (export main))`;
     return `(do (def (main) ${trimmed}) (export main))`;
   }
-  if (/^module\b/.test(trimmed) || trimmed.includes(";")) return trimmed;
+  // Already complete — a full `module …`, or a program that already declares an `export` — is left
+  // as-is. ⚠ Do NOT treat a mere `;` as "complete": a `;` can be an INTERNAL sequence separator (e.g.
+  // `def main() = (module M { … }; M.f x)`), which still needs an `export` appended. Only a real
+  // top-level `export` marks a snippet the author already made whole.
+  if (/^module\b/.test(trimmed) || /(^|\n)\s*export\b/.test(trimmed)) return trimmed;
   if (new RegExp(`^(${DECL_HEAD})\\b`).test(trimmed)) return `${trimmed}\nexport { main }`;
   return `def main() = ${trimmed}\nexport { main }`;
 }
