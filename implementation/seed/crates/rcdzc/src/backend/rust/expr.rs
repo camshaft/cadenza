@@ -892,16 +892,27 @@ fn emit_arith(
                 op_name(op),
             ))
         }
-        Prim::Div | Prim::Rem => {
-            let method = if matches!(op, Prim::Div) {
-                "checked_div"
-            } else {
-                "checked_rem"
-            };
-            // `checked_div`/`checked_rem` return `None` on a zero divisor AND on `MIN / -1` — precisely
-            // the two cases the numeric model traps.
+        Prim::Div => {
+            // `checked_div` returns `None` on a zero divisor AND on `MIN / -1` — precisely the two cases
+            // the numeric model traps for division (`MIN / -1` overflows: the quotient +2^(N-1) is out of
+            // range). Panic on either, mirroring the wasm `i64.div_s` native trap.
             Ok(format!(
-                "({l}).{method}({r}).unwrap_or_else(|| panic!(\"{} by zero or overflow\"))",
+                "({l}).checked_div({r}).unwrap_or_else(|| panic!(\"{} by zero or overflow\"))",
+                op_name(op),
+            ))
+        }
+        Prim::Rem => {
+            // `%` traps ONLY on a zero divisor — NOT on `MIN % -1`. `x % -1` is 0 for every x, including
+            // `MIN % -1 = 0` (numeric-model.md §Modulo by -1 is always zero: modulo forms no quotient, so
+            // it has no overflow — the check that makes `/` trap must NOT apply to `%`). Rust's
+            // `checked_rem` WRONGLY returns `None` at `MIN % -1` (it conflates the remainder with the
+            // division overflow), so it cannot be used here — it would panic where the value must be 0.
+            // Guard only the zero divisor explicitly, then `wrapping_rem`, which yields 0 at `MIN % -1`
+            // (it performs no overflow check), matching the wasm backend's `i64.rem_s`. Evaluate each
+            // operand once into a block-local binding so a side-effecting operand runs exactly once.
+            Ok(format!(
+                "{{ let (l, r) = ({l}, {r}); \
+                 if r == 0 {{ panic!(\"{} by zero\") }} else {{ l.wrapping_rem(r) }} }}",
                 op_name(op),
             ))
         }

@@ -1355,6 +1355,76 @@ fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
     }
 }
 
+/// `T.wrap x` where the OPERAND'S VALUE (not just its type) provably fits the target width — the
+/// truncation mask / sign-extend is redundant and elided, even when the operand's TYPE is wider.
+/// `UInt8.wrap(& x 255)`: the operand is Int64-typed but its value ∈ [0,255], so the trailing `& 255`
+/// is a no-op. Consults the value-range lattice (a mask, a flow-refinement). VALUE parity preserved.
+#[test]
+fn a_wrap_of_an_in_range_value_elides_the_truncation() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::backend::wasm::select::select_function;
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let code_of = |src: &str| -> Vec<Lir> {
+        let full = format!(
+            "(module m (def (f {}) {}) (def (main) 0) (export main))",
+            "(: x Int64)", src
+        );
+        let mut db = crate::db::Db::load(parse(&full));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code
+    };
+    // UInt8.wrap of a [0,255] value: the operand's `& 255` is at the i64 source width (`I64And`); the
+    // wrap's OWN truncation mask would be an `i32.and` AFTER `i32.wrap_i64` — and it is ELIDED (zero
+    // `I32And`). (A bare `UInt8.wrap x` DOES emit that `i32.and`; see `bare` below.)
+    let masked = code_of("(: ((. UInt8 wrap) (& x 255)) UInt8)");
+    assert!(
+        !masked.iter().any(|i| matches!(i, Lir::I32And)),
+        "the wrap's redundant i32 truncation mask is elided; got {masked:?}"
+    );
+    // Int8.wrap of a [0,7] value (fits [-128,127]): the sign-extend pair (shl/shr_s) is elided.
+    let signed = code_of("(: ((. Int8 wrap) (& x 7)) Int8)");
+    assert!(
+        !signed.iter().any(|i| matches!(i, Lir::I32Shl)),
+        "a value in [0,7] fits Int8 — no sign-extend reshape; got {signed:?}"
+    );
+    // SAFETY: a wrap of a NOT-in-range value keeps the truncation — the `i32.and` after `i32.wrap_i64`.
+    let bare = code_of("(: ((. UInt8 wrap) x) UInt8)");
+    assert!(
+        bare.iter().any(|i| matches!(i, Lir::I32And)),
+        "a bare narrowing wrap keeps its i32 truncation mask; got {bare:?}"
+    );
+    // VALUE PARITY — the elided-mask wrap computes the same as the full one.
+    let mk = |src: &str| {
+        let full = format!("(module m (def (f (: x Int64)) {src}) (export f))");
+        compile_component(&crate::codec::encode(&parse(&full))).expect("compile")
+    };
+    let b = mk("(: ((. UInt8 wrap) (& x 255)) UInt8)");
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(300)]), 44); // 300 & 255 = 44
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(255)]), 255);
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(-1)]), 255); // -1 & 255 = 255
+    let s = mk("(: ((. Int8 wrap) (& x 7)) Int8)");
+    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(5)]), 5);
+    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(7)]), 7);
+}
+
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
 /// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
 /// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or
@@ -24326,6 +24396,33 @@ mod closure_host_resource {
             .expect("distinct-signature closure-resource core module validates");
     }
 
+    /// DISTINCT-SIGNATURE END-TO-END (the whole COMPILER pipeline): a program exporting closures of TWO
+    /// different signatures (`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`) compiles to a VALID
+    /// component with two resource types (`t0`/`t1`), each with its own `make-<name>`/`call-g<n>`. Pins
+    /// that `emit_distinct_sig_resource` → `distinct_sig_resource_core_module` →
+    /// `assemble_distinct_sig_resource` produces a wasmtime-parseable component (the earlier cuts hit two
+    /// bugs: a wrong `import_base` — off by 2*(G-1) — and a NON-kebab `call-0` extern name). `Component::new`
+    /// = wasmtime's structural validator, the semantic floor. Runnable e2e is witnessed by the corpus.
+    #[test]
+    fn a_distinct_signature_multi_export_is_a_valid_component() {
+        use crate::testkit::parse;
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::new(&engine, &program)
+            .expect("a distinct-signature multi-export must produce a VALID component");
+        // The interface publishes two resource types + per-signature make/call — confirm it's the closure
+        // interface and imports the runtime (the cells are heap values).
+        assert!(
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
+            "a distinct-signature closure program imports the value-heap runtime"
+        );
+    }
+
     /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
     /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
     /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
@@ -24696,33 +24793,27 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures of the SAME signature now COMPILE (the emit path routes them to
-    /// `emit_multi_closure_resource`); the two REMAINING multi-export shapes still decline cleanly, naming
-    /// what is unsupported: (a) closure exports of DIFFERENT signatures (would need N resource types), and
-    /// (b) a closure exported ALONGSIDE a non-closure export (would need to compose two envelopes). Pins
-    /// both the newly-working case and the honest Todos for the later slices.
+    /// MULTI-EXPORT closures now COMPILE for BOTH the same-signature (one resource type, shared `call`) and
+    /// the DISTINCT-signature (N resource types, per-group `call-g<n>`) shapes. The only REMAINING
+    /// multi-export shape that declines is a closure exported ALONGSIDE a non-closure export (composing the
+    /// resource envelope with the plain scalar boundary is a later increment). Pins the two working cases +
+    /// the honest Todo.
     #[test]
-    fn multi_export_closures_compile_when_same_signature_else_decline() {
+    fn multi_export_closures_compile_same_or_distinct_signature_else_decline() {
         use crate::testkit::parse;
-        // Same signature → COMPILES.
+        // Same signature → COMPILES (shared call).
         let same = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                     (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
         crate::compile::compile_component(&crate::codec::encode(&parse(same)))
             .expect("two same-signature closure exports compile (multi-export path)");
 
-        // DIFFERENT signatures (one `(-> Int64 Int64)`, one `(-> Int64 Bool)`) → decline naming the slice.
+        // DIFFERENT signatures → now COMPILES (N resource types, per-group call).
         let diff = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                     (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
-            .expect_err("closure exports of different signatures must DECLINE");
-        assert!(
-            err.message.contains("DIFFERENT signatures") && err.code.is_none(),
-            "expected the distinct-signature multi-export decline, got: {:?} / {}",
-            err.code,
-            err.message
-        );
+        crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
+            .expect("distinct-signature closure exports compile (distinct-sig path)");
 
-        // A closure ALONGSIDE a non-closure export → decline naming the slice.
+        // A closure ALONGSIDE a non-closure export → still declines naming the slice.
         let mixed = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                      (def (two) 2) (export inc) (export two))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
