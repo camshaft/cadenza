@@ -125,6 +125,10 @@ pub enum Code {
     //# This single check MUST subsume both the reached-but-undelegated host operation and the undischarged intra-program effect, so that the two are one condition — an effect reached an entrypoint's top with no home — rather than two separate diagnostics keyed on a declaration-time host/intra distinction the effect no longer carries.
     //= spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error
     //# A program that reaches an effect operation that no enclosing handler discharges and that its entrypoint does not delegate to the host MUST be rejected at compile time, so that every effect is either handled in-program or explicitly granted to the host and none is silently ambient.
+    //= spec/contracts/host-interface-binding.md#ungranted-access-is-rejected-at-compile-time
+    //# A program that reaches a host operation its manifest does not enumerate MUST be rejected at compile time.
+    //= spec/contracts/host-interface-binding.md#ungranted-access-is-rejected-at-compile-time
+    //# The compiler MUST NOT emit a component that would fail to instantiate because it imports an operation absent from its manifest.
     EffectNoHome,
     /// A handler arm names an operation the arm's effect does not declare — a closed-set violation. An
     /// effect's operations are a closed, statically-known set (like a sum's variants), so discharging an
