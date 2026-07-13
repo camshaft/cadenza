@@ -4786,6 +4786,90 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bin_construction_folds_to_its_encoded_bytes() {
+        // `(bin <int-seg>…)` in expression position builds a Bytes; a constant folds to the exact bytes
+        // (big-endian default, `le` reversed, signed two's-complement). Each equality rides the constant-
+        // Bytes equality fold, returning a scalar 1/0 so `main` needs no bytes escape.
+        for (body, want) in [
+            // u16 258 = 0x0102 big-endian → [1,2]
+            (
+                "(module m (def (main) (if (= (bin (u16 258)) (Bytes.of (list 1 2))) 1 0)) (export main))",
+                1,
+            ),
+            // le reverses → [2,1]
+            (
+                "(module m (def (main) (if (= (bin (u16 258 le)) (Bytes.of (list 2 1))) 1 0)) (export main))",
+                1,
+            ),
+            // u32 magic → 4 big-endian bytes
+            (
+                "(module m (def (main) (if (= (bin (u32 0x89504E47)) (Bytes.of (list 137 80 78 71))) 1 0)) (export main))",
+                1,
+            ),
+            // signed i8 -1 → 0xFF (two's complement), NOT a trap
+            (
+                "(module m (def (main) (if (= (bin (i8 -1)) (Bytes.of (list 255))) 1 0)) (export main))",
+                1,
+            ),
+            // u64 258 → 8 big-endian bytes
+            (
+                "(module m (def (main) (if (= (bin (u64 258)) (Bytes.of (list 0 0 0 0 0 0 1 2))) 1 0)) (export main))",
+                1,
+            ),
+            // empty (bin) → empty bytes; length of a fixed-width construction = sum of widths
+            (
+                "(module m (def (main) (if (= (bin) (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (Bytes.len (bin (u32 0)))) (export main))",
+                4,
+            ),
+            // a wrong expected value → false (the encoding really produces those bytes)
+            (
+                "(module m (def (main) (if (= (bin (u16 258)) (Bytes.of (list 2 1))) 1 0)) (export main))",
+                0,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant bin construction folds: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
+        // A constant segment value that does not fit its width has no encoding → the build fails
+        // (CDZ0304, the compile-provable companion of the runtime "binary value does not fit segment"
+        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned.
+        for src in [
+            "(module m (def (main) (Bytes.len (bin (u8 256)))) (export main))",
+            "(module m (def (main) (Bytes.len (bin (u8 -1)))) (export main))",
+        ] {
+            assert_eq!(reject_code(src).as_deref(), Some("CDZ0304"), "src: {src}");
+        }
+    }
+
+    #[test]
+    fn an_ill_formed_bin_form_is_rejected_cdz0220() {
+        // Well-formedness is a compile-time check decidable from the segment list: bit-fields must close
+        // to whole bytes, a non-final unsized `(bytes …)` is ill-formed, and a bits width must be a const.
+        for src in [
+            // bit-fields sum to 4 bits — not byte-aligned
+            "(module m (def (main) (bin (bits 1 1) (bits 0 3))) (export main))",
+            // an unsized bytes segment that is not the final segment
+            "(module m (def (main) (bin (bytes (Bytes.of (list 1))) (u8 2))) (export main))",
+        ] {
+            assert_eq!(reject_code(src).as_deref(), Some("CDZ0220"), "src: {src}");
+        }
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the

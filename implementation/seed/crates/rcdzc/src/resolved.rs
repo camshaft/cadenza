@@ -614,9 +614,43 @@ pub enum Resolved {
         effects: Vec<StructId>,
         body: StructId,
     },
+    /// A `(bin <segment>…)` binary form — DUAL DIRECTION (like `(Some 5)` builds / `(Some n)` matches):
+    /// in EXPRESSION position it CONSTRUCTS a `Bytes` from the segments (each a fixed-width int / bit-field
+    /// / bytes splice); in PATTERN position (a `match` arm) it DESTRUCTURES a `Bytes` scrutinee. The
+    /// `segs` are parsed once at resolve (kind/width/endian/sign known from the head name), the slot kept
+    /// as an AST occurrence (a constant value to encode when building, a binder/literal-probe when
+    /// matching). `Ty::Bytes` in value position (`binary-syntax`). A well-formedness fault (mis-aligned
+    /// bit-fields, non-final unsized `(bytes …)`, non-const `bits` width) is CDZ0220, checked from `segs`.
+    Bin { segs: Vec<Segment> },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),
+}
+
+/// The KIND of a `bin` segment — what it encodes/decodes. A fixed-width integer carries its byte width
+/// and signedness; `Bits` a compile-time-constant bit width; `Bytes` a byte-sequence splice/bind (with
+/// an optional size occurrence for the dependent `(bytes b n)` form).
+#[derive(Clone, PartialEq, Debug)]
+pub enum SegKind {
+    /// A fixed-width integer: `width` BYTES (1/2/4/8 for u8/u16/u32/u64), `signed` = two's-complement
+    /// (`iNN`). Big-endian unless the segment's `le` modifier is set.
+    Int { width: u8, signed: bool },
+    /// A bit-field of `k` bits (`(bits v k)`), `k` a compile-time constant read at resolve. Sub-byte;
+    /// the running bit-sum across a `bin` must close to whole bytes (else CDZ0220).
+    Bits { k: u32 },
+    /// A byte-sequence segment `(bytes b [n])`: splice all of `b` (build) / bind the rest or exactly `n`
+    /// bytes (match). `size` is the optional dependent-size occurrence (`n`); `None` = unsized (final).
+    Bytes { size: Option<StructId> },
+}
+
+/// One `(kind slot [modifier])` segment of a [`Resolved::Bin`]. `slot` is the value/binder/literal
+/// occurrence (resolved on demand — a constant to encode, or a pattern binder/literal probe); `kind`
+/// says how to encode/decode it; `little_endian` is the `le` modifier (int segments only).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Segment {
+    pub kind: SegKind,
+    pub slot: StructId,
+    pub little_endian: bool,
 }
 
 /// One arm of a [`Resolved::Handle`] — the discharge of a single operation `(E.op (params…) state body)`.

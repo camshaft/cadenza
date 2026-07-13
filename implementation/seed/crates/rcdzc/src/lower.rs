@@ -120,6 +120,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 .collect();
             Core::BytesOf { elems }
         }
+        // A `(bin …)` construction in value position → the assembled byte sequence. On all-constant
+        // segments it FOLDS to a `Core::BytesOf` of the emitted bytes (bakes at escape, compares/slices as
+        // a constant — the same shape `b"…"`/`String.to-bytes` build); a runtime segment value takes the
+        // runtime path (BN4). See `lower_bin_build`.
+        Resolved::Bin { segs } => lower_bin_build(db, id, &segs),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -2449,6 +2454,11 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             elems.iter().any(|&e| ref_escapes_whole(db, e, init))
         }
+        // A `(bin …)` construction uses each segment's value slot (and dependent size) as a whole value.
+        Resolved::Bin { segs } => segs.iter().any(|s| {
+            ref_escapes_whole(db, s.slot, init)
+                || matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(n) } if ref_escapes_whole(db, *n, init))
+        }),
         Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
         Resolved::Apply { head, args } => {
             ref_escapes_whole(db, head, init)
@@ -3228,6 +3238,16 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             n
         }
         Resolved::Member { operand, .. } => uses_in(db, operand, init),
+        Resolved::Bin { segs } => {
+            let mut n = 0;
+            for s in segs.iter() {
+                n += uses_in(db, s.slot, init);
+                if let crate::resolved::SegKind::Bytes { size: Some(sz) } = &s.kind {
+                    n += uses_in(db, *sz, init);
+                }
+            }
+            n
+        }
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             let mut n = 0;
             for &e in elems.iter() {
@@ -4682,6 +4702,79 @@ fn lower_bytes_slice(
         disc_some,
         disc_none,
     }
+}
+
+/// Lower `(bin <segment>…)` in EXPRESSION position — construct a `Bytes`. BN1 realizes the FIXED-WIDTH
+/// INTEGER segments (`uNN`/`iNN`, big-endian, `le` modifier): a CONSTANT segment value folds to its `w`
+/// encoded bytes (big-endian MSB-first, reversed for `le`; signed values as two's-complement), assembled
+/// across all segments into a single `Core::BytesOf` of synthesized `UInt8` `Leaf::Int` elems — so a
+/// constant `(bin …)` bakes/compares/slices exactly like `(Bytes.of (list …))`, no runtime op. A value
+/// OUT OF RANGE for its segment (`(u8 256)`, `(u8 -1)`) is a compile-provable trap (CDZ0304 — the
+/// build-fail companion of the runtime "binary value does not fit segment" trap). `(bin)` (no segments)
+/// is the empty byte sequence. A `bits`/`bytes` segment, or a RUNTIME (non-constant) integer value, is
+/// not folded here yet — declines cleanly (BN2 bit-fields, BN4 dependent-bytes + the runtime path).
+fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
+    use crate::resolved::SegKind;
+    let mut raw: Vec<u8> = Vec::new();
+    for seg in segs {
+        match &seg.kind {
+            SegKind::Int { width, signed } => {
+                let w = *width as u32;
+                let bits = w * 8;
+                match core_of(db, seg.slot) {
+                    Core::Poison(r) => return Core::Poison(r),
+                    Core::ConstInt(v) => {
+                        // Range: the value must fit the segment's (signed, bits) width — else a provable
+                        // trap (never truncate). `(u8 256)`/`(u8 -1)` fail here.
+                        if !v.fits_width(*signed, bits) {
+                            return Core::Poison(Reject::coded(
+                                Code::ConstTrap,
+                                "binary value does not fit segment",
+                            ));
+                        }
+                        // The low `w` bytes of the value's two's-complement representation, big-endian
+                        // (MSB first). `to_i64_bits` gives the 64-bit two's-complement pattern; for a
+                        // signed negative this already has the right high bits within `w` (checked to fit).
+                        let word = v.to_i64_bits() as u64;
+                        let mut be: Vec<u8> = (0..w)
+                            .rev()
+                            .map(|i| ((word >> (i * 8)) & 0xff) as u8)
+                            .collect();
+                        if seg.little_endian {
+                            be.reverse();
+                        }
+                        raw.extend(be);
+                    }
+                    // A runtime integer value — the runtime construction path (BN4). Decline for now.
+                    _ => {
+                        return Core::Poison(Reject::decline(
+                            "a bin segment with a runtime value is not yet built (constant segments only)",
+                        ));
+                    }
+                }
+            }
+            // Bit-fields (BN2) and bytes splices (BN4) are not folded yet.
+            SegKind::Bits { .. } => {
+                return Core::Poison(Reject::decline("a bin bit-field segment is not yet built"));
+            }
+            SegKind::Bytes { .. } => {
+                return Core::Poison(Reject::decline("a bin bytes segment is not yet built"));
+            }
+        }
+    }
+    // Assemble the emitted bytes into a constant `Core::BytesOf` (synthesized UInt8 element leaves), the
+    // same shape `b"…"`/`String.to-bytes` produce — so it rides the constant-Bytes fold/escape/equality.
+    trace!(target: "rcdzc::lower", node = id.0, len = raw.len(), "bin construction folds to a constant Bytes");
+    let elems: Vec<StructId> = raw
+        .iter()
+        .map(|&b| {
+            db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i64(b as i64),
+                radix: crate::ast::Radix::Dec,
+            })
+        })
+        .collect();
+    Core::BytesOf { elems }
 }
 
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {

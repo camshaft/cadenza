@@ -73,6 +73,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
+        // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
+        Resolved::Bin { .. } => Ty::Bytes,
         Resolved::Float(_) => Ty::Float,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
@@ -1634,6 +1636,55 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             for &e in elems.iter() {
                 collect(db, e, out);
+            }
+        }
+        // A `(bin …)` construction: check STATIC well-formedness (CDZ0220 — decidable from the segment
+        // list alone), then descend into each segment's value slot for its own faults. Well-formedness:
+        // the running bit-cursor from `bits` segments must close to a whole byte before any byte-aligned
+        // segment (int/bytes) and at the end (`binary-syntax`: the whole `bin` is byte-aligned); an
+        // unsized `(bytes b)` (no dependent size) is only legal as the FINAL segment. A non-const `bits`
+        // width already became a CDZ0220 `Poison` at resolve.
+        Resolved::Bin { segs } => {
+            let mut bit_cursor: u32 = 0; // open bits since the last byte boundary
+            for (i, seg) in segs.iter().enumerate() {
+                match &seg.kind {
+                    crate::resolved::SegKind::Bits { k } => bit_cursor += k,
+                    crate::resolved::SegKind::Int { .. } => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                "a bin integer segment must start on a byte boundary (preceding bit-fields do not close a byte)",
+                            ));
+                        }
+                    }
+                    crate::resolved::SegKind::Bytes { size } => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                "a bin bytes segment must start on a byte boundary (preceding bit-fields do not close a byte)",
+                            ));
+                        }
+                        // An UNSIZED bytes segment (splice-all / bind-rest) is legal only as the last
+                        // segment — a non-final unsized bytes has no defined boundary.
+                        if size.is_none() && i + 1 != segs.len() {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                "a non-final bin bytes segment must have an explicit size (bytes b n)",
+                            ));
+                        }
+                    }
+                }
+                collect(db, seg.slot, out);
+                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &seg.kind {
+                    collect(db, *n, out);
+                }
+            }
+            // The whole form must be byte-aligned: any open bits at the end are ill-formed.
+            if !bit_cursor.is_multiple_of(8) {
+                out.push(Reject::coded(
+                    Code::IllFormedBinary,
+                    "a bin form's bit-fields must close to a whole number of bytes",
+                ));
             }
         }
         // Descend into the new binding/aggregate forms for their own faults.
