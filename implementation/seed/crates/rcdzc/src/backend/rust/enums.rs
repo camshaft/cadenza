@@ -149,6 +149,19 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         }
     }
 
+    // An ALL-NULLARY enum (every variant fieldless) is a bare discriminant — exactly the sums the seed
+    // permits `=` on (a payload-carrying sum has no structural `=` in the seed). The `=` intrinsic lowers
+    // (rust backend) to a native `x == y`, which needs `PartialEq`; the wasm backend compares the i32
+    // discriminant directly, so the derive is what makes the two backends AGREE on realizability. Gate the
+    // `PartialEq, Eq` derive on all-nullary: a payload-carrying variant would need its fields to be
+    // `PartialEq` too (not guaranteed), so deriving unconditionally could fail to compile — all-nullary is
+    // the safe, sufficient condition (mirrors the wasm backend's always-available discriminant compare).
+    let all_nullary = decl.variants.iter().all(|v| v.payloads.is_empty());
+    let derives = if all_nullary {
+        "Clone, PartialEq, Eq"
+    } else {
+        "Clone"
+    };
     // `#[derive(Clone)]` so a matched-and-rebuilt value (a payload read then re-wrapped) and a value used
     // more than once compose without move-out errors — the emitted code treats a sum value like any other
     // Cadenza value (freely copyable, pure). `#[allow(dead_code)]` because a declared-but-unused variant
@@ -158,7 +171,7 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     // so a matched-and-rebuilt value composes; `#[allow(dead_code)]` since a declared-but-unused variant
     // is normal in generated code. Variants are `pub` implicitly (an enum's variants share its visibility).
     Ok(format!(
-        "#[derive(Clone)]\n#[allow(dead_code)]\npub enum {name}{generics} {{ {} }}\n",
+        "#[derive({derives})]\n#[allow(dead_code)]\npub enum {name}{generics} {{ {} }}\n",
         variants.join(", ")
     ))
 }

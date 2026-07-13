@@ -483,6 +483,7 @@ pass	a wrong-arity tuple pattern nested under a constructor pattern is a type er
 pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
+pass	all-nullary enum equality compares discriminants
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation

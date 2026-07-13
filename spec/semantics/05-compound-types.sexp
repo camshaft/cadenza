@@ -3204,7 +3204,11 @@
            iff they are the same variant. Since the value is a bare discriminant (not a heap handle), this
            is a scalar comparison, not a structural heap walk: `Color.Red = Color.Red` is true (1),
            `Color.Red = Color.Green` is false (0), summing to 1. Pins that enum `=` is decided on the
-           discriminant and yields a Bool, distinguishing a runtime-built enum from its siblings.")
+           discriminant and yields a Bool, distinguishing a runtime-built enum from its siblings.
+           CROSS-BACKEND: on wasm the enum is an i32 discriminant and `=` is `i32.eq`; on the RUST backend
+           `=` lowers to a native `x == y`, so an all-nullary enum (the sums `=` is defined on) MUST derive
+           `PartialEq, Eq` — else the emitted Rust fails to build (E0369). A well-typed program that runs on
+           wasm must also build on rust, so this case guards BOTH lanes.")
   (input  (do
             (type Color Red Green Blue)
             (def (eq2 (: x Color) (: y Color)) (if (= x y) 1 0))

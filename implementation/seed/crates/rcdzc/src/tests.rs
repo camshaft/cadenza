@@ -20617,6 +20617,48 @@ mod stage1 {
     }
 
     #[test]
+    fn an_all_nullary_enum_derives_partial_eq_on_the_rust_backend() {
+        // RUST-BACKEND / CROSS-BACKEND: the `=` intrinsic on an all-nullary enum lowers (rust backend) to a
+        // native `x == y`, which needs `PartialEq` — so an all-nullary enum MUST be emitted with
+        // `#[derive(Clone, PartialEq, Eq)]`, else the generated Rust fails to build (E0369) even though the
+        // SAME program runs on wasm (where the enum is a bare i32 discriminant and `=` is `i32.eq`). A
+        // payload-carrying sum, on which the seed defines no structural `=`, stays `#[derive(Clone)]` only —
+        // deriving `PartialEq` there could fail to compile if a payload type is not itself `PartialEq`.
+        use crate::testkit::parse;
+
+        // An all-nullary enum compared with `=` → its emitted Rust enum derives PartialEq/Eq and builds.
+        let nullary = "(module m (type Color Red Green Blue) \
+                         (def (eq2 (: x Color) (: y Color)) (if (= x y) 1 0)) \
+                         (def (main (: b Bool)) (+ (eq2 (if b Color.Red Color.Green) Color.Red) 0)) \
+                         (export main))";
+        let mut db = crate::db::Db::load(parse(nullary));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let rs = crate::backend::emit(crate::backend::Target::Rust, &mut db, &layout, None, None)
+            .expect("rust artifact");
+        let rs = String::from_utf8(rs).expect("utf8");
+        assert!(
+            rs.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Color"),
+            "an all-nullary enum must derive PartialEq/Eq so native `==` builds; got:\n{rs}"
+        );
+
+        // A payload-carrying sum stays Clone-only (no `=` defined on it; deriving PartialEq is not gated by
+        // its payloads' capabilities, so it would be unsound to add unconditionally).
+        let payload = "(module m (type Box (Mk Int64) (Nil)) \
+                         (def (unbox (: b Box)) (match b ((Mk n) n) ((Nil) 0))) \
+                         (def (main) (unbox (Mk 42))) \
+                         (export main))";
+        let mut db2 = crate::db::Db::load(parse(payload));
+        let layout2 = crate::layout::compute(&mut db2).expect("layout");
+        let rs2 = crate::backend::emit(crate::backend::Target::Rust, &mut db2, &layout2, None, None)
+            .expect("rust artifact");
+        let rs2 = String::from_utf8(rs2).expect("utf8");
+        assert!(
+            rs2.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum Box"),
+            "a payload-carrying sum stays Clone-only; got:\n{rs2}"
+        );
+    }
+
+    #[test]
     fn an_all_nullary_enum_nested_in_a_boxed_sum_round_trips() {
         // ⚠ INVALID WASM regression: an all-nullary enum (a bare i32 disc) NESTED inside a boxed sum
         // (`(Option Color)`) mis-emitted both ends: (1) construction `box-int`ed the i32 disc WITHOUT the
