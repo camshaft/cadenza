@@ -458,11 +458,25 @@ the component type. The new work:
   `strip_nominal`, and the emitted `call` functype is `(own<t>) -> s64` (the nominal peeled, NO wrapper
   resource). Worked but was uncovered; +5 corpus (nominal result, nominal arg, capturing→nominal,
   round-trip through a nominal, nominal-over-Bool — the peel is kind-agnostic). Gate 1351p/0f.
-- **REMAINING (all optional, none blocking):** a compound (String/Bytes/tuple/list) closure ARG-or-RESULT
-  (recursion into the value-heap escape's encode/decode); a compound-RESULT plain export alongside a closure
-  (compose the closure envelope with the value-escape's memory/realloc/t-encode `cadenza:run/run` shape — a
-  large two-envelope composition); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
-  wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
+- **✅ COMPOUND-RESULT CLOSURE ORACLE LANDED `@c7fc3f1d` (test-only byte anchor).** The first step of the
+  compound-closure-boundary vertical: a closure whose `call` returns `list<u8>` (a compound rendered as the
+  canonical value form) instead of a scalar. `closure_list_call_core` gives the closure core a MEMORY +
+  `cabi_realloc` (a scalar `call` needs neither); `call(self, x)` recovers the code slot from the resource
+  rep, dispatches the lifted closure via `call_indirect`, then writes the payload + canonical `(ptr, len)`
+  return area and returns the retptr. `inner_reexport_component_list` types `call`'s result `list<u8>`;
+  `oracle_closure_list_component` lifts `call` with Memory/Realloc canon options. `a_closure_returning_a_
+  list_crosses_and_the_host_reads_the_bytes`: `make()` → handle, `call(handle,5)` → the host reads `[6,7]`
+  (lifted `(x)->x+1`, n=6) through the canonical ABI. Validates + RUNS under wasmtime — licenses hand-emitting
+  a compound-result `call`. ⚠ core section ORDER: table (sec 4) BEFORE memory (sec 5) — got "section out of
+  order" until fixed. NEXT: hand-emit — serializer writes the value form into the return area (reuse the
+  escape's `encode` walker for a tuple/String result; a `Bytes` result IS the payload, simplest first), the
+  envelope lifts `call` with Memory/Realloc, `closure_boundary_byte`/`emit_closure_resource` route a compound
+  result to the list shape instead of declining.
+- **REMAINING (all optional, none blocking):** hand-emit the compound-result `call` (oracle above is the
+  anchor); a compound closure ARG (host→guest decode — the decode direction, harder); a compound-RESULT plain
+  export alongside a closure (compose the closure envelope with the value-escape's `cadenza:run/run` shape);
+  a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>`
+  repeated-call handle. Everything else DONE.
 
 ## Risks / open questions
 
