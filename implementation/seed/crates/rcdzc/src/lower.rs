@@ -4205,6 +4205,10 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             let uty = b.name(unit.render());
             Some(b.list(vec![head, ity, uty]))
         }
+        // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
+        // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
+        // underlying value form (built by the value walker, which sees through the tag).
+        Ty::Nominal { name, .. } => Some(b.name(name.clone())),
         // A function/type-value has no boundary value form, so no type surface. A program that would
         // escape one declines before reaching the escape.
         Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
@@ -5457,6 +5461,13 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         Ty::Map(k, v) => {
             let (k, v) = ((**k).clone(), (**v).clone());
             ty_heap_walkable(db, &k, seen) && ty_heap_walkable(db, &v, seen)
+        }
+        // A nominal — walkable iff its underlying value is (the tag is erased at run time, so the walk
+        // compares the underlying values directly). A recursive nominal is impossible here (a recursive
+        // single-variant sum is never erased — it stays a `Ty::Sum`, handled above).
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_heap_walkable(db, &inner, seen)
         }
         // A quantity ERASES to its inner numeric type, so it is walkable iff that inner type is — a `(Qty
         // Int64 u)` compares by its erased `Int64`. (A quantity `=` folds at compile time in Layer 1, but

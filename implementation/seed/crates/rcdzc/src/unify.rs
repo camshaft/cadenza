@@ -76,6 +76,13 @@ impl Subst {
                 inner: Box::new(self.apply(inner)),
                 unit: unit.clone(),
             },
+            // A nominal substitutes into its underlying type (a generic `Box ?0` — the deferred
+            // instantiation); its `decl`/`name` identity is unchanged.
+            Ty::Nominal { decl, name, inner } => Ty::Nominal {
+                decl: *decl,
+                name: name.clone(),
+                inner: Box::new(self.apply(inner)),
+            },
             Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => {
                 ty.clone()
             }
@@ -202,6 +209,29 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
                 unify(subst, x, y)?;
             }
             Ok(())
+        }
+        // Two nominals unify iff they are the SAME declaration AND their underlying types unify — the
+        // nominal analogue of the sum rule. The `decl` is the opaque identity (distinct declarations
+        // conflict even with identical shape); `inner` carries the instantiation, so `Box Int64` and
+        // `Box Bool` conflict on their inner unify. A `Ty::Nominal` NEVER unifies with a bare `inner`
+        // (`(Nominal, Int)` falls to the `mismatch` below) — a nominal value cannot cross its own
+        // boundary as its underlying type (§Nominal Types Are Not Comparable Across Their Boundary).
+        (
+            Ty::Nominal {
+                decl: da,
+                inner: ia,
+                ..
+            },
+            Ty::Nominal {
+                decl: db,
+                inner: ib,
+                ..
+            },
+        ) => {
+            if da != db {
+                return Err(mismatch(&a, &b));
+            }
+            unify(subst, ia, ib)
         }
         // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
         (Ty::String, Ty::String) => Ok(()),
@@ -346,6 +376,8 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         // A GENERIC sum's type ARGS may hold a variable (a deferred payload) — check each. A monomorphic
         // sum has empty args, so no variable occurs in it (like the ground types).
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
+        // A nominal's underlying type may hold the variable (a generic `Box ?0`).
+        Ty::Nominal { inner, .. } => occurs(subst, v, inner),
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, elem),
         // A map's key or value type may hold the variable (`Map ?0 ?1` — the empty map).
@@ -523,6 +555,13 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             inner: Box::new(rename(inner, m)),
             unit: unit.clone(),
         },
+        // A generic nominal scheme's underlying type may hold a bound variable (a `(fn (a) … (Box a))`
+        // ctor scheme) — rename it; `decl`/`name` identity is unchanged.
+        Ty::Nominal { decl, name, inner } => Ty::Nominal {
+            decl: *decl,
+            name: name.clone(),
+            inner: Box::new(rename(inner, m)),
+        },
         Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => ty.clone(),
     }
 }
@@ -625,6 +664,11 @@ fn freshen_free_go(
         Ty::Qty { inner, unit } => Ty::Qty {
             inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
             unit: unit.clone(),
+        },
+        Ty::Nominal { decl, name, inner } => Ty::Nominal {
+            decl: *decl,
+            name: name.clone(),
+            inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
         },
         Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Char | Ty::Type | Ty::Any => ty.clone(),
     }
