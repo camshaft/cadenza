@@ -1726,7 +1726,22 @@ fn build_tree(
             // Without this fold, a false-guarded arm's trapping body raised a SPURIOUS CDZ0304 for an arm
             // that never runs. A guard reading a RUNTIME value does not fold → the runtime `Guarded` cont.
             match core_of(db, cond) {
-                Core::ConstBool(true) => return Ok(crate::core::SumCont::Leaf(body)),
+                Core::ConstBool(true) => {
+                    // The guard folds TRUE, so this arm fires and its body is the value. But a guarded arm
+                    // does NOT count toward exhaustiveness (core-semantics.md §Matching Is Exhaustive Or
+                    // Rejected: "a guarded arm may be false, so it covers no variant"), and the match must
+                    // be well-formed AS WRITTEN — a non-exhaustive match is CDZ0210 regardless of whether a
+                    // constant scrutinee happens to satisfy a guard. So verify the fall-through `rows[1..]`
+                    // still forms an exhaustive cover BEFORE folding to the body: `build_tree` on it
+                    // surfaces CDZ0210 if the variant is otherwise uncovered (a bare `((guard (Some x) …)
+                    // (None -1))` — `Some` covered ONLY by the guarded arm — must reject, matching the
+                    // standalone-emitted body). The check's RESULT is discarded (we still fold to `body`
+                    // when the scrutinee satisfies the guard); only its error propagates. This keeps the
+                    // fold consistent with the runtime `Guarded` path below, which builds `els` (and thus
+                    // checks the fall-through) unconditionally.
+                    let _ = build_tree(db, scrutinee, &rows[1..], path_types)?;
+                    return Ok(crate::core::SumCont::Leaf(body));
+                }
                 Core::ConstBool(false) => return build_tree(db, scrutinee, &rows[1..], path_types),
                 _ => {}
             }

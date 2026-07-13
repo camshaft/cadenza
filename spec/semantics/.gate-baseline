@@ -63,6 +63,7 @@ pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
+pass	a conditional on a negated runtime condition selects the correct branch and shields the other
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional shields a trap in a nested unselected branch
@@ -268,6 +269,7 @@ pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a non-constructor type applied to arguments in type position is rejected
+pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
@@ -402,6 +404,7 @@ pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string passed to a function as a runtime argument is measured by its byte length
+pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum value annotated as a scalar type is rejected
@@ -625,6 +628,9 @@ pass	match on a sum value returned by a function selects the runtime variant
 pass	matching a runtime Bytes.at Option binds the byte in the Some arm
 pass	matching a runtime Bytes.at Option takes the None arm past the end
 pass	matching against zero probes the normalized narrow value, not the raw wide slot
+pass	matching on a sliced string selects the literal arm
+pass	matching on a string produced by an expression
+pass	matching on string literals
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
 pass	member access of a field the record does not have is a type error
@@ -753,6 +759,7 @@ pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
+pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	true is greater than false
 pass	true is not less than false
 pass	tuple access on a non-tuple is a type error
@@ -792,6 +799,7 @@ pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
+pass	wrapping arithmetic algebraic identities hold at the range boundaries
 pass	wrapping arithmetic over runtime operands wraps at run time
 pass	wrapping multiplication wraps rather than trapping
 todo	Ast.decode converts bytes to an AST sum type value
@@ -1060,10 +1068,7 @@ todo	looking up an absent key yields None
 todo	map equality is independent of insertion order
 todo	matching a lookup from a computed-key map literal selects the present-value arm
 todo	matching falls through to else when no literal matches
-todo	matching on a sliced string selects the literal arm
-todo	matching on a string produced by an expression
 todo	matching on integer literals
-todo	matching on string literals
 todo	member access on a map is a type error
 todo	membership of a present element is true
 todo	membership of an absent element in the empty set is false

@@ -6198,6 +6198,36 @@ mod match_engine {
             .is_ok(),
             "an unguarded same-variant fall-through restores exhaustiveness"
         );
+        // REGRESSION: the SAME non-exhaustive match must reject EVEN WHEN it fully const-folds — a
+        // CONSTANT scrutinee `(Some 5)` whose guard `(> 5 0)` folds to TRUE previously returned the
+        // guarded body directly (→ 5), SKIPPING the exhaustiveness check, so a non-exhaustive match was
+        // silently accepted whenever a constant input happened to satisfy the guard. A match is
+        // ill-formed AS WRITTEN (CDZ0210) regardless of whether a specific fold hits the guarded arm; the
+        // guard-folds-true path now verifies the fall-through covers the variant before folding.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (Some 5) ((guard (Some x) (> x 0)) x) ((None) 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a non-exhaustive guarded match rejects even when a constant scrutinee folds its guard true"
+        );
+        // CONTROL: the fold-true case with an unguarded same-variant fall-through still COMPILES and
+        // folds to the guarded body (5) — the exhaustiveness check passes, the fold is unchanged.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) \
+                       (match (Some 5) ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0))) \
+                     (export main))"
+                )))
+                .expect("an exhaustive guarded match folds"),
+                "main"
+            ),
+            5,
+            "an exhaustive guarded match still folds to the guarded body when the guard folds true"
+        );
     }
 
     #[test]
