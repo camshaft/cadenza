@@ -1594,7 +1594,10 @@ pub(crate) fn payload_ty_at_instantiation(
 /// float (`2.5`) or an out-of-range one gets `None` — an honest "no clean fix" rather than a wrong one
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Returns the minus-signed
 /// decimal text (`-0.0` → `0`, since the integer zero has no sign).
-fn integer_text_of_float_literal(d: &crate::ast::Decimal, expected: crate::ty::IntTy) -> Option<String> {
+fn integer_text_of_float_literal(
+    d: &crate::ast::Decimal,
+    expected: crate::ty::IntTy,
+) -> Option<String> {
     // Only a non-negative exponent is a whole number (a normalized `Decimal` has no trailing-zero
     // significand, so a fractional value keeps a negative exponent).
     if d.exponent < 0 {
@@ -1617,7 +1620,11 @@ fn integer_text_of_float_literal(d: &crate::ast::Decimal, expected: crate::ty::I
     }
     let mut s: String = digits.iter().rev().map(|d| (b'0' + d) as char).collect();
     let trimmed = s.trim_start_matches('0');
-    s = if trimmed.is_empty() { "0".to_string() } else { trimmed.to_string() };
+    s = if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    };
     // Multiply by 10^exponent = append that many zeros (unless the value is zero).
     if s != "0" {
         for _ in 0..d.exponent {
@@ -2023,6 +2030,58 @@ fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
         Code::Malformed
     } else {
         Code::TypeMismatch
+    }
+}
+
+/// Check every `(Unit.define #"name" base num den)` declaration for a CONFLICT — a name bound to two
+/// different conversions (`units-of-measure.md` §A Named Unit's Conversion Is Unique) — and push CDZ0502
+/// for each. A name conflicts when its reduced unit (`base` scaled by `num/den`) differs from the
+/// BUILT-IN family unit of that name, or from an EARLIER `Unit.define` of it; an agreeing redeclaration
+/// is admissible (a `Unit` compares by dimension AND scale, so "agrees" is exact). Runs once over
+/// `db.unit_defines` (these are top-level declarations, not def bodies, so `type_errors` never reaches
+/// them). `pub(crate)` — called from `compile::collect_faults`.
+pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
+    // The declaration rows, in source order (name, base occurrence, scale).
+    let defines: Vec<(String, StructId, i128, i128)> = db.unit_defines.clone();
+    // The reduced unit for each name seen so far (built-ins seeded lazily on first mention).
+    let mut seen: std::collections::HashMap<String, crate::ty::Unit> =
+        std::collections::HashMap::new();
+    for (name, base_occ, num, den) in &defines {
+        // Reduce this declaration to the unit it denotes.
+        let Some(base) = crate::eval::unit_of(db, *base_occ) else {
+            continue; // a malformed base — its fault surfaces via the ordinary descent
+        };
+        let Some(this_unit) = base.scaled(*num, *den) else {
+            continue;
+        };
+        // Compare against the BUILT-IN family unit of this name (reduce its registry entry once).
+        if let Some((dim_pairs, bnum, bden)) = db.unit_families.get(name).cloned() {
+            let mut u = crate::ty::Unit::one();
+            for (b, e) in &dim_pairs {
+                u = u.mul(&crate::ty::Unit::base(b.clone()).pow(*e));
+            }
+            if let Some(builtin) = u.scaled(bnum, bden)
+                && builtin != this_unit
+            {
+                out.push(Reject::coded(
+                    Code::UnitConflict,
+                    format!("unit `{name}` is already a built-in unit with a different conversion"),
+                ));
+                continue;
+            }
+        }
+        // Compare against an EARLIER declaration of the same name.
+        match seen.get(name) {
+            Some(prior) if *prior != this_unit => {
+                out.push(Reject::coded(
+                    Code::UnitConflict,
+                    format!("unit `{name}` is declared twice with different conversions"),
+                ));
+            }
+            _ => {
+                seen.insert(name.clone(), this_unit);
+            }
+        }
     }
 }
 

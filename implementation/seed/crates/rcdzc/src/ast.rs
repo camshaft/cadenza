@@ -602,6 +602,19 @@ impl Arenas {
         }
     }
 
+    /// If `id` is an `Atom` of a SYMBOL literal (`#"metre"`), its text. Distinct from [`as_name`] (an
+    /// identifier) — a symbol is a `#"…"` name-value. Used to read a `Unit.define`/`Unit.of` family-unit
+    /// name off its symbol argument.
+    pub fn as_sym(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Sym(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// If `id` is an `Atom` of an integer literal, its value. (Used to read an integer member key as a
     /// tuple position — `(. t 0)` — where a name key would be a record field instead.)
     pub fn as_int(&self, id: StructId) -> Option<&IntValue> {

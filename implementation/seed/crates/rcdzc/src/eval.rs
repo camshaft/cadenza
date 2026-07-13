@@ -1999,21 +1999,49 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     u.scaled(num, den)
                 }
                 Prim::UnitOf => {
-                    // `(Unit.of #"foot")` / `(Unit.of #"mbps")` — the family-unit name is the symbol's
-                    // text (a `Str` in Layer 1); consult the family registry for its DIMENSION (a
-                    // `(base, exponent)` list — one entry for an atomic dimension, several for a derived
-                    // one like a rate) + scale, compose the dimension via `base`/`mul`/`pow`, then
-                    // `scaled(num, den)`. An unregistered name fails to reduce (declines).
+                    // `(Unit.of #"foot")` / `(Unit.of #"mbps")` / `(Unit.of #"furlong")` — the family-unit
+                    // name is the symbol's text. Consult the built-in family registry for its DIMENSION (a
+                    // `(base, exponent)` list — atomic or derived) + scale, compose the dimension via
+                    // `base`/`mul`/`pow`, then `scaled(num, den)`. A name NOT in the built-in table may be
+                    // a USER `Unit.define` — reduce its base-unit expression + apply the declared scale.
+                    // An unknown name fails to reduce (declines).
                     let name = match resolved_of(db, *args.first()?) {
                         Resolved::SymbolConst(s) | Resolved::Str(s) => s,
                         _ => return None,
                     };
-                    let (dim_pairs, num, den) = db.unit_families.get(&name)?.clone();
-                    let mut dim = Unit::one();
-                    for (base, exp) in &dim_pairs {
-                        dim = dim.mul(&Unit::base(base.clone()).pow(*exp));
+                    if let Some((dim_pairs, num, den)) = db.unit_families.get(&name).cloned() {
+                        let mut dim = Unit::one();
+                        for (base, exp) in &dim_pairs {
+                            dim = dim.mul(&Unit::base(base.clone()).pow(*exp));
+                        }
+                        return dim.scaled(num, den);
                     }
-                    dim.scaled(num, den)
+                    // A user-declared family unit: `(Unit.define #"furlong" base num den)` — the unit is
+                    // `base` (reduced) scaled by `num/den`. First matching declaration wins (a conflicting
+                    // one is CDZ0502, reported by the checker).
+                    let def = db
+                        .unit_defines
+                        .iter()
+                        .find(|(n, _, _, _)| *n == name)
+                        .map(|(_, base, num, den)| (*base, *num, *den))?;
+                    let (base_occ, num, den) = def;
+                    let base_unit = unit_of(db, base_occ)?;
+                    base_unit.scaled(num, den)
+                }
+                Prim::UnitDefine => {
+                    // `(Unit.define #"furlong" base num den)` as a VALUE reduces to the defined unit:
+                    // `base` (reduced) scaled by `num/den`. Its declaration effect (registering the name)
+                    // is the load-time scan; here it is just the unit it denotes.
+                    let base = unit_of(db, *args.get(1)?)?;
+                    let num = match resolved_of(db, *args.get(2)?) {
+                        Resolved::Int(v) => v.to_i128()?,
+                        _ => return None,
+                    };
+                    let den = match resolved_of(db, *args.get(3)?) {
+                        Resolved::Int(v) => v.to_i128()?,
+                        _ => return None,
+                    };
+                    base.scaled(num, den)
                 }
                 _ => None,
             }
