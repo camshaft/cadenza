@@ -171,21 +171,25 @@ pub enum Code {
     /// structural rejection, not a runtime surprise (a value that does not fit its segment traps at run
     /// time instead, "binary value does not fit segment"). The CDZ02xx types-and-patterns band.
     IllFormedBinary,
-    /// A DIMENSIONAL mismatch — combining quantities of incompatible dimension (`units-of-measure.md` §A
-    /// Dimensional Mismatch Is An Error): adding, subtracting, or comparing a length to a time; annotating
-    /// a quantity at a dimension the expression does not derive. Units are checked THEN ERASED before the
-    /// program runs, so a dimensional inconsistency is ALWAYS a compile-time rejection, never a runtime
-    /// trap — which is why it opens the CDZ05xx VERIFICATION-LAYER band, not a numeric-trap code. The
-    /// dimensional specialization of the annotation conflict: `TypeMismatch` (CDZ0203) names the general
-    /// type conflict; this names it when the conflict is dimensional.
+    /// A DIMENSIONAL mismatch — combining quantities of incompatible dimension: adding, subtracting, or
+    /// comparing a length to a time; annotating a quantity at a dimension the expression does not derive.
+    /// Units are checked THEN ERASED before the program runs, so a dimensional inconsistency is ALWAYS a
+    /// compile-time rejection, never a runtime trap — which is why it opens the CDZ05xx VERIFICATION-LAYER
+    /// band, not a numeric-trap code. The dimensional specialization of the annotation conflict:
+    /// `TypeMismatch` (CDZ0203) names the general type conflict; this names it when it is dimensional.
+    //= spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error
+    //# Combining quantities of incompatible dimension MUST be a compile-time error.
+    //= spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error
+    //# A combination of quantities of incompatible dimension MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied dimensional constraint, rather than accepted or deferred to runtime.
     DimensionMismatch,
     /// A family UNIT is registered more than once with CONFLICTING conversions — the same unit name
-    /// bound to a different reference dimension or a different scale (`units-of-measure.md` #A Named
-    /// Unit's Conversion Is Unique: a named unit resolves to ONE dimension and ONE scale, so its
-    /// name→conversion is a well-defined function). A redeclaration that AGREES is admissible; a
-    /// disagreement is this rejection. In the CDZ05xx verification-layer band with the dimensional
-    /// mismatch. (The built-in family table can't hit this — a conflict there is a compiler bug that
-    /// panics at construction; this codes the future USER family-declaration surface's conflict.)
+    /// bound to a different reference dimension or a different scale: a named unit resolves to ONE
+    /// dimension and ONE scale, so its name→conversion is a well-defined function. A redeclaration that
+    /// AGREES is admissible; a disagreement is this rejection. In the CDZ05xx verification-layer band with
+    /// the dimensional mismatch. (The built-in family table can't hit this — a conflict there is a
+    /// compiler bug that panics at construction; this codes the future USER family-declaration conflict.)
+    //= spec/capabilities/units-of-measure.md#a-named-unit-s-conversion-is-unique
+    //# Declaring a named unit more than once with conflicting conversions — a differing dimension or a differing scale — MUST be a compile-time error, while a redeclaration that agrees is admissible.
     UnitConflict,
     /// A module DIRECTIVE `(pragma <key> …)` names a key NOT in the fixed registry the specification
     /// defines: a directive's meaning must be fixed across generations, so an unknown key is rejected at

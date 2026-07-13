@@ -21,25 +21,28 @@ pub enum AbiValType {
     S64,
     Bool,
     F64,
+    F32,
 }
 impl AbiValType {
     /// The CORE wasm valtype byte a lowered handle/scalar occupies (i32=0x7F, i64=0x7E,
-    /// f64=0x7C) — a `u32` handle / `bool` both lower to i32.
+    /// f64=0x7C, f32=0x7D) — a `u32` handle / `bool` both lower to i32.
     pub fn core_byte(self) -> u8 {
         match self {
             AbiValType::U32 | AbiValType::Bool => 0x7F,
             AbiValType::S64 => 0x7E,
             AbiValType::F64 => 0x7C,
+            AbiValType::F32 => 0x7D,
         }
     }
-    /// The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75) —
-    /// the faithful boundary type the import instance-type declares.
+    /// The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75,
+    /// f32=0x76) — the faithful boundary type the import instance-type declares.
     pub fn comp_byte(self) -> u8 {
         match self {
             AbiValType::U32 => 0x79,
             AbiValType::S64 => 0x78,
             AbiValType::Bool => 0x7F,
             AbiValType::F64 => 0x75,
+            AbiValType::F32 => 0x76,
         }
     }
 }
@@ -60,14 +63,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "026b8cf05839413ca651474b53932a6225346508850005dfbe63633cf4e6c538";
+    "0dcedd8ed6026cf0283733d49cfa4e29cf02edea22663f2dc218689f77df8506";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "57d42c50991b9421af56c9494bfcf811391c926e5c04545d3a2679f4b50d45c2";
+    "0fbfd2de14f254a04eedc1bc90b1b11b10b813773419b5c3855cbf4d213e12ae";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant
@@ -115,6 +118,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
     RtOp {
         name: "box-float",
         params: &[AbiValType::F64],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
+        name: "box-float32",
+        params: &[AbiValType::F32],
         result: Some(AbiValType::U32),
         lowerable: true,
     },
@@ -188,6 +197,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         name: "get-float",
         params: &[AbiValType::U32],
         result: Some(AbiValType::F64),
+        lowerable: true,
+    },
+    RtOp {
+        name: "get-float32",
+        params: &[AbiValType::U32],
+        result: Some(AbiValType::F32),
         lowerable: true,
     },
     RtOp {
@@ -471,6 +486,7 @@ pub struct RuntimeOps {
     pub arr_set: &'static RtOp,
     pub box_bool: &'static RtOp,
     pub box_float: &'static RtOp,
+    pub box_float32: &'static RtOp,
     pub box_int: &'static RtOp,
     pub bytes_alloc: &'static RtOp,
     pub bytes_compact: &'static RtOp,
@@ -483,6 +499,7 @@ pub struct RuntimeOps {
     pub dup: &'static RtOp,
     pub get_bool: &'static RtOp,
     pub get_float: &'static RtOp,
+    pub get_float32: &'static RtOp,
     pub get_int: &'static RtOp,
     pub live_objects: &'static RtOp,
     pub map_alloc: &'static RtOp,
@@ -537,60 +554,62 @@ pub const OPS: RuntimeOps = RuntimeOps {
     arr_set: &RUNTIME_OPS[4],
     box_bool: &RUNTIME_OPS[5],
     box_float: &RUNTIME_OPS[6],
-    box_int: &RUNTIME_OPS[7],
-    bytes_alloc: &RUNTIME_OPS[8],
-    bytes_compact: &RUNTIME_OPS[9],
-    bytes_concat: &RUNTIME_OPS[10],
-    bytes_get: &RUNTIME_OPS[11],
-    bytes_len: &RUNTIME_OPS[12],
-    bytes_set: &RUNTIME_OPS[13],
-    bytes_slice: &RUNTIME_OPS[14],
-    drop: &RUNTIME_OPS[15],
-    dup: &RUNTIME_OPS[16],
-    get_bool: &RUNTIME_OPS[17],
-    get_float: &RUNTIME_OPS[18],
-    get_int: &RUNTIME_OPS[19],
-    live_objects: &RUNTIME_OPS[20],
-    map_alloc: &RUNTIME_OPS[21],
-    map_empty: &RUNTIME_OPS[22],
-    map_insert: &RUNTIME_OPS[23],
-    map_iter: &RUNTIME_OPS[24],
-    map_iter_key: &RUNTIME_OPS[25],
-    map_iter_next: &RUNTIME_OPS[26],
-    map_iter_val: &RUNTIME_OPS[27],
-    map_key: &RUNTIME_OPS[28],
-    map_len: &RUNTIME_OPS[29],
-    map_lookup: &RUNTIME_OPS[30],
-    map_remove: &RUNTIME_OPS[31],
-    map_set: &RUNTIME_OPS[32],
-    map_size: &RUNTIME_OPS[33],
-    map_val: &RUNTIME_OPS[34],
-    reset: &RUNTIME_OPS[35],
-    set_contains: &RUNTIME_OPS[36],
-    set_difference: &RUNTIME_OPS[37],
-    set_empty: &RUNTIME_OPS[38],
-    set_insert: &RUNTIME_OPS[39],
-    set_intersection: &RUNTIME_OPS[40],
-    set_iter: &RUNTIME_OPS[41],
-    set_iter_elem: &RUNTIME_OPS[42],
-    set_iter_next: &RUNTIME_OPS[43],
-    set_remove: &RUNTIME_OPS[44],
-    set_size: &RUNTIME_OPS[45],
-    set_union: &RUNTIME_OPS[46],
-    str_get: &RUNTIME_OPS[47],
-    str_new: &RUNTIME_OPS[48],
-    sum_disc: &RUNTIME_OPS[49],
-    sum_new: &RUNTIME_OPS[50],
-    sum_new_reuse: &RUNTIME_OPS[51],
-    sum_payload: &RUNTIME_OPS[52],
-    value_encode: &RUNTIME_OPS[53],
-    value_eq: &RUNTIME_OPS[54],
-    vec_concat: &RUNTIME_OPS[55],
-    vec_empty: &RUNTIME_OPS[56],
-    vec_get: &RUNTIME_OPS[57],
-    vec_len: &RUNTIME_OPS[58],
-    vec_of_arr: &RUNTIME_OPS[59],
-    vec_push: &RUNTIME_OPS[60],
-    vec_split: &RUNTIME_OPS[61],
-    vec_update: &RUNTIME_OPS[62],
+    box_float32: &RUNTIME_OPS[7],
+    box_int: &RUNTIME_OPS[8],
+    bytes_alloc: &RUNTIME_OPS[9],
+    bytes_compact: &RUNTIME_OPS[10],
+    bytes_concat: &RUNTIME_OPS[11],
+    bytes_get: &RUNTIME_OPS[12],
+    bytes_len: &RUNTIME_OPS[13],
+    bytes_set: &RUNTIME_OPS[14],
+    bytes_slice: &RUNTIME_OPS[15],
+    drop: &RUNTIME_OPS[16],
+    dup: &RUNTIME_OPS[17],
+    get_bool: &RUNTIME_OPS[18],
+    get_float: &RUNTIME_OPS[19],
+    get_float32: &RUNTIME_OPS[20],
+    get_int: &RUNTIME_OPS[21],
+    live_objects: &RUNTIME_OPS[22],
+    map_alloc: &RUNTIME_OPS[23],
+    map_empty: &RUNTIME_OPS[24],
+    map_insert: &RUNTIME_OPS[25],
+    map_iter: &RUNTIME_OPS[26],
+    map_iter_key: &RUNTIME_OPS[27],
+    map_iter_next: &RUNTIME_OPS[28],
+    map_iter_val: &RUNTIME_OPS[29],
+    map_key: &RUNTIME_OPS[30],
+    map_len: &RUNTIME_OPS[31],
+    map_lookup: &RUNTIME_OPS[32],
+    map_remove: &RUNTIME_OPS[33],
+    map_set: &RUNTIME_OPS[34],
+    map_size: &RUNTIME_OPS[35],
+    map_val: &RUNTIME_OPS[36],
+    reset: &RUNTIME_OPS[37],
+    set_contains: &RUNTIME_OPS[38],
+    set_difference: &RUNTIME_OPS[39],
+    set_empty: &RUNTIME_OPS[40],
+    set_insert: &RUNTIME_OPS[41],
+    set_intersection: &RUNTIME_OPS[42],
+    set_iter: &RUNTIME_OPS[43],
+    set_iter_elem: &RUNTIME_OPS[44],
+    set_iter_next: &RUNTIME_OPS[45],
+    set_remove: &RUNTIME_OPS[46],
+    set_size: &RUNTIME_OPS[47],
+    set_union: &RUNTIME_OPS[48],
+    str_get: &RUNTIME_OPS[49],
+    str_new: &RUNTIME_OPS[50],
+    sum_disc: &RUNTIME_OPS[51],
+    sum_new: &RUNTIME_OPS[52],
+    sum_new_reuse: &RUNTIME_OPS[53],
+    sum_payload: &RUNTIME_OPS[54],
+    value_encode: &RUNTIME_OPS[55],
+    value_eq: &RUNTIME_OPS[56],
+    vec_concat: &RUNTIME_OPS[57],
+    vec_empty: &RUNTIME_OPS[58],
+    vec_get: &RUNTIME_OPS[59],
+    vec_len: &RUNTIME_OPS[60],
+    vec_of_arr: &RUNTIME_OPS[61],
+    vec_push: &RUNTIME_OPS[62],
+    vec_split: &RUNTIME_OPS[63],
+    vec_update: &RUNTIME_OPS[64],
 };

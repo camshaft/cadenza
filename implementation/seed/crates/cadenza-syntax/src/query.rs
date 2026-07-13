@@ -2268,13 +2268,20 @@ pub mod textedit {
         }
     }
 
-    /// Do two child lists share a head name? (Same rule as `treediff::same_head`.)
+    /// Do two child lists share a head name? Both empty, both headed by the SAME name, or both headed by
+    /// non-names (rare — recursing beats a whole-node replace). But a NAME head vs a NON-name head (a list
+    /// head) is a genuine head CHANGE — `(+ n 1)` vs `((. Int64 of) (+ n 1))` — NOT a positional align: the
+    /// second WRAPS the first, so returning false here lets `diff_edits` take the wrap-preserve path (two
+    /// clean insert edits) instead of an LCS align that fragments into leading-space inserts + empty deletes.
     fn same_head(a: &[Tree], b: &[Tree]) -> bool {
         match (a.first(), b.first()) {
             (None, None) => true,
             (Some(x), Some(y)) => match (name_of(x), name_of(y)) {
                 (Some(nx), Some(ny)) => nx == ny,
-                _ => true,
+                // Both heads unnameable (both list-headed) — alignable; recurse.
+                (None, None) => true,
+                // One named, one not — a head change (often a wrap): NOT alignable.
+                _ => false,
             },
             _ => false,
         }

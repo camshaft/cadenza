@@ -4573,6 +4573,7 @@ enum ShapeNode {
     Int,
     Bool,
     Float,
+    Float32,
     Str,
     Bytes,
     Unit,
@@ -4609,11 +4610,11 @@ impl ShapeTableBuilder {
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
-            // A FLOAT64 payload is renderable (`box_op_ty`/`get_op_ty` box it via `box-float`/`get-float`,
-            // and the runtime `value-encode` renders a KIND_FLOAT decimal leaf). A FLOAT32 payload still
-            // declines at the box layer (an f32-slot needs a promote/demote coercion), so it falls through
-            // to the `_ => None` decline below — its recursive-sum escape is a later slice.
+            // A FLOAT payload is renderable at BOTH widths: `box_op_ty`/`get_op_ty` box it via its width's
+            // leaf (`box-float`/`box-float32`), and the runtime `value-encode` renders a KIND_FLOAT decimal
+            // — Float64 from the f64, Float32 from its OWN 4-byte leaf (the f32's shortest decimal).
             Ty::Float(ft) if ft.ground_width() == 64 => self.push(ShapeNode::Float),
+            Ty::Float(ft) if ft.ground_width() == 32 => self.push(ShapeNode::Float32),
             Ty::String => self.push(ShapeNode::Str),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
@@ -4746,7 +4747,8 @@ impl ShapeTableBuilder {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
-                ShapeNode::Str => d.push(3),   // matches the runtime `decode_shape` tag 3 = Str
+                ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
+                ShapeNode::Str => d.push(3),      // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes
                 ShapeNode::Unit => d.push(5),
                 ShapeNode::Tuple(idxs) => {
@@ -6811,8 +6813,37 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         Core::ListLen { operand } | Core::BytesLen { operand } => is_trap_free(db, operand),
         Core::MapSize { map } => is_trap_free(db, map),
         Core::SetLen { set } => is_trap_free(db, set),
-        // Everything else — checked arithmetic (+/-/*/shifts), div/rem, calls, control flow, heap
-        // constructs, poison — is conservatively treated as possibly-trapping.
+        // A RIGHT SHIFT by a CONSTANT in-range count (`0 <= k < width`) never traps: `>>` cannot overflow
+        // (its magnitude only shrinks), and a valid constant count trips no count-guard. So it is trap-free
+        // when its value operand is. (A `<<` is EXCLUDED — it is exact `·2^k` and can overflow the type, so
+        // it is genuinely trapping even with a valid count. A RUNTIME count is also excluded — an
+        // out-of-range count traps.) This lets a `(>> x k)` feed a discarding fold: `(< (>>ᵤ x 60) 20)` on
+        // a UInt64 (range `[0,15]`) folds to `true` without keeping a bogus "shift might trap" compare.
+        Core::Arith {
+            op: Prim::Shr,
+            lhs,
+            rhs,
+        } if matches!(core_of(db, rhs), Core::ConstInt(k)
+                if k.to_i64().is_some_and(|k| k >= 0 && (k as u32) < shift_width(db, lhs))) =>
+        {
+            is_trap_free(db, lhs)
+        }
+        // A `/` or `%` by a CONSTANT divisor `C ∉ {0, -1}` never traps: `C != 0` rules out ÷0, and `C != -1`
+        // rules out the sole signed-division overflow `MIN / -1`. So it is trap-free when its dividend is.
+        // (`C == 0` is a constant-trap poison in `lower` before here; `C == -1` keeps the guard. A RUNTIME
+        // divisor is excluded — it could be 0 or -1.) Lets `(< (% (& x 255) 10) 10)` fold to `true`.
+        Core::Arith {
+            op: Prim::Div | Prim::Rem,
+            lhs,
+            rhs,
+        } if matches!(core_of(db, rhs), Core::ConstInt(c)
+                if matches!(c.to_i64(), Some(v) if v != 0 && v != -1)) =>
+        {
+            is_trap_free(db, lhs)
+        }
+        // Everything else — checked arithmetic (+/-/*), a LEFT shift, a runtime-count/-divisor shift or
+        // div/rem, calls, control flow, heap constructs, poison — is conservatively treated as possibly-
+        // trapping.
         _ => false,
     }
 }

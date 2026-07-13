@@ -126,6 +126,31 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
 ///
 //= spec/capabilities/debug-information.md#emitting-debug-information-does-not-change-observable-behavior
 //# The portion of an artifact that the runtime executes MUST be byte-identical whether or not debug information is emitted for it, so that debug information occupies a region of the artifact the runtime does not execute rather than altering the code that runs.
+/// Whether a result type crosses the host boundary via the RESOURCE ESCAPE (a heap value with no scalar
+/// boundary valtype — `encode() -> list<u8>`) rather than the scalar path. This is EXACTLY the set the
+/// resource-escape gate in [`emit`] admits for a single nullary export; keeping the predicate here (and
+/// using it BOTH at the gate and at the multi-export diagnosis) means the "why did this decline" message
+/// names the ACTUAL constraint (arity — a compound must be the sole nullary export) rather than the type,
+/// and the two can never drift. A `Ty::Fn` (closure) is NOT here — it has its own resource path with a
+/// `call` method, keyed separately.
+fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    matches!(
+        ty,
+        Ty::Tuple(_)
+            | Ty::Record(_)
+            | Ty::Sum { .. }
+            | Ty::List(_)
+            | Ty::Map(_, _)
+            | Ty::Set(_)
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Symbol
+            | Ty::Nominal { .. }
+            | Ty::Qty { .. }
+    )
+}
+
 pub fn emit(
     db: &mut Db,
     layout: &Layout,
@@ -151,54 +176,18 @@ pub fn emit(
     // `encode()` WALKS the live handle from the value-form template (R2) instead of baking bytes; it is
     // routed just below. Only the single nullary-export compound case takes the resource shape; any
     // other compound host-return (multi-export, parameterized) falls through and declines below.
+    // The admitted set is `crosses_as_resource_escape` — every heap value with no scalar boundary valtype:
+    // Tuple/Record/Sum (compounds), List/Map/Set (collections — CONSTANT bytes baked, a runtime collection
+    // whose `constant_value_form` is None falls through to the decline, its looping walker a later
+    // increment), Bytes/String/Symbol (heap byte/name values — a RUNTIME one routes to the looping-walker
+    // path below), a NOMINAL newtype (crosses as its erased underlying value, tagged under the nominal
+    // name), and a QUANTITY (its full value form bakes the unit the scalar path would erase). Only the
+    // single nullary-export case takes the resource shape; any other (multi-export, parameterized) falls
+    // through and declines below with the arity/parameter diagnosis (`crosses_as_resource_escape` there too,
+    // so the message names the real constraint, not the type).
     if let [e] = &layout.exports[..]
         && e.params.is_empty()
-        && matches!(
-            e.result,
-            crate::ty::Ty::Tuple(_)
-                | crate::ty::Ty::Record(_)
-                | crate::ty::Ty::Sum { .. }
-                | crate::ty::Ty::List(_)
-                // A MAP export crosses via the resource escape like any other heap value — its CONSTANT
-                // bytes (the sorted canonical `(map (k v) …)` value form) baked into the resource module.
-                // A constant `Map.insert` chain / `(map …)` literal folds to a `Core::MapNew` whose
-                // `const_value_ast` renders sorted; a genuinely RUNTIME map has no constant form →
-                // `constant_value_form` returns None → falls through to the decline below (the looping
-                // map-escape walker, like a list's, is a later increment).
-                | crate::ty::Ty::Map(_, _)
-                // A SET export crosses via the resource escape too — its CONSTANT bytes (the sorted
-                // canonical `(Set.of (list …))` value form) baked into the resource module; a runtime set
-                // has no constant form and falls through to the decline (the looping walker is later).
-                | crate::ty::Ty::Set(_)
-                | crate::ty::Ty::Bytes
-                // A bare `String` export has no scalar boundary valtype (a string is a heap value, not an
-                // i32/i64/f64), so it crosses via the resource escape like any other heap value — its
-                // CONSTANT bytes baked into the resource module (the value form `(: "…" String)`, the same
-                // bytes a `(Some "hi")` payload already bakes). A RUNTIME string (a byte-rope built at run
-                // time) has no constant form; `constant_value_form` returns None and it falls through to
-                // the decline below (the looping string-escape walker is a later increment, like a list).
-                | crate::ty::Ty::String
-                // A SYMBOL export crosses via the resource escape like a String (a symbol has no scalar
-                // boundary valtype — it is a heap-backed name value). Its CONSTANT bytes bake the value
-                // form `(: ((. Symbol of) "…") Symbol)` — the construction form `const_value_ast` renders
-                // from the `Ty::Symbol` type + `Core::ConstStr` rep. A runtime (interned-at-run-time)
-                // symbol has no constant form → `constant_value_form` returns None → falls through to the
-                // decline (the runtime intern + walker is a later increment).
-                | crate::ty::Ty::Symbol
-                // A NOMINAL newtype export crosses as its ERASED underlying value (the tag adds nothing to
-                // the runtime representation): a nominal-over-COMPOUND takes this resource escape (its
-                // constant/runtime value form is the underlying value, with `type_ast` tagging it under the
-                // nominal NAME); a nominal-over-scalar has a scalar boundary valtype and is handled by the
-                // scalar path below (where `export_result_valtype` strips the tag), so both cross faithfully.
-                | crate::ty::Ty::Nominal { .. }
-                // A QUANTITY export renders its FULL value form `(: (Qty.of <v> <unit>) (Qty T u))` so the
-                // dimensional type is OBSERVABLE (units-of-measure.md — the corpus records the quantity, not
-                // the bare erased number). Its inner value erases to a scalar, so `comp_valtype_of(Qty)`
-                // would send it down the scalar path (losing the unit); routing it through the resource
-                // escape here bakes the quantity's constant value form (the unit lives only in these baked
-                // bytes — the emitted numeric is byte-identical, the type layer is compile-time-only).
-                | crate::ty::Ty::Qty { .. }
-        )
+        && crosses_as_resource_escape(&e.result)
     {
         let body = def_body(db, e.def)?;
         if let Some(value_bytes) = crate::lower::constant_value_form(db, body) {
@@ -508,23 +497,28 @@ pub fn emit(
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
         // The export's RESULT crosses as a `BoundaryResult`: unit → None, a scalar → its primitive
-        // byte. A COMPOUND host-return does not cross on THIS multi-export path — the single nullary
-        // export case took the resource-escape shape above; a compound reaching here declines. The two
-        // triggers are DISTINCT and the diagnosis names the actual one (the generic `export_result`
-        // message can only say "multi-export", which misdiagnoses a single PARAMETERIZED export — the
-        // resource-escape path covers only a NULLARY compound export, so a single export that takes a
-        // parameter also declines here). Report the trigger that applies, using the context known here.
-        if matches!(
-            e.result,
-            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) | crate::ty::Ty::Sum { .. }
-        ) {
+        // byte. A HEAP value (a compound OR a String/list/bytes/map/set/symbol/quantity/newtype — every
+        // `crosses_as_resource_escape` type) does not cross on THIS multi-export path — the single nullary
+        // export case took the resource-escape shape above; one reaching here declines. Diagnose the ACTUAL
+        // trigger, using the context known here — NOT the generic `export_result` message, which blames the
+        // TYPE ("type `String` has no component boundary representation") when the real constraint is ARITY:
+        // a String DOES cross fine as the sole export, so a multi-export/parameterized instance must say so.
+        // (Keyed on `crosses_as_resource_escape` — the SAME predicate the gate uses — so the two never
+        // drift and every escape-capable type gets the arity diagnosis, not just Tuple/Record/Sum. AND
+        // gated on `export_result_valtype` DECLINING it: a nominal-over-SCALAR or a quantity-over-scalar
+        // is a `crosses_as_resource_escape` type but ERASES to a scalar boundary valtype, so it crosses
+        // fine on this multi-export path — `export_result_valtype` returns `Ok(Some)` for it, and it must
+        // NOT be diagnosed as an arity decline. Only a type with NO scalar valtype reaches the arity case.)
+        if crosses_as_resource_escape(&e.result)
+            && serialize::export_result_valtype(&e.result).is_err()
+        {
             // AMBIGUOUS TYPE first — a result whose payload/element type is an UNRESOLVED variable (a bare
             // `(None)` : `Option ?0`, an empty `(list)` : `List ?0`) has no defined serialization
-            // REGARDLESS of export shape. A single NULLARY sum export with an unresolved payload reaches
-            // here (the escape guard above tried and `sum_form_template` returned `None`), so it must NOT
-            // be diagnosed as an export-shape problem — the shape is fine; the TYPE is undetermined. Report
-            // a type error naming the annotation fix (CDZ0203, the type-determination fault code), NOT the
-            // parameterized/multi-export message. `e.params.is_empty()` distinguishes it from a
+            // REGARDLESS of export shape. A single NULLARY export with an unresolved payload reaches
+            // here (the escape guard above tried and its value-form template returned `None`), so it must
+            // NOT be diagnosed as an export-shape problem — the shape is fine; the TYPE is undetermined.
+            // Report a type error naming the annotation fix (CDZ0203, the type-determination fault code),
+            // NOT the parameterized/multi-export message. `e.params.is_empty()` distinguishes it from a
             // parameterized export (whose free var, if any, would still be a shape issue at this stage).
             if e.result.has_free_var() && e.params.is_empty() && !multi_export {
                 return Err(Reject::coded(
@@ -537,21 +531,24 @@ pub fn emit(
                 ));
             }
             let why = if multi_export {
-                "a compound result crosses the host boundary only as the single export's result (this program has multiple exports)"
+                // THE ARITY constraint — the real reason a compound/heap export declines here. Names it as
+                // such (a compound crosses as the SOLE export), NOT "the type has no boundary
+                // representation" (false — it crosses fine alone via the resource escape).
+                "a heap value (a compound, string, or collection) crosses the host boundary only as the program's SINGLE export; this program has multiple exports (make it the only export, or return a scalar)"
             } else if !e.params.is_empty() {
-                // A single PARAMETERIZED export — the resource-escape path covers only a NULLARY compound
-                // export, so a compound return from a function that takes a parameter declines here.
-                "a compound result escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized compound return is not yet supported)"
+                // A single PARAMETERIZED export — the resource-escape path covers only a NULLARY export,
+                // so a heap return from a function that takes a parameter declines here.
+                "a heap value escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized heap return is not yet supported)"
             } else {
-                // A single NULLARY export whose compound result reached here — the resource-escape path
-                // above TRIED and its value-form template was `None`: the result has no runtime value form
-                // yet. This is the RECURSIVE-sum / dynamic-shape case (a self-referential `(type IntList
-                // (Cons (Tuple Int64 IntList)) Nil)` built at runtime has an UNBOUNDED static shape, so the
-                // `encode()` walker would need to LOOP to a runtime-determined depth — the analogue of the
-                // runtime-`Bytes` looping walker, a later increment). The honest reason is the missing
-                // walker, NOT a (non-existent) parameter — `main` is nullary. Consuming such a value to a
-                // scalar already works; only rendering it as the boundary result is deferred.
-                "rendering this compound as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / dynamic-shape result is not yet emitted); folding it to a scalar works"
+                // A single NULLARY export whose heap result reached here — the resource-escape path above
+                // TRIED and its value-form template was `None`: the result has no runtime value form yet.
+                // This is the RECURSIVE-sum / dynamic-shape / runtime-collection case (a self-referential
+                // sum, or a runtime-built list/map/set built at runtime has an UNBOUNDED static shape, so
+                // the `encode()` walker would need to LOOP to a runtime-determined depth — the analogue of
+                // the runtime-`Bytes` looping walker, a later increment). The honest reason is the missing
+                // walker; consuming such a value to a scalar already works, only rendering it as the
+                // boundary result is deferred.
+                "rendering this value as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / runtime-collection result is not yet emitted); folding it to a scalar works"
             };
             return Err(Reject::decline(format!(
                 "returning a {} from `{}`: {why}",
@@ -1533,6 +1530,21 @@ fn emit_multi_closure_resource(
         .iter()
         .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
+    // A byte-rope (`Bytes`/`String`) closure result crosses as `list<u8>` on the SINGLE-export path
+    // (`emit_closure_resource`), but the multi-export shared-`call` does not yet emit the memory/realloc
+    // list-`call` for N makes — decline SPECIFICALLY (not the generic scalar-only message) so the gap is
+    // clear. A single closure export returning `Bytes`/`String` works today; several sharing one `call` is
+    // a later slice (a `multi_closure_bytes_resource_core_module` + list-lifting envelope).
+    if matches!(
+        ret_ty.strip_nominal(),
+        crate::ty::Ty::Bytes | crate::ty::Ty::String
+    ) {
+        return Err(Reject::decline(
+            "a byte-rope (Bytes/String) closure result crosses on the single-export path, but a \
+             MULTI-EXPORT set sharing one `call` does not yet emit the list-returning `call` — export the \
+             closure alone, or await the multi-export compound-result slice",
+        ));
+    }
     let result_byte =
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys

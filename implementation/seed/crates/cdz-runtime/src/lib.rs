@@ -849,6 +849,27 @@ fn op_get_float(h: Handle) -> f64 {
     }
     with_node(h, 0.0, |n| f64::from_bits(read_word(&n.raw)))
 }
+/// Box a `Float32` in its NATURAL 4-byte form (distinct from `box-float`'s 8-byte Float64), so a
+/// Float32's canonical byte form — and value-encode's shortest-decimal render — is the f32's, not a
+/// promoted f64's. NaN-canonicalized on construction (the f32 twin of `op_box_float`): any NaN → the
+/// one canonical quiet `f32::NAN.to_bits()`, so two NaN Float32s are the same map/set key. Non-NaN
+/// (incl. ±0.0/±inf) keeps its bits, so `-0.0f32` stays distinct from `0.0f32`.
+fn op_box_float32(v: f32) -> Handle {
+    let bits = if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() };
+    alloc_raw(Vec::new(), Raw::inline(&bits.to_le_bytes())) // 4-byte scalar: inline, no heap raw
+}
+fn op_get_float32(h: Handle) -> f32 {
+    if is_immediate(h) {
+        return 0.0; // cross-kind totality: a float is never itself an immediate
+    }
+    with_node(h, 0.0f32, |n| {
+        // Read the low 4 bytes of the raw (zero-padded past the end — defensive, total).
+        let mut buf = [0u8; 4];
+        let k = n.raw.len().min(4);
+        buf[..k].copy_from_slice(&n.raw[..k]);
+        f32::from_bits(u32::from_le_bytes(buf))
+    })
+}
 
 // ─── Positional array — the ONE runtime shape for TUPLE, RECORD, and LIST ───────────────
 // Elements live in `handles`. Access by an out-of-bounds index into a valid array TRAPS; a null
@@ -994,6 +1015,10 @@ enum Shape {
     Str,
     Bytes,
     Unit,
+    /// A Float32 leaf — read with `get-float32` (an `f32`) and rendered as the f32's SHORTEST decimal,
+    /// distinct from `Float` (Float64). A Float32 is stored 4-byte (`box-float32`), so its canonical value
+    /// form is the f32's, not a promoted f64's (`0.1f32` renders `0.1`, not `0.10000000149011612`).
+    Float32,
     Tuple(Vec<u32>),
     List(u32),
     Record(Vec<(String, u32)>),
@@ -1091,6 +1116,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             let val = desc_leb(d, pos)? as u32;
             Shape::Map(key, val)
         }
+        14 => Shape::Float32,
         _ => return None,
     })
 }
@@ -1178,10 +1204,26 @@ impl DocBuilder {
         if !f.is_finite() {
             return None;
         }
-        let s = format!("{f:e}"); // [-]D[.DDDD]eEXP, shortest round-tripping
-        let (negative, rest) = match s.strip_prefix('-') {
+        // `{:e}` gives the f64's SHORTEST round-tripping decimal → the exact `KIND_FLOAT` decimal.
+        self.float_leaf_from_sci(&format!("{f:e}"))
+    }
+    /// A Float32 leaf — the f32's SHORTEST round-tripping decimal (via `{:e}` on the `f32`, NOT a
+    /// promoted f64 whose shortest decimal differs — `0.1f32` → `"1e-1"` not `"1.0000000149…e-1"`). Same
+    /// `KIND_FLOAT` encoding as `float_leaf`; declines a non-finite f32.
+    fn float32_leaf(&mut self, f: f32) -> Option<u32> {
+        if !f.is_finite() {
+            return None;
+        }
+        self.float_leaf_from_sci(&format!("{f:e}"))
+    }
+    /// Build a `KIND_FLOAT` `DocLeaf::Float` from a `[-]D[.DDDD]eEXP` scientific-notation string (the
+    /// `{:e}` form of an f32 or f64): parse sign / digit string / base-10 exponent, then a base-10→
+    /// base-256 Horner conversion of the digits (no BigInt — `no_std`-portable). Shared by both float
+    /// widths so the exact decimal is the value's OWN shortest form. `None` on a malformed string.
+    fn float_leaf_from_sci(&mut self, sci: &str) -> Option<u32> {
+        let (negative, rest) = match sci.strip_prefix('-') {
             Some(r) => (true, r),
-            None => (false, s.as_str()),
+            None => (false, sci),
         };
         let (mantissa, exp10): (&str, i64) = match rest.split_once('e') {
             Some((m, e)) => (m, e.parse().ok()?),
@@ -1500,6 +1542,12 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         // encode declines (matches the compiler's `Decimal::from_f64` None; nan/inf cross by
                         // their own dedicated forms, not the value-encode walker).
                         let l = b.float_leaf(op_get_float(h))?;
+                        out.push(b.atom(l));
+                    }
+                    Shape::Float32 => {
+                        // Read the 4-byte Float32 and render the f32's OWN shortest decimal (not a promoted
+                        // f64's). A non-finite f32 declines, like Float64.
+                        let l = b.float32_leaf(op_get_float32(h))?;
                         out.push(b.atom(l));
                     }
                     Shape::Tuple(elems) => {
@@ -3273,6 +3321,12 @@ impl Guest for Component {
     }
     fn get_float(handle: u32) -> f64 {
         op_get_float(Handle::from_u32(handle))
+    }
+    fn box_float32(v: f32) -> u32 {
+        op_box_float32(v).to_u32()
+    }
+    fn get_float32(handle: u32) -> f32 {
+        op_get_float32(Handle::from_u32(handle))
     }
     fn arr_alloc(len: u32) -> u32 {
         op_arr_alloc(len).to_u32()
@@ -5891,6 +5945,10 @@ mod tests {
                 let l = b.float_leaf(op_get_float(h))?;
                 b.atom(l)
             }
+            S::Float32 => {
+                let l = b.float32_leaf(op_get_float32(h))?;
+                b.atom(l)
+            }
             S::Tuple(elems) => {
                 if elems.is_empty() {
                     let l = b.name_leaf("unit");
@@ -6330,6 +6388,61 @@ mod tests {
         op_drop(inf);
 
         assert_eq!(live_nodes(), before, "no leak: every float value dropped");
+    }
+
+    /// `value-encode` renders a Float32 (`Shape::Float32`) as a `KIND_FLOAT` leaf carrying the f32's OWN
+    /// shortest decimal — the whole reason Float32 gets a 4-byte leaf instead of a promoted f64. The
+    /// headline case: `0.1f32` encodes as `1 × 10^-1` (decimal "0.1"), NOT the f64-promotion's
+    /// `10000000149011612 × 10^-17`. Also: `1.5f32` byte-exact; a non-finite f32 declines.
+    #[test]
+    fn value_encode_renders_a_float32_as_the_f32_shortest_decimal() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: table [0] = Float32 (tag 14), root = 0.
+        let desc: &[u8] = &[0x01, 0x0e, 0x00];
+
+        // 1.5f32 → decimal 15 × 10^-1: byte-exact (same decimal as 1.5f64, since 1.5 is exact in both).
+        let f = op_box_float32(1.5f32);
+        let got = op_value_encode_form(f, desc).expect("encode 1.5f32");
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // header
+            0x01, // leaf_count
+            0x06, 0x00, // KIND_FLOAT, negative=false
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // exponent = -1
+            0x01, 0x0f, // siglen 1, magnitude [15]
+            0x01, 0x00, 0x00, 0x00, // struct_count, TAG_ATOM leaf 0, root
+        ];
+        assert_eq!(got, expect, "1.5f32 → KIND_FLOAT decimal 15×10^-1");
+        op_drop(f);
+
+        // 0.1f32 → the f32's shortest decimal is "0.1" = 1 × 10^-1, NOT the f64-promoted precision. Extract
+        // the leaf's (exponent, magnitude): magnitude [1], exponent -1.
+        let g = op_box_float32(0.1f32);
+        let got_g = op_value_encode_form(g, desc).expect("encode 0.1f32");
+        // bytes [10]=neg, [11..19]=exp BE, [19]=siglen, [20..]=mag.
+        assert_eq!(got_g[10], 0, "0.1f32 is positive");
+        let mut eb = [0u8; 8];
+        eb.copy_from_slice(&got_g[11..19]);
+        assert_eq!(i64::from_be_bytes(eb), -1, "0.1f32 exponent is -1 (→ 0.1), NOT the f64-promotion's -17");
+        assert_eq!(got_g[19], 1, "siglen 1");
+        assert_eq!(&got_g[20..21], &[0x01], "magnitude [1] → 1×10^-1 = 0.1, NOT 10000000149011612×10^-17");
+        op_drop(g);
+
+        // A non-finite f32 declines.
+        let nan = op_box_float32(f32::NAN);
+        assert!(op_value_encode_form(nan, desc).is_none(), "f32 nan declines");
+        op_drop(nan);
+
+        // Differential: the iterative walk matches the recursive oracle byte-for-byte for a Float32.
+        let h = op_box_float32(0.1f32);
+        let iter_doc = op_value_encode_form(h, desc).expect("iterative");
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut bld = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut bld, h, descriptor.root, 0).expect("recursive");
+        assert_eq!(iter_doc, bld.finish(root), "iterative and recursive Float32 encode must agree");
+        op_drop(h);
+
+        assert_eq!(live_nodes(), before, "no leak: every float32 value dropped");
     }
 
     /// The decimal `float_leaf` produces must ROUND-TRIP back to the original f64 (it is the shortest
