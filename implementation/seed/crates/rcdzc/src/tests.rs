@@ -13267,13 +13267,12 @@ mod stage1 {
         // `(and true (Bail.bail 7))`: lhs true → rhs runs → abort → `(< 7 0)` = false.
         let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
                    (def (main) (handle true ((Bail.bail (n) s (< n 0))) (and true (Bail.bail 7)))) (export main))";
-        assert_eq!(
-            run_returns::<bool>(
+        assert!(
+            !run_returns::<bool>(
                 &compile_component(&crate::codec::encode(&parse(src)))
                     .expect("a short-circuit abort desugars and compiles"),
                 "main"
             ),
-            false,
             "the abort yields (< 7 0) = false"
         );
     }
