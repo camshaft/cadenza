@@ -772,6 +772,9 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         }
         // A parameter, a let-binding reference, or a CAPTURED-variable read is a runtime read — no
         // sub-poison to collect.
+        // `trap` is an EXPLICIT runtime divergence (`Core::Trap` → `unreachable`), not a compile-provable
+        // trap the build must reject — the honest "this halts here" primitive whose defined outcome IS the
+        // runtime trap (like `expect`'s absent branch), so it carries no poison to collect.
         Core::Captured { .. }
         | Core::LocalRef { .. }
         | Core::Param { .. }
@@ -781,6 +784,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
+        | Core::Trap
         | Core::Unit => {}
     }
 }

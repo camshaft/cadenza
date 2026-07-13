@@ -224,6 +224,22 @@ the component type. The new work:
   fires only for a SINGLE export (`[e]`); two closure exports fall to the multi-export path where
   `Ty::Fn` has no boundary valtype. A MULTI-EXPORT closure envelope (N make/call pairs, or a
   resource type per signature published together) is a distinct later increment.
+- **✅ C-HOST-3b (SCOPE FENCE: closures escaping effects are REJECTED) COMPLETE `@<pending>`.**
+  Operator decision (2026-07-13): "one thing we should definitely reject for now is closures
+  escaping effects. that's going to be super weird and I don't really want to support it. not sure
+  it would even work correctly." A closure's effects are discharged by the `handle`/`(host …)`
+  frame that is dynamically OPEN where the closure is BUILT; a host-held closure is invoked LATER,
+  outside that frame, so the effect would have no home at the call. `emit_closure_resource` now
+  walks the export body + every lifted closure body for a `Core::HostCall` (via
+  `host::collect_host_imports`); if any is found it REJECTS with a new dedicated code **CDZ0406**
+  (`Code::ClosureEscapesEffect`) naming the escaping op — instead of the incidental decline the
+  program used to hit ("not in the host-import set", or CDZ0401 when the effect is not delegated at
+  all). 🔑 A fully intra-program-HANDLED effect leaves NO `Core::HostCall` (the fold reduced it to
+  plain code), so a self-contained effect inside the closure is NOT caught — only an effect that
+  would genuinely escape the boundary is. +1 corpus case (21-host-closures →10, `(error CDZ0406)`
+  code-matched) + 1 unit test (`a_closure_escaping_an_effect_declines_intentionally`). Distinct from
+  CDZ0401 (EffectNoHome = no delegation anywhere): here the effect IS delegated, but the delegation
+  cannot travel with the escaping closure.
 - **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
   `cdz-run` threads a handle returned by one export back into another; inside, the param is
   `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.

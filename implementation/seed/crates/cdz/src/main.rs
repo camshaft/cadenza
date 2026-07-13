@@ -551,21 +551,47 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Reshape a `wrap` fix's replacement for the target SURFACE. The compiler renders a wrap in s-expr
+/// form — `(<ctor> …)`, `<ctor>` a name, `…` the [`rcdzc::WRAP_HOLE`]. On the ML surface a constructor
+/// application is `<ctor>(…)`, so an s-expr `(Some …)` spliced into a `.cdz` file would be a parse error
+/// (ML has no juxtaposition-application). When `is_ml`, rewrite the wrap `(<name> <HOLE>)` → `<name>(<HOLE>)`
+/// so `cdz fix` produces valid ML (`(Some …)` → `Some(…)`). A replacement that is not exactly a single
+/// `(<name> <HOLE>)` is returned unchanged (only the constructor-wrap shape the fix producers emit is
+/// reshaped; anything else stays verbatim, so an unexpected form is never mangled).
+fn render_wrap_for_surface(repl: &str, is_ml: bool) -> String {
+    if !is_ml {
+        return repl.to_string();
+    }
+    // Expect `(<name> …)`: strip the outer parens, split off the leading name, the rest is the hole part.
+    let inner = repl.strip_prefix('(').and_then(|s| s.strip_suffix(')'));
+    if let Some(inner) = inner
+        && let Some((ctor, rest)) = inner.split_once(' ')
+        && !ctor.is_empty()
+        && !ctor.contains(['(', ')', ' '])
+    {
+        // `(Some …)` -> `Some(…)`. `rest` is the hole-bearing remainder (usually just the WRAP_HOLE).
+        return format!("{ctor}({rest})");
+    }
+    repl.to_string()
+}
+
 /// Apply a structural fix to `source` text, returning the edited text — the byte-level realization of
-/// an [`rcdzc::DiagnosticFix`] the `check --verify-fixes` harness recompiles. `kind` selects the
-/// operation over the `[from, to)` byte range (the fix's target-node span, mapped by the caller).
-/// `"replace"` swaps the range for `repl`; `"insert"` inserts `repl` (rendered child forms) just before
-/// `to` (the end of the target list, before its closing paren); `"wrap"` replaces the range with `repl`
-/// in which the ellipsis placeholder ([`rcdzc::WRAP_HOLE`]) stands for the ORIGINAL range text (`(Some
-/// …)` → `(Some <original>)`); `"delete"` removes the range plus ONE adjacent separating space so the
-/// enclosing list stays clean (`(a b)` → `(b)`). `None` if the range is out of bounds or not on a char
-/// boundary (defensive — never panics).
+/// an [`rcdzc::DiagnosticFix`] the `check --verify-fixes` harness recompiles. `is_ml` selects the target
+/// surface (so a `wrap` renders as ML `ctor(…)` rather than s-expr `(ctor …)` — see
+/// [`render_wrap_for_surface`]). `kind` selects the operation over the `[from, to)` byte range (the fix's
+/// target-node span, mapped by the caller). `"replace"` swaps the range for `repl`; `"insert"` inserts
+/// `repl` (rendered child forms) just before `to` (the end of the target list, before its closing paren);
+/// `"wrap"` replaces the range with `repl` (surface-rendered) whose [`rcdzc::WRAP_HOLE`] stands for the
+/// ORIGINAL range text; `"delete"` removes the range plus ONE adjacent separating space so the enclosing
+/// list stays clean (`(a b)` → `(b)`). `None` if the range is out of bounds or not on a char boundary
+/// (defensive — never panics).
 fn apply_fix_to_source(
     source: &str,
     kind: &str,
     from: usize,
     to: usize,
     repl: &str,
+    is_ml: bool,
 ) -> Option<String> {
     if from > to
         || to > source.len()
@@ -589,7 +615,8 @@ fn apply_fix_to_source(
         }
         "wrap" => {
             let original = &source[from..to];
-            out.push_str(&repl.replace(rcdzc::WRAP_HOLE, original));
+            let rendered = render_wrap_for_surface(repl, is_ml);
+            out.push_str(&rendered.replace(rcdzc::WRAP_HOLE, original));
             out.push_str(&source[to..]);
         }
         "delete" => {
@@ -719,11 +746,12 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         let verified_flag = if fix_verified == "verified" {
             true
         } else if args.verify_fixes && fix_node != "-" && code != "-" {
+            let is_ml = is_ml_source(&args.file);
             span_of(fix_node)
                 .and_then(|(_, _, from, to)| {
-                    apply_fix_to_source(&source, fix_kind, from, to, fix_repl)
+                    apply_fix_to_source(&source, fix_kind, from, to, fix_repl, is_ml)
                 })
-                .map(|edited| fix_clears_code(&edited, is_ml_source(&args.file), code))
+                .map(|edited| fix_clears_code(&edited, is_ml, code))
                 .unwrap_or(false)
         } else {
             false
@@ -863,7 +891,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
         let apply = if rule_verified {
             true
         } else if args.all {
-            apply_fix_to_source(&source, fix_kind, from, to, fix_repl)
+            apply_fix_to_source(&source, fix_kind, from, to, fix_repl, is_ml)
                 .map(|edited| fix_clears_code(&edited, is_ml, code))
                 .unwrap_or(false)
         } else {
@@ -890,7 +918,10 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             "wrap" => Edit {
                 from,
                 to,
-                new_text: fix_repl.replace(rcdzc::WRAP_HOLE, &source[from..to]),
+                // Surface-render the wrap (`(Some …)` → `Some(…)` on ML) before filling the hole, so the
+                // written text is valid for the file's surface — matching the verify path above.
+                new_text: render_wrap_for_surface(fix_repl, is_ml)
+                    .replace(rcdzc::WRAP_HOLE, &source[from..to]),
             },
             "delete" => {
                 // Extend the range over ONE adjacent separator: a following space (`(log foo)` →

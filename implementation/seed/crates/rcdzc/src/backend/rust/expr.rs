@@ -744,6 +744,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             scrutinee,
             disc_present,
         } => emit_sum_expect(db, scrutinee, disc_present, env, ctx),
+        // `trap` → a Rust `panic!` (a Cadenza trap, matching the wasm `unreachable`). Rust's `panic!`
+        // returns the never type `!`, which coerces to ANY expected type — the runtime counterpart of
+        // `trap`'s `Never` unifying with any position. The message is dropped (the trap grades on halting,
+        // not its text), so a fixed literal keeps the emit deterministic.
+        Core::Trap => Ok("panic!(\"trap\")".to_string()),
         Core::ListNew { .. }
         | Core::ListLen { .. }
         | Core::ListPush { .. }

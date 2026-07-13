@@ -163,6 +163,18 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         operator_record(ast, "compare", OpShape::Compare),
     );
 
+    // `trap` — the DIVERGING primitive `∀a. String → a` (core-semantics.md §A Trap Occurs Only Where Its
+    // Computation Is Observed; type-system.md §Never Is The Empty Sum — a diverging expression has type
+    // `Never`, which unifies with any expected type). A bare-name operator record whose `(meta t)` is the
+    // type-lambda `(fn (a) (-> String a))`: the RESULT is the quantified variable `a`, so ordinary HM
+    // instantiates it fresh at each use and unifies it with whatever the position demands — `(trap "x")`
+    // fits an Int64 branch, a Float operand, a match scrutinee alike, with NO dedicated `Never` type. Its
+    // `(meta apply)` is the `trap` intrinsic → `Prim::Trap` → `Core::Trap` (an unconditional `unreachable`).
+    {
+        let lambda = trap_type_lambda(ast);
+        names.insert("trap".to_string(), list_op_record(ast, "trap", lambda));
+    }
+
     // The FLOATING-POINT binary operators `+.` `-.` `*.` `/.` — spelled distinctly from the integer
     // `+`/`-`/`*`/`/` (OCaml-style dot suffix) so no operator silently mixes an integer and a float
     // operand (numeric-model.md §A Floating-Point Operation Uses A Floating-Point Operator). Each is a
@@ -1045,6 +1057,20 @@ fn list_at_type_lambda(ast: &mut Arenas) -> StructId {
     let index_arrow = arrow_type(ast, int64, option_a); // (-> Int64 (Option a))
     let list_l = list_a_type(ast);
     let body = arrow_type(ast, list_l, index_arrow); // (-> (List a) (-> Int64 (Option a)))
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (a) (-> String a))` for `trap` — `∀a. String → a`. The RESULT is the quantified
+/// parameter `a` (a BARE parameter used as a type, like the comparison operators' operand), so the scheme
+/// reads as `String → <fresh var>`: `scheme_of` binds `a` to a fresh unification variable and the result
+/// IS that variable, giving `(trap "x")` a fresh type at each use that unifies with any expected type —
+/// the surface form of "a diverging expression has type Never, which unifies with any type" without a
+/// dedicated `Ty::Never`. Reuses `list_type_lambda` (a one-parameter `(fn (a) …)`), the same wrapper the
+/// element-generic list ops use.
+fn trap_type_lambda(ast: &mut Arenas) -> StructId {
+    let string_ty = push_atom(ast, Leaf::Name("String".to_string()));
+    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let body = arrow_type(ast, string_ty, a); // (-> String a)
     list_type_lambda(ast, body)
 }
 

@@ -439,7 +439,8 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
             binding_escapes(db, closure, binder, false)
                 || args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
-        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding).
+        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding). `trap`
+        // diverges with no operand, so it holds no binding to escape.
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
@@ -447,6 +448,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
         | Core::Unit
+        | Core::Trap
         | Core::Param { .. }
         | Core::Captured { .. }
         | Core::Poison(_) => false,
@@ -1139,13 +1141,15 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
         }
-        // Leaves and references emit no runtime op.
+        // Leaves and references emit no runtime op. `trap` emits `unreachable` (a core instruction, not a
+        // runtime import), so it adds nothing.
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
         | Core::Unit
+        | Core::Trap
         | Core::Param { .. }
         | Core::LocalRef { .. }
         | Core::Poison(_) => {}
@@ -3393,6 +3397,14 @@ fn emit(
         // `sum-payload` (+ `get-*` unbox, narrowing an i32 int) and whose ELSE is `unreachable` (the
         // absent-variant trap — textless; core-semantics.md §Requiring The Value Of An Optional Traps On
         // Absence). Both `sum-disc`/`sum-payload` BORROW the handle (no rc change), like a match probe.
+        Core::Trap => {
+            // `trap` — an unconditional divergence. `unreachable` HALTS and leaves the stack polymorphic,
+            // so it validates in ANY result position (the runtime counterpart of `trap`'s `Never` type,
+            // exactly as `SumExpect`'s absent branch emits below). The `String` message is already dropped
+            // at lowering (the wasm trap carries no text).
+            out.push(Lir::Unreachable);
+            Ok(())
+        }
         Core::SumExpect {
             scrutinee,
             disc_present,
@@ -6732,16 +6744,21 @@ fn emit_mul_pow2_as_shift(
     out.push(m.konst(k as i64));
     out.push(m.shl());
     out.push(Lir::LocalSet(sr));
-    // Overflow round-trip: `($r >> k)` must recover `$a`, else the shift dropped bits out of the slot.
-    // The inverse shift matches signedness so the round-trip is exact (arithmetic for signed).
-    out.push(Lir::LocalGet(sr));
-    out.push(m.konst(k as i64));
-    out.push(m.shr());
-    sa.push(out);
-    out.push(m.ne());
-    out.push(Lir::IfUnreachableEnd);
-    // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
-    emit_range_check(m, sr, ReachableBounds::Both, out);
+    // GUARD ELISION: when interval analysis proves `val << k` (= `val * 2^k`) stays in the type, both the
+    // round-trip overflow check AND the narrow range-check are dead — the machine `shl` already produced
+    // the exact result. `(* (& x 15) 2)` = `(& x 15) << 1` ∈ [0,30] fits Int64.
+    if !crate::lower::shl_provably_in_range(db, val, k) {
+        // Overflow round-trip: `($r >> k)` must recover `$a`, else the shift dropped bits out of the slot.
+        // The inverse shift matches signedness so the round-trip is exact (arithmetic for signed).
+        out.push(Lir::LocalGet(sr));
+        out.push(m.konst(k as i64));
+        out.push(m.shr());
+        sa.push(out);
+        out.push(m.ne());
+        out.push(Lir::IfUnreachableEnd);
+        // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
+        emit_range_check(m, sr, ReachableBounds::Both, out);
+    }
     out.push(Lir::LocalGet(sr));
     Ok(())
 }
@@ -6876,18 +6893,29 @@ fn emit_shift(
         _ => return Err(Reject::decline("not a shift op")),
     });
     if matches!(op, Prim::Shl) {
-        out.push(Lir::LocalSet(sr));
-        // Round-trip: shifting `$r` back right by `$b` must recover `$a`; else the shift dropped bits out
-        // of the SLOT (overflow). The inverse shift matches signedness so the round-trip is exact.
-        out.push(Lir::LocalGet(sr));
-        sb.push(out);
-        out.push(m.shr());
-        sa.push(out);
-        out.push(m.ne());
-        out.push(Lir::IfUnreachableEnd);
-        // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
-        emit_range_check(m, sr, ReachableBounds::Both, out);
-        out.push(Lir::LocalGet(sr));
+        // GUARD ELISION: a `<<` by a CONSTANT count whose result interval provably stays in the type
+        // (`(<< (& x 15) 2)` = [0,60] fits Int64) needs neither the overflow round-trip nor the
+        // range-check. Only for a constant `k` — interval analysis needs a fixed shift amount.
+        let elide = const_count.is_some_and(|k| {
+            (0..m.width as i64).contains(&k)
+                && crate::lower::shl_provably_in_range(db, lhs, k as u32)
+        });
+        if elide {
+            // The machine `shl` result is already on the stack (no round-trip needs `$r`) — nothing to do.
+        } else {
+            out.push(Lir::LocalSet(sr));
+            // Round-trip: shifting `$r` back right by `$b` must recover `$a`; else the shift dropped bits
+            // out of the SLOT (overflow). The inverse shift matches signedness so the round-trip is exact.
+            out.push(Lir::LocalGet(sr));
+            sb.push(out);
+            out.push(m.shr());
+            sa.push(out);
+            out.push(m.ne());
+            out.push(Lir::IfUnreachableEnd);
+            // Range-check: a narrow `<<` result may fit the slot but exceed the N-bit type.
+            emit_range_check(m, sr, ReachableBounds::Both, out);
+            out.push(Lir::LocalGet(sr));
+        }
     }
     // `>>`: the result is already on the stack — nothing more to do.
     Ok(())
@@ -7517,6 +7545,47 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::I64Mul)),
             "the multiply is strength-reduced away, no i64.mul"
+        );
+    }
+
+    #[test]
+    fn a_provably_in_range_shift_elides_its_overflow_guard() {
+        let select = |src: &str| {
+            let mut db = Db::load(crate::testkit::parse(src));
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(* (& x 15) 2)` → `(& x 15) << 1` ∈ [0,30], fits Int64 → NO round-trip guard (`shr ; ne`).
+        let mul =
+            select("(module m (def (f (: x Int64)) (* (& x 15) 2)) (def (main) 0) (export main))");
+        assert!(
+            !mul.iter().any(|i| matches!(i, Lir::I64Ne))
+                && !mul.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a provably-in-range `* 2^k` drops its shift-overflow guard; got {mul:?}"
+        );
+        // A user `(<< (& x 15) 2)` ∈ [0,60] likewise.
+        let shl =
+            select("(module m (def (f (: x Int64)) (<< (& x 15) 2)) (def (main) 0) (export main))");
+        assert!(
+            !shl.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "a provably-in-range `<<` drops its guard; got {shl:?}"
+        );
+        // SAFETY: a full-range `(<< x 2)` CAN overflow → keeps the round-trip guard.
+        let open = select("(module m (def (f (: x Int64)) (<< x 2)) (def (main) 0) (export main))");
+        assert!(
+            open.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "a full-range `<<` keeps its guard; got {open:?}"
+        );
+        // SAFETY: `(<< (& x 15) 60)` = [0,15]<<60 overflows Int64 → keeps its guard.
+        let over = select(
+            "(module m (def (f (: x Int64)) (<< (& x 15) 60)) (def (main) 0) (export main))",
+        );
+        assert!(
+            over.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "an over-range `<<` keeps its guard; got {over:?}"
         );
     }
 

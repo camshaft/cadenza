@@ -94,6 +94,7 @@ pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning a boolean is called by the host
+pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
