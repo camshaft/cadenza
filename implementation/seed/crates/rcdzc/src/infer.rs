@@ -4525,6 +4525,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     crate::resolve::record_op_labels(db, args[1]),
                 ) {
                     (Ty::Record(fields), Some(labels)) => {
+                        // A DUPLICATE label in the projection list `(a a)` is the SAME malformedness a
+                        // record LITERAL with a duplicate field `(record (a 1) (a 2))` is rejected for
+                        // (CDZ0201) — a record's fields are a fixed SET of names (`type-system.md` §A Record
+                        // Is Restricted To A Named Set Of Its Fields), so a label named twice is ill-formed,
+                        // not silently deduplicated to one field. Checked here (the projection's
+                        // well-formedness site, beside the absent-field check) so it holds whether or not the
+                        // projection is reached. Reported at the first REPEAT, matching the record-literal
+                        // message/code.
+                        let mut seen: std::collections::HashSet<&crate::resolved::Symbol> =
+                            std::collections::HashSet::new();
+                        for label in &labels {
+                            if !seen.insert(label) {
+                                out.push(
+                                    Reject::coded(
+                                        Code::Malformed,
+                                        format!("record names field `{}` more than once", label.name),
+                                    )
+                                    .at(args[1]),
+                                );
+                                break;
+                            }
+                        }
                         for label in &labels {
                             if !fields.contains_key(label) {
                                 out.push(

@@ -1172,6 +1172,7 @@ todo	popping a tuple yields element zero and the remaining tuple
 todo	popping an absent field is rejected
 todo	projecting a record onto an absent field is rejected
 todo	projecting a record restricts it to the named fields
+pass	projecting a record with a duplicate label is rejected
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	pushing an element onto a list appends it

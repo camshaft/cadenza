@@ -1184,6 +1184,7 @@ pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected
 pass	projecting a record restricts it to the named fields
+pass	projecting a record with a duplicate label is rejected
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	promoting a Float32 to Float64 is exact
