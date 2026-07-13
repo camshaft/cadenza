@@ -3028,6 +3028,25 @@ fn self_borrow_to_list_functype(borrow_type_idx: u32, list_type_idx: u32) -> Vec
     item
 }
 
+/// A component functype `(self: borrow<t>) -> <scalar prim>`: `40 01 <"self"> <borrow-valtype> 00
+/// <prim-byte>` — like [`self_borrow_to_list_functype`] but the result is a PRIMITIVE valtype (its
+/// negative-space byte, e.g. `COMP_U32`), not a defined-type index. Used for a scalar-result value-resource
+/// method such as `len : borrow<t> -> u32` (`bytes-len`/`vec-len` over the borrow rep) — a method that
+/// needs NO Memory/Realloc canon options (nothing crosses through linear memory). `borrow_type_idx` is the
+/// component-type index of the `borrow<t>` defined type laid just before the functype.
+/// (`#[allow(dead_code)]`: wired into the value-resource envelope in the `len`-method increment; the
+/// byte-shape test below already exercises it, mirroring how `borrow_item` was staged before its use.)
+#[allow(dead_code)]
+fn self_borrow_to_scalar_functype(borrow_type_idx: u32, result_prim: u8) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM, 0x01];
+    item.extend_from_slice(&uleb_bytes("self".len() as u64));
+    item.extend_from_slice(b"self");
+    item.extend_from_slice(&owned_valtype(borrow_type_idx));
+    item.push(0x00); // result form: one result
+    item.push(result_prim); // a primitive valtype byte (not a type index)
+    item
+}
+
 /// A component functype for a CLOSURE-RESOURCE `call` method: `(self: <handle<t>>, p0: <vt>, …) -> <vt>`
 /// — form `0x40`, then the param vec `[self : own/borrow<self_type_idx>, p0.., …]`, then the result form.
 /// `self` is the receiver (an `own`/`borrow` handle to the closure resource — a DEFINED type by index);
@@ -3464,5 +3483,34 @@ mod closure_resource_tests {
             s64,
         ];
         assert_eq!(got2, want2, "two-arg call-method functype byte shape");
+    }
+
+    /// VM-1 (byte-neutral): a scalar-result value-resource method functype `(self: borrow<t>) -> u32`
+    /// encodes to the exact component-model bytes — form `0x40`, a one-param vec `[self : borrow<t>]`,
+    /// result `00 <u32-prim>`. `self` references the `borrow<t>` DEFINED type by index (a bare type-index
+    /// uleb, same encoding as an `own<t>` valtype); the result is a PRIMITIVE valtype byte (`COMP_U32`),
+    /// NOT a type index — the distinction that keeps a scalar method free of Memory/Realloc canon options.
+    /// Pins the item shape so the envelope-wiring increment (adding `len` to the value resource) builds on
+    /// a checked primitive, exactly as `closure_call_functype_encodes_the_call_method_shape` did for `call`.
+    #[test]
+    fn self_borrow_to_scalar_functype_encodes_a_scalar_method_shape() {
+        // A `len : borrow<t> -> u32` whose `borrow<t>` is component defined-type index 4.
+        let got = self_borrow_to_scalar_functype(4, wasm_abi::COMP_U32);
+        let want: Vec<u8> = vec![
+            wasm_abi::COMP_FUNCTYPE_FORM, // 0x40 functype form
+            0x01,                         // param count = 1 (self only)
+            0x04,
+            b's',
+            b'e',
+            b'l',
+            b'f',               // "self"
+            0x04, // borrow<t> defined type, index 4 (bare uleb — same as an own<t> valtype)
+            0x00, // result form: one result
+            wasm_abi::COMP_U32, // result valtype u32 (a PRIMITIVE byte, not a type index)
+        ];
+        assert_eq!(
+            got, want,
+            "scalar value-resource method functype byte shape"
+        );
     }
 }
