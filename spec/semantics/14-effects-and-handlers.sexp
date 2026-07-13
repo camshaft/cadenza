@@ -331,6 +331,30 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main)))
   (output (: 3 Int64)))
 
+(case "a handler arm that resumes NON-tail folds when the perform is in a match scrutinee"
+  (doc    "The pure one-hole continuation extends into a `match` SCRUTINEE — a strict, always-evaluated-first
+           position (like an `if` condition), so `C = (match [] (0 100) (_ 2))` is uniform (the arms run only
+           after the scrutinee and are pure). `(resume 10 s)` → `C[10]` selects the `_` arm → 2, and the arm
+           `(+ 1 (resume 10 s))` evaluates to `(+ 1 2)` = 3. Every arm BODY is effect-free; a perform in an
+           arm body (a non-uniform continuation) still declines — that needs the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main)))
+  (output (: 3 Int64)))
+
+(case "a handler arm that resumes NON-tail folds when the perform is in an and lhs"
+  (doc    "The pure one-hole continuation extends into a short-circuit connective's LHS — a strict,
+           always-evaluated-first position. `C = (and (< [] 5) true)`; the arm `(not (resume 10 s))` produces
+           a Bool: `(resume 10 s)` → `C[10] = (and (< 10 5) true)` = false, and `(not false)` = true. The rhs
+           `true` runs only on the taken path and is pure (copied into `C`); a perform in the RHS — a
+           conditionally-run position — still declines.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main)))
+  (output (: true Bool)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

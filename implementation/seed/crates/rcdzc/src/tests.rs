@@ -20272,6 +20272,66 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_one_hole_in_a_match_scrutinee_folds() {
+        // The perform may sit in a `match` SCRUTINEE — a STRICT, always-evaluated-first position (like an
+        // `if` condition), so its continuation `C = (match [] (0 100) (_ 2))` is uniform (the arms run only
+        // AFTER the scrutinee and are pure). `(resume 10 s)` → `C[10]` = the `_` arm → 2, arm
+        // `(+ 1 (resume 10 s))` → `(+ 1 2)` = 3; a resume of 0 selects the literal arm → 100 → `(+ 1 100)`
+        // = 101. Every arm body must be strongly pure (copied into `C`, duplicated by a multi-shot resume).
+        let wild = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(wild)))
+                    .expect("a hole in a match scrutinee folds"),
+                "main"
+            ),
+            3
+        );
+        let literal = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 0 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(literal)))
+                    .expect("the resume value selects the matching arm"),
+                "main"
+            ),
+            101
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_in_an_and_lhs_folds() {
+        // The perform may sit in a short-circuit connective's LHS — a STRICT, always-evaluated-first
+        // position. `C = (and (< □ 5) true)`, arm `(not (resume 10 s))` produces Bool: `(resume 10 s)` →
+        // `(and (< 10 5) true)` = false, `(not false)` = true. The rhs `true` is pure (copied into `C`).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a hole in an and lhs folds"),
+                "main"
+            ),
+            "resume 10 → (and (< 10 5) true)=false → (not false)=true"
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_a_match_arm_body_declines() {
+        // The E5 BOUNDARY (still): a perform in a `match` ARM BODY — `(match c (true (Amb.flip)) (false 2))`
+        // — is a NON-UNIFORM continuation (the perform runs only on the taken arm, its continuation differs
+        // by arm), so `pure_hole` returns Impure and the fold declines. Contrast the scrutinee-hole case
+        // above, which folds. (Needs the captured-continuation frame machinery, a later increment.)
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (< 3 5) (true (Amb.flip)) (false 2)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail resume in a match arm body must decline (needs E5 frame capture)"
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_in_an_if_condition_folds() {
         // The perform may sit in an `if` CONDITION — a STRICT, always-evaluated-first position, so its
         // continuation `C = (if (< □ 5) 1 2)` is a uniform pure one-hole context (the branches are pure and
