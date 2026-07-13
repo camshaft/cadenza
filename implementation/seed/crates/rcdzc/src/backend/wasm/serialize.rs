@@ -1448,6 +1448,270 @@ pub fn multi_closure_resource_core_module(
     Ok(core)
 }
 
+/// One SIGNATURE GROUP for the distinct-signature multi-export ([`distinct_sig_resource_core_module`]):
+/// all exports sharing ONE closure signature `(-> A… R)` — they become ONE resource type with its own
+/// `resource.new`/`resource.rep` intrinsics + one shared `call`. `arg_vts`/`ret_vt` are the group's `call`
+/// boundary shape; `lifted_type_idx` the group's `call_indirect` functype; `makes` its per-export `make`s.
+pub struct SigGroup {
+    pub makes: Vec<ClosureMake>,
+    pub arg_vts: Vec<ValType>,
+    pub ret_vt: ValType,
+    /// The table SLOT of a REPRESENTATIVE lifted lambda of this group's signature — its `call_indirect`
+    /// functype index in the core is derived from it (`defined_type_base + order.len() + slot`), so the
+    /// caller passes the slot rather than a pre-baked type index (the distinct-sig core's type layout
+    /// differs from the multi-export one, so `layout.lifted_type_index` cannot be reused here).
+    pub lifted_slot: usize,
+}
+
+/// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
+/// types. Each group `g` gets its OWN `resource-new-g`/`resource-rep-g` imports (a core `resource.new` is
+/// typed to ONE resource — so `make` for group g news through group g's intrinsic), its per-export
+/// `make-<name>` functions, and ONE shared `call-<g>` (dispatching any closure of that signature via the
+/// group's `resource.rep-g` → the shared funcref table). All groups share the ONE guest funcref table (the
+/// resource-TYPE distinction is a boundary concern; a table slot is a slot). The `distinct_signature_…`
+/// oracle proved the shape. Exports: per group, its makes (`make-<name>`) + `call-<g>`.
+pub fn distinct_sig_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    groups: &[SigGroup],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let g = groups.len();
+    let total_makes: usize = groups.iter().map(|gr| gr.makes.len()).sum();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+
+    // ── Type section ── import functypes 0..k; then 2*G resource-intrinsic functypes `(i32)->i32` (new_g,
+    // rep_g per group); one functype per defined body; then per group: its make functype(s) + one call
+    // functype. To keep indices simple, ALL resource intrinsics share the ONE `(i32)->i32` functype.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    // One shared `(i32)->i32` functype for every resource intrinsic (index k).
+    type_items.extend_from_slice(&i32_to_i32);
+    let rintr_type_idx = k as u32;
+    let defined_type_base = k + 1;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    // Per group: make functype(s) then a call functype. Record each function's type index.
+    let mut make_type_idx: Vec<u32> = Vec::new(); // flat, in (group, make) order
+    let mut call_type_idx: Vec<u32> = Vec::new(); // one per group
+    let mut next_type = defined_type_base + n;
+    for gr in groups {
+        for mk in &gr.makes {
+            let params: Vec<u8> = mk.param_vts.iter().map(|v| vt_byte(*v)).collect();
+            let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+            t.extend_from_slice(&wasm_vec(params.len(), &params));
+            t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+            type_items.extend_from_slice(&t);
+            make_type_idx.push(next_type as u32);
+            next_type += 1;
+        }
+        let mut params = vec![wasm_abi::CORE_I32]; // self rep
+        params.extend(gr.arg_vts.iter().map(|v| vt_byte(*v)));
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[vt_byte(gr.ret_vt)]));
+        type_items.extend_from_slice(&t);
+        call_type_idx.push(next_type as u32);
+        next_type += 1;
+    }
+    let total_types = defined_type_base + n + total_makes + g;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ── k ops (each against its own `import_functype` at index i) + per group
+    // `resource-new-<g>` + `resource-rep-<g>` (2*G intrinsics, all against the shared `(i32)->i32` type).
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    let mut rnew_fn: Vec<u32> = Vec::new();
+    let mut rrep_fn: Vec<u32> = Vec::new();
+    let mut next_import_fn = k as u32;
+    for gi in 0..g {
+        import_items.extend_from_slice(&import_item(&format!("resource-new-{gi}"), rintr_type_idx));
+        rnew_fn.push(next_import_fn);
+        next_import_fn += 1;
+        import_items.extend_from_slice(&import_item(&format!("resource-rep-{gi}"), rintr_type_idx));
+        rrep_fn.push(next_import_fn);
+        next_import_fn += 1;
+    }
+    let import_sec = section(2, &wasm_vec(k + 2 * g, &import_items));
+
+    // ── Function section ── defined bodies, then per group (makes then call).
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    for &ti in &make_type_idx {
+        uleb128(ti as u64, &mut func_items);
+    }
+    for &ti in &call_type_idx {
+        uleb128(ti as u64, &mut func_items);
+    }
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + total_makes + g, &func_items),
+    );
+    // Absolute core-func indices: defined bodies at import_count..; then makes; then calls.
+    let import_count = k + 2 * g;
+    let defined_abs_base = import_count as u32;
+    let make_abs_base = defined_abs_base + n as u32;
+    let call_abs_base = make_abs_base + total_makes as u32;
+
+    // ── Table + Element ── the ONE funcref table from `layout.lifted` (all groups' lifteds share it).
+    let n_lifted = layout.lifted.len();
+    let (table_sec, elem_sec) = if n_lifted == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let mut table_entry = vec![0x70u8, 0x01];
+        uleb128(n_lifted as u64, &mut table_entry);
+        uleb128(n_lifted as u64, &mut table_entry);
+        let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        let elem_sec = section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg));
+        (table_sec, elem_sec)
+    };
+
+    // ── Export section ── per group: its makes (each `make-<name>`) + `call-<g>`.
+    let export_sec = {
+        let export = |name: &str, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(wasm_abi::EXPORT_KIND_FUNC);
+            let mut b = item;
+            uleb128(idx as u64, &mut b);
+            b
+        };
+        let mut items = Vec::new();
+        let mut make_i = 0u32;
+        for (gi, gr) in groups.iter().enumerate() {
+            for mk in &gr.makes {
+                items.extend_from_slice(&export(&mk.export_name, make_abs_base + make_i));
+                make_i += 1;
+            }
+            items.extend_from_slice(&export(&format!("call-{gi}"), call_abs_base + gi as u32));
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(total_makes + g, &items),
+        )
+    };
+
+    // ── Code section ── defined bodies, then per group (makes then call).
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    // makes (flat, in group order): each forwards its export params, calls the export body, `resource.new-g`.
+    for (gi, gr) in groups.iter().enumerate() {
+        for mk in &gr.makes {
+            let mut inner = uleb_bytes(0);
+            for p in 0..mk.param_vts.len() {
+                inner.push(op::LOCAL_GET);
+                uleb128(p as u64, &mut inner);
+            }
+            inner.push(op::CALL);
+            uleb128(mk.export_abs as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(rnew_fn[gi] as u64, &mut inner);
+            inner.push(op::END);
+            let mut e = uleb_bytes(inner.len() as u64);
+            e.extend_from_slice(&inner);
+            code_items.extend_from_slice(&e);
+        }
+    }
+    // calls (one per group): resource.rep-g → cell → dispatch the group's lifted functype → drop the cell.
+    for (gi, gr) in groups.iter().enumerate() {
+        let cell_local = (1 + gr.arg_vts.len()) as u32;
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&wasm_vec(1, &{
+            let mut gl = uleb_bytes(1);
+            gl.push(wasm_abi::CORE_I32);
+            gl
+        }));
+        inner.push(op::LOCAL_GET);
+        uleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(rrep_fn[gi] as u64, &mut inner);
+        inner.push(op::LOCAL_SET);
+        uleb128(cell_local as u64, &mut inner);
+        inner.push(op::LOCAL_GET);
+        uleb128(cell_local as u64, &mut inner);
+        for a in 0..gr.arg_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128((1 + a) as u64, &mut inner);
+        }
+        inner.push(op::LOCAL_GET);
+        uleb128(cell_local as u64, &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(import_index["arr-get"] as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(import_index["get-int"] as u64, &mut inner);
+        inner.push(op::I32_WRAP_I64);
+        inner.push(op::CALL_INDIRECT);
+        // The group's lifted `call_indirect` functype index in THIS core: the lifted bodies are the
+        // trailing `funcs` after the `order` defs, so their functype sits at
+        // `defined_type_base + order.len() + slot` (NOT `layout.lifted_type_index`, which bakes in the
+        // multi-export `import_base`; the distinct-sig core has a different type layout).
+        let lifted_tyi = (defined_type_base + layout.order.len() + gr.lifted_slot) as u32;
+        uleb128(lifted_tyi as u64, &mut inner);
+        uleb128(0, &mut inner); // table 0
+        // C-HOST-5 release (own<t> consumed → drop the cell after dispatch).
+        inner.push(op::LOCAL_GET);
+        uleb128(cell_local as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(import_index["drop"] as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(n + total_makes + g, &code_items),
+    );
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    core.extend_from_slice(&code_sec);
+    Ok(core)
+}
+
 /// One parameter of a round-trip CONSUMER export ([`ClosureConsume`]): either the closure RESOURCE being
 /// handed back (its boundary handle is `resource.rep`'d to the guest cell before the consumer body runs)
 /// or an ordinary SCALAR passed straight through.

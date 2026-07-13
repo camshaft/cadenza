@@ -297,6 +297,21 @@
   (call   main (: 9 Int64))
   (output (: 1 Int64)))
 
+(case "a handler arm that resumes NON-tail folds when the perform is the whole body"
+  (doc    "The GENERAL one-shot arm — a `resume` NOT in tail position, so the arm does work AFTER resuming
+           (`(Amb.flip (u) s (+ 1 (resume 10 s)))` adds 1 to whatever the continuation returns). This is
+           the powerful case (capabilities-and-effects.md #A Handler May Resume Anywhere). Its full form
+           needs a reified continuation, but when the performed operation is the WHOLE handle body its
+           continuation is the IDENTITY (nothing runs after the perform), so `(resume 10 s)` yields 10 in
+           place and the arm evaluates to `(+ 1 10)` = 11 — no continuation object needed. Witnesses the
+           identity-continuation sliver of the general-resume class; a non-tail resume whose perform sits
+           inside a larger expression (a non-identity continuation) still awaits the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main)))
+  (output (: 11 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
@@ -352,6 +367,91 @@
             (def (main)
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
+  (output (: 1 Int64)))
+
+; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
+; A branch's state advance is not local to the branch: the code following the conditional must run against
+; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the
+; conditional is a runtime PHI of the branches — realized by distributing the continuation into each
+; branch (`(do (if c t e) k)` ≡ `(if c (do t k) (do e k))`), so the conditional ends up in tail position
+; where the fold threads correctly. The condition/scrutinee is evaluated exactly once (never duplicated);
+; a short-circuit connective is the same shape via its if-desugar. Contrast: a conditional in TAIL position
+; (no continuation) and a perform in the CONDITION both already threaded — the gap was specifically a
+; branch perform whose advance must flow OUT to a continuation.
+
+(case "a perform in a taken if-branch threads its state to the continuation after the if"
+  (doc    "The then-branch performs `Fresh.next` (reads 0, threads 0->1); the continuation `(Fresh.next)`
+           after the `if` reads 1. The branch's state advance is NOT lost — it flows out to the code after
+           the conditional. `if` in tail position and a perform in the condition both thread already; this
+           pins the branch-then-continuation case, realized by lifting the `if` to tail position and
+           distributing the continuation into each branch.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do (if true (Fresh.next) 99) (Fresh.next)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a perform in a taken match-arm threads its state to the continuation after the match"
+  (doc    "Same threading via `match`: the `0` arm performs `Fresh.next` (reads 0, threads 0->1); the
+           continuation `(Fresh.next)` reads 1. Confirms the phi-out-of-branch threading is in the shared
+           conditional fold, not `if`-specific — a `match` arm body is a branch position exactly like an
+           `if` branch.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do (match 0 (0 (Fresh.next)) (_ 99)) (Fresh.next)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "the else-branch of an if threads a performed state to the continuation"
+  (doc    "The else-branch (taken, cond false) performs once (reads 0, threads 0->1); the continuation reads
+           1. Pins that BOTH arms thread out, not just the then-arm — the distribution wraps the continuation
+           into each branch.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do (if false 99 (Fresh.next)) (Fresh.next)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a short-circuit connective threads a branch perform to the continuation"
+  (doc    "`(and (= (Fresh.next) 0) (= (Fresh.next) 1))` desugars to `(if (= (Fresh.next) 0) (= (Fresh.next)
+           1) false)`; both reads happen (0, then 1), threading 0->2. The continuation `(Fresh.next)` reads
+           2. The connective's rhs is a branch (runs only on the taken path), so its perform's advance must
+           flow out to the continuation exactly as an explicit `if` branch's does — even though the condition
+           itself performs (the condition threads, then the branch, then the distributed continuation).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do (and (= (Fresh.next) 0) (= (Fresh.next) 1)) (Fresh.next)))) (export main)))
+  (output (: 2 Int64)))
+
+(case "branches performing DIFFERENT counts each thread their own post-state to the continuation"
+  (doc    "The two branches advance the state by different amounts — the then-branch reads once (0->1), the
+           else-branch reads twice (0->1->2). With cond true the then-branch runs, so the continuation reads
+           1; the continuation is threaded independently through each branch's own post-state, not a single
+           merged one. Pins the phi is per-branch: the distributed continuation sees whichever branch ran.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do (if true (Fresh.next) (do (Fresh.next) (Fresh.next))) (Fresh.next)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a branch perform under two nested handlers threads the inner state to the continuation"
+  (doc    "The branch performs the INNER effect `A` (reads 0, threads 0->1); the continuation `(A.an)` reads
+           1. The outer handler `B` is present but unperformed. Pins that the branch-to-continuation
+           threading composes with nested handlers — the distribution preserves each effect's own state
+           slot, so the inner effect's branch advance still reaches the continuation under the outer fold.")
+  (input  (do
+            (effect A (op an (-> Unit Int64)))
+            (effect B (op bn (-> Unit Int64)))
+            (def (main)
+              (handle B 100 ((bn (u) t (resume t (+ t 1))))
+                (handle A 0 ((an (u) s (resume s (+ s 1))))
+                  (do (if true (A.an) 0) (A.an))))) (export main)))
   (output (: 1 Int64)))
 
 (case "a handler accumulates into a list and a read-out operation reads it back"

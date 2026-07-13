@@ -510,6 +510,26 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for body in export_bodies {
         crate::effects::check_no_home(db, body, &mut faults);
     }
+    // AN EXPORT NAMING NO DEFINITION is ill-formed — `(export nope)` with no `(def nope …)`. This is a
+    // well-formedness fault (the public surface must name real definitions), so it belongs in
+    // `collect_faults` where BOTH `cdz check` and `compile` see it — not only in the emit-path layout
+    // (which `compile` runs but `check`'s Diagnostics query does not, so `check` used to MISS it). Coded
+    // CDZ0101 (an export names an unbound definition — the export-position analogue of an unbound
+    // reference), anchored at the `(export …)` clause, with a "did you mean?" over the defined names.
+    let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
+    let missing_exports: Vec<(String, StructId)> = db
+        .exports
+        .iter()
+        .filter(|e| e.def.is_none())
+        .map(|e| (e.name.clone(), e.occ))
+        .collect();
+    for (name, occ) in missing_exports {
+        let msg = match crate::diag::suggest::nearest(&name, &defined_names) {
+            Some(near) => format!("export `{name}` names no definition — did you mean `{near}`?"),
+            None => format!("export `{name}` names no definition"),
+        };
+        faults.push(Reject::coded(Code::Unbound, msg).at(occ));
+    }
     // SANITIZE ORIGINS BEFORE DEDUP. A fault anchored at a SYNTHESIZED/non-user node has its origin
     // stripped to `None` (the front-end span table only covers user nodes). This must run BEFORE
     // `dedup_faults` so the SAME fault reported once at a user node and once at a synthesized node — e.g.
