@@ -275,6 +275,54 @@ impl IntValue {
         }
     }
 
+    /// Narrow to a machine `i128`, or `None` if the value does not fit (magnitude over 128 bits, or the
+    /// `i128::MIN` boundary). A pure conversion — no arbitrary-precision ARITHMETIC (this crate has
+    /// none). Used to read a compile-time unit-SCALE ratio, which is always a small machine integer
+    /// (`tera` = 10¹², `tebi` = 2⁴⁰) — comfortably inside `i128`.
+    pub fn to_i128(&self) -> Option<i128> {
+        if self.magnitude.len() > 16 {
+            return None;
+        }
+        let mut acc: u128 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u128);
+        }
+        if self.negative {
+            if acc > (i128::MAX as u128) + 1 {
+                return None;
+            }
+            if acc == (i128::MAX as u128) + 1 {
+                Some(i128::MIN)
+            } else {
+                Some(-(acc as i128))
+            }
+        } else {
+            if acc > i128::MAX as u128 {
+                return None;
+            }
+            Some(acc as i128)
+        }
+    }
+
+    /// Build from a machine `i128`, the inverse of [`to_i128`] — the canonical minimal-magnitude form.
+    /// A pure conversion (no arithmetic): used to rebuild an `IntValue` from a folded unit-conversion
+    /// result, which is always a machine-range integer.
+    pub fn from_i128(v: i128) -> IntValue {
+        if v == 0 {
+            return IntValue::zero();
+        }
+        let mag: u128 = v.unsigned_abs();
+        let bytes = mag.to_be_bytes();
+        let mut start = 0;
+        while start < bytes.len() && bytes[start] == 0 {
+            start += 1;
+        }
+        IntValue {
+            negative: v < 0,
+            magnitude: bytes[start..].to_vec(),
+        }
+    }
+
     /// Whether two integers are EQUAL BY VALUE, independent of magnitude representation. The struct
     /// derives `PartialEq` over the raw fields, but the magnitude is NOT canonicalized on every path —
     /// a literal `0` may carry `[0]` while a folded `0` carries `[]` (empty), and both denote zero. So

@@ -412,6 +412,13 @@ pub enum Prim {
     /// `Unit.^` — a unit raised to a compile-time integer power (each exponent scaled, dropping zeros):
     /// `(Unit.^ metre 2)` = `{metre: 2}` (area). May be negative (`(Unit.^ second -1)` = frequency).
     UnitPow,
+    /// `Unit.prefix` — SCALE a unit by a prefix's exact factor, producing another unit of the SAME
+    /// dimension differing only by that factor (`units-of-measure.md` §A Scaled Unit Is A Unit Scaled By
+    /// An Exact Factor). `(Unit.prefix kilo metre)` = metre at scale 1000; `(Unit.prefix mebi byte)` =
+    /// byte at scale 2²⁰. The prefix argument (`kilo`/`milli`/`mebi`/…) is a prelude record carrying its
+    /// scale ratio on a `(meta scale)` channel (`(num den)`), which this reads and applies via
+    /// `Unit::scaled`. The scale is compile-time metadata (a machine-int ratio), NOT a runtime Rational.
+    UnitPrefix,
     /// `Qty.of` — attach a unit to a numeric value: `∀(T,u). T → u → (Qty T u)`. The result's inner type
     /// is the value argument's type; the result's UNIT is the VALUE of the second argument (a
     /// compile-time unit read by `unit_of`). Erases to the value argument's lowering (the unit is
@@ -546,6 +553,7 @@ impl Prim {
             "unit-mul" => Some(Prim::UnitMul),
             "unit-div" => Some(Prim::UnitDiv),
             "unit-pow" => Some(Prim::UnitPow),
+            "unit-prefix" => Some(Prim::UnitPrefix),
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
             "Qty" => Some(Prim::QtyCtor),

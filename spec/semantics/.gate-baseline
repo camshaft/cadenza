@@ -137,6 +137,7 @@ pass	a curried function-type annotation checks its inner result type against the
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
+pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
@@ -153,6 +154,7 @@ pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
+pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
@@ -398,6 +400,7 @@ pass	a pattern that binds the same name twice is rejected
 pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
+pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a program that delegates no effect is pure and never suspends
 pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
@@ -649,6 +652,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
@@ -776,6 +780,7 @@ pass	comparing a map to a record is a type error
 pass	comparing an empty map to an empty record is a type error
 pass	comparing equal values yields Equal
 pass	comparing quantities of incompatible dimension is a compile-time error
+pass	comparing quantities of one dimension at different scales converts before comparing
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
@@ -904,6 +909,7 @@ pass	member access on a tuple is a type error
 pass	membership of a present element is true
 pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
+pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
 pass	mixing two float widths without a conversion does not silently promote
@@ -1130,7 +1136,6 @@ todo	a default-integer pragma fixes a type but adds no conversion — no-promoti
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
 todo	a delegated capability is not itself an export field
-todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never

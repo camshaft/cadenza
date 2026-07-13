@@ -375,3 +375,48 @@
   (input  (+ (Qty.of (Rational.of 1 1) (Unit.prefix kibi (Unit.of #"byte")))
              (Qty.of (Rational.of 1 1) (Unit.prefix kilo (Unit.of #"byte")))))
   (output (: (Qty.of (Rational.of 2024 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))
+
+; ============================================================================================
+; Prefix conversion over CONCRETE numerics — the bignum-free realization (Float rounds, Int
+; exact/truncates). A unit's SCALE is compile-time metadata (a machine-integer ratio: kilo = 1000/1,
+; kibi = 1024/1), and a mixed-unit combine converts each operand to the dimension's reference by
+; `value * num / den` in the quantity's OWN inner numeric type — losing precision "only where the
+; underlying numeric type is itself inexact" (units-of-measure.md #A Unit Carries An Exact Scale To Its
+; Dimension's Reference). So the family/prefix machinery needs NO arbitrary-precision Rational: over
+; Float64 or Int64 it works today. (The `(Rational.of …)` cases above pin the EXACT-magnitude form,
+; realized when Rational lands; these pin the SAME conversions over the numerics the seed already has.)
+
+(case "a prefixed unit combines with its base by converting to the reference (Float)"
+  (doc    "`(+ (Qty.of 1.0 (Unit.prefix kilo metre)) (Qty.of 500.0 metre))` mixes kilometres and metres —
+           one dimension, two scales — so each converts to the reference `metre` (1 km = 1000 m) and they
+           add: 1000 + 500 = 1500 m. Over Float64 the scale multiply is ordinary float arithmetic; the
+           result is a `(Qty Float64 metre)` at the reference unit.")
+  (input  (Qty.value (+ (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))
+                        (Qty.of 500.0 (Unit.base #"metre")))))
+  (output (: 1500.0 Float64)))
+
+(case "a decimal kilobyte and a binary kibibyte convert distinctly over Int64"
+  (doc    "`(+ (Qty 1 KiB) (Qty 1 kB))` over Int64: kibibyte = 1024 byte and kilobyte = 1000 byte are
+           DISTINCT units with distinct exact scales, so each converts to the reference `byte` and sums to
+           1024 + 1000 = 2024 byte — NOT 2000, never silently equated (the classic KiB-vs-kB conflation
+           caught). The conversion is exact integer arithmetic (both scales are whole).")
+  (input  (Qty.value (+ (Qty.of 1 (Unit.prefix kibi (Unit.base #"byte")))
+                        (Qty.of 1 (Unit.prefix kilo (Unit.base #"byte"))))))
+  (output (: 2024 Int64)))
+
+(case "comparing quantities of one dimension at different scales converts before comparing"
+  (doc    "`(< (Qty 500.0 metre) (Qty 1.0 (Unit.prefix kilo metre)))` compares metres to kilometres — one
+           dimension, two scales — so each converts to the reference and compares there: 500 m < 1000 m,
+           so it is true. Comparison, like `+`/`-`, converts differing units of one dimension rather than
+           rejecting them.")
+  (input  (< (Qty.of 500.0 (Unit.base #"metre"))
+             (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))))
+  (output (: true Bool)))
+
+(case "mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error"
+  (doc    "`(+ (Qty 1.0 (Unit.prefix kilo metre)) (Qty 1.0 second))` mixes `length` and `time` — different
+           dimensions — so it is CDZ0501, exactly as the unprefixed case is. A prefix scales WITHIN a
+           dimension; it never bridges two, so the dimensional safety the layer exists for is untouched.")
+  (input  (+ (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))
+             (Qty.of 1.0 (Unit.base #"second"))))
+  (error  CDZ0501))

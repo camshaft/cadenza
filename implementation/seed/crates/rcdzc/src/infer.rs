@@ -403,13 +403,58 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
     if !v.fits_width(it.ground_signed(), w) {
         return Some(Reject::coded(
             Code::IntOutOfRange,
-            format!(
-                "integer literal does not fit the annotated type {}",
-                annot_ty.render_name()
-            ),
+            int_out_of_range_message(&annot_ty, it.ground_signed(), w),
         ));
     }
     None
+}
+
+/// The CDZ0302 message for an integer literal that overflows the annotated type: names the type and,
+/// when the width is a well-formed one whose range renders exactly, appends `(the valid range is
+/// min..=max)`. A malformed width (no exact range) falls back to the type-name-only message.
+fn int_out_of_range_message(annot_ty: &Ty, signed: bool, w: u32) -> String {
+    match int_width_range(signed, w) {
+        Some(range) => format!(
+            "integer literal does not fit the annotated type {} (the valid range is {range})",
+            annot_ty.render_name(),
+        ),
+        None => format!(
+            "integer literal does not fit the annotated type {}",
+            annot_ty.render_name()
+        ),
+    }
+}
+
+/// The inclusive value range a `(signed, width)` integer type holds, rendered `min..=max` (rustc's
+/// "the range is `-128..=127`" phrasing) — a signed N-bit holds `-(2^(N-1)) ..= 2^(N-1) - 1`, an
+/// unsigned N-bit `0 ..= 2^N - 1`. Names the concrete bounds a CDZ0302 out-of-range literal missed, so
+/// the message says WHICH range rather than only the type name. Returns `None` for a width the `i128`/
+/// `u128` arithmetic can't hold exactly (`w == 0`, or `> 127` signed / `> 128` unsigned — only a
+/// MALFORMED width, since a well-formed integer type is `1..=64`); the caller then omits the range
+/// clause rather than the helper panicking on a shift overflow.
+fn int_width_range(signed: bool, w: u32) -> Option<String> {
+    if w == 0 {
+        return None;
+    }
+    if signed {
+        if w > 127 {
+            return None;
+        }
+        let max = (1i128 << (w - 1)) - 1;
+        let min = -(1i128 << (w - 1));
+        Some(format!("{min}..={max}"))
+    } else {
+        if w > 128 {
+            return None;
+        }
+        // `1u128 << 128` overflows; `w == 128` max is `u128::MAX` directly.
+        let max = if w == 128 {
+            u128::MAX
+        } else {
+            (1u128 << w) - 1
+        };
+        Some(format!("0..={max}"))
+    }
 }
 
 /// The declared type of an annotated parameter whose NAME occurrence is `binder`, if any. A parameter
@@ -3109,10 +3154,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), "fault: literal does not fit annotated width (CDZ0302)");
                         out.push(Reject::coded(
                             Code::IntOutOfRange,
-                            format!(
-                                "integer literal does not fit the annotated type {}",
-                                annot_ty.render_name()
-                            ),
+                            int_out_of_range_message(&annot_ty, it.ground_signed(), w),
                         ));
                     }
                 } else if let (

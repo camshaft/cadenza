@@ -1929,11 +1929,41 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     };
                     Some(a.pow(n))
                 }
+                Prim::UnitPrefix => {
+                    // `(Unit.prefix kilo u)` — read the prefix's `(num den)` scale off its `(meta scale)`
+                    // channel and apply it to `u`. The first arg is the prefix record, the second the
+                    // unit being scaled.
+                    let (num, den) = prefix_scale_of(db, *args.first()?)?;
+                    let u = unit_of(db, *args.get(1)?)?;
+                    u.scaled(num, den)
+                }
                 _ => None,
             }
         }
         _ => None,
     }
+}
+
+/// The exact scale factor `(num, den)` a PREFIX record carries on its `(meta scale)` channel
+/// (`prelude::prefix_record`) — `kilo` → `(1000, 1)`, `milli` → `(1, 1000)`, `mebi` → `(1048576, 1)`.
+/// Read the same way `variant_disc_of` reads `(meta variant)`. `None` if `id` is not a prefix record
+/// (no `(meta scale)`, or a malformed ratio) — so `(Unit.prefix notaprefix u)` fails to reduce cleanly.
+fn prefix_scale_of(db: &mut Db, id: StructId) -> Option<(i128, i128)> {
+    let field = project_meta(db, id, "scale")?;
+    // `(num den)` — a plain two-element list of integer literals.
+    let (n, d) = match db.ast.get(field) {
+        crate::ast::Struct::List(items) if items.len() == 2 => (items[0], items[1]),
+        _ => return None,
+    };
+    let num = match resolved_of(db, n) {
+        Resolved::Int(v) => v.to_i128()?,
+        _ => return None,
+    };
+    let den = match resolved_of(db, d) {
+        Resolved::Int(v) => v.to_i128()?,
+        _ => return None,
+    };
+    Some((num, den))
 }
 
 /// How a `(Int W)`/`(UInt W)` width argument reads. A concrete non-negative natural that fits `u32` is
