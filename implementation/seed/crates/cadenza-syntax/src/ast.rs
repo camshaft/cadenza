@@ -278,10 +278,47 @@ impl Arenas {
         match (self.get(a), other.get(b)) {
             (Struct::Atom(la), Struct::Atom(lb)) => self.leaf(*la) == other.leaf(*lb),
             (Struct::List(xs), Struct::List(ys)) => {
-                xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| self.node_eq(x, other, y))
+                if xs.len() != ys.len() {
+                    return false;
+                }
+                // In HEAD position, a compound ctor's shadowable NAME alias and its unshadowable
+                // STRING primitive denote the same construct (they compile identically). The pretty-
+                // printer sugars an unshadowed name-headed `(record …)`/`(tuple …)`/`(list …)`/`(map …)`
+                // to a literal, which the reader re-reads with a STRING head — so a name-headed input
+                // still round-trips. Normalize the two head kinds here, but ONLY for the four ctors and
+                // ONLY in head position, so a bare `list` name and the string value `"list"` elsewhere
+                // stay distinct.
+                if let (Some(&xh), Some(&yh)) = (xs.first(), ys.first()) {
+                    let heads_eq = match (self.ctor_head_key(xh), other.ctor_head_key(yh)) {
+                        (Some(x), Some(y)) => x == y,
+                        _ => self.node_eq(xh, other, yh),
+                    };
+                    return heads_eq
+                        && xs[1..]
+                            .iter()
+                            .zip(&ys[1..])
+                            .all(|(&x, &y)| self.node_eq(x, other, y));
+                }
+                true // both empty (equal lengths, no head)
             }
             _ => false,
         }
+    }
+
+    /// The compound-ctor spelling an occurrence denotes as a LIST HEAD, collapsing the shadowable
+    /// NAME alias and the unshadowable STRING primitive to one key — so head-kind normalization in
+    /// [`node_eq`] can treat `Name("record")` and `Str("record")` as the same head. Only the four
+    /// compound ctors qualify; every other name/string is left to exact leaf comparison.
+    fn ctor_head_key(&self, id: StructId) -> Option<&str> {
+        let spelling = match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Name(n) => n.as_str(),
+                Leaf::Str(s) => s.as_str(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        matches!(spelling, "list" | "tuple" | "record" | "map").then_some(spelling)
     }
 }
 

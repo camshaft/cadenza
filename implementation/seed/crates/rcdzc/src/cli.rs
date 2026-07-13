@@ -34,7 +34,9 @@ use std::process::ExitCode;
     about = "The reference Cadenza → component compiler (artifacts in, artifacts out)."
 )]
 pub struct CompileArgs {
-    /// Input artifacts: `path`, `name=path`, or `kind:name=path` (kind defaults to `ast`).
+    /// Input artifacts: `path`, `name=path`, or `kind:name=path` (kind defaults to `ast`). Under
+    /// `cdz compile`, a bare `path` may also be a SOURCE file (parsed in-process) or a DIRECTORY
+    /// (recursed for every `.cdz`/`.ml`/`.sexp` source — a whole package tree; pair with `--entry`).
     #[arg(required = true, value_name = "INPUT")]
     inputs: Vec<String>,
 
@@ -49,10 +51,11 @@ pub struct CompileArgs {
     out: Option<PathBuf>,
 
     /// The ENTRY file of a multi-file PACKAGE, by name (`DESIGN-package-linking.md`). Required when
-    /// more than one `ast`/source input is given: it names which file's `(export …)` forms the
-    /// component boundary. The other files are libraries reachable only through an explicit `(import
-    /// …)`. Ignored for a single-file compile (that lone file is the entry). A file's name is its stem
-    /// (`app.cdz` → `app`) or the `name=` of an explicit `kind:name=path` spec.
+    /// more than one `ast`/source input is given (including a recursed directory): it names which
+    /// file's `(export …)` forms the component boundary. The other files are libraries reachable only
+    /// through an explicit `(import …)`. Ignored for a single-file compile (that lone file is the
+    /// entry). A file's name is its stem (`app.cdz` → `app`, `src/lib/util.cdz` → `util`) or the
+    /// `name=` of an explicit `kind:name=path` spec.
     #[arg(long, value_name = "NAME")]
     entry: Option<String>,
 }

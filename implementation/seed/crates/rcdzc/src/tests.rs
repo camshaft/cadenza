@@ -6198,6 +6198,36 @@ mod match_engine {
             .is_ok(),
             "an unguarded same-variant fall-through restores exhaustiveness"
         );
+        // REGRESSION: the SAME non-exhaustive match must reject EVEN WHEN it fully const-folds — a
+        // CONSTANT scrutinee `(Some 5)` whose guard `(> 5 0)` folds to TRUE previously returned the
+        // guarded body directly (→ 5), SKIPPING the exhaustiveness check, so a non-exhaustive match was
+        // silently accepted whenever a constant input happened to satisfy the guard. A match is
+        // ill-formed AS WRITTEN (CDZ0210) regardless of whether a specific fold hits the guarded arm; the
+        // guard-folds-true path now verifies the fall-through covers the variant before folding.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (Some 5) ((guard (Some x) (> x 0)) x) ((None) 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a non-exhaustive guarded match rejects even when a constant scrutinee folds its guard true"
+        );
+        // CONTROL: the fold-true case with an unguarded same-variant fall-through still COMPILES and
+        // folds to the guarded body (5) — the exhaustiveness check passes, the fold is unchanged.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) \
+                       (match (Some 5) ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0))) \
+                     (export main))"
+                )))
+                .expect("an exhaustive guarded match folds"),
+                "main"
+            ),
+            5,
+            "an exhaustive guarded match still folds to the guarded body when the guard folds true"
+        );
     }
 
     #[test]
@@ -10705,6 +10735,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_captures_another_closure_and_composes() {
+        // A HIGHER-ORDER capture: `twice = (fn (y) (inc (inc y)))` closes over `inc` (itself a closure)
+        // and applies it twice; `(twice 5)` = inc(inc(5)) = 7. A function value captured by another
+        // closure folds at each application.
+        assert_eq!(
+            run_main(
+                "(let ((inc (fn ((: x Int64)) (+ x 1)))) \
+                       (let ((twice (fn ((: y Int64)) (inc (inc y))))) (twice 5)))"
+            ),
+            7
+        );
+        // A closure's argument is another closure's RESULT: `((fn (x) (+ x k)) ((fn (y) (* y 2)) 3))`
+        // with k=10 → (+ 6 10) = 16. Composing two closure applications.
+        assert_eq!(
+            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) ((fn ((: y Int64)) (* y 2)) 3)))"),
+            16
+        );
+        // A closure that itself references an enclosing closure through a further nesting.
+        assert_eq!(
+            run_main(
+                "(let ((a 1)) (let ((f (fn ((: x Int64)) (+ x a)))) \
+                       (let ((g (fn ((: y Int64)) (f (+ y 1))))) (g 5))))"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
@@ -10826,6 +10884,63 @@ mod stage1 {
         };
         assert_eq!(r, "12");
         assert_eq!(run_closure(src, 5).unwrap(), "30");
+    }
+
+    #[test]
+    fn a_closure_carried_in_a_sum_payload_applies_through_call_indirect() {
+        // A closure stored in a SUM variant's payload, extracted by a match binder, and applied — the
+        // callback-in-a-variant shape. `(Some (fn (n) (* n 2)))` carries a closure; `(match … ((Some f)
+        // (f 5)) …)` binds `f` to the payload (a `sum-payload` heap read) and applies it. The closure is
+        // reached through the PAYLOAD, not a `let`/tuple projection the fold reduces through, so `f`'s
+        // application is a runtime `call_indirect` — a payload/element binder is a runtime function-value
+        // source like a `Param`. Before the fix `(f 5)` declined "value is not applyable" (the closure
+        // path was gated on a `Param` head only). Run through the composed runtime (result 10).
+        use crate::testkit::parse;
+        let cases = [
+            (
+                "Some payload, single arg",
+                "(module m (def (main) \
+                   (match (Some (fn ((: n Int64)) (* n 2))) ((Some f) (f 5)) ((None _) 0))) (export main))",
+                "10",
+            ),
+            (
+                "Ok payload, single arg",
+                "(module m (def (main) \
+                   (match (Ok (fn ((: n Int64)) (+ n 100))) ((Ok f) (f 5)) ((Err e) 0))) (export main))",
+                "105",
+            ),
+            (
+                "Some payload, TWO args (multi-param closure)",
+                "(module m (def (main) \
+                   (match (Some (fn ((: a Int64) (: b Int64)) (+ a b))) ((Some f) (f 3 4)) ((None _) 0))) \
+                 (export main))",
+                "7",
+            ),
+        ];
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        for (label, src, want) in cases {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile closure-in-sum-payload ({label}): {e:?}"));
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+                "a payload-bound closure application imports the runtime ({label})"
+            );
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("closure-in-sum-payload trapped ({label}): {t}")
+                }
+            }
+        }
     }
 
     #[test]

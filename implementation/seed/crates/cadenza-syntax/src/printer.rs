@@ -37,6 +37,7 @@ pub fn print(arenas: &Arenas, width: usize) -> String {
     let mut p = Printer {
         a: arenas,
         doc: Doc::new(),
+        shadowed_ctors: shadowed_ctors(arenas),
     };
     // A `do` at the ROOT is the program's top-level form sequence — print its forms BARE (blank-line
     // separated), not wrapped in `do { … }`. A nested `do` (reached via `expr`) keeps the block form.
@@ -62,6 +63,139 @@ pub fn print_ml(arenas: &Arenas) -> String {
 struct Printer<'a> {
     a: &'a Arenas,
     doc: Doc,
+    /// Compound-ctor names (`list`/`tuple`/`record`/`map`) that some binder in this tree shadows, so
+    /// a NAME-headed occurrence of one is a user application to render as a call — never sugared to a
+    /// literal. Computed once per print (a whole-tree scan); see [`shadowed_ctors`].
+    shadowed_ctors: CtorSet,
+}
+
+/// The four compound-value constructors that have a `{…}`/`(…)`/`[…]`/`#{…}` surface literal AND a
+/// shadowable prelude-alias name. A NAME-headed form of one sugars to its literal only when the name
+/// is unshadowed; the string-headed primitive (`("record" …)`) always sugars.
+const CTOR_NAMES: [&str; 4] = ["list", "tuple", "record", "map"];
+
+/// A tiny set of "which of the four ctor names are shadowed", by index into [`CTOR_NAMES`].
+type CtorSet = [bool; 4];
+
+fn ctor_index(name: &str) -> Option<usize> {
+    CTOR_NAMES.iter().position(|&c| c == name)
+}
+
+/// Scan the whole tree for any binder that binds one of the four compound-ctor names, returning the
+/// set of shadowed ctors. Over-approximate on purpose: a ctor name bound ANYWHERE in the tree
+/// disables literal sugar for EVERY name-headed occurrence of it, tree-wide. That is coarser than
+/// true lexical scope, but always SOUND — the only cost of a false "shadowed" verdict is printing the
+/// (still round-tripping) call form `list(…)` instead of the `[…]` literal. Precise per-occurrence
+/// scope tracking is unnecessary: shadowing a compound-ctor name is rare, and when it happens the
+/// call form is the honest rendering everywhere in that tree.
+///
+/// Binders considered (mirroring the resolver's binding forms): a `let`'s binding names, a `fn`'s
+/// parameters, a `def`'s name and parameters, a `module`'s name, and a `match` arm's pattern binders.
+fn shadowed_ctors(a: &Arenas) -> CtorSet {
+    let mut set = [false; 4];
+    for id in (0..a.structure.len() as u32).map(StructId) {
+        collect_binders_at(a, id, &mut set);
+        if set == [true; 4] {
+            break; // every ctor already shadowed — nothing more to learn
+        }
+    }
+    set
+}
+
+/// Record any compound-ctor name bound by the binder form (if any) headed at `id`.
+fn collect_binders_at(a: &Arenas, id: StructId, set: &mut CtorSet) {
+    let Struct::List(items) = a.get(id) else {
+        return;
+    };
+    let Some(&head) = items.first() else { return };
+    let mark = |a: &Arenas, name_id: StructId, set: &mut CtorSet| {
+        if let Some(n) = a.as_name(name_id)
+            && let Some(i) = ctor_index(n)
+        {
+            set[i] = true;
+        }
+    };
+    match a.as_name(head) {
+        // (let ((name value) …) body): each binding's name is a binder.
+        Some("let") if items.len() >= 2 => {
+            if let Struct::List(binds) = a.get(items[1]) {
+                for &b in binds {
+                    if let Struct::List(pair) = a.get(b)
+                        && let Some(&n) = pair.first()
+                    {
+                        mark(a, n, set);
+                    }
+                }
+            }
+        }
+        // (fn (param…) body): each param is a binder (a plain name or a `(: name Type)`).
+        Some("fn") if items.len() >= 2 => {
+            if let Struct::List(params) = a.get(items[1]) {
+                for &p in params {
+                    mark(a, param_name(a, p), set);
+                }
+            }
+        }
+        // (def (name param…) … body) or (def name … value): the def name plus any params.
+        Some("def") if items.len() >= 2 => match a.get(items[1]) {
+            Struct::List(sig) => {
+                for &s in sig {
+                    mark(a, param_name(a, s), set);
+                }
+            }
+            Struct::Atom(_) => mark(a, items[1], set),
+        },
+        // (module name …): the module name is a binder.
+        Some("module") if items.len() >= 2 => mark(a, items[1], set),
+        // (match scrut (pat body)…): each arm's pattern contributes its binders.
+        Some("match") if items.len() >= 2 => {
+            for &arm in &items[2..] {
+                if let Struct::List(pair) = a.get(arm)
+                    && let Some(&pat) = pair.first()
+                {
+                    collect_pattern_binders(a, pat, set);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The bound name of a parameter binder: `(: name Type)` binds `name`, a bare atom binds itself.
+fn param_name(a: &Arenas, p: StructId) -> StructId {
+    if let Some(t) = a.as_form(p, ":")
+        && t.len() == 2
+    {
+        t[0]
+    } else {
+        p
+    }
+}
+
+/// Collect the variable binders a pattern introduces (a bare name binds; a constructor/tuple pattern
+/// recurses into its sub-patterns; a guard's pattern is its first element). Literals bind nothing.
+fn collect_pattern_binders(a: &Arenas, pat: StructId, set: &mut CtorSet) {
+    match a.get(pat) {
+        Struct::Atom(_) => {
+            if let Some(n) = a.as_name(pat)
+                && let Some(i) = ctor_index(n)
+            {
+                set[i] = true;
+            }
+        }
+        Struct::List(items) => {
+            // `(guard pat expr)` → the pattern is the first arg; `(Ctor sub…)`/`(tuple sub…)` → the
+            // sub-patterns are the tail (the head is a ctor/dotted-ctor, not a binder).
+            if a.as_name(items.first().copied().unwrap_or(pat)) == Some("guard") && items.len() == 3
+            {
+                collect_pattern_binders(a, items[1], set);
+            } else {
+                for &sub in items.iter().skip(1) {
+                    collect_pattern_binders(a, sub, set);
+                }
+            }
+        }
+    }
 }
 
 impl<'a> Printer<'a> {
@@ -96,11 +230,12 @@ impl<'a> Printer<'a> {
             self.doc.word("#[]");
             return;
         }
-        // A compound-value CONSTRUCTOR primitive is a STRING head — render it back to its surface
-        // literal (`("list" …)` → `[…]`, `("tuple" …)` → `(a, b)`, `("record" …)` → `{…}`, `("map" …)`
-        // → `#{…}`), the round-trip inverse of the reader's literal desugar. Checked before the
-        // name-head dispatch: the string primitive is unshadowable and never an operator/keyword.
-        if let Some(ctor) = self.head_ctor(items[0]) {
+        // A compound-value literal renders back to its surface form (`(… "list" …)` → `[…]`, `tuple`
+        // → `(a, b)`, `record` → `{…}`, `map` → `#{…}`), the round-trip inverse of the reader's literal
+        // desugar. The head is the STRING primitive (`("record" …)`, always a literal) OR the NAME alias
+        // (`(record …)`) when it is NOT shadowed by a binder in this tree — a shadowed name is a user
+        // application, rendered as a call. Checked before the name-head keyword/operator dispatch below.
+        if let Some(ctor) = self.literal_ctor(items[0]) {
             let args = &items[1..];
             match ctor.as_str() {
                 "list" => return self.print_list_literal(args),
@@ -567,10 +702,11 @@ impl<'a> Printer<'a> {
             Struct::List(items) if !items.is_empty() => (items[0], &items[1..]),
             _ => return false,
         };
-        // The compound-value literals are STRING-headed primitives (`("record" …)` etc.) — a body that
-        // renders as a `{…}`/`[…]`/`(a,b)`/`#{…}` literal hugs the `=`. Recognized by the string head.
-        if let Some(ctor) = self.a.as_str(head) {
-            return match ctor {
+        // A body that renders as a `{…}`/`[…]`/`(a,b)`/`#{…}` literal hugs the `=`. Recognized through
+        // the same gate as the render itself (`literal_ctor`), so a string primitive OR an unshadowed
+        // name alias both hug — and a shadowed name (rendered as a plain call) does NOT.
+        if let Some(ctor) = self.literal_ctor(head) {
+            return match ctor.as_str() {
                 "list" => true,
                 "tuple" => args.len() >= 2,
                 "record" => self.is_record_shape(args),
@@ -990,6 +1126,22 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// The compound-ctor spelling this head denotes IF it should render as a surface literal: the
+    /// STRING primitive (`("record" …)` — always) or the NAME alias (`(record …)`) when that name is
+    /// NOT shadowed by a binder in this tree. A shadowed name (or any non-ctor head) returns `None`,
+    /// so it falls through to the ordinary call/keyword dispatch. This is the single gate through which
+    /// both the reader's string-headed literals and hand-authored name-headed forms reach the sugar.
+    fn literal_ctor(&self, id: StructId) -> Option<String> {
+        if let Some(s) = self.head_ctor(id) {
+            return Some(s); // string primitive — unshadowable, always a literal
+        }
+        let name = self.head_name(id)?;
+        match ctor_index(&name) {
+            Some(i) if !self.shadowed_ctors[i] => Some(name),
+            _ => None,
+        }
+    }
+
     /// If `id` is an `Atom(Name)` that is a plain member key (alpha/underscore start, no dots), that
     /// name — so `(. a b)` prints as `a.b` but a dotted/odd key falls back to the call form.
     fn plain_key(&self, id: StructId) -> Option<String> {
@@ -1384,6 +1536,72 @@ mod tests {
     fn paren_grouping_is_not_a_tuple() {
         // `(1 + 2) * 3` — the parens are transparent grouping, NOT a 1-tuple.
         assert_eq!(assert_roundtrip("(1 + 2) * 3", 80), "(1 + 2) * 3");
+    }
+
+    #[test]
+    fn name_headed_literals_sugar_like_string_heads() {
+        // A hand-authored NAME-headed literal (the whole `.sexp` corpus's shape) renders to its
+        // surface form, identical to the reader's STRING-headed primitive — an unshadowed `record`/
+        // `tuple`/`list`/`map` is the shadowable alias for the same constructor.
+        assert_eq!(
+            print(&sexpr::read("(record (x 1) (y 2))").unwrap(), 80),
+            "{ x = 1, y = 2 }"
+        );
+        assert_eq!(
+            print(&sexpr::read("(tuple 1 2 3)").unwrap(), 80),
+            "(1, 2, 3)"
+        );
+        assert_eq!(
+            print(&sexpr::read("(list 1 2 3)").unwrap(), 80),
+            "[1, 2, 3]"
+        );
+        assert_eq!(
+            print(&sexpr::read("(map (a 1) (b 2))").unwrap(), 80),
+            "#{ a = 1, b = 2 }"
+        );
+        // a 1-tuple keeps its trailing comma so it re-reads as a 1-tuple, not grouping.
+        assert_eq!(print(&sexpr::read("(tuple 1)").unwrap(), 80), "(1,)");
+        // empty name-headed forms mirror the string-headed empties (`()` is unit, so no empty tuple).
+        assert_eq!(print(&sexpr::read("(list)").unwrap(), 80), "[]");
+        assert_eq!(print(&sexpr::read("(record)").unwrap(), 80), "{}");
+        assert_eq!(print(&sexpr::read("(map)").unwrap(), 80), "#{}");
+    }
+
+    #[test]
+    fn name_headed_literal_round_trips_via_head_normalization() {
+        // Sugaring a NAME head means the reprint re-reads with a STRING head; `structurally_eq`
+        // normalizes the two head kinds for the four ctors, so the round-trip still holds.
+        for src in [
+            "(record (x 1) (y 2))",
+            "(tuple 1 2 3)",
+            "(list 1 2 3)",
+            "(map (a 1))",
+        ] {
+            let a = sexpr::read(src).unwrap();
+            let printed = print(&a, 80);
+            let back = parser::read_ml(&printed);
+            assert!(
+                back.ok() && back.arenas.structurally_eq(&a),
+                "{src} -> {printed} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn shadowed_ctor_name_stays_a_call() {
+        // A binder for a ctor name makes every NAME-headed occurrence of it (tree-wide) a user
+        // application — rendered as a call, NOT sugared. This is the head-position shadow the
+        // resolver honours; the printer must not misrepresent it as a literal.
+        assert_eq!(
+            assert_roundtrip("let list = fn(a, b) => a + b in\nlist(3, 4)", 80),
+            "let list = fn(a, b) => a + b in\nlist(3, 4)"
+        );
+        // shadowed via a def parameter: the `tuple` argument, not a tuple literal.
+        let a = sexpr::read("(def (f tuple) (tuple 3 4))").unwrap();
+        assert_eq!(print(&a, 80), "def f(tuple) = tuple(3, 4)");
+        // an unshadowed sibling in the SAME tree still sugars (shadow is per-name, not all-ctors).
+        let a = sexpr::read("(let ((list (fn (a) a))) (tuple (list 1) 2))").unwrap();
+        assert_eq!(print(&a, 80), "let list = fn(a) => a in\n(list(1), 2)");
     }
 
     #[test]
