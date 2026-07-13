@@ -14972,6 +14972,82 @@ mod match_engine {
     }
 
     #[test]
+    fn complementary_comparisons_fold_to_a_constant() {
+        // COMPLEMENTARY-COMPARISON LAW: two comparisons on the SAME operand pair with COMPLEMENT operators
+        // (`<`/`>=`, `<=`/`>`) partition the total order, so `(or (< a b) (>= a b))` → true (exhaustive) and
+        // `(and (< a b) (>= a b))` → false (disjoint). DISCARDS both, so gated on `is_trap_free`. Pins the
+        // fold at the Lir level (no comparison) AND value/trap parity; a NON-complement pair and a SWAPPED
+        // operand pair must NOT fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GeS | Lir::I64LeS | Lir::I64GtS))
+                .count()
+        };
+        // `<`/`>=` and `<=`/`>` complements fold (both connectives). No comparison remains.
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (>= x 5)) Bool)")), 0, "or (<5)(>=5) → true");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (>= x 5)) Bool)")), 0, "and (<5)(>=5) → false");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (<= x 5) (> x 5)) Bool)")), 0, "or (<=5)(>5) → true");
+        // Two-variable operands fold too.
+        assert_eq!(cmps(&lir("(: a Int64) (: b Int64)", "(: (or (< a b) (>= a b)) Bool)")), 0, "or (<ab)(>=ab) → true");
+        // A NON-complement pair (`<`/`<=`) does NOT fold — both compares stay.
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (<= x 5)) Bool)")), 2, "non-complement kept");
+        // A SWAPPED operand pair (`(< a b)` vs `(>= b a)`) is NOT a complement — kept (and NOT a tautology).
+        assert_eq!(cmps(&lir("(: a Int64) (: b Int64)", "(: (or (< a b) (>= b a)) Bool)")), 2, "swapped operands kept");
+
+        // VALUE PARITY: the tautology holds across the boundary; the false-law never fires; the swapped
+        // non-fold computes its real (non-tautology) result.
+        use wasmtime::component::Val;
+        let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (or (< x 5) (>= x 5))) (export f))"
+        ))).expect("compile");
+        for v in [3, 5, 10, -1] {
+            assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(v)]), "or complement @{v}");
+        }
+        let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (and (< x 5) (>= x 5))) (export f))"
+        ))).expect("compile");
+        for v in [3, 5, 10] {
+            assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(v)]), "and complement @{v}");
+        }
+        let swfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (or (< a b) (>= b a))) (export f))"
+        ))).expect("compile");
+        assert!(!run_returns_with::<bool>(&swfn, "f", &[Val::S64(5), Val::S64(3)]), "swapped a=5 b=3 is false, not a tautology");
+        // TRAP SAFETY: a trapping comparison operand keeps the runtime form and traps.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (or (< (/ 100 z) 5) (>= (/ 100 z) 5)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "a trapping comparison operand keeps its trap");
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch

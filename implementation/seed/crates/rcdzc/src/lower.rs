@@ -573,6 +573,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
                     Core::ConstBool(!is_and) // and → false ; or → true
                 }
+                // COMPLEMENTARY-COMPARISON LAW: `(or (< a b) (>= a b))` → true, `(and (< a b) (>= a b))` →
+                // false — two comparisons on the SAME operand PAIR whose operators are exact COMPLEMENTS
+                // (`< `↔`>=`, `<=`↔`>`) partition the total order, so their `or` is exhaustive (always true)
+                // and their `and` is exclusive (always false). A redundant range guard (`(or (< x c) (>= x
+                // c))`). DISCARDS both operands, so gated on `is_trap_free` for each (a comparison is
+                // trap-free iff its operands are; a `(< (/ a b) 5)` with a trapping `/` keeps the runtime
+                // form). `complementary_comparisons` checks same-pair + complement-op.
+                _ if complementary_comparisons(db, lhs, rhs)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::ConstBool(!is_and) // or → true ; and → false
+                }
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -6813,6 +6826,41 @@ fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
         matches!(core_of(db, maybe_not), Core::Not { operand } if core_equiv(db, operand, other))
     };
     is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
+}
+
+/// Whether `lhs`/`rhs` are two comparisons on the SAME operand pair whose operators are exact COMPLEMENTS
+/// over the total order — `< `/`>=` or `<=`/`>` — so together they partition every value: their `or` is
+/// always TRUE (exhaustive) and their `and` always FALSE (disjoint). `(or (< a b) (>= a b))` → true,
+/// `(and (< a b) (>= a b))` → false. Requires BOTH to be `Core::Compare` with `core_equiv` operand pairs
+/// (same order — `< a b` complements `>= a b`, NOT `>= b a`) and complementary ops. `=`/`Compare` are not
+/// ordering complements and never match. Drives the complementary-comparison fold (caller trap-guards).
+fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
+    let Core::Compare {
+        op: lop,
+        lhs: la,
+        rhs: lb,
+    } = core_of(db, lhs)
+    else {
+        return false;
+    };
+    let Core::Compare {
+        op: rop,
+        lhs: ra,
+        rhs: rb,
+    } = core_of(db, rhs)
+    else {
+        return false;
+    };
+    // Exact ordering complements: `<` ↔ `>=`, `<=` ↔ `>` (either assignment to lhs/rhs).
+    let complement = matches!(
+        (lop, rop),
+        (Prim::Lt, Prim::Ge)
+            | (Prim::Ge, Prim::Lt)
+            | (Prim::Le, Prim::Gt)
+            | (Prim::Gt, Prim::Le)
+    );
+    // Same operand pair in the SAME order (the operators already encode the direction).
+    complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
 }
 
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
