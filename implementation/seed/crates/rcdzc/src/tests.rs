@@ -4644,6 +4644,117 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_clear_low_bits_shift_pair_elides_the_left_shift_overflow_guard() {
+        // CLEAR-LOW-BITS IDIOM: `(<< (>> v k) k)` — right shift by k then left by the SAME k — just clears
+        // v's low k bits (`floor(v/2^k)*2^k`), which NEVER overflows v's type (for BOTH shift kinds: signed
+        // stays ≥ MIN since MIN is a multiple of 2^k, unsigned stays ≤ v). The interval analysis can't see
+        // this (a signed `v >>ₛ k` over a full-range v has no finite range, so `[MIN<<k, MAX<<k]` spuriously
+        // overflows) — a structural recognizer in `shl_provably_in_range` drops the `<<` overflow round-trip.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The `(<< (>> x 4) 4)` shift has NO overflow round-trip: the guard's `i64.ne`+`unreachable` is gone.
+        let idiom = lir("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)");
+        assert!(
+            !idiom.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "the clear-low-bits `<<` overflow round-trip should be elided, got: {idiom:?}"
+        );
+        // A bare `(<< x 4)` (NOT the idiom) KEEPS its overflow guard — the round-trip `i64.ne` stays.
+        let bare = lir("(: x Int64)", "(: (<< x 4) Int64)");
+        assert!(
+            bare.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "a bare `<< 4` must keep its overflow guard, got: {bare:?}"
+        );
+
+        // VALUE PARITY across signs + widths: clearing the low k bits, MIN/MAX boundaries, no false trap.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(255)]
+            ),
+            240
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(-1)]
+            ),
+            -16
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(i64::MIN)]
+            ),
+            i64::MIN,
+            "MIN cleared of its (already-zero) low bits stays MIN — no overflow"
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(i64::MAX)]
+            ),
+            i64::MAX - 15
+        );
+        // Narrow Int8: `(<< (>> x 3) 3)` clears the low 3 bits; MIN stays MIN (no overflow).
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (<< (: (>> x 3) Int8) 3) Int8)",
+                &[Val::S8(127)]
+            ),
+            120
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (<< (: (>> x 3) Int8) 3) Int8)",
+                &[Val::S8(-128)]
+            ),
+            -128
+        );
+        // The idiom NEVER traps (even at MAX, where a bare `<< 4` would); a genuine `<< 4` overflow still does.
+        assert!(!traps(
+            "(: x Int64)",
+            "(: (<< (: (>> x 4) Int64) 4) Int64)",
+            &[Val::S64(i64::MAX)]
+        ));
+        assert!(traps(
+            "(: x Int64)",
+            "(: (<< x 4) Int64)",
+            &[Val::S64(1i64 << 60)]
+        ));
+    }
+
+    #[test]
     fn constant_count_shift_folds_the_count_guard() {
         // A shift by a COMPILE-TIME-CONSTANT count folds the runtime `count >= width` guard (the
         // condition is decided at compile time). It must behave IDENTICALLY to the runtime-count form:
@@ -8654,6 +8765,56 @@ mod match_engine {
     }
 
     #[test]
+    fn a_misspelled_export_carries_a_replace_fix_not_just_a_did_you_mean_string() {
+        // An export naming no definition that is a near-miss for a defined name (`computee` for `compute`)
+        // is a typo — CDZ0101 already NAMED the candidate ("did you mean `compute`?"), but carried NO fix,
+        // so an agent got a text hint and no applicable structural patch. It now carries the concrete
+        // repair: REPLACE the export's name atom with the real definition's name — the export-position
+        // analogue of the pragma-key / unbound-name did-you-mean replace fix.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (compute) 1) (export computee))",
+        )));
+        let d = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101"))
+            .expect("a misspelled export is reported in check");
+        assert!(
+            d.message.contains("did you mean `compute`?"),
+            "names the candidate: {}",
+            d.message
+        );
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("carries a replace fix, not just a string");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "compute",
+            "replaces the typo with the real name"
+        );
+        assert!(!fix.verified, "the nearest-name match is a heuristic guess");
+        // NO OVERREACH: an export naming no definition with NO near-miss (nothing close enough) states the
+        // fault but carries NO fix — a baseless "did you mean?" is worse than none.
+        let far = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (compute) 1) (export zzzzzzzz))",
+        )));
+        let d2 = far
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101"))
+            .expect("the far-miss export is still reported");
+        assert!(
+            !d2.message.contains("did you mean"),
+            "no baseless suggestion: {}",
+            d2.message
+        );
+        assert!(
+            d2.fix.is_none(),
+            "no fix without a plausible candidate: {:?}",
+            d2.fix
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
@@ -9760,6 +9921,58 @@ mod match_engine {
             reject_code("(module m (def (main) (quasiquote (a (unquote (+ b 1))))) (export main))")
                 .as_deref(),
             Some("CDZ0101")
+        );
+    }
+
+    #[test]
+    fn splicing_a_non_list_into_a_quasiquote_is_cdz0201() {
+        // 12-metaprogramming "splicing a non-list value into a quasiquote" / "splicing an integer literal
+        // directly": `,@` splices the ELEMENTS of a LIST into the parent (metaprogramming.md §Quasiquote
+        // Constructs AST With Selective Evaluation), so its operand MUST be a list. A splice of a PROVABLY
+        // non-list value — a scalar, a string — has no elements to splice, so it is ill-typed (CDZ0201),
+        // surfaced through the quoted structure even though the enclosing quasiquote itself declines.
+        // Directly-written literal `,@5`:
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (quasiquote ((unquote-splicing 5) 3))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // A bound non-list name `,@x` with x an Int64:
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // A string operand is likewise a non-list splice.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (quasiquote (f (unquote-splicing \"ab\")))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // CONSERVATIVE: `,@` of an actual LIST is NOT rejected as a non-list — it declines downstream
+        // (the Ast value is unbuilt), a Todo, never a false CDZ0201. And an unbound splice operand keeps
+        // its OWN CDZ0101 (the operand's error is primary, not a spurious "not a list" on top).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (let ((xs (list 1 2 3))) (quasiquote (f (unquote-splicing xs))))) (export main))"
+            )
+            .as_deref(),
+            None,
+            "a splice of an actual list must NOT be rejected CDZ0201 — it declines (Ast unbuilt)"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (quasiquote (f (unquote-splicing zzz)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101"),
+            "an unbound splice operand keeps its own CDZ0101, not a non-list CDZ0201"
         );
     }
 
@@ -15169,6 +15382,26 @@ mod stage1 {
         assert_eq!(run_main("(do (def x 5) (+ x 1))"), 6);
         assert_eq!(run_main("(do (def (f n) (+ n 1)) (f 9))"), 10);
         assert_eq!(run_main("(do (def x 5) (def y (+ x 1)) y)"), 6);
+    }
+
+    /// A WIDE `do` block compiles cheaply AND still detects its do-local declaration — the correctness
+    /// guard for the `is_binding_candidate` per-parent memo in `build_scope_skip`. That predicate is
+    /// O(children) for a `(do …)` (it scans the block's forms for a `def`/`module`), and it was called
+    /// ONCE PER CHILD of the block (the scope-skip build asks it with the parent per child) → O(N²) for a
+    /// wide block (6400 statements ≈ 216ms). The memo collapses the repeat to O(N). Behavior must be
+    /// unchanged: a do-local `(def h …)` buried among many value statements is STILL a binding candidate,
+    /// so a later reference to `h` resolves — a broken memo would mark the block non-binding and unbind `h`.
+    #[test]
+    fn a_wide_do_block_still_binds_its_local_declaration() {
+        // 200 value statements, then a do-local def, then a reference to it. The reference must resolve
+        // through the (memoized) binding-candidate detection.
+        let stmts: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
+        let src = format!("(do {stmts}(def (h n) (+ n 1)) (h 41))");
+        assert_eq!(run_main(&src), 42);
+        // And a leading do-local def is visible to a statement far LATER in a wide block.
+        let stmts2: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
+        let src2 = format!("(do (def x 7) {stmts2}x)");
+        assert_eq!(run_main(&src2), 7);
     }
 
     #[test]
@@ -20618,6 +20851,49 @@ mod stage1 {
             let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(arg)]);
             assert_eq!(got, want, "classify(pick {arg})");
         }
+    }
+
+    #[test]
+    fn an_all_nullary_enum_derives_partial_eq_on_the_rust_backend() {
+        // RUST-BACKEND / CROSS-BACKEND: the `=` intrinsic on an all-nullary enum lowers (rust backend) to a
+        // native `x == y`, which needs `PartialEq` — so an all-nullary enum MUST be emitted with
+        // `#[derive(Clone, PartialEq, Eq)]`, else the generated Rust fails to build (E0369) even though the
+        // SAME program runs on wasm (where the enum is a bare i32 discriminant and `=` is `i32.eq`). A
+        // payload-carrying sum, on which the seed defines no structural `=`, stays `#[derive(Clone)]` only —
+        // deriving `PartialEq` there could fail to compile if a payload type is not itself `PartialEq`.
+        use crate::testkit::parse;
+
+        // An all-nullary enum compared with `=` → its emitted Rust enum derives PartialEq/Eq and builds.
+        let nullary = "(module m (type Color Red Green Blue) \
+                         (def (eq2 (: x Color) (: y Color)) (if (= x y) 1 0)) \
+                         (def (main (: b Bool)) (+ (eq2 (if b Color.Red Color.Green) Color.Red) 0)) \
+                         (export main))";
+        let mut db = crate::db::Db::load(parse(nullary));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let rs = crate::backend::emit(crate::backend::Target::Rust, &mut db, &layout, None, None)
+            .expect("rust artifact");
+        let rs = String::from_utf8(rs).expect("utf8");
+        assert!(
+            rs.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Color"),
+            "an all-nullary enum must derive PartialEq/Eq so native `==` builds; got:\n{rs}"
+        );
+
+        // A payload-carrying sum stays Clone-only (no `=` defined on it; deriving PartialEq is not gated by
+        // its payloads' capabilities, so it would be unsound to add unconditionally).
+        let payload = "(module m (type Box (Mk Int64) (Nil)) \
+                         (def (unbox (: b Box)) (match b ((Mk n) n) ((Nil) 0))) \
+                         (def (main) (unbox (Mk 42))) \
+                         (export main))";
+        let mut db2 = crate::db::Db::load(parse(payload));
+        let layout2 = crate::layout::compute(&mut db2).expect("layout");
+        let rs2 =
+            crate::backend::emit(crate::backend::Target::Rust, &mut db2, &layout2, None, None)
+                .expect("rust artifact");
+        let rs2 = String::from_utf8(rs2).expect("utf8");
+        assert!(
+            rs2.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum Box"),
+            "a payload-carrying sum stays Clone-only; got:\n{rs2}"
+        );
     }
 
     #[test]

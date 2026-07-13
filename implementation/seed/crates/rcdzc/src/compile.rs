@@ -729,18 +729,48 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // CDZ0101 (an export names an unbound definition — the export-position analogue of an unbound
     // reference), anchored at the `(export …)` clause, with a "did you mean?" over the defined names.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
-    let missing_exports: Vec<(String, StructId)> = db
+    // Capture the NAME occurrence (the `(export NAME)` clause's first element), not just the clause, so a
+    // "did you mean?" can attach a REPLACE fix on the name atom — the same closed-set repair the pragma-key
+    // typo carries above. `occ` is the clause (where the error anchors); `name_occ` is the atom the fix edits.
+    let missing_exports: Vec<(String, StructId, Option<StructId>)> = db
         .exports
         .iter()
         .filter(|e| e.def.is_none())
-        .map(|e| (e.name.clone(), e.occ))
+        .map(|e| {
+            let name_occ = db
+                .ast
+                .as_form(e.occ, "export")
+                .and_then(|tail| tail.first().copied());
+            (e.name.clone(), e.occ, name_occ)
+        })
         .collect();
-    for (name, occ) in missing_exports {
-        let msg = match crate::diag::suggest::nearest(&name, &defined_names) {
-            Some(near) => format!("export `{name}` names no definition — did you mean `{near}`?"),
-            None => format!("export `{name}` names no definition"),
-        };
-        faults.push(Reject::coded(Code::Unbound, msg).at(occ));
+    for (name, occ, name_occ) in missing_exports {
+        match crate::diag::suggest::nearest(&name, &defined_names) {
+            // A near-miss for a defined name — almost always a typo (`computee` for `compute`). Name it AND
+            // carry the concrete repair: REPLACE the export's name atom with the real definition's name. The
+            // candidate pool is the defined names, so the suggestion can never name a def the check would
+            // then reject. Heuristic — the nearest-name match is a guess at intent, not a proof.
+            Some(near) => {
+                let mut reject = Reject::coded(
+                    Code::Unbound,
+                    format!("export `{name}` names no definition — did you mean `{near}`?"),
+                )
+                .at(occ);
+                if let Some(at) = name_occ {
+                    reject = reject.with_fix(crate::diag::Fix::replace_heuristic(at, near));
+                }
+                faults.push(reject);
+            }
+            None => {
+                faults.push(
+                    Reject::coded(
+                        Code::Unbound,
+                        format!("export `{name}` names no definition"),
+                    )
+                    .at(occ),
+                );
+            }
+        }
     }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
     // APPLICATION `(f 1)` for a two-parameter `f`, whose residual parameter type inference never fixed

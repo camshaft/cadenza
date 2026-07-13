@@ -1,5 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.unit recovers a derived unit
+pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
@@ -41,6 +43,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
+pass	a String compound export under a non-main name crosses to the host
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -316,6 +319,7 @@ pass	a linear non-tail recursion over a non-associative operator preserves its e
 pass	a list annotated with the wrong element type is rejected
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
+pass	a list compound export under a non-main name crosses to the host
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
@@ -495,6 +499,7 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
@@ -730,6 +735,7 @@ pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple binding pattern against a non-tuple value is a shape error
 pass	a tuple binding pattern nests to any depth
+pass	a tuple compound export under a non-main name crosses to the host
 pass	a tuple is constructed with positional elements
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 pass	a tuple of two sums is matched with nested constructor patterns
@@ -1179,6 +1185,8 @@ pass	slicing past the end of a byte sequence yields None
 pass	slicing with a negative start yields None
 pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
+pass	splicing a non-list value into a quasiquote is a type error
+pass	splicing an integer literal directly is a type error
 pass	splitting a tuple beyond its arity is rejected
 pass	string concatenation
 pass	string equality
@@ -1453,8 +1461,6 @@ todo	reading the text a printer produced round-trips to an equal value
 todo	record reshaping is subset comparison as explicit projection
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
-todo	splicing a non-list value into a quasiquote is a type error
-todo	splicing an integer literal directly is a type error
 todo	splitting a tuple at a position yields a prefix and a suffix
 todo	splitting a tuple at zero yields an empty prefix
 todo	the AST is a sum type deconstructible by pattern matching

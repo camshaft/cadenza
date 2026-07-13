@@ -1038,6 +1038,12 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     let pow_field = push_atom(ast, Leaf::Name("pow".to_string()));
     let pow_op = ctor_record(ast, "qty-pow");
     children.push(push_list(ast, vec![pow_field, pow_op]));
+    // `unit` — extract a quantity's UNIT as a compile-time unit value: `(Qty.of new (Qty.unit y))` makes
+    // a new quantity in `y`'s unit without re-spelling it. It IS a unit expression (reduces via
+    // `unit_of`, reading `y`'s solved type), so it is used in unit position like `(Unit.base …)`.
+    let unit_field = push_atom(ast, Leaf::Name("unit".to_string()));
+    let unit_op = ctor_record(ast, "qty-unit");
+    children.push(push_list(ast, vec![unit_field, unit_op]));
     push_list(ast, children)
 }
 

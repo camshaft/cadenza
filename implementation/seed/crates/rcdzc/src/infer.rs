@@ -2558,9 +2558,14 @@ fn check_application(
         // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
         // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
         // String; a nominal value never silently compares equal to the untagged shape it was declared
-        // distinct from (`type-system.md` §Nominal Types Are Not Comparable Across Their Boundary), the
-        // same rule the nominal-record-vs-plain-record case pins. Reported HERE for the right code (the
-        // generic scheme-unify below would give the plain CDZ0203); fires on either operand order.
+        // distinct from, the same rule the nominal-record-vs-plain-record case pins. Reported HERE for the
+        // right code (the generic scheme-unify below would give the plain CDZ0203); fires on either operand
+        // order. (A comparison of two DIFFERENT nominal types is likewise rejected — as the generic CDZ0203
+        // type mismatch — since two distinct `decl`s never unify.)
+        //= spec/capabilities/type-system.md#nominal-types-are-not-comparable-across-their-boundary
+        //# A comparison between a nominal value and the underlying structural value of the same shape MUST be rejected by a type-tracking generation, so that a nominal value never silently compares equal to the untagged shape it was declared distinct from.
+        //= spec/capabilities/type-system.md#nominal-types-are-not-comparable-across-their-boundary
+        //# A comparison whose operands are of two different nominal types MUST be rejected by a type-tracking generation, because the purpose of declaring a type nominal is to give its values an identity that is not interchangeable with a same-shape value of another type.
         if matches!(
             (&a, &b),
             (Ty::Symbol, Ty::String) | (Ty::String, Ty::Symbol)
@@ -3540,6 +3545,36 @@ fn collect(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 /// the AST children directly (the resolved form is a decline, carrying no child structure). The `unquote`'s
 /// own OPERANDS are ordinary expressions (`,(+ x 1)`) but they too are inert data until the `Ast` vertical,
 /// so only the quoting-form structure is inspected here, not the operand values.
+/// Whether `ty` is a type the compiler can PROVE is NOT a list — the predicate the `,@` splice-operand
+/// check fires on. A CONSERVATIVE test: it returns `true` only for a concrete non-`List` type (a scalar,
+/// text, tuple, record, map, set, sum, quantity), and `false` for a `List` (the good case) OR for any
+/// type that is not yet determined — an open `Var`, `Any`, or a nominal wrapper whose underlying shape
+/// this walk does not unwrap — so an operand whose type never resolves DECLINES rather than being falsely
+/// rejected as a non-list. "Prove it is wrong, never guess it is wrong."
+fn provably_not_list(ty: &Ty) -> bool {
+    use Ty::*;
+    match ty {
+        // A concrete NON-list type — a splice of it has no elements.
+        Int(_)
+        | Bool
+        | Unit
+        | Record(_)
+        | Tuple(_)
+        | Map(_, _)
+        | Set(_)
+        | Bytes
+        | String
+        | Char
+        | Symbol
+        | Float(_)
+        | Qty { .. }
+        | Sum { .. } => true,
+        // A list is exactly the good case; an open var / `Any` / anything else is not yet provably wrong.
+        List(_) => false,
+        _ => false,
+    }
+}
+
 fn collect_quote_body_syntax(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // An `(unquote e)` / `(unquote-splicing e)` node: either a SYNTAX/arity defect (report its coded
     // reject), or a WELL-FORMED escape genuinely inside a quasiquote — which MUST evaluate its operand
@@ -3562,12 +3597,40 @@ fn collect_quote_body_syntax(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             }
             // A well-formed unquote inside a quasiquote — its operand IS evaluated, so collect its faults.
             _ => {
-                if let Some(&operand) = db
-                    .ast
-                    .as_form(id, db.ast.head_name(id).unwrap())
-                    .and_then(|t| t.first())
-                {
+                // OWN the head + operand before `collect` (which needs `&mut Db`) — a borrowed `head: &str`
+                // / `operand` into `db.ast` would pin `db` immutable across the mutable-borrowing collect.
+                let head = db.ast.head_name(id).unwrap().to_string();
+                let operand = db.ast.as_form(id, &head).and_then(|t| t.first()).copied();
+                if let Some(operand) = operand {
+                    let before = out.len();
                     collect(db, operand, out);
+                    // `,@` (unquote-splicing) splices the ELEMENTS of a LIST into the parent, so its
+                    // operand MUST be a list (`metaprogramming.md` §Quasiquote Constructs AST With
+                    // Selective Evaluation: ",@ evaluates <list-expr> to a LIST and splices its
+                    // elements"). A splice of a PROVABLY non-list value — a scalar, a string, a tuple —
+                    // has no elements to splice, so it is ill-typed (CDZ0201). CONSERVATIVE: only a type
+                    // we can PROVE is not a list rejects; a still-open `Var`/`Any`, or a genuine `List`,
+                    // does not — so the good `,@(list 1 2 3)` case is untouched, and an operand whose type
+                    // never resolves declines (never a false reject). The `,` (unquote) operand embeds as
+                    // ONE element and admits any type, so this check is `,@`-only. Only when the operand
+                    // was itself fault-free (`before == out.len()`) — else the operand's OWN error (an
+                    // unbound name) is the primary one, not a spurious "not a list" on top.
+                    if head == "unquote-splicing" && out.len() == before {
+                        let ty = type_of(db, operand);
+                        if provably_not_list(&ty) {
+                            out.push(
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!(
+                                        "unquote-splicing (,@) splices the elements of a list, but its \
+                                         operand is {} — a value with no elements to splice",
+                                        ty.render_name()
+                                    ),
+                                )
+                                .at(operand),
+                            );
+                        }
+                    }
                 }
                 return;
             }

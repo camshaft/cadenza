@@ -2209,6 +2209,15 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     };
                     base.scaled(num, den)
                 }
+                // `Qty.unit q` — the UNIT of `q`, read off its solved `Ty::Qty`. This is the inverse of
+                // `Qty.of`'s unit argument: a quantity's unit, recovered as a first-class unit value so
+                // `(Qty.of new (Qty.unit y))` reuses `y`'s unit without re-spelling it. The eval→infer
+                // call is the established direction (the operator/width arms already read `type_of`); a
+                // non-quantity argument (its type is not `Ty::Qty`) is not a unit expression → declines.
+                Prim::QtyUnit => match crate::infer::type_of(db, *args.first()?) {
+                    crate::ty::Ty::Qty { unit, .. } => Some(unit),
+                    _ => None,
+                },
                 _ => None,
             }
         }

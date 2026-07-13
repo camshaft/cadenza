@@ -85,6 +85,44 @@
   (input  (Qty.of 3.0 Unit.one))
   (output (: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))))
 
+; Unit extraction — `(Qty.unit q)` recovers a quantity's UNIT as a first-class compile-time unit value,
+; the inverse of `Qty.of`'s unit argument. It lets a program construct another quantity in the SAME unit
+; as an existing one — `(Qty.of new (Qty.unit y))` — without re-spelling the unit expression. The unit is
+; a compile-time value (like `(Unit.base …)`), erased before emission, so `Qty.unit` is used in a unit
+; position, never as a runtime value; the reconstructed quantity is dimensionally checked in full.
+
+(case "Qty.unit recovers a quantity's unit to build another quantity of the same unit"
+  (doc    "`(Qty.of 9.0 (Qty.unit y))` where `y` is a `(Qty Float64 metre)` builds a NEW quantity in the
+           same unit — metre — as `y`, without naming metre again. `Qty.unit` reads the unit off `y`'s
+           solved type and yields it as a unit value, the inverse of the unit `Qty.of` attaches; the
+           result is `(Qty Float64 metre)` with value 9.0. The `make another quantity of the same unit as
+           this one` idiom, composing at the value level.")
+  (input  (let ((y (Qty.of 3.0 (Unit.base #"metre"))))
+            (Qty.of 9.0 (Qty.unit y))))
+  (output (: (Qty.of 9.0 (Unit.base #"metre")) (Qty Float64 (Unit.base #"metre")))))
+
+(case "Qty.unit recovers a derived unit"
+  (doc    "`(Qty.unit (speed))` where `speed` derives metre/second recovers the DERIVED unit — the whole
+           free-abelian-group value, not just a base — so `(Qty.of 10.0 (Qty.unit (speed)))` is a
+           `(Qty Float64 (metre/second))` with value 10.0. Pins that extraction carries a composed unit
+           (a quotient, here a velocity), not only an atomic base.")
+  (input  (do
+            (def (speed)
+              (/ (Qty.of 6.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"second"))))
+            (def (main) (Qty.value (Qty.of 10.0 (Qty.unit (speed)))))
+            (export main)))
+  (output (: 10.0 Float64)))
+
+(case "a quantity built from an extracted unit is dimensionally checked"
+  (doc    "The unit `Qty.unit` yields is a REAL unit, checked like any other: `(+ (Qty.of 1.0 (Qty.unit
+           y)) (Qty.of 2.0 second))` where `y` is a length adds a length (the extracted metre) to a time —
+           incompatible dimensions — so it is CDZ0501, exactly as writing `metre` explicitly would be.
+           Extraction is transparent to the dimensional check; it reuses a unit, it does not escape the
+           checking.")
+  (input  (let ((y (Qty.of 3.0 (Unit.base #"metre"))))
+            (+ (Qty.of 1.0 (Qty.unit y)) (Qty.of 2.0 (Unit.base #"second")))))
+  (error  CDZ0501))
+
 ; ============================================================================================
 ; Addition and subtraction — same dimension required, dimension preserved
 ; ============================================================================================

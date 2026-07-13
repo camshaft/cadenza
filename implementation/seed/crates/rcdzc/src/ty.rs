@@ -545,6 +545,16 @@ pub enum Ty {
     /// (which `type_of` does on every memo read) is a refcount bump, not a deep map copy — a wide
     /// record read field-by-field was O(N²) in map clone. Faithful to the Cadenza port target, which
     /// is ref-counted throughout (a shared immutable value = one refcounted allocation).
+    ///
+    /// Record / [`Tuple`](Ty::Tuple) / [`Sum`](Ty::Sum) are THE structural types — a record of named
+    /// fields, a tuple of positional elements, a sum of named variants. A STRUCTURAL type's identity is
+    /// its SHAPE (its constituents in their defining positions), so two are equal exactly when those
+    /// coincide — the hand-written `PartialEq` compares a record by its field-name→type map, a tuple by
+    /// its ordered element types, a sum by `decl` (structural sums share one synthesized decl per shape).
+    //= spec/capabilities/type-system.md#the-structural-types-are-record-tuple-and-sum
+    //# A program MUST be able to form a structural type — a record of named fields, a tuple of positional elements, or a sum of named variants — whose identity is its shape, equal to any type of the same shape.
+    //= spec/capabilities/type-system.md#the-structural-types-are-record-tuple-and-sum
+    //# A structural type's shape MUST be its constituent types in their defining positions — a record's field names with their types, a tuple's element types in order, a sum's variant names with their payload types — so that two structural types are equal exactly when those constituents coincide.
     Record(std::sync::Arc<std::collections::BTreeMap<crate::resolved::Symbol, Ty>>),
     /// A tuple: a fixed-ARITY POSITIONAL product, each position with its own type. The arity AND the
     /// per-position types ARE the type — a tuple of a different arity, or with a differently-typed
@@ -721,6 +731,14 @@ pub enum Ty {
     /// RECURSIVE nominal's `inner` diverges by derivation path (folded `Ty::Sum{decl}` back-edge vs
     /// unfolded `Ty::Nominal{decl}`), and comparing it would make `Lst != Lst`. Excluding it from equality
     /// is what lets a recursive newtype erase (the μ-type equality problem dissolves).
+    //= spec/capabilities/type-system.md#nominal-is-an-orthogonal-modifier-over-any-structural-type
+    //# A program MUST be able to declare a nominal type by tagging any structural type — record, tuple, or sum — with a name, so that nominal-versus-structural is one orthogonal choice available over every structural type rather than a property of one kind of type.
+    //= spec/capabilities/type-system.md#nominal-is-an-orthogonal-modifier-over-any-structural-type
+    //# A nominal type MUST be represented as its underlying structural value together with a compile-time tag naming the type, so that a nominal type and its underlying structural type are one runtime mechanism and the tag adds nothing to the value's runtime representation.
+    //= spec/capabilities/type-system.md#nominal-is-an-orthogonal-modifier-over-any-structural-type
+    //# A nominal type's identity MUST be its fully-qualified name — the module path in which it is declared together with its declared name — so that its identity is unique across the whole program and does not depend on its shape.
+    //= spec/capabilities/type-system.md#nominal-is-an-orthogonal-modifier-over-any-structural-type
+    //# Two nominal types MUST be distinct whenever their fully-qualified names differ, even when their underlying structures and their declared local names are identical, so that a module cannot forge a value of another module's nominal type by re-declaring a same-shape same-name type.
     Nominal {
         decl: crate::ast::StructId,
         name: String,
