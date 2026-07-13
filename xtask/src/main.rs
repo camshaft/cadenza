@@ -2071,7 +2071,8 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
 // ============================================================================================
 
 /// Run the whole health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
-/// the wasm runtime build, and the behavior gate. Each step's full output is CAPTURED to a log file
+/// the wasm runtime build, the excluded-but-host-checkable `cdz-wasm` crate (fmt/build/test/clippy on
+/// its own manifest), and the behavior gate. Each step's full output is CAPTURED to a log file
 /// rather than flooding the console; the console shows one ✓ per passing step. The first failing step
 /// prints the whole captured log
 /// (so an agent reads it in place instead of re-running with `| tail`) and its path, then exits.
@@ -2107,6 +2108,25 @@ fn check(paths: &Paths, profile: &str) {
         // The runtime builds core/alloc/std from source (deterministic panic=immediate-abort); its
         // build-std is a -Z feature, enabled on the stable pin via RUSTC_BOOTSTRAP.
         &[("RUSTC_BOOTSTRAP", "1")],
+    );
+
+    // cdz-wasm (the browser guide's wasm-bindgen wrapper) is ALSO excluded from the native workspace
+    // (its own `[workspace]`, so a native `cargo build` never compiles wasm-bindgen). That left it
+    // OUTSIDE the gate — a change to its diagnostic/fix marshaling could break the guide with the check
+    // still green. It is `crate-type = ["cdylib", "rlib"]`, so it fmt/clippy/build/test-checks on the
+    // HOST target against its own manifest (no wasm32 / `wasm-pack` needed) — close the gap here, the
+    // same way the wasm runtime's exclusion is closed above. `-D warnings` keeps it clippy-clean too.
+    // Scope every step to `-p cdz-wasm`: cdz-wasm's path-deps reach the native workspace crates, so a
+    // bare `--all`/`--workspace` here would re-check THEM (and trip on the native workspace's own
+    // pre-existing rustfmt drift). `-p cdz-wasm` checks only cdz-wasm's own package.
+    let wasm = paths.seed.join("crates/cdz-wasm");
+    log.step("cdz-wasm-fmt", "cargo fmt -p cdz-wasm --check", &wasm);
+    log.step("cdz-wasm-build", "cargo build -p cdz-wasm", &wasm);
+    log.step("cdz-wasm-test", "cargo test -p cdz-wasm", &wasm);
+    log.step(
+        "cdz-wasm-clippy",
+        "cargo clippy -p cdz-wasm -- -D warnings",
+        &wasm,
     );
 
     // The behavior gate — invoke this same xtask binary. Use `gate --check` (vs the baseline) when a
