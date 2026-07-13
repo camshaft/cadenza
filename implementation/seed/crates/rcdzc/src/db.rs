@@ -404,6 +404,16 @@ pub struct Db {
     /// shadows a built-in by the ordinary lookup precedence.
     pub prelude: BTreeMap<String, StructId>,
 
+    /// The FAMILY-OF-MEASURE registry — maps each named family unit (`"foot"`, `"kilometre"`, `"byte"`)
+    /// to its `(reference-dimension name, scale numerator, scale denominator)`: `"foot"` →
+    /// `("metre", 381, 1250)`, `"minute"` → `("second", 60, 1)` (`units-of-measure.md` §A Dimension
+    /// Groups Interconvertible Units). `(Unit.of #"foot")` consults this to build `Unit.base("metre")
+    /// .scaled(381, 1250)`. The vocabulary is prelude DATA (authored once in `prelude::unit_families`),
+    /// so the layer fixes the MECHANISM, not a privileged in-compiler list. Scales are machine-int
+    /// metadata (all small — the largest is a mile's 201168/125), so a family unit auto-converts over
+    /// Float/Int with no arbitrary-precision arithmetic.
+    pub unit_families: BTreeMap<String, (String, i128, i128)>,
+
     /// PACKAGE LINKAGE — `Some` only for a multi-file package (`DESIGN-package-linking.md`), `None` for
     /// the single-file compile (whose namespace is flat, byte-identical to the pre-linking compiler).
     /// When present it makes name resolution FILE-SCOPED: a bare name in file `f` resolves against
@@ -735,6 +745,7 @@ impl Db {
             def_name_index: def_by_name,
             scope_binders,
             prelude,
+            unit_families: crate::prelude::unit_families(),
             file_scope,
             user_node_count,
             reduce_depth: 0,

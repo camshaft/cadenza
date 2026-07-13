@@ -419,7 +419,14 @@ pub enum Prim {
     /// scale ratio on a `(meta scale)` channel (`(num den)`), which this reads and applies via
     /// `Unit::scaled`. The scale is compile-time metadata (a machine-int ratio), NOT a runtime Rational.
     UnitPrefix,
-    /// `Qty.of` — attach a unit to a numeric value: `∀(T,u). T → u → (Qty T u)`. The result's inner type
+    /// `Unit.of` — name a FAMILY unit: `(Unit.of #"foot")` is a unit of the `length` dimension at foot's
+    /// exact scale to metre (381/1250). Consults a prelude FAMILY REGISTRY (a record mapping each unit
+    /// name to its reference-dimension symbol + scale `(num den)`), so the vocabulary is prelude DATA,
+    /// not a privileged in-compiler list (`units-of-measure.md` #A Dimension Groups Interconvertible
+    /// Units). Builds `Unit.base(dim).scaled(num, den)`. Scales are machine-int metadata (foot 381/1250,
+    /// mile 201168/125 - all small), so a family unit auto-converts over Float/Int with NO bignum.
+    UnitOf,
+    /// `Qty.of` - attach a unit to a numeric value: `∀(T,u). T → u → (Qty T u)`. The result's inner type
     /// is the value argument's type; the result's UNIT is the VALUE of the second argument (a
     /// compile-time unit read by `unit_of`). Erases to the value argument's lowering (the unit is
     /// compile-time-only). The one quantity CONSTRUCTOR.
@@ -554,6 +561,7 @@ impl Prim {
             "unit-div" => Some(Prim::UnitDiv),
             "unit-pow" => Some(Prim::UnitPow),
             "unit-prefix" => Some(Prim::UnitPrefix),
+            "unit-of" => Some(Prim::UnitOf),
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
             "Qty" => Some(Prim::QtyCtor),

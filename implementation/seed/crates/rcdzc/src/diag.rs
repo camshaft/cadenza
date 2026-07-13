@@ -131,6 +131,14 @@ pub enum Code {
     /// dimensional specialization of the annotation conflict: `TypeMismatch` (CDZ0203) names the general
     /// type conflict; this names it when the conflict is dimensional.
     DimensionMismatch,
+    /// A family UNIT is registered more than once with CONFLICTING conversions — the same unit name
+    /// bound to a different reference dimension or a different scale (`units-of-measure.md` #A Unit
+    /// Carries An Exact Scale To Its Dimension's Reference: a unit HAS a scale, singular, so its
+    /// name-to-conversion must be a function). A duplicate that AGREES is harmless; a disagreement is
+    /// this rejection. In the CDZ05xx verification-layer band with the dimensional mismatch. (The
+    /// built-in family table can't hit this — a conflict there is a compiler bug that panics at
+    /// construction; this codes the future USER family-declaration surface's conflict.)
+    UnitConflict,
     /// A ROBUSTNESS decline: a well-formed program the compiler cannot reduce to a component because it
     /// hits a recursion/resource BOUND — an unproductive compile-time recursion (a nullary self-call
     /// `(def (f) (f))` with no base case: following it re-enters the same body without end, and a nullary
@@ -169,6 +177,7 @@ impl Code {
             Code::ClosureEscapesEffect => "CDZ0406",
             Code::IllFormedBinary => "CDZ0220",
             Code::DimensionMismatch => "CDZ0501",
+            Code::UnitConflict => "CDZ0502",
             Code::RecursionBound => "CDZ0999",
         }
     }

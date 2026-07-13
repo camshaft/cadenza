@@ -9611,6 +9611,68 @@ mod match_engine {
     }
 
     #[test]
+    fn a_family_unit_auto_converts_to_the_reference_over_float() {
+        // F2-2: `1 inch + 1 mm` over Float64 — two named FAMILY units of `length` (inch = 127/5000 m, mm
+        // = 1/1000 m) — each converts to the reference `metre` and sums to 127/5000 + 1/1000 = 33/1250 =
+        // 0.0264 m. The family vocabulary is prelude DATA (`Db::unit_families`); the scales are machine-
+        // int metadata, so `Unit.of` families convert over Float with NO bignum. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1.0 ((. Unit of) #\"inch\")) \
+                      ((. Qty of) 1.0 ((. Unit of) #\"millimetre\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an inch+mm family-unit sum compiles and runs"),
+                "main"
+            ),
+            0.0264
+        );
+    }
+
+    #[test]
+    fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
+        // Operator ask: a name→conversion must be a FUNCTION — registering the same unit name with a
+        // DIFFERENT dimension or scale is an error (returns the offending name → CDZ0502 at a future user
+        // family-declaration surface), while a duplicate that AGREES is idempotent. `register_families`
+        // is the gate the built-in table and any user family flow through.
+        use crate::prelude::register_families;
+        // A conflict: `foot` twice with different scales.
+        let conflict = register_families(
+            [
+                ("foot", "metre", 381i128, 1250i128),
+                ("foot", "metre", 1, 3), // a bogus, disagreeing scale
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            conflict.err().as_deref(),
+            Some("foot"),
+            "a name registered with two different conversions is a conflict"
+        );
+        // A conflict on the DIMENSION too (same name, different reference dimension).
+        assert!(
+            register_families([("x", "metre", 1i128, 1i128), ("x", "second", 1, 1)].into_iter())
+                .is_err(),
+            "same name under two dimensions conflicts"
+        );
+        // An AGREEING duplicate is idempotent (harmless), not an error.
+        let ok = register_families(
+            [
+                ("inch", "metre", 127i128, 5000i128),
+                ("inch", "metre", 127, 5000),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            ok.ok().and_then(|m| m.get("inch").cloned()),
+            Some(("metre".to_string(), 127, 5000)),
+            "an agreeing re-registration is idempotent"
+        );
+        // The built-in table itself registers without conflict (it is validated through the same gate).
+        assert!(crate::prelude::unit_families().contains_key("foot"));
+    }
+
+    #[test]
     fn a_prefixed_unit_of_a_different_dimension_still_rejects_cdz0501() {
         // F2-1: a prefix scales WITHIN a dimension, never across — `km + second` is still CDZ0501. Pins
         // that the family/prefix relaxation (auto-convert within a dimension) does not weaken the
@@ -20851,6 +20913,77 @@ mod closure_host_resource {
         assert!(
             err.message.contains("ask.ask"),
             "the rejection should name the escaping effect operation, got: {}",
+            err.message
+        );
+    }
+
+    /// MULTI-EXPORT closures are NOT YET SUPPORTED — a program exporting two closures (or a closure
+    /// alongside another export) declines cleanly with a message NAMING the feature, rather than falling
+    /// through to the scalar multi-export path's generic "type `(-> A B)` has no component boundary
+    /// representation" (which reads as a type error, not an honest not-yet-built Todo). The single-export
+    /// closure escape fires only on `[e]`; N closure exports need a multi-export envelope (one `make` per
+    /// closure export). Pins the honest Todo until that increment lands.
+    #[test]
+    fn multiple_closure_exports_decline_naming_the_feature() {
+        use crate::testkit::parse;
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("two closure exports must DECLINE (multi-export closures not yet built)");
+        assert!(
+            err.message.contains("MORE THAN ONE closure")
+                && err.message.contains("multi-export closure envelope"),
+            "expected the multi-export-closures not-yet-supported message, got: {}",
+            err.message
+        );
+        assert!(
+            err.code.is_none(),
+            "a not-yet-built feature must DECLINE (uncoded), not carry a rejection code: {:?}",
+            err.code
+        );
+    }
+
+    /// The escape check is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose
+    /// result the closure merely CAPTURES does NOT escape and must not be rejected CDZ0406. Here `ask.ask`
+    /// runs in the `let` initializer, at export-execution time INSIDE the `(host (ask) …)` delegation's
+    /// dynamic extent (where it has a home); the returned `(fn (x) (+ x v))` captures the plain result `v`
+    /// and is effect-free. The over-rejection was scanning the WHOLE export body for a `Core::HostCall`
+    /// (catching the `make`-time one); the fix scans only the LIFTED closure bodies (the code that crosses
+    /// the boundary and runs later). This program does not yet RUN (the export-time host-call boundary is
+    /// E2-host WIP, so it declines codeless "not in the host-import set" — grades todo), but the point is
+    /// the COMPILE-TIME outcome must NOT be the CDZ0406 over-rejection. Mirrors the intra-program
+    /// `(handle … (let ((v (E.get))) (fn (x) (+ x v))))`, which compiles.
+    #[test]
+    fn a_build_time_delegated_effect_captured_by_a_closure_is_not_a_cdz0406_escape() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) \
+                   (export main))";
+        let r = crate::compile::compile_component(&crate::codec::encode(&parse(src)));
+        // Whether it compiles or declines on the E2-host boundary, it must NOT be the CDZ0406 escape
+        // over-rejection — the build-time effect is discharged in scope, not escaped.
+        if let Err(d) = &r {
+            assert_ne!(
+                d.code.as_deref(),
+                Some("CDZ0406"),
+                "a build-time delegated effect the closure only captures must NOT be a CDZ0406 escape; \
+                 got: {:?} / {}",
+                d.code,
+                d.message
+            );
+        }
+        // The genuine escape — the effect performed INSIDE a NESTED (curried) returned closure — is still
+        // caught, so the fix did not blind the check to a real escape reachable only through nesting.
+        let nested = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (fn ((: x Int64)) (fn ((: y Int64)) (+ (+ x y) (ask.ask)))))) \
+                   (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(nested)))
+            .expect_err("an effect inside a nested returned closure still escapes");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0406"),
+            "a nested escaping closure must still reject CDZ0406, got: {:?} / {}",
+            err.code,
             err.message
         );
     }
