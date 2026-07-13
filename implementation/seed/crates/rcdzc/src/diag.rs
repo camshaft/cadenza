@@ -269,3 +269,83 @@ impl Reject {
         self.code.is_none()
     }
 }
+
+/// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
+/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
+/// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands
+/// this its candidate set — the names that WOULD have been valid there — and gets back the nearest
+/// plausible typo, or `None` when nothing is close enough (a false suggestion is worse than none: an
+/// agent would apply the wrong edit). Kept in `diag` so resolve/infer/… share one implementation and
+/// one cutoff rather than each rolling its own.
+pub mod suggest {
+    /// Pick the closest of `candidates` to `name` under a length-relative edit-distance cutoff, or
+    /// `None` if none is close enough. The cutoff (`max(1, len/3)`, rustc's `find_best_match_for_name`
+    /// heuristic) keeps a suggestion only when the candidate is a plausible typo: a 3-char name tolerates
+    /// 1 edit, a 9-char name up to 3. Ties break on the smaller distance, then the
+    /// lexicographically-smaller name, so the result is a DETERMINISTIC function of the candidate SET —
+    /// independent of the order they are supplied in (a hash-map iteration order never leaks through).
+    pub fn nearest<I, S>(name: &str, candidates: I) -> Option<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let name_len = name.chars().count();
+        let max_dist = (name_len / 3).max(1);
+        let mut best: Option<(usize, String)> = None;
+        for cand in candidates {
+            let cand = cand.as_ref();
+            // Never suggest the name itself (a shadowed / out-of-scope exact match is not a typo), nor
+            // the wildcard.
+            if cand == name || cand == "_" {
+                continue;
+            }
+            let d = edit_distance(name, cand);
+            if d > max_dist {
+                continue;
+            }
+            let better = match &best {
+                None => true,
+                Some((bd, bn)) => d < *bd || (d == *bd && cand < bn.as_str()),
+            };
+            if better {
+                best = Some((d, cand.to_string()));
+            }
+        }
+        best.map(|(_, n)| n)
+    }
+
+    /// Levenshtein–Damerau edit distance (insertions, deletions, substitutions, and ADJACENT
+    /// TRANSPOSITIONS) between two names, in Unicode scalar values. Transpositions count as one edit so a
+    /// `fodl`→`fold` swap reads as a single typo. O(a·b) time, O(b) space — names are short, so this is
+    /// negligible and only runs on a reject path.
+    pub fn edit_distance(a: &str, b: &str) -> usize {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        if a.is_empty() {
+            return b.len();
+        }
+        if b.is_empty() {
+            return a.len();
+        }
+        // Two rolling rows would suffice for plain Levenshtein; the transposition rule needs the row two
+        // back, so keep three rows.
+        let mut prev2: Vec<usize> = vec![0; b.len() + 1];
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        let mut cur: Vec<usize> = vec![0; b.len() + 1];
+        for i in 1..=a.len() {
+            cur[0] = i;
+            for j in 1..=b.len() {
+                let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+                let mut v = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+                // Adjacent transposition: `a[i-1] a[i-2]` swapped matches `b[j-2] b[j-1]`.
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    v = v.min(prev2[j - 2] + 1);
+                }
+                cur[j] = v;
+            }
+            std::mem::swap(&mut prev2, &mut prev);
+            std::mem::swap(&mut prev, &mut cur);
+        }
+        prev[b.len()]
+    }
+}

@@ -747,6 +747,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesConcat { .. }
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }
+        | Core::MapNew { .. }
+        | Core::MapInsert { .. }
+        | Core::MapLookup { .. }
+        | Core::MapRemove { .. }
+        | Core::MapSize { .. }
+        | Core::BinBuild { .. }
         | Core::Closure { .. }
         | Core::CallClosure { .. }
         | Core::Captured { .. }

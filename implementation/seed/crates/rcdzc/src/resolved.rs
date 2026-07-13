@@ -303,6 +303,51 @@ pub enum Prim {
     /// target width is the module's own, read off the solved type (a narrow width masks after the op).
     WrappingAdd,
     WrappingMul,
+    /// A MAP TYPE CONSTRUCTOR — the `(meta apply)` of the `Map` prelude module. Applying it in TYPE
+    /// position (`(Map Int64 Int64)`) builds the type-value `Ty::Map(key, value)` (used in annotations
+    /// and in the map ops' schemes `∀k v. (Map k v) → …`). TWO type parameters (key then value), unlike
+    /// `List`'s single — the two-parameter companion of `List`/`Tuple`/`Record` type constructors.
+    MapCtor,
+    /// A MAP VALUE CONSTRUCTOR — the `(meta apply)` of the `map` prelude alias, and the lowering target of
+    /// the `(map (k v) …)` literal. Builds a map value from `(key, value)` entry pairs, each key an
+    /// ORDINARY VALUE expression resolved in scope (NOT a compile-time label like a record field): `(let
+    /// ((a 5)) (map (a 1)))` keys by the VALUE 5. HOMOGENEOUS on two axes — all keys unify to one type,
+    /// all values to one — so its type is `Ty::Map(k, v)`. Lowers to `map-empty` + a consuming
+    /// `map-insert` per entry (or const-folds a constant map). Keys are compared by value, so a
+    /// runtime-computed duplicate key overwrites; a compile-time-constant duplicate is a CDZ0201 reject.
+    MapNew,
+    /// `Map.empty` — the empty map VALUE `∀k v. (Map k v)`. The `(meta apply)` of the `empty` field of
+    /// the `Map` module. A value, not a function (like a nullary sum ctor's bare use); lowers to the
+    /// runtime `map-empty` op (or folds to an empty `Core::MapNew`).
+    MapEmpty,
+    /// `Map.insert` — add-or-replace an association, returning the NEW map (functional construction):
+    /// `∀k v. (Map k v) → k → v → (Map k v)`. Lowers to the runtime `map-insert` op (persistent —
+    /// consumes the map handle, returns a new one). Enforces key/value homogeneity against the map's
+    /// solved key/value types (CDZ0201 on a mismatch). Inserting a present key replaces its value.
+    MapInsert,
+    /// `Map.lookup` — the FALLIBLE keyed read `∀k v. (Map k v) → k → (Option v)`: `Some v` when the map
+    /// contains the key, `None` otherwise (collections-and-text.md §Indexing And Lookup Are Fallible —
+    /// the map clause). Lowers to the runtime `map-lookup` op (returns a NULL handle when absent, which
+    /// the backend wraps as the Option, exactly as `List.at` wraps a bounds-checked read). Keys compared
+    /// by value.
+    MapLookup,
+    /// `Map.remove` — drop a key's association, returning the NEW map: `∀k v. (Map k v) → k → (Map k v)`.
+    /// Lowers to the runtime `map-remove` op (persistent — consumes the map handle). Removing an absent
+    /// key yields a map equal to the operand (removal is total, no trap).
+    MapRemove,
+    /// `Map.size` — the number of DISTINCT keys the map associates, an `Int64` (`∀k v. (Map k v) →
+    /// Int64`). Lowers to the runtime `map-size` op (O(1) from the CHAMP root) + an i32→i64 extend. The
+    /// map companion of `List.len`.
+    MapSize,
+    /// `Map.swap` — the value-yielding add: `∀k v. (Map k v) → k → v → (Tuple (Option v) (Map k v))`,
+    /// pairing the prior value (present when the key was associated) with the new map. Lowers as a
+    /// borrow-`map-lookup` (→ Option) paired with a consuming `map-insert` (collections-and-text.md §A Map
+    /// Is Built By Functional Construction — the two-form rule).
+    MapSwap,
+    /// `Map.take` — the value-yielding remove: `∀k v. (Map k v) → k → (Tuple (Option v) (Map k v))`,
+    /// pairing the removed value (present when the key was associated) with the new map. Lowers as a
+    /// borrow-`map-lookup` paired with a consuming `map-remove`. The remove companion of `Map.swap`.
+    MapTake,
 }
 
 impl Prim {
@@ -372,6 +417,15 @@ impl Prim {
             "checked-mul" => Some(Prim::CheckedMul),
             "wrapping-add" => Some(Prim::WrappingAdd),
             "wrapping-mul" => Some(Prim::WrappingMul),
+            "Map" => Some(Prim::MapCtor),
+            "map-new" => Some(Prim::MapNew),
+            "map-empty" => Some(Prim::MapEmpty),
+            "map-insert" => Some(Prim::MapInsert),
+            "map-lookup" => Some(Prim::MapLookup),
+            "map-remove" => Some(Prim::MapRemove),
+            "map-size" => Some(Prim::MapSize),
+            "map-swap" => Some(Prim::MapSwap),
+            "map-take" => Some(Prim::MapTake),
             _ => None,
         }
     }

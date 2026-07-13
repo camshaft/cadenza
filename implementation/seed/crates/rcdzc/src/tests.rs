@@ -5531,6 +5531,103 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
+        // A `(bin …)` whose segment value is a genuine RUNTIME value (an EXPORTED boundary parameter, which
+        // cannot fold) builds a Bytes on the rope heap at run time: `Core::BinBuild` allocs the buffer,
+        // writes each segment's bytes big-endian (`le` reversed), and range-checks each value (trap if out
+        // of range). `main` reads a SCALAR out (a `Bytes.len` or a match round-trip) so no escape is needed.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime bin construction run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> cdz_run::Outcome {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            cdz_run::run(&component(src), &opts).expect("run")
+        };
+        let val = |src: &str, args: &[&str]| -> String {
+            match run(src, args) {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("unexpected trap: {t}"),
+            }
+        };
+        // (Runtime bin MATCHING — decoding a runtime Bytes scrutinee — is a separate unbuilt slice, so
+        // these read the built bytes back with `Bytes.len` / `Bytes.at`, not a `(bin …)` pattern.)
+        // A runtime u16 built + measured: (bin (u16 n)) with n=258 → 2 bytes.
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u16 n)))) (export main))",
+                &["258"]
+            ),
+            "2",
+            "runtime u16 length"
+        );
+        // Big-endian byte order: (bin (u16 258)) = [0x01, 0x02]; read byte 0 → 1 (MSB first).
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (u16 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                &["258"]
+            ),
+            "1",
+            "runtime u16 big-endian MSB"
+        );
+        // Little-endian: (bin (u16 258 le)) = [0x02, 0x01]; byte 0 → 2.
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (u16 n le)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                &["258"]
+            ),
+            "2",
+            "runtime u16 little-endian LSB-first"
+        );
+        // Multi-segment: (u8 a)(u16 b) → 3 bytes.
+        assert_eq!(
+            val(
+                "(module m (def (main (: a Int64) (: b Int64)) ((. Bytes len) (bin (u8 a) (u16 b)))) (export main))",
+                &["7", "258"]
+            ),
+            "3",
+            "runtime multi-segment length"
+        );
+        // A SIGNED i8 of -1 is IN range (two's complement) → byte 0xFF (255), no trap.
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (i8 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                &["-1"]
+            ),
+            "255",
+            "runtime signed i8 -1 → 0xFF"
+        );
+        // Range check: a runtime u8 given 256 has no 8-bit encoding → TRAP (does not truncate to 0).
+        assert!(
+            matches!(
+                run(
+                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
+                    &["256"]
+                ),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a runtime u8 of 256 must trap, not truncate"
+        );
+        // Range check: a runtime u8 given -1 (negative into unsigned) → TRAP.
+        assert!(
+            matches!(
+                run(
+                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
+                    &["-1"]
+                ),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a runtime u8 of -1 must trap"
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
@@ -8454,6 +8551,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_field_on_a_visible_record_suggests_the_nearest_field() {
+        // The record analogue of the unbound-name "did you mean?" — a field typo (`height` → `heigth`)
+        // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
+        // token (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+        let d = expect_error("(. (record (width 10) (height 20)) heigth)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("did you mean `height`?"),
+            "names the near field: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a fix is carried");
+        assert_eq!(fix.replacement, "height");
+        assert!(!fix.verified, "a nearest-field guess is heuristic");
+    }
+
+    #[test]
+    fn a_misspelled_field_on_a_runtime_record_type_suggests_the_nearest_field() {
+        // A RUNTIME record (reached through a def parameter that inlines a record argument) carries a
+        // record TYPE; the field typo is caught on that type and suggested the same way. `get-h`'s body
+        // `(. r heigth)` faults once `r`'s record argument flows in.
+        let src = "(module m (def (get-h r) (. r heigth)) \
+                   (def (main) (get-h (record (width 10) (height 20)))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("height"),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_close_match_carries_no_suggestion() {
+        // No field is within the edit-distance cutoff of `zzzzzz` — the plain "no field" message, no
+        // misleading fix.
+        let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("did you mean"),
+            "no suggestion: {}",
+            d.message
+        );
+        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+    }
+
+    #[test]
     fn returning_a_constant_record_compiles_via_the_resource_escape() {
         // A CONSTANT record returned as the program result now crosses the host boundary as a
         // component-model resource whose `encode()` yields the canonical value form (the escape path,
@@ -9928,6 +10073,60 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wrong_type_variant_payload_is_a_malformed_construction() {
+        // A variant constructor is a single-arity function whose argument is checked against its DECLARED
+        // payload type (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function). A wrong-type
+        // / wrong-arity payload is a MALFORMED construction (CDZ0201, a structural sum-shape violation),
+        // the code the corpus assigns — NOT the generic unify mismatch (CDZ0203) an ordinary function's
+        // argument mismatch gets. The reclassification is on the SAME instantiated-and-substituted unify
+        // the generic application takes, so a GENERIC/nested construction is not over-rejected.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Wrong-type scalar payload (String where Int64 declared), wrong-arity tuple payload → CDZ0201.
+        assert_eq!(
+            code("(type T (Mk Int64)) (def (main) (T.Mk \"x\"))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            code("(type W (Wt (Tuple Int64 Int64))) (def (main) (W.Wt (tuple 1 2 3)))").as_deref(),
+            Some("CDZ0201")
+        );
+        // NO OVER-REJECTION: a GENERIC variant accepts any payload type; a nested construction is fine.
+        assert_eq!(
+            code("(def (main) (match (Some true) ((Some x) (if x 1 0)) (None 0)))"),
+            None
+        );
+        assert_eq!(
+            code("(def (main) (match (Ok (Err 9)) ((Ok (Ok n)) n) ((Ok (Err e)) e) ((Err _) -2)))"),
+            None
+        );
+        // An ordinary (non-constructor) function's argument mismatch stays CDZ0203, not reclassified.
+        assert_eq!(
+            code("(def (main) (if (< 1 true) 1 0))").as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
@@ -10388,6 +10587,35 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a host-delegated perform inside an intra-program handler must compile"
+        );
+    }
+
+    #[test]
+    fn a_host_op_with_a_string_argument_compiles() {
+        // E2h-string: a host op `log.emit : String -> Unit` performed on a CONSTANT string. The string
+        // crosses the boundary as the component `string` (core `(ptr,len)`): the compiler bakes "ready"
+        // into a data segment, imports a shared memory, and the op's canon-lower carries the Memory option
+        // (the shared-memory 2-instance envelope shape). Compiles to a component importing
+        // `log: interface { emit: func(p0: string) }` (verified via the gate → unit + observed log.emit).
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (log.emit \"ready\"))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a host op with a constant string argument must compile"
+        );
+    }
+
+    #[test]
+    fn a_dropped_host_call_in_a_non_final_do_statement_declines() {
+        // E2h: a `(do …)` block lowers to only its LAST form's value, so a host call in a NON-FINAL
+        // statement would be silently dropped. The compiler DECLINES rather than miscompile (drop the
+        // call's side effect). Multi-statement host sequencing is a later increment.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (do (log.emit \"first\") (log.emit \"second\")))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a dropped host call in a non-final do statement must decline, not miscompile"
         );
     }
 
@@ -12547,6 +12775,59 @@ mod stage1 {
               (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
             (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
         assert_eq!(run_closure(src2, 3).unwrap(), "27");
+    }
+
+    #[test]
+    fn a_closure_captures_a_capturing_closure_and_calls_it() {
+        // NESTED CAPTURING CLOSURES: `g = (fn (x) (f x))` captures `f`, and `f = (fn (y) (+ y k))` ITSELF
+        // captures `k`. Inside `g`'s lifted body, `f` is a runtime closure HANDLE read from `g`'s env cell
+        // — NOT the compile-time lambda it was defined from — so `(f x)` must apply via `call_indirect`
+        // (which threads `f`'s OWN env, carrying `k`), not β-reduce. The bug: `head_is_runtime_fn_value`
+        // followed the captured `f` REF through to its original `(fn …)` definition and reported
+        // not-runtime, so `(f x)` mis-lowered — `f`'s handle was read as a scalar and ADDED to `x` instead
+        // of called (a silent MISCOMPILE, wrong value). Fixed by recognizing a captured-ref head as a
+        // runtime fn value. `ap (fn (x) (f (+ x 1))) 2` with `f = (+100)`: g(2)+g(1) = (2+1+100)+(1+1+100)
+        // = 205.
+        let src = "(module m \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: k Int64)) \
+              (let ((f (fn ((: y Int64)) (+ y k)))) \
+                (ap (fn ((: x Int64)) (f (+ x 1))) 2))) (export main))";
+        let Some(r) = run_closure(src, 100) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "205"); // (2+1+100)+(1+1+100)
+        // The simplest form — `g` just forwards to the captured capturing `f` (no wrapping arithmetic):
+        // `ap (fn (x) (f x)) 2` with `f = (+100)` = (2+100)+(1+100) = 203. Pins that the captured closure's
+        // OWN environment (k) is threaded through the nested indirect call.
+        let plain = "(module m \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: k Int64)) \
+              (let ((f (fn ((: y Int64)) (+ y k)))) \
+                (ap (fn ((: x Int64)) (f x)) 2))) (export main))";
+        assert_eq!(run_closure(plain, 100).unwrap(), "203"); // (2+100)+(1+100)
+    }
+
+    #[test]
+    fn a_three_parameter_closure_applies_at_full_arity() {
+        // A THREE-parameter runtime closure applied at full arity through a recursive HOF — the multi-param
+        // lift generalizes past two params. `(fn (a b c) (+ (+ a b) c))` lifts to `(env, a, b, c) ->
+        // result` and applies via one `call_indirect` with all three args. `ap3 g n` sums `(g i i i) =
+        // 3·i` for i = n..1, so with n=3 the total is 3·(3+2+1) = 18.
+        let src = "(module m \
+            (def (ap3 (: g (-> Int64 (-> Int64 (-> Int64 Int64)))) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n n n) (ap3 g (- n 1))))) \
+            (def (main (: n Int64)) (ap3 (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)) n)) \
+            (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "18"); // 3·(3+2+1)
+        assert_eq!(run_closure(src, 4).unwrap(), "30"); // 3·(4+3+2+1)
     }
 
     #[test]

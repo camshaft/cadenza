@@ -164,9 +164,28 @@ pub fn emit(
         .iter()
         .map(|h| (h.effect.clone(), h.op.clone()))
         .collect();
+    // The host-call STRING constants + their data-segment offsets (E2h-string): a host call passing a
+    // `string` arg emits `(ptr, len)` pointing into the program's memory, where the string's bytes lie.
+    // Collect each distinct constant string a `Core::HostCall` passes and assign a running byte offset
+    // (each string laid contiguously). Empty when no host call passes a string (the scalar shape).
+    let mut host_strings: Vec<(String, u32)> = Vec::new();
+    let mut next_offset: u32 = 0;
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let mut strs = Vec::new();
+        collect_host_arg_strings(db, body, &mut strs);
+        for s in strs {
+            if !host_strings.iter().any(|(v, _)| *v == s) {
+                let len = s.len() as u32;
+                host_strings.push((s, next_offset));
+                next_offset += len;
+            }
+        }
+    }
     let layout = layout
         .with_import_base((imports.len() + host_imports.len()) as u32)
-        .with_host_order(host_order);
+        .with_host_order(host_order)
+        .with_host_strings(host_strings);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
@@ -334,7 +353,14 @@ pub fn emit(
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
-        return Ok(envelope::assemble_host(&core, &boundary, &iface, &host_fns));
+        // A host op with a STRING parameter needs the shared-memory shape (the `(ptr,len)` a `string`
+        // lowers to is read from a memory both the program and the op's canon-lower bind); a scalar-only
+        // host set takes the memoryless shape (byte-identical to E2h-2).
+        return Ok(if host::set_needs_memory(&host_imports) {
+            envelope::assemble_host_mem(&core, &boundary, &iface, &host_fns)
+        } else {
+            envelope::assemble_host(&core, &boundary, &iface, &host_fns)
+        });
     }
 
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
@@ -346,17 +372,48 @@ pub fn emit(
 }
 
 /// The component functype item (`0x40 <params> <result>`) for a host op — its parameter and result
-/// COMPONENT valtype bytes (`AbiValType::comp_byte`, the faithful boundary primitives). Params are NAMED
-/// (`p0`, `p1`, …) as the component model requires; a `Unit` domain/result was already elided when the
-/// `HostImport` was collected, so `params`/`result` hold only scalar slots.
+/// COMPONENT valtype bytes (the faithful boundary primitives). Params are NAMED (`p0`, `p1`, …) as the
+/// component model requires. A SCALAR param is its `AbiValType::comp_byte`; a STRING param is the
+/// component `string` primitive (`COMP_STRING`). A `Unit` domain/result was already elided.
+/// Collect the CONSTANT string values a `Core::HostCall` passes as a `string` argument, in encounter
+/// order (E2h-string). Each becomes a data-segment entry the arg emit points `(ptr,len)` at. A non-string
+/// arg is ignored; the walk descends every child so a host call nested anywhere is found. Mirrors
+/// `host::collect_host_imports`' descent but gathers the arg strings rather than the op signatures.
+fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<String>) {
+    use crate::core::Core;
+    match crate::lower::core_of(db, id) {
+        Core::HostCall { args, .. } => {
+            for a in &args {
+                if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {
+                    out.push(s);
+                }
+            }
+            for a in args {
+                collect_host_arg_strings(db, a, out);
+            }
+        }
+        _ => {
+            if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
+                for c in children {
+                    collect_host_arg_strings(db, c, out);
+                }
+            }
+        }
+    }
+}
+
 fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
+    use host::HostParam;
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
     let mut param_items = Vec::new();
     for (i, p) in h.params.iter().enumerate() {
         let pname = format!("p{i}");
         param_items.extend_from_slice(&(pname.len() as u8).to_le_bytes());
         param_items.extend_from_slice(pname.as_bytes());
-        param_items.push(p.comp_byte());
+        param_items.push(match p {
+            HostParam::Scalar(v) => v.comp_byte(),
+            HostParam::Str => wasm_abi::COMP_STRING,
+        });
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
     match h.result {

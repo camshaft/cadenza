@@ -176,6 +176,14 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     let elem = type_in_env(db, args[0], env)?;
                     Some(Ty::List(Box::new(elem)))
                 }
+                // `(Map k v)` inside a type-lambda — key and value reduced under the env (so `k`/`v`
+                // become their type variables), then `Ty::Map(key, value)`. This is what makes a `Map`
+                // op's `(meta t)` = `(fn (k v) (-> (Map k v) …))` read as the scheme `∀k v. (Map k v) → …`.
+                Prim::MapCtor if args.len() == 2 => {
+                    let key = type_in_env(db, args[0], env)?;
+                    let value = type_in_env(db, args[1], env)?;
+                    Some(Ty::Map(Box::new(key), Box::new(value)))
+                }
                 // A GENERIC SUM application `(Option a)` inside a type-lambda — each arg reduced under
                 // the env (so `a` becomes its type variable), then `Ty::Sum{decl, args}`. This is what
                 // makes a generic variant ctor's `(meta t)` = `(fn (a) (-> a (Option a)))` read as the
@@ -1186,6 +1194,24 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
     }
 }
 
+/// The field NAMES a member-access operand offers — the candidate set a "no field `x`; did you mean
+/// `y`?" suggestion draws from (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+/// Fix). Reduces the operand exactly as [`member_value`] does: if it reduces to a compile-time-visible
+/// record, its field names; otherwise the operand's record TYPE's field names (a runtime record — a
+/// call result / `if` selection). Empty when the operand is not a record at all (a non-record operand
+/// is a different fault, "member access requires a record", with no field to suggest).
+pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
+    if let Some(rec) = reduce_to_record_id(db, operand)
+        && let Resolved::Record { fields } = resolved_of(db, rec)
+    {
+        return fields.keys().map(|k| k.name.clone()).collect();
+    }
+    match crate::infer::type_of(db, operand) {
+        crate::ty::Ty::Record(fields) => fields.keys().map(|k| k.name.clone()).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The sorted-position index of field `key` in a RUNTIME record operand — one whose value does not
 /// reduce to a compile-time-visible record (returned from a call, selected by an `if`) but whose TYPE
 /// is a record carrying the field. `None` if the operand is not a record type, or is a record type
@@ -1460,6 +1486,19 @@ pub fn reduce_ctor(
             let list_ty = crate::ty::Ty::List(Box::new(elem));
             trace!(target: "rcdzc::eval", ty = %list_ty.render_name(), "ctor (List): built list type-value");
             Ok(encode_typeval(db, &list_ty))
+        }
+        // `Map` — a KEY type and a VALUE type: `(Map Int64 Int64)` builds `Ty::Map(Int64, Int64)`, the
+        // type an annotation `(: m (Map K V))` checks against. Two arguments, unlike `List`'s one.
+        Prim::MapCtor => {
+            if args.len() != 2 {
+                return Err("Map takes a key type and a value type".to_string());
+            }
+            let key = typeval_of(db, args[0]).ok_or_else(|| "Map key is not a type".to_string())?;
+            let value =
+                typeval_of(db, args[1]).ok_or_else(|| "Map value is not a type".to_string())?;
+            let map_ty = crate::ty::Ty::Map(Box::new(key), Box::new(value));
+            trace!(target: "rcdzc::eval", ty = %map_ty.render_name(), "ctor (Map): built map type-value");
+            Ok(encode_typeval(db, &map_ty))
         }
         // `Record` — VARIADIC over `(name type)` field pairs: each arg is a raw `(name T)` list; read the
         // field name (first child) and reduce the type (second child) to a `Ty`. The field-name SET +

@@ -310,6 +310,8 @@ impl<'a> Printer<'a> {
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
+                "export" if self.is_export_shape(args) => return self.print_export(args),
+                "import" if self.is_import_shape(args) => return self.print_import(args),
                 // The compound-value literals (`list`/`tuple`/`record`/`map`) are STRING-headed now and
                 // handled by the `head_ctor` dispatch above — a NAME head of the same spelling is an
                 // ordinary application of the shadowable alias (or a user binding), rendered as a call.
@@ -1086,16 +1088,68 @@ impl<'a> Printer<'a> {
         self.bracketed("(", ")", false, elems, |p, e| p.expr(e, 0));
     }
 
-    /// `{ name = e, … }`.
+    /// `{ name = e, … }`, with field SHORTHAND: a field whose value is a bare-name reference to the
+    /// field's own name (`(x x)`) prints as just `{ x }` (the inverse of the reader's `{ x }` → `(x x)`
+    /// pun). A field with any other value prints the full `name = value`.
     fn print_record(&mut self, fields: &[StructId]) {
         self.bracketed("{", "}", true, fields, |p, field| {
             if let Struct::List(pair) = p.a.get(field) {
                 let (name, value) = (pair[0], pair[1]);
                 p.expr(name, 0);
-                p.doc.word(" = ");
-                p.expr(value, 0);
+                if !p.is_field_pun(name, value) {
+                    p.doc.word(" = ");
+                    p.expr(value, 0);
+                }
             }
         });
+    }
+
+    /// Whether a record field `(name value)` is a SHORTHAND pun — `value` is a bare-`Name` reference
+    /// spelled identically to `name` (also a bare `Name`), so `{ name = value }` collapses to `{ name }`.
+    fn is_field_pun(&self, name: StructId, value: StructId) -> bool {
+        matches!((self.a.as_name(name), self.a.as_name(value)), (Some(n), Some(v)) if n == v)
+    }
+
+    /// `export { name, … }` — the module's public surface as a brace-delimited name list. `args` are
+    /// the `(export name…)` form's exported names (all bare names, per `is_export_shape`).
+    fn print_export(&mut self, args: &[StructId]) {
+        self.doc.word("export ");
+        self.print_name_group(args);
+    }
+
+    /// `import { name, … } from "path"` — brings a sibling module's public names into scope. `args`
+    /// is `["path" (name…)]` (per `is_import_shape`): the path string then the name-list occurrence.
+    fn print_import(&mut self, args: &[StructId]) {
+        let names = match self.a.get(args[1]) {
+            Struct::List(items) => items.clone(),
+            _ => return,
+        };
+        self.doc.word("import ");
+        self.print_name_group(&names);
+        self.doc.word(" from ");
+        self.expr(args[0], 0); // the path string literal
+    }
+
+    /// A brace-delimited comma-separated name group `{ a, b, … }`, all-or-nothing breaking — the
+    /// surface shared by `export` and `import`. Each element prints as a bare (or escaped) name.
+    fn print_name_group(&mut self, names: &[StructId]) {
+        self.bracketed("{", "}", true, names, |p, name| p.expr(name, 0));
+    }
+
+    /// An `(export name…)` the `export { … }` surface handles: at least one arg, every arg a bare
+    /// name. A malformed export (a non-name arg) falls back to the generic call form so it round-trips.
+    fn is_export_shape(&self, args: &[StructId]) -> bool {
+        !args.is_empty() && args.iter().all(|&a| self.a.as_name(a).is_some())
+    }
+
+    /// An `(import "path" (name…))` the `import { … } from "path"` surface handles: a string path, a
+    /// name-LIST of bare names. Any other shape (e.g. the alias form `(import "path" alias)`) falls
+    /// back to the generic call form so it still round-trips.
+    fn is_import_shape(&self, args: &[StructId]) -> bool {
+        args.len() == 2
+            && self.is_string(args[0])
+            && matches!(self.a.get(args[1]), Struct::List(names)
+                if !names.is_empty() && names.iter().all(|&n| self.a.as_name(n).is_some()))
     }
 
     /// `#{ key = v, … }`.
@@ -1891,6 +1945,76 @@ mod tests {
                 "{src} -> {printed} did not round-trip"
             );
         }
+    }
+
+    #[test]
+    fn record_field_shorthand() {
+        // `{ x }` puns to `(record (x x))`; the printer renders a same-name field back as `{ x }`.
+        assert_eq!(print(&sexpr::read("(record (x x))").unwrap(), 80), "{ x }");
+        assert_eq!(
+            print(&sexpr::read("(record (x x) (y 2))").unwrap(), 80),
+            "{ x, y = 2 }"
+        );
+        // a non-punned field keeps `name = value`.
+        assert_eq!(
+            print(&sexpr::read("(record (x 1))").unwrap(), 80),
+            "{ x = 1 }"
+        );
+        // parse `{ x }` → the pun (a STRING-headed record primitive, per the reader's literal desugar).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("{ x }").arenas),
+            "(\"record\" (x x))"
+        );
+        assert_eq!(assert_roundtrip("{ x }", 80), "{ x }");
+        assert_eq!(assert_roundtrip("{ x = x }", 80), "{ x }");
+        assert_eq!(assert_roundtrip("{ x, y = 2 }", 80), "{ x, y = 2 }");
+    }
+
+    #[test]
+    fn export_brace_surface() {
+        // `(export name…)` renders as a brace name group; `export { … }` parses back to it.
+        assert_eq!(
+            print(&sexpr::read("(export main)").unwrap(), 80),
+            "export { main }"
+        );
+        assert_eq!(
+            print(&sexpr::read("(export main helper)").unwrap(), 80),
+            "export { main, helper }"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("export { main, helper }").arenas),
+            "(export main helper)"
+        );
+        assert_eq!(
+            assert_roundtrip("export { main, helper }", 80),
+            "export { main, helper }"
+        );
+    }
+
+    #[test]
+    fn import_brace_from_surface() {
+        // `(import "path" (name…))` renders `import { name, … } from "path"`; parses back to it.
+        assert_eq!(
+            print(&sexpr::read("(import \"lib\" (helper))").unwrap(), 80),
+            "import { helper } from \"lib\""
+        );
+        assert_eq!(
+            print(&sexpr::read("(import \"lib\" (helper other))").unwrap(), 80),
+            "import { helper, other } from \"lib\""
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("import { helper, other } from \"lib\"").arenas),
+            "(import \"lib\" (helper other))"
+        );
+        assert_eq!(
+            assert_roundtrip("import { helper, other } from \"lib\"", 80),
+            "import { helper, other } from \"lib\""
+        );
+        // `from` is contextual — still usable as an ordinary name elsewhere.
+        assert_eq!(
+            assert_roundtrip("let from = 5 in\nfrom", 80),
+            "let from = 5 in\nfrom"
+        );
     }
 
     #[test]
