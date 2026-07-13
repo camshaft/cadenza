@@ -6173,6 +6173,27 @@ mod match_engine {
     }
 
     #[test]
+    fn an_empty_quote_is_cdz0201_not_an_unbound_name() {
+        // 07-type-system "an empty quote is rejected, not a crash": `(quote)` with no operand is
+        // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
+        // well-formedness defect), NOT the CDZ0101 unbound-name error a non-grammar `quote` head produced,
+        // and never panics reaching for the absent quoted node. `quote` is a grammar head now, so this is
+        // an arity check; a well-formed `(quote FORM)` still DECLINES (real quotation is the
+        // metaprogramming vertical), a Todo — a codeless decline, verified below.
+        assert_eq!(
+            reject_code("(module m (def (main) (quote)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // A one-operand `(quote FORM)` is well-formed but not yet built → a codeless DECLINE (not CDZ0201,
+        // and no longer the CDZ0101 unbound-name error).
+        assert_eq!(
+            reject_code("(module m (def (main) (quote 5)) (export main))"),
+            None,
+            "a well-formed (quote FORM) declines (a Todo), it is not a coded rejection"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
@@ -21119,7 +21140,11 @@ mod closure_host_resource {
             inner_idx,
             [
                 ("import-type-t", ComponentExportKind::Type, res_ty),
-                ("import-func-make-inc", ComponentExportKind::Func, make_inc_comp),
+                (
+                    "import-func-make-inc",
+                    ComponentExportKind::Func,
+                    make_inc_comp,
+                ),
                 (
                     "import-func-make-triple",
                     ComponentExportKind::Func,
@@ -21188,7 +21213,9 @@ mod closure_host_resource {
 
         // make-triple() → a handle; the SAME shared call dispatches (* x 3), so call(_, 5) = 15.
         let mut h2 = [Val::Bool(false)];
-        make_triple.call(&mut store, &[], &mut h2).expect("make-triple");
+        make_triple
+            .call(&mut store, &[], &mut h2)
+            .expect("make-triple");
         make_triple.post_return(&mut store).expect("post_return");
         let mut out2 = [Val::Bool(false)];
         call.call(&mut store, &[h2[0].clone(), Val::S64(5)], &mut out2)
