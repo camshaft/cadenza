@@ -1839,17 +1839,16 @@ impl ComposedRuntime {
     }
 
     /// Drive a RESOURCE-ESCAPE program to completion: reach `make`/`encode` inside the `cadenza:run/run`
-    /// instance, call `make()` → a resource handle, then `encode(handle)` → the value bytes. `encode`
-    /// takes `self: own<t>`, so it CONSUMES the resource and OWNS the last reference to the compound's
-    /// heap handle — so `encode` itself calls `heap.drop(rep)` after the walk (see
-    /// `serialize::encode_walk_body`), reclaiming it and balancing `make`'s `arr-alloc`. So after the
-    /// `make`/`encode` round-trip NO heap cell remains live — `live_objects()` reads 0. (We do NOT rely
-    /// on the resource dtor / a host `resource_drop`: `resource.rep` on a BORROWED self traps in wasmtime
-    /// 37, so `encode` keeps `own` + releases the rep itself — the sound release point for the nullary
-    /// escape, which always calls encode. See [[rcdzc-r1-resource-encode-linking-findings]].) Returns the
-    /// decoded value text.
+    /// instance, call `make()` → a resource handle, `encode(handle)` → the value bytes, then DROP the
+    /// handle so the resource dtor fires. `encode` now takes `self: borrow<t>` — it READS self without
+    /// consuming (using the borrow's rep DIRECTLY, no `resource.rep`), so the host keeps ownership and the
+    /// resource stays live (repeatable). Reclamation is the resource DTOR's job: dropping the handle calls
+    /// `t-dtor(rep)` → `heap.drop(rep)`, reclaiming the compound's rc handle (cascading to its boxed
+    /// elements) and balancing `make`'s `arr-alloc`. So after make/encode/drop NO heap cell remains live —
+    /// `live_objects()` reads 0. See [[rcdzc-r1-resource-encode-linking-findings]] (the borrow correction).
+    /// Returns the decoded value text.
     fn run_escape_and_drop(&mut self) -> String {
-        use wasmtime::component::Val;
+        use wasmtime::component::{ResourceAny, Val};
         let iface = self
             .program
             .get_export_index(&mut self.store, None, "cadenza:run/run")
@@ -1876,7 +1875,7 @@ impl ComposedRuntime {
         let mut out = [Val::Bool(false)];
         encode
             .call(&mut self.store, &handle, &mut out)
-            .expect("encode"); // consumes the own<t>
+            .expect("encode"); // BORROWS self — the handle stays owned by the host
         encode.post_return(&mut self.store).expect("encode post");
         let bytes: Vec<u8> = match &out[0] {
             Val::List(items) => items
@@ -1889,7 +1888,16 @@ impl ComposedRuntime {
             o => panic!("expected list<u8>, got {o:?}"),
         };
         let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode value form");
-        cadenza_syntax::sexpr::print(&arenas).trim().to_string()
+        let text = cadenza_syntax::sexpr::print(&arenas).trim().to_string();
+        // DROP the still-owned resource handle → the dtor runs `heap.drop(rep)`, reclaiming the compound.
+        if let Val::Resource(r) = handle[0] {
+            let r: ResourceAny = r;
+            r.resource_drop(&mut self.store)
+                .expect("resource drop fires the dtor");
+        } else {
+            panic!("make did not return a resource handle");
+        }
+        text
     }
 }
 
@@ -2096,12 +2104,12 @@ fn a_recursive_list_fold_leaks_every_node_known_gap() {
 }
 
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
-/// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
-/// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
-/// boxed elements) and balancing `make`'s `arr-alloc`. Composes the debug-counters runtime, runs the
-/// recursive-tuple escape, and reads `live-objects` → 0. `#[ignore]` — needs `xtask build` to have
-/// populated the store (run with `-- --ignored`). (This was the R2 leak bug; the fix is encode-owns-and-
-/// drops, NOT a resource dtor + borrow — `resource.rep` on a borrow traps in wasmtime 37, see
+/// heap cells after the `make`/`encode`/DROP round-trip — `encode` now BORROWS self (reads without
+/// consuming), so reclamation is the resource DTOR's job: dropping the handle runs `t-dtor(rep)` →
+/// `heap.drop(rep)`, reclaiming the compound's rc handle (cascading to its boxed elements) and balancing
+/// `make`'s `arr-alloc`. Composes the debug-counters runtime, runs the recursive-tuple escape + drop, and
+/// reads `live-objects` → 0. `#[ignore]` — needs `xtask build` to have populated the store (run with
+/// `-- --ignored`). (The borrow migration replaced the earlier encode-owns-and-drops workaround; see
 /// [[rcdzc-r1-resource-encode-linking-findings]].)
 #[test]
 #[ignore]
@@ -21151,8 +21159,10 @@ mod r2_runtime_resource {
     }
 
     /// The INNER re-export component (identical to R1's — imports the abstract resource + funcs, re-
-    /// exports the resource directly + the funcs against it). Reused so the combined shape publishes
-    /// `cadenza:run/run` the same way.
+    /// exports the resource directly + the funcs against it). The runtime resource path now uses the
+    /// BORROW inner (`inner_reexport_component_borrow`); this OWN-encode variant is kept as the reference
+    /// for the own shape.
+    #[allow(dead_code)]
     fn inner_reexport_component() -> wasm_encoder::ComponentBuilder {
         use wasm_encoder::*;
         let mut c = ComponentBuilder::default();
@@ -21280,18 +21290,22 @@ mod r2_runtime_resource {
         let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
         let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
 
-        // (5) lift make/encode against the internal resource type (both `own<t>` self for now — the
-        // `borrow<t>` migration is the R2-dtor follow-up).
+        // (5) lift make against `own<t>` (make PRODUCES the owned handle) and encode against `borrow<t>`
+        // (encode READS self without consuming — the host keeps ownership, drops afterward → the dtor
+        // reclaims the rep, and the resource is repeatable). The core `t-encode` uses the borrow's rep
+        // DIRECTLY (no resource.rep), matching `RepSource::Borrow` in the production serializer.
         let (own_t, odef) = c.type_defined();
         odef.own(res_ty);
         let (make_ty, mut enc) = c.type_function();
         enc.params::<[(&str, ComponentValType); 0], _>([])
             .result(Some(ComponentValType::Type(own_t)));
         let make_comp = c.lift_func(make_core, make_ty, []);
+        let (borrow_t, bdef) = c.type_defined();
+        bdef.borrow(res_ty);
         let (list_u8, ldef) = c.type_defined();
         ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
         let (encode_ty, mut enc2) = c.type_function();
-        enc2.params([("self", ComponentValType::Type(own_t))])
+        enc2.params([("self", ComponentValType::Type(borrow_t))])
             .result(Some(ComponentValType::Type(list_u8)));
         let encode_comp = c.lift_func(
             encode_core,
@@ -21302,8 +21316,9 @@ mod r2_runtime_resource {
             ],
         );
 
-        // (6) inner re-export component → the `cadenza:run/run` instance.
-        let inner_idx = c.component(inner_reexport_component());
+        // (6) inner re-export component (BORROW variant — re-types encode against borrow<t>) → the
+        // `cadenza:run/run` instance.
+        let inner_idx = c.component(inner_reexport_component_borrow());
         let inst2 = c.instantiate(
             inner_idx,
             [
@@ -21352,10 +21367,11 @@ mod r2_runtime_resource {
     #[test]
     fn a_flat_runtime_tuple_walks_and_crosses() {
         // Build `(tuple 3 1)` on the value heap, escape it as a resource, walk it in encode(), decode →
-        // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip.
+        // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip. `run_composed`
+        // wraps the BORROW envelope now, so the core must be the borrow walker (rep = param, no drop).
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
-        let core = walker_core(&tpl, &[3, 1]);
+        let core = walker_core_borrow(&tpl, &[3, 1]);
         if let Some(text) = run_composed(&core) {
             assert_eq!(text, "(: (tuple 3 1) (Tuple Int64 Int64))");
         } else {
@@ -21368,7 +21384,7 @@ mod r2_runtime_resource {
         // A negative element exercises the NEG kind-byte flip + absolute-magnitude write in the walker.
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
-        let core = walker_core(&tpl, &[-5, 7]);
+        let core = walker_core_borrow(&tpl, &[-5, 7]);
         if let Some(text) = run_composed(&core) {
             assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
         } else {

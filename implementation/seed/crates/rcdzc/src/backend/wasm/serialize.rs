@@ -1094,22 +1094,27 @@ pub fn runtime_resource_core_module_form(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    // t-encode(handle): recover the heap rep, then either walk the one template's holes (flat) or
-    // switch on `sum-disc` and walk the matching variant's (sum).
+    // t-encode(self: BORROW<t>): the canonical ABI passes the heap REP directly as the param (a borrow is
+    // not a table index — wasmtime `lift_borrow` returns the rep), so the walker uses `RepSource::Borrow`
+    // (no `resource.rep`, no reclaiming drop — the host keeps ownership and the dtor reclaims on drop, so
+    // the resource is repeatable). `resource-rep` stays imported (index math unchanged) but is now unused
+    // by `t-encode` — only `make` uses `resource-new`. [[rcdzc-r1-resource-encode-linking-findings]].
+    let _ = f_rrep; // borrow: the rep is the param, so resource.rep is not called
+    let rep_src = RepSource::Borrow;
     let encode_body = match &form {
         EscapeForm::Flat(t) => encode_walk_body(
             t,
             placed[0].byte_off,
             placed[0].ret_off,
-            f_rrep,
+            rep_src,
             &import_index,
         ),
         EscapeForm::Sum(s) => {
-            encode_sum_walk_body(&s.variants, &placed_pairs(&placed), f_rrep, &import_index)
+            encode_sum_walk_body(&s.variants, &placed_pairs(&placed), rep_src, &import_index)
         }
-        EscapeForm::RuntimeBytes(form) => encode_bytes_walk_body(form, f_rrep, &import_index),
+        EscapeForm::RuntimeBytes(form) => encode_bytes_walk_body(form, rep_src, &import_index),
         EscapeForm::RecursiveSum(desc) => {
-            encode_recursive_sum_walk_body(desc, f_rrep, &import_index)
+            encode_recursive_sum_walk_body(desc, rep_src, &import_index)
         }
     };
     code_items.extend_from_slice(&encode_body);
@@ -1293,7 +1298,10 @@ pub fn multi_closure_resource_core_module(
         uleb128((make_type_base + i) as u64, &mut func_items);
     }
     uleb128(call_type_idx as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + nmk + 1, &func_items));
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + nmk + 1, &func_items),
+    );
     let make_abs_base = (defined_type_base + n) as u32; // first make's core func index
     let call_abs = make_abs_base + nmk as u32;
 
@@ -1397,9 +1405,15 @@ pub fn multi_closure_resource_core_module(
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);
         inner.push(op::CALL);
-        uleb128(*import_index.get("arr-get").expect("arr-get imported") as u64, &mut inner);
+        uleb128(
+            *import_index.get("arr-get").expect("arr-get imported") as u64,
+            &mut inner,
+        );
         inner.push(op::CALL);
-        uleb128(*import_index.get("get-int").expect("get-int imported") as u64, &mut inner);
+        uleb128(
+            *import_index.get("get-int").expect("get-int imported") as u64,
+            &mut inner,
+        );
         inner.push(op::I32_WRAP_I64);
         inner.push(op::CALL_INDIRECT);
         uleb128(lifted_type_idx as u64, &mut inner);
@@ -1414,7 +1428,12 @@ pub fn multi_closure_resource_core_module(
         inner.push(op::LOCAL_GET);
         uleb128(cell_local as u64, &mut inner);
         inner.push(op::CALL);
-        uleb128(*import_index.get("drop").expect("drop imported for the closure-cell release") as u64, &mut inner);
+        uleb128(
+            *import_index
+                .get("drop")
+                .expect("drop imported for the closure-cell release") as u64,
+            &mut inner,
+        );
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);
@@ -1602,10 +1621,7 @@ pub fn distinct_sig_resource_core_module(
                 items.extend_from_slice(&export(&mk.export_name, make_abs_base + make_i));
                 make_i += 1;
             }
-            items.extend_from_slice(&export(
-                &format!("call-g{gi}"),
-                call_abs_base + gi as u32,
-            ));
+            items.extend_from_slice(&export(&format!("call-g{gi}"), call_abs_base + gi as u32));
         }
         section(
             wasm_abi::CORE_SEC_EXPORT,
@@ -1793,7 +1809,11 @@ pub fn roundtrip_resource_core_module(
     }
     let consume_type_base = make_type_base + nmk;
     for c in consumers {
-        let params: Vec<u8> = c.params.iter().map(|p| vt_byte(consume_param_vt(p))).collect();
+        let params: Vec<u8> = c
+            .params
+            .iter()
+            .map(|p| vt_byte(consume_param_vt(p)))
+            .collect();
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(params.len(), &params));
         t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));
@@ -1881,10 +1901,7 @@ pub fn roundtrip_resource_core_module(
                 consume_abs_base + i as u32,
             ));
         }
-        section(
-            wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(nmk + ncons, &items),
-        )
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(nmk + ncons, &items))
     };
 
     // ── Code section ── defined bodies, then make wrappers, then consumer wrappers.
@@ -1965,7 +1982,12 @@ pub fn roundtrip_resource_core_module(
             inner.push(op::LOCAL_GET);
             uleb128(*cell as u64, &mut inner);
             inner.push(op::CALL);
-            uleb128(*import_index.get("drop").expect("drop imported for the closure-cell release") as u64, &mut inner);
+            uleb128(
+                *import_index
+                    .get("drop")
+                    .expect("drop imported for the closure-cell release") as u64,
+                &mut inner,
+            );
         }
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
@@ -2274,19 +2296,75 @@ pub fn distinct_sig_roundtrip_core_module(
 /// `resource.rep(handle)` (core func `f_rrep`), then for each template hole walks its `arr-get` path
 /// from the rep, reads the leaf (`get-int`/`get-bool`), and writes its bytes into the template (at mem
 /// offset 0, doubling as the output buffer); returns the `(ptr=0, len)` return area at `ret_off`. The
+/// How the `t-encode`/walk body recovers the heap REP from its `self` param, and whether it reclaims the
+/// handle. Two receiver shapes:
+///  * `Own(f_rrep)` — `encode` takes `own<t>`: `self` is a resource-table INDEX, so the rep is
+///    `resource.rep(self)` (core func `f_rrep`), and encode OWNS the handle so it must `heap.drop(rep)` to
+///    reclaim it (the constant-escape shape, whose resource carries no live heap handle, still uses this —
+///    a drop of a baked rep is harmless).
+///  * `Borrow` — `encode` takes `borrow<t>`: the canonical ABI's `lift_borrow` hands the guest the REP
+///    DIRECTLY as the param (NOT a table index; wasmtime `resource_lift_borrow` returns `rep`), so the rep
+///    IS `self` and there is NO `resource.rep`. Encode does NOT own the handle — the host keeps it and
+///    drops it after the call (firing the dtor) — so encode must NOT drop. The value survives → the method
+///    is repeatable. ([[rcdzc-r1-resource-encode-linking-findings]], the 2026-07-13 borrow correction.)
+#[derive(Clone, Copy)]
+enum RepSource {
+    /// `own<t>` self: recover the rep via `resource.rep(self)` (the core func index) and drop it after
+    /// the walk. The RUNTIME resource path now lifts every method as `borrow` (see below), so this variant
+    /// is the documented reference for the own shape — kept for the constant/closure paths that may adopt
+    /// it and to make `emit_bind_rep`/`emit_drop_if_owned` total over both receiver modes.
+    #[allow(dead_code)]
+    Own(u32),
+    Borrow,
+}
+
+impl RepSource {
+    /// Emit the prologue binding local `rep` to the heap rep: `resource.rep(local 0)` (own) or a plain
+    /// copy of the `self` param (borrow — the param IS the rep).
+    fn emit_bind_rep(
+        self,
+        rep: u32,
+        body: &mut Vec<u8>,
+        _import_index: &std::collections::HashMap<&str, u32>,
+    ) {
+        use crate::backend::wasm::wasm_abi::op;
+        body.push(op::LOCAL_GET);
+        uleb128(0, body); // the self param
+        if let RepSource::Own(f_rrep) = self {
+            body.push(op::CALL);
+            uleb128(f_rrep as u64, body); // resource.rep(handle) → rep
+        }
+        body.push(op::LOCAL_SET);
+        uleb128(rep as u64, body);
+    }
+
+    /// Emit the epilogue reclaim: `heap.drop(rep)` for an OWNED self (encode holds the last reference); a
+    /// borrow self reclaims NOTHING here (the host/dtor owns the release).
+    fn emit_drop_if_owned(
+        self,
+        rep: u32,
+        body: &mut Vec<u8>,
+        import_index: &std::collections::HashMap<&str, u32>,
+    ) {
+        use crate::backend::wasm::wasm_abi::op;
+        if let RepSource::Own(_) = self {
+            body.push(op::LOCAL_GET);
+            uleb128(rep as u64, body);
+            body.push(op::CALL);
+            uleb128(import_index["drop"] as u64, body);
+        }
+    }
+}
+
 /// walk ops resolve by name through `import_index` (the same map the defined bodies use).
 fn encode_walk_body(
     template: &crate::lower::ValueFormTemplate,
     byte_off: usize,
     ret_off: usize,
-    f_rrep: u32,
+    rep_src: RepSource,
     import_index: &std::collections::HashMap<&str, u32>,
 ) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
-    let call_op = |name: &str, out: &mut Vec<u8>| {
-        out.push(op::CALL);
-        uleb128(import_index[name] as u64, out);
-    };
     let mut body = Vec::new();
     // Locals: 1 group of i32 (the rep), 1 group of i64 (scratch).
     uleb128(2, &mut body); // 2 local-decl groups
@@ -2296,28 +2374,17 @@ fn encode_walk_body(
     body.push(wasm_abi::CORE_I64); // local 2: scratch
     let rep = 1u32;
     let scratch = 2u32;
-    // rep = resource.rep(handle=local 0).
-    body.push(op::LOCAL_GET);
-    uleb128(0, &mut body);
-    body.push(op::CALL);
-    uleb128(f_rrep as u64, &mut body);
-    body.push(op::LOCAL_SET);
-    uleb128(rep as u64, &mut body);
+    // Recover the heap rep into local `rep` — from `resource.rep(self)` (own self) or DIRECTLY from the
+    // self param (borrow self: the canonical ABI passes the rep, not a table index).
+    rep_src.emit_bind_rep(rep, &mut body, import_index);
 
     for hole in &template.leaves {
         emit_hole_fill(hole, byte_off, rep, scratch, import_index, &mut body);
     }
-    // RELEASE the compound's heap handle: `encode` takes `self: own<t>` (the canonical ABI transfers
-    // ownership INTO encode), so encode owns the last reference — call `heap.drop(rep)` to reclaim it
-    // (cascades to the boxed children; the value heap is acyclic). This is what balances `make`'s
-    // `arr-alloc`, so a runtime compound escape leaves NO live heap cell. (We do NOT rely on the resource
-    // DTOR to release it: `encode`'s `own` self is consumed here, and — decisive finding — `resource.rep`
-    // on a BORROWED self traps in wasmtime 37, so we cannot switch encode to `borrow` and let the host
-    // drop. Owning + dropping in encode is the sound release point for the nullary escape, which always
-    // calls encode. [[rcdzc-r1-resource-encode-linking-findings]].)
-    body.push(op::LOCAL_GET);
-    uleb128(rep as u64, &mut body);
-    call_op("drop", &mut body);
+    // Reclaim the heap handle IFF `encode` owns it (own self). For a BORROW self the host keeps ownership
+    // and drops the handle after the call (firing the dtor, which reclaims the rep) — so `encode` must NOT
+    // drop, and the value survives, making the method repeatable.
+    rep_src.emit_drop_if_owned(rep, &mut body, import_index);
     // return the (ptr,len) area.
     body.push(op::I32_CONST);
     crate::backend::wasm::encode::sleb128(ret_off as i64, &mut body);
@@ -2339,7 +2406,7 @@ fn encode_walk_body(
 /// bit) are emitted with `sleb128` (the raw-`i32.const`-is-signed-LEB rule).
 fn encode_bytes_walk_body(
     form: &crate::lower::RuntimeBytesForm,
-    f_rrep: u32,
+    rep_src: RepSource,
     import_index: &std::collections::HashMap<&str, u32>,
 ) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
@@ -2381,12 +2448,9 @@ fn encode_bytes_walk_body(
         uleb128(l as u64, out);
     };
 
-    // rep = resource.rep(handle).
-    get(0, &mut body);
-    body.push(op::CALL);
-    uleb128(f_rrep as u64, &mut body);
-    set(rep, &mut body);
-    // n = bytes-len(rep)  (BORROWS rep — drop happens once, at the end).
+    // Recover the heap rep (own: resource.rep; borrow: the param IS the rep).
+    rep_src.emit_bind_rep(rep, &mut body, import_index);
+    // n = bytes-len(rep)  (BORROWS rep — drop happens once, at the end, only if we own it).
     get(rep, &mut body);
     call_op("bytes-len", &mut body);
     set(n, &mut body);
@@ -2494,9 +2558,9 @@ fn encode_bytes_walk_body(
         set(w, &mut body);
     }
 
-    // Release the escaped handle: encode owns `own<t>`, so drop the one reference (balances make's alloc).
-    get(rep, &mut body);
-    call_op("drop", &mut body);
+    // Release the escaped handle ONLY if encode owns it (own self); a borrow self leaves reclamation to
+    // the host/dtor, so the value survives for a repeated call.
+    rep_src.emit_drop_if_owned(rep, &mut body, import_index);
 
     // Store the retarea at [0..8]: ptr = OUT, len = w - OUT. Then return 0 (the retptr).
     const_i32(0, &mut body); // addr for ptr store
@@ -2530,7 +2594,7 @@ fn encode_bytes_walk_body(
 /// values (no data-section blob / memory load needed).
 fn encode_recursive_sum_walk_body(
     descriptor: &[u8],
-    f_rrep: u32,
+    rep_src: RepSource,
     import_index: &std::collections::HashMap<&str, u32>,
 ) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
@@ -2564,11 +2628,8 @@ fn encode_recursive_sum_walk_body(
         uleb128(l as u64, out);
     };
 
-    // rep = resource.rep(handle).
-    get(0, &mut body);
-    body.push(op::CALL);
-    uleb128(f_rrep as u64, &mut body);
-    set(rep, &mut body);
+    // Recover the heap rep (own: resource.rep; borrow: the param IS the rep).
+    rep_src.emit_bind_rep(rep, &mut body, import_index);
 
     // desc = bytes-alloc(len); then for each descriptor byte, desc = bytes-set(desc, j, <const byte>).
     // The descriptor bytes are compile-time constants, so each is a literal `i32.const` (no data-section
@@ -2625,10 +2686,10 @@ fn encode_recursive_sum_walk_body(
     body.push(op::END); // end loop
     body.push(op::END); // end block
 
-    // Release the three handles: rep (encode owns `own<t>`, balances make's alloc), desc + doc
-    // (temporaries this body built). The value heap is acyclic; each drop cascades to its children.
-    get(rep, &mut body);
-    call_op("drop", &mut body);
+    // Release the handles: `rep` ONLY if encode owns it (own self — balances make's alloc; a borrow self
+    // leaves rep-reclamation to the host/dtor), plus `desc` + `doc` (temporaries this body built, ALWAYS
+    // dropped regardless of the self mode). The value heap is acyclic; each drop cascades to its children.
+    rep_src.emit_drop_if_owned(rep, &mut body, import_index);
     get(desc, &mut body);
     call_op("drop", &mut body);
     get(doc, &mut body);
@@ -2771,7 +2832,7 @@ fn placed_pairs(placed: &[Placed]) -> Vec<(usize, usize)> {
 fn encode_sum_walk_body(
     variants: &[crate::lower::ValueFormTemplate],
     placed: &[(usize, usize)],
-    f_rrep: u32,
+    rep_src: RepSource,
     import_index: &std::collections::HashMap<&str, u32>,
 ) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
@@ -2791,13 +2852,8 @@ fn encode_sum_walk_body(
     let rep = 1u32;
     let scratch = 2u32;
     let disc = 3u32;
-    // rep = resource.rep(handle).
-    body.push(op::LOCAL_GET);
-    uleb128(0, &mut body);
-    body.push(op::CALL);
-    uleb128(f_rrep as u64, &mut body);
-    body.push(op::LOCAL_SET);
-    uleb128(rep as u64, &mut body);
+    // Recover the heap rep (own: resource.rep; borrow: the param IS the rep).
+    rep_src.emit_bind_rep(rep, &mut body, import_index);
     // disc = sum-disc(rep).
     body.push(op::LOCAL_GET);
     uleb128(rep as u64, &mut body);
@@ -2821,10 +2877,9 @@ fn encode_sum_walk_body(
         for hole in &tpl.leaves {
             emit_hole_fill(hole, *byte_off, rep, scratch, import_index, &mut body);
         }
-        // drop the rep (encode owns it), then return this variant's ret area pointer.
-        body.push(op::LOCAL_GET);
-        uleb128(rep as u64, &mut body);
-        call_op("drop", &mut body);
+        // drop the rep ONLY if encode owns it (own self); a borrow self leaves it live. Then return this
+        // variant's ret area pointer.
+        rep_src.emit_drop_if_owned(rep, &mut body, import_index);
         body.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(*ret_off as i64, &mut body);
         body.push(op::RETURN);
