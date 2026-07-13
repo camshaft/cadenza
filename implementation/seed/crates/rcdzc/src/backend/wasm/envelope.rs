@@ -2644,6 +2644,14 @@ pub fn assemble_distinct_sig_roundtrip_resource_mixed(
         .iter()
         .map(|gr| gr.makes.len() + gr.consumers.len())
         .sum();
+    // A byte-rope consumer crosses as `(…) -> list<u8>` (own<t> + list<u8> + functype = 3 comp types, vs a
+    // scalar consumer's 2) and needs a shared memory + `cabi_realloc` (lifted with Memory/Realloc). `n_bytes`
+    // counts them; `any_bytes` gates the shared plumbing.
+    let n_bytes: usize = groups
+        .iter()
+        .map(|gr| gr.consumers.iter().filter(|c| c.ret_is_bytes).count())
+        .sum();
+    let any_bytes = n_bytes > 0;
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -2752,9 +2760,12 @@ pub fn assemble_distinct_sig_roundtrip_resource_mixed(
     ));
     let prog_inst = heap_inst + 1;
     // sec 6: alias each group's makes then consumers off the program instance (core order matches the
-    // core module's export order: per group, makes then consumers).
+    // core module's export order: per group, makes then consumers); then (when byte-rope) the shared
+    // `memory` + `cabi_realloc`; then each PLAIN export's body. Track which flat fn is a byte-rope consumer.
     let mut fn_core: Vec<u32> = Vec::new();
+    let mut fn_is_bytes: Vec<bool> = Vec::new();
     let mut plain_core: Vec<u32> = Vec::new();
+    let mut realloc_core: u32 = 0;
     let mut next_fn = (k + 3 * g) as u32;
     out.extend_from_slice(&{
         let mut items = Vec::new();
@@ -2762,24 +2773,36 @@ pub fn assemble_distinct_sig_roundtrip_resource_mixed(
             for mk in &gr.makes {
                 items.extend_from_slice(&core_alias_item(prog_inst, &mk.name));
                 fn_core.push(next_fn);
+                fn_is_bytes.push(false);
                 next_fn += 1;
             }
             for c in &gr.consumers {
                 items.extend_from_slice(&core_alias_item(prog_inst, &c.name));
                 fn_core.push(next_fn);
+                fn_is_bytes.push(c.ret_is_bytes);
                 next_fn += 1;
             }
         }
-        // each PLAIN export's body, aliased AFTER all the closure fns → core funcs k+3g+total_fns+j.
+        if any_bytes {
+            items.extend_from_slice(&memory_alias_item(prog_inst, MEMORY_EXPORT));
+            items.extend_from_slice(&core_alias_item(prog_inst, REALLOC_EXPORT));
+            realloc_core = next_fn;
+            next_fn += 1;
+        }
+        // each PLAIN export's body, aliased AFTER the closure fns (+ memory/realloc when byte-rope).
         for p in plain {
             items.extend_from_slice(&core_alias_item(prog_inst, &p.core_name));
             plain_core.push(next_fn);
             next_fn += 1;
         }
-        section(sec::ALIAS, &wasm_vec(total_fns + np, &items))
+        section(
+            sec::ALIAS,
+            &wasm_vec(total_fns + np + if any_bytes { 2 } else { 0 }, &items),
+        )
     });
-    // sec 7: per fn its `own<t_g>` + functype (make: `(params…)->own<t>`; consumer: source-ordered params);
-    // then one PLAIN functype per plain export (scalar `(params…)->R`, NO own<t> wrapper).
+    // sec 7: per fn its `own<t_g>` + functype (make: `(params…)->own<t>`; scalar consumer: source-ordered
+    // params → R; byte-rope consumer: own<t> + list<u8> + `(…)->list<u8>` = 3 types); then one PLAIN functype
+    // per plain export (scalar `(params…)->R`, NO own<t> wrapper). Record each fn's functype comp-type index.
     let mut fn_functype: Vec<u32> = Vec::new();
     let mut plain_functype: Vec<u32> = Vec::new();
     out.extend_from_slice(&{
@@ -2797,10 +2820,20 @@ pub fn assemble_distinct_sig_roundtrip_resource_mixed(
                 ti += 2;
             }
             for c in &gr.consumers {
-                items.extend_from_slice(&own_item(rty));
-                items.extend_from_slice(&consumer_functype(ti, &c.params, c.result_byte));
-                fn_functype.push(ti + 1);
-                ti += 2;
+                if c.ret_is_bytes {
+                    items.extend_from_slice(&own_item(rty));
+                    let own_ty = ti;
+                    let list_ty = ti + 1;
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&consumer_list_functype(own_ty, &c.params, list_ty));
+                    fn_functype.push(ti + 2);
+                    ti += 3;
+                } else {
+                    items.extend_from_slice(&own_item(rty));
+                    items.extend_from_slice(&consumer_functype(ti, &c.params, c.result_byte));
+                    fn_functype.push(ti + 1);
+                    ti += 2;
+                }
             }
         }
         for p in plain {
@@ -2808,12 +2841,24 @@ pub fn assemble_distinct_sig_roundtrip_resource_mixed(
             plain_functype.push(ti);
             ti += 1;
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * total_fns + np, &items))
+        section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(2 * total_fns + n_bytes + np, &items),
+        )
     });
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for i in 0..total_fns {
-            items.extend_from_slice(&canon_lift_item(fn_core[i], fn_functype[i]));
+            if fn_is_bytes[i] {
+                items.extend_from_slice(&canon_lift_list_item(
+                    fn_core[i],
+                    0,
+                    realloc_core,
+                    fn_functype[i],
+                ));
+            } else {
+                items.extend_from_slice(&canon_lift_item(fn_core[i], fn_functype[i]));
+            }
         }
         for j in 0..np {
             items.extend_from_slice(&canon_lift_item(plain_core[j], plain_functype[j]));
@@ -3657,10 +3702,6 @@ fn component_instantiate_distinct_sig_item(
 /// exported identity. Type-index layout identical to the distinct-sig one (own<t> + functype per fn, flat).
 fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8> {
     let g = groups.len();
-    let total_fns: usize = groups
-        .iter()
-        .map(|gr| gr.makes.len() + gr.consumers.len())
-        .sum();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     for gi in 0..g {
@@ -3669,12 +3710,15 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
             &wasm_vec(1, &import_subresource_item(&format!("import-type-t{gi}"))),
         ));
     }
-    // IMPORT each fn (flat, group order: makes then consumers): own<t_g> (type g+2f) + functype (g+2f+1).
+    // IMPORT each fn (flat, group order: makes then consumers). A make/scalar-consumer pins own<t_g> +
+    // functype (2 types); a BYTE-ROPE consumer pins own<t_g> + list<u8> + `(…)->list<u8>` (3 types). `ty`
+    // runs past `g` (the G imported resources) as types are minted; `f` is the func index.
+    let mut ty = g as u32;
     let mut f = 0usize;
     for (gi, gr) in groups.iter().enumerate() {
         for mk in &gr.makes {
-            let own_ty = (g + 2 * f) as u32;
-            let ft_ty = (g + 2 * f + 1) as u32;
+            let own_ty = ty;
+            let ft_ty = ty + 1;
             out.extend_from_slice(&{
                 let mut items = own_item(gi as u32);
                 items.extend_from_slice(&params_result_functype(
@@ -3687,26 +3731,45 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
                 sec::COMPONENT_IMPORT,
                 &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
             ));
+            ty += 2;
             f += 1;
         }
         for c in &gr.consumers {
-            let _ = c;
-            let own_ty = (g + 2 * f) as u32;
-            let ft_ty = (g + 2 * f + 1) as u32;
-            out.extend_from_slice(&{
-                let mut items = own_item(gi as u32);
-                items.extend_from_slice(&consumer_functype(own_ty, &c.params, c.result_byte));
-                section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
-            });
-            out.extend_from_slice(&section(
-                sec::COMPONENT_IMPORT,
-                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
-            ));
+            if c.ret_is_bytes {
+                let own_ty = ty;
+                let list_ty = ty + 1;
+                let ft_ty = ty + 2;
+                out.extend_from_slice(&{
+                    let mut items = own_item(gi as u32);
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&consumer_list_functype(own_ty, &c.params, list_ty));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+                ));
+                ty += 3;
+            } else {
+                let own_ty = ty;
+                let ft_ty = ty + 1;
+                out.extend_from_slice(&{
+                    let mut items = own_item(gi as u32);
+                    items.extend_from_slice(&consumer_functype(own_ty, &c.params, c.result_byte));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+                ));
+                ty += 2;
+            }
             f += 1;
         }
     }
-    // RE-EXPORT G resources → exported types E..E+g; then per fn re-ascribe against its group's exported rty.
-    let e = (g + 2 * total_fns) as u32;
+    // RE-EXPORT G resources → exported types E..E+g (E = the running `ty`); then per fn re-ascribe against its
+    // group's exported rty. Types continue at E+g; byte-rope consumers add 3, others 2.
+    let e = ty;
     for gi in 0..g {
         out.extend_from_slice(&section(
             sec::COMPONENT_EXPORT,
@@ -3734,16 +3797,30 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
             f += 1;
         }
         for c in &gr.consumers {
-            out.extend_from_slice(&{
-                let mut items = own_item(exp_rty);
-                items.extend_from_slice(&consumer_functype(ti, &c.params, c.result_byte));
-                section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
-            });
-            out.extend_from_slice(&section(
-                sec::COMPONENT_EXPORT,
-                &wasm_vec(1, &export_func_ascribed_item(&c.name, f as u32, ti + 1)),
-            ));
-            ti += 2;
+            if c.ret_is_bytes {
+                out.extend_from_slice(&{
+                    let mut items = own_item(exp_rty);
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&consumer_list_functype(ti, &c.params, ti + 1));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(1, &export_func_ascribed_item(&c.name, f as u32, ti + 2)),
+                ));
+                ti += 3;
+            } else {
+                out.extend_from_slice(&{
+                    let mut items = own_item(exp_rty);
+                    items.extend_from_slice(&consumer_functype(ti, &c.params, c.result_byte));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(1, &export_func_ascribed_item(&c.name, f as u32, ti + 1)),
+                ));
+                ti += 2;
+            }
             f += 1;
         }
     }

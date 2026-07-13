@@ -2838,6 +2838,7 @@ fn emit_distinct_sig_roundtrip_resource(
         abi_params: Vec<envelope::ConsumeParamAbi>,
         ret_vt: crate::backend::wasm::lir::ValType,
         result_byte: u8,
+        ret_is_bytes: bool,
     }
     struct PlainS {
         def: usize,
@@ -2915,8 +2916,18 @@ fn emit_distinct_sig_roundtrip_resource(
             }
             let ret_vt = valtype_of(&e.result)
                 .ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
-            let result_byte = closure_boundary_byte(&e.result)
-                .ok_or_else(|| closure_boundary_reject("result", &e.result))?;
+            // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (the compound consumer);
+            // a scalar takes its inline byte.
+            let ret_is_bytes = matches!(
+                e.result.strip_nominal(),
+                crate::ty::Ty::Bytes | crate::ty::Ty::String
+            );
+            let result_byte = if ret_is_bytes {
+                0 // unused by the byte-rope path; the consumer returns list<u8>
+            } else {
+                closure_boundary_byte(&e.result)
+                    .ok_or_else(|| closure_boundary_reject("result", &e.result))?
+            };
             cons.push(ConsS {
                 def: e.def,
                 group,
@@ -2925,6 +2936,7 @@ fn emit_distinct_sig_roundtrip_resource(
                 abi_params,
                 ret_vt,
                 result_byte,
+                ret_is_bytes,
             });
         }
     }
@@ -2953,10 +2965,16 @@ fn emit_distinct_sig_roundtrip_resource(
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
     let intrinsics = (2 * sigs.len()) as u32;
+    let any_bytes = cons.iter().any(|c| c.ret_is_bytes);
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        if any_bytes {
+            // A byte-rope consumer copies its returned Bytes/String out via a `bytes-len`/`bytes-get` loop.
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -3006,15 +3024,13 @@ fn emit_distinct_sig_roundtrip_resource(
                 consume_abs,
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
-                // Byte-rope result on the DISTINCT-SIG round-trip is a further widening; that path's
-                // consumer result is still a scalar (`closure_boundary_byte` above declines byte-rope).
-                ret_is_bytes: false,
+                ret_is_bytes: c.ret_is_bytes,
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),
                 params: c.abi_params.clone(),
                 result_byte: c.result_byte,
-                ret_is_bytes: false,
+                ret_is_bytes: c.ret_is_bytes,
             });
         }
         ser_groups.push(serialize::RtSigGroup {
