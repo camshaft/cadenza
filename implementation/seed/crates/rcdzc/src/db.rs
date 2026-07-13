@@ -882,6 +882,18 @@ impl Db {
             crate::fxhash::FxHashMap::default();
         for decl in &type_decls {
             for v in &decl.variants {
+                // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
+                // a variant whose name COLLIDES with a built-in prelude entry (`Int`/`List`/`Name` — a type
+                // constructor, a collection module) would SHADOW it, breaking that name everywhere it is
+                // used as a type/module (a payload `(Int Int64)`, an annotation `(: x Int64)` whose reduction
+                // touches `Int`). A colliding variant is reached ONLY qualified — `(. T Int)` / the built-in
+                // `(. Ast Int)` — via the sum RECORD's field, never the bare-name index; so DON'T index a
+                // variant name the prelude already binds. (`Some`/`None`/`Neg`/… do not collide, so they
+                // still bind bare — the common case is unaffected.) The qualified member access is
+                // unchanged: it projects the sum record's field, independent of this bare-name index.
+                if prelude.contains_key(&v.name) {
+                    continue;
+                }
                 if let Some(ctor) = v.ctor {
                     variant_ctor_index.entry(v.name.clone()).or_insert(ctor);
                 }

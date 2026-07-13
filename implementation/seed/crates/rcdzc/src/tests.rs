@@ -15797,6 +15797,59 @@ mod match_engine {
     }
 
     #[test]
+    fn a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it() {
+        // A bare variant name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so a variant
+        // whose name COLLIDES with a built-in prelude entry (`Int`/`List`/`Name` — a type constructor, a
+        // collection module) must NOT shadow it — else that name breaks everywhere it is used as a
+        // type/module. The `variant_ctor_index` build skips a prelude-colliding variant name; the variant
+        // stays reachable QUALIFIED (`(. T Int)`) via the sum record's field. Regression: declaring `(type
+        // T (Int Int64))` made bare `Int` the variant ctor, so an unrelated `(: x Int64)` failed to reduce
+        // (`Int` was no longer the width constructor) — a global corruption from one declaration.
+        // The unrelated `Int64` annotation still reduces even with a `(type T (Int Int64))` in scope.
+        assert!(
+            reject_code(
+                "(module m (type T (Int Int64)) (def (g (: x Int64)) x) (def (main) (g 5)) (export main))"
+            )
+            .is_none(),
+            "a variant named `Int` must not shadow the prelude `Int` type constructor"
+        );
+        // The colliding variant is still reachable QUALIFIED and checks its payload: `(. T Int)` applied
+        // to a String is the wrong-payload CDZ0201, exactly as a non-colliding variant is.
+        assert_eq!(
+            reject_code(
+                "(module m (type T (Int Int64)) (def (main) ((. T Int) \"x\")) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a qualified colliding-variant ctor still type-checks its payload"
+        );
+    }
+
+    #[test]
+    fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
+        // 12-metaprogramming "a built-in Ast constructor applied to a wrong-type payload is a type error":
+        // the built-in `Ast` is an ordinary MONOMORPHIC prelude sum (Int:Int64, Name:String, List:(List
+        // Ast)) — a variant per syntactic form (type-system.md §The Abstract Syntax Tree Type Is An
+        // Ordinary Sum Type). Its variants are reached ONLY QUALIFIED (`Ast.Int`), their names colliding
+        // with prelude `Int`/`List` so they don't bind bare. `Ast.Int`'s payload is Int64, so `(Ast.Int
+        // "x")` applies it to a String — the wrong-payload CDZ0201, exactly as a user sum variant is.
+        assert_eq!(
+            reject_code("(module m (def (main) (Ast.Int \"x\")) (export main))").as_deref(),
+            Some("CDZ0201"),
+            "the built-in Ast.Int checks its Int64 payload"
+        );
+        // The correct payload types (no fault); a String payload to `Ast.Name` is likewise well-typed.
+        assert!(
+            reject_code("(module m (def (main) (Ast.Int 42)) (export main))").is_none(),
+            "Ast.Int applied to Int64 is well-typed"
+        );
+        assert!(
+            reject_code("(module m (def (main) (Ast.Name \"x\")) (export main))").is_none(),
+            "Ast.Name applied to String is well-typed"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_linked_list_folds_at_runtime() {
         // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
         // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length
@@ -18540,13 +18593,18 @@ mod stage1 {
 
     #[test]
     fn an_unbound_name_close_to_a_prelude_builtin_suggests_it() {
-        // The prelude's names are candidates — `List` misspelled `Lst` (a module head).
+        // The prelude's names are candidates — `List` misspelled `Lst` (a module head). `Lst` is
+        // distance-1 from BOTH `List` (insert `i`) and the built-in `Ast` (substitute `L`→`A`), so the
+        // nearest-name search returns one of the two tied candidates — either is a valid prelude module.
+        // (Before the built-in `Ast` prelude sum existed this was unambiguously `List`; `Ast` joining the
+        // pool made it a legitimate tie — the point of the test is that a near-miss to a prelude name
+        // GETS a suggestion, not which of two equidistant prelude names wins the tie-break.)
         let d = expect_error("(Lst.push (list 1 2) 3)");
         assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("List"),
-            "message: {}",
+        let suggested = d.fix.as_ref().map(|f| f.replacement.as_str());
+        assert!(
+            matches!(suggested, Some("List") | Some("Ast")),
+            "a near-miss to a prelude module suggests a distance-1 prelude name (List or Ast): {}",
             d.message
         );
     }

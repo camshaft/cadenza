@@ -92,6 +92,7 @@ pass	a bound name in a map key is used by its value, not the literal name
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a built map renders its entries in canonical key order
+pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a byte sequence carrying a runtime byte value is a first-class value
@@ -1435,7 +1436,6 @@ todo	Type is a first-class value
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a build-time delegated effect whose result a returned closure captures does not escape
-todo	a built-in Ast constructor applied to a wrong-type payload is a type error
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
