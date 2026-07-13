@@ -317,6 +317,11 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
+        // A sequencing block: the binding escapes if it escapes any statement or the tail.
+        Core::Seq { stmts, tail } => {
+            stmts.iter().any(|&s| binding_escapes(db, s, binder, false))
+                || binding_escapes(db, tail, binder, false)
+        }
         // Control flow: the binding escapes if it escapes any reachable sub-position.
         Core::If { cond, then_, else_ } => {
             binding_escapes(db, cond, binder, false)
@@ -846,6 +851,12 @@ pub fn collect_used_ops(
             for arg in args {
                 collect_used_ops(db, arg, out);
             }
+        }
+        Core::Seq { stmts, tail } => {
+            for s in stmts {
+                collect_used_ops(db, s, out);
+            }
+            collect_used_ops(db, tail, out);
         }
         Core::Record { fields } => {
             // A runtime record builds on the heap exactly as a tuple — `arr-alloc` + per-field
@@ -3606,6 +3617,25 @@ fn emit(
             }
             out.push(Lir::CallHostImport(index));
             Ok(())
+        }
+        // A SEQUENCING block — emit each statement FOR ITS EFFECT (in order), then the tail as the value.
+        // A statement is a host call whose result is `Unit` (it leaves NOTHING on the stack — a
+        // `func()`-typed import), so emitting it needs no `drop`; a value-leaving statement is not produced
+        // here yet (the `do`-fold only sequences Unit-returning host calls). The tail leaves the block's
+        // value on the stack.
+        Core::Seq { stmts, tail } => {
+            for s in &stmts {
+                // A statement must leave nothing on the stack (a Unit host call). Guard it: a non-Unit
+                // statement would leave a dangling value (stack imbalance) — decline rather than emit it.
+                if !matches!(crate::infer::type_of(db, *s), Ty::Unit) {
+                    return Err(Reject::decline(
+                        "a sequencing statement that leaves a value is not yet emitted (only a \
+                         unit-returning host-call statement)",
+                    ));
+                }
+                emit(db, *s, slots, base, high, scratch_ty, layout, out)?;
+            }
+            emit(db, tail, slots, base, high, scratch_ty, layout, out)
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.

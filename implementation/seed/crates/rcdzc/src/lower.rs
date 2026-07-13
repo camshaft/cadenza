@@ -99,7 +99,44 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
 /// record used as a runtime value survives as `Core::Record` (which declines at select until the
 /// value heap exists). This is the one compile-time reduction tier acting through lowering
 /// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
+/// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
+/// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
+/// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
+fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
+    if matches!(core_of(db, id), Core::HostCall { .. }) {
+        return true;
+    }
+    match db.ast.get(id).clone() {
+        crate::ast::Struct::List(children) => {
+            children.iter().any(|&c| subtree_reaches_host_call(db, c))
+        }
+        crate::ast::Struct::Atom(_) => false,
+    }
+}
+
 fn compute(db: &mut Db, id: StructId) -> Core {
+    // A `(do S… tail)` block whose NON-FINAL statements reach a HOST CALL lowers to a `Core::Seq` — the
+    // side-effecting statements must be EMITTED (their host call crosses the boundary), then the tail is
+    // the block's value. A `do` resolves to a `Ref` to its last form (`resolve_do`), which would DROP the
+    // intermediates; intercept here for the effectful case so the calls are not lost. A `do` whose
+    // intermediates are all PURE keeps the `Ref{last}` fold (the intermediates contribute nothing), so
+    // this only fires when a non-final statement genuinely reaches a host call. Each sequenced statement
+    // is a def-free value form (a do-local `(def …)` is a binding, not a statement — resolved by name).
+    if db.ast.head_name(id) == Some("do")
+        && let Some(forms) = db.ast.as_form(id, "do")
+        && let Some((&tail, stmts)) = forms.split_last()
+    {
+        let stmts: Vec<StructId> = stmts
+            .iter()
+            .copied()
+            .filter(|&f| db.ast.head_name(f) != Some("def"))
+            .collect();
+        // Only build a Seq if some non-final statement reaches a host call (else the ordinary Ref{last}
+        // fold is correct + cheaper). `subtree_reaches_host_call` walks the statement's core.
+        if stmts.iter().any(|&s| subtree_reaches_host_call(db, s)) {
+            return Core::Seq { stmts, tail };
+        }
+    }
     match resolved_of(db, id) {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),

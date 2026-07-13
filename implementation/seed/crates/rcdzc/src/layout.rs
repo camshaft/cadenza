@@ -439,6 +439,12 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
                 collect_closure_codes(db, a, out);
             }
         }
+        Core::Seq { stmts, tail } => {
+            for s in stmts {
+                collect_closure_codes(db, s, out);
+            }
+            collect_closure_codes(db, tail, out);
+        }
         Core::Match { scrutinee, arms } => {
             collect_closure_codes(db, scrutinee, out);
             for arm in arms {
@@ -665,6 +671,12 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             for arg in args {
                 collect_call_callees(db, arg, out);
             }
+        }
+        crate::core::Core::Seq { stmts, tail } => {
+            for s in stmts {
+                collect_call_callees(db, s, out);
+            }
+            collect_call_callees(db, tail, out);
         }
         // Leaves and references have no sub-calls (a `Captured` read is a heap read of the env cell).
         crate::core::Core::ConstInt(_)

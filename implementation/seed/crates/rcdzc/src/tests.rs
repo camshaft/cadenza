@@ -10640,16 +10640,19 @@ mod stage1 {
     }
 
     #[test]
-    fn a_dropped_host_call_in_a_non_final_do_statement_declines() {
-        // E2h: a `(do …)` block lowers to only its LAST form's value, so a host call in a NON-FINAL
-        // statement would be silently dropped. The compiler DECLINES rather than miscompile (drop the
-        // call's side effect). Multi-statement host sequencing is a later increment.
+    fn a_do_block_of_host_calls_sequences_them() {
+        // E2h-seq: a `(do (log.emit "first") (log.emit "second"))` — two side-effecting host-call
+        // statements — lowers to a `Core::Seq` that EMITS each statement in order (their calls both cross
+        // the boundary), then the tail is the block's value. Was a clean decline (the block would else
+        // drop the non-final call); now it compiles + BOTH calls fire (verified in order via the corpus
+        // gate → observed [log.emit, log.emit]). The host imports are unbound in-process, so this asserts
+        // it COMPILES; the gate runs the observed sequence.
         let src = "(do (effect log (op emit (-> String Unit))) \
                    (def (main) (host (log) (do (log.emit \"first\") (log.emit \"second\")))) \
                    (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a dropped host call in a non-final do statement must decline, not miscompile"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a do block of host-call statements must compile (sequencing both calls)"
         );
     }
 

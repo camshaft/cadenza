@@ -541,6 +541,17 @@ pub enum Core {
         args: Vec<StructId>,
         result: crate::ty::Ty,
     },
+    /// A SEQUENCING block — evaluate each `stmt` FOR ITS SIDE EFFECT (discarding its value), then evaluate
+    /// `tail` as the block's value. The core form of a `(do S… tail)` whose non-final statements have
+    /// OBSERVABLE side effects that must run (a host call — its call crosses the boundary even though its
+    /// result is discarded). A `do` whose intermediates are PURE folds to just `tail` (the intermediates
+    /// contribute nothing), so this node is produced ONLY when a statement reaches a side effect that
+    /// selection must emit. The backend emits each stmt (a Unit-returning host call leaves nothing on the
+    /// stack; a value-returning stmt would need a `drop`, not yet produced here) then the tail.
+    Seq {
+        stmts: Vec<StructId>,
+        tail: StructId,
+    },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }
