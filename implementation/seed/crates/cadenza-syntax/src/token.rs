@@ -49,6 +49,10 @@ pub enum Kind {
     Slash,    // `/`
     Percent,  // `%`
     StarPct,  // `*%`
+    PlusDot,  // `+.` — floating-point addition (the OCaml-style FP operators)
+    MinusDot, // `-.` — floating-point subtraction
+    StarDot,  // `*.` — floating-point multiplication
+    SlashDot, // `/.` — floating-point division
 
     // ---- delimiters / punctuation ----
     LParen,
@@ -109,6 +113,10 @@ impl Kind {
             Kind::Slash => "/",
             Kind::Percent => "%",
             Kind::StarPct => "*%",
+            Kind::PlusDot => "+.",
+            Kind::MinusDot => "-.",
+            Kind::StarDot => "*.",
+            Kind::SlashDot => "/.",
             _ => return None,
         })
     }
@@ -222,8 +230,8 @@ pub fn infix_prec(op: &str) -> Option<u8> {
         "|" | "^" => 7,
         "&" => 8,
         "<<" | ">>" => 9,
-        "+" | "-" | "+%" | "-%" => 10,
-        "*" | "/" | "%" | "*%" => 11,
+        "+" | "-" | "+%" | "-%" | "+." | "-." => 10,
+        "*" | "/" | "%" | "*%" | "*." | "/." => 11,
         _ => return None,
     })
 }
@@ -258,6 +266,10 @@ mod tests {
             Kind::Slash,
             Kind::Percent,
             Kind::StarPct,
+            Kind::PlusDot,
+            Kind::MinusDot,
+            Kind::StarDot,
+            Kind::SlashDot,
         ] {
             let s = k.op_str().expect("operator kind has a name");
             assert!(infix_prec(s).is_some(), "operator {s} has a precedence");
