@@ -1083,6 +1083,22 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
+            Format::Json => {
+                // A JSON document is a queryable/rewritable tree like any surface (its `(json-object
+                // …)`/`(json-array …)`/scalar nodes are all matchable). Unlike CommonMark, JSON can
+                // fail — a malformed document is surfaced as an error.
+                let text =
+                    std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
+                let (arena, spans) =
+                    crate::json::read_spanned(text).map_err(|e| format!("JSON parse: {}", e.0))?;
+                Ok((
+                    Target {
+                        tree: Tree::of(&arena),
+                        spans: Some(spans),
+                    },
+                    Vec::new(),
+                ))
+            }
             Format::Debug | Format::Flat => Err(format!(
                 "`{}` is an output-only format, not an input",
                 from.name()
@@ -1258,6 +1274,7 @@ pub mod driver {
             Format::Ml => Ok(printer::print(arena, width)),
             Format::Sexpr => Ok(sexpr::print(arena)),
             Format::Markdown => Ok(crate::markdown::print(arena, width)),
+            Format::Json => Ok(crate::json::print(arena, width)),
             Format::Debug => Ok(crate::debug::print(arena)),
             Format::Flat => Ok(crate::debug::print_flat(arena)),
             Format::Binary => Err("binary output is not supported for query results".to_string()),

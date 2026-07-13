@@ -20,6 +20,12 @@ pub mod doc;
 pub mod extern_name;
 pub mod fxhash;
 pub mod iter;
+/// The JSON surface: a faithful data document (`(json-object …)`/`(json-array …)`/`(json-null)` plus
+/// bare scalar leaves) is a projection of the same arena the code surfaces use. Unlike a native
+/// `record`/`list`, it preserves everything real JSON has that the typed value universe would reject
+/// or normalize — duplicate & non-identifier keys, key order, heterogeneous arrays, exact numbers,
+/// and `null`.
+pub mod json;
 pub mod leb128;
 pub mod lexer;
 pub mod literal;
