@@ -46,7 +46,6 @@
            nominal name value a symbol table is keyed on. This is the value the Cadenza-authored
            compiler interns an identifier or a node-kind name to. Its canonical written form is
            `(Symbol.of \"map-insert\")`, as a byte sequence's is `(Bytes.of (list …))`.")
-  (needs  symbols)
   (input  (Symbol.of "map-insert"))
   (output (: (Symbol.of "map-insert") Symbol)))
 
@@ -56,7 +55,6 @@
            exists for: a realization interns to one shared identity so `=` is a handle compare, but
            the OBSERVABLE law is just that two symbols of the same content are equal (core-semantics.md
            #Equality Is Structural). Holds whether or not the two calls are the same call site.")
-  (needs  symbols)
   (input  (= (Symbol.of "map-insert") (Symbol.of "map-insert")))
   (output (: true Bool)))
 
@@ -64,7 +62,6 @@
   (doc    "`(= (Symbol.of \"map-insert\") (Symbol.of \"map-lookup\"))` is false — Symbols of different
            content are distinct (the companion of the idempotence case). Pins that Symbol equality is a
            genuine content test, not a blanket true, so a symbol-table lookup distinguishes names.")
-  (needs  symbols)
   (input  (= (Symbol.of "map-insert") (Symbol.of "map-lookup")))
   (output (: false Bool)))
 
@@ -74,7 +71,6 @@
            content. Pins that identity is content-derived, not derivation-path- or allocation-order-
            derived (memory-and-resource-model.md #Sharing Is Not Observable; deterministic-value-form.md
            #A Value Has One Canonical Byte Form) — a first-seen-order id would make these two distinct.")
-  (needs  symbols)
   (input  (= (Symbol.of (String.concat "map" "-insert")) (Symbol.of "map-insert")))
   (output (: true Bool)))
 
@@ -87,7 +83,6 @@
            content and hands it back as a String. This is the only way to observe a Symbol's content —
            together with `=` it is the whole observable surface, which is why an allocation-order id has
            nothing to attach to. The compiler uses it to render a name back for a diagnostic.")
-  (needs  symbols)
   (input  (Symbol.to-string (Symbol.of "map-insert")))
   (output (: "map-insert" String)))
 
@@ -98,7 +93,6 @@
            Symbols interned from them are equal. This is the reason a Symbol is String-backed rather
            than Bytes-backed — two spellings of one source name intern to one symbol. Companion of the
            13-strings normalization cases, lifted through the Symbol tag.")
-  (needs  symbols)
   (input  (= (Symbol.of "café") (Symbol.of "café")))
   (output (: true Bool)))
 
@@ -110,7 +104,6 @@
   (doc    "`(Symbol.of \"\")` interns the empty string to a Symbol — a first-class value equal only to
            another empty symbol. Pins that interning handles the zero-length name (an anonymous or
            generated name), the Symbol companion of the empty-string and empty-byte-sequence clusters.")
-  (needs  symbols)
   (input  (= (Symbol.of "") (Symbol.of "")))
   (output (: true Bool)))
 
@@ -118,7 +111,6 @@
   (doc    "`(Symbol.to-string (Symbol.of \"\"))` = \"\": the empty symbol's content is the empty
            string. Pins that the round-trip through Symbol.to-string handles the zero-length content,
            not underflowing or reading a phantom scalar.")
-  (needs  symbols)
   (input  (Symbol.to-string (Symbol.of "")))
   (output (: "" String)))
 
@@ -136,7 +128,6 @@
            symbol-table hot path — a name carried at run time compared against a known symbol by a
            handle compare rather than a byte scan. The equality is over a RUNTIME Symbol operand, not
            two constants.")
-  (needs  symbols)
   (input  (do
             (def (resolve s) (if (= s (Symbol.of "map-insert")) 1 0))
             (def (main) (resolve (Symbol.of "map-insert"))) (export main)))
@@ -147,7 +138,6 @@
            compares it to `(Symbol.of \"map-insert\")` and returns 0. Confirms the runtime Symbol
            comparison is a genuine content test (1 for the matching name, 0 for a different one), not a
            blanket answer.")
-  (needs  symbols)
   (input  (do
             (def (resolve s) (if (= s (Symbol.of "map-insert")) 1 0))
             (def (main) (resolve (Symbol.of "other"))) (export main)))
@@ -170,7 +160,6 @@
            Types Are Not Comparable Across Their Boundary). A Symbol never silently compares equal to
            the String it was interned from; to compare content you write
            `(= (Symbol.to-string s) \"x\")`.")
-  (needs  symbols)
   (input  (= (Symbol.of "x") "x"))
   (error  CDZ0202))
 
@@ -178,7 +167,6 @@
   (doc    "The order-flipped companion: `(= \"x\" (Symbol.of \"x\"))` is the same nominal-boundary
            violation regardless of which operand carries the Symbol tag — CDZ0202. Pins that the tag is
            checked on either side of the comparison, mirroring the nominal-record boundary cases.")
-  (needs  symbols)
   (input  (= "x" (Symbol.of "x")))
   (error  CDZ0202))
 
@@ -197,7 +185,6 @@
   (doc    "`#\"map-insert\"` reads to `(Symbol.of \"map-insert\")`, so the two denote one Symbol value
            and `(= #\"map-insert\" (Symbol.of \"map-insert\"))` is true. Pins the reader sugar against
            the canonical form it expands to.")
-  (needs  symbols)
   (input  (= #"map-insert" (Symbol.of "map-insert")))
   (output (: true Bool)))
 
@@ -206,7 +193,6 @@
            form could not carry unambiguously (it would read as member access) — so
            `(= #\"List.at\" (Symbol.of \"List.at\"))` is true. Pins that the string-form literal
            interns arbitrary content, the reason it is `#\"…\"` rather than `#foo`.")
-  (needs  symbols)
   (input  (= #"List.at" (Symbol.of "List.at")))
   (output (: true Bool)))
 
@@ -214,6 +200,5 @@
   (doc    "`#\"\"` reads to `(Symbol.of \"\")`, the empty symbol — `(= #\"\" (Symbol.of \"\"))` is true.
            Pins that the reader sugar handles the zero-length case, the degenerate boundary of the
            literal form.")
-  (needs  symbols)
   (input  (= #"" (Symbol.of "")))
   (output (: true Bool)))

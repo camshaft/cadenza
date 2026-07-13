@@ -337,6 +337,5 @@
            implementation-defined character. Carries `(needs strict-escapes)`: the seed's reader today
            accepts an unknown escape as the bare character, so it SKIPS this case until a generation
            enforces the closed set; a later generation rejects the program.")
-  (needs  strict-escapes)
   (input  "\q")
   (error  CDZ0001))

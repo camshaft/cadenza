@@ -226,8 +226,6 @@
            is the union of the entry's delegations, so the capabilities metadata contains \"log\" (the
            delegation — not the declaration — is the grant, capabilities-and-effects.md #The Program
            Manifest Is The Union Of Its Entrypoints' Delegations).")
-  (needs  collections)
-  (needs  effects)
   (input  (do
             (module m
               (effect log (op emit (-> String Unit)))
@@ -244,7 +242,6 @@
            contain (core-semantics.md #Member Access Projects A Record Field), rejected before lowering
            rather than deferred to a runtime trap. The capability lives in `(meta capabilities)`
            (witnessed by the case above), not among the export fields, so `log` resolves to no export.")
-  (needs  effects)
   (input  (do
             (module m
               (effect log (op emit (-> String Unit)))
@@ -271,7 +268,6 @@
            not silently ignored. THE reason the channel is strict: a dropped meaning-changing directive
            would make one source mean two things on two toolchains. The general-mechanism companion of
            the numeric `default-integer` cases.")
-  (needs  module-pragmas)
   (input  (do
             (module m
               (pragma frobnicate 3)
@@ -285,7 +281,6 @@
            Directive Is Drawn From A Fixed Set, 2nd sentence). Distinct from CDZ0601 (unknown key) and
            from CDZ0303 (a well-formed directive whose type argument fails the integer-domain predicate):
            here the directive is structurally malformed.")
-  (needs  module-pragmas)
   (input  (do
             (module m
               (pragma default-integer)
@@ -301,8 +296,6 @@
            to that definition (applied, it yields 7), while `(. m (meta capabilities))` resolves to the
            manifest — the same spelling in the two channels denotes two different things, which is the
            whole reason metadata lives behind (meta …).")
-  (needs  collections)
-  (needs  effects)
   (input  (do
             (module m
               (effect log (op emit (-> String Unit)))

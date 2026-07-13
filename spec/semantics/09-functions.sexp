@@ -174,7 +174,6 @@
            payload binder; applying it must peel that arrow to type the result. Pins that a closure
            carried in a user-declared sum applies exactly as one in a built-in sum — the callback-in-a-
            variant idiom a user's own event/AST types rely on. `needs sum-type-declaration`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type T (Mk (-> Int64 Int64)))
             (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5))))
@@ -775,7 +774,6 @@
   (doc    "The control the case above must match: `(record (f (fn (x) (+ x 1))))` stores a function in
            field `f`; `(. … f)` extracts it and applying it to 5 yields 6. The seed runs this — a
            function stored in a record is resolved and called. The tuple case must behave identically.")
-  (needs   collections)
   (input   ((. (record (f (fn (x) (+ x 1)))) f) 5))
   (output  (: 6 Int64)))
 
@@ -786,7 +784,6 @@
            Accessing a field inside the lambda body already works, and accessing a directly-written or
            let-bound record works — projecting the record a lambda RETURNS must behave the same, not
            trap. This is the record-builder idiom a compiler uses constantly.")
-  (needs   collections)
   (input   (. ((fn (x) (record (v x))) 7) v))
   (output  (: 7 Int64)))
 
@@ -800,7 +797,6 @@
   (doc    "The same record-builder reached through a named binding: `mk` is a lambda returning a
            record; `(mk 7)` builds {v: 7} and `(. (mk 7) v)` projects 7. Binding the builder to a name
            does not change that its result is an accessible record.")
-  (needs   collections)
   (input   (let ((mk (fn (x) (record (v x)))))
              (. (mk 7) v)))
   (output  (: 7 Int64)))
@@ -858,7 +854,6 @@
            the field, yielding 5. Projecting a field of a nullary function's record result must behave
            like projecting a unary function's record result (above), not trap. The seed traps on the
            nullary case.")
-  (needs   collections)
   (input   (do
              (def (mk) (record (a 5)))
              (def (main) (. (mk) a)) (export main)))

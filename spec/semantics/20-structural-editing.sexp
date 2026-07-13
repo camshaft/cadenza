@@ -258,7 +258,6 @@
            built-in-`Ast` realization of program-transformation-is-a-program; the seed realizes the
            built-in `Ast` only inline (core case above), so composing it across a boundary is the
            increment a later generation lands. `(needs builtin-ast-across-calls)`.")
-  (needs  builtin-ast-across-calls)
   (input  (do
             (def (main) (= (bump (quote 7)) (Ast.Int 8)))
             (def (bump node)
@@ -285,7 +284,6 @@
            applied to `(quote (+ x 0))` it yields `(quote x)`. The rule set looks like the algebra it
            performs — the agent authors intent, not delimiter bookkeeping. `(needs quote-patterns)`;
            also relies on the built-in `Ast` composing across a call (companion above).")
-  (needs  quote-patterns)
   (input  (do
             (def (main) (= (simp (quote (+ x 0))) (quote x)))
             (def (simp node)

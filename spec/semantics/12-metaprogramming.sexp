@@ -42,7 +42,6 @@
   (doc    "Witnesses metaprogramming.md #Eval Is Optional For Macros And Interactive Use: (eval <ast>)
            executes AST as code, optional for macros/REPL. Seed provides it; static generations need
            not. (eval (quote (+ 1 2))) produces 3.")
-  (needs  eval)
   (input  (eval (quote (+ 1 2))))
   (output (: 3 Int64)))
 
@@ -73,7 +72,6 @@
 (case "eval on malformed AST traps"
   (doc    "Witnesses metaprogramming.md #Eval Is Optional: eval on malformed AST traps. An Ast.List
            with no elements is malformed (no operator), so eval traps.")
-  (needs  eval)
   (input  (eval (Ast.List (list))))
   (trap   "malformed AST"))
 
@@ -471,7 +469,6 @@
            a=`(Ast.Int 3)` and b=`(Ast.Int 5)`; the arm returns b, so the AST for 5. Pins the core
            destructuring: unquote is the binder, a literal subterm matches by equality. The catch-all
            `other` is an ordinary bare-name pattern — `,` is meaningful only inside a `` ` `` template.")
-  (needs  quote-patterns)
   (input  (match (quote (+ 3 5))
             (`(+ ,a ,b) b)
             (other      other)))
@@ -482,7 +479,6 @@
            identically. `` `(+ ,a ,b) `` and `(Ast.List (list (Ast.Name \"+\") a b))` matched against the
            same `(quote (+ 1 2))` both bind a=`(Ast.Int 1)`; comparing the two bound values is true. Pins
            the equivalence the form rests on — the pattern adds a surface, not a second mechanism.")
-  (needs  quote-patterns)
   (input  (= (match (quote (+ 1 2)) (`(+ ,a ,b) a) (_ (Ast.Int 0)))
              (match (quote (+ 1 2)) ((Ast.List (list (Ast.Name "+") a b)) a) (_ (Ast.Int 0)))))
   (output (: true Bool)))
@@ -493,7 +489,6 @@
            `(quote (- 3 5))`, whose head is `-`, it does NOT match, so control falls to the `other`
            catch-all. Pins that the literal name in the template constrains the head, not merely the
            arity.")
-  (needs  quote-patterns)
   (input  (match (quote (- 3 5))
             (`(+ ,a ,b) 1)
             (other      0)))
@@ -504,7 +499,6 @@
            reading of `(Ast.List (list (Ast.Name \"f\") a b))`, whose `(list …)` sub-pattern fixes
            length. `(quote (f 1 2 3))` has four elements, so it does NOT match the two-operand pattern and
            falls to the catch-all. Pins fixed arity: variable length is expressed only through `,@`.")
-  (needs  quote-patterns)
   (input  (match (quote (f 1 2 3))
             (`(f ,a ,b) 2)
             (other      9)))
@@ -515,7 +509,6 @@
            matches only an addition whose first operand is an INTEGER LITERAL and binds its value to n.
            Against `(quote (+ 7 x))`, the first operand `(Ast.Int 7)` matches `(Ast.Int n)` binding n=7;
            the arm returns n. Pins that unquote takes a full pattern, not only a bare name.")
-  (needs  quote-patterns)
   (input  (match (quote (+ 7 x))
             (`(+ ,(Ast.Int n) ,b) n)
             (other                0)))
@@ -526,7 +519,6 @@
            pattern-position dual of splicing construction. `` `(f ,@args) `` against `(quote (f 1 2 3))`
            binds args to the list `(Ast.Int 1) (Ast.Int 2) (Ast.Int 3)`; `List.len` of it is 3. Pins the
            tail splice binds the rest and that the elements are a list.")
-  (needs  quote-patterns)
   (input  (match (quote (f 1 2 3))
             (`(f ,@args) (List.len args))
             (other       0)))
@@ -538,7 +530,6 @@
            reads as the surface it lowers. Here a tiny `lower` distinguishes `(+ …)` from everything else
            by quote pattern; against `(quote (+ 4 6))` it selects the add arm and returns the first
            operand's node. Mirrors the construction idiom `` `(op-const ,n) `` on the pattern side.")
-  (needs  quote-patterns)
   (input  (match (quote (+ 4 6))
             (`(+ ,a ,b) a)
             (`(- ,a ,b) b)
@@ -556,7 +547,6 @@
            differently-headed list, none of which it matches. With no bare-name/`_` catch-all arm the
            match does not cover the AST sum and is rejected CDZ0210 — the same rejection a sum match
            missing a variant gets. Pins that quote matching reuses the existing exhaustiveness rule.")
-  (needs  quote-patterns)
   (input  (match (quote (+ 1 2))
             (`(+ ,a ,b) a)))
   (error  CDZ0210))
@@ -573,7 +563,6 @@
            flanked by a fixed tail — an ill-formed quote pattern, rejected CDZ0221
            (options/quote-patterns/quasiquote-pattern.md #Tail Splice Is Final-Position Only). Mirrors the
            binary-form rule that an unsized `bytes` segment is legal only last.")
-  (needs  quote-patterns)
   (input  (match (quote (f 1 2 3))
             (`(f ,@init ,last) last)
             (other             other)))

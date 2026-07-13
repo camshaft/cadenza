@@ -1070,6 +1070,32 @@ pub fn reduce_handle(
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
     let ctx = HandlerCtx::new(db, map, vec![slot]);
+    // ABORTIVE (E4) TYPE-CONSISTENCY GUARD. An abortive arm materializes its BODY as the abort value, which
+    // becomes the value of the position the perform occupied — a position the type checker typed by the
+    // op's declared RESULT type (a perform types as its result, never as the arm value). If the arm body's
+    // type differs from that result type (`bail : Int64 -> Bool` but the arm yields `n : Int64`), the abort
+    // value does not fit where it lands: in a conditional it disagrees with the sibling branch and emits an
+    // ill-typed `if` (invalid wasm). The checker misses this gap, so guard it in the fold — decline when any
+    // abortive arm's body type does not match its operation's result type. (A tail-resumptive arm is already
+    // covered: `resume_result_type_ok` checked its resume value against the result type above.)
+    let undetermined = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Any | crate::ty::Ty::Var(_));
+    let abortive_keys: Vec<(u32, u32)> = ctx.abortive.iter().copied().collect();
+    for (d, i) in abortive_keys {
+        let arm_op = ctx.arms.get(&(d, i))?.op;
+        let arm_body = ctx.arms.get(&(d, i))?.body;
+        let body_ty = crate::infer::type_of(db, arm_body);
+        let result_ty = op_result_type(db, arm_op);
+        // Compare structurally; an undetermined side (an `Any`/var) does not disqualify (the abort value
+        // then flows unconstrained, matching the E4-a strict cases that already work). Only a DEFINITE
+        // disagreement (two concrete, distinct ground types) declines.
+        if let Some(rt) = result_ty
+            && !undetermined(&body_ty)
+            && !undetermined(&rt)
+            && body_ty != rt
+        {
+            return None;
+        }
+    }
     // ABORTIVE (E4) NON-TAIL HOIST. An abort in a strict OPERAND under a conditional — `(+ 100 (if c
     // (Bail.bail 7) 50))` — is not directly foldable (the abort must escape the `+`). But an abort
     // ABANDONS the enclosing computation, so distributing the surrounding strict op INTO both `if` branches
@@ -1193,6 +1219,31 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
                 }
             }
         }
+    }
+    // A SHORT-CIRCUIT connective `(and lhs rhs)` / `(or lhs rhs)` whose RIGHT operand carries an abort is
+    // itself a conditional in disguise — `rhs` runs on only one value of `lhs`. Desugar it to the
+    // equivalent `if` so the abort lands in a branch tail the per-branch capture folds: `(and lhs rhs)` ≡
+    // `(if lhs rhs false)` (rhs runs only when lhs is true), `(or lhs rhs)` ≡ `(if lhs true rhs)` (rhs runs
+    // only when lhs is false). `lhs` becomes the `if` CONDITION — evaluated exactly once either way, so no
+    // duplication and no purity constraint on it (a later hoist pass lifts any abort inside `lhs`, which is
+    // an unconditional strict position — the connective always evaluates lhs). Only fires when `rhs` holds
+    // an abortive perform (a plain short-circuit with no abort threads unchanged). The desugared `if`'s
+    // aborting branch materializes the abort VALUE opposite a Bool constant, so it must be Bool-typed —
+    // guaranteed by the TYPE-CONSISTENCY guard at the top of `reduce_handle` (an abortive arm whose body
+    // type ≠ its op's result type declines before reaching here; a connective operand's op result IS Bool,
+    // so a surviving abortive arm yields Bool). A plain short-circuit with no abort is not a site.
+    if let Resolved::And { lhs, rhs, is_and } = resolved_of(db, node)
+        && subtree_has_abortive_perform(db, rhs, ctx)
+    {
+        let if_head = db.push_atom(Leaf::Name("if".to_string()));
+        let (then_, else_) = if is_and {
+            let false_lit = db.push_atom(Leaf::Bool(false));
+            (rhs, false_lit) // (and lhs rhs) ≡ (if lhs rhs false)
+        } else {
+            let true_lit = db.push_atom(Leaf::Bool(true));
+            (true_lit, rhs) // (or lhs rhs) ≡ (if lhs true rhs)
+        };
+        return Some(db.push_list(vec![if_head, lhs, then_, else_]));
     }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child. A special form
     // (`if`/`let`/`match`) is descended structurally too: a non-tail abort nested in a `let` init or an
