@@ -1616,7 +1616,7 @@ pub fn distinct_sig_resource_core_module(
                 items.extend_from_slice(&export(&mk.export_name, make_abs_base + make_i));
                 make_i += 1;
             }
-            items.extend_from_slice(&export(&format!("call-{gi}"), call_abs_base + gi as u32));
+            items.extend_from_slice(&export(&format!("call-g{gi}"), call_abs_base + gi as u32));
         }
         section(
             wasm_abi::CORE_SEC_EXPORT,

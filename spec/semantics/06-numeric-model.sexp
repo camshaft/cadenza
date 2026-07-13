@@ -744,6 +744,29 @@
   (input  (% -9223372036854775808 -1))
   (output (: 0 Int64)))
 
+(case "a runtime modulo of the minimum integer by -1 is zero on every backend"
+  (doc    "The RUNTIME companion of the constant case above — and the one that catches a backend that only
+           the runtime path reaches. `(% a b)` with a = Int64.min, b = -1 must be 0: `x % -1` is 0 for
+           every x, and modulo forms no quotient so it never overflows (numeric-model §Modulo by -1 is
+           always zero). The constant `(% MIN -1)` folds to 0 at compile time on every backend, so it does
+           NOT exercise a backend's runtime remainder emit; only RUNTIME operands reaching that emit do.
+           The wasm backend's `i64.rem_s` yields 0; the Rust backend must too — a `%` guards ONLY the zero
+           divisor (a wrapping remainder gives the correct 0 at MIN%-1), NOT the MIN/-1 overflow that only
+           `/` has. Contrast the runtime `(/ a b)` at (MIN,-1) below, which genuinely overflows and traps.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (% a b)) (export main)))
+  (call   main (: -9223372036854775808 Int64) (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case "a runtime division of the minimum integer by -1 overflows and traps"
+  (doc    "The RUNTIME companion pinning that `/` (unlike `%`) DOES trap at (MIN,-1): `(/ a b)` with
+           a = Int64.min, b = -1 forms the out-of-range quotient +2^63 and MUST trap, on both backends.
+           Together with the modulo case above this pins the `/`-vs-`%` split at the shared MIN/-1 input —
+           the divergence a backend that treats them identically (e.g. one `checked_rem` for both) gets
+           wrong: `%` must yield 0, `/` must trap.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (/ a b)) (export main)))
+  (call   main (: -9223372036854775808 Int64) (: -1 Int64))
+  (trap   "overflow"))
+
 (case "division of the minimum integer by -1 overflows and traps"
   (doc    "`(/ -9223372036854775808 -1)` = +2^63, which is out of the Int64 range. The compiler can
            prove this overflow via constant folding and rejects at compile time (CDZ0304) rather than

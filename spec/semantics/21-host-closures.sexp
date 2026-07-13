@@ -425,3 +425,135 @@
               (export mk) (export is-pos)))
   (call   is-pos (: 5 Int64))
   (output (: true Bool)))
+
+; DISTINCT-SIGNATURE multi-export — a program exporting closures of DIFFERENT signatures crosses as one
+; resource type PER signature. `inc : (-> Int64 Int64)` and `isz : (-> Int64 Bool)` become resources `t0`
+; and `t1`, each with its own `make-<name>` + `call-g<n>` (the group's shared call). The host picks a
+; closure export by name; the driver calls `make-<name>` → a handle, then the `call-g<n>` whose `self`
+; resource type matches. Each group gets its own `resource.new`/`resource.rep` intrinsics (a core
+; `resource.new` is typed to ONE resource); both closures still share the guest funcref table.
+
+(case "one of two DIFFERENT-signature closure exports is made and called"
+  (doc    "`(def (inc) (fn (x) (+ x 1)))` is `(-> Int64 Int64)` and `(def (isz) (fn (x) (= x 0)))` is
+           `(-> Int64 Bool)` — DIFFERENT signatures, so they cross as two resource types. Calling `inc`
+           drives `make-inc()` (resource t0) then its `call`(5) = 6. Pins that distinct signatures each get
+           their own resource type + make/call, published in one interface.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export inc) (export isz)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "the second distinct-signature closure export returns its own type"
+  (doc    "The SAME two-export program, now calling `isz` (resource t1, a `(-> Int64 Bool)` closure):
+           `make-isz()` then its `call`(0) = true. The `isz` group's `call` returns Bool, distinct from
+           `inc`'s Int64 — proving the two resource types carry independent signatures and results.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export inc) (export isz)))
+  (call   isz (: 0 Int64))
+  (output (: true Bool)))
+
+(case "three distinct closure signatures cross as three resource types"
+  (doc    "`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`, `dbl : (-> Int64 Int64)` — note `inc` and
+           `dbl` SHARE a signature (one resource type, two makes), while `isz` is distinct (its own).
+           Calling `dbl`(7) = 14 exercises the shared-signature group alongside the distinct one. Pins that
+           grouping-by-signature composes: same-signature exports share a resource, distinct ones don't.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (dbl) (fn ((: x Int64)) (* x 2)))
+              (export inc) (export isz) (export dbl)))
+  (call   dbl (: 7 Int64))
+  (output (: 14 Int64)))
+
+; DISTINCT-SIGNATURE composed with MULTI-ARG and CAPTURE — the grouping-by-signature path (each signature
+; its own resource type) composes with the arity/capture machinery, no new compiler work. `add : (-> Int64
+; (-> Int64 Int64))` (two args) and `isz : (-> Int64 Bool)` are distinct signatures → two resource types;
+; `add`'s `call` takes both args. And two CAPTURING producers of distinct signatures (`adder`/`eq`) each
+; forward their captured param through their own resource.
+
+(case "a multi-argument closure among distinct-signature exports"
+  (doc    "`(def (add) (fn (a b) (+ a b)))` is `(-> Int64 (-> Int64 Int64))` (two-arg) and `(def (isz) (fn
+           (x) (= x 0)))` is `(-> Int64 Bool)` — distinct signatures, two resource types. Calling `add`
+           drives `make-add()` then its `call(3, 4)` = 7 — the two-arg `call` on its own resource, alongside
+           the distinct `isz`. Pins that multi-arg composes with distinct-signature grouping.")
+  (input  (do (def (add) (fn ((: a Int64) (: b Int64)) (+ a b)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export add) (export isz)))
+  (call   add (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "distinct-signature capturing producers"
+  (doc    "`(def (adder (: k Int64)) (fn (x) (+ x k)))` → `(-> Int64 Int64)` and `(def (eq (: k Int64)) (fn
+           (x) (= x k)))` → `(-> Int64 Bool)` — distinct signatures, both CAPTURING their `k`. Calling `eq`
+           drives `make-eq(5)` (capturing k=5) then its `call(5)` = true. Pins that make-param capture rides
+           through the per-signature resource, distinct from `adder`'s.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (eq (: k Int64)) (fn ((: x Int64)) (= x k)))
+              (export adder) (export eq)))
+  (call   eq (: 5 Int64) (: 5 Int64))
+  (output (: true Bool)))
+
+; ROUND-TRIP composed with MULTI-ARG and a WIDENED width — the producer/consumer path is arity- and
+; width-agnostic (the consumer's `call_indirect` dispatches the guest lifted body over the ONE table).
+
+(case "a multi-argument closure round-trips through a consumer"
+  (doc    "`(def (mk) (fn (a b) (+ a b)))` produces a two-arg `(-> Int64 (-> Int64 Int64))` closure; `(def
+           (app (: g (-> Int64 (-> Int64 Int64))) (: a Int64) (: b Int64)) (g a b))` applies it with BOTH
+           args. The host `mk()` → a handle → `app(handle, 3, 4)` = 7. Pins that the round trip threads a
+           MULTI-ARG closure back (the consumer's dispatch pushes both args).")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (+ a b)))
+              (def (app (: g (-> Int64 (-> Int64 Int64))) (: a Int64) (: b Int64)) (g a b))
+              (export mk) (export app)))
+  (call   app (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "a round-trip at a widened scalar width (UInt32)"
+  (doc    "The round trip at UInt32, not Int64: `(def (mk (: k UInt32)) (fn (x) (+ x k)))` produces a `(->
+           UInt32 UInt32)` closure; `(def (app (: g (-> UInt32 UInt32)) (: x UInt32)) (g x))` applies it.
+           `mk(100)` → a handle → `app(handle, 7)` = 107. Pins that the producer/consumer boundary crosses
+           a widened scalar width (own<t> + resource.rep dispatch is width-agnostic).")
+  (input  (do (def (mk (: k UInt32)) (fn ((: x UInt32)) (+ x k)))
+              (def (app (: g (-> UInt32 UInt32)) (: x UInt32)) (g x))
+              (export mk) (export app)))
+  (call   app (: 100 UInt32) (: 7 UInt32))
+  (output (: 107 UInt32)))
+
+; STRESS the multi-export paths at higher fan-out — THREE distinct signatures (three resource types, one
+; with a narrower width) and FOUR same-signature exports (one resource, four makes sharing the call) — plus
+; a consumer whose ONLY use of the handed-back closure is to apply it to an INTERNAL constant. Adversarial
+; witnesses that the grouping/sharing machinery holds past the two-export cases above.
+
+(case "three distinct closure signatures cross as three resource types"
+  (doc    "`p : (-> Int64 Int64)`, `q : (-> Int64 Bool)`, `r : (-> Int32 Int32)` — THREE distinct
+           signatures (note `r`'s narrower Int32 width) → three resource types. Calling `r` drives its
+           `make`+`call(5)` = 10. Pins that grouping-by-signature scales past two groups and mixes widths.")
+  (input  (do (def (p) (fn ((: x Int64)) (+ x 1)))
+              (def (q) (fn ((: x Int64)) (= x 0)))
+              (def (r) (fn ((: x Int32)) (* x 2)))
+              (export p) (export q) (export r)))
+  (call   r (: 5 Int32))
+  (output (: 10 Int32)))
+
+(case "four same-signature closure exports share one resource"
+  (doc    "`a`,`b`,`cc`,`dd` are all `(-> Int64 Int64)` → ONE resource type with four `make-<name>`s sharing
+           the one `call`. Calling `cc` drives `make-cc()` then the shared `call(10)` = 13. Pins that the
+           shared-call multi-export scales past two same-signature exports.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x 1)))
+              (def (b) (fn ((: x Int64)) (+ x 2)))
+              (def (cc) (fn ((: x Int64)) (+ x 3)))
+              (def (dd) (fn ((: x Int64)) (+ x 4)))
+              (export a) (export b) (export cc) (export dd)))
+  (call   cc (: 10 Int64))
+  (output (: 13 Int64)))
+
+(case "a consumer applies the handed-back closure to an internal constant"
+  (doc    "`(def (app (: g (-> Int64 Int64))) (g 99))` — the consumer takes ONLY a closure param and applies
+           it to a fixed 99 (no scalar param of its own). With `mk(1)` producing `(+ x 1)`, the host `mk(1)`
+           → a handle → `app(handle)` = (g 99) = 99 + 1 = 100. Pins a consumer whose sole boundary param is
+           the closure (the arg it applies is internal, not a boundary scalar).")
+  (input  (do (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (app (: g (-> Int64 Int64))) (g 99))
+              (export mk) (export app)))
+  (call   app (: 1 Int64))
+  (output (: 100 Int64)))

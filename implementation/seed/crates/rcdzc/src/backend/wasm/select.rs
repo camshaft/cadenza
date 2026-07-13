@@ -7416,7 +7416,20 @@ fn emit_wrap(
     // sign-extend) genuinely reshapes the value, so it keeps the truncation. (Signedness must match: even
     // at equal width, `Int8.wrap(UInt8)` reinterprets the top bit.)
     let truncation_is_identity = src.width <= dst.width && src.signed == dst.signed;
-    if dst.narrow() && !truncation_is_identity {
+    // RANGE-BASED elision: even when the SOURCE TYPE is wider (or a different sign), the truncation is a
+    // no-op if the operand's VALUE provably already lies in the target's `[min_N, max_N]` — then its low
+    // N bits already encode it and the high slot bits are the correct sign extension, so masking/
+    // sign-extending changes nothing. `UInt8.wrap(& x 255)` (operand ∈ [0,255], Int64-typed) and a wrap of
+    // a flow-refined value shed the mask. Consults the same lattice as the guard-elision checks.
+    //
+    // `bounds()` is only defined for a NARROW width (`1u64 << 64` overflows), so it is consulted STRICTLY
+    // behind the `dst.narrow()` guard — a full-width `wrap` (`UInt64.wrap`, `Int64.wrap`) never masks and
+    // never queries the range.
+    let operand_fits = dst.narrow() && {
+        let (min_n, max_n) = dst.bounds();
+        crate::lower::value_range_within(db, operand, min_n, max_n)
+    };
+    if dst.narrow() && !truncation_is_identity && !operand_fits {
         let slot_bits = dst.slot_bits();
         if dst.signed {
             // Sign-extend from bit N-1: `(x << (M-N)) >> (M-N)` with arithmetic (signed) shr. This both

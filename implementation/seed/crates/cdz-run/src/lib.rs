@@ -715,11 +715,12 @@ fn run_closure_resource(
     let iface = instance
         .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
         .ok_or_else(|| anyhow!("closure escape: no `{CLOSURE_INTERFACE}` instance export"))?;
-    // ROUND-TRIP (C-HOST-4): a program with producer + consumer exports has NO `call` method. The corpus
-    // `(call <consumer> args…)` names the consumer; the sole PRODUCER (the other func) mints the closure.
-    // Detected by the absence of a `call` export in the interface.
     let iface_funcs = closure_interface_funcs(engine, component);
-    if !iface_funcs.iter().any(|f| f == "call") {
+    // ROUND-TRIP (C-HOST-4): producer + consumer exports, NO `call` method AND NO per-signature `call-g<n>`
+    // (a distinct-sig program also lacks a bare `call` but has `call-g0` — handled below). The corpus
+    // `(call <consumer> args…)` names the consumer; the sole PRODUCER (the other func) mints the closure.
+    let has_call_g = iface_funcs.iter().any(|f| f == "call-g0");
+    if !iface_funcs.iter().any(|f| f == "call") && !has_call_g {
         let consumer = export.ok_or_else(|| {
             anyhow!("round-trip closure: no --call given (name the CONSUMER export)")
         })?;
@@ -731,6 +732,94 @@ fn run_closure_resource(
             })?
             .clone();
         return run_roundtrip_closure(&mut *store, instance, &iface, consumer, &producer, arg_strs);
+    }
+    // DISTINCT-SIGNATURE multi-export: no bare `call`, but per-signature `call-g<n>` functions (each bound
+    // to its own resource type). The corpus `(call <name> …)` names a closure export → `make-<name>`; the
+    // matching call is the `call-g<n>` whose `self` param resource type equals `make-<name>`'s RESULT
+    // resource type.
+    if has_call_g {
+        let name = export.ok_or_else(|| {
+            anyhow!("distinct-sig closure: no --call given (name a closure export)")
+        })?;
+        let make_name = format!("make-{name}");
+        let make_idx = instance
+            .get_export_index(&mut *store, Some(&iface), &make_name)
+            .ok_or_else(|| anyhow!("distinct-sig closure: no `{make_name}`"))?;
+        let make = instance
+            .get_func(&mut *store, make_idx)
+            .ok_or_else(|| anyhow!("distinct-sig closure: `{make_name}` is not a function"))?;
+        // `make`'s result resource type — pair it with the `call-g<n>` whose first param is that same type.
+        let make_result = make.results(&*store).first().cloned();
+        let want_res = match &make_result {
+            Some(Type::Own(rt)) | Some(Type::Borrow(rt)) => *rt,
+            other => {
+                return Err(anyhow!(
+                    "distinct-sig closure: `{make_name}` does not return a resource ({other:?})"
+                ));
+            }
+        };
+        // Find the matching call among `call-g<n>` funcs.
+        let call_name = iface_funcs
+            .iter()
+            .filter(|f| f.starts_with("call-g"))
+            .find(|cn| {
+                let Some(idx) = instance.get_export_index(&mut *store, Some(&iface), cn) else {
+                    return false;
+                };
+                let Some(cf) = instance.get_func(&mut *store, idx) else {
+                    return false;
+                };
+                matches!(cf.params(&*store).first().map(|(_, t)| t.clone()),
+                    Some(Type::Own(rt)) | Some(Type::Borrow(rt)) if rt == want_res)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!("distinct-sig closure: no `call-g<n>` matches `{make_name}`'s resource")
+            })?;
+        let call_idx = instance
+            .get_export_index(&mut *store, Some(&iface), &call_name)
+            .ok_or_else(|| anyhow!("distinct-sig closure: no `{call_name}`"))?;
+        let call = instance
+            .get_func(&mut *store, call_idx)
+            .ok_or_else(|| anyhow!("distinct-sig closure: `{call_name}` is not a function"))?;
+        // Split args by make's arity (as the multi-export path does).
+        let make_param_types: Vec<Type> = make
+            .params(&*store)
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        let n_make = make_param_types.len();
+        if arg_strs.len() < n_make {
+            return Err(anyhow!(
+                "distinct-sig closure: `{make_name}` needs {n_make} arg(s)"
+            ));
+        }
+        let make_args = coerce_args(&arg_strs[..n_make], &make_param_types)?;
+        let mut handle = [Val::Bool(false)];
+        if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
+            return Ok(Outcome::Trap(format!("{e}")));
+        }
+        let _ = make.post_return(&mut *store);
+        let param_types: Vec<Type> = call
+            .params(&*store)
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        let coerced = coerce_args(&arg_strs[n_make..], param_types.get(1..).unwrap_or(&[]))?;
+        let mut call_args = vec![handle[0].clone()];
+        call_args.extend(coerced);
+        let mut out = [Val::Bool(false)];
+        return match call.call(&mut *store, &call_args, &mut out) {
+            Ok(()) => {
+                let _ = call.post_return(&mut *store);
+                Ok(Outcome::Value(match out.first() {
+                    None => "unit".to_string(),
+                    Some(Val::String(s)) => s.clone(),
+                    Some(other) => render_val(other),
+                }))
+            }
+            Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+        };
     }
     // The make function to call: a single-export program publishes a bare `make`; a MULTI-EXPORT program
     // publishes `make-<name>` per closure export, and the corpus `(call <name> …)` picks which. Try

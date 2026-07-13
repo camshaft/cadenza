@@ -110,6 +110,40 @@ fn rustc_roundtrip_narrow_literal_operand_computes_and_traps() {
 }
 
 #[test]
+fn modulo_emits_a_zero_divisor_guard_not_checked_rem() {
+    // A `%` traps ONLY on a zero divisor — NOT on `MIN % -1` (which is a defined 0; modulo forms no
+    // quotient, so it has no overflow — numeric-model §Modulo by -1 is always zero). Rust's `checked_rem`
+    // WRONGLY returns None at `MIN % -1`, so it must NOT be used: the emit guards the zero divisor and
+    // uses `wrapping_rem` (0 at MIN%-1, matching wasm `i64.rem_s`). Contrast `/`, which keeps checked_div
+    // (MIN/-1 genuinely overflows and traps).
+    let rem = compile_rust("(module m (def (r (: a Int64) (: b Int64)) (% a b)) (export r))");
+    assert!(
+        rem.contains("wrapping_rem") && !rem.contains("checked_rem"),
+        "modulo must use a guarded wrapping_rem, not checked_rem:\n{rem}"
+    );
+    let div = compile_rust("(module m (def (d (: a Int64) (: b Int64)) (/ a b)) (export d))");
+    assert!(
+        div.contains("checked_div"),
+        "division keeps checked_div (MIN/-1 overflows and traps):\n{div}"
+    );
+}
+
+#[test]
+fn rustc_roundtrip_modulo_min_by_neg1_is_zero_not_a_trap() {
+    // End-to-end through rustc: `(% a b)` at (Int64.min, -1) MUST return 0 on the Rust backend, matching
+    // wasm `i64.rem_s`. Before the fix the emitted `checked_rem(MIN, -1)` returned None and PANICKED — a
+    // wrong trap where the value must be 0. All signed widths share the emit; Int64 is the witness.
+    let rs = compile_rust("(module m (def (r (: a Int64) (: b Int64)) (% a b)) (export r))");
+    if let Some(out) = rustc_run(&rs, "r(i64::MIN, -1)") {
+        assert_eq!(out, "0", "MIN % -1 must be 0, not a panic");
+    }
+    // A normal modulo still computes, and the sign follows the dividend.
+    if let Some(out) = rustc_run(&rs, "r(-7, 2)") {
+        assert_eq!(out, "-1");
+    }
+}
+
+#[test]
 fn a_narrow_signed_negative_constant_uses_the_bit_pattern_cast() {
     // -56 : Int8 is emitted as `200u8 as i8` (the two's-complement bit pattern), mirroring the wasm
     // backend's `to_i32_bits` (tests.rs `a_narrow_signed_...` expects -56 from a UInt8 wrap).

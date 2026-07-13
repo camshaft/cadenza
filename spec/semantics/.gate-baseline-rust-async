@@ -360,6 +360,7 @@ pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
+pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
@@ -997,6 +998,7 @@ todo	a returned runtime string with a non-printable scalar renders it verbatim, 
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime closure compares its argument to a captured value in a branch
 todo	a runtime closure whose body calls a recursive top-level function
+todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned

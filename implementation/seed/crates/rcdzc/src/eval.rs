@@ -323,13 +323,24 @@ fn pin_free_vars(db: &mut Db, node: StructId, lam_body: StructId, own_params: &[
     }
 }
 
-/// The binder occurrence a name reference resolves to (following `Ref`s / a `Param`), or `None` if it is
-/// not a resolvable reference to a binding (a prelude/global name, a literal, a form). Used to tell a
-/// captured free variable (binder outside the lambda) from a local one.
+/// The binder occurrence a name reference resolves to (following `Ref`s / a `Param`, or a `Lambda`'s
+/// body), or `None` if it is not a resolvable reference to a binding (a prelude/global name, a literal, a
+/// form). Used by `pin_free_vars` to tell a captured free variable (binding OUTSIDE the lambda) from a
+/// body-local one via `is_within(binder, lam_body)`.
+///
+/// A `Lambda` resolution has no single binder occurrence — its representative is the lambda's BODY, which
+/// gives exactly the right `is_within` discrimination: a do-local / module-SIBLING function def (its body
+/// is a sibling, OUTSIDE the enclosing lambda's body) is a capture and MUST be pinned — otherwise the
+/// β-copy re-parents the reference into an orphan and re-resolving it against the copy's scope finds
+/// nothing (a spurious CDZ0101, the do-local/module `(def (f x) (+ (dbl x) 1))` bug). A body-INTERNAL
+/// nested def (its body lies WITHIN the lambda body) is not a capture — it re-resolves against the copy.
+/// A top-level def also resolves to a `Lambda`; pinning its reference is harmless (it re-resolves to the
+/// same def by name regardless of position), exactly as pinning a top-level VALUE def's `Ref` already is.
 fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
     match resolved_of(db, id) {
         Resolved::Param { binder } => Some(binder),
         Resolved::Ref { value } => Some(value),
+        Resolved::Lambda { body, .. } => Some(body),
         _ => None,
     }
 }

@@ -355,13 +355,19 @@ the component type. The new work:
   🔑 the group's `call_indirect` functype index = `defined_type_base + order.len() + lifted_slot` (the
   distinct-sig core's TYPE layout differs from multi-export's — only ONE shared `(i32)->i32` rintr functype
   regardless of G — so `layout.lifted_type_index` is NOT reusable). +1 serializer unit test (2 groups, valid).
-- **NEXT: DISTINCT-SIGNATURE ENVELOPE + EMIT + HOST** — the compiler still declines "closures of DIFFERENT
-  signatures" (mod.rs). Remaining: (a) `envelope::assemble_distinct_sig_resource` — N dtors, N resource
-  types, N resource-new/rep canon pairs (bound to each resource), an inner component importing/re-exporting
-  N resources + each fn ascribed to its own (model = oracle `distinct_sig_inner_component`); (b) `emit`
-  groups exports by signature → builds `SigGroup`s → routes to `emit_distinct_sig_resource`; (c) `cdz-run`
-  drives `make-<name>` + `call-<g>` (the group's call is named `call-<g>`, not a bare `call`). Then only the
-  compound-closure-arg and the wasmtime-blocked borrow<t> remain.
+- **✅✅ DISTINCT-SIGNATURE MULTI-EXPORT COMPLETE — END-TO-END `@c9faa6e8`.** Closures of DIFFERENT
+  signatures now compile + compose + the host drives each. (a) `envelope::assemble_distinct_sig_resource` +
+  `resource_inner_component_distinct_sig` + `component_instantiate_distinct_sig_item` — G dtors, G resource
+  types, G resource-new/rep pairs, an inner component importing/re-exporting all G resources with each fn
+  ascribed to its own. (b) `emit_distinct_sig_resource` (mod.rs) groups exports by signature → `SigGroup`s +
+  `SigGroupAbi`s (a group's `call_indirect` functype = the first lifted lambda matching by valtype shape);
+  replaces the "DIFFERENT signatures" decline. (c) `cdz-run` distinct-sig branch: `(call <name>)` →
+  `make-<name>` → the `call-g<n>` whose `self` resource type matches. 🔑🔑 TWO BUGS: (1) `import_base` off by
+  2*(G-1) — added `resource_escape_build_n(intrinsics=2*G)`; (2) the KEBAB gotcha AGAIN — `call-0` numeric
+  segment fails wasmtime's extern-name check → renamed `call-g<n>`. e2e: inc(5)=6/isz(0)=true, 3-export mix
+  (inc+dbl share a resource, isz distinct) dbl(7)=14. +3 corpus (→33p). Gate 1202p/0f.
+- **REMAINING (both optional, none blocking):** (5) a compound/closure-typed closure ARG; the wasmtime-
+  blocked `borrow<t>` repeated-call handle. Everything else in the closures-across-host vertical is DONE.
 
 ## Risks / open questions
 
