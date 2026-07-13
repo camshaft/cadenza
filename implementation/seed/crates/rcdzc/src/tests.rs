@@ -2685,8 +2685,14 @@ fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
     let s8 = "(module m (def (f (: x Int8)) (* (: (* x 2) Int8) 4)) (export f))";
     let b8 = compile_component(&crate::codec::encode(&parse(s8))).expect("compile");
     assert_eq!(run_returns_with::<i8>(&b8, "f", &[Val::S8(15)]), 120);
-    assert!(call_traps(&b8, "f", &[Val::S8(20)]), "outer Int8 overflow (160) traps");
-    assert!(call_traps(&b8, "f", &[Val::S8(100)]), "inner Int8 overflow (200) traps");
+    assert!(
+        call_traps(&b8, "f", &[Val::S8(20)]),
+        "outer Int8 overflow (160) traps"
+    );
+    assert!(
+        call_traps(&b8, "f", &[Val::S8(100)]),
+        "inner Int8 overflow (200) traps"
+    );
 }
 
 /// An exported comparison `(def (lt (: a Int64) (: b Int64)) (< a b))` runs to a boolean over runtime
@@ -4352,23 +4358,75 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let rems = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64RemS | Lir::I64RemU)).count();
+        let rems = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64RemS | Lir::I64RemU))
+                .count()
+        };
         // `N | M` (10 | 100, 5 | 100) collapse to ONE rem; `N ∤ M` (7 ∤ 100) keeps TWO.
-        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)")), 1, "10 | 100 → one rem");
-        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 5) Int64)")), 1, "5 | 100 → one rem");
-        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 7) Int64)")), 2, "7 ∤ 100 → two rems");
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)")),
+            1,
+            "10 | 100 → one rem"
+        );
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 5) Int64)")),
+            1,
+            "5 | 100 → one rem"
+        );
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 100) Int64) 7) Int64)")),
+            2,
+            "7 ∤ 100 → two rems"
+        );
         // Equal divisors collapse too (N | N): `(% (% x 10) 10)` → `(% x 10)`.
-        assert_eq!(rems(&lir("(: x Int64)", "(: (% (: (% x 10) Int64) 10) Int64)")), 1, "10 | 10 → one rem");
+        assert_eq!(
+            rems(&lir("(: x Int64)", "(: (% (: (% x 10) Int64) 10) Int64)")),
+            1,
+            "10 | 10 → one rem"
+        );
 
         // VALUE PARITY across signs; the non-dividing case computes its (distinct) real result.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)", &[Val::S64(12347)]), 7);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)", &[Val::S64(-25)]), -5);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 10) Int64)", &[Val::S64(-105)]), -5);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 10) Int64)",
+                &[Val::S64(12347)]
+            ),
+            7
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 10) Int64)",
+                &[Val::S64(-25)]
+            ),
+            -5
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 10) Int64)",
+                &[Val::S64(-105)]
+            ),
+            -5
+        );
         // 7 ∤ 100: (101 % 100) % 7 = 1 % 7 = 1 (NOT 101 % 7 = 3) — the non-collapse is the correct answer.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (: (% x 100) Int64) 7) Int64)", &[Val::S64(101)]), 1);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (% x 100) Int64) 7) Int64)",
+                &[Val::S64(101)]
+            ),
+            1
+        );
         // TRAP PRESERVATION: `v` stays the operand, so a trapping `(/ 100 z)` inside still ÷0-traps.
         assert!(
-            traps("(: z Int64)", "(% (: (% (: (/ 100 z) Int64) 100) Int64) 10)", &[Val::S64(0)]),
+            traps(
+                "(: z Int64)",
+                "(% (: (% (: (/ 100 z) Int64) 100) Int64) 10)",
+                &[Val::S64(0)]
+            ),
             "the nested-modulo collapse keeps a trapping operand's trap"
         );
     }
@@ -4813,23 +4871,67 @@ mod runtime_ops {
         );
 
         // VALUE PARITY across signs + widths: clearing the low k bits, MIN/MAX boundaries, no false trap.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(255)]), 240);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(-1)]), -16);
         assert_eq!(
-            run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(i64::MIN)]),
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(255)]
+            ),
+            240
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(-1)]
+            ),
+            -16
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(i64::MIN)]
+            ),
             i64::MIN,
             "MIN cleared of its (already-zero) low bits stays MIN — no overflow"
         );
         assert_eq!(
-            run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(i64::MAX)]),
+            run::<i64>(
+                "(: x Int64)",
+                "(: (<< (: (>> x 4) Int64) 4) Int64)",
+                &[Val::S64(i64::MAX)]
+            ),
             i64::MAX - 15
         );
         // Narrow Int8: `(<< (>> x 3) 3)` clears the low 3 bits; MIN stays MIN (no overflow).
-        assert_eq!(run::<i8>("(: x Int8)", "(: (<< (: (>> x 3) Int8) 3) Int8)", &[Val::S8(127)]), 120);
-        assert_eq!(run::<i8>("(: x Int8)", "(: (<< (: (>> x 3) Int8) 3) Int8)", &[Val::S8(-128)]), -128);
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (<< (: (>> x 3) Int8) 3) Int8)",
+                &[Val::S8(127)]
+            ),
+            120
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8)",
+                "(: (<< (: (>> x 3) Int8) 3) Int8)",
+                &[Val::S8(-128)]
+            ),
+            -128
+        );
         // The idiom NEVER traps (even at MAX, where a bare `<< 4` would); a genuine `<< 4` overflow still does.
-        assert!(!traps("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(i64::MAX)]));
-        assert!(traps("(: x Int64)", "(: (<< x 4) Int64)", &[Val::S64(1i64 << 60)]));
+        assert!(!traps(
+            "(: x Int64)",
+            "(: (<< (: (>> x 4) Int64) 4) Int64)",
+            &[Val::S64(i64::MAX)]
+        ));
+        assert!(traps(
+            "(: x Int64)",
+            "(: (<< x 4) Int64)",
+            &[Val::S64(1i64 << 60)]
+        ));
     }
 
     #[test]
@@ -5443,22 +5545,70 @@ mod runtime_ops {
                 .count()
         };
         // TAUTOLOGIES fold — no comparison remains.
-        assert_eq!(cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 20) Bool)")), 0, "shr [0,15] < 20 → folded");
-        assert_eq!(cmps(&lir("(: x Int64)", "(: (< (% (: (& x 255) Int64) 10) 10) Bool)")), 0, "rem [0,9] < 10 → folded");
+        assert_eq!(
+            cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 20) Bool)")),
+            0,
+            "shr [0,15] < 20 → folded"
+        );
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (< (% (: (& x 255) Int64) 10) 10) Bool)"
+            )),
+            0,
+            "rem [0,9] < 10 → folded"
+        );
         // NON-tautology (const inside the range) KEEPS its compare.
-        assert_eq!(cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 8) Bool)")), 1, "shr [0,15] < 8 → runtime compare");
+        assert_eq!(
+            cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 8) Bool)")),
+            1,
+            "shr [0,15] < 8 → runtime compare"
+        );
 
         // VALUE PARITY: the folded tautologies are true; a non-tautology computes correctly.
-        assert_eq!(run::<i64>("(: x UInt64)", "(if (< (>> x 60) 20) 111 222)", &[Val::U64(12345)]), 111);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (< (% (: (& x 255) Int64) 10) 10) 111 222)", &[Val::S64(12345)]), 111);
-        assert_eq!(run::<i64>("(: x UInt64)", "(if (< (>> x 60) 8) 111 222)", &[Val::U64(12345)]), 111); // 12345>>60=0 < 8
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (< (>> x 60) 20) 111 222)",
+                &[Val::U64(12345)]
+            ),
+            111
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (< (% (: (& x 255) Int64) 10) 10) 111 222)",
+                &[Val::S64(12345)]
+            ),
+            111
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (< (>> x 60) 8) 111 222)",
+                &[Val::U64(12345)]
+            ),
+            111
+        ); // 12345>>60=0 < 8
 
         // TRAP SAFETY: a LEFT shift is NOT trap-free (it can overflow), so a `(>= (<< x 2) MIN)` tautology
         // is NOT folded and a genuine overflow still traps; a RUNTIME-divisor `%` likewise traps on ÷0.
-        assert!(traps("(: x Int64)", "(>= (<< x 2) -9223372036854775808)", &[Val::S64(1i64 << 62)]),
-            "a left-shift overflow must still trap (<< is not trap-free)");
-        assert!(traps("(: x Int64) (: d Int64)", "(< (% (: (& x 255) Int64) d) 300)", &[Val::S64(12345), Val::S64(0)]),
-            "a runtime-divisor rem must still trap on ÷0 (not trap-free)");
+        assert!(
+            traps(
+                "(: x Int64)",
+                "(>= (<< x 2) -9223372036854775808)",
+                &[Val::S64(1i64 << 62)]
+            ),
+            "a left-shift overflow must still trap (<< is not trap-free)"
+        );
+        assert!(
+            traps(
+                "(: x Int64) (: d Int64)",
+                "(< (% (: (& x 255) Int64) d) 300)",
+                &[Val::S64(12345), Val::S64(0)]
+            ),
+            "a runtime-divisor rem must still trap on ÷0 (not trap-free)"
+        );
     }
 
     #[test]
@@ -5596,27 +5746,67 @@ mod runtime_ops {
             "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 255) x)) (def (main) 0) (export main))",
             "f",
         );
-        assert_eq!(ands(&elided), 0, "the redundant `& 255` under x∈[0,255] is elided, got: {elided:?}");
+        assert_eq!(
+            ands(&elided),
+            0,
+            "the redundant `& 255` under x∈[0,255] is elided, got: {elided:?}"
+        );
         // CONTRAST: an UNREFINED signed `(& x 255)` (x full-range Int64) KEEPS the mask — it really narrows.
         let kept = select(
             "(module m (def (f (: x Int64)) (& x 255)) (def (main) 0) (export main))",
             "f",
         );
-        assert_eq!(ands(&kept), 1, "an unrefined signed mask must be kept, got: {kept:?}");
+        assert_eq!(
+            ands(&kept),
+            1,
+            "an unrefined signed mask must be kept, got: {kept:?}"
+        );
         // A mask that only PARTIALLY covers the refined range is NOT redundant — `(& x 15)` under x∈[0,255]
         // (x can set bits above bit 3) must stay.
         let partial = select(
             "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 15) x)) (def (main) 0) (export main))",
             "f",
         );
-        assert_eq!(ands(&partial), 1, "a partial mask (& 15) under x∈[0,255] is NOT redundant, got: {partial:?}");
+        assert_eq!(
+            ands(&partial),
+            1,
+            "a partial mask (& 15) under x∈[0,255] is NOT redundant, got: {partial:?}"
+        );
 
         // VALUE PARITY: the elided-mask path returns x in range; out of range takes the else; the partial
         // mask still masks.
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 255) x)", &[Val::S64(200)]), 200);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 255) x)", &[Val::S64(1000)]), 1000);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 255) x)", &[Val::S64(0)]), 0);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (& x 15) x)", &[Val::S64(200)]), 8); // 200&15
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
+                &[Val::S64(200)]
+            ),
+            200
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
+                &[Val::S64(1000)]
+            ),
+            1000
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
+                &[Val::S64(0)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 15) x)",
+                &[Val::S64(200)]
+            ),
+            8
+        ); // 200&15
     }
 
     #[test]
@@ -5657,28 +5847,72 @@ mod runtime_ops {
             "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 255) x)) (def (main) 0) (export main))",
             "f",
         );
-        assert_eq!(ors(&refined), 0, "the saturating `| 255` under x∈[0,255] folds to 255, got: {refined:?}");
+        assert_eq!(
+            ors(&refined),
+            0,
+            "the saturating `| 255` under x∈[0,255] folds to 255, got: {refined:?}"
+        );
         // LOWER-time unsigned: `UInt8 | 255` → 255 (the type bounds x to [0,255]).
         let unsigned = select(
             "(module m (def (f (: x UInt8)) (| x 255)) (def (main) 0) (export main))",
             "f",
         );
-        assert_eq!(ors(&unsigned), 0, "UInt8 `| 255` saturates to 255 at lower time, got: {unsigned:?}");
+        assert_eq!(
+            ors(&unsigned),
+            0,
+            "UInt8 `| 255` saturates to 255 at lower time, got: {unsigned:?}"
+        );
         // A PARTIAL mask (`| 15` under x∈[0,255]) is NOT a saturation — bits 4-7 of x survive, so it stays.
         let partial = select(
             "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 15) x)) (def (main) 0) (export main))",
             "f",
         );
-        assert_eq!(ors(&partial), 1, "a partial `| 15` under x∈[0,255] is kept, got: {partial:?}");
+        assert_eq!(
+            ors(&partial),
+            1,
+            "a partial `| 15` under x∈[0,255] is kept, got: {partial:?}"
+        );
 
         // VALUE PARITY: saturates to the constant in range; else branch out of range; partial still ORs.
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 255) x)", &[Val::S64(200)]), 255);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 255) x)", &[Val::S64(0)]), 255);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 255) x)", &[Val::S64(1000)]), 1000);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 15) x)", &[Val::S64(200)]), 207); // 200|15
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
+                &[Val::S64(200)]
+            ),
+            255
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
+                &[Val::S64(0)]
+            ),
+            255
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
+                &[Val::S64(1000)]
+            ),
+            1000
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (| x 15) x)",
+                &[Val::S64(200)]
+            ),
+            207
+        ); // 200|15
         // TRAP PRESERVATION: the `|` fold DISCARDS x, so a trapping `(& (/ 100 z) 7)` still ÷0-traps.
         assert!(
-            traps("(: z Int64)", "(| (: (& (: (/ 100 z) Int64) 7) Int64) 255)", &[Val::S64(0)]),
+            traps(
+                "(: z Int64)",
+                "(| (: (& (: (/ 100 z) Int64) 7) Int64) 255)",
+                &[Val::S64(0)]
+            ),
             "the saturating-or fold must not drop a trapping operand"
         );
     }
@@ -5723,20 +5957,61 @@ mod runtime_ops {
                 .count()
         };
         // `(& (| x 15) 15)` and `(& (| x 255) 15)` both absorb to the constant `15` — no bit ops.
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 15) Int64)")), 0, "C2==C1 → absorbed");
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (| x 255) Int64) 15) Int64)")), 0, "C2 ⊂ C1 → absorbed");
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 15) Int64)")),
+            0,
+            "C2==C1 → absorbed"
+        );
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (| x 255) Int64) 15) Int64)")),
+            0,
+            "C2 ⊂ C1 → absorbed"
+        );
         // Constant on the LEFT of the outer `&` works too.
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (& 15 (: (| x 15) Int64)) Int64)")), 0, "left-const → absorbed");
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& 15 (: (| x 15) Int64)) Int64)")),
+            0,
+            "left-const → absorbed"
+        );
         // A mask NOT covered (`240 ⊄ 15`) is NOT absorbed — both ops stay.
-        assert_eq!(bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 240) Int64)")), 2, "C2 ⊄ C1 → kept");
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 240) Int64)")),
+            2,
+            "C2 ⊄ C1 → kept"
+        );
 
         // VALUE PARITY: absorbed cases → the constant; the non-covered case computes the real result.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& (: (| x 15) Int64) 15) Int64)", &[Val::S64(12345)]), 15);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& (: (| x 255) Int64) 15) Int64)", &[Val::S64(12345)]), 15);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& (: (| x 15) Int64) 240) Int64)", &[Val::S64(12345)]), (12345 | 15) & 240);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& (: (| x 15) Int64) 15) Int64)",
+                &[Val::S64(12345)]
+            ),
+            15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& (: (| x 255) Int64) 15) Int64)",
+                &[Val::S64(12345)]
+            ),
+            15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& (: (| x 15) Int64) 240) Int64)",
+                &[Val::S64(12345)]
+            ),
+            (12345 | 15) & 240
+        );
         // TRAP PRESERVATION: the fold DISCARDS `v`, so a trapping `(/ 100 z)` keeps its ÷0 trap.
         assert!(
-            traps("(: z Int64)", "(& (: (| (: (/ 100 z) Int64) 15) Int64) 15)", &[Val::S64(0)]),
+            traps(
+                "(: z Int64)",
+                "(& (: (| (: (/ 100 z) Int64) 15) Int64) 15)",
+                &[Val::S64(0)]
+            ),
             "the or-then-mask absorption must not drop a trapping operand"
         );
     }
@@ -7459,26 +7734,93 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let xors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor)).count();
+        let xors = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor))
+                .count()
+        };
         // Runtime `w`, constant `w`, commuted inner, and outer order — ALL cancel to zero xors.
-        assert_eq!(xors(&lir("(: x Int64) (: y Int64)", "(: (^ (: (^ x y) Int64) y) Int64)")), 0, "runtime w cancels");
-        assert_eq!(xors(&lir("(: x Int64)", "(: (^ (: (^ x 5) Int64) 5) Int64)")), 0, "constant w cancels");
-        assert_eq!(xors(&lir("(: x Int64) (: y Int64)", "(: (^ (: (^ y x) Int64) y) Int64)")), 0, "commuted inner cancels");
-        assert_eq!(xors(&lir("(: x Int64) (: y Int64)", "(: (^ y (: (^ x y) Int64)) Int64)")), 0, "outer order cancels");
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (^ (: (^ x y) Int64) y) Int64)"
+            )),
+            0,
+            "runtime w cancels"
+        );
+        assert_eq!(
+            xors(&lir("(: x Int64)", "(: (^ (: (^ x 5) Int64) 5) Int64)")),
+            0,
+            "constant w cancels"
+        );
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (^ (: (^ y x) Int64) y) Int64)"
+            )),
+            0,
+            "commuted inner cancels"
+        );
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (^ y (: (^ x y) Int64)) Int64)"
+            )),
+            0,
+            "outer order cancels"
+        );
         // A masked (trap-free, non-constant) `w` cancels too — the whole `(& y 15)` drops.
-        let masked = lir("(: x Int64) (: y Int64)", "(: (^ (: (^ x (: (& y 15) Int64)) Int64) (: (& y 15) Int64)) Int64)");
+        let masked = lir(
+            "(: x Int64) (: y Int64)",
+            "(: (^ (: (^ x (: (& y 15) Int64)) Int64) (: (& y 15) Int64)) Int64)",
+        );
         assert_eq!(xors(&masked), 0, "masked w cancels");
-        assert!(!masked.iter().any(|i| matches!(i, Lir::I64And)), "the discarded masked w drops entirely");
+        assert!(
+            !masked.iter().any(|i| matches!(i, Lir::I64And)),
+            "the discarded masked w drops entirely"
+        );
         // A DIFFERENT second operand does NOT cancel: `(^ (^ x y) z)` keeps both xors.
-        assert_eq!(xors(&lir("(: x Int64) (: y Int64) (: z Int64)", "(: (^ (: (^ x y) Int64) z) Int64)")), 2, "distinct w does not cancel");
+        assert_eq!(
+            xors(&lir(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(: (^ (: (^ x y) Int64) z) Int64)"
+            )),
+            2,
+            "distinct w does not cancel"
+        );
 
         // VALUE PARITY.
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (^ (: (^ x y) Int64) y) Int64)", &[Val::S64(12345), Val::S64(6789)]), 12345);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (: (^ x 5) Int64) 5) Int64)", &[Val::S64(999)]), 999);
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (^ y (: (^ x y) Int64)) Int64)", &[Val::S64(-7), Val::S64(42)]), -7);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (^ (: (^ x y) Int64) y) Int64)",
+                &[Val::S64(12345), Val::S64(6789)]
+            ),
+            12345
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (^ (: (^ x 5) Int64) 5) Int64)",
+                &[Val::S64(999)]
+            ),
+            999
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (^ y (: (^ x y) Int64)) Int64)",
+                &[Val::S64(-7), Val::S64(42)]
+            ),
+            -7
+        );
         // TRAP SAFETY: a trapping `w = (/ 100 z)` is discarded by the fold — must NOT be dropped, still ÷0.
         assert!(
-            traps("(: x Int64) (: z Int64)", "(^ (: (^ x (: (/ 100 z) Int64)) Int64) (: (/ 100 z) Int64))", &[Val::S64(5), Val::S64(0)]),
+            traps(
+                "(: x Int64) (: z Int64)",
+                "(^ (: (^ x (: (/ 100 z) Int64)) Int64) (: (/ 100 z) Int64))",
+                &[Val::S64(5), Val::S64(0)]
+            ),
             "a trapping xor operand must keep its trap (not cancelled)"
         );
     }
@@ -7520,22 +7862,85 @@ mod runtime_ops {
         let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or)).count();
         let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And)).count();
         // Runtime `w`, commuted inner, outer order — all collapse to ONE op.
-        assert_eq!(ors(&lir("(: x Int64) (: y Int64)", "(: (| (: (| x y) Int64) y) Int64)")), 1, "| (| x y) y → one");
-        assert_eq!(ors(&lir("(: x Int64) (: y Int64)", "(: (| (: (| y x) Int64) y) Int64)")), 1, "commuted inner");
-        assert_eq!(ors(&lir("(: x Int64) (: y Int64)", "(: (| y (: (| x y) Int64)) Int64)")), 1, "outer order");
-        assert_eq!(ands(&lir("(: x Int64) (: y Int64)", "(: (& (: (& x y) Int64) y) Int64)")), 1, "& (& x y) y → one");
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (| x y) Int64) y) Int64)"
+            )),
+            1,
+            "| (| x y) y → one"
+        );
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (| y x) Int64) y) Int64)"
+            )),
+            1,
+            "commuted inner"
+        );
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (| y (: (| x y) Int64)) Int64)"
+            )),
+            1,
+            "outer order"
+        );
+        assert_eq!(
+            ands(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (& x y) Int64) y) Int64)"
+            )),
+            1,
+            "& (& x y) y → one"
+        );
         // A DISTINCT third operand does NOT collapse — both ops stay.
-        assert_eq!(ors(&lir("(: x Int64) (: y Int64) (: z Int64)", "(: (| (: (| x y) Int64) z) Int64)")), 2, "distinct z kept");
+        assert_eq!(
+            ors(&lir(
+                "(: x Int64) (: y Int64) (: z Int64)",
+                "(: (| (: (| x y) Int64) z) Int64)"
+            )),
+            2,
+            "distinct z kept"
+        );
 
         // VALUE PARITY.
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (| (: (| x y) Int64) y) Int64)", &[Val::S64(12), Val::S64(10)]), 14);
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (& (: (& x y) Int64) y) Int64)", &[Val::S64(14), Val::S64(10)]), 10);
-        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (| y (: (| x y) Int64)) Int64)", &[Val::S64(12), Val::S64(10)]), 14);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (| (: (| x y) Int64) y) Int64)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            14
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (& (: (& x y) Int64) y) Int64)",
+                &[Val::S64(14), Val::S64(10)]
+            ),
+            10
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64) (: y Int64)",
+                "(: (| y (: (| x y) Int64)) Int64)",
+                &[Val::S64(12), Val::S64(10)]
+            ),
+            14
+        );
         // The same-operand `(| a a)` → a fold is NOT shadowed.
-        assert_eq!(run::<i64>("(: a Int64)", "(: (| a a) Int64)", &[Val::S64(7)]), 7);
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(: (| a a) Int64)", &[Val::S64(7)]),
+            7
+        );
         // TRAP SAFETY: both operands are retained, so a trapping `v = (/ 100 z)` still ÷0-traps.
         assert!(
-            traps("(: z Int64) (: y Int64)", "(| (: (| (: (/ 100 z) Int64) y) Int64) y)", &[Val::S64(0), Val::S64(5)]),
+            traps(
+                "(: z Int64) (: y Int64)",
+                "(| (: (| (: (/ 100 z) Int64) y) Int64) y)",
+                &[Val::S64(0), Val::S64(5)]
+            ),
             "the idempotent collapse retains both operands — a trapping operand keeps its trap"
         );
     }
@@ -7999,17 +8404,28 @@ mod runtime_ops {
         // `UInt64 >> 1` → range `[0, 2^63-1]`, bits = 63 (the `Shr` type-width arm). Used to panic.
         compiles("(: x UInt64)", "(: (>= (>> x 1) 0) Bool)");
         // The 63-bit range flowing into `is_full_mask_for` (mask covering `[0, 2^63-1]`).
-        compiles("(: x UInt64)", "(: (& (>> x 1) 9223372036854775807) UInt64)");
+        compiles(
+            "(: x UInt64)",
+            "(: (& (>> x 1) 9223372036854775807) UInt64)",
+        );
 
         // VALUE PARITY at the boundary: `(>= (>> x 1) 0)` is a tautology (a logical shift of a nonneg is
         // nonneg); `(>> x 1)` halves; the covering mask is a no-op.
         assert_eq!(run::<u64>("(: x UInt64)", "(>> x 1)", &[Val::U64(100)]), 50);
         assert_eq!(
-            run::<i64>("(: x UInt64)", "(if (>= (>> x 1) 0) 111 222)", &[Val::U64(100)]),
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (>= (>> x 1) 0) 111 222)",
+                &[Val::U64(100)]
+            ),
             111
         );
         assert_eq!(
-            run::<u64>("(: x UInt64)", "(& (>> x 1) 9223372036854775807)", &[Val::U64(9223372036854775806)]),
+            run::<u64>(
+                "(: x UInt64)",
+                "(& (>> x 1) 9223372036854775807)",
+                &[Val::U64(9223372036854775806)]
+            ),
             4611686018427387903
         );
     }
@@ -9726,7 +10142,9 @@ mod match_engine {
         // Full-width mask (2^64-1), addition of 2^63 (i64::MAX+1), and a comparison — all against a UInt64.
         ok("(module m (def (main (: x UInt64)) (& x 18446744073709551615)) (export main))");
         ok("(module m (def (main (: x UInt64)) (+ x 9223372036854775808)) (export main))");
-        ok("(module m (def (main (: x UInt64)) (if (< x 18446744073709551615) 1 0)) (export main))");
+        ok(
+            "(module m (def (main (: x UInt64)) (if (< x 18446744073709551615) 1 0)) (export main))",
+        );
         // NO OVER-ACCEPTANCE: a bare literal past i64 with NO integer-operand context is still CDZ0201; a
         // value too big even for the contextual UInt64 (2^64) is still rejected (now naming UInt64).
         assert_eq!(
@@ -9734,8 +10152,10 @@ mod match_engine {
             Some("CDZ0201"),
             "a bare literal past i64 with no context is still malformed"
         );
-        let d = reject_full("(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))")
-            .expect("a value past UInt64.max must still be rejected");
+        let d = reject_full(
+            "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
+        )
+        .expect("a value past UInt64.max must still be rejected");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
             d.message.contains("UInt64"),
@@ -11500,7 +11920,8 @@ mod match_engine {
             "f",
         );
         assert!(
-            !m.iter().any(|i| matches!(i, Lir::ConstI64(-1) | Lir::ConstI64(999))),
+            !m.iter()
+                .any(|i| matches!(i, Lir::ConstI64(-1) | Lir::ConstI64(999))),
             "the impossible negative-length arm is dropped, got: {m:?}"
         );
 
@@ -11524,11 +11945,23 @@ mod match_engine {
             }
         };
         // The tautology returns the then-branch value regardless of the (built, then measured) list.
-        run_f("(module m (def (f (: xs (List Int64))) (if (>= (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))", "111");
-        run_f("(module m (def (f (: xs (List Int64))) (if (< (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))", "222");
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (if (>= (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))",
+            "111",
+        );
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (if (< (List.len xs) 0) 111 222)) (def (main) (f (list 7 8))) (export main))",
+            "222",
+        );
         // The match: len 0 hits the `0` arm, len 1 the wildcard; the `-1` arm never (and was dropped).
-        run_f("(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list))) (export main))", "111");
-        run_f("(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list 5))) (export main))", "222");
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list))) (export main))",
+            "111",
+        );
+        run_f(
+            "(module m (def (f (: xs (List Int64))) (match (List.len xs) (-1 999) (0 111) (_ 222))) (def (main) (f (list 5))) (export main))",
+            "222",
+        );
     }
 
     #[test]
@@ -13126,6 +13559,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_built_map_and_set_escape_via_value_encode() {
+        // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
+        // the host boundary, where before they declined "needs a value-form walker". Both escape via the
+        // runtime `value-encode` op (like a List/recursive-sum): the compiler bakes a shape descriptor
+        // whose PARAMETRIC frame renders the key/value/element types (`Framed("Map", [k,v])` /
+        // `Framed("Set", [e])`), and the runtime walks the CHAMP in CANONICAL KEY order. `build` inserts
+        // 3,2,1 → entries render sorted.
+        // MAP: insert (k=k v=k) for k in {3,2,1} → `(map (1 1) (2 2) (3 3))` under `(Map Int64 Int64)`.
+        let Some(out) = escape_render(
+            "(module m (def (build m n) (if (< n 1) m (build ((. Map insert) m n n) (- n 1)))) \
+                       (def (main) (build (. Map empty) 3)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-Map escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))",
+            "runtime Map renders sorted under (Map Int64 Int64)"
+        );
+
+        // SET: insert k for k in {3,2,1} onto an empty set → `((. Set of) (list 1 2 3))` under `(Set Int64)`.
+        let out = escape_render(
+            "(module m (def (build s n) (if (< n 1) s (build ((. Set insert) s n) (- n 1)))) \
+                       (def (main) (build ((. Set of) (list)) 3)) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(
+            out, "(: ((. Set of) (list 1 2 3)) (Set Int64))",
+            "runtime Set renders sorted under (Set Int64)"
+        );
+    }
+
+    #[test]
     fn a_runtime_bytes_resource_exposes_a_repeatable_len_method() {
         // VM-1: a runtime-Bytes result crosses as a resource carrying make + encode + `len : borrow<t> ->
         // u32` (= `bytes-len(rep)`). The host reaches `len` INSIDE the `cadenza:run/run` instance and calls
@@ -14005,9 +14471,17 @@ mod match_engine {
         // runs on the value heap (never folds — `run_on_heap` asserts the runtime import). A masked nonneg
         // index in bounds → the element; a masked index past the end → None; a plain negative index → None.
         let cases = [
-            ("(match (List.at xs (& n 3)) ((Some x) x) (None -1))", "1", "1"), // (&1 3)=1 → xs[1]=1
-            ("(match (List.at xs (& n 15)) ((Some x) x) (None -1))", "7", "-1"), // (&7 15)=7 >= len 3 → None
-            ("(match (List.at xs n) ((Some x) x) (None -1))", "-1", "-1"),       // negative → None
+            (
+                "(match (List.at xs (& n 3)) ((Some x) x) (None -1))",
+                "1",
+                "1",
+            ), // (&1 3)=1 → xs[1]=1
+            (
+                "(match (List.at xs (& n 15)) ((Some x) x) (None -1))",
+                "7",
+                "-1",
+            ), // (&7 15)=7 >= len 3 → None
+            ("(match (List.at xs n) ((Some x) x) (None -1))", "-1", "-1"), // negative → None
         ];
         for (body, arg, want) in cases {
             let Some(out) = run_on_heap(&format!(
@@ -14018,7 +14492,10 @@ mod match_engine {
                 eprintln!("runtime wasm not found; skipping bounds-elision run");
                 return;
             };
-            assert_eq!(out, want, "List.at bounds elision parity for {body} @ n={arg}");
+            assert_eq!(
+                out, want,
+                "List.at bounds elision parity for {body} @ n={arg}"
+            );
         }
     }
 
@@ -22646,8 +23123,9 @@ mod stage1 {
                          (export main))";
         let mut db2 = crate::db::Db::load(parse(payload));
         let layout2 = crate::layout::compute(&mut db2).expect("layout");
-        let rs2 = crate::backend::emit(crate::backend::Target::Rust, &mut db2, &layout2, None, None)
-            .expect("rust artifact");
+        let rs2 =
+            crate::backend::emit(crate::backend::Target::Rust, &mut db2, &layout2, None, None)
+                .expect("rust artifact");
         let rs2 = String::from_utf8(rs2).expect("utf8");
         assert!(
             rs2.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum Box"),
@@ -24232,8 +24710,9 @@ mod stage1 {
             body = format!("(+ 1 {body})");
         }
         let src = format!("(module m (def (main) {body}) (export main))");
-        let err = cadenza_syntax::sexpr::read(&src)
-            .expect_err("a pathologically deep expression must be a clean reader error, not a crash");
+        let err = cadenza_syntax::sexpr::read(&src).expect_err(
+            "a pathologically deep expression must be a clean reader error, not a crash",
+        );
         assert!(
             err.0.contains("deeply") || err.0.contains("nests"),
             "got: {}",
@@ -32269,14 +32748,16 @@ mod closure_host_resource {
         // A SINGLE closure returning a byte-rope (Bytes/String) COMPILES (the compound-result `call` path),
         // and now TWO such closures sharing one `call` COMPILE too (the multi-export list-returning `call`:
         // N makes + one shared bytes-`call`).
-        let one_bytes = "(do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) (export main))";
+        let one_bytes =
+            "(do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) (export main))";
         crate::compile::compile_component(&crate::codec::encode(&parse(one_bytes)))
             .expect("a single Bytes-returning closure compiles (compound-result path)");
         let two_bytes = "(do (def (a) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) \
                          (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap n))))) \
                          (export a) (export b))";
-        crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes)))
-            .expect("two Bytes-returning closures sharing one call compile (multi-export bytes path)");
+        crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes))).expect(
+            "two Bytes-returning closures sharing one call compile (multi-export bytes path)",
+        );
     }
 
     /// The escape check is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose

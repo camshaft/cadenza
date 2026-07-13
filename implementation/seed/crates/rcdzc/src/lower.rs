@@ -4590,13 +4590,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `String`/a nominal) so it splices as one type atom; a NESTED-element list (`(List (List Int64))`)
         // would need a compound type-arg node — a later refinement, decline for now.
         crate::ty::Ty::List(elem) => {
-            if !matches!(
-                **elem,
-                crate::ty::Ty::Int(_)
-                    | crate::ty::Ty::Bool
-                    | crate::ty::Ty::String
-                    | crate::ty::Ty::Unit
-            ) {
+            if !is_scalar_type_arg(elem) {
                 return None; // nested/compound-element list type node not yet built
             }
             let inner = builder.shape_of(db, ty)?;
@@ -4607,8 +4601,48 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             ));
             Some(builder.encode(framed))
         }
+        // A SET result: `(: ((. Set of) (list …)) (Set <elem>))`. Parametric `Framed("Set", [<elem>], …)`;
+        // the element must be a scalar type NAME (it splices as one type-arg atom).
+        crate::ty::Ty::Set(elem) => {
+            if !is_scalar_type_arg(elem) {
+                return None;
+            }
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(
+                "Set".to_string(),
+                vec![elem.render_name()],
+                inner,
+            ));
+            Some(builder.encode(framed))
+        }
+        // A MAP result: `(: (map (k v) …) (Map <k> <v>))`. Parametric `Framed("Map", [<k>, <v>], …)`; BOTH
+        // the key AND value must be scalar type NAMES (each splices as one type-arg atom — a compound
+        // value or key type-node is a later refinement, decline).
+        crate::ty::Ty::Map(k, v) => {
+            if !is_scalar_type_arg(k) || !is_scalar_type_arg(v) {
+                return None;
+            }
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(
+                "Map".to_string(),
+                vec![k.render_name(), v.render_name()],
+                inner,
+            ));
+            Some(builder.encode(framed))
+        }
         _ => None,
     }
+}
+
+/// Whether a type is a SCALAR whose name splices as a single bare type-arg atom in a parametric value-form
+/// type node (`(List <t>)`/`(Set <t>)`/`(Map <k> <v>)`). Int/Bool/String/Unit qualify; a compound
+/// (List/Map/Set/Tuple/Sum) `render_name` is a parenthesized NODE, not a bare atom — those need a compound
+/// type-arg node (a later refinement), so they decline here.
+fn is_scalar_type_arg(ty: &crate::ty::Ty) -> bool {
+    matches!(
+        ty,
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::String | crate::ty::Ty::Unit
+    )
 }
 
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
@@ -4795,7 +4829,7 @@ impl ShapeTableBuilder {
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
-                ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
+                ShapeNode::Str => d.push(3),      // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes
                 ShapeNode::Unit => d.push(5),
                 ShapeNode::Tuple(idxs) => {
@@ -6745,7 +6779,12 @@ fn xor_cancels(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, S
 /// Covers a RUNTIME `w` the constant-folding `nested_bitwise_collapse` cannot (`(| (| x y) y)` → `(| x
 /// y)`). Both outer orders and `w` on either side of the inner op are tried. The inner `(op v w)` node is
 /// RETAINED, so both `v` and `w` are still evaluated — no trap is dropped (no `is_trap_free` needed).
-fn idempotent_bitwise_collapse(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<StructId> {
+fn idempotent_bitwise_collapse(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<StructId> {
     // `inner` must be `(op v w)` with the SAME op; `outer_w` must match one of its operands.
     let check = |db: &mut Db, inner: StructId, outer_w: StructId| -> Option<StructId> {
         let Core::Arith {
@@ -8116,7 +8155,10 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
         // a length used as a mask/shift/dividend operand sheds guards. The `2^32-1` upper bound is the true
         // representable maximum (a count can't exceed the i32 the runtime returns); a tighter real cap
         // (heap size) is unknown here, so `2^32-1` is the sound envelope.
-        Core::ListLen { .. } | Core::BytesLen { .. } | Core::MapSize { .. } | Core::SetLen { .. } => {
+        Core::ListLen { .. }
+        | Core::BytesLen { .. }
+        | Core::MapSize { .. }
+        | Core::SetLen { .. } => {
             return Some((0, Some(u32::MAX as i64)));
         }
         _ => {}

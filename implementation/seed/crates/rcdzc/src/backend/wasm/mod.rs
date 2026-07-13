@@ -258,15 +258,19 @@ pub fn emit(
             if let Some(form) = form {
                 return emit_runtime_bytes_resource(db, layout, e.def, &form, spans);
             }
-        } else if matches!(result, crate::ty::Ty::List(_))
-            && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
+        } else if matches!(
+            result,
+            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+        ) && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
         {
-            // A RUNTIME `List` (a `List.push`/recursion-built vector — not constant-foldable) has a
-            // VARIABLE length, so it escapes via the runtime `value-encode` op (the same walker a recursive
-            // sum uses): the encode body bakes the compiler's shape descriptor as a heap Bytes, calls
-            // `value-encode(rep, desc)` to render the `(: (list …) (List <elem>)) `value form, and copies
-            // it out. `sum_shape_descriptor`'s List arm builds a parametric `Framed("List", [<elem>], …)`
-            // frame so the element type is observable (a scalar-element list; nested-element declines).
+            // A RUNTIME `List`/`Map`/`Set` (a push/insert/recursion-built collection — not constant-
+            // foldable) has a VARIABLE size, so it escapes via the runtime `value-encode` op (the same
+            // walker a recursive sum uses): the encode body bakes the compiler's shape descriptor as a heap
+            // Bytes, calls `value-encode(rep, desc)` to render the value form (`(: (list …) (List <e>))` /
+            // `(: (map (k v) …) (Map <k> <v>))` / `(: ((. Set of) (list …)) (Set <e>))`, entries in
+            // canonical key order), and copies it out. `sum_shape_descriptor`'s List/Map/Set arms build a
+            // parametric `Framed(<head>, [<type-args>], …)` frame so the element/key/value types are
+            // observable (scalar element/key/value only — a compound type-arg node is a later refinement).
             return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is

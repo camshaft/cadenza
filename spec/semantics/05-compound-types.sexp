@@ -999,6 +999,18 @@
             (def (main) (build 0 3 (list))) (export main)))
   (output (: (list 0 1 2) (List Int64))))
 
+(case "a map built at run time escapes to the host as its value form"
+  (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
+           Like a runtime list/set, it escapes via the runtime value-encode walker guided by a
+           compiler-baked shape descriptor whose PARAMETRIC frame renders the key AND value types — the
+           value form is `(map (k v) …)` with entries in CANONICAL KEY order under `(Map Int64 Int64)`.
+           `build` inserts (k=n v=n) for n in {3,2,1} → entries render sorted `(1 1) (2 2) (3 3)`. This
+           declined before as needing a value-form walker that loops to a runtime-determined depth.")
+  (input  (do
+            (def (build m n) (if (< n 1) m (build (Map.insert m n n) (- n 1))))
+            (def (main) (build Map.empty 3)) (export main)))
+  (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
+
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
            list in order followed by those of the second (collections-and-text.md §A List Is Grown By

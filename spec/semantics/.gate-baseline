@@ -23,6 +23,8 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
+pass	a Bytes-returning closure alongside a plain export — the closure runs
+pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CBOR atom decodes each scalar major type to its value
@@ -46,6 +48,8 @@ pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
+pass	a String-returning closure alongside a parameterized plain export
+pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -359,6 +363,7 @@ pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a magic header and a length-prefixed chunk parse together
+pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map entry with no value expression is rejected, not a crash
@@ -691,6 +696,7 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a set built at run time escapes to the host as its value form
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
 pass	a set with elements of two different types is a type error
