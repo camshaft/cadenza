@@ -48,3 +48,31 @@
   (input  (do (def (main) (fn ((: x Int64)) (* x 3))) (export main)))
   (call   main (: 4 Int64))
   (output (: 12 Int64)))
+
+; C-HOST-2 — a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x) (+ x
+; k)))` returns a closure that captures `k`, so the whole export crosses as `adder : (Int64) ->
+; own<closure-s64-s64>`. The host computes a DISTINCT closure per input: `make(k)` runs the export body
+; (closing over `k` into the cell), then `call(handle, x)` reads `k` back from the cell inside the
+; dispatch. The handle genuinely originates in-guest, computed from the host's input. The corpus `(call
+; …)` args are SPLIT by `make`'s arity: the first (here `k`) goes to `make`, the rest (here `x`) to `call`.
+
+(case "a parameterized export returning a capturing closure is made and called by the host"
+  (doc    "`(def (adder (: k Int64)) (fn (x) (+ x k)))` — the host calls `make(10)` (building a closure
+           that captured k=10), then `call(handle, 5)` = 5 + 10 = 15. Pins that the closure handle is
+           computed from the host's input (make forwards the export param) AND the captured environment
+           rides in the cell, read back inside the closure's `call` dispatch. The first `(call …)` arg
+           (10) is make's `k`, the second (5) is the closure's `x`.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+  (call   adder (: 10 Int64) (: 5 Int64))
+  (output (: 15 Int64)))
+
+; The same capturing closure with a different capture AND a different call argument — the result tracks
+; both, confirming `make`'s input flows into the captured cell and `call`'s input into the dispatch.
+
+(case "a capturing closure export tracks both the captured value and the call argument"
+  (doc    "`adder(100)` then `call(7)` = 7 + 100 = 107. A different `k` (100) captured, a different `x` (7)
+           applied — the result follows both, so the captured value is genuinely per-`make` and the call
+           argument per-`call`.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+  (call   adder (: 100 Int64) (: 7 Int64))
+  (output (: 107 Int64)))

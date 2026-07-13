@@ -566,11 +566,15 @@ fn has_closure_instance(engine: &Engine, component: &Component) -> bool {
 }
 
 /// Run a CLOSURE-resource program: reach `make`/`call` inside the `cadenza:closure/exports` instance,
-/// call `make()` → the closure resource handle, then `call(handle, args…)` with the caller's arguments
-/// (coerced to `call`'s declared parameter types) → the closure's result, rendered. The host acts as the
-/// closure's custodian: it holds the opaque handle and invokes the guest's `call` method (which dispatches
-/// the closure via the guest's own `call_indirect`). `own<t>` consumes the handle, so this is one call per
-/// `make` (the corpus drives a single `(call …)` per case).
+/// call `make(make-args…)` → the closure resource handle, then `call(handle, call-args…)` → the closure's
+/// result, rendered. The host acts as the closure's custodian: it holds the opaque handle and invokes the
+/// guest's `call` method (which dispatches the closure via the guest's own `call_indirect`). `own<t>`
+/// consumes the handle, so this is one `make`+`call` per case.
+///
+/// The caller supplies ONE flat arg list (`(call name a b c …)`); it is SPLIT by `make`'s declared arity —
+/// the first N go to `make` (the EXPORT's parameters, e.g. `adder`'s `k`), the rest to `call` (the
+/// CLOSURE's own arguments, e.g. `x`). A nullary export (N=0) sends all args to `call`. So
+/// `(call adder (: 10 Int64) (: 5 Int64))` → `make(10)` then `call(5)` = 15.
 fn run_closure_resource(
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
@@ -592,12 +596,27 @@ fn run_closure_resource(
         .get_func(&mut *store, call_idx)
         .ok_or_else(|| anyhow!("closure escape: `call` is not a function"))?;
 
+    // SPLIT the flat arg list by `make`'s arity: the first `make.params().len()` go to `make` (the export
+    // params), the rest to `call` (after its leading `self`).
+    let make_param_types: Vec<Type> = make
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
+    let n_make = make_param_types.len();
+    if arg_strs.len() < n_make {
+        return Err(anyhow!(
+            "closure escape: `make` needs {n_make} argument(s) but only {} supplied",
+            arg_strs.len()
+        ));
+    }
+    let make_args = coerce_args(&arg_strs[..n_make], &make_param_types)?;
     let mut handle = [Val::Bool(false)];
-    if let Err(e) = make.call(&mut *store, &[], &mut handle) {
+    if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
         return Ok(Outcome::Trap(format!("{e}")));
     }
     let _ = make.post_return(&mut *store);
-    // `call`'s params are `(self, args…)`; coerce the caller's arg strings to the DECLARED arg types
+    // `call`'s params are `(self, args…)`; coerce the REMAINING arg strings to the DECLARED arg types
     // (skipping the leading `self` handle param).
     let param_types: Vec<Type> = call
         .params(&*store)
@@ -605,7 +624,7 @@ fn run_closure_resource(
         .map(|(_, t)| t.clone())
         .collect();
     let arg_types = param_types.get(1..).unwrap_or(&[]);
-    let coerced = coerce_args(arg_strs, arg_types)?;
+    let coerced = coerce_args(&arg_strs[n_make..], arg_types)?;
     let mut call_args = vec![handle[0].clone()];
     call_args.extend(coerced);
     let mut out = [Val::Bool(false)];

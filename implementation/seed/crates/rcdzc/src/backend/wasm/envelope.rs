@@ -1115,6 +1115,7 @@ pub fn assemble_closure_resource(
     dtor_core: &[u8],
     imports: &[&RtOp],
     import_name: &str,
+    make_param_bytes: &[u8],
     arg_bytes: &[u8],
     result_byte: u8,
 ) -> Vec<u8> {
@@ -1226,10 +1227,11 @@ pub fn assemble_closure_resource(
         items.extend_from_slice(&core_alias_item(3, CALL_CORE_EXPORT));
         section(sec::ALIAS, &wasm_vec(2, &items))
     });
-    // sec 7: `own<t>` (type 2) then the `make` functype `() -> own<t>` (type 3). Resource is comp type 1.
+    // sec 7: `own<t>` (type 2) then the `make` functype `(export-params…) -> own<t>` (type 3). Resource
+    // is comp type 1. A PARAMETERIZED export gives `make` those params (C-HOST-2); nullary gives `()`.
     out.extend_from_slice(&{
         let mut items = own_item(1);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(2)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(2)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     });
     // sec 8: lift `make` (core func k+3) against functype type 3 → component func k.
@@ -1255,6 +1257,7 @@ pub fn assemble_closure_resource(
     // component instance 1 (the runtime import is component instance 0). sec 11: export as the closure
     // interface.
     out.extend_from_slice(&component_section(&resource_inner_component_closure(
+        make_param_bytes,
         arg_bytes,
         result_byte,
     )));
@@ -1359,7 +1362,11 @@ fn resource_inner_component() -> Vec<u8> {
 /// call-ft `(self:own<3>, args…)->R` → 4; imported `make` → func 0; imported `call` → func 1; RE-EXPORTED
 /// resource → type 5; `own<5>` → 6; make-exp-ft → 7; `own<5>` → 8; call-exp-ft `(self:own<8>, args…)->R` →
 /// 9. (No `list u8` type as the encode variant has — a `call`'s result is a scalar valtype inline.)
-fn resource_inner_component_closure(arg_bytes: &[u8], result_byte: u8) -> Vec<u8> {
+fn resource_inner_component_closure(
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    result_byte: u8,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     // sec 10: import the abstract resource → type 0.
@@ -1367,10 +1374,10 @@ fn resource_inner_component_closure(arg_bytes: &[u8], result_byte: u8) -> Vec<u8
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_subresource_item("import-type-t")),
     ));
-    // sec 7: `own<0>` (type 1) then the imported `make` functype `() -> own<0>` (type 2).
+    // sec 7: `own<0>` (type 1) then the imported `make` functype `(export-params…) -> own<0>` (type 2).
     let make_import_types = {
         let mut items = own_item(0);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(1)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
     out.extend_from_slice(&make_import_types);
@@ -1399,7 +1406,7 @@ fn resource_inner_component_closure(arg_bytes: &[u8], result_byte: u8) -> Vec<u8
     // sec 7: `own<5>` (type 6) then the `make` functype re-typed against the exported resource (type 7).
     let make_export_types = {
         let mut items = own_item(5);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(6)));
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(6)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
     out.extend_from_slice(&make_export_types);
@@ -1597,6 +1604,26 @@ fn owned_valtype(type_idx: u32) -> Vec<u8> {
 /// -> own<t>`.
 fn nullary_result_functype(result_valtype: &[u8]) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM, 0x00, 0x00];
+    item.extend_from_slice(result_valtype);
+    item
+}
+
+/// A component functype `(p0: <vt>, …) -> <result>` — form, a param vec of the given scalar valtype bytes
+/// (named `p0`, `p1`, …), result-form `0x00` (one result), then the result valtype bytes. Used for a
+/// PARAMETERIZED closure export's `make(export-params…) -> own<t>` (C-HOST-2); an empty `param_bytes`
+/// reduces to the nullary shape. The result may be a DEFINED type (an `own<t>` handle) referenced by index
+/// — pass its `owned_valtype(idx)` bytes.
+fn params_result_functype(param_bytes: &[u8], result_valtype: &[u8]) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut params = Vec::new();
+    for (i, &vt) in param_bytes.iter().enumerate() {
+        let pname = format!("p{i}");
+        params.extend_from_slice(&uleb_bytes(pname.len() as u64));
+        params.extend_from_slice(pname.as_bytes());
+        params.push(vt);
+    }
+    item.extend_from_slice(&wasm_vec(param_bytes.len(), &params));
+    item.push(0x00); // one result
     item.extend_from_slice(result_valtype);
     item
 }

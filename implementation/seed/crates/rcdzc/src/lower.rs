@@ -1184,7 +1184,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // recursive perform) makes `reduce_handle` return `None` → DECLINE (a Todo, never a miscompile).
         Resolved::Handle { init, arms, body } => {
             match crate::effects::reduce_handle(db, init, &arms, body) {
-                Some(rewritten) => core_of(db, rewritten),
+                Some(rewritten) => {
+                    // The rewritten body is a synthesized subtree with root parent `None` (`push_list`).
+                    // Graft it UNDER the original `handle` node so a FREE variable inside it — e.g. an
+                    // enclosing function's parameter used directly in the handle body (`(handle … (+ x
+                    // (E.op)))`) — resolves up the original lexical chain instead of hitting CDZ0101. We
+                    // parent to the `handle` node ITSELF (not its parent): the scope walk from a free name
+                    // then ascends rewritten → handle → …, and a binder form above (a `def`/`fn`/`let`)
+                    // recognizes the handle as the child it ascended from (its recorded body slot), so its
+                    // `from == body_occ` param check still fires. Re-parenting to the handle's parent would
+                    // instead present the rewritten node as the child, which that check would reject. (A
+                    // perform's own binders were already substituted by the fold; only free names need this.)
+                    db.reparent(rewritten, Some(id), db.child_ix_of(id) as u32);
+                    core_of(db, rewritten)
+                }
                 None => Core::Poison(Reject::decline(
                     "this handler is not yet reducible by the tail-resumptive fold (cross-function \
                  or non-tail resume arrives in a later increment)",

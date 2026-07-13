@@ -1599,7 +1599,11 @@ impl ComposedRuntime {
     /// and invokes the guest's `call` method (which dispatches the closure via the guest's own
     /// `call_indirect`). `own<t>` consumes the handle per call, so each `closure_make_call` mints a fresh
     /// handle (C-HOST-1 own/no-drop; the `borrow<t>` repeated-call form is C-HOST-5).
-    fn closure_make_call(&mut self, args: &[wasmtime::component::Val]) -> wasmtime::component::Val {
+    fn closure_make_call(
+        &mut self,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
         use wasmtime::component::Val;
         let iface = self
             .program
@@ -1621,14 +1625,16 @@ impl ComposedRuntime {
             .program
             .get_func(&mut self.store, call_idx)
             .expect("call func");
+        // make(make_args…) → the closure handle. A PARAMETERIZED export (C-HOST-2) passes its params here
+        // (e.g. `adder(10)`); a nullary export passes none.
         let mut handle = [Val::Bool(false)];
-        make.call(&mut self.store, &[], &mut handle)
+        make.call(&mut self.store, make_args, &mut handle)
             .expect("make call");
         make.post_return(&mut self.store).expect("make post_return");
-        let mut call_args = vec![handle[0].clone()];
-        call_args.extend_from_slice(args);
+        let mut full_call_args = vec![handle[0].clone()];
+        full_call_args.extend_from_slice(call_args);
         let mut out = [Val::Bool(false)];
-        call.call(&mut self.store, &call_args, &mut out)
+        call.call(&mut self.store, &full_call_args, &mut out)
             .expect("call");
         call.post_return(&mut self.store).expect("call post_return");
         out[0].clone()
@@ -7679,6 +7685,45 @@ mod match_engine {
     }
 
     #[test]
+    fn a_cross_width_nan_comparison_is_a_type_error() {
+        // A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a
+        // Float32 — so a cross-width comparison is the CDZ0301 no-silent-promotion error the identical
+        // FINITE comparison gets (numeric-model.md §Numeric Types Do Not Silently Promote). The hole was
+        // that `Prim::FloatNan` typed as a DEFERRED-width float, so a nan unified with EITHER width; the
+        // fix annotates each `Float{32,64}.nan` field with its module's `(Float width)` in the prelude
+        // (like `Int64.max` is `(: <lit> (Int 64))`), so the width unification fires as for a finite float.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            compile_component(&crate::codec::encode(&parse(&src)))
+                .err()
+                .and_then(|d| d.code)
+        };
+        // Cross-width nan comparisons — CDZ0301, exactly as the finite cross-width comparison is.
+        assert_eq!(
+            code("(= Float32.nan Float64.nan)").as_deref(),
+            Some("CDZ0301")
+        );
+        assert_eq!(
+            code("(= Float32.nan (: 1.5 Float64))").as_deref(),
+            Some("CDZ0301")
+        );
+        assert_eq!(
+            code("(= (: 1.5 Float32) Float64.nan)").as_deref(),
+            Some("CDZ0301")
+        );
+        // The finite control rejects the same way (the behavior the nan path must match).
+        assert_eq!(
+            code("(= (: 1.5 Float32) (: 1.5 Float64))").as_deref(),
+            Some("CDZ0301")
+        );
+        // NO over-rejection / no regression: a SAME-width nan comparison still compiles (and folds true),
+        // and a nan vs a NON-float is still the cross-KIND CDZ0301 it was.
+        assert_eq!(code("(= Float32.nan Float32.nan)"), None);
+        assert_eq!(code("(= Float64.nan Float64.nan)"), None);
+        assert_eq!(code("(= Float64.nan 5)").as_deref(), Some("CDZ0301"));
+    }
+
+    #[test]
     fn nan_crosses_the_boundary_as_a_canonical_f64_nan() {
         // `Float64.nan` returned as the program result emits an `f64.const` of the canonical NaN bits;
         // the export returns f64 and the boundary lifts it. Read back BY BITS: it IS a NaN (f64::NAN).
@@ -10493,6 +10538,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_value_eq_on_a_sum_payload_string_compiles() {
+        // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
+        // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
+        // resolver dispatches on. The `value-eq` operand-ownership analysis must classify a payload READ
+        // as Borrowed (the enclosing compound owns it) and a constant-string literal as Owned (it
+        // materializes a fresh byte-leaf that the compare drops); previously the `ConstStr` operand
+        // declined "an ownership this backend cannot yet prove", blocking the whole resolver.
+        let src = "(module m (type N (NI Int64) (NP (Tuple String N))) \
+                     (def (f n) (match n ((NI v) v) ((NP (tuple h t)) (if (= h \"+\") (f t) 0)))) \
+                     (def (main) (f (NP (tuple \"+\" (NI 5))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a value-eq comparing a sum-payload string to a constant compiles (payload=Borrowed, \
+             const string=Owned)"
+        );
+    }
+
+    #[test]
     fn a_multi_export_compound_return_declines_with_the_multi_export_diagnosis() {
         // The OTHER compound-return trigger: a program with MULTIPLE exports, one returning a compound.
         // The resource-escape path takes only a SINGLE nullary compound export, so a multi-export program
@@ -12660,6 +12723,51 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an abortive perform in a conditional let-init must decline, not miscompile"
+        );
+    }
+
+    #[test]
+    fn a_handle_body_reads_an_enclosing_function_parameter() {
+        // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
+        // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
+        // handler that resumes 5 is `x + 5`; called with x=10 → 15. `reduce_handle` synthesizes a fresh
+        // body subtree (root parent `None`); lowering re-anchors it UNDER the original `handle` node so `x`
+        // still reaches `main`'s parameter binder instead of a spurious CDZ0101. Regression guard for the
+        // reparent fix — before it, ANY handle body referencing a function parameter failed to compile.
+        use wasmtime::component::Val;
+        let src = "(do (effect Get (op get (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (handle 0 ((Get.get (n) s (resume 5 s))) (+ x (Get.get 0)))) (export main))";
+        assert_eq!(
+            run_returns_with::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a handle body reading a parameter compiles"),
+                "main",
+                &[Val::S64(10)],
+            ),
+            15
+        );
+    }
+
+    #[test]
+    fn a_runtime_condition_selects_an_abortive_branch_reading_a_parameter() {
+        // Composes the branch-tail abortive fold with a RUNTIME condition over an enclosing parameter — the
+        // "validate and bail" shape. `(if (< x 5) (Bail.bail 7) x)`: the true branch aborts (arm value 7),
+        // the false branch reads the parameter `x`. Called with x=3 (< 5) → 7 (abort); x=9 → 9 (fall
+        // through). Exercises the reparent fix (free `x`) together with `thread_branch_local_abort`.
+        use wasmtime::component::Val;
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) x))) (export main))";
+        let component = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a runtime-conditioned branch-tail abort reading a parameter compiles");
+        assert_eq!(
+            run_returns_with::<i64>(&component, "main", &[Val::S64(3)]),
+            7,
+            "x=3 (< 5) aborts to the arm value 7"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&component, "main", &[Val::S64(9)]),
+            9,
+            "x=9 falls through to the parameter"
         );
     }
 
@@ -19814,6 +19922,7 @@ mod closure_host_resource {
             export_abs,
             &[ValType::I64],
             ValType::I64,
+            &[], // nullary export → make() has no params
             lifted_type_idx,
             &layout,
         )
@@ -19857,13 +19966,49 @@ mod closure_host_resource {
             "a closure-resource export imports the value-heap runtime (the cell is a heap value)"
         );
         let mut rt = super::ComposedRuntime::new(&program, &runtime);
-        // make() → closure handle; call(handle, 5) → 6.
+        // make() → closure handle (the export is nullary); call(handle, 5) → 6.
         assert_eq!(
-            rt.closure_make_call(&[Val::S64(5)]),
+            rt.closure_make_call(&[], &[Val::S64(5)]),
             Val::S64(6),
             "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
         );
         // A fresh handle called with 41 → 42 (own<t> consumed the first; each call mints a new handle).
-        assert_eq!(rt.closure_make_call(&[Val::S64(41)]), Val::S64(42));
+        assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
+    }
+
+    /// C-HOST-2: a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x)
+    /// (+ x k)))` crosses as `adder : (s64) -> own<closure>`; the host calls `make(10)` (which runs the
+    /// export body, closing over k=10 into the cell), then `call(handle, 5)` → 15. This proves (a) the
+    /// closure handle is COMPUTED from the host's input (make forwards the export param), and (b) the
+    /// captured environment (k) rides along in the cell and is read back inside `call`'s dispatch.
+    #[test]
+    fn a_compiled_capturing_closure_export_is_called_by_the_host() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
+            "a capturing closure export imports the value-heap runtime"
+        );
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make(10) → a closure capturing k=10; call(handle, 5) → 5 + 10 = 15.
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(10)], &[Val::S64(5)]),
+            Val::S64(15),
+            "adder(10) then call(5) = 15 — the captured k rides in the cell"
+        );
+        // A different capture (k=100) + a different call arg (7) → 107 — the handle tracks make's input.
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(100)], &[Val::S64(7)]),
+            Val::S64(107)
+        );
     }
 }

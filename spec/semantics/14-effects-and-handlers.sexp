@@ -208,6 +208,39 @@
                 (let ((k 5)) (if true (Bail.bail 7) k)))) (export main)))
   (output (: 7 Int64)))
 
+(case "a handle body reads an enclosing function parameter"
+  (doc    "The handle body is not closed — it may reference a binding from the enclosing scope, exactly as
+           any other expression does. `main`'s parameter `x` is read directly in the handle body `(+ x
+           (Get.get 0))`: the `Get` handler resumes 5, so the body is `x + 5`. Called with `x = 10` the
+           result is 15. Pins that the tail-resumptive fold's rewritten body still resolves a FREE variable
+           up the original lexical chain — the fold synthesizes a fresh body subtree, which must remain
+           anchored where the `handle` sat so `x` reaches `main`'s parameter binder (not a spurious unbound
+           name). Runtime parameters are what make an effectful body more than a constant.")
+  (needs  effects)
+  (input  (do
+            (effect Get (op get (-> Int64 Int64)))
+            (def (main (: x Int64))
+              (handle 0 ((Get.get (n) s (resume 5 s)))
+                (+ x (Get.get 0)))) (export main)))
+  (call   main (: 10 Int64))
+  (output (: 15 Int64)))
+
+(case "a runtime condition selects an abortive branch reading an enclosing parameter"
+  (doc    "The branch-tail abort with a RUNTIME condition over an enclosing parameter — the shape a
+           validation routine takes: `(handle 0 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) x))`. The
+           `if` is the handle's value, so an abort in a branch tail is local to that branch (yields the arm
+           value); the other branch reads the parameter `x` and falls through. Called with `x = 9` (not <
+           5), the false branch yields `x` = 9 — no abort. This composes the branch-tail abortive fold with
+           a free parameter reference and a runtime condition (`DESIGN-effects-rcdzc.md` §4.2).")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: x Int64))
+              (handle 0 ((Bail.bail (n) s n))
+                (if (< x 5) (Bail.bail 7) x))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
