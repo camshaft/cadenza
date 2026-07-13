@@ -366,8 +366,16 @@ the component type. The new work:
   2*(G-1) — added `resource_escape_build_n(intrinsics=2*G)`; (2) the KEBAB gotcha AGAIN — `call-0` numeric
   segment fails wasmtime's extern-name check → renamed `call-g<n>`. e2e: inc(5)=6/isz(0)=true, 3-export mix
   (inc+dbl share a resource, isz distinct) dbl(7)=14. +3 corpus (→33p). Gate 1202p/0f.
-- **REMAINING (both optional, none blocking):** (5) a compound/closure-typed closure ARG; the wasmtime-
-  blocked `borrow<t>` repeated-call handle. Everything else in the closures-across-host vertical is DONE.
+- **✅ ROBUSTNESS: adversarial probes + a clean transformer decline `@94b16219`.** Stress-probed the shipped
+  multi-export/round-trip paths (higher fan-out, odd shapes) — found NO latent bugs; +6 corpus witnesses
+  across two ticks (3 distinct sigs, 4 same-sig, consumer-applies-a-constant, multi-arg/capturing/widened
+  round-trips). ONE clarity fix: a closure TRANSFORMER export (both a closure PARAM and a closure RESULT,
+  e.g. `(def (twice (: g …)) (fn (x) (g (g x))))`) used to leak a confusing internal error; now declines
+  cleanly naming the shape (`emit_roundtrip_resource` detects it up front). +1 decline test.
+- **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
+  into the value-heap escape's encode/decode); a closure exported ALONGSIDE a non-closure export; the
+  DISTINCT-SIG round-trip (round-trip emit generalized to N resource types); a closure TRANSFORMER (`own<t>`
+  both directions); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else is DONE + robust.
 
 ## Risks / open questions
 
