@@ -171,11 +171,16 @@ pub fn print_pretty_width(arenas: &Arenas, width: usize) -> String {
 /// `width` columns — the pretty counterpart of [`print_from`].
 pub fn print_pretty_from(arenas: &Arenas, id: StructId, width: usize) -> String {
     let mut doc = Doc::new();
-    pretty_node(arenas, id, &mut doc);
+    pretty_node(arenas, id, &mut doc, true);
     doc.render(width)
 }
 
-fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc) {
+/// Render occurrence `id`. `top` marks a declaration-level position (the root, or a module body) —
+/// where a top-level `(do …)` form-sequence blank-separates its members. It is cleared for every
+/// nested child, so a `(do …)` used as a function body deeper in the tree keeps its statements
+/// tightly single-broken. A `module` blank-separates its members at ANY depth (a module body is
+/// always a declaration list).
+fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc, top: bool) {
     match a.get(id) {
         Struct::Atom(l) => {
             let mut s = String::new();
@@ -193,15 +198,40 @@ fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc) {
             // head. The head hugs the `(`; the closing `)` hugs the last child (no dangling paren).
             doc.cbox(INDENT);
             doc.word("(");
-            pretty_node(a, items[0], doc);
-            for &child in &items[1..] {
-                doc.space();
-                pretty_node(a, child, doc);
+            pretty_node(a, items[0], doc, false);
+            // The MEMBERS of a top-level form sequence (`do`) or a `module` are definitions — a
+            // single break between them reads as a crammed wall. Separate them with a BLANK line
+            // (which only materializes when the box breaks; a small sequence that fits stays on one
+            // line with plain single spaces). The `do`/`module` HEAD, and a module's NAME, still
+            // attach with an ordinary break — only definition-to-definition gets the blank line. A
+            // nested `do` (top cleared) is a statement block, so it stays tightly single-broken.
+            let blank_sep_from = match a.head_name(id) {
+                Some("do") if top => 1, // root statement sequence: blank between statements
+                Some("module") => 2,    // (module name member1 …): blank between the members
+                _ => usize::MAX,        // any other form: ordinary single-break separation
+            };
+            for (i, &child) in items.iter().enumerate().skip(1) {
+                if i > blank_sep_from {
+                    blank_line(doc);
+                } else {
+                    doc.space();
+                }
+                pretty_node(a, child, doc, false);
             }
             doc.word(")");
             doc.end();
         }
     }
+}
+
+/// A separator that renders as a single space when its box is flat, but a BLANK line (two newlines)
+/// when the box breaks — a `space` (1 space / newline) immediately followed by a `zerobreak`
+/// (nothing / newline). In a consistent box both breaks fire together on break, yielding the empty
+/// line; when flat, the space is 1 and the zerobreak 0, so it is the same single space as an
+/// ordinary separator (a fitting sequence is unchanged, only broken ones get breathing room).
+fn blank_line(doc: &mut Doc) {
+    doc.space();
+    doc.zerobreak();
 }
 
 fn print_leaf(leaf: &Leaf, out: &mut String) {
@@ -795,6 +825,35 @@ mod tests {
         assert_eq!(
             print_pretty_width(&a, 20),
             "(match\n  e\n  ((Some n) n)\n  ((None _) 0))"
+        );
+    }
+
+    /// A broken top-level `(do …)` blank-separates its statements; a broken `(module …)` blank-
+    /// separates its members (but the head/name attach normally).
+    #[test]
+    fn pretty_blank_separates_top_level_and_module_members() {
+        // read_all wraps top-level forms in a synthetic `(do …)`.
+        let a = read_all("(def (a x) (+ x 1)) (def (b y) (* y 2))").unwrap();
+        assert_eq!(
+            print_pretty_width(&a, 25),
+            "(do\n  (def (a x) (+ x 1))\n\n  (def (b y) (* y 2)))"
+        );
+        // A module blank-separates members, keeping `module` and the name attached.
+        let a = read("(module m (type T A B) (def (a x) x) (def (b y) y))").unwrap();
+        assert_eq!(
+            print_pretty_width(&a, 25),
+            "(module\n  m\n  (type T A B)\n\n  (def (a x) x)\n\n  (def (b y) y))"
+        );
+    }
+
+    /// A NESTED `(do …)` — a function body, not the root — keeps its statements tightly single-
+    /// broken (no blank lines); only the ROOT statement sequence blank-separates.
+    #[test]
+    fn pretty_nested_do_is_not_blank_separated() {
+        let a = read("(def (f x) (do (foo x) (bar x) (baz x)))").unwrap();
+        assert_eq!(
+            print_pretty_width(&a, 15),
+            "(def\n  (f x)\n  (do\n    (foo x)\n    (bar x)\n    (baz x)))"
         );
     }
 
