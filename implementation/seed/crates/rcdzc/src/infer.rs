@@ -5033,10 +5033,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     .map(|it| Ty::Int(it).render_name())
                     .unwrap_or_else(|| "Int64".to_string());
                 trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds its width (malformed, CDZ0201)");
-                out.push(Reject::coded(
-                    Code::Malformed,
-                    format!("integer literal is out of range for {ty_name}"),
-                ));
+                // Name the valid RANGE the literal overflowed (as the annotated-width CDZ0302 does), so a
+                // bare huge literal explains WHAT it exceeded rather than a terse "out of range". When the
+                // overflowed type is the Int64 DEFAULT (a bare literal, no context), also note it is the
+                // widest fixed integer — the honest current story (the numeric model reserves wider values
+                // to a big-integer layer not yet constructible), so the author knows the value simply has
+                // no representable fixed type rather than expecting a `--from`-style flag.
+                let msg = match int_width_range(signed, width) {
+                    Some(range) if context.is_none() => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}; \
+                         Int64 is the widest fixed-size integer)"
+                    ),
+                    Some(range) => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range})"
+                    ),
+                    None => format!("integer literal is out of range for {ty_name}"),
+                };
+                out.push(Reject::coded(Code::Malformed, msg));
             }
         }
         Resolved::Prim(_)

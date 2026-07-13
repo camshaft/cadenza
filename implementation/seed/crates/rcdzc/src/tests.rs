@@ -10207,10 +10207,20 @@ mod match_engine {
         );
         // NO OVER-ACCEPTANCE: a bare literal past i64 with NO integer-operand context is still CDZ0201; a
         // value too big even for the contextual UInt64 (2^64) is still rejected (now naming UInt64).
+        let d = reject_full("(module m (def (main) 18446744073709551615) (export main))")
+            .expect("a bare literal past i64 is rejected");
         assert_eq!(
-            reject_code("(module m (def (main) 18446744073709551615) (export main))").as_deref(),
+            d.code.as_deref(),
             Some("CDZ0201"),
             "a bare literal past i64 with no context is still malformed"
+        );
+        // The message names the valid RANGE it overflowed AND that Int64 is the widest fixed integer
+        // (the honest current story — no wider fixed type / BigInt is not yet constructible).
+        assert!(
+            d.message.contains("the valid range is")
+                && d.message.contains("widest fixed-size integer"),
+            "a bare over-Int64 literal names its range + the widest-fixed note; got {}",
+            d.message
         );
         let d = reject_full(
             "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
