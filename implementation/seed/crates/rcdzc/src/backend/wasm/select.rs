@@ -2332,11 +2332,27 @@ fn emit(
             // block. Ground a bare-`ConstInt` branch to the result's integer width via `emit_operand`,
             // exactly as an operator operand (`@1a4528f`) and a match arm (`@10f7bdb`) are grounded.
             emit_branch(
-                db, then_, &result, slots, branch_base, high, scratch_ty, layout, out,
+                db,
+                then_,
+                &result,
+                slots,
+                branch_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
             )?;
             out.push(Lir::Else);
             emit_branch(
-                db, else_, &result, slots, branch_base, high, scratch_ty, layout, out,
+                db,
+                else_,
+                &result,
+                slots,
+                branch_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -2949,10 +2965,94 @@ fn emit_match_arms_tailable(
             (OperandSrc::Slot(slot), *high)
         }
     };
+    // BRANCHLESS 2-ARM SELECT: a match of exactly TWO UNGUARDED arms — a literal probe then a wildcard
+    // (`(match n (0 a) (_ b))`), or a Bool's two literals (`(match p (true a) (false b))`) — is
+    // `(if (scrutinee == probe0) body0 body1)`, so when both bodies are cheap trap-free LEAVES and the
+    // result is a scalar it emits wasm's `select` instead of an `if`/`else` block: `body0 ; body1 ;
+    // (scrutinee == probe0) ; select`. This is the match analogue of the `if`→`select` rewrite and rests
+    // on the same soundness (a `select` evaluates both operands, safe precisely because each leaf is
+    // trap/allocation-free). Excluded for a heap/unit result (a `select` on a handle would drop-leak;
+    // unit has no value). TAIL position is fine here even though a `select` cannot carry a tail call: a
+    // `is_select_leaf` body is a param/local/const, which is never a call, so no arm is ever a tail call
+    // to preserve. A NON-leaf body, a guard, or >2 arms falls through to the probe chain (which does
+    // handle tail bodies). `arms[1]` is the wildcard/second-literal cover (`lower` guaranteed
+    // exhaustiveness), so `(scrutinee == probe0) ? body0 : body1` is total.
+    if arms.len() == 2
+        && arms.iter().all(|a| a.guard.is_none())
+        && matches!(
+            arms[0].probe,
+            crate::core::Probe::Int(_) | crate::core::Probe::Bool(_)
+        )
+        && is_select_leaf(db, arms[0].body)
+        && is_select_leaf(db, arms[1].body)
+        && !matches!(block_ty, BlockType::Empty)
+    {
+        // The body leaves are grounded to the match's result width (as the probe-chain arms are),
+        // recovered from `result_it` (an Int result) or the block valtype (a Bool result is an i32).
+        let res_ty = match result_it {
+            Some(rit) => Ty::Int(rit),
+            None => Ty::Bool,
+        };
+        emit_branch(
+            db,
+            arms[0].body,
+            &res_ty,
+            slots,
+            chain_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        emit_branch(
+            db,
+            arms[1].body,
+            &res_ty,
+            slots,
+            chain_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        )?;
+        emit_probe_condition(&arms[0].probe, src, it, out);
+        out.push(Lir::Select);
+        return Ok(());
+    }
     emit_probe_chain(
         db, src, arms, it, result_it, block_ty, slots, chain_base, high, scratch_ty, layout, out,
         tail,
     )
+}
+
+/// Emit the boolean `scrutinee == probe` for a match's literal probe: push the scrutinee `src`, then the
+/// comparison. Uses the same instruction selection the probe chain applies — an `Int` `0` probe is
+/// `i64.eqz`/`i32.eqz` (one instruction, cycle-43), a nonzero `Int` is `const ; eq`, and a `Bool` probe
+/// against `true` is IDENTITY (a Bool is canonical i32 0/1, so `p == 1` is just `p` — push nothing more),
+/// against `false` is `i32.eqz`. Shared by the branchless 2-arm select; the `Wild` probe is not a
+/// condition (it's the fallthrough) so it never reaches here.
+fn emit_probe_condition(
+    probe: &crate::core::Probe,
+    src: OperandSrc,
+    it: IntTy,
+    out: &mut Vec<Lir>,
+) {
+    src.push(out);
+    match probe {
+        crate::core::Probe::Int(v) => {
+            let m = Machine::of(it);
+            if v.to_i64_bits() == 0 {
+                out.push(if m.slot32 { Lir::I32Eqz } else { Lir::I64Eqz });
+            } else {
+                out.push(m.konst(v.to_i64_bits()));
+                out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
+            }
+        }
+        // A Bool is canonical i32 0/1: `p == true` IS `p` (nothing more), `p == false` is `i32.eqz`.
+        crate::core::Probe::Bool(true) => {}
+        crate::core::Probe::Bool(false) => out.push(Lir::I32Eqz),
+        crate::core::Probe::Wild => {}
+    }
 }
 
 /// The wasm slot type of a scalar match scrutinee (Int → its width's slot, Bool → i32), or `None` if
@@ -5337,6 +5437,61 @@ mod tests {
             !f.code.contains(&Lir::Select),
             "a non-leaf branch must NOT use select, got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn a_two_arm_match_with_leaf_bodies_selects() {
+        // The match analogue of the `if`→`select` rewrite: a 2-arm scalar/bool match with a literal
+        // probe + wildcard (or the two Bool literals) and cheap trap-free LEAF bodies emits a branchless
+        // `select`, not an `if`/`else`. `(match n (0 a) (_ b))` → `a ; b ; (n eqz) ; select` (the 0-probe
+        // uses `eqz`, cycle-43); `(match p (true a) (false b))` → `a ; b ; p ; select` (a Bool IS its own
+        // condition — no `p == 1` compare). A NON-leaf body / a guard / >2 arms keeps the probe chain.
+        let lir = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // (match n (0 a) (_ b)) → a ; b ; n ; eqz ; select.
+        let zero = lir(
+            "(module m (def (f (: n Int64) (: a Int64) (: b Int64)) (match n (0 a) (_ b))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            zero,
+            vec![
+                Lir::LocalGet(1), // a
+                Lir::LocalGet(2), // b
+                Lir::LocalGet(0), // n
+                Lir::I64Eqz,      // n == 0
+                Lir::Select,
+            ],
+            "a 2-arm 0-probe match selects with eqz"
+        );
+        // (match p (true a) (false b)) → a ; b ; p ; select — no `p == 1` compare (a Bool is the cond).
+        let boolm = lir(
+            "(module m (def (f (: p Bool) (: a Int64) (: b Int64)) (match p (true a) (false b))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            boolm,
+            vec![
+                Lir::LocalGet(1),
+                Lir::LocalGet(2),
+                Lir::LocalGet(0),
+                Lir::Select,
+            ],
+            "a Bool 2-arm match selects on the bare condition"
+        );
+        // A NON-leaf body keeps the structured if (no select).
+        let nonleaf = lir(
+            "(module m (def (f (: n Int64) (: a Int64) (: b Int64)) (match n (0 (+ a 1)) (_ b))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !nonleaf.contains(&Lir::Select) && nonleaf.iter().any(|i| matches!(i, Lir::If(_))),
+            "a non-leaf arm body keeps the if, got: {nonleaf:?}"
         );
     }
 
