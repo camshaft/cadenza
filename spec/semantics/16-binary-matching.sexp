@@ -78,6 +78,18 @@
   (input  (= (bin (u64 258)) (Bytes.of (list 0 0 0 0 0 0 1 2))))
   (output (: true Bool)))
 
+(case "a multi-segment bin concatenates mixed-width signed and unsigned segments in order"
+  (doc    "A `bin` with several integer segments of different widths and signedness lays them out
+           left-to-right, each encoded independently. `(bin (u8 1) (u16 258) (i8 -1))` produces the u8 byte
+           1, then the big-endian u16 258 = 0x0102 = two bytes 1 2, then the signed i8 −1 = two's-complement
+           255 — the four bytes `(Bytes.of (list 1 1 2 255))`. Pins that segment widths, endianness, and
+           signedness are applied per-segment and the results concatenated in source order (a builder that
+           mis-ordered the segments, dropped a width, or sign-mishandled the i8 would differ), the
+           integration of the single-segment u8/u16/i8 cases above into one bin.")
+  (needs  binary-matching)
+  (input  (= (bin (u8 1) (u16 258) (i8 -1)) (Bytes.of (list 1 1 2 255))))
+  (output (: true Bool)))
+
 (case "bit-field segments pack sub-byte values into one byte"
   (doc    "`(bin (bits 1 1) (bits 2 3) (bits 5 4))` packs a 1-bit flag (1), a 3-bit tag (2 = 0b010), and a
            4-bit value (5 = 0b0101), most-significant field first: 1·010·0101 = 0b1010_0101 = 165. The
