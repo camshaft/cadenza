@@ -18500,6 +18500,44 @@ mod stage1 {
     }
 
     #[test]
+    fn an_all_nullary_enum_program_imports_no_value_heap_runtime() {
+        // An all-nullary enum is a bare i32 discriminant (built with `i32.const`, matched with a
+        // `br_table`) — it touches the value heap NOT AT ALL. So a program whose only sum is such an enum
+        // must import NO runtime op: `collect_used_ops` must mirror `select`'s enum-disc fast path and NOT
+        // over-report `sum-new`/`sum-disc` (a dead import would force a needless `heap` linkage AND — since
+        // the import set fixes every `CallImport` index — a phantom import shifts them, risking a
+        // miscompile). Regression for that over-report; also a composed run confirms correctness.
+        use crate::testkit::parse;
+        let src = "(module m (type Color (Red) (Green) (Blue)) \
+                     (def (classify (: c Color)) (match c ((Red) 1) ((Green) 2) ((Blue) 3))) \
+                     (def (pick (: n Int64)) (if (< n 0) (Red) (if (= n 0) (Green) (Blue)))) \
+                     (def (main (: n Int64)) (classify (pick n))) \
+                     (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile enum");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "an all-nullary enum is a bare i32 — no value-heap runtime import (no dead sum-new/sum-disc)"
+        );
+        // A boxed sum in the SAME shape (Option) STILL imports the runtime — the elision is enum-only.
+        let boxed = "(module m \
+                       (def (mk (: n Int64)) (if (< n 0) (None) (Some n))) \
+                       (def (get (: o (Option Int64))) (match o ((Some x) x) ((None) 0))) \
+                       (def (main (: n Int64)) (get (mk n))) \
+                       (export main))";
+        let bb = compile_component(&crate::codec::encode(&parse(boxed))).expect("compile boxed");
+        assert!(
+            cdz_run::required_runtime(&bb).expect("valid").is_some(),
+            "a genuinely-boxed sum still imports the value-heap runtime"
+        );
+        // The enum program runs correctly with no runtime composed in (a plain scalar function): n<0 → Red
+        // → 1, n==0 → Green → 2, n>0 → Blue → 3.
+        for (arg, want) in [(-1i64, 1i64), (0, 2), (5, 3)] {
+            let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(arg)]);
+            assert_eq!(got, want, "classify(pick {arg})");
+        }
+    }
+
+    #[test]
     fn a_sum_match_disc_zero_probe_uses_eqz_and_dispatches() {
         // A sum match dispatches on `sum-disc(scrutinee) == disc`; when the tested discriminant is 0 —
         // the FIRST declared variant (`Some`), the common first-arm probe — that is `i32.eqz` (opcode
@@ -21923,6 +21961,435 @@ mod r2_runtime_resource {
             dtor_module(),
             "the compiler's drop-dtor module must match the oracle's"
         );
+    }
+
+    // ── #20 FEASIBILITY PROBE: a value resource with a REPEATABLE second method ──────────────────────
+    //
+    // The value resource already carries TWO methods (make + encode) and encode is now `borrow<t>`
+    // (repeatable). The genuinely-new risk for String/Bytes-as-resource-with-methods is whether ONE live
+    // handle survives a SEQUENCE of borrow-method calls — `make → len → len → encode → drop` — since a
+    // wasmtime borrow-lend scope is per-call and multiple lends of the same handle could interact. This
+    // oracle proves it does: a `(tuple 7 9)` resource whose `len : borrow<t> -> u32` reads `arr-len(rep)`
+    // (repeatable, no consume) coexists with `encode`, and every call uses the borrow's rep DIRECTLY.
+
+    /// The runtime ops this multi-method core imports (sorted by name — the order the compiler's used-set
+    /// would produce): arr-alloc/arr-get/arr-len/arr-set build + read the tuple, box-int boxes a leaf,
+    /// drop is the dtor's release op, get-int reads a leaf value in encode.
+    fn methods_ops() -> [&'static RtOp; 7] {
+        [
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_len,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ]
+    }
+
+    /// The program core for the multi-method probe: `make()` builds `(tuple 7 9)` + resource.new; the
+    /// BORROW methods `t-encode(rep)` (walk the value-form holes) and `t-len(rep)` (= `arr-len(rep)`) both
+    /// use the param DIRECTLY as the rep (no resource.rep) and do NOT drop. Imports the ops + resource-new
+    /// from "heap"; exports memory/make/t-encode/t-len/cabi_realloc.
+    fn tuple_methods_core(tpl: &ValueFormTemplate, elems: &[i64]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = methods_ops();
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        let mut import_type_idx = Vec::new();
+        for op in ops {
+            let (p, r) = op_core_functype(op);
+            types.ty().function(p, r);
+            import_type_idx.push(import_type_idx.len() as u32);
+        }
+        let rnew_ty = import_type_idx.len() as u32;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // resource-new (i32)->i32
+        let make_ty = rnew_ty + 1;
+        types.ty().function(vec![], vec![ValType::I32]);
+        let unary_ty = make_ty + 1; // (i32)->i32 for both t-encode and t-len
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]);
+        let realloc_ty = unary_ty + 1;
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I32],
+        );
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        for (i, op) in ops.iter().enumerate() {
+            imports.import("heap", op.name, EntityType::Function(import_type_idx[i]));
+        }
+        imports.import("heap", "resource-new", EntityType::Function(rnew_ty));
+        m.section(&imports);
+        let idx_of = |name: &str| ops.iter().position(|o| o.name == name).unwrap() as u32;
+        let f_arr_alloc = idx_of("arr-alloc");
+        let f_arr_get = idx_of("arr-get");
+        let f_arr_len = idx_of("arr-len");
+        let f_arr_set = idx_of("arr-set");
+        let f_box_int = idx_of("box-int");
+        let f_get_int = idx_of("get-int");
+        let f_rnew = ops.len() as u32;
+
+        let make_fn = ops.len() as u32 + 1; // k ops + resource-new
+        let encode_fn = make_fn + 1;
+        let len_fn = encode_fn + 1;
+        let realloc_fn = len_fn + 1;
+        let mut funcs = FunctionSection::new();
+        funcs.function(make_ty);
+        funcs.function(unary_ty); // t-encode
+        funcs.function(unary_ty); // t-len
+        funcs.function(realloc_ty);
+        m.section(&funcs);
+
+        let mut mems = MemorySection::new();
+        mems.memory(MemoryType {
+            minimum: 1,
+            maximum: None,
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        m.section(&mems);
+
+        let mut exports = ExportSection::new();
+        exports.export("memory", ExportKind::Memory, 0);
+        exports.export("make", ExportKind::Func, make_fn);
+        exports.export("t-encode", ExportKind::Func, encode_fn);
+        exports.export("t-len", ExportKind::Func, len_fn);
+        exports.export("cabi_realloc", ExportKind::Func, realloc_fn);
+        m.section(&exports);
+
+        let tpl_len = tpl.bytes.len();
+        let ret_off = (tpl_len + 3) & !3;
+        let mut data_bytes = tpl.bytes.clone();
+        data_bytes.resize(ret_off, 0);
+        data_bytes.extend_from_slice(&0u32.to_le_bytes());
+        data_bytes.extend_from_slice(&(tpl_len as u32).to_le_bytes());
+
+        // make: build the tuple, then resource.new(handle).
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(elems.len() as i32));
+        make.instruction(&Instruction::Call(f_arr_alloc));
+        for (i, &v) in elems.iter().enumerate() {
+            make.instruction(&Instruction::I32Const(i as i32));
+            make.instruction(&Instruction::I64Const(v));
+            make.instruction(&Instruction::Call(f_box_int));
+            make.instruction(&Instruction::Call(f_arr_set));
+        }
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+
+        // t-encode(borrow rep): the param IS the rep; walk each hole (int leaves only here). No drop.
+        let mut encode = Function::new(vec![(1, ValType::I64)]);
+        let rep = 0u32;
+        let scratch = 1u32;
+        for hole in &tpl.leaves {
+            let out_off = hole.offset as u64;
+            // int-leaf write (the probe uses only non-negative ints, so skip the neg-flip for brevity —
+            // 7 and 9 are positive; the negative path is already covered by walker_core_borrow's tests).
+            encode.instruction(&Instruction::LocalGet(rep));
+            for &idx in &hole.path {
+                encode.instruction(&Instruction::I32Const(idx as i32));
+                encode.instruction(&Instruction::Call(f_arr_get));
+            }
+            encode.instruction(&Instruction::Call(f_get_int));
+            encode.instruction(&Instruction::LocalSet(scratch));
+            for b in 0..8u64 {
+                encode.instruction(&Instruction::I32Const((out_off + b) as i32));
+                encode.instruction(&Instruction::LocalGet(scratch));
+                let shift = (7 - b) * 8;
+                if shift > 0 {
+                    encode.instruction(&Instruction::I64Const(shift as i64));
+                    encode.instruction(&Instruction::I64ShrU);
+                }
+                encode.instruction(&Instruction::I32WrapI64);
+                encode.instruction(&Instruction::I32Store8(MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
+            }
+        }
+        encode.instruction(&Instruction::I32Const(ret_off as i32));
+        encode.instruction(&Instruction::End);
+
+        // t-len(borrow rep) -> u32: the param IS the rep; `arr-len(rep)`. Repeatable — reads without
+        // consuming, no drop. This is the shape a String/Bytes `len` method takes (bytes-len instead).
+        let mut len = Function::new(vec![]);
+        len.instruction(&Instruction::LocalGet(rep));
+        len.instruction(&Instruction::Call(f_arr_len));
+        len.instruction(&Instruction::End);
+
+        let mut realloc = Function::new(vec![]);
+        realloc.instruction(&Instruction::I32Const(0));
+        realloc.instruction(&Instruction::End);
+
+        let mut code = CodeSection::new();
+        code.function(&make);
+        code.function(&encode);
+        code.function(&len);
+        code.function(&realloc);
+        m.section(&code);
+        let mut data = DataSection::new();
+        data.active(0, &ConstExpr::i32_const(0), data_bytes.iter().copied());
+        m.section(&data);
+        m.finish()
+    }
+
+    /// The multi-method oracle: the borrow envelope plus a THIRD lifted method `len : borrow<t> -> u32`
+    /// alongside make + encode, all published in `cadenza:run/run`. Mirrors
+    /// `oracle_runtime_resource_component_borrow` with the extra len functype/lift + inner re-export entry.
+    fn oracle_tuple_methods(core: &[u8], import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        let ops = methods_ops();
+        let mut c = ComponentBuilder::default();
+        let mut it = InstanceType::new();
+        for (i, op) in ops.iter().enumerate() {
+            let params: Vec<(String, ComponentValType)> = op
+                .params
+                .iter()
+                .enumerate()
+                .map(|(j, p)| (format!("p{j}"), abi_comp(*p)))
+                .collect();
+            {
+                let mut ft = it.ty().function();
+                ft.params(params.iter().map(|(n, t)| (n.as_str(), *t)));
+                ft.result(op.result.map(abi_comp));
+            }
+            it.export(op.name, ComponentTypeRef::Func(i as u32));
+        }
+        let it_ty = c.type_instance(&it);
+        let inst = c.import(import_name, ComponentTypeRef::Instance(it_ty));
+        let comp_fns: Vec<u32> = ops
+            .iter()
+            .map(|op| c.alias_export(inst, op.name, ComponentExportKind::Func))
+            .collect();
+        let lowered: Vec<(&str, u32)> = ops
+            .iter()
+            .zip(comp_fns)
+            .map(|(op, f)| (op.name, c.lower_func(f, [])))
+            .collect();
+        let drop_core = lowered
+            .iter()
+            .find(|(n, _)| *n == "drop")
+            .map(|(_, f)| *f)
+            .expect("drop op");
+        let heap_dtor_inst = c.core_instantiate_exports([("drop", ExportKind::Func, drop_core)]);
+        let dtor_idx = c.core_module_raw(&dtor_module());
+        let dtor_inst = c.core_instantiate(
+            dtor_idx,
+            [("heap-dtor", ModuleArg::Instance(heap_dtor_inst))],
+        );
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let mut heap_exports: Vec<(&str, ExportKind, u32)> = lowered
+            .iter()
+            .map(|(n, f)| (*n, ExportKind::Func, *f))
+            .collect();
+        heap_exports.push(("resource-new", ExportKind::Func, rnew_core));
+        let heap_inst = c.core_instantiate_exports(heap_exports);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
+        let len_core = c.core_alias_export(prog_inst, "t-len", ExportKind::Func);
+        let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
+        let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut enc) = c.type_function();
+        enc.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (borrow_t, bdef) = c.type_defined();
+        bdef.borrow(res_ty);
+        let (list_u8, ldef) = c.type_defined();
+        ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (encode_ty, mut enc2) = c.type_function();
+        enc2.params([("self", ComponentValType::Type(borrow_t))])
+            .result(Some(ComponentValType::Type(list_u8)));
+        let encode_comp = c.lift_func(
+            encode_core,
+            encode_ty,
+            [
+                CanonicalOption::Memory(mem),
+                CanonicalOption::Realloc(realloc),
+            ],
+        );
+        // len : (self: borrow<t>) -> u32. Reuse the borrow<t> defined type; no memory/realloc (scalar).
+        let (len_ty, mut lf) = c.type_function();
+        lf.params([("self", ComponentValType::Type(borrow_t))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let len_comp = c.lift_func(len_core, len_ty, []);
+        let inner_idx = c.component(inner_reexport_component_methods());
+        let inst2 = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-encode", ComponentExportKind::Func, encode_comp),
+                ("import-func-len", ComponentExportKind::Func, len_comp),
+            ],
+        );
+        c.export(
+            "cadenza:run/run",
+            ComponentExportKind::Instance,
+            inst2,
+            None,
+        );
+        c.finish()
+    }
+
+    /// The inner re-export component for the multi-method oracle: imports the abstract resource + make +
+    /// encode + len, re-exports the resource directly and re-declares all three against it. Extends
+    /// `inner_reexport_component_borrow` with the `len` method.
+    fn inner_reexport_component_methods() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        let (borrow_imp, bd) = c.type_defined();
+        bd.borrow(imp_t);
+        let (list1, ld) = c.type_defined();
+        ld.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_ty, mut ef) = c.type_function();
+        ef.params([("self", ComponentValType::Type(borrow_imp))])
+            .result(Some(ComponentValType::Type(list1)));
+        let enc_fn = c.import("import-func-encode", ComponentTypeRef::Func(enc_ty));
+        let (borrow_imp2, bd1b) = c.type_defined();
+        bd1b.borrow(imp_t);
+        let (len_ty, mut lf) = c.type_function();
+        lf.params([("self", ComponentValType::Type(borrow_imp2))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let len_fn = c.import("import-func-len", ComponentTypeRef::Func(len_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od2) = c.type_defined();
+        od2.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (borrow_exp, bd2) = c.type_defined();
+        bd2.borrow(exp_t);
+        let (list2, ld2) = c.type_defined();
+        ld2.list(ComponentValType::Primitive(PrimitiveValType::U8));
+        let (enc_exp_ty, mut ef2) = c.type_function();
+        ef2.params([("self", ComponentValType::Type(borrow_exp))])
+            .result(Some(ComponentValType::Type(list2)));
+        c.export(
+            "encode",
+            ComponentExportKind::Func,
+            enc_fn,
+            Some(ComponentTypeRef::Func(enc_exp_ty)),
+        );
+        let (borrow_exp2, bd3) = c.type_defined();
+        bd3.borrow(exp_t);
+        let (len_exp_ty, mut lf2) = c.type_function();
+        lf2.params([("self", ComponentValType::Type(borrow_exp2))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        c.export(
+            "len",
+            ComponentExportKind::Func,
+            len_fn,
+            Some(ComponentTypeRef::Func(len_exp_ty)),
+        );
+        c
+    }
+
+    #[test]
+    fn a_value_resource_carries_a_repeatable_len_method_beside_encode() {
+        // #20 FOUNDATION: prove one live handle survives `make → len → len → encode → drop`, with `len` a
+        // repeatable borrow method (arr-len) coexisting with encode. If len returns 2 BOTH times and encode
+        // still decodes correctly AFTER the len calls, the multi-method value resource is sound end-to-end.
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = tuple_methods_core(&tpl, &[7, 9]);
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        let comp = oracle_tuple_methods(&core, &import_name);
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("multi-method component validates");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[#20] runtime wasm not found; skipping multi-method probe");
+            return;
+        };
+        use wasmtime::component::{ResourceAny, Val};
+        let mut rt = super::ComposedRuntime::new(&comp, &runtime);
+        let iface = rt
+            .program
+            .get_export_index(&mut rt.store, None, "cadenza:run/run")
+            .expect("run iface");
+        let get = |rt: &mut super::ComposedRuntime, n: &str| {
+            let idx = rt
+                .program
+                .get_export_index(&mut rt.store, Some(&iface), n)
+                .unwrap_or_else(|| panic!("{n} exported"));
+            rt.program.get_func(&mut rt.store, idx).expect("func")
+        };
+        let make = get(&mut rt, "make");
+        let len = get(&mut rt, "len");
+        let encode = get(&mut rt, "encode");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut rt.store, &[], &mut handle).expect("make");
+        make.post_return(&mut rt.store).expect("make post");
+        // len TWICE on the SAME handle — the repeatability the borrow buys.
+        for round in 0..2 {
+            let mut out = [Val::Bool(false)];
+            len.call(&mut rt.store, &handle, &mut out)
+                .unwrap_or_else(|e| panic!("len round {round}: {e}"));
+            len.post_return(&mut rt.store).expect("len post");
+            assert!(
+                matches!(out[0], Val::U32(2)),
+                "len round {round}: expected 2, got {:?}",
+                out[0]
+            );
+        }
+        // encode AFTER the len calls — the handle is still live, walks correctly.
+        let mut out = [Val::Bool(false)];
+        encode
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("encode");
+        encode.post_return(&mut rt.store).expect("encode post");
+        let bytes: Vec<u8> = match &out[0] {
+            Val::List(items) => items
+                .iter()
+                .map(|v| match v {
+                    Val::U8(b) => *b,
+                    o => panic!("not u8: {o:?}"),
+                })
+                .collect(),
+            o => panic!("expected list<u8>: {o:?}"),
+        };
+        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode value form");
+        assert_eq!(
+            cadenza_syntax::sexpr::print(&arenas).trim(),
+            "(: (tuple 7 9) (Tuple Int64 Int64))",
+            "encode still decodes correctly after the repeated len calls"
+        );
+        // Drop → the dtor reclaims.
+        if let Val::Resource(r) = handle[0] {
+            let r: ResourceAny = r;
+            r.resource_drop(&mut rt.store).expect("resource drop");
+        } else {
+            panic!("make did not return a resource handle");
+        }
     }
 }
 
