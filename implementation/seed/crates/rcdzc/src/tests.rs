@@ -22982,6 +22982,27 @@ mod closure_host_resource {
         );
     }
 
+    #[test]
+    fn a_partial_application_escaping_as_a_result_declines_with_an_arity_message() {
+        use crate::testkit::parse;
+        // An entrypoint whose result is a PARTIAL APPLICATION — `(f 1)` for a two-parameter `f` — is a
+        // closure whose remaining parameter has an UNCONSTRAINED (`Any`) type, so it cannot cross the
+        // host boundary. The message must explain THAT (a partial application escaping as the result),
+        // not the misleading "a closure argument of type Any has no scalar representation" (which reads
+        // as if a real type is unsupported). Internal partial application still WORKS (a separate test);
+        // only escaping one as the export result declines.
+        let src = "(do (def (f x y) (+ x y)) (def (main) (f 1)) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a partial application escaping as the export result must decline");
+        assert!(
+            err.message.contains("unconstrained")
+                && err.message.contains("partial application")
+                && !err.message.contains("of type Any"),
+            "expected the partial-application explanation, not the raw `type Any` phrasing, got: {}",
+            err.message
+        );
+    }
+
     /// A closure that PERFORMS AN EFFECT cannot escape to the host (operator decision 2026-07-13:
     /// "closures escaping effects — that's going to be super weird and I don't really want to support
     /// it"). The closure's handler context is the `(host …)`/`(handle …)` frame open when the closure
