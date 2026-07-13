@@ -701,7 +701,7 @@ fn apply_lambda_uncached(
                 crate::resolve::resolve_subtree(db, combined);
                 Ok(Some(combined))
             }
-            None => Err("applied more arguments than the function accepts".to_string()),
+            None => Err(crate::diag::OVER_APPLICATION_DECLINE.to_string()),
         }
     }
 }

@@ -4420,6 +4420,75 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_nested_narrow_arith_with_control_flow_operands_takes_the_consuming_width() {
+        // ⚠ INVALID WASM regression: a NESTED narrow `+`/`-`/`*` whose operands are all deferred-width
+        // (`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8`) types as `Int(Deferred)` and was emitted at the i64
+        // DEFAULT — storing an i64 result into the i32 slot the enclosing narrow op declared → wasm
+        // rejected the module. The c78 leaf-operand wrap did NOT cover this (the inner op goes through
+        // `emit_operand_into`'s nested-arith fast path at its own width). Fixed by emitting a
+        // deferred-width nested arith at the CONSUMING op's width `ot` (`emit_operand_into`): the inner op
+        // now computes AND range-checks at the narrow width. SOUND — a genuine fixed inner width differing
+        // from the context is a CDZ0301 fault before emit. Values + INNER-overflow trap parity:
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool) (: d Bool)",
+                "(: (+ (+ (if c 1 2) (if d 3 4)) 5) Int8)",
+                &[Val::Bool(true), Val::Bool(true)]
+            ),
+            9 // 1 + 3 + 5
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool) (: d Bool)",
+                "(: (+ (+ (if c 1 2) (if d 3 4)) 5) Int8)",
+                &[Val::Bool(false), Val::Bool(false)]
+            ),
+            11 // 2 + 4 + 5
+        );
+        // A nested MUL operand, and a triple nest, likewise.
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool) (: d Bool)",
+                "(: (+ (* (if c 1 2) (if d 3 4)) 5) Int8)",
+                &[Val::Bool(true), Val::Bool(false)]
+            ),
+            9 // 1 * 4 + 5
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool)",
+                "(: (+ (+ (+ (if c 1 2) 3) 4) 5) Int8)",
+                &[Val::Bool(true)]
+            ),
+            13 // 1 + 3 + 4 + 5
+        );
+        // INNER-overflow trap parity: the inner `+` range-checks at Int8, so a runtime inner 100+100=200
+        // TRAPS (distinct branch values so it is not const-folded), while in-range inputs compute.
+        assert!(traps(
+            "(: c Bool) (: d Bool)",
+            "(: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)",
+            &[Val::Bool(true), Val::Bool(true)]
+        ));
+        assert_eq!(
+            run::<i8>(
+                "(: c Bool) (: d Bool)",
+                "(: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)",
+                &[Val::Bool(true), Val::Bool(false)]
+            ),
+            115 // 100 + 10 + 5
+        );
+        // The wide (Int64) nesting is unchanged.
+        assert_eq!(
+            run::<i64>(
+                "(: c Bool) (: d Bool)",
+                "(: (+ (+ (if c 1 2) (if d 3 4)) 5) Int64)",
+                &[Val::Bool(true), Val::Bool(true)]
+            ),
+            9
+        );
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
@@ -6920,6 +6989,42 @@ mod match_engine {
             1,
             "one duplicate field = one CDZ0201, got: {:?}",
             out.diagnostics
+        );
+    }
+
+    #[test]
+    fn over_applying_a_function_reports_one_error_not_a_shadowing_decline() {
+        // Over-application (`(f 1 2)` for a 1-param `f`) must be ONE primary `error:` — the coded CDZ0203
+        // `applied 2 arguments to a function of arity 1 …` — NOT that reject PLUS the evaluator's uncoded
+        // "applied more arguments than the function accepts" decline for the same node. `dedup_faults`
+        // drops the weaker decline when the coded over-application reject is present.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (f (: x Int64)) x) (def (main) (f 1 2)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "over-application = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::OVER_APPLICATION_DECLINE),
+            "the 'applied more arguments' decline must not accompany the coded reject"
         );
     }
 
@@ -14421,6 +14526,26 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(cond))).is_err(),
             "a scalar abort in a conditional tuple operand must decline, not miscompile to (1,7)"
+        );
+    }
+
+    #[test]
+    fn an_abort_in_an_if_condition_folds_by_type_compatibility() {
+        // E4 type-consistency guard uses COMPATIBILITY, not structural `==`. `(if (< (Bail.bail 7) 5) 1 2)`
+        // — the abort is in the condition, evaluated first, so it abandons the whole `if` → 7. The handle
+        // body infers `Int{Deferred}` (the `if` branches 1/2 not yet ground) while the abort arm value is
+        // `Int64{Fixed}`; a structural `!=` spuriously flagged this as a mismatch and DECLINED. Comparing
+        // with `agrees_with` (an undetermined Int agrees with Int64) folds it correctly. Regression guard
+        // for that false-positive decline — the abort-in-condition is a real "validate then bail" shape.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if (< (Bail.bail 7) 5) 1 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an abort in an if condition folds"),
+                "main"
+            ),
+            7
         );
     }
 
