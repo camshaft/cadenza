@@ -588,6 +588,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
                 // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
                 _ if core_equiv(db, lhs, rhs) => lc,
+                // NESTED IDEMPOTENCE / ABSORPTION: `(and (and a b) a)` → `(and a b)` and `(or (or a b) a)` →
+                // `(or a b)` — one operand is a nested SAME-connective `(and/or p q)` that already CONTAINS
+                // the other operand (`p` or `q` is `core_equiv` to it), so re-conjoining/disjoining it is
+                // redundant. Returns the nested node (all operands stay evaluated → trap-safe, like the
+                // bitwise idempotent collapse c117). Only the SAME connective (`is_and` matches). Both outer
+                // orders are tried by `bool_nested_idempotent`.
+                _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => core_of(db, keep),
                 // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
                 // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
                 // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
@@ -6961,6 +6968,30 @@ fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
         matches!(core_of(db, maybe_not), Core::Not { operand } if core_equiv(db, operand, other))
     };
     is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
+}
+
+/// NESTED IDEMPOTENCE for a short-circuit `and`/`or`: when one outer operand is a nested `Core::And` of the
+/// SAME connective (`is_and`) that already CONTAINS the other outer operand (one of its sides is
+/// `core_equiv` to it), the outer re-application is redundant — `(and (and a b) a)` == `(and a b)`. Returns
+/// the NESTED node to keep (all its operands stay evaluated → trap-safe, no operand dropped). Both outer
+/// operand orders and both nested-operand positions are tried. `None` when the shape does not match.
+fn bool_nested_idempotent(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Option<StructId> {
+    // `nested` is `(op p q)` with the SAME connective; `outer` must be `core_equiv` to `p` or `q`.
+    let check = |db: &mut Db, nested: StructId, outer: StructId| -> Option<StructId> {
+        let Core::And {
+            lhs: p,
+            rhs: q,
+            is_and: nested_is_and,
+        } = core_of(db, nested)
+        else {
+            return None;
+        };
+        if nested_is_and != is_and {
+            return None;
+        }
+        (core_equiv(db, p, outer) || core_equiv(db, q, outer)).then_some(nested)
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
 }
 
 /// Whether `lhs`/`rhs` are two comparisons on the SAME operand pair whose operators are exact COMPLEMENTS

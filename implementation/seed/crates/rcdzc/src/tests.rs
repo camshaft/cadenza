@@ -15228,6 +15228,65 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_absorbs_a_repeated_conjunct() {
+        // NESTED IDEMPOTENCE: `(and (and a b) a)` → `(and a b)`, `(or (or a b) b)` → `(or a b)` — one operand
+        // is a nested SAME-connective node already containing the other, so re-applying it is redundant. The
+        // nested node is KEPT (all operands stay evaluated → trap-safe). Only the SAME connective; a MIXED
+        // connective or a DISTINCT operand is not folded.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let conn = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I32And | Lir::I32Or)).count();
+        // Both nested positions and both connectives collapse to ONE connective op.
+        assert_eq!(conn(&lir("(: a Bool) (: b Bool)", "(: (and (and a b) a) Bool)")), 1, "(and (and a b) a) → (and a b)");
+        assert_eq!(conn(&lir("(: a Bool) (: b Bool)", "(: (and a (and a b)) Bool)")), 1, "outer order");
+        assert_eq!(conn(&lir("(: a Bool) (: b Bool)", "(: (or (or a b) b) Bool)")), 1, "(or (or a b) b) → (or a b)");
+        // A DISTINCT third operand does NOT fold.
+        assert_eq!(conn(&lir("(: a Bool) (: b Bool) (: c Bool)", "(: (and (and a b) c) Bool)")), 2, "distinct c kept");
+
+        // VALUE PARITY over all truth combinations.
+        use wasmtime::component::Val;
+        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+            "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
+        )))).expect("compile");
+        let andn = f("(and (and a b) a)");
+        let orn = f("(or (or a b) b)");
+        for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(run_returns_with::<bool>(&andn, "f", &[Val::Bool(a), Val::Bool(b)]), a && b, "and @{a},{b}");
+            assert_eq!(run_returns_with::<bool>(&orn, "f", &[Val::Bool(a), Val::Bool(b)]), a || b, "or @{a},{b}");
+        }
+        // TRAP SAFETY: the nested node is retained, so a trapping operand in it still traps.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64) (: b Bool)) (if (and (and (> (/ 10 n) 0) b) (> (/ 10 n) 0)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&tb, "f", &[Val::S64(0), Val::Bool(true)]), "a trapping nested operand keeps its trap");
+    }
+
+    #[test]
     fn a_short_circuit_connective_with_a_value_and_its_negation_folds_to_a_constant() {
         // BOOLEAN COMPLEMENT LAWS: `(and a (not a))` → false, `(or a (not a))` → true — a boolean and its
         // negation are exclusive+exhaustive. The `and`/`or` analogue of the bitwise `x & ~x`/`x | ~x` fold.
