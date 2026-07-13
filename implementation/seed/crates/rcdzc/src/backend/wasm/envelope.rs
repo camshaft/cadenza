@@ -469,8 +469,8 @@ pub fn assemble_host(
         for (i, f) in host_fns.iter().enumerate() {
             decls.push(0x01); // ty decl
             decls.extend_from_slice(&f.comp_functype);
-            decls.push(0x04); // export decl
-            decls.extend_from_slice(&extern_name(&f.op));
+            decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
+            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
             decls.push(0x01); // sort: component func
             uleb128(i as u64, &mut decls);
         }
@@ -480,20 +480,22 @@ pub fn assemble_host(
     };
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
-    // sec 10: import the effect interface as an instance of component type 0, under the effect's name.
+    // sec 10: import the effect interface as an instance of component type 0, under the effect's name —
+    // KEBAB-normalized (a non-kebab effect name like `Log` is not a valid component import extern name).
     let import_sec = {
-        let mut item = extern_name(iface);
+        let mut item = extern_name(&super::kebab_extern_name(iface));
         item.push(0x05); // ComponentTypeRef::Instance sort
         uleb128(0, &mut item); // type index 0
         section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
     };
 
     // sec 6 (first): alias each op out of the imported effect instance (component instance 0) → component
-    // funcs `0..h`.
+    // funcs `0..h`. The alias reads the op by the COMPONENT extern name the instance-type exports it under
+    // (the kebab-normalized op name), so it must match the export decl above.
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &f.op));
+            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
         }
         section(sec::ALIAS, &wasm_vec(h, &items))
     };
@@ -646,7 +648,7 @@ pub fn assemble_host_mem(
             decls.push(0x01);
             decls.extend_from_slice(&f.comp_functype);
             decls.push(0x04);
-            decls.extend_from_slice(&extern_name(&f.op));
+            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
             decls.push(0x01);
             uleb128(i as u64, &mut decls);
         }
@@ -656,19 +658,20 @@ pub fn assemble_host_mem(
     };
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
-    // sec 10: import the effect interface as an instance of component type 0.
+    // sec 10: import the effect interface as an instance of component type 0 (kebab-normalized name).
     let import_sec = {
-        let mut item = extern_name(iface);
+        let mut item = extern_name(&super::kebab_extern_name(iface));
         item.push(0x05);
         uleb128(0, &mut item);
         section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
     };
 
-    // sec 6 (first): alias each op out of the imported effect instance (comp instance 0) → comp funcs.
+    // sec 6 (first): alias each op out of the imported effect instance (comp instance 0) → comp funcs. The
+    // alias name is the kebab-normalized op name the instance-type export decl uses (they must match).
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &f.op));
+            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
         }
         section(sec::ALIAS, &wasm_vec(h, &items))
     };
@@ -906,8 +909,9 @@ pub fn assemble_resource(main_core: &[u8], dtor_core: &[u8]) -> Vec<u8> {
 /// `resource.new` `k+1`, `resource.rep` `k+2`, then the program's `make` `k+3`, `t-encode` `k+4`,
 /// `cabi_realloc` `k+5` (the program core module imports the `k` runtime ops + `resource-new` +
 /// `resource-rep` = `k+2` funcs before its own three). Component types — import-instance-type `0`,
-/// resource `1`, `own<t>` `2`, make-ft `3`, `list u8` `4`, encode-ft `5`. Component funcs — aliased ops
-/// `0..k`, make-lift `k`, encode-lift `k+1`. Core instances — dtor `0`, heap `1`, program `2`. The
+/// resource `1`, `own<t>` `2`, make-ft `3`, then `borrow<t>` `4`, `list u8` `5`, encode-ft `6`. Component
+/// funcs — aliased ops `0..k`, make-lift `k`, encode-lift `k+1`. Core instances — dtor `0`, heap `1`,
+/// program `2`. The
 /// program core module (`serialize::runtime_resource_core_module`) must import the `k` ops + the two
 /// intrinsics in THIS order and export `memory`/`make`/`t-encode`/`cabi_realloc`.
 pub fn assemble_runtime_resource(
@@ -1056,31 +1060,32 @@ pub fn assemble_runtime_resource(
         sec::CANON,
         &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
     ));
-    // sec 7: the shared `list u8` type (type 4) then the `encode` functype `(self: own<t>) -> list<u8>`
-    // (type 5). ⚠ `encode` takes `own<t>` (CONSUMES self) — this is why a runtime compound's handle
-    // LEAKS: encode swallows the handle and the guest never drops it, so the dtor never fires. The
-    // correct design is `borrow<t>` (host keeps ownership, drops afterward → dtor fires), but that
-    // regresses the composed walk under wasmtime 37 with an un-root-caused host-side trap in encode
-    // (resource.rep / borrow-lend interaction). Tracked as the R2-dtor follow-up in
-    // [[rcdzc-r1-resource-encode-linking-findings]]; kept as `own` here to preserve a GREEN gate.
+    // sec 7: `borrow<t>` (type 4), the shared `list u8` type (type 5), then the `encode` functype
+    // `(self: borrow<t>) -> list<u8>` (type 6). `encode` BORROWS self — the host keeps ownership and
+    // drops the handle afterward (firing the dtor, which reclaims the heap rep). The core `t-encode`
+    // receives the borrow's REP DIRECTLY as its param (wasmtime's `lift_borrow` passes the rep, not a
+    // table index), so it walks the heap without `resource.rep` and does NOT drop — the value survives
+    // the call, making the method repeatable ([[rcdzc-r1-resource-encode-linking-findings]], the
+    // 2026-07-13 borrow correction; proven by `a_borrow_self_encode_walks_and_crosses`).
     let encode_types = {
-        let mut items = list_u8_defined_type();
-        items.extend_from_slice(&self_own_to_list_functype(2, 4));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        let mut items = borrow_item(1); // borrow<resource> — resource is component type 1
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(4, 5));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_types);
-    // sec 8: lift `encode` (core func k+4) against functype type 5, carrying Memory 0 + Realloc (core
+    // sec 8: lift `encode` (core func k+4) against functype type 6, carrying Memory 0 + Realloc (core
     // func k+5) → component func k+1.
     out.extend_from_slice(&section(
         sec::CANON,
         &wasm_vec(
             1,
-            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 5),
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
         ),
     ));
-    // sec 4: the nested re-export component (its own local resource/func indices) — same blob as the
-    // constant path's inner component.
-    out.extend_from_slice(&component_section(&resource_inner_component()));
+    // sec 4: the nested re-export component — the BORROW variant (re-types `encode` against
+    // `borrow<t>`), matching the borrow lift above.
+    out.extend_from_slice(&component_section(&resource_inner_component_borrow()));
     // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the two
     // lifted funcs (comp funcs k, k+1) → component instance 0.
     out.extend_from_slice(&section(

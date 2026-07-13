@@ -8,88 +8,116 @@ export default function Modules() {
     <article>
       <H1>Modules</H1>
       <Lede>
-        As a program grows, related definitions want a home. A module groups them under a name and
-        controls what's visible from outside — Cadenza's unit of scoping.
+        As a program grows, related definitions want a home. A module groups them under a name — and,
+        because a module is just a record of what it defines, you reach inside it the way you reach into
+        any record.
       </Lede>
 
       <P>
-        A <C>module</C> gathers definitions and binds a name for them. From outside, you reach a
-        definition by qualifying it with the module's name — <C>Math.square</C> — the same dotted access
-        you already use to reach a record's field, because a module <em>is</em> a record of what it
-        exports:
+        A <C>module</C> gathers definitions and binds a name for them. Say we have a temperature
+        conversion — it belongs with other temperature code, under a <C>Temp</C> name, reached by
+        qualifying it: <C>Temp.c-to-f</C>.
       </P>
       <Runnable
         source={`(def (main)
   (do
-    (module Math
-      (def (square x) (* x x)))
-    (Math.square 5)))`}
+    (module Temp
+      (def (c-to-f c) (+ (/ (* c 9) 5) 32)))
+    (Temp.c-to-f 100)))`}
       />
       <P>
-        <C>Math</C> names the group; <C>Math.square</C> reaches its <C>square</C>. The definition lives in
-        the module's namespace, not loose in the surrounding scope.
+        100°C is 212°F. <C>Temp</C> names the group; <C>Temp.c-to-f</C> reaches the conversion inside it.
+        The definition lives in the module's namespace rather than loose in the surrounding scope — the
+        same dotted access you already use for a record's field.
       </P>
 
-      <H2>Modules hold values too</H2>
+      <H2>A module keeps its own pieces together</H2>
       <P>
-        A module isn't only functions — a value definition is a field like any other. A little{" "}
-        <C>Config</C> module makes a tidy namespace for constants:
+        The real value shows once a module has more than one piece. Here <C>Circle</C> holds a constant{" "}
+        <C>pi</C> and an <C>area</C> that uses it. The caller only deals with <C>Circle.area</C> — the{" "}
+        <C>pi</C> is an internal detail the module manages for itself:
       </P>
       <Runnable
         source={`(def (main)
   (do
-    (module Config
-      (def limit 100))
-    (Config.limit)))`}
+    (module Circle
+      (def pi 3)
+      (def (area r) (* pi (* r r))))
+    (Circle.area 10)))`}
       />
+      <P>
+        <C>area 10</C> is <C>3 × 10 × 10</C> = <C>300</C>. The function reads <C>pi</C> directly, because
+        inside the module they're siblings; from outside you just call <C>area</C> and don't think about
+        how it's computed.
+      </P>
 
-      <H2>Several definitions, one namespace</H2>
+      <H2>Composing across modules</H2>
       <P>
-        The point is grouping: put the related pieces together and call them through the one name.
+        Two modules, each with its own job, combine cleanly — a qualified name says exactly which piece
+        you mean, so there's never a question of whose <C>f</C> is whose:
       </P>
       <Runnable
         source={`(def (main)
   (do
-    (module Geo
-      (def (square x) (* x x))
-      (def (double x) (* x 2)))
-    (+ (Geo.square 3) (Geo.double 5))))`}
+    (module Inc (def (f x) (+ x 1)))
+    (module Scale (def (g x) (* x 10)))
+    (Scale.g (Inc.f 4))))`}
       />
       <P>
-        <C>Geo.square 3</C> is 9, <C>Geo.double 5</C> is 10 — summed to <C>19</C>. Two definitions, reached
-        through one qualified name.
+        <C>Inc.f 4</C> is 5, then <C>Scale.g 5</C> is <C>50</C>. Swap the order — <C>(Inc.f (Scale.g 4))</C>{" "}
+        — and you'd get 41 instead; the names make the pipeline unambiguous either way.
       </P>
 
       <Why tenet="A module is a record of its exports">
-        Cadenza doesn't add a separate "module system" bolted onto the language — a module is just a{" "}
-        <em>value</em>, a record whose fields are its exported definitions, bound to a name. That's why
-        you reach into it with the same <C>.</C> you use for any record: there's one idea of "a named
-        thing with fields", not two. Grouping and namespacing fall out of a feature the language already
-        has, rather than a new construct with its own rules.
+        Cadenza doesn't bolt on a separate "module system" with its own rules — a module is just a{" "}
+        <em>value</em>, a record whose fields are its definitions, bound to a name. That's why you reach
+        into it with the same <C>.</C> you use for any record: there's one idea of "a named thing with
+        fields", not two. Grouping and namespacing fall out of a feature the language already has. The
+        payoff is that everything you know about records — how they're built, accessed, passed around —
+        already tells you how modules behave.
       </Why>
 
       <Note>
-        This is scoping <em>within</em> a program. A larger project also splits across files, where one
-        module <C>import</C>s the names another <C>export</C>s — the same grouping idea, scaled up to the
+        This is scoping <em>within</em> one program. A larger project also splits across files, where a
+        module <C>import</C>s the names another <C>export</C>s — the same grouping idea, scaled up to a
         whole package.
       </Note>
 
       <H2>Your turn</H2>
       <Exercise
         id="modules:1"
-        prompt={<>Call <C>Math.square</C> on <C>6</C> through the module, so the answer is <C>36</C>.</>}
+        prompt={<>Finish <C>area</C> so <C>Circle.area 5</C> gives <C>75</C> — it should use the module's <C>pi</C>.</>}
         starter={`(def (main)
   (do
-    (module Math
-      (def (square x) (* x x)))
-    (Math.square ?)))`}
+    (module Circle
+      (def pi 3)
+      (def (area r) (* pi ?)))
+    (Circle.area 5)))`}
         solution={`(def (main)
   (do
-    (module Math
-      (def (square x) (* x x)))
-    (Math.square 6)))`}
-        expected="36"
-        hint={<>Qualify the call with the module name and pass <C>6</C>: <C>(Math.square 6)</C>.</>}
+    (module Circle
+      (def pi 3)
+      (def (area r) (* pi (* r r))))
+    (Circle.area 5)))`}
+        expected="75"
+        hint={<>Area is <C>pi × r × r</C>. You need <C>r</C> squared: <C>(* r r)</C>.</>}
+      />
+
+      <Exercise
+        id="modules:2"
+        prompt={<>Pipe <C>4</C> through <C>Scale.g</C> first, then <C>Inc.f</C>, so the answer is <C>41</C>.</>}
+        starter={`(def (main)
+  (do
+    (module Inc (def (f x) (+ x 1)))
+    (module Scale (def (g x) (* x 10)))
+    (Inc.f (Scale.g ?))))`}
+        solution={`(def (main)
+  (do
+    (module Inc (def (f x) (+ x 1)))
+    (module Scale (def (g x) (* x 10)))
+    (Inc.f (Scale.g 4))))`}
+        expected="41"
+        hint={<><C>Scale.g 4</C> is 40, then <C>Inc.f 40</C> adds 1.</>}
       />
     </article>
   );

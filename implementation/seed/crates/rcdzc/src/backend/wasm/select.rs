@@ -482,12 +482,19 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
 /// box op — so this returns `Ok(None)` for a compound (the caller skips the box). A type with no heap
 /// representation at all (a function/type-value) DECLINES. Reads the solved type.
 fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
-    box_op_ty(&type_of(db, id))
+    let ty = type_of(db, id);
+    box_op_ty(db, &ty)
 }
 
 /// The box op for a solved TYPE directly (not a node) — used where a map's key/value type is known but
 /// no representative node is at hand (a `Map.lookup` value unbox reads `val_ty`). Mirrors [`box_op`].
-fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
+fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
+    // An ENUM-DISCRIMINANT sum is a bare i32 discriminant, NOT a heap handle, so as a nested element it
+    // boxes exactly like an integer (`box-int`, with the i32→i64 extend the caller applies) — checked
+    // before the `Ty::Sum` "already a handle" arm below.
+    if ty_is_enum_disc(db, ty) {
+        return Ok(Some(OP_BOX_INT));
+    }
     match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
@@ -510,7 +517,7 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type (`lower` strips the `Qty`), so box it by that inner
         // type — a `(Qty Int64 u)` element boxes exactly as an `Int64` element.
-        Ty::Qty { inner, .. } => box_op_ty(inner),
+        Ty::Qty { inner, .. } => box_op_ty(db, inner),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -524,12 +531,18 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
 /// handle `arr-get` yields IS the nested compound — so this returns `Ok(None)` (the caller uses the
 /// handle as-is). A projection of a type with no heap representation declines.
 fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
-    get_op_ty(&type_of(db, id))
+    let ty = type_of(db, id);
+    get_op_ty(db, &ty)
 }
 
 /// The unbox op for a solved TYPE directly (not a node) — the dual of [`box_op_ty`], used where a value
 /// type is known but no node is at hand (a `Map.lookup` reads its `Some` payload back by `val_ty`).
-fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
+fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
+    // An ENUM-DISCRIMINANT sum was boxed as an integer (see `box_op_ty`), so it is read back with
+    // `get-int` (and the caller narrows i64→i32) — NOT used as a handle. Checked before the `Ty::Sum` arm.
+    if ty_is_enum_disc(db, ty) {
+        return Ok(Some(OP_GET_INT));
+    }
     match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
@@ -548,7 +561,7 @@ fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::String
         | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type — unbox by that inner type (the dual of `box_op_ty`).
-        Ty::Qty { inner, .. } => get_op_ty(inner),
+        Ty::Qty { inner, .. } => get_op_ty(db, inner),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -807,10 +820,10 @@ pub fn collect_used_ops(
             out.insert(OP_MAP_EMPTY);
             if !entries.is_empty() {
                 out.insert(OP_MAP_INSERT);
-                if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                     out.insert(op);
                 }
-                if let Ok(Some(op)) = box_op_ty(&val_ty) {
+                if let Ok(Some(op)) = box_op_ty(db, &val_ty) {
                     out.insert(op);
                 }
             }
@@ -828,10 +841,10 @@ pub fn collect_used_ops(
             val_ty,
         } => {
             out.insert(OP_MAP_INSERT);
-            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
-            if let Ok(Some(op)) = box_op_ty(&val_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &val_ty) {
                 out.insert(op);
             }
             collect_used_ops(db, map, out);
@@ -851,7 +864,7 @@ pub fn collect_used_ops(
             out.insert(OP_DROP);
             out.insert(OP_SUM_NEW);
             out.insert(OP_ARR_ALLOC);
-            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
             collect_used_ops(db, map, out);
@@ -860,7 +873,7 @@ pub fn collect_used_ops(
         // `Map.remove` = `map-remove`, boxing the key by its type.
         Core::MapRemove { map, key, key_ty } => {
             out.insert(OP_MAP_REMOVE);
-            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
             collect_used_ops(db, map, out);
@@ -876,7 +889,7 @@ pub fn collect_used_ops(
             out.insert(OP_SET_EMPTY);
             if !elems.is_empty() {
                 out.insert(OP_SET_INSERT);
-                if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+                if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                     out.insert(op);
                 }
             }
@@ -888,7 +901,7 @@ pub fn collect_used_ops(
         Core::SetContains { set, elem, elem_ty } => {
             out.insert(OP_SET_CONTAINS);
             out.insert(OP_DROP);
-            if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
             collect_used_ops(db, set, out);
@@ -897,7 +910,7 @@ pub fn collect_used_ops(
         // `Set.insert`/`Set.remove` = `set-insert`/`set-remove`, boxing the element by its type.
         Core::SetInsert { set, elem, elem_ty } => {
             out.insert(OP_SET_INSERT);
-            if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
             collect_used_ops(db, set, out);
@@ -905,7 +918,7 @@ pub fn collect_used_ops(
         }
         Core::SetRemove { set, elem, elem_ty } => {
             out.insert(OP_SET_REMOVE);
-            if let Ok(Some(op)) = box_op_ty(&elem_ty) {
+            if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
             collect_used_ops(db, set, out);
@@ -2237,6 +2250,116 @@ fn closure_type_index(
     Some(layout.lifted_type_index(slot, layout.import_base))
 }
 
+/// Whether the value at node `id` has an ENUM-DISCRIMINANT type — a C-style enum represented directly as
+/// its discriminant `i32`, with no heap box (`Db::is_enum_disc`). Reads the node's SOLVED type, peels a
+/// nominal wrapper (a nominal-over-enum shares the enum's representation), and asks the decl. A non-sum
+/// (or a boxed mixed sum) is `false`, so every backend site can gate the unboxed path on this one query.
+fn node_is_enum_disc(db: &mut Db, id: StructId) -> bool {
+    let ty = crate::infer::type_of(db, id);
+    ty_is_enum_disc(db, &ty)
+}
+
+/// Whether the SOLVED type `ty` is an enum-discriminant sum — the type-level companion of
+/// [`node_is_enum_disc`], used where a type (a scrutinee's, an operand's) is in hand rather than a node.
+fn ty_is_enum_disc(db: &Db, ty: &crate::ty::Ty) -> bool {
+    match ty.strip_nominal() {
+        crate::ty::Ty::Sum { decl, .. } => db.is_enum_disc(*decl),
+        _ => false,
+    }
+}
+
+/// The type of the sub-value reached by walking `path` from a value of type `root` — `Payload` descends a
+/// sum variant's payload (or a nominal newtype's inner), `Elem(i)` a tuple/record element. Used to decide
+/// how a match switch extracts the discriminant at `path`: a boxed sum uses `sum-disc`, an ENUM-DISC
+/// sub-value is a boxed int (`get-int`) or, at the top level, already the raw i32. Returns `Ty::Any` if the
+/// walk cannot be resolved (a defensive fallback — the caller then takes the boxed-sum path, never a
+/// miscompiled enum path).
+fn ty_at_path(db: &mut Db, root: &crate::ty::Ty, path: &[crate::core::PathStep]) -> crate::ty::Ty {
+    let mut ty = root.clone();
+    for step in path {
+        ty = match step {
+            crate::core::PathStep::Payload => match ty.strip_nominal() {
+                // A single-payload variant's payload type; a multi-payload variant's payload is a tuple
+                // (a following `Elem` selects within it). Read the sum's variant-0 payload shape.
+                crate::ty::Ty::Sum { .. } => match sum_single_payload_ty(db, &ty) {
+                    Some(p) => p,
+                    None => return crate::ty::Ty::Any,
+                },
+                // A nominal newtype: the payload step is a static unwrap to its inner.
+                inner => inner.clone(),
+            },
+            crate::core::PathStep::Elem(i) => match ty.strip_nominal() {
+                crate::ty::Ty::Tuple(elems) => match elems.get(*i) {
+                    Some(e) => e.clone(),
+                    None => return crate::ty::Ty::Any,
+                },
+                _ => return crate::ty::Ty::Any,
+            },
+        };
+    }
+    ty
+}
+
+/// The payload type of a sum's variant 0 (the shape a `Payload` path step descends into) — `None` for a
+/// nullary or unresolvable variant. A helper for [`ty_at_path`]; reads the decl's first variant's payload
+/// occurrences and decodes them (a single payload IS the type, multiple box as a tuple).
+fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::Ty> {
+    let crate::ty::Ty::Sum { decl, .. } = sum.strip_nominal() else {
+        return None;
+    };
+    let ctor = {
+        let td = db.type_decl_by_occ(*decl)?;
+        let v0 = td.variants.first()?;
+        v0.ctor?
+    };
+    crate::eval::variant_payload_type(db, ctor)
+}
+
+/// Emit the scrutinee at `scrutinee`, walk `path` to the sub-value, and leave its DISCRIMINANT (an i32)
+/// on the stack — the shared front of every sum switch/probe. A boxed sum reads `sum-disc`; an ENUM-DISC
+/// sub-value carries its discriminant AS its representation, so at the top level (empty path) the emitted
+/// i32 IS the discriminant (no op) and at a nested position it was boxed as an int, read back with
+/// `get-int` (then narrowed to i32). This is the ONE place the discriminant-extraction representation
+/// choice lives, so the br-table switch, the linear switch, and the `expect` probe all agree.
+#[allow(clippy::too_many_arguments)]
+fn push_discriminant(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let root = type_of(db, scrutinee);
+    let sub = ty_at_path(db, &root, path);
+    let sub_is_enum = ty_is_enum_disc(db, &sub);
+    emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
+    for step in path {
+        match step {
+            crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+            crate::core::PathStep::Elem(i) => {
+                out.push(Lir::ConstI32(*i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET));
+            }
+        }
+    }
+    if sub_is_enum {
+        // The sub-value is an enum-disc value. At the TOP level it is already the raw discriminant i32.
+        // At a NESTED position (a non-empty path ending in a Payload/Elem read) it was boxed as an int, so
+        // `get-int` recovers the i64 cell and `i32.wrap_i64` narrows it to the discriminant i32.
+        if !path.is_empty() {
+            out.push(Lir::CallImport(OP_GET_INT));
+            out.push(Lir::I32WrapI64);
+        }
+    } else {
+        out.push(Lir::CallImport(OP_SUM_DISC));
+    }
+    Ok(())
+}
+
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
 /// name occurrence to its wasm local slot; `base` is the next free SCRATCH slot (a guarded op claims
 /// `[base, base+1, base+2]` and recurses operands at `base+3`); `high` is the running high-water mark of
@@ -2833,6 +2956,13 @@ fn emit(
         //    payload box + `arr-set`).
         // Leaves the sum's u32 handle on the stack.
         Core::SumNew { disc, payloads } => {
+            // ENUM-DISCRIMINANT sum (every variant nullary, ≥2 variants): the value IS its discriminant,
+            // so construction is JUST the constant — no `sum-new` box, no unit payload. The i32 slot holds
+            // the discriminant directly; a match switches on it and equality is `i32.eq` (see those sites).
+            if node_is_enum_disc(db, id) {
+                out.push(Lir::ConstI32(disc as i32));
+                return Ok(());
+            }
             out.push(Lir::ConstI32(disc as i32)); // [disc]
             match payloads.len() {
                 0 => {
@@ -2962,7 +3092,7 @@ fn emit(
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in &entries {
                 emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-                if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(op) = box_op_ty(db, &key_ty)? {
                     if let Some(m) = is_narrow_int(db, k) {
                         out.push(if m.signed {
                             Lir::I64ExtendI32S
@@ -2973,7 +3103,7 @@ fn emit(
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-                if let Some(op) = box_op_ty(&val_ty)? {
+                if let Some(op) = box_op_ty(db, &val_ty)? {
                     if let Some(m) = is_narrow_int(db, v) {
                         out.push(if m.signed {
                             Lir::I64ExtendI32S
@@ -2999,7 +3129,7 @@ fn emit(
         } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(&key_ty)? {
+            if let Some(op) = box_op_ty(db, &key_ty)? {
                 if let Some(m) = is_narrow_int(db, key) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -3010,7 +3140,7 @@ fn emit(
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-            if let Some(op) = box_op_ty(&val_ty)? {
+            if let Some(op) = box_op_ty(db, &val_ty)? {
                 if let Some(m) = is_narrow_int(db, val) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -3029,7 +3159,7 @@ fn emit(
         Core::MapRemove { map, key, key_ty } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(&key_ty)? {
+            if let Some(op) = box_op_ty(db, &key_ty)? {
                 if let Some(m) = is_narrow_int(db, key) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -3058,7 +3188,7 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
             for &e in &elems {
                 emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-                if let Some(op) = box_op_ty(&elem_ty)? {
+                if let Some(op) = box_op_ty(db, &elem_ty)? {
                     if let Some(m) = is_narrow_int(db, e) {
                         out.push(if m.signed {
                             Lir::I64ExtendI32S
@@ -3077,7 +3207,7 @@ fn emit(
         Core::SetInsert { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(&elem_ty)? {
+            if let Some(op) = box_op_ty(db, &elem_ty)? {
                 if let Some(m) = is_narrow_int(db, elem) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -3096,7 +3226,7 @@ fn emit(
         Core::SetRemove { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(&elem_ty)? {
+            if let Some(op) = box_op_ty(db, &elem_ty)? {
                 if let Some(m) = is_narrow_int(db, elem) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -3128,7 +3258,7 @@ fn emit(
             scratch_ty.insert(elem_slot, ValType::I32);
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(&elem_ty)? {
+            if let Some(op) = box_op_ty(db, &elem_ty)? {
                 if let Some(m) = is_narrow_int(db, elem) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -3180,7 +3310,7 @@ fn emit(
             scratch_ty.insert(val_slot, ValType::I32);
             emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(&key_ty)? {
+            if let Some(op) = box_op_ty(db, &key_ty)? {
                 if let Some(m) = is_narrow_int(db, key) {
                     out.push(if m.signed {
                         Lir::I64ExtendI32S
@@ -5150,18 +5280,11 @@ fn try_emit_disc_br_table(
     for _ in 0..m {
         out.push(Lir::Block(BlockType::Empty)); // $a_{m-1} … $a_0
     }
-    // Push the discriminant: emit the scrutinee, walk `path`, then `sum-disc`.
-    emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
-    for step in path {
-        match step {
-            crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
-            crate::core::PathStep::Elem(i) => {
-                out.push(Lir::ConstI32(*i as i32));
-                out.push(Lir::CallImport(OP_ARR_GET));
-            }
-        }
-    }
-    out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc: i32]
+    // Push the discriminant at `path` — `sum-disc` for a boxed sum, the raw i32 / unboxed int for an
+    // enum-disc value (see `push_discriminant`).
+    push_discriminant(
+        db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
+    )?;
     if has_default_block {
         // Target k (arm index) → depth k (exits $a_k); table default → depth m (exits $default).
         let targets: Vec<u32> = (0..m).collect();
@@ -5247,18 +5370,11 @@ fn emit_sum_match_arms(
         ),
         Some((arm, rest)) => {
             let disc = arm.disc.expect("non-None handled above");
-            // sum-disc(<scrutinee walked down `path`>) == disc.
-            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
-            for step in path {
-                match step {
-                    crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
-                    crate::core::PathStep::Elem(i) => {
-                        out.push(Lir::ConstI32(*i as i32));
-                        out.push(Lir::CallImport(OP_ARR_GET));
-                    }
-                }
-            }
-            out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc]
+            // discriminant(<scrutinee walked down `path`>) == disc — `sum-disc` for a boxed sum, the raw
+            // i32 / unboxed int for an enum-disc value (see `push_discriminant`).
+            push_discriminant(
+                db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
+            )?;
             // `disc == 0` is `i32.eqz` (one instruction), not `const 0 ; i32.eq` (two) — the sum-disc
             // twin of the scalar/probe eqz special case (cycle 43). A `0` discriminant is the FIRST
             // declared variant (`Some`, `Ok`, …), so this fires on the common first-arm test.
@@ -7577,6 +7693,11 @@ fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
         (Ty::Int(it), _) => *it,
         (_, Ty::Int(it)) => *it,
         (Ty::Bool, _) | (_, Ty::Bool) => bool_as_i32,
+        // An ENUM-DISCRIMINANT operand is a bare discriminant i32 (like a bool), so its comparison is an
+        // i32 op — the same signed-≤32 width bool uses. Lets `(= c C.Red)` emit `i32.eq` on the raw
+        // discriminants rather than a `value-eq` heap walk (which would misread a discriminant as a
+        // tagged handle). Reached only for an enum-disc `=` routed here by `lower`.
+        _ if ty_is_enum_disc(db, &lt) || ty_is_enum_disc(db, &rt) => bool_as_i32,
         _ => IntTy::i64(),
     }
 }
