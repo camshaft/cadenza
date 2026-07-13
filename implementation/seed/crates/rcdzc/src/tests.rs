@@ -10243,9 +10243,9 @@ mod stage1 {
     // ── truncating conversion `T.wrap` (R3): constant FOLD, no sums, never traps ──────────────────
     //
     // `(UInt8.wrap n)` = `((. UInt8 wrap) n)` — projecting the module's `wrap` operator and applying it.
-    // On a constant it FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width. It is
-    // the honest, principled form of the old `to-byte`: the target width comes from the TYPE (`UInt8`),
-    // not a magic op name. The result crosses the boundary as the target's faithful primitive (u8/s8/…).
+    // On a constant it FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width. The
+    // target width comes from the TYPE (`UInt8`), not a magic op name — one truncating conversion, width-
+    // indexed. The result crosses the boundary as the target's faithful primitive (u8/s8/…).
 
     #[test]
     fn wrap_truncates_an_out_of_range_constant() {
@@ -10258,8 +10258,8 @@ mod stage1 {
 
     #[test]
     fn wrap_of_a_negative_uses_twos_complement() {
-        // `(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones). This is exactly
-        // the old `(Int.to-byte -1)`, now typed as UInt8 with the width from the type.
+        // `(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones); the target width
+        // (UInt8) comes from the type.
         let src = "(module m (def (main) (UInt8.wrap -1)) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         assert_eq!(run_returns::<u8>(&bytes, "main"), 255);

@@ -4,7 +4,7 @@
 LEB128 (`uleb 624485 → E5 8E 26`), signed LEB128 boundaries, the core-module framing "byte-identical
 to cdz-rustc for main=42", the component envelope. These were verified by ephemeral `emit` probes in
 the gitignored `implementation/` tree, not by gate obligations. The corpus pinned each *primitive*
-(`&`, `|`, `>>`, `Int.to-byte`, `Bytes.concat`) but not the *composition* — so the compiler's
+(`&`, `|`, `>>`, `UInt8.wrap`, `Bytes.concat`) but not the *composition* — so the compiler's
 byte-emitting spine was protected only by a scratch buffer that vanishes when the spike is cleaned.
 
 **Why it touches the spec/process.** The two-compilers differential gate only protects what the

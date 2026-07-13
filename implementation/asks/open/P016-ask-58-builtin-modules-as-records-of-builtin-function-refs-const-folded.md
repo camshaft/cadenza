@@ -89,7 +89,7 @@ has repeatedly declined the per-builtin alternative as contortion-adjacent, and 
 ## ✅ NATIVE PHASE LANDED (2026-07-07) + 🔑 a finding that shapes compiler.cdz's half
 
 **Native now realizes ask-58 (verified 21:31 build):** applied builtin-methods COMPILE — `(Bytes.len (Bytes.of
-(list 1 2 3)))`→3, `(Int64.wrapping-add 5 3)`→8, `(Int.to-byte 65)`→65. A BARE `(. Bytes len)` declines with the
+(list 1 2 3)))`→3, `(Int64.wrapping-add 5 3)`→8, `(UInt8.wrap 65)`→65. A BARE `(. Bytes len)` declines with the
 new, correct message *"bare built-in operation value not representable (apply it)"* — i.e. `Bytes` IS a record now,
 projecting `len` yields a built-in operation VALUE, which is fine unapplied-declines and lowers on APPLY. Binding
 it to a name (`(do (def f (. Bytes len)) (f …))`) not yet supported (the first-class-ref-as-value case). So the

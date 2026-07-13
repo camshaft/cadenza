@@ -15,6 +15,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
+pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
@@ -253,6 +254,9 @@ pass	a map entry with no value expression is rejected, not a crash
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
+pass	a map pattern binds the rest of the map after the named key
+pass	a map pattern falls through when the key is absent
+pass	a map pattern matches a present key and binds its value
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
 pass	a map with record values of different field sets is a type error
@@ -413,8 +417,6 @@ pass	a right shift by the bit width or more traps rather than masking
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime arithmetic right shift preserves the sign
-pass	a runtime bin match dispatches on a literal tag across arms
-pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
@@ -425,7 +427,6 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime division by zero traps
 pass	a runtime division truncates toward zero
-pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
 pass	a runtime float multiplication emits the machine mul
@@ -469,7 +470,6 @@ pass	a runtime truncation to an unsigned byte keeps the low bits, total on negat
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned-byte addition traps on overflow of its width
-pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -781,6 +781,8 @@ pass	inserting into the empty map then looking a key up yields the value
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
 pass	integer division truncates toward zero
+pass	integer to byte (truncate to 0-255)
+pass	integer to byte wraps on overflow
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
@@ -829,6 +831,7 @@ pass	multiplication past the maximum integer overflows and traps
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime narrow integer just above its min is exact
 pass	negation inverts a boolean
+pass	negative integer to byte uses two's complement
 pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
@@ -903,6 +906,7 @@ pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	subtraction of an integer and a float does not silently promote
 pass	sum type constructors are in scope after declaration
+pass	the LEB128 byte composition runs on a runtime operand
 pass	the boolean less-than operator agrees with the three-way comparison
 pass	the boolean literals
 pass	the byte length of a runtime string equals the length of its encoded bytes
@@ -1007,7 +1011,6 @@ todo	Ast.encode and Ast.decode round-trip
 todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
-todo	a LEB128 non-final byte composes mask, continuation bit, and to-byte
 todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
 todo	a NaN nested in a tuple compares equal under the canonical byte form
@@ -1040,9 +1043,6 @@ todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
 todo	a literal subterm in a quote pattern matches by equality
-todo	a map pattern binds the rest of the map after the named key
-todo	a map pattern falls through when the key is absent
-todo	a map pattern matches a present key and binds its value
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
@@ -1141,7 +1141,6 @@ todo	comparing two units of one dimension converts before comparing
 todo	concatenating tuples preserves each element's type
 todo	concatenating two tuples appends their elements
 todo	constructing a rational with a zero denominator traps
-todo	constructing a runtime value that does not fit its segment traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
 todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a unit to another unit of the same dimension is an exact rational scale
@@ -1169,8 +1168,6 @@ todo	inserting a key of a different type into a map is a type error
 todo	inserting a present element is a no-op value
 todo	inserting a value of a different type into a map is a type error
 todo	inserting an element yields a set containing it
-todo	integer to byte (truncate to 0-255)
-todo	integer to byte wraps on overflow
 todo	interning the same string twice yields equal symbols
 todo	map equality is independent of insertion order
 todo	membership of a present element is true
@@ -1182,7 +1179,6 @@ todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
-todo	negative integer to byte uses two's complement
 todo	ordering a string against an integer is a type error regardless of operand order
 todo	ordering an integer against a string is a type error
 todo	pattern matching over AST distinguishes forms
@@ -1214,7 +1210,6 @@ todo	subtracting quantities of incompatible dimension is a compile-time error
 todo	symbol identity follows String normalization
 todo	symbols interned from different strings are unequal
 todo	the AST is a sum type deconstructible by pattern matching
-todo	the LEB128 byte composition runs on a runtime operand
 todo	the built-in Ast is transformed as an ordinary value
 todo	the built-in list is folded by an element-with-rest pattern
 todo	the default-integer pragma is definition-site scoped, not use-site
@@ -1245,4 +1240,3 @@ todo	updating a record field changes its type to the new value's
 todo	updating a record field replaces its value
 todo	updating an absent record field is rejected
 todo	wrapping arithmetic uses the distinct wrapping type
-pass	an abortive handler arm never resumes, so its value becomes the handle's value

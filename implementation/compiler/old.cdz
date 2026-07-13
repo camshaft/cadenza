@@ -186,14 +186,14 @@
 (def (uleb n)
   (doc "Unsigned LEB128 of a non-negative Int64 — section/vector lengths, indices, u32 operands.")
   (if (< n 128)
-      (u8 (Int.to-byte n))
-      (cat (u8 (Int.to-byte (| (& n 127) 128))) (uleb (>> n 7)))))
+      (u8 (UInt8.wrap n))
+      (cat (u8 (UInt8.wrap (| (& n 127) 128))) (uleb (>> n 7)))))
 
 (def (sleb n)
   (doc "Signed LEB128 of an Int64 — the operand of i64.const.")
   (if (sleb-done n)
-      (u8 (Int.to-byte (& n 127)))
-      (cat (u8 (Int.to-byte (| (& n 127) 128))) (sleb (>> n 7)))))
+      (u8 (UInt8.wrap (& n 127)))
+      (cat (u8 (UInt8.wrap (| (& n 127) 128))) (sleb (>> n 7)))))
 
 (def (sleb-done n)
   (doc "A signed value is complete when the shifted remainder is all sign bits and the current
@@ -214,7 +214,7 @@
 ; runs in Cadenza; `/` `%` are exact here). Independently testable via `Bytes.len`.
 (def (digit-char d)
   (doc "The ASCII byte for decimal digit d (0..9): '0'(48) + d.")
-  (u8 (Int.to-byte (+ 48 d))))
+  (u8 (UInt8.wrap (+ 48 d))))
 
 (def (int-to-decimal n)
   (doc "The decimal ASCII bytes of Int64 `n` (e.g. -12 → \"-12\"). 0 → \"0\"; negatives get a leading '-'
@@ -223,7 +223,7 @@
   (if (= n 0)
       (digit-char 0)
   (if (< n 0)
-      (cat (u8 (Int.to-byte 45)) (neg-magnitude-digits n))
+      (cat (u8 (UInt8.wrap 45)) (neg-magnitude-digits n))
       (nat-digits n))))
 
 (def (nat-digits n)
