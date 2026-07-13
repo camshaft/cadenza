@@ -39,7 +39,7 @@ export function cadenzaLinter(ctx: LinterContext): Extension {
       }
       ctx.onDiagnostics?.(diags);
       const editorBytes = new TextEncoder().encode(editorText).length;
-      return toCmDiagnostics(diags, { editorText, wrapPrefixBytes, editorBytes });
+      return toCmDiagnostics(diags, { editorText, surface, wrapPrefixBytes, editorBytes });
     },
     { delay: 300 },
   );

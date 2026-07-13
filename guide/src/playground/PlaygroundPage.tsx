@@ -15,6 +15,7 @@ import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { compile, renderSyntax, emitRust, coreModule, replEval, definedNames, type Diag, type Surface } from "../compiler/client.ts";
 import type { ReplEntry } from "./ReplPanel.tsx";
 import { toWat } from "./wat.ts";
+import { applyFix } from "./applyFix.ts";
 import type { CompiledView } from "./OutputPanel.tsx";
 import { run as runComponent } from "../runner/client.ts";
 import type { EditorView } from "@codemirror/view";
@@ -292,6 +293,24 @@ export default function PlaygroundPage() {
     v.focus();
   }, []);
 
+  // Apply a diagnostic's structural fix from the Diagnostics panel. The playground compiles its buffer
+  // VERBATIM (a full program, no scaffolding), so the fix's byte range maps directly (prefix 0). Edits
+  // via the editor view when present so the change is a proper CodeMirror transaction (undoable); falls
+  // back to `setText` otherwise.
+  const applyFixToBuffer = useCallback((d: Diag) => {
+    if (!d.fix) return;
+    const doc = viewRef.current?.state.doc.toString() ?? text;
+    const next = applyFix(doc, d.fix, 0);
+    if (next == null) return;
+    const v = viewRef.current;
+    if (v) {
+      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: next } });
+      v.focus();
+    } else {
+      setText(next);
+    }
+  }, [text]);
+
   const errorCount = useMemo(() => diags.filter((d) => d.error).length, [diags]);
   const warnCount = diags.length - errorCount;
 
@@ -371,6 +390,7 @@ export default function PlaygroundPage() {
             onReplEval={replCall}
             onReplNames={replNames}
             onJumpTo={jumpTo}
+            onApplyFix={applyFixToBuffer}
             onNeedCompiledView={needCompiledView}
           />
         </Panel>

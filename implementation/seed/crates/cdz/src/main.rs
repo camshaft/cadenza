@@ -557,8 +557,9 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
 /// `"replace"` swaps the range for `repl`; `"insert"` inserts `repl` (rendered child forms) just before
 /// `to` (the end of the target list, before its closing paren); `"wrap"` replaces the range with `repl`
 /// in which the ellipsis placeholder ([`rcdzc::WRAP_HOLE`]) stands for the ORIGINAL range text (`(Some
-/// …)` → `(Some <original>)`). `None` if the range is out of bounds or not on a char boundary
-/// (defensive — never panics).
+/// …)` → `(Some <original>)`); `"delete"` removes the range plus ONE adjacent separating space so the
+/// enclosing list stays clean (`(a b)` → `(b)`). `None` if the range is out of bounds or not on a char
+/// boundary (defensive — never panics).
 fn apply_fix_to_source(
     source: &str,
     kind: &str,
@@ -590,6 +591,20 @@ fn apply_fix_to_source(
             let original = &source[from..to];
             out.push_str(&repl.replace(rcdzc::WRAP_HOLE, original));
             out.push_str(&source[to..]);
+        }
+        "delete" => {
+            // Remove `[from,to)` plus one adjacent separating space so the list stays well-formed:
+            // prefer a FOLLOWING space (`(log foo)` → `(foo)`); else a PRECEDING one (`(foo log)` →
+            // `(foo)`). `out` currently holds `source[..from]`.
+            let after = &source[to..];
+            if let Some(rest) = after.strip_prefix(' ') {
+                out.push_str(rest); // drop the trailing separator
+            } else if out.ends_with(' ') {
+                out.pop(); // no trailing separator — drop the leading one
+                out.push_str(after);
+            } else {
+                out.push_str(after); // sole element — nothing to trim (`(log)` → `()`)
+            }
         }
         _ => {
             // "replace" (and any unknown kind, treated as replace): swap the range for `repl`.
@@ -766,6 +781,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             let action = match fix_kind {
                 "insert" => format!("add `{fix_repl}`"),
                 "wrap" => format!("wrap in `{fix_repl}`"),
+                "delete" => "remove this element".to_string(),
                 _ => format!("replace with `{fix_repl}`"),
             };
             println!("{}: help{marker}: {action}", loc_label(fix_node));
@@ -857,10 +873,11 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             skipped_unverified += 1;
             continue;
         }
-        // Resolve the fix to a plain `[from,to) → new_text` splice — the same three shapes
+        // Resolve the fix to a plain `[from,to) → new_text` splice — the same shapes
         // `apply_fix_to_source` realizes, but recorded as a precise byte-range edit so a SET of them
         // applies uniformly (descending offset) below. `replace`/`wrap` target `[from,to)`; `insert`
-        // splices before the target list's closing paren.
+        // splices before the target list's closing paren; `delete` removes the range + one adjacent
+        // separator space (so `(a b)` → `(b)`).
         let edit = match fix_kind {
             "insert" => {
                 let inner_end = source[..to].rfind(')').unwrap_or(to);
@@ -875,6 +892,29 @@ fn run_fix(args: &FixArgs) -> ExitCode {
                 to,
                 new_text: fix_repl.replace(rcdzc::WRAP_HOLE, &source[from..to]),
             },
+            "delete" => {
+                // Extend the range over ONE adjacent separator: a following space (`(log foo)` →
+                // `(foo)`), else a preceding one (`(foo log)` → `(foo)`); a sole element leaves `()`.
+                if source[to..].starts_with(' ') {
+                    Edit {
+                        from,
+                        to: to + 1,
+                        new_text: String::new(),
+                    }
+                } else if source[..from].ends_with(' ') {
+                    Edit {
+                        from: from - 1,
+                        to,
+                        new_text: String::new(),
+                    }
+                } else {
+                    Edit {
+                        from,
+                        to,
+                        new_text: String::new(),
+                    }
+                }
+            }
             _ => Edit {
                 from,
                 to,

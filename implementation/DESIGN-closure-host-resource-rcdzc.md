@@ -204,10 +204,17 @@ the component type. The new work:
     `call(5)`=6 / `call(41)`=42; `(* x 3)` on 4=12. +3 corpus cases
     (`spec/semantics/21-host-closures.sexp`, all pass the full gate) + 2 unit tests (compiler
     e2e via `ComposedRuntime::closure_make_call`; the core serializer). own<t> consumes per call.
-- **C-HOST-2 — a PARAMETERIZED export returning a CAPTURING closure.** `(def (adder (: k
-  Int64)) (fn (x) (+ x k)))` → `adder : (s64) -> own<closure-s64-s64>`; host calls
-  `adder(10)` then `call(5)` → 15. Proves the handle is computed from the host's input AND
-  the environment rides along in the cell — the real shape, not the degenerate constant.
+- **✅ C-HOST-2 COMPLETE `@e234e618` — a PARAMETERIZED export returning a CAPTURING closure.**
+  `(def (adder (: k Int64)) (fn (x) (+ x k)))` → `adder : (s64) -> own<closure-s64-s64>`; host
+  calls `make(10)` then `call(5)` → 15. Two changes over C-HOST-1's nullary shape: (1) `make`
+  FORWARDS the export's params (`closure_resource_core_module` gives `make` the export param
+  valtypes + `local.get 0..N` before `call export`; `assemble_closure_resource` + inner component
+  type `make` as `(export-params…)->own<t>` via a new `params_result_functype`); (2)
+  `emit_closure_resource` collects the LIFTED bodies' used-ops (a capturing body reads its env via
+  get-int etc. — ops only in the lifted body, which `resource_escape_build` doesn't walk) or the
+  module was invalid. `cdz-run` SPLITS the flat `(call …)` arg list by `make`'s arity (first N →
+  make's export params, rest → call's closure args). VERIFIED e2e: adder(10)+call(5)=15,
+  adder(100)+call(7)=107. +2 corpus cases (→5 total) + 1 unit test. own<t> consumes per call.
 - **C-HOST-3 — multi-arg + multiple signatures.** A closure of `(-> Int64 (-> Int64
   Int64))` → `call` with two args; two distinct signatures in one program mint two resource
   types (dedup by the solved `Ty::Fn`).

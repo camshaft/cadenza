@@ -223,6 +223,11 @@ pub enum Edit {
         prefix: String,
         suffix: String,
     },
+    /// DELETE the node `at` from its enclosing list — the consumer removes the node's span plus one
+    /// adjacent separating space, so the list stays well-formed (`(a b)` → `(b)`, not `( b)`). The
+    /// "remove the unused element" edit — a latent-authority effect dropped from a `host` manifest, a
+    /// dead item. No payload: the edit is fully described by the target node.
+    Delete { at: crate::ast::StructId },
 }
 
 impl Fix {
@@ -290,6 +295,18 @@ impl Fix {
                 prefix: prefix.into(),
                 suffix: suffix.into(),
             },
+            applicability: Applicability::Heuristic,
+        }
+    }
+
+    /// A heuristic "remove this element" fix — delete the node `at` from its enclosing list. `label`
+    /// states what is removed ("remove the unused effect `log`"). Heuristic: dropping the element
+    /// resolves the diagnostic, but whether the author meant to remove it (vs. add a use for it) is a
+    /// guess.
+    pub fn delete_heuristic(at: crate::ast::StructId, label: impl Into<String>) -> Fix {
+        Fix {
+            label: label.into(),
+            edit: Edit::Delete { at },
             applicability: Applicability::Heuristic,
         }
     }

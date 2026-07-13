@@ -3080,6 +3080,95 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_comparison_against_a_derived_range_bound_is_simplified() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let folded = |c: &[Lir], want: i32| {
+            c.contains(&Lir::ConstI32(want))
+                && !c
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+        };
+        // `(& x 15)` derives the range [0,15] EVEN on a signed Int64 (the mask clears the sign bits), so:
+        assert!(
+            folded(&lir("(: x Int64)", "(< (& x 15) 20)"), 1),
+            "[0,15] < 20 → true"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(< (& x 15) 16)"), 1),
+            "[0,15] < 16 → true"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(>= (& x 15) 0)"), 1),
+            "[0,15] >= 0 → true (nonneg mask)"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(> (& x 15) 15)"), 0),
+            "[0,15] > 15 → false"
+        );
+        assert!(
+            folded(&lir("(: x Int64)", "(<= (& x 15) 15)"), 1),
+            "[0,15] <= 15 → true"
+        );
+        // A constant STRICTLY INSIDE the range is NOT decidable — the compare stays.
+        let inside = lir("(: x Int64)", "(< (& x 15) 10)");
+        assert!(
+            inside.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "a constant inside the range keeps the compare; got {inside:?}"
+        );
+
+        // VALUE PARITY — the folded results agree with the real comparison, and the not-folded one too.
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(< (& x 15) 20)",
+            &[Val::S64(-1)]
+        )); // -1&15=15, 15<20
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(>= (& x 15) 0)",
+            &[Val::S64(-99)]
+        )); // masked → nonneg
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(> (& x 15) 15)",
+            &[Val::S64(255)]
+        )); // 255&15=15, not >15
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(< (& x 15) 10)",
+            &[Val::S64(8)]
+        )); // 8<10
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(< (& x 15) 10)",
+            &[Val::S64(12)]
+        )); // 12<10 false
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
@@ -4645,13 +4734,23 @@ mod runtime_ops {
             kept.iter().any(|i| matches!(i, Lir::I32ShrU)),
             "a shift leaving a bit keeps the shr_u; got {kept:?}"
         );
-        // A SIGNED value is NOT provably nonnegative (its slot high bits may be sign extension), so
-        // `unsigned_value_bits` declines it and the fold does not fire — the `shr_s` stays. (Use an
-        // in-range count on an Int16 so this is a genuine runtime shift, not a count-guard trap.)
-        let signed = lir("(: x Int16)", "(>> (& x 15) 7)");
+        // A directly-shifted SIGNED value (no mask) is NOT provably nonnegative — its slot high bits may
+        // be sign extension — so `unsigned_value_bits` declines it and the fold does not fire; the `shr_s`
+        // stays. (In-range count on an Int16, so a genuine runtime shift not a count-guard trap.)
+        let signed = lir("(: x Int16)", "(>> x 7)");
         assert!(
             signed.iter().any(|i| matches!(i, Lir::I32ShrS)),
-            "a signed >> is not folded to 0; got {signed:?}"
+            "a bare signed >> is not folded to 0; got {signed:?}"
+        );
+        // BUT a signed value MASKED by a nonneg constant IS provably nonnegative (`(& x 15)` ∈ [0,15]),
+        // so `>> 7` shifts out all its bits → 0 (arithmetic and logical shift agree for a nonneg value).
+        let masked_signed = lir("(: x Int16)", "(>> (& x 15) 7)");
+        assert!(
+            masked_signed.contains(&Lir::ConstI32(0))
+                && !masked_signed
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32ShrS | Lir::I32ShrU)),
+            "a masked (nonneg) value fully shifted out folds to 0 even at a signed type; got {masked_signed:?}"
         );
 
         // VALUE PARITY.
@@ -5284,6 +5383,55 @@ mod match_engine {
     }
 
     #[test]
+    fn a_newtype_over_a_record_reads_a_field_through_the_tag() {
+        // A newtype wrapping a record (a "struct") supports `.field` DIRECTLY through the tag: `(. (Mk
+        // rec) x)` sees through the erased nominal to the payload record — the runtime value IS the record
+        // handle, so member access reads the inner field with NO unwrap ceremony. Constant fold.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (Mk (Record (x Int64) (y Int64)))) \
+                       (def (main) (. (UserId.Mk (record (x 1) (y 2))) x)) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_record_reads_a_field_at_runtime() {
+        // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
+        // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
+        // see through the tag.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (Mk (Record (x Int64) (y Int64)))) \
+                       (def (main) (. (UserId.Mk (record (x 5) (y (if true 9 0)))) y)) (export main))"
+                ),
+                "main"
+            ),
+            9
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_record_still_rejects_a_missing_field() {
+        // The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))`
+        // rejects (CDZ0201) exactly as it would on the bare record — seeing through the tag reaches the
+        // SAME field-set validation.
+        assert_eq!(
+            reject_code(
+                "(module m (type UserId (Mk (Record (x Int64)))) \
+                   (def (main) (. (UserId.Mk (record (x 1))) z)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
     fn a_newtype_wrong_constructor_pattern_is_a_type_error() {
         // A `(Some x)` pattern over a `UserId` scrutinee names a constructor of ANOTHER type — a type
         // confusion the matcher must REJECT (CDZ0203), the nominal analogue of the boxed-sum
@@ -5641,6 +5789,32 @@ mod match_engine {
                 "(module m (def (main) (match (Some 5) ((Some x) x) ((None _) 0))) (export main))"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn if_branches_of_distinct_numeric_type_are_cdz0201_but_cross_kind_stays_cdz0203() {
+        // 02-binding "a conditional with integer and floating-point branches is a type error": two DISTINCT
+        // NUMERIC branch types (Int64 vs Float64) are the no-silent-promotion rule (numeric-model.md
+        // #Numeric Types Do Not Silently Promote) → a MALFORMED program (CDZ0201). Every OTHER branch
+        // disagreement — a cross-KIND mismatch (Int vs Bool, a compound vs a scalar, tuples of different
+        // arity) — is the structural type mismatch (CDZ0203). The split is by "both branches numeric".
+        assert_eq!(
+            reject_code("(module m (def (main) (if true 1 3.5)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // Cross-kind: Int64 then vs Bool else — a structural mismatch, still CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (main) (if true 1 false)) (export main))").as_deref(),
+            Some("CDZ0203")
+        );
+        // Cross-kind: two tuples of different arity — CDZ0203 (a tuple's arity is part of its type).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (if true (tuple 1 2) (tuple 3 4 5))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203")
         );
     }
 
@@ -8349,18 +8523,20 @@ mod match_engine {
 
     #[test]
     fn a_boolean_connective_operand_must_be_bool() {
-        // A non-Bool operand is a type mismatch (CDZ0203), the same class as a non-Bool `if` condition.
+        // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
+        // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
+        // disagreement is (02-binding "a boolean connective with a non-boolean operand is a type error").
         assert_eq!(
             reject_code("(module m (def (main) (and true 1)) (export main))").as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
         assert_eq!(
             reject_code("(module m (def (main) (or 5 false)) (export main))").as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
         assert_eq!(
             reject_code("(module m (def (main) (not 7)) (export main))").as_deref(),
-            Some("CDZ0203")
+            Some("CDZ0201")
         );
     }
 
@@ -11868,6 +12044,43 @@ mod stage1 {
     }
 
     #[test]
+    fn an_annotated_tuple_pattern_parameter_binds_and_checks() {
+        // A tuple-pattern parameter that ALSO carries a type annotation — `(: (tuple a b) T)` — must both
+        // BIND its pattern's names and CHECK the annotation. `binding_params::lower` peels the `(: <pattern>
+        // T)` to reach the inner tuple: it rewrites `(def (f (: (tuple a b) T)) BODY)` →
+        // `(def (f (: p$0 T)) (let (((tuple a b) p$0)) BODY))`, keeping the annotation on the fresh binder
+        // and the destructuring on its value. Without the peel the whole `(: (tuple a b) T)` was left as one
+        // binder, so `a`/`b` were never bound (CDZ0101) — even though the un-annotated tuple param and the
+        // annotated PLAIN binder both work; only their combination broke (and the ML printer emits it).
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            run_returns::<i64>(&bytes, "main")
+        };
+        // Binds the halves: (+ a b) over (tuple 3 4) = 7; projecting just `a` = 3.
+        assert_eq!(
+            run(
+                "(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b)) \
+                   (def (main) (f (tuple 3 4))) (export main))"
+            ),
+            7
+        );
+        assert_eq!(
+            run("(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) a) \
+                   (def (main) (f (tuple 3 4))) (export main))"),
+            3
+        );
+        // The annotation is ENFORCED, not dropped: a `(Tuple Int64 Bool)` annotation against an Int64/Int64
+        // argument is a contradiction (CDZ0203), exactly as an annotated `let` binder is.
+        let code = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: (tuple a b) (Tuple Int64 Bool))) a) \
+               (def (main) (f (tuple 3 4))) (export main))",
+        )))
+        .err()
+        .and_then(|d| d.code);
+        assert_eq!(code.as_deref(), Some("CDZ0203"));
+    }
+
+    #[test]
     fn an_ill_formed_def_parameter_pattern_is_rejected() {
         // A parameter position is a binding position — no alternative arm — so its pattern must be
         // irrefutable and linear (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
@@ -12462,6 +12675,27 @@ mod stage1 {
             Some("CDZ0404"),
             "expected CDZ0404 (latent authority), got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_latent_authority_delegation_offers_a_delete_fix() {
+        // The CDZ0404 repair is to DROP the unreached effect from the manifest — a DELETE fix on the
+        // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+        // Fix), the first use of `Edit::Delete`. `main` delegates `log` but never performs it.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) 42)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("latent authority must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0404"), "got: {}", err.message);
+        let fix = err.fix.expect("a delete fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(!fix.verified, "a delete is heuristic (intent guess)");
+        // The fix targets the delegated effect-name occurrence (the same node the diagnostic anchors).
+        assert_eq!(
+            Some(fix.node),
+            err.node,
+            "delete targets the effect-name node"
         );
     }
 

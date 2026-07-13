@@ -165,7 +165,10 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // selection), but its TYPE may be a record carrying the field — a RUNTIME record. Its
             // field type is that field's type in the record type (the runtime read's result type),
             // mirroring how a tuple projection reads its element type off `Ty::Tuple`.
-            _ => match type_of(db, operand) {
+            // A NOMINAL newtype over a record is erased at run time to that record, so a field read sees
+            // through the tag (`strip_nominal`) to the inner record's field type — `(. u x)` on `u :
+            // UserId` (a `(type UserId (Mk (Record (x Int64) …)))`) types as the inner `x`'s type.
+            _ => match type_of(db, operand).strip_nominal() {
                 Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
                 _ => Ty::Any,
             },
@@ -2440,9 +2443,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let then_ty = type_of(db, then_);
             let else_ty = type_of(db, else_);
             if !then_ty.agrees_with(&else_ty) {
-                trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), "fault: if branches differ (CDZ0203)");
+                // Two DISTINCT NUMERIC types (an `Int64` branch and a `Float64` branch) are the no-silent-
+                // promotion rule (numeric-model.md #Numeric Types Do Not Silently Promote) — a MALFORMED
+                // program (CDZ0201), NOT the structural type mismatch (CDZ0203) a cross-KIND disagreement
+                // (Int vs Bool, a compound vs a scalar, two tuples of different arity) is. So an `if` whose
+                // branches are both numeric but of different numeric type is CDZ0201; every other branch
+                // disagreement stays CDZ0203. (02-binding "a conditional with integer and floating-point
+                // branches is a type error" wants CDZ0201; the tuple-arity/kind cases want CDZ0203.)
+                let both_numeric = matches!(then_ty, Ty::Int(_) | Ty::Float(_))
+                    && matches!(else_ty, Ty::Int(_) | Ty::Float(_));
+                let code = if both_numeric {
+                    Code::Malformed
+                } else {
+                    Code::TypeMismatch
+                };
+                trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
                 out.push(Reject::coded(
-                    Code::TypeMismatch,
+                    code,
                     format!(
                         "if branches differ: {} vs {}",
                         then_ty.render_name(),
@@ -2455,17 +2472,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect(db, else_, out);
         }
         // A boolean connective — each operand must be Bool (core-semantics.md §Boolean Connectives
-        // Short-Circuit: conjunction/disjunction/negation are OVER boolean values). A non-Bool operand is
-        // a type mismatch (CDZ0203), the same class as a non-Bool `if` condition. Then descend for each
-        // operand's own faults.
+        // Short-Circuit: each operand is type-checked as a Bool whether or not it is evaluated). A non-Bool
+        // operand is a MALFORMED program (CDZ0201) — the operand simply is not the required type, like a
+        // binary operator's operand, NOT the structural-shape mismatch (CDZ0203) a cross-kind disagreement
+        // is (02-binding "a boolean connective with a non-boolean operand is a type error" wants CDZ0201).
+        // Then descend for each operand's own faults.
         Resolved::And { lhs, rhs, is_and } => {
             let op = if is_and { "and" } else { "or" };
             for &operand in &[lhs, rhs] {
                 let t = type_of(db, operand);
                 if !t.agrees_with(&Ty::Bool) {
-                    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: connective operand not Bool (CDZ0203)");
+                    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: connective operand not Bool (CDZ0201)");
                     out.push(Reject::coded(
-                        Code::TypeMismatch,
+                        Code::Malformed,
                         format!("`{op}` operand must be Bool, found {}", t.render_name()),
                     ));
                 }
@@ -2475,9 +2494,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Not { operand } => {
             let t = type_of(db, operand);
             if !t.agrees_with(&Ty::Bool) {
-                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: not operand not Bool (CDZ0203)");
+                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: not operand not Bool (CDZ0201)");
                 out.push(Reject::coded(
-                    Code::TypeMismatch,
+                    Code::Malformed,
                     format!("`not` operand must be Bool, found {}", t.render_name()),
                 ));
             }
@@ -2505,7 +2524,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // an `arr-get` at the field's sorted index (mirrors a tuple projection on a runtime
                 // tuple). Only a genuine non-record operand, or a record type lacking the field, faults.
                 crate::eval::Member::NotRecord if !operand_is_poison => {
-                    match type_of(db, operand) {
+                    // A NOMINAL newtype over a record is erased to that record at run time, so member
+                    // access sees through the tag (`strip_nominal`): the access is well-formed iff the
+                    // inner record type has the field. A nominal over a NON-record stays a non-record
+                    // fault (the `other` arm).
+                    match type_of(db, operand).strip_nominal() {
                         Ty::Record(fields) if fields.contains_key(&key) => {}
                         Ty::Record(_) => {
                             trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: runtime record has no such field (CDZ0201)");

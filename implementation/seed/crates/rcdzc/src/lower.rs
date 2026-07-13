@@ -5368,9 +5368,11 @@ fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
     } = core_of(db, val)
     {
         // Each operand's bit-bound: a NON-NEGATIVE constant contributes its own significant-bit count
-        // (`⌈log2(v+1)⌉`), a runtime operand its `unsigned_value_bits`. `v & M` sets no bit above EITHER
-        // operand's highest possible set bit, so the AND fits the MIN of the two bounds. Either operand
-        // being a small constant mask caps the result — `(& x:UInt8 15)` → min(8, 4) = 4.
+        // (`⌈log2(v+1)⌉`), a runtime operand its `unsigned_value_bits`. `v & M` sets no bit above ANY
+        // bounded operand's highest possible set bit, so the AND fits the MIN of whatever bounds are
+        // known — a nonneg constant mask on EITHER side alone caps the result, even when the OTHER
+        // operand (a signed `x`) has no bound. `(& x:Int64 15)` → 4 (the mask caps it to `[0,15]`
+        // regardless of `x`'s sign, since masking clears the high/sign bits).
         let operand_bits = |db: &mut Db, o: StructId| -> Option<u32> {
             match core_of(db, o) {
                 Core::ConstInt(v) => v
@@ -5380,8 +5382,9 @@ fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
                 _ => unsigned_value_bits(db, o),
             }
         };
-        if let (Some(ab), Some(bb)) = (operand_bits(db, a), operand_bits(db, b)) {
-            return Some(ab.min(bb).max(1));
+        let (ab, bb) = (operand_bits(db, a), operand_bits(db, b));
+        if let Some(bound) = ab.into_iter().chain(bb).min() {
+            return Some(bound.max(1));
         }
     }
     // Otherwise the bound is the value's own resolved unsigned width.
@@ -5985,17 +5988,12 @@ fn fold_comparison_at_type_bound(
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
     };
-    let int_bounds = |db: &mut Db, id: StructId| match crate::infer::type_of(db, id) {
-        crate::ty::Ty::Int(it) => resolved_int_bounds(it),
-        _ => None,
-    };
-    // Identify (runtime operand `v`, its bounds, the constant `c`, whether `v` is on the LEFT). Exactly
-    // one side must be a constant and the OTHER a resolved integer. `min`/`max` are each `Option` — a
-    // bound that does not fit i64 (unsigned-64's max) is absent and never matches a constant.
+    // Identify (runtime operand `v`, its `(min, max)` range, the constant `c`, whether `v` is on the
+    // LEFT). Exactly one side must be a constant and the OTHER a runtime value with a known range.
     let (v, (min, max), c, v_on_left) =
-        if let (Some(c), Some(b)) = (const_val(db, rhs), int_bounds(db, lhs)) {
+        if let (Some(c), Some(b)) = (const_val(db, rhs), value_range(db, lhs)) {
             (lhs, b, c, true) // `(op v c)`
-        } else if let (Some(c), Some(b)) = (const_val(db, lhs), int_bounds(db, rhs)) {
+        } else if let (Some(c), Some(b)) = (const_val(db, lhs), value_range(db, rhs)) {
             (rhs, b, c, false) // `(op c v)`
         } else {
             return None;
@@ -6011,27 +6009,60 @@ fn fold_comparison_at_type_bound(
     // The constant occurrence to reuse as the rhs of a rewritten `v == c` (keeps its width grounding).
     let c_occ = if v_on_left { rhs } else { lhs };
     let const_bool = |r: bool, why: &str| {
-        trace!(target: "rcdzc::fold", node = v.0, why, "comparison at a type bound folds to a constant");
+        trace!(target: "rcdzc::fold", node = v.0, why, "range-vs-constant comparison folds to a constant");
         Some(Core::ConstBool(r))
     };
     let eq_bound = |why: &str| {
-        trace!(target: "rcdzc::fold", node = v.0, why, "comparison at a type bound folds to `== bound`");
+        trace!(target: "rcdzc::fold", node = v.0, why, "range-vs-constant comparison folds to `== bound`");
         Some(Core::Compare {
             op: Prim::Eq,
             lhs: v,
             rhs: c_occ,
         })
     };
-    let at_min = min == Some(c);
-    let at_max = max == Some(c);
+    // `v ∈ [min, max]` (`max` is `None` when the upper bound is not i64-representable — an unsigned-64
+    // value, `[0, 2^64)`). A comparison against `c` is DECIDABLE when the whole range lies on one side;
+    // the boundary cases (`c` exactly at `min`/`max`) collapse `<=`/`>=` to an equality test (which the
+    // backend selects to `eqz` when the bound is 0). Rules verified exhaustively. A rule that references
+    // `max` fires only when `max` is known.
+    let above_max = |c: i64| max.is_some_and(|m| c > m);
+    let at_or_above_max = |c: i64| max.is_some_and(|m| c >= m);
+    let at_max = |c: i64| max == Some(c);
     match cmp {
-        Prim::Lt if at_min => const_bool(false, "v < min"),
-        Prim::Ge if at_min => const_bool(true, "v >= min"),
-        Prim::Le if at_min => eq_bound("v <= min ⇔ v == min"),
-        Prim::Gt if at_max => const_bool(false, "v > max"),
-        Prim::Le if at_max => const_bool(true, "v <= max"),
-        Prim::Ge if at_max => eq_bound("v >= max ⇔ v == max"),
-        // `v < max` / `v > min` (and any constant strictly inside the range) — not decidable.
+        Prim::Lt if above_max(c) => const_bool(true, "v < c: c > max"), // every v < c
+        Prim::Lt if c <= min => const_bool(false, "v < c: c <= min"),   // no v < c
+        Prim::Ge if above_max(c) => const_bool(false, "v >= c: c > max"),
+        Prim::Ge if c <= min => const_bool(true, "v >= c: c <= min"),
+        Prim::Le if at_or_above_max(c) => const_bool(true, "v <= c: c >= max"),
+        Prim::Le if c < min => const_bool(false, "v <= c: c < min"),
+        Prim::Le if c == min => eq_bound("v <= min ⇔ v == min"),
+        Prim::Gt if at_or_above_max(c) => const_bool(false, "v > c: c >= max"),
+        Prim::Gt if c < min => const_bool(true, "v > c: c < min"),
+        Prim::Ge if at_max(c) => eq_bound("v >= max ⇔ v == max"),
+        // A constant strictly inside the range (and not at a collapsing boundary) — not decidable.
+        _ => None,
+    }
+}
+
+/// The inclusive range a runtime value provably occupies, as `(min, max)` where `min: i64` is always
+/// known and `max: Option<i64>` is absent when the upper bound is not i64-representable (an unsigned-64
+/// value spans `[0, 2^64)` — min 0, no i64 max). `None` when no bound is known at all. Prefers the DERIVED
+/// range from `unsigned_value_bits` (a nonnegative value with a known significant-bit count `B` →
+/// `[0, 2^B − 1]`, tighter than its type) and falls back to the value's declared-type bounds. Feeds the
+/// range-vs-constant comparison fold.
+fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
+    // A derived nonnegative bit-bound gives the tightest range `[0, 2^B − 1]`. `B < 64` (the helper caps
+    // it), so `2^B − 1` fits i64.
+    if let Some(b) = unsigned_value_bits(db, id) {
+        return Some((0, Some((1i64 << b) - 1)));
+    }
+    // Else the declared integer type's bounds. `min` must be i64-representable (it always is: signed MIN
+    // and unsigned 0 both fit); `max` may be absent (unsigned-64).
+    match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Int(it) => match resolved_int_bounds(it) {
+            Some((Some(lo), hi)) => Some((lo, hi)),
+            _ => None,
+        },
         _ => None,
     }
 }

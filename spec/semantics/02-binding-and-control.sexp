@@ -2139,9 +2139,43 @@
 
 ; A FUNCTION PARAMETER is a binding position too (core-semantics.md #A Binding Position Accepts An
 ; Irrefutable Pattern): `(def (f (tuple a b)) …)` names the two halves of its single pair argument, keeping
-; ARITY ONE. The compiler realizes this (a load-time rewrite to a fresh whole-value parameter + a
-; destructuring `let` over the body), witnessed by unit tests. Corpus witnesses are deferred until the ML
-; SYNTAX SURFACE parses a tuple-pattern parameter (`def f((a, b)) = …`) — the round-trip gate requires
-; every corpus program to survive `sexpr → ml → sexpr`, and the ML parser does not yet accept a
-; destructuring parameter (it expects a bare name in a parameter position). The `let` binder cases above
-; already witness the binding-pattern capability end-to-end; the parameter face rides the same mechanism.
+; ARITY ONE. The compiler realizes this by a load-time rewrite to a fresh whole-value parameter + a
+; destructuring `let` over the body — the SAME desugar the annotated variant `(: (tuple a b) T)` takes,
+; keeping the annotation on the fresh binder and the tuple destructuring on its value. The ML syntax
+; surface parses `def f((a, b)) = …` and its annotated form `def f((a, b): T) = …`, so these survive the
+; `sexpr → ml → sexpr` round-trip gate.
+
+(case "a tuple-pattern parameter binds the halves of its pair argument"
+  (doc    "`(def (f (tuple a b)) (+ a b))` — a destructuring parameter names the two elements of its single
+           pair argument, keeping arity one, exactly as the equivalent `let` binder `(let (((tuple a b) p))
+           …)` does. Calling `(f (tuple 3 4))` binds `a`=3, `b`=4 and yields 7. Pins the parameter face of
+           the binding-pattern capability the `let` cases above witness.")
+  (input  (do
+            (def (f (tuple a b)) (+ a b))
+            (def (main) (f (tuple 3 4))) (export main)))
+  (output (: 7 Int64)))
+
+(case "an annotated tuple-pattern parameter binds its pattern's names"
+  (doc    "`(def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b))` is a destructuring tuple parameter that
+           ALSO carries a type annotation. Its binders `a`/`b` must be in scope in the body, exactly as the
+           un-annotated `(def (f (tuple a b)) …)` binds them. The annotated form desugars to a fresh
+           annotated binder `(: p T)` plus a destructuring `let` over the inner tuple, so the annotation
+           constrains the argument AND the halves bind. Calling `(f (tuple 3 4))` gives 7. (Without peeling
+           the `(: pattern T)` annotation the desugar left `a`/`b` unbound — CDZ0101 — even though the
+           un-annotated and the annotated-plain-binder forms both work; only their combination broke, and
+           the ML printer emits exactly this form.)")
+  (input  (do
+            (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b))
+            (def (main) (f (tuple 3 4))) (export main)))
+  (output (: 7 Int64)))
+
+(case "an annotated tuple-pattern parameter still checks its annotation against the argument"
+  (doc    "The annotation on a destructuring parameter is ENFORCED, not silently dropped: `(def (f (: (tuple
+           a b) (Tuple Int64 Bool))) a)` declares the second element `Bool`, but `(f (tuple 3 4))` passes an
+           Int64 there — a contradiction (CDZ0203, type-system.md #Annotations Constrain, Never Contradict),
+           exactly as an annotated `let` binder `(let (((: x Bool) 5)) x)` is rejected. Pins that peeling the
+           annotation to reach the tuple pattern keeps the annotation live on the fresh binder.")
+  (input  (do
+            (def (f (: (tuple a b) (Tuple Int64 Bool))) a)
+            (def (main) (f (tuple 3 4))) (export main)))
+  (error  CDZ0203))

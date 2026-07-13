@@ -863,6 +863,16 @@ fn check_no_home_walk(
             // delegation's effect-name occurrence).
             for &(occ, decl) in &added {
                 if !body_reaches_effect(db, body, decl, 0) {
+                    // The repair is to DROP the unreached effect from the manifest — a delete edit on the
+                    // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
+                    // Route To A Fix). The effect's name (for the label) comes from its declaration.
+                    let eff_name = db
+                        .effect_decl_by_occ(crate::ast::StructId(decl))
+                        .map(|e| e.name.clone());
+                    let label = match &eff_name {
+                        Some(n) => format!("remove the unreached effect `{n}` from the delegation"),
+                        None => "remove the unreached effect from the delegation".to_string(),
+                    };
                     out.push(
                         crate::diag::Reject::coded(
                             crate::diag::Code::LatentAuthority,
@@ -870,7 +880,8 @@ fn check_no_home_walk(
                              reaches (latent authority); the manifest must be exactly the effects \
                              that escape",
                         )
-                        .at(occ),
+                        .at(occ)
+                        .with_fix(crate::diag::Fix::delete_heuristic(occ, label)),
                     );
                 }
             }

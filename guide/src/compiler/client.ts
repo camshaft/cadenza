@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, Diag, Surface, TypeAtInfo, DefineAtInfo } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -77,4 +77,4 @@ export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }
 
-export type { CompileOutcome, Surface, Diag, TypeAtInfo, DefineAtInfo };
+export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo };
