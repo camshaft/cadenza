@@ -2449,6 +2449,87 @@ mod runtime_ops {
         call_traps(&func(params, body), "f", args)
     }
 
+    #[test]
+    fn if_with_one_zero_branches_materializes_the_boolean() {
+        // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
+        // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
+        // tests; here we confirm the VALUE is identical to the branchy form across widths and both a
+        // comparison condition and a bare bool param.
+        // (if (< a b) 1 0) : Int64
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 1 0)",
+                &[Val::S64(3), Val::S64(9)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 1 0)",
+                &[Val::S64(9), Val::S64(3)]
+            ),
+            0
+        );
+        // (if (< a b) 0 1) : the negation.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 0 1)",
+                &[Val::S64(3), Val::S64(9)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 0 1)",
+                &[Val::S64(9), Val::S64(3)]
+            ),
+            1
+        );
+        // A bare BOOL param condition (not a comparison) — `(if p 1 0)` = p as an int.
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if p 1 0)", &[Val::Bool(true)]),
+            1
+        );
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if p 1 0)", &[Val::Bool(false)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if p 0 1)", &[Val::Bool(true)]),
+            0
+        );
+        // A narrow Int32-operand comparison still materializes to the correct 0/1.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int32) (: b Int32)",
+                "(if (< a b) 1 0)",
+                &[Val::S32(1), Val::S32(2)]
+            ),
+            1
+        );
+        // A NON-0/1 constant pair keeps the ordinary select — value parity holds there too.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 5 7)",
+                &[Val::S64(1), Val::S64(2)]
+            ),
+            5
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 5 7)",
+                &[Val::S64(2), Val::S64(1)]
+            ),
+            7
+        );
+    }
+
     // ── bitwise: total, never trap; width-agnostic on a normalized value ─────────────────────────
 
     #[test]

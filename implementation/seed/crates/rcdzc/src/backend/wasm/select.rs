@@ -1415,6 +1415,13 @@ fn emit_tail(
             // /loop-`br` — the whole `if` becomes one value expression the caller consumes. (An exported
             // body emitted in tail position — `(def (f p a b) (if p a b))` — reaches HERE, not the
             // non-tail arm, so the select must be handled in both places.)
+            // BOOLEAN MATERIALIZATION: `(if c 1 0)`/`(if c 0 1)` → the condition coerced to the result
+            // width (a leaf `if` can reach tail position — an exported `(def (f p) (if p 1 0))` body).
+            if let Some(r) = try_bool_materialization(
+                db, cond, then_, else_, &result, slots, base, high, scratch_ty, layout, out,
+            ) {
+                return r;
+            }
             if !matches!(result, Ty::Unit)
                 && !is_heap_type(&result)
                 && valtype_of(&result).is_some()
@@ -2496,6 +2503,13 @@ fn emit(
             // handles and discard one WITHOUT the Perceus `drop` that owning branch would run, leaking
             // its cell — the `if` (which evaluates only the taken branch) stays for those. This is the
             // classic `min`/`max`/conditional-value idiom `(if (< a b) a b)`.
+            // BOOLEAN MATERIALIZATION first: `(if c 1 0)`/`(if c 0 1)` is the condition itself (coerced to
+            // the result width), cheaper than the `const;const;select` a leaf select would emit.
+            if let Some(r) = try_bool_materialization(
+                db, cond, then_, else_, &result, slots, base, high, scratch_ty, layout, out,
+            ) {
+                return r;
+            }
             if !matches!(result, Ty::Unit)
                 && !is_heap_type(&result)
                 && valtype_of(&result).is_some()
@@ -4409,6 +4423,62 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
     )
 }
 
+/// BOOLEAN MATERIALIZATION: an `(if c 1 0)` / `(if c 0 1)` whose branches are the integer literals `1`
+/// and `0` is just the condition itself, coerced to the result's integer width — no branch and no
+/// `select`. A bool `c` already evaluates to exactly `0`/`1` in an i32 slot, so:
+///   `(if c 1 0)` → `c`            (identity, then widen to the result slot);
+///   `(if c 0 1)` → `i32.eqz c`    (logical negation, likewise `0`/`1`).
+/// This attempts the emit and returns `Some(Ok(()))` when it fired, `None` when the shape does not match
+/// (the caller falls through to the `select`/`if` lowering). Sound at every width: `c` is unconditionally
+/// evaluated exactly as it was as the condition (so any trap in `c` still fires), and the branches carry
+/// no traps of their own (bare literals). The result width comes from the node's solved type — a 64-bit
+/// result zero-extends the i32 bool (`i64.extend_i32_u`); a ≤32-bit result already holds `0`/`1`.
+#[allow(clippy::too_many_arguments)]
+fn try_bool_materialization(
+    db: &mut Db,
+    cond: StructId,
+    then_: StructId,
+    else_: StructId,
+    result: &Ty,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Option<Result<(), Reject>> {
+    // The result must be an integer type (a `Bool` result already folded `(if c true false)`→`c` in
+    // `lower`; this is the INTEGER-literal analogue that `lower` cannot see without width knowledge).
+    let Ty::Int(it) = result else {
+        return None;
+    };
+    let (t, e) = (core_of(db, then_), core_of(db, else_));
+    // Read each branch's constant i64 value, if it is one.
+    let as_int = |c: &Core| match c {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    let (tv, ev) = (as_int(&t)?, as_int(&e)?);
+    // `(if c 1 0)` → c ; `(if c 0 1)` → !c. Any other constant pair is not a bool materialization.
+    let negate = match (tv, ev) {
+        (1, 0) => false,
+        (0, 1) => true,
+        _ => return None,
+    };
+    // Emit the condition (a bool → i32 `0`/`1`); negate via `i32.eqz` for the `0 1` form.
+    if let Err(r) = emit(db, cond, slots, base, high, scratch_ty, layout, out) {
+        return Some(Err(r));
+    }
+    if negate {
+        out.push(Lir::I32Eqz);
+    }
+    // Widen the i32 `0`/`1` to a 64-bit result slot; a ≤32-bit result already holds it.
+    if m_slot(*it) == ValType::I64 {
+        out.push(Lir::I64ExtendI32U);
+    }
+    Some(Ok(()))
+}
+
 /// Whether `id` is safe to evaluate UNCONDITIONALLY as the right operand of a BRANCHLESS boolean
 /// connective (`(and lhs rhs)` / `(or lhs rhs)` → `i32.and`/`i32.or`, no short-circuit `if`). The
 /// short-circuit exists ONLY to skip a `rhs` that could TRAP or has an EFFECT when `lhs` already decides
@@ -6137,6 +6207,73 @@ mod tests {
         assert!(
             f.code.contains(&Lir::I64DivS),
             "a runtime-operand multiply keeps the div_s guard, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn if_c_one_zero_materializes_the_bool_without_a_select() {
+        // (def (f (: a Int64) (: b Int64)) (if (< a b) 1 0)) — the boolean materialization: the compare
+        // already yields 0/1, so the `if` is just that i32 bool widened to the i64 result — NO two consts,
+        // NO select, NO branch.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 1 0)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::I64LtS,
+                Lir::I64ExtendI32U, // widen the 0/1 bool to the Int64 result — no select.
+            ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::Select)),
+            "the 1/0 branches materialize the condition directly, no select"
+        );
+    }
+
+    #[test]
+    fn if_c_zero_one_materializes_the_negated_bool() {
+        // (if (< a b) 0 1) — the reversed literals are the NEGATION: compare, `i32.eqz`, then widen.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 0 1)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::I64LtS,
+                Lir::I32Eqz, // negate the 0/1 bool.
+                Lir::I64ExtendI32U,
+            ]
+        );
+    }
+
+    #[test]
+    fn if_with_non_zero_one_constants_keeps_the_select() {
+        // (if (< a b) 5 7) — the branches are not 1/0, so the materialization does NOT fire; the leaf
+        // branches still lower to a branchless `select` (5, 7, cond).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 5 7)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::Select)),
+            "non-0/1 constant branches keep the select, got: {:?}",
             f.code
         );
     }
