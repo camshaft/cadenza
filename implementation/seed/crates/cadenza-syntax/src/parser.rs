@@ -562,8 +562,14 @@ impl<'a> Parser<'a> {
                             let t = self.bump().unwrap();
                             self.name(literal::unescape_backtick_name(self.text(t)), key_span)
                         }
+                        // A numeric index — positional tuple access `obj.0`. The key is the same `Int`
+                        // atom the corpus `(. obj 0)` head-form carries, so both surfaces agree.
+                        Kind::Int => {
+                            let t = self.bump().unwrap();
+                            self.atom(literal::classify_word(self.text(t)), key_span)
+                        }
                         _ => {
-                            self.error("expected a member name after `.`");
+                            self.error("expected a member name or index after `.`");
                             self.error_node(key_span)
                         }
                     };
@@ -585,9 +591,13 @@ impl<'a> Parser<'a> {
         node
     }
 
-    /// A `.` begins member access only when followed by a member key.
+    /// A `.` begins member access only when followed by a member key — a field name, an escaped name,
+    /// or a numeric index (`obj.0`, positional tuple access).
     fn dot_is_member(&self) -> bool {
-        matches!(self.nth_kind(1), Kind::Ident | Kind::BacktickName)
+        matches!(
+            self.nth_kind(1),
+            Kind::Ident | Kind::BacktickName | Kind::Int
+        )
     }
 
     fn nth_kind(&self, n: usize) -> Kind {
@@ -1347,6 +1357,19 @@ mod tests {
         // `a.b` -> (. a b)
         let a = parse_ok("a.b");
         assert_eq!(a.head_name(a.root), Some("."));
+
+        // `p.0` -> (. p 0) — positional tuple access, the numeric sibling of `p.field`.
+        let a = parse_ok("p.0");
+        let tail = a.as_form(a.root, ".").unwrap();
+        assert_eq!(a.as_name(tail[0]), Some("p"));
+        assert!(
+            matches!(a.get(tail[1]), crate::ast::Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Int { .. }))
+        );
+        // `(x.0).1` -> (. (. x 0) 1) — chained index, parens keep `0.1` from lexing as a float.
+        let a = parse_ok("(x.0).1");
+        assert_eq!(a.head_name(a.root), Some("."));
+        let outer = a.as_form(a.root, ".").unwrap();
+        assert_eq!(a.head_name(outer[0]), Some("."));
 
         // `if a then b else c` -> (if a b c)
         let a = parse_ok("if a then b else c");

@@ -129,6 +129,65 @@ impl IntTy {
     }
 }
 
+/// The default float width a float literal grounds to when nothing fixes it (`Float64` — binary64).
+pub const DEFAULT_FLOAT_WIDTH: u32 = 64;
+
+/// The set of IEEE-754 binary float widths the numeric model admits — the widths a conforming wasm
+/// runtime provides (`f32`/`f64`), pinned at `options/numeric-model/`. A `(Float N)` for any other `N`
+/// fails the width constraint (CDZ0302), exactly as an out-of-range integer width does. This is
+/// set-MEMBERSHIP, not a range (unlike integers, where every width in `1..=64` is a type): a float
+/// width is an IEEE format, not an arbitrary bit count. The admitted-set check lives at the `Float`
+/// constructor (`prelude::build_float_ty`), exactly as the integer `1..=64` check lives at `Int`.
+pub const ADMITTED_FLOAT_WIDTHS: [u32; 2] = [32, 64];
+
+/// A floating-point type: a [`Width`] (there is no signedness axis — a float is inherently signed, so
+/// this is [`IntTy`] minus its `Sign`). `FloatTy { width: Fixed(64) }` is `Float64` (binary64), the
+/// type a bare float literal grounds to; `Fixed(32)` is `Float32`. The width is polymorphic exactly as
+/// an integer's is: `Deferred` a bare literal, `Var` an operator generic over the float width (`+. :
+/// (Float a) → (Float a) → (Float a)`), `Fixed` a concrete width. Crucially it REUSES the integer
+/// [`Width`] machinery (`unify_width`/`apply_width`/freshen) — parametric "just like ints" — because a
+/// width variable is a width variable regardless of whether it ends up bound in a float or integer
+/// context, and a float only ever unifies with a float so the two never cross. Only the admitted SET
+/// differs ({32,64} vs 1..=64), enforced at the constructor, not here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FloatTy {
+    pub width: Width,
+}
+
+impl FloatTy {
+    /// A deferred float — the type a bare float literal takes before any constraint or defaulting fixes
+    /// its width. An annotation (or a float operator's signature) can ground it.
+    pub fn deferred() -> FloatTy {
+        FloatTy {
+            width: Width::Deferred,
+        }
+    }
+
+    /// The 64-bit float (`Float64`, binary64) — the concrete type an unresolved float width grounds to.
+    pub fn f64() -> FloatTy {
+        FloatTy {
+            width: Width::Fixed(DEFAULT_FLOAT_WIDTH),
+        }
+    }
+
+    /// A concrete-width float — the ordinary constructor for a fixed float type (`(Float 32)`/`(Float
+    /// 64)`).
+    pub fn fixed(width: u32) -> FloatTy {
+        FloatTy {
+            width: Width::Fixed(width),
+        }
+    }
+
+    /// The concrete width this float takes at the machine boundary: its fixed width, or the default
+    /// (`Float64`) if still deferred or an unresolved variable. The backend/renderer reads THIS.
+    pub fn ground_width(self) -> u32 {
+        match self.width {
+            Width::Fixed(w) => w,
+            Width::Deferred | Width::Var(_) => DEFAULT_FLOAT_WIDTH,
+        }
+    }
+}
+
 /// A solved type — the closed variant set inference determines and every pass below reads.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Ty {
@@ -176,14 +235,13 @@ pub enum Ty {
     /// `Bytes` renders `\xNN`). This increment realizes the CONSTANT string (a literal folds + equality);
     /// runtime string ops (`concat`/`len`/`at`) + string escape arrive later.
     String,
-    /// A FLOATING-POINT number (`numeric-model.md` §Numeric Types Do Not Silently Promote). One
-    /// monomorphic leaf for now (the corpus uses only `Float64`-shaped literals like `2.0`); a
-    /// width-parameterized float can refine this later, mirroring `Ty::Int`. Its role in THIS increment
-    /// is purely to give a float LITERAL a type DISTINCT from `Ty::Int`, so mixing the two in one
-    /// arithmetic operator — `(+ 2 2.0)` — fails to unify and is REJECTED (CDZ0301, no silent promotion)
-    /// rather than declining. Float VALUES do not yet run (no float arithmetic, no boundary rep): a
-    /// pure-float program declines, an int↔float MIX rejects — both decline-don't-miscompile-safe.
-    Float,
+    /// A FLOATING-POINT number, indexed by its bit WIDTH (`numeric-model.md` §A Floating-Point Type Is
+    /// Indexed By A Compile-Time Width) — the float analogue of [`Ty::Int`], carrying a [`FloatTy`]
+    /// (a possibly-deferred [`FloatWidth`]) rather than a fixed name. `Float64` is the signed 64-bit
+    /// (binary64) instance a bare float literal grounds to; `Float32` is `(Float 32)`. Two float types
+    /// of different width are DISTINCT (no silent promotion), and an integer never unifies with a float
+    /// (`(+ 2 2.0)` → CDZ0301). Backed at the boundary by the component-model `f64`/`f32`.
+    Float(FloatTy),
     /// A SUM: a value of one of a fixed set of named variants (`type-system.md` §The Structural Types
     /// Are Record, Tuple, And Sum — "a sum of named variants"). Declared by `(type NAME variant…)`,
     /// which tags it NOMINAL (`§Nominal Is An Orthogonal Modifier Over Any Structural Type`), so its
@@ -254,6 +312,16 @@ impl Ty {
         Ty::Int(IntTy::i64())
     }
 
+    /// A fresh float-literal type: width deferred. Inference or the backend fixes the width (`Float64`).
+    pub fn float() -> Ty {
+        Ty::Float(FloatTy::deferred())
+    }
+
+    /// The 64-bit float type (`Float64`) — a float literal grounded to its default width.
+    pub fn float64() -> Ty {
+        Ty::Float(FloatTy::f64())
+    }
+
     /// Whether the type contains an UNRESOLVED type variable ([`Ty::Var`]) — a payload/element/parameter
     /// the inference solve never determined (a bare `(None)` is `Option ?0`; an empty `(list)` is `List
     /// ?0`). Such a type has no defined serialization, so a value of it reaching the HOST BOUNDARY is a
@@ -276,7 +344,7 @@ impl Ty {
             | Ty::Any
             | Ty::Bytes
             | Ty::String
-            | Ty::Float => false,
+            | Ty::Float(_) => false,
         }
     }
 
@@ -345,9 +413,13 @@ impl Ty {
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
-            // `Float` is a monomorphic leaf — a float agrees only with another float, NOT with an integer
-            // (numeric-model.md §Numeric Types Do Not Silently Promote — the whole point of the type).
-            (Ty::Float, Ty::Float) => true,
+            // Two floats agree iff their WIDTHS agree — `Float32` ≠ `Float64` (no silent promotion), a
+            // deferred/variable width is compatible (not yet fixed). A float never agrees with an integer
+            // (numeric-model.md §Numeric Types Do Not Silently Promote). Mirrors the `Ty::Int` width check.
+            (Ty::Float(a), Ty::Float(b)) => match (a.width, b.width) {
+                (Width::Fixed(wa), Width::Fixed(wb)) => wa == wb,
+                _ => true,
+            },
             _ => false,
         }
     }
@@ -433,7 +505,10 @@ impl Ty {
             Ty::Unit => "Unit".to_string(),
             // A string renders as `String` — one monomorphic type, no parameters.
             Ty::String => "String".to_string(),
-            Ty::Float => "Float64".to_string(),
+            // A float renders as its aliased width name — `Float32`/`Float64`. Every admitted float
+            // width ({32, 64}) has an alias, so an observed float type is always a concrete `FloatN`
+            // (an unresolved width grounds to `Float64`), mirroring the integer `IntN`/`UIntN` render.
+            Ty::Float(ft) => format!("Float{}", ft.ground_width()),
             // A record renders as `(record (name Type) …)` in canonical (sorted) field order — the
             // shape the renderer walks. The runtime holds no field names; this type does.
             Ty::Record(fields) => {

@@ -45,6 +45,11 @@ impl Subst {
                 sign: self.apply_sign(it.sign),
                 width: self.apply_width(it.width),
             }),
+            // A float's width may be a `Var` (an operator generic over the float width), resolved the
+            // SAME way an integer's width is — floats reuse the integer width machinery.
+            Ty::Float(ft) => Ty::Float(crate::ty::FloatTy {
+                width: self.apply_width(ft.width),
+            }),
             Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
             Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
                 fields
@@ -63,9 +68,7 @@ impl Subst {
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
             },
-            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Float | Ty::Type | Ty::Any => {
-                ty.clone()
-            }
+            Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
         }
     }
 
@@ -183,9 +186,11 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         }
         // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
         (Ty::String, Ty::String) => Ok(()),
-        // `Float` is a monomorphic leaf — it unifies only with itself. Crucially it does NOT unify with
-        // `Ty::Int` (which falls to the `mismatch` below), so `(+ 2 2.0)` is rejected, not promoted.
-        (Ty::Float, Ty::Float) => Ok(()),
+        // Two floats unify iff their WIDTHS unify — reusing the integer `unify_width` (a width variable is
+        // a width variable). So `Float32`/`Float64` are distinct (two fixed widths conflict → CDZ0301),
+        // a deferred/variable float width solves. A float does NOT unify with `Ty::Int` (it falls to the
+        // `mismatch` below, coded CDZ0301 as two-different-numeric), so `(+ 2 2.0)` is rejected.
+        (Ty::Float(fa), Ty::Float(fb)) => unify_width(subst, fa.width, fb.width),
         _ => Err(mismatch(&a, &b)),
     }
 }
@@ -284,11 +289,11 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, &elem),
         Ty::Int(_)
+        | Ty::Float(_)
         | Ty::Bool
         | Ty::Unit
         | Ty::Bytes
         | Ty::String
-        | Ty::Float
         | Ty::Type
         | Ty::Any => false,
     }
@@ -306,7 +311,7 @@ fn mismatch(a: &Ty, b: &Ty) -> Reject {
     // promotion rule (CDZ0301, `numeric-model.md` §Numeric Types Do Not Silently Promote). Covers a
     // width/sign mismatch (`Int32` vs `Int64`) AND an integer↔float mix (`Int64` vs `Float64`, i.e.
     // `(+ 2 2.0)`). A non-numeric conflict (`Bool` vs `Int64`) stays the general CDZ0203.
-    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float);
+    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_));
     let both_numeric = is_numeric(a) && is_numeric(b);
     let code = if both_numeric {
         Code::NumericMismatch
@@ -423,6 +428,10 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             sign: rename_sign(it.sign, m),
             width: rename_width(it.width, m),
         }),
+        // A float's width variable is renamed the SAME way an integer's is (shared `Width` machinery).
+        Ty::Float(ft) => Ty::Float(crate::ty::FloatTy {
+            width: rename_width(ft.width, m),
+        }),
         Ty::Fn(p, r) => Ty::Fn(Box::new(rename(p, m)), Box::new(rename(r, m))),
         Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
             fields
@@ -440,7 +449,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Float | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 
@@ -500,6 +509,14 @@ fn freshen_free_go(
                 other => other,
             },
         }),
+        // A float's free width variable is freshened the SAME way an integer's is (shared `Width`
+        // machinery / `wmap`), so a generic float operator's scheme instantiates a fresh width per use.
+        Ty::Float(ft) => Ty::Float(crate::ty::FloatTy {
+            width: match ft.width {
+                Width::Var(v) => Width::Var(*wmap.entry(v).or_insert_with(|| fresh.var())),
+                other => other,
+            },
+        }),
         Ty::Fn(p, r) => Ty::Fn(
             Box::new(freshen_free_go(p, fresh, map, wmap, smap)),
             Box::new(freshen_free_go(r, fresh, map, wmap, smap)),
@@ -525,7 +542,7 @@ fn freshen_free_go(
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
         },
-        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Float | Ty::Type | Ty::Any => ty.clone(),
+        Ty::Bool | Ty::Unit | Ty::Bytes | Ty::String | Ty::Type | Ty::Any => ty.clone(),
     }
 }
 

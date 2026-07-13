@@ -1582,7 +1582,8 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             "Unit" => Some(Ty::Unit),
             "Bytes" => Some(Ty::Bytes),
             "String" => Some(Ty::String),
-            "Float64" => Some(Ty::Float),
+            "Float32" => Some(Ty::Float(crate::ty::FloatTy::fixed(32))),
+            "Float64" => Some(Ty::Float(crate::ty::FloatTy::fixed(64))),
             _ => None,
         };
     }
@@ -1598,6 +1599,25 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 _ => None,
             })?;
             Some(Ty::Int(IntTy::fixed(head == "Int", w)))
+        }
+        // A float type-value: `(Float N)` for an admitted width N ∈ {32,64} — the dual of `encode_ty`'s
+        // float arm and the width-indexed form `Float32`/`Float64` alias. A non-admitted width has no
+        // decoded type here (the `prelude::build_float_ty` constructor is where CDZ0302 is raised for a
+        // source annotation; this backend-side decoder just declines an unknown width).
+        "Float" => {
+            let tail = db.ast.as_form(node, "Float")?;
+            let w = tail.first().and_then(|&s| match db.ast.get(s) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => value.to_i64().and_then(|n| u32::try_from(n).ok()),
+                    _ => None,
+                },
+                _ => None,
+            })?;
+            if crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w) {
+                Some(Ty::Float(crate::ty::FloatTy::fixed(w)))
+            } else {
+                None
+            }
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;

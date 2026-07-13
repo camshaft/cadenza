@@ -68,9 +68,13 @@ export function stripModule(rendered: string, surface: Surface): string {
   if (!m) return rendered;
   const lines = m[1].split("\n").filter((l) => !/^\s*export\(/.test(l));
   const dedented = dedent(lines.join("\n"));
-  // Unwrap a synthesized `def main() = <expr>` (single def, no helpers) back to the expression.
-  const bare = /^def\s+main\(\)\s*=\s*([\s\S]*)$/.exec(dedented.trim());
-  if (bare && !/^\s*(def|type)\b/m.test(bare[1])) return bare[1].trim();
+  // Unwrap a synthesized `def main() = <expr>` (single def, no helpers) back to the expression. Match
+  // only the horizontal gap after `=` (`[^\S\n]*`, NOT `\s*`) so a multi-line body's continuation
+  // lines keep their leading indentation; then `dedent` the whole body as a block, so the def-body
+  // indentation is removed uniformly (a `.trim()` alone would only fix the first line, leaving the
+  // rest over-indented).
+  const bare = /^def\s+main\(\)\s*=[^\S\n]*([\s\S]*)$/.exec(dedented.trim());
+  if (bare && !/^\s*(def|type)\b/m.test(bare[1])) return dedent(bare[1]).trim();
   return dedented;
 }
 

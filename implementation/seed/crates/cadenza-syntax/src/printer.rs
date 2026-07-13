@@ -261,14 +261,26 @@ impl<'a> Printer<'a> {
                 return self.infix(&head, prec, args[0], args[1], parent_prec);
             }
             // ---- member access `(. obj key)` -> obj.key ----
+            // The key is a plain field NAME (`obj.field`) or a non-negative INTEGER index
+            // (`obj.0` — positional tuple access). A numeric key must not abut an operand that ends in
+            // a decimal digit, or the concatenation re-lexes as a float (`5.0`, `x.0.1`); such an
+            // operand is wrapped in explicit parens (`(5).0`, `(x.0).1`) so it re-reads correctly.
             if head == "."
                 && args.len() == 2
-                && let Some(key) = self.plain_key(args[1])
+                && let Some(key) = self.member_key(args[1])
             {
+                let numeric = key.bytes().next().is_some_and(|b| b.is_ascii_digit());
+                let wrap = numeric && self.ends_in_decimal_digit(args[0]);
                 self.doc.ibox(0);
-                self.expr(args[0], PREC_MEMBER);
+                if wrap {
+                    self.doc.word("(");
+                    self.expr(args[0], 0);
+                    self.doc.word(")");
+                } else {
+                    self.expr(args[0], PREC_MEMBER);
+                }
                 self.doc.word(".");
-                self.doc.word(emit_name(&key));
+                self.doc.word(key);
                 self.doc.end();
                 return;
             }
@@ -1157,6 +1169,51 @@ impl<'a> Printer<'a> {
         if n.contains('.') { None } else { Some(n) }
     }
 
+    /// The rendered text of a member-access key `(. obj KEY)`, if it re-reads as a `.KEY` postfix: a
+    /// plain field NAME (`obj.field`) or a non-negative decimal INTEGER index (`obj.0` — positional
+    /// tuple access). A negative/non-decimal integer, a float, or any other atom returns `None`, so
+    /// the access falls back to the round-tripping head-call form `` `.`(obj, key) ``.
+    fn member_key(&self, id: StructId) -> Option<String> {
+        if let Some(name) = self.plain_key(id) {
+            return Some(name);
+        }
+        // A non-negative decimal integer index: rendered as its bare digits (the parser reads a `.N`
+        // postfix as this same `Int` key). Hex/binary or negative indices aren't valid `.N` syntax.
+        match self.a.get(id) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Int {
+                    value,
+                    radix: crate::ast::Radix::Dec,
+                } if value.sign() != num_bigint::Sign::Minus => {
+                    Some(literal::render_int(value, crate::ast::Radix::Dec))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether the ML rendering of `id` ends in a decimal digit at its top level — the operands a
+    /// following numeric `.N` would glue into a float token. That is a bare non-negative decimal
+    /// integer (`5` → `5.0`), or a member access whose own key is a numeric index (`x.0` → `x.0.1`).
+    /// A parenthesized/name/string operand does not, so it needs no extra parens.
+    fn ends_in_decimal_digit(&self, id: StructId) -> bool {
+        match self.a.get(id) {
+            Struct::Atom(l) => matches!(
+                self.a.leaf(*l),
+                Leaf::Int { radix: crate::ast::Radix::Dec, value } if value.sign() != num_bigint::Sign::Minus
+            ),
+            Struct::List(items) => {
+                // a `(. inner NUMERIC)` renders `inner.N`, ending in the numeric key's digit.
+                items.len() == 3
+                    && self.head_name(items[0]).as_deref() == Some(".")
+                    && self
+                        .member_key(items[2])
+                        .is_some_and(|k| k.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+            }
+        }
+    }
+
     fn is_let_shape(&self, args: &[StructId]) -> bool {
         if args.len() != 2 {
             return false;
@@ -1338,6 +1395,41 @@ mod tests {
         // The independent s-expr reader is the oracle: `(|> x f)` prints as the ML pipeline.
         let a = sexpr::read("(|> x f)").unwrap();
         assert_eq!(print(&a, 80), "x |> f");
+    }
+
+    #[test]
+    fn positional_member_access() {
+        // `(. obj N)` (positional tuple access) renders `obj.N`, the numeric sibling of `obj.field`.
+        assert_eq!(print(&sexpr::read("(. p 0)").unwrap(), 80), "p.0");
+        assert_eq!(
+            print(&sexpr::read("(. (tuple 1 2 3) 0)").unwrap(), 80),
+            "(1, 2, 3).0"
+        );
+        // `.0` re-reads to the same `(. p 0)` head form.
+        assert_eq!(assert_roundtrip("p.0", 80), "p.0");
+        assert_eq!(assert_roundtrip("p.field", 80), "p.field");
+        // a name key with a numeric-looking segment stays a name (only a real Int key is an index).
+        let a = parser::read_ml("p.0");
+        assert_eq!(sexpr::print(&a.arenas), "(. p 0)");
+    }
+
+    #[test]
+    fn positional_member_operand_parenthesized_when_digit_adjacent() {
+        // A numeric key must not abut an operand ending in a decimal digit, or it re-lexes as a float.
+        // `(. 5 0)` → `(5).0` (not `5.0`); a chained `(. (. x 0) 1)` → `(x.0).1` (not `x.0.1`).
+        assert_eq!(assert_roundtrip("(5).0", 80), "(5).0");
+        assert_eq!(assert_roundtrip("(x.0).1", 80), "(x.0).1");
+        assert_eq!(print(&sexpr::read("(. 5 0)").unwrap(), 80), "(5).0");
+        assert_eq!(print(&sexpr::read("(. (. x 0) 1)").unwrap(), 80), "(x.0).1");
+        // both re-read to the canonical head form.
+        assert_eq!(sexpr::print(&parser::read_ml("(5).0").arenas), "(. 5 0)");
+        assert_eq!(
+            sexpr::print(&parser::read_ml("(x.0).1").arenas),
+            "(. (. x 0) 1)"
+        );
+        // a NAME operand or a `)`-terminated operand needs no parens.
+        assert_eq!(print(&sexpr::read("(. x 0)").unwrap(), 80), "x.0");
+        assert_eq!(print(&sexpr::read("(. (f a) 0)").unwrap(), 80), "f(a).0");
     }
 
     #[test]

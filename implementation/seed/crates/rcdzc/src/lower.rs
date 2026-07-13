@@ -3223,9 +3223,13 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // AMBIGUOUS-TYPE guard in `backend/wasm/mod.rs` (`has_free_var` → CDZ0203, "annotate it") rather
         // than crossing with an invented type. type-system.md §An Escaping Value MUST Have A Fully
         // Determined Type; corpus 07 "an escaped value with an unresolved payload type is rejected".
-        // A float has no boundary value form yet (no float value runs / crosses), so no type surface —
-        // like a function/type-value. A float program declines before reaching the escape anyway.
-        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any | Ty::Float => None,
+        // A float's type surface is its aliased width name `Float32`/`Float64` (a leaf, like a scalar) —
+        // matches `render_name`; its VALUE renders as the float literal. Needed when a float is NESTED in
+        // a compound value form (`(tuple 1.0 2.0)`) whose type annotation the escape bakes.
+        Ty::Float(ft) => Some(b.name(format!("Float{}", ft.ground_width()))),
+        // A function/type-value has no boundary value form, so no type surface. A program that would
+        // escape one declines before reaching the escape.
+        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
     }
 }
 
@@ -4085,7 +4089,7 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
         // canonical form needs machinery this increment does not emit, or it is not a runtime value that
         // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
-        Ty::List(_) | Ty::Bytes | Ty::String | Ty::Float | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
+        Ty::List(_) | Ty::Bytes | Ty::String | Ty::Float(_) | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
             false
         }
     }

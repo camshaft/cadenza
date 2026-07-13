@@ -75,7 +75,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
-        Resolved::Float(_) => Ty::Float,
+        // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
+        // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
+        Resolved::Float(_) => Ty::float(),
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         Resolved::Ref { value } => type_of(db, value),
