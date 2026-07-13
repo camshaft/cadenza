@@ -667,8 +667,12 @@ pass	concatenation is associative by content
 pass	conditional propagation respects a shadowing rebind of the condition variable
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
+pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
+pass	constructing a sized bytes segment whose value length differs from the size is rejected
+pass	constructing a u8 segment from a value above its range is rejected
+pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
@@ -1086,11 +1090,7 @@ todo	comparing two same-shape nominal sum types is a type error, not false
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating tuples preserves each element's type
 todo	concatenating two tuples appends their elements
-todo	constructing a bit-field from a value wider than its width traps
 todo	constructing a rational with a zero denominator traps
-todo	constructing a sized bytes segment whose value length differs from the size traps
-todo	constructing a u8 segment from a value above its range traps
-todo	constructing an unsigned segment from a negative value traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
 todo	converting a char to its integer scalar value is total
 todo	converting a fixed-width integer to BigInt is explicit
