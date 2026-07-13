@@ -348,6 +348,36 @@
             (def (main) (find 0)) (export main)))
   (output (: 3 Int64)))
 
+(case "a guarded wildcard arm falls through to a tail-recursive call"
+  (doc    "A `match` whose FIRST arm is a GUARDED WILDCARD (`(guard x <cond>)`) and whose fall-through arm
+           TAIL-CALLS the enclosing function, compiled as a wasm LOOP: `find` returns `n` once `(> n 2)`
+           holds, else `(find (+ n 1))` iterates. `find(0)` = 3. A guarded wildcard emits `if <guard>
+           <body> else <fall-through>` with NO separate probe test (a wildcard needs none), so the guard's
+           `if` is the ONLY block its body and fall-through nest inside. A generation that counted a
+           (non-existent) probe `if` too made the fall-through's self-tail-call `br` one level too far —
+           PAST the loop — producing an invalid module (`expected i64 but nothing on stack`). Pins that a
+           guarded-wildcard arm's block nesting is exactly its guard `if`, so a tail call in its
+           fall-through iterates the loop rather than escaping it.")
+  (input  (do
+            (def (find n) (match n ((guard x (> x 2)) x) (_ (find (+ n 1)))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
+(case "a value-eq guard on a wildcard arm drives a tail-recursive loop"
+  (doc    "The heap-handle companion of the guarded-wildcard loop case: the guard is a runtime `value-eq`
+           (`(= (mk x) (mk 3))`, `mk` building genuine sum values), so BOTH fixes compose — the guard's i32
+           handle scratch must sit above the fall-through's i64 iteration arithmetic (the branch-scratch
+           discipline), AND the guarded-wildcard block nesting must be exactly one `if` (the tail-depth
+           discipline). `find(0)` = 3. This is the exact shape a proof/AST search takes: scan upward,
+           returning when a structural equality on a constructed term holds, else recurse.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (mk n) (N.I n))
+            (def (find n) (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1)))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
 (case "two constant sums with the same payload but different variants are not equal"
   (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and
            structural equality compares the VARIANT before the payload: `(= (Ok 1) (Err 1))` is FALSE even

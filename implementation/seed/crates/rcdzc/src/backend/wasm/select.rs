@@ -3071,10 +3071,16 @@ fn emit_probe_chain(
         out.push(Lir::End);
         Ok(())
     } else {
-        // A `Wild` probe with a guard: the guard alone gates the arm — `if guard body else rest`.
+        // A `Wild` probe with a guard: the guard alone gates the arm — `if guard body else rest`. There
+        // is NO probe `if` here (a wildcard needs no literal test), so pass `tail`, NOT `inner`: the ONLY
+        // block the guard's body/fall-through nest inside is the guard's own `if` (which
+        // `emit_arm_guarded_body` accounts for with its own `deeper_tail`). Passing the probe-adjusted
+        // `inner` here DOUBLE-COUNTED the nesting — a self-tail-call in the fall-through `br`'d one level
+        // too far, PAST the loop, producing invalid wasm (`expected i64 but nothing on stack`). `inner`
+        // is correct ONLY for the literal-probe path above, where a real probe `if` IS pushed.
         emit_arm_guarded_body(
             db, arm, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out, inner,
+            out, tail,
         )
     }
 }
@@ -3322,16 +3328,23 @@ fn emit_arm_guarded_body(
             // `if guard body else <rest>`. The guard is a plain boolean value (never a tail call), so it
             // is emitted with `emit` at `base`; its result is the `if` condition.
             emit(db, g, slots, base, high, scratch_ty, layout, out)?;
+            // The body and fallthrough start scratch ABOVE the high-water the GUARD reached, NOT at
+            // `base` — the same discipline as the `Core::If` arms. A guard that stashes an i32 HEAP
+            // HANDLE (a runtime `value-eq`/`MatchSum` on constructed sums, `(guard x (= (mk x) (mk 3)))`)
+            // types a low slot i32 for the whole function; the fallthrough's loop-iteration i64 arith
+            // (`(find (+ n 1))`) reusing that slot number at a different width fails validation. A scalar
+            // guard leaves `*high == base`, so this is byte-identical for the common case.
+            let body_base = *high;
             out.push(Lir::If(block_ty));
             // Both the body and the fallthrough are one `if` deeper than this arm's nesting.
             let deeper = deeper_tail(inner);
             emit_arm_body(
-                db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, deeper,
+                db, arm.body, result_it, slots, body_base, high, scratch_ty, layout, out, deeper,
             )?;
             out.push(Lir::Else);
             emit_probe_chain(
-                db, src, rest, it, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-                deeper,
+                db, src, rest, it, result_it, block_ty, slots, body_base, high, scratch_ty, layout,
+                out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
