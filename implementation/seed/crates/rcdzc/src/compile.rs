@@ -653,8 +653,10 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect_reached_poisons(db, closure, out);
             collect_reached_poisons(db, arg, out);
         }
-        // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
-        Core::LocalRef { .. }
+        // A parameter, a let-binding reference, or a CAPTURED-variable read is a runtime read — no
+        // sub-poison to collect.
+        Core::Captured { .. }
+        | Core::LocalRef { .. }
         | Core::Param { .. }
         | Core::ConstInt(_)
         | Core::ConstBool(_)

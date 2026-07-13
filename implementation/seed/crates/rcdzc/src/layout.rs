@@ -377,13 +377,14 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, closure, out);
             collect_call_callees(db, arg, out);
         }
-        // Leaves and references have no sub-calls.
+        // Leaves and references have no sub-calls (a `Captured` read is a heap read of the env cell).
         crate::core::Core::ConstInt(_)
         | crate::core::Core::ConstBool(_)
         | crate::core::Core::ConstStr(_)
         | crate::core::Core::ConstFloat(_)
         | crate::core::Core::Unit
         | crate::core::Core::Param { .. }
+        | crate::core::Core::Captured { .. }
         | crate::core::Core::LocalRef { .. }
         | crate::core::Core::Poison(_) => {}
     }

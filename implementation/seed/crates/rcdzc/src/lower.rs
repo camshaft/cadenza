@@ -27,23 +27,28 @@ use crate::resolved::{Prim, Resolved};
 use tracing::trace;
 
 /// A LAMBDA-LIFTED closure — a `(fn (param) body)` that survived lowering as a runtime value and was
-/// hoisted to a standalone wasm function. Its position in `db.lifted` is its funcref-TABLE slot. The
-/// backend selects it like a def body: `param` occupies wasm local slot 0, `body` is the returned
-/// expression. Only NO-CAPTURE (combinator) lambdas lift in this increment — `param` is the single
-/// parameter's binder occurrence (single-arity per `core-semantics.md`). The param + result machine
-/// types come from the lambda's SOLVED function type at its use site (captured in `param_ty`/`ret_ty`).
+/// hoisted to a standalone wasm function. Its position in `db.lifted` is its funcref-TABLE slot. Every
+/// closure is UNIFORMLY a `(env, param) -> result` function (so a function-typed parameter can hold a
+/// capturing OR a non-capturing closure interchangeably): the closure CELL (`box-int(code)` + captures)
+/// is passed as the env at local slot 0, and the lambda's own parameter at slot 1. A body reference to
+/// the lambda's parameter is a `Core::Param`; a reference to a CAPTURED free variable is a
+/// `Core::Captured { index }` that reads the env cell (recorded per-occurrence in `db.captured_refs`).
+/// The param + result machine types come from the lambda's body (`param_ty`/`ret_ty`).
 /// `DESIGN-runtime-closures-rcdzc.md` §3.
 #[derive(Clone, PartialEq, Debug)]
 pub struct LiftedLambda {
     /// The lambda's `body` occurrence — the identity that dedups a lambda lifted more than once, and
     /// what the backend selects as the function body.
     pub body: StructId,
-    /// The single parameter's binder occurrence (wasm local slot 0).
+    /// The single parameter's binder occurrence (wasm local slot 1 — slot 0 is the env cell).
     pub param: StructId,
-    /// The parameter's solved machine type (from the lambda's function type at its use site).
+    /// The parameter's solved machine type.
     pub param_ty: crate::ty::Ty,
     /// The result's solved machine type.
     pub ret_ty: crate::ty::Ty,
+    /// The captured free variables, in cell order (cell index `1 + position`). Each is the binder
+    /// occurrence of the enclosing binding the lambda body references. Empty for a combinator.
+    pub captures: Vec<StructId>,
 }
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
@@ -52,6 +57,19 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
         return c.clone();
+    }
+    // A CAPTURED-reference occurrence (a body reference to a free variable of a lifted lambda) reads the
+    // env cell — `Core::Captured` — rather than following the ref to its (out-of-scope) binding. Recorded
+    // by `lower_lambda_value` when the lambda was lifted; keyed by this reference occurrence. Checked
+    // before the ordinary resolved dispatch so the ref is not followed. (Not memoized into the column
+    // here — it is filled below like any node — but the map lookup is O(1) and the value is stable.)
+    if let Some(&(index, ref ty)) = db.captured_ref.get(&id) {
+        let c = Core::Captured {
+            index,
+            ty: ty.clone(),
+        };
+        db.core.fill(id, c.clone());
+        return c;
     }
     // Recursive-descent DEPTH GUARD. `compute` re-enters `core_of` for a node's sub-expressions, so a
     // pathologically deep nest (`(+ 1 (+ 1 …))` thousands deep) or an unproductive self-recursion a
@@ -2056,12 +2074,12 @@ fn head_is_param(db: &mut Db, id: StructId) -> bool {
 }
 
 /// Lower a `(fn (param…) body)` that survives as a RUNTIME value — LAMBDA-LIFT it to a standalone
-/// function and produce a `Core::Closure` naming its funcref-table slot. Only a SINGLE-parameter,
-/// NO-CAPTURE (combinator) lambda lifts in this increment: a multi-param lambda (the curried case
-/// β-reduces via partial application before reaching here, so a bare multi-param survivor is rare) and
-/// a lambda with FREE VARIABLES (which would need the captures stored on a heap cell — a later step)
-/// both DECLINE. The lambda's parameter + result machine types come from its SOLVED function type at
-/// this occurrence (threaded by unification from the use site's expected `(-> A B)`).
+/// function and produce a `Core::Closure` naming its funcref-table slot + capture set. Single-parameter
+/// only (the curried surface reduces multi-param application via partial application upstream). The
+/// lambda's FREE VARIABLES are captured BY VALUE into the closure cell; each capturing reference in the
+/// body is recorded (`db.captured_ref`) so lowering that reference in the lifted body reads the env cell
+/// (`Core::Captured`) rather than following through to the (out-of-scope) binding. The param + result
+/// machine types come from the lambda's body (`type_of`).
 fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: StructId) -> Core {
     // Single-arity only (the curried surface reduces multi-param application via partial application
     // upstream; a bare multi-param lambda value has no single-arity table entry yet).
@@ -2071,20 +2089,21 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         ));
     }
     let param = crate::eval::param_name_occ(db, params[0]);
-    // NO-CAPTURE only: the body must reference no binding OUTSIDE the lambda (other than its own param
-    // and top-level defs / the prelude). A captured free variable needs a heap closure cell — a later
-    // increment — so decline it cleanly here rather than silently dropping the capture.
-    if lambda_captures(db, body, param, id) {
+    // Collect the ORDERED, DISTINCT capture set — the enclosing-binding occurrences the body references
+    // (other than its own param / top-level defs / the prelude), first-reference order. Each capturing
+    // REFERENCE occurrence is recorded → its capture index, so the lifted body reads it from the env.
+    let mut captures: Vec<StructId> = Vec::new();
+    let mut capture_refs: Vec<(StructId, usize)> = Vec::new();
+    if !collect_captures(db, body, param, id, &mut captures, &mut capture_refs) {
         return Core::Poison(Reject::decline(
-            "a closure that captures a free variable is not yet built (only a no-capture closure lifts)",
+            "a closure captures a value with no runtime representation (not yet built)",
         ));
     }
     // The lambda's param + result machine types. A bare `(fn (x) …)` types with FRESH variables at its
     // own occurrence (inference does not thread the use-site's expected `(-> A B)` back onto the arg's
     // memoized type), so read the types from the BODY instead: the result is `type_of(body)`, and the
-    // param's type is what its uses in the body ground it to (`type_of` of the param occurrence). For
-    // the target `(fn (x) (* x 2))`, `2`'s Int64 grounds `*` → `x : Int64` and the body : Int64. A
-    // param the body does not constrain to a machine type declines below (no invented width).
+    // param's type is what its uses in the body ground it to. A param the body does not constrain to a
+    // machine type declines below (no invented width).
     let ret_ty = crate::infer::type_of(db, body);
     let param_ty = crate::infer::type_of(db, param);
     if crate::backend::wasm::lir::valtype_of(&param_ty).is_none()
@@ -2094,65 +2113,102 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
             "a closure's parameter or result type has no machine representation",
         ));
     }
+    // Every captured value must have a machine representation too (it is boxed into the cell).
+    for &cap in &captures {
+        if crate::backend::wasm::lir::valtype_of(&crate::infer::type_of(db, cap)).is_none() {
+            return Core::Poison(Reject::decline(
+                "a closure captures a value with no machine representation",
+            ));
+        }
+    }
+    // Record each capturing reference → its capture index + type, so `core_of` on that reference (when
+    // the LIFTED body is lowered) produces a `Core::Captured` reading the env cell. Keyed by the
+    // reference OCCURRENCE (unique per use), so it never collides with an ordinary ref elsewhere.
+    for (ref_occ, index) in capture_refs {
+        let ty = crate::infer::type_of(db, captures[index]);
+        db.captured_ref.insert(ref_occ, (index, ty));
+    }
     // Register the lift (dedup by body occurrence); its position in `db.lifted` is its table slot.
     let code = db.lift_lambda(crate::lower::LiftedLambda {
         body,
         param,
         param_ty,
         ret_ty,
+        captures: captures.clone(),
     });
-    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, "lift lambda → Core::Closure (no-capture)");
-    Core::Closure {
-        code,
-        captures: Vec::new(),
-    }
+    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, n_captures = captures.len(), "lift lambda → Core::Closure");
+    Core::Closure { code, captures }
 }
 
-/// Whether the lambda `body` references a FREE VARIABLE — a local binding (a `let` or an enclosing
-/// parameter) OTHER than this lambda's own `param`, lexically outside the lambda `lam_id`. Such a
-/// reference is a CAPTURE (the value must be stored in the closure cell). A reference to the lambda's
-/// own param, to a top-level def, or to a prelude name is NOT a capture. Conservative: any reference
-/// this cannot prove is non-capturing counts as a capture (so a capturing lambda declines rather than
-/// miscompiles). Walks the body's occurrences via the resolved column.
-fn lambda_captures(db: &mut Db, body: StructId, param: StructId, lam_id: StructId) -> bool {
-    // A `Resolved::Param` whose binder is NOT this lambda's param is a captured enclosing parameter.
-    match resolved_of(db, body) {
-        Resolved::Param { binder } => return binder != param,
-        // A `Ref` to a binding: a capture iff the binding is a LOCAL (a `let` init / a param) that sits
-        // OUTSIDE this lambda. A `Ref` to a top-level def (its body is a `db.defs` entry) or a prelude
-        // record is global — not a capture. Detected by whether the referenced binder occurrence is a
-        // user-program node lexically outside the lambda AND not a def body.
-        Resolved::Ref { value } => {
-            if db.def_index_by_body(value).is_some() {
-                return false; // a top-level def reference — global, not captured.
-            }
-            // A reference to a PRELUDE or evaluator-SYNTHESIZED node (`*`, `+`, a built `(Int W)` module)
-            // is global — not a capture. Only a USER-program binding can be captured. (A synthesized
-            // node also has no meaningful parent chain, so the `is_within` walk below would wrongly flag
-            // it.)
-            if !db.is_user_node(value) {
-                return false;
-            }
-            // A reference into the lambda's own subtree is local to it (its param, a nested let). A
-            // reference to a USER node OUTSIDE the lambda's subtree is a capture.
-            if !db.is_within(value, lam_id) {
+/// Collect the lambda body's FREE-VARIABLE capture set into `captures` (ordered, distinct, first-use
+/// order) and record each capturing REFERENCE occurrence → its capture index into `capture_refs`.
+/// Returns `false` if a capture cannot be represented (a decline). A reference is a capture iff it
+/// resolves to a USER-program binding (a `let` init / an enclosing parameter) lexically OUTSIDE the
+/// lambda `lam_id`; a reference to the lambda's own `param`, a top-level def, or a prelude name is NOT a
+/// capture. The captured VALUE identity is the binding occurrence the reference resolves to (so two
+/// references to the same free variable share ONE capture slot).
+fn collect_captures(
+    db: &mut Db,
+    node: StructId,
+    param: StructId,
+    lam_id: StructId,
+    captures: &mut Vec<StructId>,
+    capture_refs: &mut Vec<(StructId, usize)>,
+) -> bool {
+    match resolved_of(db, node) {
+        // A bare parameter USE: `Resolved::Param { binder }`. Its own param → not a capture; an
+        // enclosing param → a capture keyed by that binder.
+        Resolved::Param { binder } => {
+            if binder == param {
                 return true;
             }
-            // Within the lambda — recurse through the ref target to catch a nested capture.
-            return lambda_captures(db, value, param, lam_id);
+            record_capture(binder, node, captures, capture_refs);
+            return true;
+        }
+        Resolved::Ref { value } => {
+            if db.def_index_by_body(value).is_some() || !db.is_user_node(value) {
+                return true; // a top-level def / prelude / synthesized ref — global, not captured.
+            }
+            if !db.is_within(value, lam_id) {
+                // A USER binding outside the lambda — a capture. Its identity is `value` (the binding
+                // occurrence); this reference occurrence (`node`) reads it from the env.
+                record_capture(value, node, captures, capture_refs);
+                return true;
+            }
+            // Within the lambda (its param, a nested let) — recurse through the target for a nested
+            // capture (e.g. a `let`-local whose init references a free variable).
+            return collect_captures(db, value, param, lam_id, captures, capture_refs);
         }
         _ => {}
     }
-    // Descend into the children of the body's AST node (a form's operands, an if's branches, …).
-    match db.ast.get(body) {
+    // Descend into the AST children (a form's operands, an if's branches, a nested lambda's body).
+    match db.ast.get(node) {
         crate::ast::Struct::List(children) => {
             let children: Vec<StructId> = children.clone();
             children
                 .iter()
-                .any(|&c| lambda_captures(db, c, param, lam_id))
+                .all(|&c| collect_captures(db, c, param, lam_id, captures, capture_refs))
         }
-        crate::ast::Struct::Atom(_) => false,
+        crate::ast::Struct::Atom(_) => true,
     }
+}
+
+/// Record a captured binding: assign `binder` a capture slot (first-use order, deduped) and map the
+/// capturing reference occurrence `ref_occ` to that slot.
+fn record_capture(
+    binder: StructId,
+    ref_occ: StructId,
+    captures: &mut Vec<StructId>,
+    capture_refs: &mut Vec<(StructId, usize)>,
+) {
+    let index = captures
+        .iter()
+        .position(|&b| b == binder)
+        .unwrap_or_else(|| {
+            captures.push(binder);
+            captures.len() - 1
+        });
+    capture_refs.push((ref_occ, index));
 }
 
 /// A lambda application whose β-reduction DECLINED with `msg`: emit a runtime `Core::Call` if it

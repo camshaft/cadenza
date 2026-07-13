@@ -42,6 +42,10 @@ pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
+pass	a byte sequence written as a literal renders back to the same literal
+pass	a byte-string literal equals the explicit byte sequence it desugars to
+pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a capturing closure is applied through a recursive higher-order function
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure captures the binding in scope where it was created
@@ -436,6 +440,7 @@ pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
 pass	an element read across a concatenation boundary is the right value
+pass	an empty byte-string literal is the empty byte sequence
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
@@ -772,9 +777,6 @@ todo	a bottom-up fold matches a tuple of its recursive results with constructor 
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
-todo	a byte sequence written as a literal renders back to the same literal
-todo	a byte-string literal equals the explicit byte sequence it desugars to
-todo	a byte-string literal with escapes equals its explicit byte sequence
 todo	a char literal naming a surrogate is a reader error
 todo	a char order agrees with its scalar value
 todo	a checked conversion of a negative value into an unsigned type traps
@@ -947,7 +949,6 @@ todo	an argument bound to a used parameter IS observed, so its trap occurs (the 
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an element pattern matches a list by its length and elements
 todo	an empty binary form is the empty byte sequence
-todo	an empty byte-string literal is the empty byte sequence
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 todo	an empty scrutinee matches an empty bin pattern

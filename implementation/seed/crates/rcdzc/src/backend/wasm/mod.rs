@@ -157,12 +157,24 @@ pub fn emit(
         funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
     }
     // LAMBDA-LIFTED closures emit as standalone functions AFTER the def functions (their wasm indices
-    // are `import_base + order.len() + slot`, which the funcref element section points at). Each is a
-    // single-arity `(param) -> result` function selected like a def body: its param occupies local slot
-    // 0, its body is the returned expression. The lifted set is fixed at layout time (in table-slot
-    // order); empty for a program with no runtime closure (byte-identical to before).
+    // are `import_base + order.len() + slot`, which the funcref element section points at). Each is
+    // UNIFORMLY an `(env, param) -> result` function: local slot 0 is the closure CELL (the env — read
+    // by `Core::Captured` as `arr-get(local 0, 1+index)`), slot 1 is the lambda's own parameter. So the
+    // params list PREPENDS an env parameter (an i32 handle) whose binder key is the lifted body itself
+    // (a `StructId` nothing resolves to as a `Core::Param`, so it claims slot 0 without shadowing).
+    // The lifted set is fixed at layout time (in table-slot order); empty for a closure-free program.
     for lifted in layout.lifted.clone() {
-        let params = vec![(lifted.param, lifted.param_ty.clone())];
+        // The env's type is any type whose machine rep is an i32 HANDLE (the closure cell) — `Ty::Bytes`
+        // is a heap-handle leaf (`valtype_of` → i32), used here purely as the "i32 handle" marker for the
+        // env slot. The env's slot-map KEY must be a node NOTHING in the body resolves to (the body reads
+        // the env only via `Core::Captured` → `local.get 0`, never by name) — so a FRESH synthesized atom,
+        // NOT the body occurrence (which would make `select`'s `slots.get(body)` return slot 0 and emit the
+        // env instead of the body).
+        let env_key = db.push_name("$closure-env");
+        let params = vec![
+            (env_key, crate::ty::Ty::Bytes),
+            (lifted.param, lifted.param_ty.clone()),
+        ];
         funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
     }
 

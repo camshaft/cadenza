@@ -241,13 +241,14 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::CallClosure { closure, arg } => {
             binding_escapes(db, closure, binder, false) || binding_escapes(db, arg, binder, false)
         }
-        // Leaves reference no binding.
+        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding).
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
         | Core::ConstFloat(_)
         | Core::Unit
         | Core::Param { .. }
+        | Core::Captured { .. }
         | Core::Poison(_) => false,
     }
 }
@@ -632,17 +633,33 @@ pub fn collect_used_ops(
             }
             collect_used_ops(db, scrutinee, out);
         }
-        // A closure VALUE: a no-capture closure is a plain table-slot i32 constant (no heap op). Its
-        // captured values (when captures land) would need `arr-alloc`/`arr-set` — added then. A closure
-        // APPLICATION uses `call_indirect` (a core instruction, not a runtime import), plus its operands.
+        // A closure VALUE is a heap CELL — `arr-alloc(1 + captures)` then `arr-set` of `box-int(code)`
+        // (slot 0) and each boxed capture. So it uses `arr-alloc`/`arr-set`/`box-int` always, plus the
+        // per-capture box op. A closure APPLICATION reads the code slot (`arr-get`+`get-int`) then
+        // `call_indirect` (a core instruction, not a runtime import), plus its operands.
         Core::Closure { captures, .. } => {
-            for c in captures {
+            out.insert(OP_ARR_ALLOC);
+            out.insert(OP_ARR_SET);
+            out.insert(OP_BOX_INT); // slot 0 = box-int(code)
+            for &c in &captures {
+                if let Ok(Some(op)) = box_op(db, c) {
+                    out.insert(op);
+                }
                 collect_used_ops(db, c, out);
             }
         }
         Core::CallClosure { closure, arg } => {
+            out.insert(OP_ARR_GET); // read the code slot from the cell
+            out.insert(OP_GET_INT); // unbox it to the table index
             collect_used_ops(db, closure, out);
             collect_used_ops(db, arg, out);
+        }
+        // A CAPTURED-variable read: `arr-get(env, 1+index)` then unbox by the captured value's type.
+        Core::Captured { .. } => {
+            out.insert(OP_ARR_GET);
+            if let Ok(Some(op)) = get_op(db, id) {
+                out.insert(op);
+            }
         }
         // Leaves and references emit no runtime op. (A constant string CROSSES only via the escape
         // path's baked bytes — it emits no in-body op; a runtime string handle op arrives later.)
@@ -2734,29 +2751,92 @@ fn emit(
         // A runtime CLOSURE VALUE — a NO-CAPTURE closure is exactly its funcref-TABLE SLOT, an i32
         // constant. The element section maps slot `code` → the lifted function's wasm index, so pushing
         // the slot is the whole closure value (no heap cell — captures would add an `arr-alloc` here).
+        // A runtime CLOSURE VALUE — a heap CELL `arr-alloc(1 + captures)`: slot 0 = `box-int(code)` (the
+        // funcref-table slot), slots 1.. = each captured value (boxed if a scalar). Leaves the cell's u32
+        // handle on the stack. Uniform shape for capturing AND non-capturing closures, so a fn-typed
+        // parameter holds either interchangeably. Built exactly like a tuple (`arr-set` returns the array
+        // handle for threading, so no scratch local needed).
         Core::Closure { code, captures } => {
-            if !captures.is_empty() {
-                return Err(Reject::decline(
-                    "a capturing closure is not yet emitted (only a no-capture closure)",
-                ));
+            out.push(Lir::ConstI32(1 + captures.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [cell]
+            // Slot 0: box-int(code). `box-int` takes an i64, so the table slot is an `i64.const`.
+            out.push(Lir::ConstI32(0)); // index
+            out.push(Lir::ConstI64(code as i64)); // the table slot (box-int wants i64)
+            out.push(Lir::CallImport(OP_BOX_INT));
+            out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
+            // Slots 1..: each captured value, boxed if scalar (a narrow int extends i32→i64 first, like a
+            // tuple element), arr-set into place.
+            for (k, &cap) in captures.iter().enumerate() {
+                out.push(Lir::ConstI32(1 + k as i32)); // index
+                emit(db, cap, slots, base, high, scratch_ty, layout, out)?;
+                if let Some(op) = box_op(db, cap)? {
+                    if let Some(m) = is_narrow_int(db, cap) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op));
+                }
+                out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
             }
-            out.push(Lir::ConstI32(code as i32));
             Ok(())
         }
-        // A runtime CLOSURE APPLICATION — `call_indirect` through the funcref table. Emit the argument,
-        // then the closure value (its table slot i32, the indirection index on top of the stack), then
-        // `call_indirect` at the closure's signature type. The type index is the lifted function's
-        // functype (structural — any matching `(param)->result` validates); resolve it from the closure
-        // head's solved `Ty::Fn` by finding the lifted lambda with that signature.
+        // A runtime CLOSURE APPLICATION — `call_indirect` through the funcref table. The lifted function
+        // is `(env, arg) -> result`: push the arg, then the env cell, then read the table slot from the
+        // cell (`arr-get(cell, 0)` + `get-int`) as the indirection index, then `call_indirect`. The cell
+        // must be materialized into a local so it is read TWICE (once passed as env, once for the code
+        // slot) without recomputation.
         Core::CallClosure { closure, arg } => {
             let type_index = closure_type_index(db, closure, layout).ok_or_else(|| {
                 Reject::decline("a runtime closure application has no matching function type")
             })?;
-            // Argument first (wasm calling convention: args below the table index), then the closure
-            // value (the table slot), then `call_indirect`.
-            emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
-            emit(db, closure, slots, base, high, scratch_ty, layout, out)?;
+            // Materialize the closure cell into a scratch local (read twice: env arg + code slot).
+            let cell_slot = base.max(*high);
+            *high = (*high).max(cell_slot + 1);
+            scratch_ty.insert(cell_slot, ValType::I32);
+            emit(
+                db,
+                closure,
+                slots,
+                cell_slot + 1,
+                high,
+                scratch_ty,
+                layout,
+                out,
+            )?;
+            out.push(Lir::LocalSet(cell_slot));
+            // The lifted function is `(env, arg) -> result`, so push env (param 0) THEN arg (param 1),
+            // in that order, before the indirection index.
+            out.push(Lir::LocalGet(cell_slot)); // env (the cell)
+            emit(db, arg, slots, cell_slot + 1, high, scratch_ty, layout, out)?;
+            // …then the indirection index: arr-get(cell, 0) → box-int(code); get-int → the table slot as
+            // an i64; `call_indirect` needs the index as an i32, so narrow it (`i32.wrap_i64`). The code
+            // is a small table slot, so the wrap is exact.
+            out.push(Lir::LocalGet(cell_slot));
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_GET));
+            out.push(Lir::CallImport(OP_GET_INT));
+            out.push(Lir::I32WrapI64);
             out.push(Lir::CallIndirect(type_index));
+            Ok(())
+        }
+        // A CAPTURED free-variable read inside a lifted closure body — `arr-get(env, 1 + index)` then
+        // unbox by the captured value's type (a scalar `get-int`/`get-bool`, then a NARROW int narrows
+        // i64→i32; a compound handle is used as-is). The env cell is the lifted function's local slot 0.
+        // The node's own `type_of` is the captured value's type (set at lowering), so `get_op`/`is_narrow`
+        // read it exactly as a tuple projection does.
+        Core::Captured { index, .. } => {
+            out.push(Lir::LocalGet(0)); // the env cell (lifted fn's 1st param)
+            out.push(Lir::ConstI32(1 + index as i32));
+            out.push(Lir::CallImport(OP_ARR_GET));
+            if let Some(op) = get_op(db, id)? {
+                out.push(Lir::CallImport(op));
+                if is_narrow_int(db, id).is_some() {
+                    out.push(Lir::I32WrapI64);
+                }
+            }
             Ok(())
         }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector

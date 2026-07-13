@@ -6439,7 +6439,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, run_returns, run_returns_with};
+    use super::{FromVal, find_runtime_wasm, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -9845,37 +9845,75 @@ mod stage1 {
         );
     }
 
+    /// Run `src`'s `main` with a single integer `arg` through the COMPOSED value-heap runtime (a closure
+    /// is a heap cell, so instantiation needs the runtime linked), returning the rendered result string.
+    /// Skips (returns `None`) if the runtime wasm is not built.
+    fn run_closure(src: &str, arg: i64) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime closure imports the value-heap runtime (a heap cell, not a fold)"
+        );
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
     #[test]
     fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
-        use wasmtime::component::Val;
         // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
         // higher-order function, applied inside the recursion. `apply-sum` cannot inline (it recurses),
         // so its function parameter `g` is a real runtime CLOSURE VALUE — the lambda `(fn (x) (* x 2))`
-        // is LAMBDA-LIFTED to a standalone function, passed as a funcref-table slot, and applied via
+        // is LAMBDA-LIFTED to a standalone function, passed as a heap-cell handle, and applied via
         // `call_indirect`. `apply-sum g n = g(n) + g(n-1) + … + g(1)`, so with `g = (*2)` the result is
         // `2·(n + (n-1) + … + 1) = n·(n+1)`. `core-semantics.md` §A Function Is A First-Class Value.
         let src = "(module m \
             (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(0)]), 0);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 2);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(3)]), 12);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 30);
-        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the result is
-        // `sum(k=1..n) (k + 100) = n(n+1)/2 + 100n`. Pins that the closure carries the RIGHT code (the
-        // table slot selects the applied function), not a fixed one.
+        let Some(r0) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r0, "0");
+        assert_eq!(run_closure(src, 1).unwrap(), "2");
+        assert_eq!(run_closure(src, 3).unwrap(), "12");
+        assert_eq!(run_closure(src, 5).unwrap(), "30");
+        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the closure must
+        // carry the RIGHT code (the table slot selects the applied function). n=3: 3·100 + 6 = 306.
         let src2 = "(module m \
             (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n)) (export main))";
-        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
-        // n=3: (3+100)+(2+100)+(1+100) = 306.
-        assert_eq!(
-            run_returns_with::<i64>(&bytes2, "main", &[Val::S64(3)]),
-            306
-        );
+        assert_eq!(run_closure(src2, 3).unwrap(), "306");
+    }
+
+    #[test]
+    fn a_capturing_closure_crosses_a_recursive_boundary() {
+        // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
+        // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND
+        // the captured `k` — passed to the recursive `apply-sum` and applied at each step, each
+        // application reading `k` back from the cell. `core-semantics.md` §A Function Value Captures The
+        // Bindings In Scope Where It Is Created. `apply-sum (fn (x) (+ x k)) 3 = (3+k)+(2+k)+(1+k) = 6+3k`.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3)) (export main))";
+        let Some(r0) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r0, "6");
+        assert_eq!(run_closure(src, 10).unwrap(), "36");
+        assert_eq!(run_closure(src, 100).unwrap(), "306");
     }
 
     #[test]

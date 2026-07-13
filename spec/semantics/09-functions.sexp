@@ -129,6 +129,25 @@
   (call   main (: 3 Int64))
   (output (: 306 Int64)))
 
+; A CAPTURING closure through the recursive HOF — the lambda closes over a free variable `k` from its
+; creation scope. `core-semantics.md` §A Function Value Captures The Bindings In Scope Where It Is
+; Created: `k` is captured BY VALUE into the closure, so each `g(i)` observes the captured `k`. The
+; closure is a heap cell (the code pointer + the captured `k`); applying it reads `k` back from the
+; cell. `apply-sum (fn (x) (+ x k)) 3 = (3+k)+(2+k)+(1+k) = 6 + 3k`.
+
+(case "a capturing closure is applied through a recursive higher-order function"
+  (doc    "The lambda `(fn (x) (+ x k))` CAPTURES `k` from `main`'s scope — a genuine runtime closure
+           with an environment, not just a code pointer. Passed to the recursive `apply-sum` and applied
+           at each step, every application observes the captured `k`. With k=10: (3+10)+(2+10)+(1+10) =
+           36. A generation that cannot store a captured value in the closure declines.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 36 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field

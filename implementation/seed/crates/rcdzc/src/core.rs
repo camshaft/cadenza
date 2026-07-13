@@ -422,12 +422,25 @@ pub enum Core {
         code: usize,
         captures: Vec<StructId>,
     },
+    /// A read of the k-th CAPTURED free variable inside a LIFTED closure body — `arr-get(env, 1 + index)`
+    /// then the value's own unbox/borrow. The lifted function receives its closure CELL as its first wasm
+    /// parameter (local slot 0, the "env"); a body reference to a captured variable reads it back from the
+    /// env at cell index `1 + index` (cell slot 0 is `box-int(code)`, so captures start at 1). This is the
+    /// runtime read a captured variable is (vs a `Param`, read from a wasm local): a captured value lives
+    /// in the closure cell, not a parameter slot. `DESIGN-runtime-closures-rcdzc.md` §3.
+    Captured {
+        index: usize,
+        /// The captured value's solved type (so selection knows the `get-*` to unbox by — a scalar cell
+        /// read returns a boxed handle that must be unboxed, a compound stays a handle).
+        ty: crate::ty::Ty,
+    },
     /// Apply a RUNTIME CLOSURE VALUE to one argument via `call_indirect` through the funcref table. The
-    /// `closure` operand is the closure cell (slot 0 holds the table slot the `call_indirect` reads); the
-    /// lifted function is invoked with `(env = the closure cell, arg)`. Present only when the applied head
-    /// is a runtime function value — a function-typed PARAMETER `g` applied inside a (recursive) body.
-    /// Single-arity (`core-semantics.md` §Functions Are Single-Arity). `DESIGN-runtime-closures-rcdzc.md`
-    /// §3.
+    /// `closure` operand is the closure CELL — a heap product whose slot 0 is `box-int(table-slot)` and
+    /// whose remaining slots are the captures. The lifted function is invoked with `(env = the closure
+    /// cell, arg)`: the arg and the cell are pushed, then `arr-get(cell, 0)`+`get-int` reads the table
+    /// slot for the indirection index. Present only when the applied head is a runtime function value — a
+    /// function-typed PARAMETER `g` applied inside a (recursive) body. Single-arity (`core-semantics.md`
+    /// §Functions Are Single-Arity). `DESIGN-runtime-closures-rcdzc.md` §3.
     CallClosure { closure: StructId, arg: StructId },
     /// A produced "no" carried into the core.
     Poison(Reject),
