@@ -71,6 +71,95 @@ pub fn synthesize(ast: &mut Arenas, decls: &mut [EffectDecl]) {
     }
 }
 
+/// Desugar every CANONICAL handler form `(handle E seed (arm…) body)` — where the effect `E` and the
+/// initial `seed` are PROMOTED into the head and each arm's operation is written BARE (`(op (p…) state
+/// body)`) — into the INTERNAL form the rest of the compiler consumes: `(handle seed (arm'…) body)`
+/// with `E` dropped from the head and each arm's op rewritten to its `(. E op)` projection. This lets
+/// the surface (both s-expr and ML) name the effect once, on the `handle`, while `resolve_handle` /
+/// `effects` / infer / lower / compile keep reading the projection-per-arm shape unchanged.
+///
+/// Runs at load BEFORE the parent index is built, so the rewritten `(. E op)` projections resolve like
+/// hand-written member access. Mutates the arena IN PLACE (swapping a handle node's children vector),
+/// mirroring `accum::introduce` / `binding_params::lower`.
+///
+/// The canonical shape also carries the language RULE that a `handle` discharges exactly ONE effect:
+/// its head names that effect, and every arm is one of that effect's operations. That is checked
+/// downstream — an arm op `(. E op)` that `E` does not declare is the ordinary undeclared-operation
+/// rejection (CDZ0403) — so this pass only performs the mechanical rewrite. A form that is NOT the
+/// canonical shape (already-internal `(handle seed (arm…) body)` with 4 children, or a malformed
+/// handle) is left untouched, so a hand-authored internal-shape program still compiles.
+pub fn desugar_handles(ast: &mut Arenas) {
+    // Collect the rewrites first (an immutable scan), then apply — appends during apply must not
+    // perturb the ids we scanned.
+    let mut plans: Vec<(StructId, Vec<StructId>)> = Vec::new();
+    for id in (0..ast.structure.len() as u32).map(StructId) {
+        if let Some(children) = canonical_handle_rewrite(ast, id) {
+            plans.push((id, children));
+        }
+    }
+    for (id, children) in plans {
+        ast.structure[id.0 as usize] = Struct::List(children);
+    }
+}
+
+/// If `id` is a CANONICAL `(handle E seed (arm…) body)` — five children, the second a NAME (the effect)
+/// — compute its rewritten INTERNAL children `[handle, seed, arms', body]` with the effect dropped and
+/// each arm's bare op rewritten to `(. E op)`. Returns `None` for any other shape (already-internal,
+/// malformed, or not a handle), which is left untouched. Appends the projection nodes to `ast`.
+fn canonical_handle_rewrite(ast: &mut Arenas, id: StructId) -> Option<Vec<StructId>> {
+    let Struct::List(items) = ast.get(id) else {
+        return None;
+    };
+    // Canonical head: `handle` with FIVE children (head, effect, seed, arms, body). The internal form
+    // has four (head, seed, arms, body), so the arity distinguishes them with no ambiguity.
+    if items.len() != 5 || ast.as_name(items[0]) != Some("handle") {
+        return None;
+    }
+    let effect_occ = items[1];
+    // The head's second child MUST be a bare effect NAME for this to be the canonical (promoted) shape.
+    // A five-child handle whose second child is not a name is not the canonical form — leave it.
+    let effect_name = ast.as_name(effect_occ)?.to_string();
+    let seed = items[2];
+    let arms_occ = items[3];
+    let body = items[4];
+    let Struct::List(arm_nodes) = ast.get(arms_occ) else {
+        return None;
+    };
+    let arm_nodes = arm_nodes.clone();
+    // Confirm EVERY arm is `(bare-op (params…) state arm-body)` — a 4-part list whose op is a bare NAME
+    // (not an already-projected `(. E op)`). If any arm is not this shape, this is not the canonical form
+    // (or it is already internal), so leave the whole handle untouched.
+    for &arm in &arm_nodes {
+        let Struct::List(parts) = ast.get(arm) else {
+            return None;
+        };
+        if parts.len() != 4 || ast.as_name(parts[0]).is_none() {
+            return None;
+        }
+    }
+    // Rewrite each arm `(op (params…) state arm-body)` -> `((. E op) (params…) state arm-body)`.
+    let mut new_arms = Vec::with_capacity(arm_nodes.len());
+    for arm in arm_nodes {
+        let Struct::List(parts) = ast.get(arm) else {
+            return None; // malformed arm — leave the whole handle untouched
+        };
+        if parts.len() != 4 {
+            return None;
+        }
+        let parts = parts.clone();
+        // The bare op name -> the projection `(. E op)`. `E` is a FRESH name occurrence per arm so the
+        // parent walk anchors each projection independently.
+        let dot = push_atom(ast, Leaf::Name(".".to_string()));
+        let eff = push_atom(ast, Leaf::Name(effect_name.clone()));
+        let proj = push_list(ast, vec![dot, eff, parts[0]]);
+        let new_arm = push_list(ast, vec![proj, parts[1], parts[2], parts[3]]);
+        new_arms.push(new_arm);
+    }
+    let head = push_atom(ast, Leaf::Name("handle".to_string()));
+    let new_arms_occ = push_list(ast, new_arms);
+    Some(vec![head, seed, new_arms_occ, body])
+}
+
 /// The occurrence of the operation field named `op_name` inside a synthesized effect `record` — so a
 /// consumer can find an operation value by name. The record is `(record ((meta t) …) (emit <op>)
 /// (collect <op>)…)`; an operation field is a 2-element `(name <op>)` list whose name matches. `None`
@@ -484,6 +573,68 @@ pub fn arm_op_names_undeclared_operation(db: &mut Db, op: StructId) -> bool {
     match db.effect_decl_by_occ(crate::ast::StructId(decl)) {
         Some(eff) => !eff.ops.iter().any(|o| o.name == key.name),
         None => false, // no such effect declaration (should not happen for a resolved effect record)
+    }
+}
+
+/// For an undeclared handler-arm op `(. E k)` (one `arm_op_names_undeclared_operation` flagged), the
+/// nearest DECLARED operation name of the effect `E` to the mistyped `k` — the "did you mean?"
+/// suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix), the effect-op
+/// analogue of the absent-field suggestion. Draws candidates from the effect's own declared op set (via
+/// the shared `diag::suggest::nearest`), so the suggestion is always a real operation of that effect.
+/// Returns `(key-occurrence, nearest-op-name)` — the occurrence is the node a replace fix rewrites.
+/// `None` if `op` is not `(. E k)` on an effect, or no declared op is close enough to `k`.
+pub fn nearest_declared_op(db: &mut Db, op: StructId) -> Option<(StructId, String)> {
+    let Resolved::Member { operand, key } = resolved_of(db, op) else {
+        return None;
+    };
+    let decl = effect_decl_of_value(db, operand)?;
+    let names: Vec<String> = db
+        .effect_decl_by_occ(crate::ast::StructId(decl))?
+        .ops
+        .iter()
+        .map(|o| o.name.clone())
+        .collect();
+    let candidate = crate::diag::suggest::nearest(&key.name, &names)?;
+    // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
+    let key_occ = db.ast.as_form(op, ".").and_then(|t| t.get(1).copied())?;
+    Some((key_occ, candidate))
+}
+
+/// The operations an exhaustive handler for the effect discharged by `arms` MUST bind but does NOT —
+/// the effect's declared operation names minus the arms' operation names, in declaration order. Empty
+/// when the handler is exhaustive (binds every operation) OR when the effect can't be determined (a
+/// malformed handle whose own fault surfaces elsewhere). This realizes CDZ0405: a `handle E` names ONE
+/// effect and, since an effect's operations are a closed set, must discharge the WHOLE set — the effect
+/// analogue of match exhaustiveness.
+///
+/// The effect is read from the FIRST well-formed arm (every arm of a well-formed handle names the same
+/// effect — a cross-effect arm is CDZ0403, checked independently). A duplicate operation among the arms
+/// still counts once; a repeated op does not make the handler more exhaustive.
+pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<String> {
+    // The effect discharged: the declaring effect of the first arm whose op resolves to an effect op.
+    let decl = arms
+        .iter()
+        .find_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, _)| d));
+    let Some(decl) = decl else {
+        return Vec::new();
+    };
+    // The operation names the arms bind (an arm op is `(. E k)` → its key name).
+    let bound: std::collections::HashSet<String> = arms
+        .iter()
+        .filter_map(|a| match resolved_of(db, a.op) {
+            Resolved::Member { key, .. } => Some(key.name.clone()),
+            _ => None,
+        })
+        .collect();
+    // The effect's full operation set, minus what the arms bind, in declaration order.
+    match db.effect_decl_by_occ(decl) {
+        Some(eff) => eff
+            .ops
+            .iter()
+            .map(|o| o.name.clone())
+            .filter(|name| !bound.contains(name))
+            .collect(),
+        None => Vec::new(),
     }
 }
 
@@ -1749,4 +1900,61 @@ fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
 /// so the copy discipline is identical.)
 fn copy_pure(db: &mut Db, node: StructId) -> StructId {
     crate::eval::beta_reduce(db, node, &HashMap::default())
+}
+
+#[cfg(test)]
+mod desugar_tests {
+    use super::*;
+    use crate::testkit::parse;
+
+    /// The CANONICAL handle `(handle E seed (bare-arm…) body)` desugars to the INTERNAL
+    /// `(handle seed ((. E op)-arm…) body)` the resolver consumes: `E` leaves the head and each arm's
+    /// bare op becomes its `(. E op)` projection, with params/state/body preserved.
+    #[test]
+    fn desugars_canonical_handle_to_internal_shape() {
+        let mut ast = parse("(handle Fresh 0 ((next (u) s (resume s (+ s 1)))) (Fresh.next))");
+        desugar_handles(&mut ast);
+        // The root is now the internal 4-child handle: (handle 0 (arm…) body).
+        let tail = ast.as_form(ast.root, "handle").expect("still a handle");
+        assert_eq!(
+            tail.len(),
+            3,
+            "internal handle = seed (arms) body (head excluded)"
+        );
+        // tail[0] = seed (the int 0, no longer the effect name).
+        assert_eq!(
+            ast.as_name(tail[0]),
+            None,
+            "first child is the seed, not the effect"
+        );
+        let Struct::List(arms) = ast.get(tail[1]) else {
+            panic!("arms list")
+        };
+        let Struct::List(arm0) = ast.get(arms[0]) else {
+            panic!("one arm")
+        };
+        assert_eq!(arm0.len(), 4, "arm = op-proj (params) state body");
+        // The op is now the projection (. Fresh next).
+        let proj = ast
+            .as_form(arm0[0], ".")
+            .expect("op rewritten to a `.` projection");
+        assert_eq!(ast.as_name(proj[0]), Some("Fresh"));
+        assert_eq!(ast.as_name(proj[1]), Some("next"));
+    }
+
+    /// A handle ALREADY in internal shape (4 children, dotted arm op) is left untouched — so a
+    /// hand-authored internal-shape program still compiles unchanged.
+    #[test]
+    fn leaves_internal_shape_handle_untouched() {
+        let mut ast = parse("(handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) (Fresh.next))");
+        let before = ast.structure.len();
+        desugar_handles(&mut ast);
+        assert_eq!(
+            ast.structure.len(),
+            before,
+            "no nodes appended for an internal-shape handle"
+        );
+        let tail = ast.as_form(ast.root, "handle").unwrap();
+        assert_eq!(tail.len(), 3);
+    }
 }

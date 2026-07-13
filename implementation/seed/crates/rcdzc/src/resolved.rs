@@ -412,6 +412,12 @@ pub enum Prim {
     /// The explicit exit from the dimensional layer (the widening that requires no check). Erases to its
     /// argument's lowering (the quantity's inner value IS its erased value).
     QtyValue,
+    /// `Qty : (Type, Unit) → Type` — the QUANTITY-TYPE constructor. `(Qty Float64 u)` in TYPE position
+    /// builds the type-value `Ty::Qty { inner, unit }` (used in an annotation `(: e (Qty T u))`), reading
+    /// the first argument as the inner numeric type and the second as a compile-time unit (`unit_of`).
+    /// The `(meta apply)` of the `Qty` module — the quantity companion of `Int`/`List`/`Tuple`'s type
+    /// constructors, so a `(Qty …)` annotation reduces through the ordinary `typeval_of` path.
+    QtyCtor,
 }
 
 impl Prim {
@@ -503,6 +509,7 @@ impl Prim {
             "unit-pow" => Some(Prim::UnitPow),
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
+            "Qty" => Some(Prim::QtyCtor),
             _ => None,
         }
     }

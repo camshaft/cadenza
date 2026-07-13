@@ -1,17 +1,20 @@
 ; Effects and handlers — witnesses capabilities-and-effects.md. An effect is declared with (effect
 ; <name> (op <op> <type>)…): a ROUTING-AGNOSTIC CONTRACT that names the effect and types its operations
 ; and says NOTHING about where it is discharged. Routing is decided by the nearest enclosing router: a
-; (handle <init> ((<name>.<op> (params…) <state> body)…) body) discharges the effect IN-PROGRAM (it does
-; NOT appear in the manifest), while an entrypoint (host (<effect>…) body) DELEGATES it to the component
+; (handle <effect> <init> ((<op> (params…) <state> body)…) body) discharges ONE effect IN-PROGRAM — its
+; head names that effect and every arm is one of that effect's operations (discharging several effects is
+; NESTED handles) — and it does NOT appear in the manifest, while an entrypoint (host (<effect>…) body)
+; DELEGATES it to the component
 ; boundary as a plain imported-function call the host resolves (the host is its terminal handler; it enters
 ; the manifest as the escaping row; the delegation is the grant). The SAME declared effect may be handled in
 ; one program and delegated in another — there is no (host) marker on the declaration and no separate import
 ; form. An operation is performed and handled as <name>.<op>.
 ;
 ; A HANDLER FOLDS STATE (capabilities-and-effects.md #A Handler Threads State Across The Operations It
-; Discharges). Every handle SEEDS an initial state — `(handle <init> (arms…) body)` — fixed where the
-; handler is installed, so nothing is ambient. Every arm binds the CURRENT state after its operation's
-; parameters — `(<name>.<op> (params…) <state> body)` — and resume carries BOTH outputs:
+; Discharges). Every handle SEEDS an initial state — `(handle <effect> <init> (arms…) body)` — fixed
+; where the handler is installed, so nothing is ambient. Every arm names one of the effect's operations
+; and binds the CURRENT state after its operation's parameters — `(<op> (params…) <state> body)` — and
+; resume carries BOTH outputs:
 ; `(resume <value> <next-state>)` returns <value> to the point that performed the operation (one-shot) and
 ; threads <next-state> forward to the rest of the sub-computation. A handle EVALUATES TO THE VALUE OF ITS
 ; BODY; the accumulated state is observable only through the effect's own operations (a read-out is an
@@ -82,8 +85,7 @@
             (effect Scale (op by (-> Int64 Int64)))
             (def (main)
               (host (ask)
-                (handle unit ((Scale.by (n) s (resume (* n 2) s)))
-                  (Scale.by (ask.ask))))) (export main)))
+                (handle Scale unit ((by (n) s (resume (* n 2) s))) (Scale.by (ask.ask))))) (export main)))
   (host-responses (respond ask.ask (: 21 Int64)))
   (host-calls (call ask.ask))
   (output (: 42 Int64)))
@@ -117,9 +119,7 @@
             (effect Count (op tick (-> Unit Unit)))
             (def (main)
               (host (ask)
-                (handle unit ((Count.tick (u) s (resume unit s)))
-                  (handle unit ((ask.ask () s (do (Count.tick) (resume (ask.ask) s))))
-                    (+ (ask.ask) (ask.ask)))))) (export main)))
+                (handle Count unit ((tick (u) s (resume unit s))) (handle ask unit ((ask () s (do (Count.tick) (resume (ask.ask) s)))) (+ (ask.ask) (ask.ask)))))) (export main)))
   (host-responses (respond ask.ask (: 3 Int64))
                   (respond ask.ask (: 4 Int64)))
   (host-calls (call ask.ask) (call ask.ask))
@@ -138,8 +138,7 @@
   (input  (do
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
-              (handle unit ((Choose.pick () s (resume 5 s)))
-                (+ (Choose.pick) 1))) (export main)))
+              (handle Choose unit ((pick () s (resume 5 s))) (+ (Choose.pick) 1))) (export main)))
   (output (: 6 Int64))
   (host-calls))
 
@@ -152,8 +151,7 @@
   (input  (do
             (effect Get (op get (-> Unit Int64)))
             (def (main)
-              (handle unit ((Get.get () s (resume 41 s)))
-                (+ (Get.get) 1))) (export main)))
+              (handle Get unit ((get () s (resume 41 s))) (+ (Get.get) 1))) (export main)))
   (output (: 42 Int64))
   (host-calls))
 
@@ -233,8 +231,7 @@
   (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (main)
-              (handle 0 ((Fresh.next (u) s (resume s (+ s 1))))
-                (do (Fresh.next)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) (do (Fresh.next)
                     (Fresh.next)
                     (Fresh.next)))) (export main)))
   (output (: 2 Int64)))
@@ -258,9 +255,7 @@
             (effect Diag (op emit (-> Int64 Unit))
                          (op collect (-> Unit (List Int64))))
             (def (main)
-              (handle (list) ((Diag.emit (code) s (resume unit (List.push s code)))
-                              (Diag.collect (u) s (resume s s)))
-                (do (Diag.emit 201)
+              (handle Diag (list) ((emit (code) s (resume unit (List.push s code))) (collect (u) s (resume s s))) (do (Diag.emit 201)
                     (Diag.emit 210)
                     (Diag.collect)))) (export main)))
   (output (: (list 201 210) (List Int64))))
@@ -286,26 +281,28 @@
                   (Diag.collect unit)
                   (do (Diag.emit n) (walk (- n 1)))))
             (def (main)
-              (handle (list) ((Diag.emit (v) s (resume unit (List.push s v)))
-                              (Diag.collect (u) s (resume s s)))
-                (List.len (walk 3)))) (export main)))
+              (handle Diag (list) ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
 (case "two effects each declaring a same-named operation do not collide"
   (doc    "Witnesses capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its
            Operations (2nd sentence): `Unify` and `Scope` each declare a `resolve` operation, reached as
-           `Unify.resolve` and `Scope.resolve`; the qualified names disambiguate, so the two handler arms
-           discharge distinct operations. The body performs `Unify.resolve`, resumed with 5. The handler is
-           stateless (seed `unit`). Pins that an operation is reached through its declaring effect and a
-           shared operation name is collision-free.")
+           `Unify.resolve` and `Scope.resolve`; the qualified names disambiguate. A `handle` discharges
+           exactly ONE effect — its head names that effect and every arm is one of that effect's
+           operations — so discharging both effects is two NESTED handles: an outer `(handle Scope …)`
+           and an inner `(handle Unify …)`, each binding its own effect's `resolve`. The body performs
+           `Unify.resolve`, discharged by the inner handler and resumed with 5; `Scope` is installed but
+           never performed. Both handlers are stateless (seed `unit`). Pins that an operation is reached
+           through its declaring effect and a shared operation name is collision-free — the two `resolve`
+           arms live under distinct handlers keyed to distinct effects.")
   (needs  effects)
   (input  (do
             (effect Unify (op resolve (-> Int64 Int64)))
             (effect Scope (op resolve (-> Int64 Int64)))
             (def (main)
-              (handle unit ((Unify.resolve (x) s (resume (+ x 1) s))
-                            (Scope.resolve (x) s (resume x s)))
-                (Unify.resolve 4))) (export main)))
+              (handle Scope unit ((resolve (x) s (resume x s)))
+                (handle Unify unit ((resolve (x) s (resume (+ x 1) s)))
+                  (Unify.resolve 4)))) (export main)))
   (output (: 5 Int64))
   (host-calls))
 
@@ -367,8 +364,7 @@
             (effect Bump (op by (-> Int64 Int64)))
             (def (gen) (Bump.by 41))
             (def (main)
-              (handle unit ((Bump.by (n) s (resume (+ n 1) s)))
-                (gen))) (export main)))
+              (handle Bump unit ((by (n) s (resume (+ n 1) s))) (gen))) (export main)))
   (output (: 42 Int64))
   (host-calls))
 
@@ -385,8 +381,7 @@
             (def (leaf) (Ping.ping))
             (def (mid)  (+ (leaf) 100))
             (def (main)
-              (handle unit ((Ping.ping () s (resume 5 s)))
-                (mid))) (export main)))
+              (handle Ping unit ((ping () s (resume 5 s))) (mid))) (export main)))
   (output (: 105 Int64))
   (host-calls))
 
@@ -402,8 +397,8 @@
   (input  (do
             (effect Mul (op by (-> Int64 Int64)))
             (def (leaf) (Mul.by 1))
-            (def (mid)  (handle unit ((Mul.by (x) s (resume (* x 10) s))) (leaf)))
-            (def (main) (handle unit ((Mul.by (x) s (resume (* x 100) s))) (mid))) (export main)))
+            (def (mid)  (handle Mul unit ((by (x) s (resume (* x 10) s))) (leaf)))
+            (def (main) (handle Mul unit ((by (x) s (resume (* x 100) s))) (mid))) (export main)))
   (output (: 10 Int64))
   (host-calls))
 
@@ -423,8 +418,8 @@
             (effect Get (op get (-> Unit Int64)))
             (def (ask) (+ (Get.get) 1))
             (def (main)
-              (+ (handle unit ((Get.get () s (resume 10 s))) (ask))
-                 (handle unit ((Get.get () s (resume 20 s))) (ask)))) (export main)))
+              (+ (handle Get unit ((get () s (resume 10 s))) (ask))
+                 (handle Get unit ((get () s (resume 20 s))) (ask)))) (export main)))
   (output (: 32 Int64))
   (host-calls))
 
@@ -444,8 +439,7 @@
             (def (b) (+ (c) 1))
             (def (a) (+ (b) 1))
             (def (main)
-              (handle unit ((Ask.ask () s (resume 7 s)))
-                (a))) (export main)))
+              (handle Ask unit ((ask () s (resume 7 s))) (a))) (export main)))
   (output (: 10 Int64))
   (host-calls))
 
@@ -465,8 +459,7 @@
             (def (label)   (Fresh.next))
             (def (pair-of) (tuple (label) (label)))
             (def (main)
-              (handle 0 ((Fresh.next (u) s (resume s (+ s 1))))
-                (pair-of))) (export main)))
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) (pair-of))) (export main)))
   (output (: (tuple 0 1) (Tuple Int64 Int64))))
 
 ; --- A recursive function drives an effect (the state-machine idiom) --------------------------
@@ -502,8 +495,7 @@
                   0
                   (+ 1 (loop))))
             (def (main)
-              (handle 3 ((Countdown.tick (u) s (resume s (- s 1))))
-                (loop))) (export main)))
+              (handle Countdown 3 ((tick (u) s (resume s (- s 1)))) (loop))) (export main)))
   (output (: 3 Int64)))
 
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
@@ -526,8 +518,7 @@
                     0
                     (+ i (sum-down)))))
             (def (main)
-              (handle 3 ((Idx.next (u) s (resume s (- s 1))))
-                (sum-down))) (export main)))
+              (handle Idx 3 ((next (u) s (resume s (- s 1)))) (sum-down))) (export main)))
   (output (: 6 Int64)))
 
 (case "a recursive function threads two nested handlers' states at once"
@@ -555,9 +546,7 @@
                   0
                   (+ (B.bump) (loop))))
             (def (main)
-              (handle 0 ((B.bump (u) s (resume s (+ s 10))))
-                (handle 3 ((A.tick (u) s (resume s (- s 1))))
-                  (loop)))) (export main)))
+              (handle B 0 ((bump (u) s (resume s (+ s 10)))) (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main)))
   (output (: 30 Int64)))
 
 (case "a recursive function that installs a fresh handler on each call grows its context without bound"
@@ -580,8 +569,7 @@
   (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (loop n)
-              (handle 100 ((Fresh.next (u) s (resume s (+ s 1))))
-                (if (= n 0)
+              (handle Fresh 100 ((next (u) s (resume s (+ s 1)))) (if (= n 0)
                     (Fresh.next)
                     (loop (- n 1)))))
             (def (main)
@@ -622,8 +610,7 @@
   (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
-              (handle unit ((E.op (n) s (resume n s)))
-                (E.op true))) (export main)))
+              (handle E unit ((op (n) s (resume n s))) (E.op true))) (export main)))
   (error  CDZ0203))
 
 ; The perform-argument check must fire for EVERY declared parameter type, not only Int64. An operation
@@ -653,8 +640,7 @@
   (input  (do
             (effect E (op emit (-> String Unit)))
             (def (main)
-              (handle unit ((E.emit (s) st (resume unit st)))
-                (E.emit 42))) (export main)))
+              (handle E unit ((emit (s) st (resume unit st))) (E.emit 42))) (export main)))
   (error  CDZ0203))
 
 ; The perform-argument check must also fire for a COMPOUND declared parameter type, not only the scalar
@@ -683,8 +669,7 @@
   (input  (do
             (effect E (op put (-> (List Int64) Unit)))
             (def (main)
-              (handle unit ((E.put (xs) s (resume unit s)))
-                (E.put 42))) (export main)))
+              (handle E unit ((put (xs) s (resume unit s))) (E.put 42))) (export main)))
   (error  CDZ0203))
 
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
@@ -718,8 +703,7 @@
   (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
-              (handle unit ((E.op (n) s (resume true s)))
-                (E.op 1))) (export main)))
+              (handle E unit ((op (n) s (resume true s))) (E.op 1))) (export main)))
   (error  CDZ0201))
 
 ; The resume-value result-type check must hold when the declared result type is a COMPOUND, not only a
@@ -748,8 +732,7 @@
   (input  (do
             (effect E (op get (-> (List Int64))))
             (def (main)
-              (handle unit ((E.get () s (resume 42 s)))
-                (E.get))) (export main)))
+              (handle E unit ((get () s (resume 42 s))) (E.get))) (export main)))
   (error  CDZ0201))
 
 ; A resume carries two values — `(resume <value> <state>)` — and BOTH are ordinary expressions subject to
@@ -774,8 +757,7 @@
   (input  (do
             (effect E (op put (-> Int64 Unit)))
             (def (main)
-              (handle unit ((E.put (p) s (resume unit undefined-xyz)))
-                (E.put 1))) (export main)))
+              (handle E unit ((put (p) s (resume unit undefined-xyz))) (E.put 1))) (export main)))
   (error  CDZ0101))
 
 (case "a handler arm for an operation the effect does not declare is rejected"
@@ -788,9 +770,27 @@
   (input  (do
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
-              (handle unit ((Choose.guess () s (resume 5 s)))
-                (Choose.pick))) (export main)))
+              (handle Choose unit ((guess () s (resume 5 s))) (Choose.pick))) (export main)))
   (error  CDZ0403))
+
+(case "a handler that does not discharge every operation of its effect is rejected"
+  (doc    "`Diag` declares two operations, `emit` and `collect`; a `handle Diag` binding only `emit`
+           leaves `collect` undischarged. A handle names ONE effect and its arms ARE that effect's
+           operations, and an effect's operations are a CLOSED, statically-known SET (capabilities-and-
+           effects.md #An Effect Declaration Names The Effect And Types Its Operations), so a handler must
+           discharge the WHOLE set — the effect analogue of match exhaustiveness over a sum's variants. A
+           handler missing an operation is rejected at compile time (CDZ0405): it would claim to discharge
+           `Diag` while leaving `Diag.collect` without a home. Discharging a subset across LAYERS is nested
+           handles, each exhaustive for its own effect (see the collision-free cross-effect case, which is
+           two nested single-operation handlers). A generation that does not yet check handler
+           exhaustiveness declines rather than running the partial handler (reject-don't-miscompile).")
+  (needs  effects)
+  (input  (do
+            (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64))))
+            (def (main)
+              (handle Diag (list) ((emit (code) s (resume unit (List.push s code))))
+                (do (Diag.emit 1) 0))) (export main)))
+  (error  CDZ0405))
 
 (case "an effect operation reached with neither a handler nor a delegation is rejected"
   (doc    "`Ask` is a routing-agnostic effect; `main` performs `(Ask.ask)` with no enclosing handler and

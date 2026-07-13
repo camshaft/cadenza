@@ -5,6 +5,25 @@ inner numeric type; a measurement family you join (`Length`) with registered uni
 that auto-convert; automatic SI + IEC (bibi) prefixes; no runtime overhead — all compile-time static
 analysis."* This doc pins the decisions and the increment plan. Read §0 first.
 
+## STATUS — LAYER 1 COMPLETE (`spec`, 2026-07-13)
+
+Layer 1 (the erasure-only dimensional core over one-unit-per-dimension) is IMPLEMENTED and landed on
+`spec`. `spec/semantics/18-units-of-measure.sexp` grades **19 pass / 10 todo / 0 fail** — every
+`(Unit.base …)` case: construct, observe, erase (byte-identical to the bare numeric), `+`/`-`/`*`/`/`,
+comparison, dimensional-mismatch `CDZ0501`, canonical-exponent-map equality, annotation-conflict
+`CDZ0501`, and a velocity derived through a function. Increments landed:
+- **L1-0** `Ty::Qty { inner, unit }` + `ty::Unit` (free-abelian-group exponent map) through the closed
+  type universe (byte-neutral).
+- **L1-1a** the `#"metre"` symbol literal (`Leaf::Sym`) through both syntax surfaces + both codecs.
+- **L1-1b** `Qty`/`Unit` prelude + construct/observe/erase + the quantity value form.
+- **L1-2 (+ L1-3)** operator dimensional rules + `CDZ0501` + `Qty` type constructor + float-inner
+  arithmetic + quotient unit rendering.
+
+The **10 remaining todos are all LAYER 2** — families (`Unit.of`), prefixes (`Unit.prefix`, SI + IEC),
+automatic mixing conversion, and `Rational` magnitudes — which are BLOCKED on two prerequisite verticals
+that do not yet exist in the compiler: a full `Symbol` type and `Rational`. See §7. **Next work = the
+Symbols and Rationals verticals, then Layer 2.**
+
 The **spec is already written** and rich — this is an IMPLEMENTATION plan against a fixed contract, not
 a design-from-scratch:
 

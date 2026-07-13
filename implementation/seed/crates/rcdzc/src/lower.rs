@@ -747,6 +747,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         format!("{} takes exactly 2 operands", intrinsic_name(prim)),
                     ));
                 }
+                // A UNARY (payload-carrying) VARIANT CONSTRUCTOR applied to ZERO arguments — `(Some)` —
+                // is UNDER-application, the low-arity mirror of the over-application `(Some 1 2)`: a sum
+                // constructor produces its value only when applied to its payload argument
+                // (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function). Reject CDZ0201
+                // rather than fall through to `core_of(head)`, which would decline the bare partial
+                // application ("needs closures") — a to-do, not the well-formedness error `(Some)` is
+                // (09-functions "under-applying a unary constructor is a type error, not a fabricated unit
+                // payload"). A NULLARY variant `(None)` has NO payload type, so it is NOT under-applied —
+                // it constructs its value here (falls through to `core_of(head)`), preserving the valid
+                // bare-nullary-construction path.
+                if crate::eval::variant_disc_of(db, head).is_some()
+                    && crate::eval::variant_payload_type(db, head).is_some()
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unary variant ctor under-applied (CDZ0201)");
+                    return Core::Poison(Reject::coded(
+                        Code::Malformed,
+                        "a variant constructor with a payload must be applied to its argument",
+                    ));
+                }
                 // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
                 // the head would re-enter the same body without end. Decline it exactly as a recursive
                 // parameterized call declines (a nullary def has no runtime-function form yet, so there
@@ -764,6 +783,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 return core_of(db, head);
             }
             match crate::eval::meta_apply_of(db, head) {
+                // A quantity over a FLOAT magnitude combined with `+`/`-`/`*`/`/` runs the INNER numeric
+                // type's operation — the plain `T` op (units-of-measure.md §A Unit Conversion Is The
+                // Arithmetic The Source Denotes: the running arithmetic is the plain `T` operation on erased
+                // values). For a Float-inner quantity that is FLOAT arithmetic, so map the integer arith
+                // prim to its float counterpart and route to `lower_float_arith` (the operands erase to their
+                // inner floats, so the fold/emit is over `Core::ConstFloat`). A quantity's `+`/`*` is thus
+                // polymorphic over the inner numeric, unlike the bare int-only `+` (which rejects a float).
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if quantity_inner_is_float(db, id, &args) =>
+                {
+                    let fprim = match prim {
+                        Prim::Add => Prim::FAdd,
+                        Prim::Sub => Prim::FSub,
+                        Prim::Mul => Prim::FMul,
+                        _ => Prim::FDiv,
+                    };
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity float arithmetic (inner Float)");
+                    lower_float_arith(db, id, fprim, &args)
+                }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
@@ -4608,22 +4646,23 @@ fn const_value_ast_at(
 
 /// Materialize a compile-time `Unit` value as SOURCE structure — the `<unit>` position of a rendered
 /// `(Qty.of <value> <unit>)` and of a `(Qty T <unit>)` type. The dimensionless unit renders `Unit.one`;
-/// a single base to the first power renders `(Unit.base #"name")`; a base to a power renders `(Unit.^
-/// (Unit.base #"name") k)`; a product of several renders a left-nested `(Unit.* …)`. Uses the `#"name"`
-/// SYMBOL leaf for each base dimension, so the rendered unit re-reads to the same `Unit` (the corpus
-/// surface `(Unit.base #"metre")`). Mirrors `ty::Unit::render` but builds real arena nodes.
+/// a single base to the first power renders `((. Unit base) #"name")`; a base to a power `(Unit.^ …
+/// k)`; a product of positive factors a left-nested `(Unit.* …)`; and — crucially — a unit with
+/// NEGATIVE exponents renders as a QUOTIENT `(Unit./ <numerator> <denominator>)`, the surface the corpus
+/// records for a derived unit (`(Unit./ metre second)` for a velocity, NOT `(Unit.* metre (Unit.^ second
+/// -1))`). The numerator is the positive-exponent factors (`Unit.one` if none); the denominator the
+/// negative-exponent factors with their exponents made positive. Uses the `#"name"` SYMBOL leaf per base
+/// so the rendered unit re-reads to the same `Unit`. `Unit.base` is member access; `Unit.^`/`Unit.*`/
+/// `Unit./` stay BARE names (their segment is not alphabetic, so the reader does not desugar them).
 fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> StructId {
     use crate::ast::Leaf;
     let entries: Vec<(String, i64)> = unit.entries().map(|(n, e)| (n.clone(), *e)).collect();
     if entries.is_empty() {
-        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)` the reader
-        // normalizes `Unit.one` to.
+        // `Unit.one` — the dimensionless unit, the member-access form `(. Unit one)`.
         return member_access(b, "Unit", "one");
     }
-    // Build each base factor: `((. Unit base) #"name")` or `(Unit.^ ((. Unit base) #"name") k)`. The
-    // `Unit.base` head is member access (an alphabetic segment desugars); `Unit.^`/`Unit.*` stay BARE
-    // names (the `^`/`*` segment is not alphabetic, so the reader does NOT desugar them).
-    let factor = |b: &mut crate::ast::Builder, name: &str, exp: i64| -> StructId {
+    // One base factor at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
+    fn factor(b: &mut crate::ast::Builder, name: &str, exp: i64) -> StructId {
         let base_head = member_access(b, "Unit", "base");
         let sym = b.atom_leaf(Leaf::Sym(name.to_string()));
         let base = b.list(vec![base_head, sym]);
@@ -4637,16 +4676,40 @@ fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> Struct
             });
             b.list(vec![pow_head, base, n])
         }
-    };
-    let mut it = entries.into_iter();
-    let (n0, e0) = it.next().unwrap();
-    let mut acc = factor(b, &n0, e0);
-    for (name, exp) in it {
-        let f = factor(b, &name, exp);
-        let mul_head = b.name("Unit.*");
-        acc = b.list(vec![mul_head, acc, f]);
     }
-    acc
+    // Left-nested product of a factor list, or `Unit.one` when empty.
+    fn product(b: &mut crate::ast::Builder, factors: &[(String, i64)]) -> StructId {
+        if factors.is_empty() {
+            return member_access(b, "Unit", "one");
+        }
+        let mut acc = factor(b, &factors[0].0, factors[0].1);
+        for (name, exp) in &factors[1..] {
+            let f = factor(b, name, *exp);
+            let mul_head = b.name("Unit.*");
+            acc = b.list(vec![mul_head, acc, f]);
+        }
+        acc
+    }
+    // Split into positive (numerator) and negative (denominator, exponents made positive) factors.
+    let num: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(_, e)| *e > 0)
+        .map(|(n, e)| (n.clone(), *e))
+        .collect();
+    let den: Vec<(String, i64)> = entries
+        .iter()
+        .filter(|(_, e)| *e < 0)
+        .map(|(n, e)| (n.clone(), -*e))
+        .collect();
+    if den.is_empty() {
+        // All positive — a plain product (or a single factor).
+        return product(b, &num);
+    }
+    // A quotient `(Unit./ numerator denominator)` — the derived-unit surface.
+    let numerator = product(b, &num);
+    let denominator = product(b, &den);
+    let div_head = b.name("Unit./");
+    b.list(vec![div_head, numerator, denominator])
 }
 
 /// Build a member-access form `(. <operand-name> <key>)` — the canonical shape the reader normalizes a
@@ -4900,6 +4963,23 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
 /// a shipped runtime trap (`reference-compiler.md` §A Compile-Provable Trap Fails The Build). An
 /// operand that is not a constant stays a runtime `Arith` (its wasm op selected from the solved width
 /// at selection); a poison operand propagates.
+/// Whether the arithmetic application at `id` is over QUANTITIES whose inner numeric type is a FLOAT —
+/// so `+`/`-`/`*`/`/` must run the float operation on the erased inner values (a quantity's operator is
+/// polymorphic over its inner numeric). Reads the node's solved type: `+`/`-`/comparison keep the
+/// operands' unit so the RESULT is `(Qty Float …)`; `*`/`/` compose units so the result is still a
+/// quantity — either way a `Ty::Qty { inner: Float }` result marks the float case. Falls back to the
+/// first operand's type when the result is not itself a quantity (a `Qty.value`-peeled position).
+fn quantity_inner_is_float(db: &mut Db, id: StructId, args: &[StructId]) -> bool {
+    let is_qty_float = |t: &crate::ty::Ty| matches!(t, crate::ty::Ty::Qty { inner, .. } if matches!(**inner, crate::ty::Ty::Float(_)));
+    if is_qty_float(&crate::infer::type_of(db, id)) {
+        return true;
+    }
+    // The result may not be a quantity (a comparison yields Bool); check the first operand.
+    args.first()
+        .map(|&a| is_qty_float(&crate::infer::type_of(db, a)))
+        .unwrap_or(false)
+}
+
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(Reject::coded(
@@ -5178,6 +5258,25 @@ fn arith_identity(
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
+        // `(>>ᵤ x k)` → 0 when the LOGICAL right shift drops ALL of `x`'s significant bits — its provable
+        // bit-bound `B <= k`. E.g. `(x & 15) >>ᵤ 4`: `x & 15` fits 4 bits, `>>ᵤ 4` shifts them all out → 0.
+        // DISCARDS `x`, so gated on `is_trap_free` (a trapping operand's trap must survive). `k` must be a
+        // valid IN-RANGE constant count (`< width`) — an out-of-range shift TRAPS rather than yielding 0,
+        // so a too-large `k` is left for the runtime count-guard. `unsigned_value_bits` returns the bound
+        // only for an unsigned logical-shift chain, so this never misfires on a signed `>>ₛ` (which
+        // sign-extends, not zero-fills).
+        Prim::Shr
+            if is_trap_free(db, lhs)
+                && let Core::ConstInt(k) = rc
+                && let Some(k) = k.to_i64()
+                && k >= 1
+                && let Some(bits) = unsigned_value_bits(db, lhs)
+                && (k as u32) < shift_width(db, lhs)
+                && bits <= k as u32 =>
+        {
+            trace!(target: "rcdzc::fold", node = lhs.0, k, bits, "logical shift drops all significant bits → 0");
+            Some(zero())
+        }
         // `x / 1` → x (division by one is the identity; keeps x, so its own traps stay).
         Prim::Div if is(rc, 1) => Some(lc.clone()),
         // `x % 1` → 0 (every integer is divisible by 1) — DISCARDS x, so only when x cannot trap.
@@ -5245,6 +5344,33 @@ fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
     {
         return Some(inner_bits.saturating_sub(k as u32).max(1));
     }
+    // A bitwise AND with a NON-NEGATIVE constant mask `M` caps the result at `M`'s significant-bit count:
+    // `v & M` sets no bit above `M`'s highest set bit, so it fits `⌈log2(M+1)⌉` bits regardless of `v`'s
+    // range. This narrows `(& x 15)` to 4 bits even when `x` is a full UInt8, so a following `>>ᵤ 4` sees
+    // an all-bits-shifted-out value. (A negative `M` — all high slot bits set — is not a narrowing.)
+    if let Core::Arith {
+        op: Prim::BitAnd,
+        lhs: a,
+        rhs: b,
+    } = core_of(db, val)
+    {
+        // Each operand's bit-bound: a NON-NEGATIVE constant contributes its own significant-bit count
+        // (`⌈log2(v+1)⌉`), a runtime operand its `unsigned_value_bits`. `v & M` sets no bit above EITHER
+        // operand's highest possible set bit, so the AND fits the MIN of the two bounds. Either operand
+        // being a small constant mask caps the result — `(& x:UInt8 15)` → min(8, 4) = 4.
+        let operand_bits = |db: &mut Db, o: StructId| -> Option<u32> {
+            match core_of(db, o) {
+                Core::ConstInt(v) => v
+                    .to_i64()
+                    .filter(|&x| x >= 0)
+                    .map(|x| (64 - (x as u64).leading_zeros()).max(1)),
+                _ => unsigned_value_bits(db, o),
+            }
+        };
+        if let (Some(ab), Some(bb)) = (operand_bits(db, a), operand_bits(db, b)) {
+            return Some(ab.min(bb).max(1));
+        }
+    }
     // Otherwise the bound is the value's own resolved unsigned width.
     let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
         return None;
@@ -5253,6 +5379,20 @@ fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
         return None; // only a resolved UNSIGNED type; signed/deferred is not provably nonnegative.
     };
     (n < 64).then_some(n) // 2^64 - 1 is not i64-representable here.
+}
+
+/// The language WIDTH `N` of `val`'s resolved integer type — the range a shift COUNT is guarded to
+/// `[0, N)`. Used by the shift-out-to-zero fold to confirm the constant count is IN-RANGE (an
+/// out-of-range shift TRAPS, so it must NOT be folded to 0). `None` if the type is not a resolved
+/// integer (a deferred width would guess the guard bound).
+fn shift_width(db: &mut Db, val: StructId) -> u32 {
+    match crate::infer::type_of(db, val) {
+        crate::ty::Ty::Int(it) => match it.width {
+            crate::ty::Width::Fixed(n) => n,
+            _ => 0, // deferred/var — treat as 0 so the `k < width` guard fails (no fold).
+        },
+        _ => 0,
+    }
 }
 
 /// Whether the node at `id` lowers to a core that CANNOT TRAP at run time — so discarding it (an
@@ -5475,7 +5615,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitDiv
         | Prim::UnitPow
         | Prim::QtyOf
-        | Prim::QtyValue => {
+        | Prim::QtyValue
+        | Prim::QtyCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -7975,6 +8116,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitPow => "unit-pow",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
+        Prim::QtyCtor => "Qty",
     }
 }
 

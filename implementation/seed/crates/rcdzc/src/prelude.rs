@@ -615,7 +615,13 @@ fn unit_op_ctor(ast: &mut Arenas, prim: &str) -> StructId {
 /// arguments' shape, not a fixed scheme).
 fn qty_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
-    let mut children = vec![head];
+    // `(meta apply) = Qty` — the quantity-TYPE constructor, so `(Qty Float64 u)` in TYPE position builds
+    // `Ty::Qty` via the ordinary `typeval_of` path (an annotation `(: e (Qty T u))`), exactly as `(List
+    // T)` reduces via `List`'s `(meta apply)`. The value constructor is `Qty.of` (a field); this channel
+    // is the type-constructor role.
+    let ctor = intrinsic_node(ast, "Qty");
+    let apply_field = meta_field(ast, "apply", ctor);
+    let mut children = vec![head, apply_field];
     let of_field = push_atom(ast, Leaf::Name("of".to_string()));
     let of_op = ctor_record(ast, "qty-of");
     children.push(push_list(ast, vec![of_field, of_op]));
