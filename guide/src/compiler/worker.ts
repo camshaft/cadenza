@@ -13,6 +13,7 @@ import init, {
   define_at as wasmDefineAt,
   references_at as wasmReferencesAt,
   emit_rust as wasmEmitRust,
+  core_module as wasmCoreModule,
   render_syntax as wasmRenderSyntax,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
@@ -125,6 +126,14 @@ const api = {
   async emitRust(text: string, from: Surface, isAsync: boolean): Promise<string> {
     await ensureReady();
     return wasmEmitRust(text, from, isAsync);
+  },
+
+  /// The program's embedded CORE MODULE bytes (DWARF-free, unwrapped from the component) — for the WAT
+  /// view. Null if the program declines. The caller prints these with `wasm-tools print`.
+  async coreModule(text: string, from: Surface): Promise<Uint8Array | null> {
+    await ensureReady();
+    const bytes = wasmCoreModule(text, from);
+    return bytes ? new Uint8Array(bytes) : null;
   },
 
   async runtimeHash(): Promise<string> {
