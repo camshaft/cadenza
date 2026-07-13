@@ -220,8 +220,10 @@ impl<'a> Printer<'a> {
             Leaf::Bool(b) => self.doc.word(if *b { "true" } else { "false" }),
             Leaf::Str(s) => self.doc.word(format!("\"{}\"", literal::escape_string(s))),
             Leaf::Bytes(b) => self.doc.word(format!("b\"{}\"", literal::escape_bytes(b))),
-            // A symbol renders `#"…"` (reusing the string escape set) — re-reads via the ML lexer's `#"`
-            // path to the same `Leaf::Sym`.
+            // A symbol renders `#name` (the unquoted sugar) when its content is a bare identifier, else
+            // `#"…"` (reusing the string escape set). Both re-read via the ML lexer's `#` paths to the same
+            // `Leaf::Sym`, so the round-trip is preserved either way.
+            Leaf::Sym(s) if sym_is_bare_safe(s) => self.doc.word(format!("#{s}")),
             Leaf::Sym(s) => self.doc.word(format!("#\"{}\"", literal::escape_string(s))),
             Leaf::Name(n) => self.doc.word(emit_name(n)),
             // A bad-escape MARKER round-trips back to `"\<c>"` so the printed form re-reads to the same
@@ -1913,6 +1915,31 @@ pub fn emit_name(s: &str) -> String {
     }
 }
 
+/// True iff a symbol with content `s` may print as the UNQUOTED `#name` sugar rather than `#"…"`.
+/// Operational (runs the real lexer over `#s`), so the sugar can never drift from what the lexer
+/// accepts: it holds exactly when `#s` lexes to a single `SymLit` token spanning all of `#s` AND that
+/// token re-decodes to `s` unchanged. The span check rejects any content the lexer would not glue into
+/// one token (empty, a space, a leading digit, an operator glyph, `.`); the decode check rejects
+/// content that is not already NFC-normalized, since the unquoted body is NFC-normalized on the way
+/// back in (`unescape_sym_token`) and would otherwise round-trip to a DIFFERENT symbol. Everything else
+/// keeps the explicit `#"…"` form.
+fn sym_is_bare_safe(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let candidate = format!("#{s}");
+    let mut toks = Lexer::new(&candidate).filter(|t| !t.kind.is_trivia());
+    match (toks.next(), toks.next()) {
+        (Some(t), None) => {
+            t.kind == Kind::SymLit
+                && t.span.start == 0
+                && t.span.end == candidate.len()
+                && literal::unescape_sym_token(&candidate) == Leaf::Sym(s.to_string())
+        }
+        _ => false,
+    }
+}
+
 /// True iff `s` lexes to exactly one `Ident` token spanning all of `s`, and `s` is not a reserved
 /// word. Operational (runs the real lexer), so the escape can never drift from what the lexer
 /// accepts bare. An operator glyph (`+`, `->`) lexes as an operator token, NOT an `Ident`, so it is
@@ -1984,6 +2011,28 @@ mod tests {
     }
 
     #[test]
+    fn symbol_sugar_round_trips() {
+        // An identifier-content symbol prints with the unquoted `#name` sugar and re-reads to the same
+        // `Leaf::Sym`. The two surfaces (ML `#metre` and the sugar it prints) agree with the s-expr
+        // oracle's `#"metre"`.
+        assert_eq!(assert_roundtrip("#metre", 80), "#metre");
+        assert_eq!(assert_roundtrip("#map-insert", 80), "#map-insert");
+        // Both spellings read to the same value, so the quoted input canonicalizes to the sugar.
+        assert_eq!(assert_roundtrip("#\"metre\"", 80), "#metre");
+        // Non-identifier content keeps the explicit `#"…"` form (a space, an empty symbol, a leading
+        // digit, an operator glyph, a `.`): the sugar would not re-lex to the same symbol.
+        assert_eq!(assert_roundtrip("#\"foo bar\"", 80), "#\"foo bar\"");
+        assert_eq!(assert_roundtrip("#\"\"", 80), "#\"\"");
+        assert_eq!(assert_roundtrip("#\"1st\"", 80), "#\"1st\"");
+        assert_eq!(assert_roundtrip("#\"a.b\"", 80), "#\"a.b\"");
+        // The ML `#name` spelling agrees with the s-expr oracle reading `#"name"`.
+        assert_eq!(
+            print(&sexpr::read(r#"(= #"map-insert" x)"#).unwrap(), 80),
+            "#map-insert == x"
+        );
+    }
+
+    #[test]
     fn quantity_literal_round_trips() {
         // A quantity literal `(Qty.of <num> (Unit.of #"name"))` renders as the concise `<num> name`
         // surface and re-parses to the same arena — the inverse of `maybe_quantity_literal`.
@@ -2007,14 +2056,16 @@ mod tests {
         // computed unit, a non-bare-safe unit name, and `Unit.of` used outside a `Qty.of`.
         let computed =
             sexpr::read(r#"(Qty.of 5.0 (Unit./ (Unit.of #"metre") (Unit.of #"second")))"#).unwrap();
+        // Identifier-content symbols print with the unquoted `#name` sugar.
         assert_eq!(
             print(&computed, 80),
-            "Qty.of(5.0, Unit.of(#\"metre\") / Unit.of(#\"second\"))"
+            "Qty.of(5.0, Unit.of(#metre) / Unit.of(#second))"
         );
+        // A non-identifier symbol (a space) keeps the explicit `#"…"` form.
         let odd = sexpr::read(r#"(Qty.of 5 (Unit.of #"foo bar"))"#).unwrap();
         assert_eq!(print(&odd, 80), "Qty.of(5, Unit.of(#\"foo bar\"))");
         let bare = sexpr::read(r#"(Unit.of #"metre")"#).unwrap();
-        assert_eq!(print(&bare, 80), "Unit.of(#\"metre\")");
+        assert_eq!(print(&bare, 80), "Unit.of(#metre)");
     }
 
     #[test]

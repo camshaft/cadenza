@@ -2657,8 +2657,23 @@ fn emit_recursive_sum_resource(
 
 /// The program's runtime import name: the interface (`cadenza:runtime/heap`) pinned to the semver
 /// `0.0.0` with the runtime's content hash as build-metadata (`+<hash>`) — the versioned form `cdz-run`
-/// matches against the composed runtime (`component-abi.md` §The Value-Heap Runtime Crosses By A
-/// Well-Known Import). Both parts come from the generated ABI table, so a runtime change re-pins it.
+/// matches against the composed runtime. Both parts come from the generated ABI table, so a runtime
+/// change re-pins it. The interface identity (`RUNTIME_IFACE`) is fixed for every program the generation
+/// emits, and the content hash (`REQUIRED_RUNTIME_HASH`) records the EXACT runtime the component
+/// requires, right in the import name embedded in the emitted component — so the artifact is
+/// self-describing and its execution is deterministic in the (program, runtime content address) pair:
+///
+//= spec/contracts/component-abi.md#the-value-heap-runtime-crosses-by-a-well-known-import
+//# The identity of that runtime interface MUST be fixed at the declared-default location and MUST be the same for every program a generation emits, so that any conforming host can satisfy the import and the interface is a stable part of the ABI rather than a per-program choice.
+///
+//= spec/contracts/component-abi.md#the-value-heap-runtime-crosses-by-a-well-known-import
+//# The concrete runtime a program is emitted against MUST be identified by the content address of that runtime component, so that a program's execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified environment rather than a silent substitution (reproducible-derivation.md §Derivation Is A Function Of Source And Toolchain).
+///
+//= spec/contracts/component-abi.md#the-emitted-component-records-its-required-runtime
+//# A derived program MUST record, in the emitted component itself, the content address of the runtime it requires, so that the component is self-describing: what interface it imports and which exact runtime implementation satisfies that import both travel with the artifact.
+///
+//= spec/contracts/component-abi.md#the-emitted-component-records-its-required-runtime
+//# A compiler MUST be built against a fixed runtime interface and a fixed runtime content address, so that which runtime a generation targets is a property of the compiler rather than a per-invocation choice, and the compiler and its runtime are one versioned pair.
 fn runtime_import_name() -> String {
     format!(
         "{}@0.0.0+{}",
