@@ -6845,6 +6845,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_nullary_recursive_sum_return_declines_with_an_honest_reason() {
+        // A NULLARY `main` returning a RECURSIVE sum built at runtime (`count 3` → an `IntList` whose
+        // spine length is decided at run time) declines: rendering an unbounded-depth recursive-sum value
+        // as the host result needs an `encode()` walker that LOOPS to a runtime-determined depth (the
+        // analogue of the runtime-`Bytes` looping walker), a later increment. The DECLINE is correct
+        // (folding such a value to a scalar works; only rendering it as the boundary result is deferred).
+        // REGRESSION: the message must NOT claim "this export takes a parameter" — `main` is NULLARY. The
+        // resource-escape path tried and its value-form template was `None` (a self-referential sum has no
+        // bounded static shape), falling through to the multi-export diagnosis, which previously
+        // misdiagnosed a nullary fall-through as parameterized. The honest reason names the missing walker.
+        use crate::testkit::parse;
+        let src = "(module m (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                     (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) \
+                        (IntList.Cons (tuple n (count (- n 1)))))) \
+                     (def (main) (count 3)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a nullary recursive-sum return declines (no looping value-form walker yet)");
+        assert!(
+            !err.message.contains("takes a parameter"),
+            "a NULLARY recursive-sum return must NOT be misdiagnosed as parameterized, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("runtime-determined depth") || err.message.contains("walker"),
+            "the decline names the missing looping value-form walker, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_multi_export_compound_return_declines_with_the_multi_export_diagnosis() {
         // The OTHER compound-return trigger: a program with MULTIPLE exports, one returning a compound.
         // The resource-escape path takes only a SINGLE nullary compound export, so a multi-export program

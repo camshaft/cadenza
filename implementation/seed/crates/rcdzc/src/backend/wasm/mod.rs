@@ -239,10 +239,20 @@ pub fn emit(
             }
             let why = if multi_export {
                 "a compound result crosses the host boundary only as the single export's result (this program has multiple exports)"
-            } else {
-                // A single export reached here (the nullary-single case escaped above), so it is
-                // parameterized — the resource-escape path covers only a NULLARY compound export.
+            } else if !e.params.is_empty() {
+                // A single PARAMETERIZED export — the resource-escape path covers only a NULLARY compound
+                // export, so a compound return from a function that takes a parameter declines here.
                 "a compound result escapes to the host as a resource only from a NULLARY export; this export takes a parameter (a parameterized compound return is not yet supported)"
+            } else {
+                // A single NULLARY export whose compound result reached here — the resource-escape path
+                // above TRIED and its value-form template was `None`: the result has no runtime value form
+                // yet. This is the RECURSIVE-sum / dynamic-shape case (a self-referential `(type IntList
+                // (Cons (Tuple Int64 IntList)) Nil)` built at runtime has an UNBOUNDED static shape, so the
+                // `encode()` walker would need to LOOP to a runtime-determined depth — the analogue of the
+                // runtime-`Bytes` looping walker, a later increment). The honest reason is the missing
+                // walker, NOT a (non-existent) parameter — `main` is nullary. Consuming such a value to a
+                // scalar already works; only rendering it as the boundary result is deferred.
+                "rendering this compound as the host result needs a value-form walker that loops to a runtime-determined depth (a recursive-sum / dynamic-shape result is not yet emitted); folding it to a scalar works"
             };
             return Err(Reject::decline(format!(
                 "returning a {} from `{}`: {why}",
