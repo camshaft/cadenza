@@ -313,7 +313,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             crate::eval::Member::Field(value) => core_of(db, value),
             crate::eval::Member::NoField => Core::Poison(Reject::coded(
                 Code::Malformed,
-                format!("record has no field `{}`", key.name),
+                format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
             )),
             // The operand did not reduce to a compile-time-visible record. MEMBER-INTO-IF: if it is an
             // `(if c R S)` whose BOTH branches are visible records carrying the field →

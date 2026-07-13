@@ -3351,14 +3351,15 @@ fn no_field_reject(
         (Some(field), Some(occ)) => Reject::coded(
             Code::Malformed,
             format!(
-                "record has no field `{}` — did you mean `{field}`?",
+                "{}`{}` — did you mean `{field}`?",
+                crate::diag::NO_FIELD_PREFIX,
                 key.name
             ),
         )
         .with_fix(Fix::replace_heuristic(occ, field)),
         _ => Reject::coded(
             Code::Malformed,
-            format!("record has no field `{}`", key.name),
+            format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
         ),
     }
 }

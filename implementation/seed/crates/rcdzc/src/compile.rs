@@ -812,6 +812,25 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     let has_closure_boundary_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::CLOSURE_BOUNDARY_MARKER));
+    // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean
+    // fix) AND the emit-side member fold, at two DIFFERENT nodes (the `.k` projection vs an enclosing
+    // `(R.k …)` apply), is ONE fault shown twice. The messages are IDENTICAL up to the fix suffix, so key
+    // the duplicate by the `record has no field \`k\`` core (prefix + the backticked key, which both
+    // versions carry): if ANY copy carries a fix (the infer one), drop the OTHER anchored copies of the
+    // same field-fault. Keeps the richer, fix-bearing report; collapses the bare duplicate. Narrow to the
+    // no-field family so two genuinely-distinct same-message faults elsewhere are never merged.
+    fn no_field_key(msg: &str) -> Option<&str> {
+        // The invariant core is `record has no field \`k\`` — strip an optional ` — did you mean …?` tail.
+        msg.strip_prefix(crate::diag::NO_FIELD_PREFIX)
+            .map(|rest| rest.split(" — ").next().unwrap_or(rest))
+    }
+    // A field-fault CORE the program reports WITH a fix (the infer did-you-mean copy) — its fix-less twin
+    // is dropped below (keep the richer copy).
+    let fixed_field_cores: std::collections::HashSet<&str> = faults
+        .iter()
+        .filter(|r| r.fix.is_some())
+        .filter_map(|r| no_field_key(&r.message))
+        .collect();
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -886,6 +905,16 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             }
             // A DECLINE anchored at a node that also carries a CODED reject is shadowed by it — drop it.
             if r.is_decline() && r.at.is_some_and(|s| coded_nodes.contains(&s.0)) {
+                return false;
+            }
+            // A FIX-LESS "record has no field `k`" copy whose SAME field-fault appears WITH a fix
+            // elsewhere (infer's did-you-mean copy) is the emit-side duplicate — drop it, keep the fix.
+            // (Scoped to the fix-vs-no-fix pair, so two DISTINCT same-name field faults — neither with a
+            // fix — are never merged; the `R.make`-with-no-near-field duplicate is handled at its source
+            // in `lower`, not here.)
+            if r.fix.is_none()
+                && no_field_key(&r.message).is_some_and(|k| fixed_field_cores.contains(k))
+            {
                 return false;
             }
             // An anchored fault is identified by (code, node); an unanchored one by (code, message)

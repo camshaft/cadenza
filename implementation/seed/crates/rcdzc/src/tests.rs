@@ -15091,6 +15091,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_field_call_head_reports_one_error_not_a_dup() {
+        // A misspelled field access used as a CALL HEAD (`((. r fld-typo) 5)`) is checked by BOTH the
+        // infer member-check (which adds the did-you-mean fix) AND the emit-side member fold — at two
+        // DIFFERENT nodes (the `.fld-typo` projection vs the enclosing apply), so it used to surface the
+        // SAME "record has no field" fault TWICE. `dedup_faults` now drops the fix-less emit-side copy
+        // when the fix-carrying infer copy of the same field-fault is present → ONE error, WITH the fix.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. (record (compute 1)) computee) 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let field_errs: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == crate::abi::Severity::Error && d.message.contains("record has no field")
+            })
+            .collect();
+        assert_eq!(
+            field_errs.len(),
+            1,
+            "one no-field error, not the infer+lower duplicate: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            field_errs[0].fix.is_some() && field_errs[0].message.contains("did you mean `compute`?"),
+            "the surviving copy is the RICH one (with the did-you-mean fix): {}",
+            field_errs[0].message
+        );
+    }
+
+    #[test]
     fn returning_a_constant_record_compiles_via_the_resource_escape() {
         // A CONSTANT record returned as the program result now crosses the host boundary as a
         // component-model resource whose `encode()` yields the canonical value form (the escape path,

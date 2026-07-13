@@ -560,6 +560,15 @@ pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducib
 /// unrepresentable closure). Shared as consts so `dedup_faults` drops the decline whenever that CDZ0201 is
 /// present — ONE primary, actionable "no". A non-exported closure with an unrepresentable part (no CDZ0201
 /// covering it) keeps its honest decline.
+/// The shared PREFIX of the CDZ0201 "record has no field `<key>`" reject. A member access `(. r key)`
+/// with an absent field is reported by BOTH the infer-side member check (`infer::no_field_reject`, which
+/// adds a did-you-mean fix) AND — when that access is the head of an application `(R.make …)` — the
+/// emit-side member fold (`lower`). Both anchor the SAME construct at DIFFERENT nodes (the `.key`
+/// projection vs the enclosing apply), so `dedup_faults` sees two `(code, node)` keys for ONE fault.
+/// Sharing the prefix lets `dedup_faults` recognize the pair by message and keep only the RICHER infer
+/// copy (the one carrying the fix). NOTE the trailing space before the backticked key.
+pub const NO_FIELD_PREFIX: &str = "record has no field ";
+
 pub const CLOSURE_PARAM_NO_REPR_DECLINE: &str = "a closure's parameter type has no machine representation";
 pub const CLOSURE_RESULT_NO_REPR_DECLINE: &str = "a closure's result type has no machine representation";
 pub const CLOSURE_CAPTURE_NO_REPR_DECLINE: &str = "a closure captures a value with no machine representation";
