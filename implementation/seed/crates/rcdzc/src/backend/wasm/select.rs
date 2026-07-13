@@ -1788,6 +1788,17 @@ fn emit_tail(
         // branches are — a tail call in either branch is the function's result.
         Core::If { cond, then_, else_ } => {
             let result = type_of(db, id);
+            // FLOW-SENSITIVE DEAD-BRANCH ELIMINATION (see the non-tail arm): when the active refinement
+            // decides this `if`'s condition, emit ONLY the taken branch — in TAIL position (so a tail call
+            // in it stays a `return_call`/loop `br`). The condition is a trap-free refined comparison, so
+            // dropping it preserves behavior.
+            if let Core::Compare { op, lhs, rhs } = core_of(db, cond)
+                && let Some(taken) = crate::lower::refined_comparison_const(db, op, lhs, rhs)
+            {
+                let branch = if taken { then_ } else { else_ };
+                trace!(target: "rcdzc::select", node = id.0, taken, "tail if condition decided by branch refinement — emit only the taken branch");
+                return emit_tail(db, branch, slots, base, high, scratch_ty, layout, out, tl);
+            }
             // BRANCHLESS SELECT (see the non-tail `emit` arm for the full rationale): when both branches
             // are cheap trap-free leaves and the result is a non-heap scalar, a `select` beats an `if`.
             // A leaf branch is never a tail call, so dropping the tail context here loses no `return_call`
@@ -3483,6 +3494,22 @@ fn emit(
         }
         Core::If { cond, then_, else_ } => {
             let result = type_of(db, id);
+            // FLOW-SENSITIVE DEAD-BRANCH ELIMINATION: when the active branch refinement DECIDES this `if`'s
+            // condition (`(if (> n 0) (if (> n 0) …) …)` — the inner cond is known true; `(if (>= n 5) (if
+            // (> n 0) …))` — implied), emit ONLY the taken branch and drop the other. The condition is a
+            // comparison of a refined (trap-free) variable against a constant, so evaluating it has no
+            // effect to preserve. Fires before the select/if lowering so a fully-decided nested conditional
+            // costs nothing (not even a `select` on a constant). The taken branch keeps this `if`'s tail
+            // context via `emit` (non-tail arm).
+            if let Core::Compare { op, lhs, rhs } = core_of(db, cond)
+                && let Some(taken) = crate::lower::refined_comparison_const(db, op, lhs, rhs)
+            {
+                let branch = if taken { then_ } else { else_ };
+                trace!(target: "rcdzc::select", node = id.0, taken, "if condition decided by branch refinement — emit only the taken branch");
+                return emit_branch(
+                    db, branch, &result, slots, base, high, scratch_ty, layout, out,
+                );
+            }
             // BRANCHLESS SELECT: when both branches are cheap trap-free leaves (a param/local/constant)
             // and the result is a SCALAR (not unit, not a heap handle), emit wasm's `select` instead of
             // an `if`/`else`/`end` block — one instruction, no branch. `select` pops `[a, b, cond]` and
@@ -3808,6 +3835,18 @@ fn emit(
         // sign-agnostic). The result is an i32 boolean. A comparison never overflows, so both operands
         // share the same scratch base (each is dead once pushed).
         Core::Compare { op, lhs, rhs } => {
+            // FLOW-SENSITIVE COMPARISON FOLD: when the enclosing branch has REFINED a variable operand's
+            // range so this comparison against a constant is already decided (`(if (> n 0) (if (> n 0) …)
+            // …)` — the inner test is known true; or an IMPLIED test `(if (>= n 5) (if (> n 0) …))`), emit
+            // the constant bool directly instead of recomputing the compare. Refinements live only during
+            // emit, so `lower`'s `fold_comparison_at_type_bound` could not see this; the runtime operand is
+            // a refined `Param`/`LocalRef` (trap-free), so discarding it drops no trap. Result is an i32
+            // bool (`0`/`1`), exactly what a comparison leaves.
+            if let Some(r) = crate::lower::refined_comparison_const(db, op, lhs, rhs) {
+                trace!(target: "rcdzc::select", node = id.0, result = r, "comparison folded to a constant by the active branch refinement");
+                out.push(Lir::ConstI32(r as i32));
+                return Ok(());
+            }
             // Both operands must share the comparison's machine slot; ground a bare-literal operand to
             // the shared width so `(> x 50)` over a narrow `x` does not push an i64 beside `x`'s i32.
             let it = operand_int_ty(db, lhs, rhs);
