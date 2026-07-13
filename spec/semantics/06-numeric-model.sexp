@@ -391,6 +391,37 @@
   (input  (+. 2 2.0))
   (error  CDZ0301))
 
+; --- Runtime float operands: the EMITTED machine op, not the constant fold -----------------------
+; The float-arithmetic cases above use CONSTANT operands, so the compiler folds them at build time. A
+; value that arrives at RUN TIME (an argument to the exported entry) cannot be folded, so the float
+; operator is emitted as a real machine instruction (`f64.add`/…). These `(call <export> <arg>…)` cases
+; run each float operator over runtime Float64 operands and pin that the emitted path AGREES with the
+; folded constant cases. Unlike the integer arithmetic these emit NO overflow guard — a float op never
+; traps (IEEE overflow → inf). CORE cases (the seed realizes runtime Float64 operators).
+
+(case "a runtime float addition emits the machine add"
+  (doc    "`(def (main (: a Float64) (: b Float64)) (+. a b))` called with (0.1, 0.2). The addition cannot
+           fold (both operands are runtime), so it is emitted as `f64.add` — the non-exact IEEE sum
+           0.30000000000000004, matching the folded `(+. 0.1 0.2)` case. Pins the emitted float-add path.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (+. a b)) (export main)))
+  (call   main (: 0.1 Float64) (: 0.2 Float64))
+  (output (: 0.30000000000000004 Float64)))
+
+(case "a runtime float multiplication emits the machine mul"
+  (doc    "`(*. a b)` over runtime Float64 operands emits `f64.mul`; `(6.0, 7.0)` = 42.0, matching the
+           folded `(*. 6.0 7.0)`. Pins the emitted float-multiply path.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (*. a b)) (export main)))
+  (call   main (: 6.0 Float64) (: 7.0 Float64))
+  (output (: 42.0 Float64)))
+
+(case "a runtime float division rounds under the fixed mode"
+  (doc    "`(/. a b)` over runtime operands emits `f64.div`, which rounds under the fixed round-to-
+           nearest-even mode; `(1.0, 3.0)` = 0.3333333333333333, matching the folded `(/. 1.0 3.0)`. Pins
+           the emitted float-divide path and that it rounds deterministically (not a trap on inexactness).")
+  (input  (do (def (main (: a Float64) (: b Float64)) (/. a b)) (export main)))
+  (call   main (: 1.0 Float64) (: 3.0 Float64))
+  (output (: 0.3333333333333333 Float64)))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias

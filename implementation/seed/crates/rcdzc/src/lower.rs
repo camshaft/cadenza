@@ -3909,11 +3909,14 @@ fn lower_float_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> 
                 )),
             }
         }
-        // A runtime float operand — the machine `f64.add`/… emit is a later increment (needs the f64
-        // arithmetic opcodes via the codegen op-list). Decline cleanly.
-        _ => Core::Poison(Reject::decline(
-            "a runtime float arithmetic operand is not yet emitted (only a constant float folds)",
-        )),
+        // A runtime float operand — emit the machine `f64.add`/`f32.add`/… at selection (the op's width
+        // read off the solved type there, like the integer `Core::Arith`). Float ops never trap, so no
+        // overflow guard — just the two operands + the machine op. A poison operand already returned above.
+        _ => Core::Arith {
+            op,
+            lhs: args[0],
+            rhs: args[1],
+        },
     }
 }
 

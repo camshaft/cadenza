@@ -1926,23 +1926,22 @@ fn emit(
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
         )),
-        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Float64`
-        // occupies in its f64 machine slot, and what an export returning a float leaves on the stack (the
-        // boundary lifts it to the component `f64`). A `Float32`-typed constant needs an `f32.const`
-        // (a different opcode + a rounded-to-binary32 immediate) — DECLINES here until the f32 emit path
-        // lands (a clean Todo, never an f64 value in an f32 slot = invalid wasm). The width is read off
-        // the node's SOLVED type (the same read the boundary valtype uses). Float ARITHMETIC is later.
+        // A float CONSTANT emits an `f64.const`/`f32.const` of its canonical bit pattern at the node's
+        // SOLVED width — the value a float occupies in its machine slot, and what an export returning a
+        // float leaves on the stack (the boundary lifts it to the component `f64`/`f32`). A `Float32`
+        // constant rounds the exact `Decimal` through binary32 (`as f32`) and emits `f32.const`. The width
+        // is read off the solved type (the same read the boundary valtype uses).
         Core::ConstFloat(d) => {
             let width = match crate::infer::type_of(db, id) {
                 crate::ty::Ty::Float(ft) => ft.ground_width(),
                 _ => 64,
             };
             if width == 32 {
-                return Err(Reject::decline(
-                    "a Float32 constant is not yet emitted (only Float64 crosses; f32 emit is a later increment)",
-                ));
+                let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
+                out.push(Lir::F32ConstBits(bits));
+            } else {
+                out.push(Lir::F64ConstBits(d.to_f64_bits()));
             }
-            out.push(Lir::F64ConstBits(d.to_f64_bits()));
             Ok(())
         }
         Core::Unit => {
@@ -2946,6 +2945,21 @@ fn emit(
         // A runtime operand only arises from a boundary parameter, and only the aliased widths
         // (8/16/32/64) have a boundary representation — but the recipe is correct for any N in 1..=64,
         // so nothing here assumes a machine width. A constant of any width folds in `lower` instead.
+        // A runtime FLOAT arithmetic op (`+.`/`-.`/`*.`/`/.`) — emit the two operands then the machine
+        // `f64`/`f32` op at the result width (read off the solved type). IEEE, NEVER traps, so NO overflow
+        // guard (unlike the integer arith below). Both operands share the result's float type (binary-op
+        // unification), so they emit at the same width.
+        Core::Arith { op, lhs, rhs } if op.is_float_arith() => {
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            trace!(target: "rcdzc::select", node = id.0, ?op, width, "emit runtime float op");
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+            out.push(float_arith_op(op, width));
+            Ok(())
+        }
         Core::Arith { op, lhs, rhs } => {
             let m = Machine::of(int_ty_of(db, id));
             trace!(target: "rcdzc::select", node = id.0, ?op, width = m.width, signed = m.signed, "emit runtime integer op");
@@ -5944,6 +5958,44 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
     match type_of(db, id) {
         Ty::Int(it) => it,
         _ => IntTy::i64(),
+    }
+}
+
+/// The wasm machine op for a runtime FLOAT arithmetic prim at a given width — the f64/f32 `add`/`sub`/
+/// `mul`/`div`. `width` is the operands' solved float width (32 → f32, else f64). IEEE, never trapping.
+fn float_arith_op(op: Prim, width: u32) -> Lir {
+    let f32 = width == 32;
+    match op {
+        Prim::FAdd => {
+            if f32 {
+                Lir::F32Add
+            } else {
+                Lir::F64Add
+            }
+        }
+        Prim::FSub => {
+            if f32 {
+                Lir::F32Sub
+            } else {
+                Lir::F64Sub
+            }
+        }
+        Prim::FMul => {
+            if f32 {
+                Lir::F32Mul
+            } else {
+                Lir::F64Mul
+            }
+        }
+        Prim::FDiv => {
+            if f32 {
+                Lir::F32Div
+            } else {
+                Lir::F64Div
+            }
+        }
+        // A non-float-arith prim never reaches here (guarded by `op.is_float_arith()` at the call site).
+        _ => Lir::F64Add,
     }
 }
 

@@ -612,6 +612,27 @@ mod wasm_abi {
             op("I32_CONST", Instruction::I32Const(0)),
             op("I64_CONST", Instruction::I64Const(0)),
             op("F64_CONST", Instruction::F64Const(0.0f64.into())),
+            op("F32_CONST", Instruction::F32Const(0.0f32.into())),
+            // Float ARITHMETIC (f64/f32) — the machine ops a runtime `+.`/`-.`/`*.`/`/.` selects.
+            // IEEE, never trapping (overflow → inf, x/0 → ±inf/NaN), so no overflow guard (unlike the
+            // integer arith). Round-to-nearest-even is the hardware default the determinism contract pins.
+            op("F64_ADD", Instruction::F64Add),
+            op("F64_SUB", Instruction::F64Sub),
+            op("F64_MUL", Instruction::F64Mul),
+            op("F64_DIV", Instruction::F64Div),
+            op("F32_ADD", Instruction::F32Add),
+            op("F32_SUB", Instruction::F32Sub),
+            op("F32_MUL", Instruction::F32Mul),
+            op("F32_DIV", Instruction::F32Div),
+            // Float EQUALITY (f64/f32) — a runtime float `=` (IEEE compare: -0.0 == 0.0, NaN ≠ NaN).
+            op("F64_EQ", Instruction::F64Eq),
+            op("F64_NE", Instruction::F64Ne),
+            op("F32_EQ", Instruction::F32Eq),
+            op("F32_NE", Instruction::F32Ne),
+            // Float width conversion (F5): `f32.demote_f64` narrows Float64→Float32 (rounds),
+            // `f64.promote_f32` widens Float32→Float64 (exact). Int↔float conversions land with `of-int`.
+            op("F32_DEMOTE_F64", Instruction::F32DemoteF64),
+            op("F64_PROMOTE_F32", Instruction::F64PromoteF32),
             op("IF", Instruction::If(wasm_encoder::BlockType::Empty)),
             op("ELSE", Instruction::Else),
             op("END", Instruction::End),
