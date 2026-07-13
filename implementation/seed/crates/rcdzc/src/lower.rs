@@ -8107,6 +8107,11 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             // needs the heap walk (`value-eq`/`champ_eq`, deferred to the backend).
             //= spec/capabilities/core-semantics.md#equality-is-structural
             //# Two values MUST be equal when they have the same type and their contents are equal component-wise.
+            // This component-wise fold agrees with the canonical byte form: two constant compounds are equal
+            // exactly when their canonical forms coincide (a scalar leaf compares by its canonical value, a
+            // nested compound recurses), so structural equality and byte-form identity never disagree.
+            //= spec/capabilities/core-semantics.md#equality-is-structural
+            //# Value equality MUST agree with the canonical byte form, so that two values are equal exactly when their canonical byte forms are identical.
             // `(= (Some 1) (Some 1))` → true, `(= (Some 1) (Some 2))` → false, `(= None None)` → true,
             // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
             // element that is itself a compound). Returns `None` when either side is not a constant

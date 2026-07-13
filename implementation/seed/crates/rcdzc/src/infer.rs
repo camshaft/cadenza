@@ -4354,7 +4354,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // operand is a MALFORMED program (CDZ0201) — the operand simply is not the required type, like a
         // binary operator's operand, NOT the structural-shape mismatch (CDZ0203) a cross-kind disagreement
         // is (02-binding "a boolean connective with a non-boolean operand is a type error" wants CDZ0201).
-        // Then descend for each operand's own faults.
+        // Then descend for each operand's own faults. Both operands are checked here EVEN THOUGH the right
+        // is short-circuited at run time, so an unevaluated operand can never carry a deferred type error —
+        // exactly as every branch of a conditional is type-checked whether or not it is taken.
+        //= spec/capabilities/core-semantics.md#boolean-connectives-short-circuit
+        //# Each operand of a boolean connective MUST be type-checked as a boolean whether or not it is evaluated, so that an unevaluated operand cannot carry a deferred error, exactly as every branch of a conditional is type-checked.
         Resolved::And { lhs, rhs, is_and } => {
             let op = if is_and { "and" } else { "or" };
             for &operand in &[lhs, rhs] {

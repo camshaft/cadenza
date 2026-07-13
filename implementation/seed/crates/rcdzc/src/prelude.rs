@@ -223,11 +223,15 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // `compare` — the THREE-WAY comparison `∀a. a → a → Ordering`. The PRIMITIVE the boolean `<`/`>`/…
     // agree with; its result is the `Ordering` sum (Less/Equal/Greater), not a Bool — an ordinary closed
     // three-variant sum deconstructed by the same exhaustive match as any other sum. Same operator-record
-    // mechanism as the relational comparisons; only the result type differs.
+    // mechanism as the relational comparisons; only the result type differs. The relational operators
+    // above and this `compare` are two surfaces of the SAME total order (`OpShape::Comparison` vs
+    // `OpShape::Compare` over one comparison), so the boolean operators cannot disagree with the three-way.
     //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
     //# A type that offers a total order MUST offer a three-way comparison that yields an ordering value with exactly three variants — less, equal, and greater — so that a single comparison reports the full relation between two values rather than a single boolean bit of it.
     //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
     //# The ordering value's type MUST be an ordinary closed sum type of the language, so that a comparison result is deconstructed by the same exhaustive match as any other sum and every consumer handles all three cases.
+    //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
+    //# The boolean ordering operators MUST agree with the three-way comparison, so that a type has one total order surfaced two ways that cannot disagree.
     names.insert(
         "compare".to_string(),
         operator_record(ast, "compare", OpShape::Compare),
