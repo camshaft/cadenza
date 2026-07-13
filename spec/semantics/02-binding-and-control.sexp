@@ -654,6 +654,22 @@
             (def (main) (f 3)) (export main)))
   (output (: 3 Int64)))
 
+(case "a conditional on a negated runtime condition selects the correct branch and shields the other"
+  (doc    "A conditional whose condition is `(not c)` may be lowered by SWAPPING the then/else branches and
+           dropping the negation (rather than computing `not` then branching): `(if (not c) T E)` becomes
+           `(if c E T)`. That rewrite must preserve BOTH the selection and the shielding. `(if (not b) 7 (/
+           1 z))` with `b` = false: `(not false)` is true, so the THEN branch (7) is selected and the else
+           `(/ 1 z)` (a division by zero at z = 0) is NOT evaluated — the result is 7, not a trap. A swap
+           that mis-mapped the branches would select `(/ 1 z)` and trap; one that evaluated both would trap
+           too. The anchor: with `b` = true, `(not true)` is false, so the else `(/ 1 z)` IS selected and
+           traps. Pins the negated-if branch swap keeps the untaken branch shielded and the condition
+           correctly inverted.")
+  (input  (do
+            (def (main (: b Bool) (: z Int64)) (if (not b) 7 (/ 1 z)))
+            (export main)))
+  (call   main (: false Bool) (: 0 Int64))
+  (output (: 7 Int64)))
+
 (case "a conjunction guards a let over a runtime value inside a conditional"
   (doc    "An INTEGRATION case: several control constructs composed in one function over a runtime
            parameter, the way a real program (not an isolated feature test) uses the language.
@@ -1480,6 +1496,21 @@
             (def (classify n) (match n (0 100) (1 200) (_ 900)))
             (def (main) (classify 0)) (export main)))
   (output (: 100 Int64)))
+
+(case "a two-arm match does not evaluate the unselected arm's trapping body"
+  (doc    "A 2-arm `match` with leaf-value bodies may be lowered to a branchless `select` (both bodies on
+           the stack, the discriminant chooses) — but ONLY when both bodies are trap-free. `(match n (0 (/
+           1 z)) (_ 99))` has a trapping body `(/ 1 z)` in the first arm, so it MUST keep the branch: with
+           n = 5 the wildcard arm is selected → 99, and the first arm's division by zero (z = 0) is NOT
+           evaluated. A naive branchless-select that evaluated both bodies would trap here. Pins that the
+           2-arm-match-to-select optimization does not treat a trapping arm body as a select leaf — the
+           match evaluates only the selected arm (core-semantics.md #Matching Is Exhaustive Or Rejected +
+           the trap-observation rule). The anchor: with n = 0 the first arm IS selected and it traps.")
+  (input  (do
+            (def (main (: n Int64) (: z Int64)) (match n (0 (/ 1 z)) (_ 99)))
+            (export main)))
+  (call   main (: 5 Int64) (: 0 Int64))
+  (output (: 99 Int64)))
 
 (case "a runtime scrutinee selects a non-first literal arm"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: arms are tried top-to-bottom

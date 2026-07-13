@@ -489,6 +489,13 @@ impl<'a> Parser<'a> {
                     span,
                 )
             }
+            Kind::ByteStr => {
+                let t = self.bump().unwrap();
+                self.atom(
+                    Leaf::Bytes(literal::unescape_byte_string_token(self.text(t))),
+                    span,
+                )
+            }
             Kind::BacktickName => {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)
@@ -998,6 +1005,13 @@ impl<'a> Parser<'a> {
                 let t = self.bump().unwrap();
                 self.atom(
                     Leaf::Str(literal::unescape_string_token(self.text(t))),
+                    span,
+                )
+            }
+            Kind::ByteStr => {
+                let t = self.bump().unwrap();
+                self.atom(
+                    Leaf::Bytes(literal::unescape_byte_string_token(self.text(t))),
                     span,
                 )
             }

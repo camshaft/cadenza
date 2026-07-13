@@ -1590,6 +1590,48 @@
             (def (main) (f 5)) (export main)))
   (output (: (Cons (tuple 5 (Nil unit))) IntList)))
 
+(case "a generic recursive sum references itself bare and carries its own type parameter"
+  (doc    "A GENERIC recursive sum — `(type Tree (Leaf a) (Branch (Tuple Tree Tree)))` — where the
+           self-reference `Tree` in the `Branch` payload is written BARE (not `(Tree a)`). A bare
+           self-reference in a PARAMETERIZED sum denotes the sum applied to its OWN type parameters
+           (`(Tree a)`), exactly as the constructor's result type is — the same convention a monomorphic
+           sum's bare `IntList` self-reference uses, generalized to carry the declaration's params. So
+           `sm` folds a `Tree Int64` — `(Branch (tuple (Leaf 3) (Branch (tuple (Leaf 4) (Leaf 5)))))`
+           sums to 12. Pins that a bare self-reference in a generic sum is `(Tree a)`, not the
+           args-less type constructor (which would not unify with the `(Tree Int64)` a `Branch` value
+           carries). The parameter is annotated because inferring a recursive-sum parameter's
+           instantiation from its match arms is a separate increment.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Tree (Leaf a) (Branch (Tuple Tree Tree)))
+            (def (sm (: t (Tree Int64)))
+              (match t
+                ((Tree.Leaf n) n)
+                ((Tree.Branch (tuple l r)) (+ (sm l) (sm r)))))
+            (def (main)
+              (sm (Tree.Branch (tuple (Tree.Leaf 3)
+                                      (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
+            (export main)))
+  (output (: 12 Int64)))
+
+(case "a generic recursive sum with a bare self-reference nested in a list parameter"
+  (doc    "The companion where the bare self-reference is nested inside another type constructor: `(type
+           Rose (RLeaf a) (RNode (List Rose)))` — a rose tree whose `RNode` payload is a `List` of the sum
+           itself. The bare `Rose` inside `(List Rose)` is rewritten to `(Rose a)` at any depth, so
+           `(List Rose)` is `(List (Rose a))`. `sz` returns the child count of an `RNode`. Pins that the
+           bare-self-reference-carries-the-params rule descends through a compound payload type (`List`,
+           and equally `Tuple`/`Option`), not only a top-level bare occurrence.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Rose (RLeaf a) (RNode (List Rose)))
+            (def (sz (: t (Rose Int64)))
+              (match t
+                ((Rose.RLeaf n) n)
+                ((Rose.RNode xs) (List.len xs))))
+            (def (main) (sz (Rose.RNode (list (Rose.RLeaf 1) (Rose.RLeaf 2) (Rose.RLeaf 3)))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "a recursively-built linked list renders its full runtime spine"
   (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
            self-recursive function (so its length is decided at run time) is returned as the program's

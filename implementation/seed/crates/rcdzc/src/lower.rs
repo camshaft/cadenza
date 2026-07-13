@@ -26,24 +26,30 @@ use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved};
 use tracing::trace;
 
-/// A LAMBDA-LIFTED closure — a `(fn (param) body)` that survived lowering as a runtime value and was
-/// hoisted to a standalone wasm function. Its position in `db.lifted` is its funcref-TABLE slot. The
-/// backend selects it like a def body: `param` occupies wasm local slot 0, `body` is the returned
-/// expression. Only NO-CAPTURE (combinator) lambdas lift in this increment — `param` is the single
-/// parameter's binder occurrence (single-arity per `core-semantics.md`). The param + result machine
-/// types come from the lambda's SOLVED function type at its use site (captured in `param_ty`/`ret_ty`).
+/// A LAMBDA-LIFTED closure — a `(fn (param…) body)` that survived lowering as a runtime value and was
+/// hoisted to a standalone wasm function. Its position in `db.lifted` is its funcref-TABLE slot. Every
+/// closure is UNIFORMLY an `(env, param…) -> result` function (so a function-typed parameter can hold a
+/// capturing OR a non-capturing closure interchangeably): the closure CELL (`box-int(code)` + captures)
+/// is passed as the env at local slot 0, and the lambda's own parameters at slots 1.. . A body reference
+/// to a lambda parameter is a `Core::Param`; a reference to a CAPTURED free variable is a
+/// `Core::Captured { index }` that reads the env cell (recorded per-occurrence in `db.captured_ref`).
+/// The param + result machine types come from the lambda's body. A MULTI-parameter lambda is supported
+/// only when applied at FULL arity (a `(g a b)` application → one `call_indirect` with all args); a
+/// partial application of a runtime multi-param closure (runtime currying) still declines.
 /// `DESIGN-runtime-closures-rcdzc.md` §3.
 #[derive(Clone, PartialEq, Debug)]
 pub struct LiftedLambda {
     /// The lambda's `body` occurrence — the identity that dedups a lambda lifted more than once, and
     /// what the backend selects as the function body.
     pub body: StructId,
-    /// The single parameter's binder occurrence (wasm local slot 0).
-    pub param: StructId,
-    /// The parameter's solved machine type (from the lambda's function type at its use site).
-    pub param_ty: crate::ty::Ty,
+    /// The lambda's parameters, in order — each `(binder occurrence, solved machine type)`. They occupy
+    /// wasm local slots `1..1+params.len()` (slot 0 is the env cell).
+    pub params: Vec<(StructId, crate::ty::Ty)>,
     /// The result's solved machine type.
     pub ret_ty: crate::ty::Ty,
+    /// The captured free variables, in cell order (cell index `1 + position`). Each is the binder
+    /// occurrence of the enclosing binding the lambda body references. Empty for a combinator.
+    pub captures: Vec<StructId>,
 }
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
@@ -52,6 +58,19 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
         return c.clone();
+    }
+    // A CAPTURED-reference occurrence (a body reference to a free variable of a lifted lambda) reads the
+    // env cell — `Core::Captured` — rather than following the ref to its (out-of-scope) binding. Recorded
+    // by `lower_lambda_value` when the lambda was lifted; keyed by this reference occurrence. Checked
+    // before the ordinary resolved dispatch so the ref is not followed. (Not memoized into the column
+    // here — it is filled below like any node — but the map lookup is O(1) and the value is stable.)
+    if let Some(&(index, ref ty)) = db.captured_ref.get(&id) {
+        let c = Core::Captured {
+            index,
+            ty: ty.clone(),
+        };
+        db.core.fill(id, c.clone());
+        return c;
     }
     // Recursive-descent DEPTH GUARD. `compute` re-enters `core_of` for a node's sub-expressions, so a
     // pathologically deep nest (`(+ 1 (+ 1 …))` thousands deep) or an unproductive self-recursion a
@@ -85,6 +104,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A byte-string literal `b"…"` lowers to a `Core::BytesOf` of its bytes — each a fresh `UInt8`
+        // `Leaf::Int` synthesized into the arena (the SAME shape `(Bytes.of (list …))` and
+        // `String.to-bytes` build), so it bakes at escape, compares/slices/concats as a constant, and
+        // renders back `b"…"`. No runtime op for a constant.
+        Resolved::Bytes(bs) => {
+            let elems: Vec<StructId> = bs
+                .iter()
+                .map(|&byte| {
+                    db.push_atom(crate::ast::Leaf::Int {
+                        value: IntValue::from_i64(byte as i64),
+                        radix: crate::ast::Radix::Dec,
+                    })
+                })
+                .collect();
+            Core::BytesOf { elems }
+        }
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -285,6 +320,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // reachability notwithstanding. So keep the `Core::If` when the untaken branch is a non-trap
         // poison, letting that fault surface; fold otherwise. A runtime condition stays a `Core::If`.
         Resolved::If { cond, then_, else_ } => {
+            // NEGATED-CONDITION BRANCH SWAP: `(if (not c) t e)` ≡ `(if c e t)` — drop the negation by
+            // swapping the branches. The `not` (an `i32.eqz`) is pure and `c` is evaluated either way (so
+            // its trap, if any, is preserved), and the two forms select the same branch for every `c`. If
+            // `c`'s core is `Core::Not { operand }`, re-drive the fold with `operand` as the condition and
+            // the branches swapped — reusing the EXISTING `operand`/branch occurrences (no synthesis). A
+            // `(not (not c))` unwinds one layer per swap and the inner `Not` fold cancels the rest.
+            let (cond, then_, else_) = match core_of(db, cond) {
+                Core::Not { operand } => (operand, else_, then_),
+                _ => (cond, then_, else_),
+            };
             // CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition (runtime `c` only). Within the
             // THEN-branch `c` is known TRUE, within the ELSE-branch FALSE — so a branch that is ITSELF
             // `(if c' A B)` with `c'` EQUIVALENT to `c` (a syntactically-equal PURE condition; with no
@@ -456,26 +501,29 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
             // A RUNTIME CLOSURE APPLICATION: the head is a runtime FUNCTION VALUE that does NOT reduce to
             // a compile-time lambda and is NOT a known constructor/operator/type-builder — a
-            // function-typed PARAMETER `g` applied inside a body (`(g n)`), or a runtime-held closure. It
-            // cannot β-reduce (its value is unknown at compile time), so it applies via `call_indirect`:
-            // lower to `Core::CallClosure`. The head must be a `Resolved::Param` (the only runtime
-            // function-value source in this increment); a sum-variant constructor (`Ok`, whose type is
-            // also an arrow), an operator prim, a type builder, and a named def all have their own paths
+            // function-typed PARAMETER `g` applied inside a body (`(g n)` / `(g a b)`), or a runtime-held
+            // closure. It cannot β-reduce (its value is unknown at compile time), so it applies via
+            // `call_indirect`: lower to `Core::CallClosure`. The head must be a `Resolved::Param` (the
+            // only runtime function-value source); a sum-variant constructor (`Ok`, whose type is also an
+            // arrow), an operator prim, a type builder, and a named def all have their own paths
             // (constructors build, prims fold, defs β-reduce/inline) and must NOT be diverted here — so
             // this is gated on the head being a bare parameter, not merely on its type being `Ty::Fn`.
-            // Single-arity per `core-semantics.md`. Checked before the lambda-head path.
+            // A multi-arg application `(g a b)` is a FULL-arity call of a multi-param closure (all args
+            // pushed to one `call_indirect`); a PARTIAL application (fewer args than the closure's arity)
+            // is runtime currying — it must build an intermediate closure, which is not yet supported, so
+            // it declines at select (the `call_indirect` type won't match). Checked before the lambda path.
             if head_is_param(db, head)
                 && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
             {
-                if args.len() != 1 {
+                if args.is_empty() {
                     return Core::Poison(Reject::decline(
-                        "a runtime closure applies to one argument at a time (curried)",
+                        "a runtime closure applied to no arguments",
                     ));
                 }
-                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: runtime closure application → Core::CallClosure");
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, n_args = args.len(), "apply: runtime closure application → Core::CallClosure");
                 return Core::CallClosure {
                     closure: head,
-                    arg: args[0],
+                    args: args.to_vec(),
                 };
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
@@ -987,6 +1035,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         let pat_ty = match probe {
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
+            crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
             crate::core::Probe::Wild => None,
         };
         if let Some(pt) = pat_ty
@@ -1044,6 +1093,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     let const_scrut = match &scrut_core {
         Core::ConstInt(v) => Some(GuardFoldScrut::Int(v.clone())),
         Core::ConstBool(b) => Some(GuardFoldScrut::Bool(*b)),
+        Core::ConstStr(s) => Some(GuardFoldScrut::Str(s.clone())),
         _ => None,
     };
     if let Some(sc) = const_scrut {
@@ -1052,6 +1102,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             let probe_hit = match &sc {
                 GuardFoldScrut::Int(v) => probe_matches_int(probe, v),
                 GuardFoldScrut::Bool(b) => probe_matches_bool(probe, *b),
+                GuardFoldScrut::Str(s) => probe_matches_str(probe, s),
             };
             if !probe_hit {
                 continue; // this arm's pattern doesn't match the constant — try the next
@@ -1124,6 +1175,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 enum GuardFoldScrut {
     Int(IntValue),
     Bool(bool),
+    Str(String),
 }
 
 /// Walk a constant-value path from `root` down `steps`, returning the leaf's core if EVERY step lands
@@ -2002,6 +2054,10 @@ fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
     match resolved_of(db, pat) {
         Resolved::Int(v) => Some(crate::core::Probe::Int(v)),
         Resolved::Bool(b) => Some(crate::core::Probe::Bool(b)),
+        // A STRING-literal pattern (`("hello" …)`). Only the constant-scrutinee fold uses it (a runtime
+        // string match declines — `is_scalar` is Int/Bool); it is classified here so a match on a
+        // constant string selects its arm.
+        Resolved::Str(s) => Some(crate::core::Probe::Str(s)),
         _ => None,
     }
 }
@@ -2013,7 +2069,7 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
     match probe {
         crate::core::Probe::Int(p) => p.eq_value(v),
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Bool(_) => false,
+        crate::core::Probe::Bool(_) | crate::core::Probe::Str(_) => false,
     }
 }
 
@@ -2022,7 +2078,18 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
     match probe {
         crate::core::Probe::Bool(p) => *p == b,
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Int(_) => false,
+        crate::core::Probe::Int(_) | crate::core::Probe::Str(_) => false,
+    }
+}
+
+/// Whether a probe matches a constant string scrutinee (for the fold). A `Wild` matches anything; a
+/// string literal matches by VALUE equality (the `ConstStr` scrutinee and pattern are both already NFC-
+/// normalized by the reader, so `==` is exact — the same basis as the constant `String` equality fold).
+fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
+    match probe {
+        crate::core::Probe::Str(p) => p == s,
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Int(_) | crate::core::Probe::Bool(_) => false,
     }
 }
 
@@ -2040,103 +2107,155 @@ fn head_is_param(db: &mut Db, id: StructId) -> bool {
 }
 
 /// Lower a `(fn (param…) body)` that survives as a RUNTIME value — LAMBDA-LIFT it to a standalone
-/// function and produce a `Core::Closure` naming its funcref-table slot. Only a SINGLE-parameter,
-/// NO-CAPTURE (combinator) lambda lifts in this increment: a multi-param lambda (the curried case
-/// β-reduces via partial application before reaching here, so a bare multi-param survivor is rare) and
-/// a lambda with FREE VARIABLES (which would need the captures stored on a heap cell — a later step)
-/// both DECLINE. The lambda's parameter + result machine types come from its SOLVED function type at
-/// this occurrence (threaded by unification from the use site's expected `(-> A B)`).
+/// function and produce a `Core::Closure` naming its funcref-table slot + capture set. Single-parameter
+/// only (the curried surface reduces multi-param application via partial application upstream). The
+/// lambda's FREE VARIABLES are captured BY VALUE into the closure cell; each capturing reference in the
+/// body is recorded (`db.captured_ref`) so lowering that reference in the lifted body reads the env cell
+/// (`Core::Captured`) rather than following through to the (out-of-scope) binding. The param + result
+/// machine types come from the lambda's body (`type_of`).
 fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: StructId) -> Core {
-    // Single-arity only (the curried surface reduces multi-param application via partial application
-    // upstream; a bare multi-param lambda value has no single-arity table entry yet).
-    if params.len() != 1 {
+    // At least one parameter (a nullary lambda value has no use here). A multi-parameter lambda IS
+    // supported — it lifts to an `(env, p1, …, pn) -> result` function and is applied at FULL arity via
+    // one `call_indirect` (see the `Core::CallClosure` lowering). A PARTIAL application of a runtime
+    // multi-param closure (runtime currying) still declines at the application site, not here.
+    if params.is_empty() {
         return Core::Poison(Reject::decline(
-            "a multi-parameter lambda has no runtime form yet (only a single-arity closure lifts)",
+            "a nullary lambda has no runtime closure form",
         ));
     }
-    let param = crate::eval::param_name_occ(db, params[0]);
-    // NO-CAPTURE only: the body must reference no binding OUTSIDE the lambda (other than its own param
-    // and top-level defs / the prelude). A captured free variable needs a heap closure cell — a later
-    // increment — so decline it cleanly here rather than silently dropping the capture.
-    if lambda_captures(db, body, param, id) {
+    let param_occs: Vec<StructId> = params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
+    // Collect the ORDERED, DISTINCT capture set — the enclosing-binding occurrences the body references
+    // (other than ANY of its own params / top-level defs / the prelude), first-reference order. Each
+    // capturing REFERENCE occurrence is recorded → its capture index, so the lifted body reads it from
+    // the env.
+    let mut captures: Vec<StructId> = Vec::new();
+    let mut capture_refs: Vec<(StructId, usize)> = Vec::new();
+    if !collect_captures(db, body, &param_occs, id, &mut captures, &mut capture_refs) {
         return Core::Poison(Reject::decline(
-            "a closure that captures a free variable is not yet built (only a no-capture closure lifts)",
+            "a closure captures a value with no runtime representation (not yet built)",
         ));
     }
-    // The lambda's param + result machine types. A bare `(fn (x) …)` types with FRESH variables at its
-    // own occurrence (inference does not thread the use-site's expected `(-> A B)` back onto the arg's
-    // memoized type), so read the types from the BODY instead: the result is `type_of(body)`, and the
-    // param's type is what its uses in the body ground it to (`type_of` of the param occurrence). For
-    // the target `(fn (x) (* x 2))`, `2`'s Int64 grounds `*` → `x : Int64` and the body : Int64. A
-    // param the body does not constrain to a machine type declines below (no invented width).
+    // Each parameter's solved machine type. A bare `(fn (x) …)` types `Any` at its own occurrence
+    // (inference does not thread the use-site arrow back), so SOLVE it from the body's uses
+    // (`solve_lambda_param_ty`, the lambda analogue of the recursive-def A2 solve). A param the body does
+    // not constrain to a machine type declines below (no invented width). The RESULT type is the body's.
     let ret_ty = crate::infer::type_of(db, body);
-    let param_ty = crate::infer::type_of(db, param);
-    if crate::backend::wasm::lir::valtype_of(&param_ty).is_none()
-        || crate::backend::wasm::lir::valtype_of(&ret_ty).is_none()
-    {
+    let mut param_tys: Vec<(StructId, crate::ty::Ty)> = Vec::new();
+    for &p in &param_occs {
+        let pt = match crate::infer::type_of(db, p) {
+            crate::ty::Ty::Any => crate::infer::solve_lambda_param_ty(db, p, body),
+            t => t,
+        };
+        if crate::backend::wasm::lir::valtype_of(&pt).is_none() {
+            return Core::Poison(Reject::decline(
+                "a closure's parameter type has no machine representation",
+            ));
+        }
+        param_tys.push((p, pt));
+    }
+    if crate::backend::wasm::lir::valtype_of(&ret_ty).is_none() {
         return Core::Poison(Reject::decline(
-            "a closure's parameter or result type has no machine representation",
+            "a closure's result type has no machine representation",
         ));
+    }
+    // Every captured value must have a machine representation too (it is boxed into the cell).
+    for &cap in &captures {
+        if crate::backend::wasm::lir::valtype_of(&crate::infer::type_of(db, cap)).is_none() {
+            return Core::Poison(Reject::decline(
+                "a closure captures a value with no machine representation",
+            ));
+        }
+    }
+    // Record each capturing reference → its capture index + type, so `core_of` on that reference (when
+    // the LIFTED body is lowered) produces a `Core::Captured` reading the env cell. Keyed by the
+    // reference OCCURRENCE (unique per use), so it never collides with an ordinary ref elsewhere.
+    for (ref_occ, index) in capture_refs {
+        let ty = crate::infer::type_of(db, captures[index]);
+        db.captured_ref.insert(ref_occ, (index, ty));
     }
     // Register the lift (dedup by body occurrence); its position in `db.lifted` is its table slot.
     let code = db.lift_lambda(crate::lower::LiftedLambda {
         body,
-        param,
-        param_ty,
+        params: param_tys,
         ret_ty,
+        captures: captures.clone(),
     });
-    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, "lift lambda → Core::Closure (no-capture)");
-    Core::Closure {
-        code,
-        captures: Vec::new(),
-    }
+    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, n_params = params.len(), n_captures = captures.len(), "lift lambda → Core::Closure");
+    Core::Closure { code, captures }
 }
 
-/// Whether the lambda `body` references a FREE VARIABLE — a local binding (a `let` or an enclosing
-/// parameter) OTHER than this lambda's own `param`, lexically outside the lambda `lam_id`. Such a
-/// reference is a CAPTURE (the value must be stored in the closure cell). A reference to the lambda's
-/// own param, to a top-level def, or to a prelude name is NOT a capture. Conservative: any reference
-/// this cannot prove is non-capturing counts as a capture (so a capturing lambda declines rather than
-/// miscompiles). Walks the body's occurrences via the resolved column.
-fn lambda_captures(db: &mut Db, body: StructId, param: StructId, lam_id: StructId) -> bool {
-    // A `Resolved::Param` whose binder is NOT this lambda's param is a captured enclosing parameter.
-    match resolved_of(db, body) {
-        Resolved::Param { binder } => return binder != param,
-        // A `Ref` to a binding: a capture iff the binding is a LOCAL (a `let` init / a param) that sits
-        // OUTSIDE this lambda. A `Ref` to a top-level def (its body is a `db.defs` entry) or a prelude
-        // record is global — not a capture. Detected by whether the referenced binder occurrence is a
-        // user-program node lexically outside the lambda AND not a def body.
-        Resolved::Ref { value } => {
-            if db.def_index_by_body(value).is_some() {
-                return false; // a top-level def reference — global, not captured.
-            }
-            // A reference to a PRELUDE or evaluator-SYNTHESIZED node (`*`, `+`, a built `(Int W)` module)
-            // is global — not a capture. Only a USER-program binding can be captured. (A synthesized
-            // node also has no meaningful parent chain, so the `is_within` walk below would wrongly flag
-            // it.)
-            if !db.is_user_node(value) {
-                return false;
-            }
-            // A reference into the lambda's own subtree is local to it (its param, a nested let). A
-            // reference to a USER node OUTSIDE the lambda's subtree is a capture.
-            if !db.is_within(value, lam_id) {
+/// Collect the lambda body's FREE-VARIABLE capture set into `captures` (ordered, distinct, first-use
+/// order) and record each capturing REFERENCE occurrence → its capture index into `capture_refs`.
+/// Returns `false` if a capture cannot be represented (a decline). A reference is a capture iff it
+/// resolves to a USER-program binding (a `let` init / an enclosing parameter) lexically OUTSIDE the
+/// lambda `lam_id`; a reference to the lambda's own `param`, a top-level def, or a prelude name is NOT a
+/// capture. The captured VALUE identity is the binding occurrence the reference resolves to (so two
+/// references to the same free variable share ONE capture slot).
+fn collect_captures(
+    db: &mut Db,
+    node: StructId,
+    params: &[StructId],
+    lam_id: StructId,
+    captures: &mut Vec<StructId>,
+    capture_refs: &mut Vec<(StructId, usize)>,
+) -> bool {
+    match resolved_of(db, node) {
+        // A bare parameter USE: `Resolved::Param { binder }`. One of the lambda's OWN params → not a
+        // capture; an enclosing param → a capture keyed by that binder.
+        Resolved::Param { binder } => {
+            if params.contains(&binder) {
                 return true;
             }
-            // Within the lambda — recurse through the ref target to catch a nested capture.
-            return lambda_captures(db, value, param, lam_id);
+            record_capture(binder, node, captures, capture_refs);
+            return true;
+        }
+        Resolved::Ref { value } => {
+            if db.def_index_by_body(value).is_some() || !db.is_user_node(value) {
+                return true; // a top-level def / prelude / synthesized ref — global, not captured.
+            }
+            if !db.is_within(value, lam_id) {
+                // A USER binding outside the lambda — a capture. Its identity is `value` (the binding
+                // occurrence); this reference occurrence (`node`) reads it from the env.
+                record_capture(value, node, captures, capture_refs);
+                return true;
+            }
+            // Within the lambda (its params, a nested let) — recurse through the target for a nested
+            // capture (e.g. a `let`-local whose init references a free variable).
+            return collect_captures(db, value, params, lam_id, captures, capture_refs);
         }
         _ => {}
     }
-    // Descend into the children of the body's AST node (a form's operands, an if's branches, …).
-    match db.ast.get(body) {
+    // Descend into the AST children (a form's operands, an if's branches, a nested lambda's body).
+    match db.ast.get(node) {
         crate::ast::Struct::List(children) => {
             let children: Vec<StructId> = children.clone();
             children
                 .iter()
-                .any(|&c| lambda_captures(db, c, param, lam_id))
+                .all(|&c| collect_captures(db, c, params, lam_id, captures, capture_refs))
         }
-        crate::ast::Struct::Atom(_) => false,
+        crate::ast::Struct::Atom(_) => true,
     }
+}
+
+/// Record a captured binding: assign `binder` a capture slot (first-use order, deduped) and map the
+/// capturing reference occurrence `ref_occ` to that slot.
+fn record_capture(
+    binder: StructId,
+    ref_occ: StructId,
+    captures: &mut Vec<StructId>,
+    capture_refs: &mut Vec<(StructId, usize)>,
+) {
+    let index = captures
+        .iter()
+        .position(|&b| b == binder)
+        .unwrap_or_else(|| {
+            captures.push(binder);
+            captures.len() - 1
+        });
+    capture_refs.push((ref_occ, index));
 }
 
 /// A lambda application whose β-reduction DECLINED with `msg`: emit a runtime `Core::Call` if it
@@ -2201,6 +2320,18 @@ fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
 /// pays for itself only when it avoids a recompute). A constant, a single-use binding, or a poison is
 /// propagated (byte-neutral).
 fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
+    // A LAMBDA-valued binding is NEVER kept as a runtime `let` slot — it is copy-propagated so its
+    // applications fold (β-reduce) at each use. Short-circuit HERE, before `is_runtime_computation` calls
+    // `core_of(init)` — which for a lambda runs `lower_lambda_value`, LIFTING it speculatively and (for a
+    // capturing lambda) polluting `db.captured_ref` with the body's capturing-reference occurrences. Those
+    // occurrences are SHARED with the fold's reduced body (`(g 5)` → `(+ 5 k)` reuses the original `k`
+    // occurrence), so the stale `captured_ref` entry would then make the FOLDED `k` lower to a
+    // `Core::Captured` env-read in the ENCLOSING scope (where there is no env) — a miscompile (reading an
+    // uninitialized local). Checking `resolved_of` (not `core_of`) avoids triggering the lift. A lambda
+    // that genuinely escapes to runtime is lifted at its USE site, not kept here.
+    if matches!(resolved_of(db, init), Resolved::Lambda { .. }) {
+        return false;
+    }
     // A value that folds to a constant / atom leaves no computation to share — always propagate.
     if !is_runtime_computation(db, init) {
         return false;
@@ -2310,6 +2441,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -3104,6 +3236,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -3196,6 +3329,16 @@ fn arith_identity(
         // `x * 0` / `0 * x` → 0 — DISCARDS x, so only when x cannot trap.
         Prim::Mul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
         Prim::Mul if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
+        // WRAPPING arithmetic has the SAME algebraic identities as checked `+`/`*` — the wrap is total,
+        // so it never traps and the fold is value-identical (`a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`).
+        // The keeping folds preserve the surviving operand's traps; the annihilator `*% 0` DISCARDS the
+        // other operand, so it too is guarded on trap-freedom (`(/ x 0) *% 0` must still trap).
+        Prim::WrappingAdd if is(rc, 0) => Some(lc.clone()),
+        Prim::WrappingAdd if is(lc, 0) => Some(rc.clone()),
+        Prim::WrappingMul if is(rc, 1) => Some(lc.clone()),
+        Prim::WrappingMul if is(lc, 1) => Some(rc.clone()),
+        Prim::WrappingMul if is(rc, 0) && is_trap_free(db, lhs) => Some(zero()),
+        Prim::WrappingMul if is(lc, 0) && is_trap_free(db, rhs) => Some(zero()),
         // `x | 0` / `0 | x` / `x ^ 0` / `0 ^ x` → x.
         Prim::BitOr | Prim::BitXor if is(rc, 0) => Some(lc.clone()),
         Prim::BitOr | Prim::BitXor if is(lc, 0) => Some(rc.clone()),
@@ -3776,6 +3919,16 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
     match ty {
         // Scalar leaves — the base case the walk compares directly (equal canonical raw bytes).
         Ty::Int(_) | Ty::Bool | Ty::Unit => true,
+        // An UNCONSTRAINED type variable — a PHANTOM parameter no value in this comparison instantiates.
+        // It arises for a SIBLING variant of a multi-parameter sum whose param the compared values do not
+        // use: `(= (Ok 6) (Ok 6))` types the operand `Result Int64 ?b` (the `Err` parameter `b` is free —
+        // no `Err` value exists here), so walking `Result`'s variants reaches `Err`'s payload `?b`. A bare
+        // unconstrained var is SCALAR-SAFE for the walk: it can only ground to a phantom (unit-like) type,
+        // NEVER to a concrete non-canonical leaf — a `List`/`Bytes`/`String` is a concrete `Ty` (it reaches
+        // the arm below), and a var CONSTRAINED to a collection is substituted to that concrete `Ty` before
+        // reaching here. Treating it as walkable admits only the genuinely-phantom case; rejecting it was
+        // over-conservative and declined `(= (Ok x) (Ok 6))` though the compared `Ok` values ARE walkable.
+        Ty::Var(_) => true,
         // A tuple/record — walkable iff every element/field is. (An empty tuple is unit, trivially so.)
         Ty::Tuple(elems) => {
             let elems: Vec<Ty> = elems.to_vec();
@@ -3818,14 +3971,9 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
         // canonical form needs machinery this increment does not emit, or it is not a runtime value that
         // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
-        Ty::List(_)
-        | Ty::Bytes
-        | Ty::String
-        | Ty::Float
-        | Ty::Fn(_, _)
-        | Ty::Var(_)
-        | Ty::Type
-        | Ty::Any => false,
+        Ty::List(_) | Ty::Bytes | Ty::String | Ty::Float | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
+            false
+        }
     }
 }
 
@@ -4273,8 +4421,17 @@ fn lower_wrapping_arith(db: &mut Db, prim: Prim, lhs: StructId, rhs: StructId) -
             Core::ConstInt(IntValue::from_i64(n))
         }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        // A runtime operand — the RAW (non-trapping) machine op, selected in the backend from this prim.
-        _ => Core::Arith { op: prim, lhs, rhs },
+        // ALGEBRAIC IDENTITY: one operand is a constant making the wrapping op a no-op (`a +% 0`,
+        // `a *% 1`) or a constant (`a *% 0 → 0`) — elide the op. Shares the checked-arith `arith_identity`
+        // helper (which now handles the wrapping prims), so the two families stay in lockstep.
+        (lc, rc) => {
+            if let Some(simplified) = arith_identity(db, prim, lhs, &lc, rhs, &rc) {
+                trace!(target: "rcdzc::lower", ?prim, "wrapping-arithmetic identity simplified (op elided)");
+                return simplified;
+            }
+            // A runtime operand — the RAW (non-trapping) machine op, selected in the backend from this prim.
+            Core::Arith { op: prim, lhs, rhs }
+        }
     }
 }
 
@@ -4343,16 +4500,26 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
             "Bytes.at result is not the built-in Option sum",
         ));
     };
-    // FOLD a constant `Bytes.of` indexed by a constant integer.
+    // FOLD a `Bytes.of` indexed by a constant integer. An OUT-OF-BOUNDS constant index folds to `None`
+    // regardless of the elements (the length is statically known). An IN-BOUNDS index folds to `Some
+    // <byte>` ONLY when that element is a compile-time CONSTANT: the `Some` payload is an `Int64`, and a
+    // constant byte's core folds through that width, but a RUNTIME element occurrence is a `UInt8` (an i32
+    // value) that would sit in the i64 `Some(Int64)` payload UN-WIDENED → invalid wasm ("expected i64,
+    // found i32"). So a runtime-element in-bounds read falls through to the runtime `Core::BytesAt` below,
+    // which reads the byte and zero-extends it to the payload's i64 width. (`Bytes.at (Bytes.of (list 5))
+    // 0)` folds; `Bytes.at (Bytes.of (list n)) 0` with `n` runtime takes the runtime read.)
     if let (Core::BytesOf { elems }, Core::ConstInt(i)) = (core_of(db, bytes), core_of(db, index)) {
         match i.to_i64() {
             Some(n) if n >= 0 && (n as usize) < elems.len() => {
-                // The byte at `n` is a constant `Int64` element occurrence — its own core is the payload.
-                trace!(target: "rcdzc::fold", node = id.0, index = n, "Bytes.at folds to Some (in-bounds constant index)");
-                return Core::SumNew {
-                    disc: disc_some,
-                    payloads: vec![elems[n as usize]],
-                };
+                if matches!(core_of(db, elems[n as usize]), Core::ConstInt(_)) {
+                    trace!(target: "rcdzc::fold", node = id.0, index = n, "Bytes.at folds to Some (in-bounds constant index + constant element)");
+                    return Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![elems[n as usize]],
+                    };
+                }
+                // A runtime element at an in-bounds constant index — fall through to the runtime read
+                // (which widens the byte to the Int64 payload); the constant fold would not widen it.
             }
             _ => {
                 trace!(target: "rcdzc::fold", node = id.0, "Bytes.at folds to None (out-of-bounds constant index)");
@@ -4363,7 +4530,7 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
             }
         }
     }
-    // A runtime bytes or runtime index — emit the bounds-checked runtime read.
+    // A runtime bytes/element or runtime index — emit the bounds-checked runtime read.
     Core::BytesAt {
         bytes,
         index,

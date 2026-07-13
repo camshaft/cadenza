@@ -562,6 +562,14 @@ pub struct Db {
     /// program with no runtime closure — byte-identical to before. `DESIGN-runtime-closures-rcdzc.md` §3.
     pub(crate) lifted: Vec<crate::lower::LiftedLambda>,
 
+    /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
+    /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
+    /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
+    /// that reference produces a `Core::Captured` (an env-cell read) rather than following the ref to the
+    /// out-of-scope binding. Keyed by the reference OCCURRENCE (unique per use). Empty for a program with
+    /// no capturing closure. `DESIGN-runtime-closures-rcdzc.md` §3.
+    pub(crate) captured_ref: crate::fxhash::FxHashMap<StructId, (usize, Ty)>,
+
     /// The set of subtree roots [`crate::resolve::resolve_subtree`] has ALREADY fully walked. That
     /// function eagerly resolves every node under a root to PIN an argument's meaning before
     /// β-reduction re-parents it; `apply_lambda` calls it on each argument at EVERY application. The
@@ -714,6 +722,7 @@ impl Db {
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
+            captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
@@ -1038,6 +1047,29 @@ impl Db {
             .and_then(|t| t.synth)
     }
 
+    /// The constructor-field occurrence a BARE variant name denotes — `NLit` for `(type Node (NLit …) …)`,
+    /// the same field a qualified `(. Node NLit)` projects. A nullary variant used as a VALUE may be
+    /// written bare (`NNil`, not `(. Node NNil)` — `core-semantics.md` §A Sum Type Constructor Is A
+    /// Single-Arity Function), and a payload variant bare-applied (`(NLit 5)`); both resolve here to the
+    /// ctor field, then take the ordinary application/`(meta variant)` paths. The BUILT-IN prelude sums
+    /// (`Some`/`None`/`Ok`/`Err`) bind their bare variant names in the prelude map at load; this is the
+    /// same binding for a USER `(type …)` declaration, resolved generically (a scan of `type_decls`, no
+    /// name special-case). FIRST-WINS across declarations: if two sums declare a same-named variant a
+    /// bare reference takes the first-declared, and a qualified `(. Type Variant)` disambiguates — exactly
+    /// how `type_decl_by_name` / `def_by_name` resolve a shared name. `None` if no declared sum has a
+    /// variant named `name`.
+    pub fn variant_ctor_by_name(&self, name: &str) -> Option<StructId> {
+        for decl in &self.type_decls {
+            if decl.variants.iter().any(|v| v.name == name)
+                && let Some(record) = decl.synth
+                && let Some(field) = crate::sums::variant_ctor_field(&self.ast, record, name)
+            {
+                return Some(field);
+            }
+        }
+        None
+    }
+
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
     /// nominal identity a `Ty::Sum { decl }` carries. Used by the escape renderer to recover a sum's
     /// variant names + payload types from its type-value. `None` if `occ` names no declaration.
@@ -1128,6 +1160,19 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
     // guard reference to its binder would be spuriously unbound.
     if let Some(h) = ast.head_name(form)
         && matches!(h, "let" | "fn" | "def" | "guard")
+    {
+        return true;
+    }
+    // A NESTED `(do …)` block whose forms include a `(def …)` declaration binds that name for the
+    // following forms (`resolve::binder_in`'s Case 8). Without the `do` as a candidate the scope-skip
+    // index would hop PAST it and Case 8 would never fire, so a reference to a do-local declaration would
+    // be spuriously unbound (the `is_binding_candidate` trap: every binding form MUST be listed here). A
+    // `do` with NO declaration binds nothing, so it need not be a candidate — a plain value-sequencing
+    // block stays on the fast non-binding spine. The PROGRAM ROOT do is EXCLUDED: its defs are the
+    // top-level scan's (resolved file-scoped by name), not a lexical do-scope (see `do_local_binds`).
+    if form != ast.root
+        && let Some(forms) = ast.as_form(form, "do")
+        && forms.iter().any(|&f| ast.head_name(f) == Some("def"))
     {
         return true;
     }

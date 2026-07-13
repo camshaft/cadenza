@@ -517,6 +517,15 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     {
         let forms: Vec<StructId> = forms.to_vec();
         for f in forms {
+            // A do-local `(def …)` is a BINDING, not an unconditionally-evaluated statement: its value is
+            // computed only where the name is used, so a provable trap in an UNUSED declaration is not a
+            // build failure (it is the CDZ0305 "always traps but never used" warning a `let` binding
+            // gets, raised by the DCE pass — not a `collect_reached_poisons` fault). A USED declaration's
+            // trap is reached through the reference site (the value is inlined there), so it is caught
+            // there. So a def-form is skipped here; only a pure STATEMENT form is unconditional.
+            if db.ast.head_name(f) == Some("def") {
+                continue;
+            }
             collect_reached_poisons(db, f, out);
         }
         return;
@@ -649,12 +658,16 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, c, out);
             }
         }
-        Core::CallClosure { closure, arg } => {
+        Core::CallClosure { closure, args } => {
             collect_reached_poisons(db, closure, out);
-            collect_reached_poisons(db, arg, out);
+            for arg in args {
+                collect_reached_poisons(db, arg, out);
+            }
         }
-        // A parameter or let-binding reference is a runtime local read — no sub-poison to collect.
-        Core::LocalRef { .. }
+        // A parameter, a let-binding reference, or a CAPTURED-variable read is a runtime read — no
+        // sub-poison to collect.
+        Core::Captured { .. }
+        | Core::LocalRef { .. }
         | Core::Param { .. }
         | Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -771,6 +784,7 @@ fn walk_for_dead_traps(
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)

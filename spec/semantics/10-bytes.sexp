@@ -575,6 +575,22 @@
             (def (main)   (at (Bytes.of (list 10 20 30)) 9)) (export main)))
   (output (: -1 Int64)))
 
+(case "reading a byte from a sequence built with a RUNTIME element widens it to the Option payload"
+  (doc    "`(Bytes.of (list n))` with `n : UInt8` a parameter builds a one-byte sequence from a RUNTIME
+           value; `(Bytes.at … 0)` reads that byte back as `Some x`, `x = 5` for n = 5. The read must
+           reconcile the STORED byte's width (UInt8 / i32) with the `Some` payload's width (Int64 / i64):
+           the stored byte is zero-extended to the payload. Was INVALID WASM ('expected i64, found i32') —
+           the `Bytes.at` fold used the raw UInt8 element occurrence as the Some(Int64) payload without
+           widening (correct only for a CONSTANT element, whose core folds through the width; a runtime
+           element must take the runtime read). A constant-element read (`(Bytes.at (Bytes.of (list 5))
+           0)`) folds and was always fine; this pins the runtime-stored byte is widened on read.")
+  (needs  fallible-access)
+  (input  (do
+            (def (main (: n UInt8)) (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1)))
+            (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 5 Int64)))
+
 (case "a recursive byte walk sums a runtime sequence via Bytes.at and match"
   (doc    "The reader's shape: walk a runtime byte sequence from index 0, matching `(Bytes.at b i)` on
            each step — `Some` binds the byte and recurses with `i+1`, `None` (past the end) terminates

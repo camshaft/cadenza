@@ -313,6 +313,30 @@
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+(case "two runtime Ok values of a multi-parameter sum compare equal by a heap walk"
+  (doc    "The MULTI-PARAMETER-sum companion: `Result` has TWO type parameters (`Ok a`, `Err b`), and
+           `(Ok (sumto 3))` fixes only `a = Int64` — the `Err` parameter `b` is a PHANTOM no value here
+           instantiates. `(= (Ok (sumto 3)) (Ok 6))` builds both operands from recursion (unfoldable), so
+           the runtime `value-eq` heap walk runs; the two `Ok` values carry equal Int64 payloads → 1. Pins
+           that an UNCONSTRAINED type parameter of a SIBLING variant (`Err b`) does not block the walk: a
+           phantom parameter carries no runtime structure, so it is scalar-safe. A generation that walked
+           every variant's payload type and rejected the free `b` declined this though the compared `Ok`
+           values are exactly walkable — the walkability check must admit a bare unconstrained variable.")
+  (input  (do
+            (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
+            (def (main) (if (= (Ok (sumto 3)) (Ok 6)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk"
+  (doc    "The unequal companion: `(sumto 3)` = 6, so `(Ok (sumto 3))` carries 6 while `(Ok 7)` carries 7
+           — the heap walk finds the payloads differ and the comparison is false → 0. Confirms the
+           phantom-`Err`-parameter `Result` comparison is a genuine content test, not a fold that
+           happened to say true.")
+  (input  (do
+            (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
+            (def (main) (if (= (Ok (sumto 3)) (Ok 7)) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
 (case "a runtime sum equality drives a tail-recursive loop"
   (doc    "The runtime heap walk `=` used as the CONDITION of a tail-recursive function that compiles to a
            wasm LOOP: `find` searches upward from 0 for the `n` whose `(N.I n)` equals `(N.I 3)`, so the
@@ -375,6 +399,59 @@
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
             (def (find n) (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1)))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
+(case "a runtime sum equality as a match SCRUTINEE drives a tail-recursive loop"
+  (doc    "The runtime heap walk `=` used as the SCRUTINEE of a `match` (a Bool the arms dispatch on),
+           inside a tail-recursive loop: `find` matches `(= (mk n) (mk 3))` — `true` returns `n`, `false`
+           iterates `(find (+ n 1))`. `find(0)` = 3. The scrutinee is a COMPUTED value (a value-eq, not a
+           bare local), so it is evaluated ONCE into a slot; its i32 heap-handle scratch must not be reused
+           by the arm bodies' i64 iteration arithmetic — the probe chain starts ABOVE the scrutinee emit's
+           high-water, not a bare `base+1`. A generation that fixed the probe floor at `base+1` reused a
+           value-eq handle slot for the branch arithmetic (`expected i64, found i32`).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (mk n) (N.I n))
+            (def (find n) (match (= (mk n) (mk 3)) (true n) (false (find (+ n 1)))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
+(case "a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop"
+  (doc    "The literal-probe companion of the guarded-wildcard loop case: the first arm is `(guard 3 <cond>)`
+           — a LITERAL probe (`n == 3`) AND a runtime `value-eq` guard — with a fall-through that iterates.
+           `find(0)` climbs until `n == 3`, where the guard `(= (mk n) (mk 3))` also holds, returning 300.
+           A literal-probe-plus-guard nests `if (n==3) { if <guard> body else <fall> } else <fall>` — the
+           guard's i32 handle scratch (in the THEN) types a slot the OUTER probe-else's i64 iteration
+           arithmetic must not reuse (the two `if` branches share one function-global local declaration).
+           Pins that the probe-else starts scratch above the THEN's high-water — the same discipline the
+           `if`-condition and guarded-wildcard cases exercise, here at the literal-probe/guard seam.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (mk n) (N.I n))
+            (def (find n) (match n ((guard 3 (= (mk n) (mk 3))) 300) (_ (find (+ n 1)))))
+            (def (main) (find 0)) (export main)))
+  (output (: 300 Int64)))
+
+(case "a value-eq guard on a SUM-match arm drives a tail-recursive loop"
+  (doc    "The sum-match-decision-tree companion: the scrutinee is a genuine heap SUM (`(bump n)`, a call so
+           it does not fold), matched by a variant pattern `(N.I x)` with a runtime `value-eq` GUARD, and a
+           fall-through arm that iterates. `find(0)` climbs until `x == 3`. The decision tree emits `if
+           (sum-disc == I) { if <guard> body else <fall> } else <fall>`; the guard's i32 handle scratch (in
+           the disc-matched THEN) types a slot the disc-switch's ELSE fall-through i64 iteration arithmetic
+           must not reuse. Pins the branch-scratch discipline at the SUM-match seam (`emit_sum_cont`'s
+           guarded-arm + disc-switch), distinct from the scalar-match probe chain: the fall-through of BOTH
+           the guard `if` and the disc-switch `if` must clear the arm's heap-handle high-water.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (bump n) (if (< n 0) (N.J n) (N.I n)))
+            (def (mk n) (N.I n))
+            (def (find n) (match (bump n)
+                            ((guard (N.I x) (= (mk x) (mk 3))) x)
+                            (_ (find (+ n 1)))))
             (def (main) (find 0)) (export main)))
   (output (: 3 Int64)))
 

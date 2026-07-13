@@ -28,6 +28,83 @@
               (add-y 4))))
   (output (: 7 Int64)))
 
+; A lambda that references an ENCLOSING binding and is applied INSIDE that binding's scope — the capture
+; is a free variable bound further out, not inside the lambda's own body. core-semantics.md §A Function
+; Value Captures The Bindings In Scope Where It Is Created: `(+ x k)` reads `k` from the enclosing `let`.
+; Applying the lambda β-reduces `(+ 5 k)` and `k` must still resolve to that enclosing `k` — the free
+; variable is PRESERVED across the reduction, not lost. (A generation that copied the free name into an
+; orphan scope would report `k` unbound; this pins that a captured enclosing binding survives.)
+
+(case "a lambda applied in the scope of the binding it captures observes that binding"
+  (doc    "`(let ((k 10)) ((fn (x) (+ x k)) 5))` — the lambda captures `k` from the enclosing `let` and is
+           applied to 5 inside that `let`. The application reduces to `(+ 5 k)` with `k = 10`, yielding
+           15. The captured free variable `k` binds OUTSIDE the lambda body, so β-reducing the application
+           must preserve its resolution to the enclosing `let`, not lose it.")
+  (input  (let ((k 10)) ((fn ((: x Int64)) (+ x k)) 5)))
+  (output (: 15 Int64)))
+
+(case "a lambda captures an enclosing function parameter and is applied in its body"
+  (doc    "The same capture over a def PARAMETER rather than a `let`: `(def (f k) ((fn (x) (+ x k)) 5))`
+           — the lambda captures `f`'s parameter `k` and is applied inside `f`'s body. `f(10)` reduces
+           `(+ 5 k)` with `k = 10` = 15. Pins that an enclosing PARAMETER is captured and preserved
+           across the β-reduction exactly as an enclosing `let` binding is.")
+  (input  (do
+            (def (f (: k Int64)) ((fn ((: x Int64)) (+ x k)) 5))
+            (def (main (: k Int64)) (f k)) (export main)))
+  (call   main (: 10 Int64))
+  (output (: 15 Int64)))
+
+; A capturing lambda BOUND to a name (a `let` binding) and then applied — `(let ((g (fn (x) (+ x k))))
+; (g 5))` where `g` closes over an enclosing `k`. Binding the closure to a name does not change that it
+; folds when applied: `g` is copy-propagated (a lambda value is never kept as a runtime slot), so `(g 5)`
+; β-reduces to `(+ 5 k)` and `k` resolves to its enclosing binding. Pins that a NAMED capturing closure
+; applied directly folds exactly as the anonymous form does.
+
+(case "a named capturing closure applied directly folds through its capture"
+  (doc    "`(let ((k 10)) (let ((g (fn (x) (+ x k)))) (g 5)))` — `g` is a let-bound closure capturing the
+           outer `k`; applying it yields (+ 5 10) = 15. A NAMED capturing closure applied directly must
+           fold like the anonymous `((fn (x) (+ x k)) 5)` form — the name binding is transparent.")
+  (input  (let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5))))
+  (output (: 15 Int64)))
+
+(case "a named capturing closure applied more than once folds at each use"
+  (doc    "The same named closure `g` applied twice — `(+ (g 5) (g 6))` with `g = (fn (x) (+ x k))`,
+           k = 10 — folds each application: (5+10) + (6+10) = 31. Two uses of a capturing closure each
+           β-reduce independently; the closure value is not built at run time.")
+  (input  (let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (+ (g 5) (g 6)))))
+  (output (: 31 Int64)))
+
+; A closure factory — a function RETURNING a capturing closure — whose result is applied at the call
+; site. `(mk k)` returns `(fn (x) (+ x k))` closing over `k`; `((mk 10) 5)` applies that returned
+; closure. core-semantics.md §A Function Is A First-Class Value ("returned as a result") composed with
+; capture: the returned closure carries `mk`'s parameter `k`. The whole chain folds — `mk` inlines,
+; the returned lambda β-reduces — so no runtime closure survives.
+
+(case "a closure factory's returned capturing closure is applied at the call site"
+  (doc    "`(def (mk k) (fn (x) (+ x k)))` returns a closure over `k`; `((mk 10) 5)` = (+ 5 10) = 15. The
+           returned closure captures the factory's parameter and applies correctly — a returned closure
+           composed with a capture, both folded away.")
+  (input  (do
+            (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
+            (def (main) ((mk 10) 5)) (export main)))
+  (output (: 15 Int64)))
+
+(case "a capturing closure stored in a tuple is extracted and applied"
+  (doc    "A capturing closure `(fn (x) (+ x k))` (over an enclosing `k = 7`) stored as a tuple element,
+           projected out, and applied: `((. (tuple (fn (x) (+ x k)) 9) 0) 5)` = (+ 5 7) = 12. Storing a
+           capturing closure in a data structure and reading it back preserves its capture — the whole
+           thing folds (the tuple projection reaches the closure, which β-reduces).")
+  (input  (let ((k 7))
+            ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5)))
+  (output (: 12 Int64)))
+
+(case "a closure capturing two enclosing bindings folds through nested arithmetic"
+  (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
+           a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
+           `let`s are each preserved and folded through a nested arithmetic body.")
+  (input  (let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5)))
+  (output (: 13 Int64)))
+
 (case "a function is passed as an argument (higher-order)"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: apply-twice takes a function
            f and a value v and applies f to the result of applying f to v.")
@@ -59,6 +136,21 @@
   (input  (let ((adder (fn (n) (fn (x) (+ x n)))))
             ((adder 10) 5)))
   (output (: 15 Int64)))
+
+(case "a multi-parameter closure keeps its captured environment distinct from its arguments"
+  (doc    "A closure that BOTH captures multiple variables AND takes multiple parameters must keep the two
+           sets of slots distinct — the captured environment (`a`, `b`) and the applied arguments (`x`, `y`)
+           must not be confused by the closure calling convention. `(mk a b)` returns `(fn (x y) (+ (* a x)
+           (* b y)))`; with distinguishable powers-of-ten weights any env/arg swap changes the result:
+           `((mk 1 1000) 7 3)` = 1·7 + 1000·3 = 3007. A convention that read an argument where a capture
+           belongs (or vice versa) would give a different number (7·1 + 3·1000, or 1·1 + 1000·1). Pins that
+           a multi-param closure's environment cells and argument slots are separately addressed — captures
+           first, then the full-arity arguments.")
+  (input  (do
+            (def (mk (: a Int64) (: b Int64)) (fn (x y) (+ (* a x) (* b y))))
+            (def (main) ((mk 1 1000) 7 3))
+            (export main)))
+  (output (: 3007 Int64)))
 
 ; A function SELECTED BY A RUNTIME CONDITION and then applied — `((if b f g) x)`. `core-semantics.md`
 ; §A Function Is A First-Class Value: a function is a value an `if` may return, so applying the `if`'s
@@ -128,6 +220,64 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 306 Int64)))
+
+; A CAPTURING closure through the recursive HOF — the lambda closes over a free variable `k` from its
+; creation scope. `core-semantics.md` §A Function Value Captures The Bindings In Scope Where It Is
+; Created: `k` is captured BY VALUE into the closure, so each `g(i)` observes the captured `k`. The
+; closure is a heap cell (the code pointer + the captured `k`); applying it reads `k` back from the
+; cell. `apply-sum (fn (x) (+ x k)) 3 = (3+k)+(2+k)+(1+k) = 6 + 3k`.
+
+(case "a capturing closure is applied through a recursive higher-order function"
+  (doc    "The lambda `(fn (x) (+ x k))` CAPTURES `k` from `main`'s scope — a genuine runtime closure
+           with an environment, not just a code pointer. Passed to the recursive `apply-sum` and applied
+           at each step, every application observes the captured `k`. With k=10: (3+10)+(2+10)+(1+10) =
+           36. A generation that cannot store a captured value in the closure declines.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 36 Int64)))
+
+; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
+; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
+; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls
+; out; the closure lifts with that machine type, needing no annotation. Same runtime path as the
+; annotated case above, only the parameter's type is inferred rather than declared.
+
+(case "an unannotated closure parameter is grounded from its body and applied at runtime"
+  (doc    "`(fn (x) (* x 2))` has no annotation on `x`; its type is solved from the body's `(* x 2)`
+           (an integer operand → `x : Int64`). Passed to the recursive `apply-sum` and applied via the
+           indirect call, `apply-sum (fn (x) (* x 2)) 3 = 6+4+2 = 12`. Pins that a bare-parameter lambda
+           lifts to a runtime closure without requiring an explicit parameter type.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: n Int64)) (apply-sum (fn (x) (* x 2)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 12 Int64)))
+
+; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
+; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
+; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and
+; applies via a single indirect call (no intermediate closure). `ap2 (fn (a b) (+ a b)) n` sums
+; `(g i i)` for i = n…1, i.e. `2·(n + … + 1) = n·(n+1)`. (A PARTIAL application of a runtime multi-param
+; closure — runtime currying — still declines: it would need to build the intermediate closure.)
+
+(case "a two-parameter closure is applied at full arity through a recursive HOF"
+  (doc    "`ap2` applies its two-argument function `g` to `(g i i)` at each recursion level and sums the
+           results. `g = (fn (a b) (+ a b))` lifts to a two-parameter closure `(env, a, b) → result`
+           applied at full arity; with n=3 the sum is (3+3)+(2+2)+(1+1) = 12. Pins that a multi-parameter
+           lambda VALUE runs at run time when applied to all its arguments at once.")
+  (input  (do
+            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64))
+              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1)))))
+            (def (main (: n Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ a b)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 12 Int64)))
 
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
@@ -970,6 +1120,51 @@
             (def (main (: v Int64)) (get-x v))
             (export main)))
   (error  CDZ0201))
+
+; --- A recursive parameter used ONLY as a call argument infers from the callee -----------------------
+; A RECURSIVE def's parameter that no primitive operator ever touches — it is only PASSED AS AN ARGUMENT
+; to another def, threaded unchanged through the recursion — is still determined: its type is the
+; callee's parameter type at that position. `(def (f a n) (… (twice a) … (f a (- n 1))))` uses `a` only
+; in `(twice a)`, so `a`'s type is `twice`'s parameter type (Int64, pinned by `twice`'s own `(+ a a)`).
+; The recursive-parameter solver reads that argument-position constraint; without it `a` stayed
+; unconstrained and the def declined "a recursive function with an unannotated parameter is not yet
+; inferred", refusing a well-typed program (annotating `a` compiled the same program — inference, not
+; codegen, was the gap). The constraint is precise: a parameter passed to a POLYMORPHIC callee (whose
+; parameter is itself unconstrained) is NOT pinned, so a generic position stays generic. This is the last
+; inference piece the byte-walking reader family (a `Bytes` param threaded through a recursive walk via a
+; helper) needs — see the CBOR-reader cases in 10-bytes.sexp.
+
+(case "a recursive parameter used only as a call argument infers from the callee's parameter type"
+  (doc    "`f` is recursive; its parameter `a` is threaded unchanged through the recursion and used ONLY
+           as the argument of `(twice a)` — no primitive operator touches `a` directly. Its type is
+           `twice`'s parameter type: `twice`'s body `(+ a a)` pins that parameter to Int64, so `a` infers
+           Int64 without an annotation. Was declined ('a recursive function with an unannotated parameter
+           is not yet inferred') because the solver derived a constraint only from an operator applied to
+           the parameter or the self-call, never from an argument position. `f(5, 3)` sums `twice(5)` =
+           10 three times → 30. Inference, not codegen, was the only gap.")
+  (input  (do
+            (def (twice a) (+ a a))
+            (def (f a n) (if (< n 1) 0 (+ (twice a) (f a (- n 1)))))
+            (def (main) (f 5 3)) (export main)))
+  (call   main)
+  (output (: 30 Int64)))
+
+(case "a recursive byte walk threading a Bytes parameter through a helper infers without annotation"
+  (doc    "The motivating instance (the CBOR-reader family): `be` is recursive; its `Bytes` parameter `b`
+           is threaded unchanged and used only as the first argument of `(byte-at b i)`. `byte-at`'s body
+           `(match (Bytes.at b i) …)` pins its first parameter to `Bytes`, so `b` infers `Bytes` from that
+           argument position — no annotation needed. The non-recursive helper `byte-at` itself needs no
+           annotation. The bytes 1, 2, 3 are read and summed over three steps → 6. Was declined for want
+           of the argument-position constraint.")
+  (input  (do
+            (def (byte-at b i)
+              (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
+            (def (be b i n)
+              (if (< n 1) 0 (+ (byte-at b i) (be b (+ i 1) (- n 1)))))
+            (def (main) (be (Bytes.of (list 1 2 3)) 0 3))
+            (export main)))
+  (call   main)
+  (output (: 6 Int64)))
 
 ; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
 ; NEAREST enclosing binding of that name — regardless of the name's capitalization. So a `def` whose name

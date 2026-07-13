@@ -72,6 +72,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Int(_) => Ty::int(),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
+        Resolved::Bytes(_) => Ty::Bytes,
         Resolved::Float(_) => Ty::Float,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
@@ -271,6 +272,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // uses; a still-`None` result means either a non-recursive param (typed `Any` — it inlines at
         // its call site, where the argument's type flows in via the fold) or an unconstrained one.
         Resolved::Param { binder } => param_annot_ty(db, binder)
+            .or_else(|| crate::effects::handle_arm_param_ty(db, binder))
             .or_else(|| solved_param_ty(db, binder))
             .unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
@@ -370,6 +372,77 @@ fn solved_param_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     }
     solve_recursive_params(db, def);
     db.param_types.get(&binder).cloned()
+}
+
+/// The type of the `k`-th parameter of def `callee`, for constraining an argument passed there from
+/// another def's recursive-param solve. Sources, in order: (a) an explicit ANNOTATION on the param; (b)
+/// a param whose type is already solved in `db.param_types` (a recursive callee, or one solved earlier);
+/// (c) otherwise, collect the callee's OWN body constraints (the same operator/if/self-call collection
+/// `solve_recursive_params` runs) over a fresh env and read the k-th param's solved type — this pins a
+/// NON-recursive unannotated helper's param (`byte-at`'s `b` ⇒ `Bytes` via `(Bytes.at b i)`) without
+/// requiring the helper to have a standalone scheme. Returns `None` (no constraint) if the param stays
+/// undetermined or `callee` has no such param. Guarded against re-entry (a cycle) by `db.solving_params`.
+fn callee_param_ty(db: &mut Db, callee: usize, k: usize) -> Option<Ty> {
+    let params = db.defs[callee].params.clone();
+    let p = *params.get(k)?;
+    let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+        Some(name_occ) => name_occ,
+        None => p,
+    };
+    if let Some(t) = param_annot_ty(db, binder) {
+        return Some(t);
+    }
+    if let Some(t) = db.param_types.get(&binder) {
+        return Some(t.clone());
+    }
+    if db.solving_params.contains(&callee) {
+        return None;
+    }
+    let body = db.defs[callee].body?;
+    db.solving_params.insert(callee);
+    let mut fresh = Fresh::new();
+    let mut env: crate::fxhash::FxHashMap<StructId, Ty> = crate::fxhash::FxHashMap::default();
+    let mut binders: Vec<(StructId, Ty)> = Vec::new();
+    for pp in &params {
+        let b = match db.ast.as_form(*pp, ":").and_then(|t| t.first().copied()) {
+            Some(name_occ) => name_occ,
+            None => *pp,
+        };
+        let var = param_annot_ty(db, b).unwrap_or_else(|| Ty::Var(fresh.var()));
+        env.insert(b, var.clone());
+        binders.push((b, var));
+    }
+    let mut subst = Subst::new();
+    collect_param_constraints(db, body, &env, callee, &mut subst, &mut fresh);
+    db.solving_params.remove(&callee);
+    let solved = ground_param(subst.apply(&binders.get(k)?.1));
+    match solved {
+        Ty::Any | Ty::Var(_) => None,
+        other => Some(other),
+    }
+}
+
+/// Solve the machine type of a LAMBDA parameter `binder` from its uses in the lambda `body` — the
+/// lambda analogue of [`solve_recursive_params`], for a lifted closure whose parameter is UNANNOTATED
+/// (a bare `(fn (x) …)`). A bare lambda types with a fresh variable at its own occurrence (inference
+/// does not thread the use-site arrow back onto it), so `type_of(binder)` is `Any`; but the body's
+/// operations DO constrain it — `(* x 2)` pins `x` to an integer. Give the param a fresh variable,
+/// walk the body collecting the operand constraints its uses impose (the same `collect_param_constraints`
+/// the recursive-def solve uses, with a sentinel def index that no call matches — a lambda body has no
+/// self-recursion to a def), then ground the solved variable (a numeric use defaults to Int64, an
+/// unconstrained variable stays `Any` → the caller declines rather than invent a width). Returns the
+/// grounded type. This is a read-only solve over a fresh `Subst` — it does NOT touch `db.param_types`
+/// (a lambda param is not a def param), so it is safe to call at lowering.
+pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> Ty {
+    let mut fresh = Fresh::new();
+    let var = param_annot_ty(db, binder).unwrap_or_else(|| Ty::Var(fresh.var()));
+    let mut env: crate::fxhash::FxHashMap<StructId, Ty> = crate::fxhash::FxHashMap::default();
+    env.insert(binder, var.clone());
+    let mut subst = Subst::new();
+    // A sentinel def index no `callee == def` comparison matches (a lambda body has no self-recursive
+    // call to a `db.defs` entry — its own applications resolve to the param or to real defs).
+    collect_param_constraints(db, body, &env, usize::MAX, &mut subst, &mut fresh);
+    ground_param(subst.apply(&var))
 }
 
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
@@ -493,8 +566,7 @@ fn collect_param_constraints(
                 }
             } else if let Some(callee) = callee_def_index_for_infer(db, head) {
                 // A call to a user def. If it is THIS def (self-recursion), unify each argument against
-                // this def's own parameter variable — the fixpoint. (A cross-def callee in a mutual
-                // group is handled by its own solve; here we still constrain the argument sub-terms.)
+                // this def's own parameter variable — the fixpoint.
                 if callee == def {
                     // The parameters in signature order (env is unordered) — arguments match positionally.
                     let ordered = ordered_param_binders(db, def);
@@ -504,6 +576,33 @@ fn collect_param_constraints(
                         {
                             let at = arg_ty_in_env(db, arg, env, subst);
                             let _ = crate::unify::unify(subst, pvar, &at);
+                        }
+                    }
+                } else {
+                    // A call to ANOTHER def: a parameter passed as the k-th argument is constrained by the
+                    // callee's k-th PARAMETER TYPE. Without this, a parameter used ONLY as a call argument
+                    // (`(byte-at b i)` — `b` never touched by an operator) stays a free `Var`, grounds to
+                    // `Any`, and the recursive-def guard declines a well-typed program. The callee's own
+                    // body pins its param type (`byte-at`'s `b` is `Bytes` via `(Bytes.at b i)`), so read
+                    // the callee's k-th param type and unify. Only a DETERMINED callee param (not
+                    // `Any`/`Var`) constrains — an undetermined one adds nothing, so a genuinely
+                    // polymorphic position is never over-constrained.
+                    for (i, &arg) in args.iter().enumerate() {
+                        let arg_is_param = matches!(
+                            resolved_of(db, arg),
+                            Resolved::Ref { value } if env.contains_key(&value)
+                        ) || matches!(
+                            resolved_of(db, arg),
+                            Resolved::Param { binder } if env.contains_key(&binder)
+                        );
+                        if !arg_is_param {
+                            continue;
+                        }
+                        if let Some(pt) = callee_param_ty(db, callee, i)
+                            && !matches!(pt, Ty::Any | Ty::Var(_))
+                        {
+                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let _ = crate::unify::unify(subst, &at, &pt);
                         }
                     }
                 }
@@ -1031,6 +1130,21 @@ fn tail_resume_value(db: &mut Db, node: StructId) -> Option<StructId> {
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
+/// Whether `ty` is a DEFINITE non-function type — a ground value type that can never be applied (a
+/// scalar Int/Bool/Float/String/Bytes/Unit, or a structural Record/Tuple/Sum/List/Map/Set value). Used
+/// to turn "applying a non-function" into a coded reject: only a type KNOWN not to be a function faults,
+/// so an UNDETERMINED head (`Ty::Any` — a not-yet-modeled construct or an unresolved variable) is NOT
+/// flagged (it falls through to a clean decline, never a spurious reject). `Ty::Fn` is applyable;
+/// `Ty::Type` (a type-value) is a constructor-like value handled on its own paths, so it is excluded too.
+fn is_definite_non_function(ty: &Ty) -> bool {
+    match ty {
+        // Applyable or undetermined — not a "definitely can't apply this" case.
+        Ty::Fn(_, _) | Ty::Any | Ty::Var(_) | Ty::Type => false,
+        // Every other ground/structural value type is a non-function.
+        _ => true,
+    }
+}
+
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
     // A LIST constructor (`list` alias) applied — its arguments are its ELEMENTS, and a list is
     // HOMOGENEOUS: every element must share one type (collections-and-text.md §A List Is A Homogeneous
@@ -1139,7 +1253,37 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
-        None => return,
+        // No scheme: the head is not a function-valued built-in/def. It may still be applyable via one
+        // of the paths above (lambda / constructor / compound alias — all handled + returned already),
+        // so reaching here means the head is a PLAIN VALUE. If its type is a DEFINITE non-function —
+        // applying a scalar `(5 3)`, a Bool `(true 1)`, a Float `(3.5 1)` — that is a MALFORMED
+        // application (`core-semantics.md` §Applying A Function Binds Its Parameter To Its Argument: a
+        // non-function has no defined result), the CDZ0201 the corpus assigns (09-functions "applying a
+        // non-function/boolean/float is a type error"). Reject it here rather than letting lowering
+        // decline "value is not applyable" (which grades as a to-do, not the type error it is). Guarded
+        // on `is_definite_non_function` so an UNDETERMINED head (`Ty::Any` — a not-yet-modeled construct,
+        // an unresolved var) still falls through to a clean decline, never a spurious reject.
+        None => {
+            // A head with a `(meta apply)` PRIMITIVE is applyable via that primitive even though it has
+            // no type SCHEME — the compound-value constructors (`tuple`/`record`/`list` aliases build the
+            // compound), a type constructor (`(Int 64)`), etc. Those are NOT "applying a non-function";
+            // only a head that is neither scheme-typed NOR a `(meta apply)` primitive AND whose type is a
+            // definite non-function is the malformed `(5 3)` / `(true 1)` / `(3.5 1)` case.
+            if !args.is_empty() && crate::eval::meta_apply_of(db, head).is_none() {
+                let ht = type_of(db, head);
+                if is_definite_non_function(&ht) {
+                    trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "cannot apply a value of type {} — it is not a function",
+                            ht.render_name()
+                        ),
+                    ));
+                }
+            }
+            return;
+        }
     };
     let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
     let mut subst = Subst::new();
@@ -1241,6 +1385,18 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     {
         let forms: Vec<StructId> = forms.to_vec();
         for f in forms {
+            // A do-local `(def …)` is a DECLARATION, not a value expression — resolving it as one would
+            // decline. A VALUE declaration `(def x V)` (or nullary `(def (x) V)`) has its value `V`
+            // type-checked eagerly, exactly like a `let` binding's value (a value binding is a fault
+            // whether or not the name is used). A FUNCTION declaration `(def (f p…) BODY)` is a lambda:
+            // its body is checked on CALL (β-reduced at a reference), like a `let`-bound lambda, so it is
+            // not descended into here.
+            if db.ast.head_name(f) == Some("def") {
+                if let Some(value) = crate::resolve::do_value_def_value(db, f) {
+                    collect(db, value, out);
+                }
+                continue;
+            }
             collect(db, f, out);
         }
         return;
@@ -1656,6 +1812,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)

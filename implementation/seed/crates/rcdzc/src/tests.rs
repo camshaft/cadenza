@@ -1678,6 +1678,99 @@ fn runtime_value_eq_borrowed_operand_survives_and_balances() {
     );
 }
 
+/// KNOWN LEAK (tracking probe): a RECURSIVE function with a HEAP-typed PARAMETER threaded through the
+/// recursion and only BORROWED (never destructured/consumed) leaks the cell — a BOUNDED O(1) leak (one
+/// cell per heap value created, NOT per recursion level), correctness-PRESERVING (the answer is right).
+/// This is a CROSS-CUTTING Perceus-in-recursion gap, NOT closure-specific: a `(Tuple …)` param threaded
+/// the same way leaks identically (verified — 0 `drop`s emitted). ROOT: a function that received an
+/// OWNED heap param and does not consume it on a control path (the base case `n=0` returns `0` without
+/// touching `g`) must DROP it there; today no such drop is inserted (`emit_call_args` also does not
+/// `dup` a re-passed heap arg). The correct fix is whole-function last-use drop insertion for params
+/// (the general Perceus pass), which is its own workstream — a partial fix risks a double-free (far worse
+/// than a bounded leak), so it is tracked here rather than hacked in. This probe ASSERTS the current
+/// (leaking) count so the leak cannot silently WORSEN (grow past O(1)); flip the expected value to 0 when
+/// the Perceus pass lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_closure_leaks_exactly_one_cell_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[closure-leak] debug-counters runtime not in the store; skipping known-leak probe"
+        );
+        return;
+    };
+    let src = "(module m \
+                 (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+                    (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+                 (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The answer is CORRECT despite the leak (the leak is a reclamation gap, not a miscompile).
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(10)]),
+        Val::S64(36),
+        "the closure still computes 36"
+    );
+    // ONE closure cell leaks, regardless of the recursion depth (the cell is built once and only
+    // borrowed down the recursion). A larger `n` must NOT increase the leak — that would signal a
+    // per-level allocation regression, which this pins.
+    let mut rt_deep = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(rt_deep.call("main", &[Val::S64(50)]), Val::S64(6 + 3 * 50));
+    assert_eq!(
+        rt.live_objects(),
+        1,
+        "KNOWN GAP: a heap closure param threaded through recursion leaks exactly 1 cell (flip to 0 when \
+         the general Perceus param-drop pass lands). A count > 1 is a REGRESSION (per-level allocation)."
+    );
+    assert_eq!(
+        rt_deep.live_objects(),
+        1,
+        "the leak is O(1): n=50 leaks the same ONE cell as n=3 (no per-recursion-level growth)"
+    );
+}
+
+/// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
+/// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
+/// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive
+/// fold and consumed by `match` at each level leaks all its cells. `len(build 3)` returns the CORRECT 3
+/// but leaves 7 live cells (3 Cons + 3 tuples + 1 Nil). This pins the leak COUNT so it cannot silently
+/// worsen and documents the real scope of the gap (contrast the O(1) closure sub-case above). The FIX is
+/// the general Perceus drop-insertion pass (a sum-match drops the matched shell after dup-ing its payload;
+/// a dead heap param drops on its branch) — its own workstream, high correctness stakes. Flip the expected
+/// counts to 0 when it lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_recursive_list_fold_leaks_every_node_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[list-leak] debug-counters runtime not in the store; skipping known-leak probe");
+        return;
+    };
+    let src = "(module m (type L (Cons (Tuple Int64 L)) Nil) \
+        (def (len (: xs L) (: acc Int64)) \
+           (match xs ((L.Cons (tuple h t)) (len t (+ acc 1))) ((L.Nil _) acc))) \
+        (def (build (: n Int64)) (if (< n 1) (L.Nil ()) (L.Cons (tuple n (build (- n 1)))))) \
+        (def (main) (len (build 3) 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // The answer is CORRECT despite the leak (reclamation gap, not a miscompile).
+    assert_eq!(rt.call("main", &[]), Val::S64(3), "len(build 3) computes 3");
+    // A 3-element list = 3 Cons + 3 (Int,list) tuples + 1 Nil = 7 cells, none reclaimed (the recursion
+    // heap-reclamation gap). Flip to 0 when the general Perceus drop-insertion pass lands. This documents
+    // the PERVASIVE, O(N)-in-data scope of the gap (the closure sub-case above is only O(1)).
+    assert_eq!(
+        rt.live_objects(),
+        7,
+        "KNOWN GAP: a recursive list fold leaks every heap node (match does not reclaim the matched \
+         shell); 7 cells for a 3-element list. Flip to 0 when the Perceus drop-insertion pass lands."
+    );
+}
+
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
 /// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
 /// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
@@ -2212,6 +2305,97 @@ fn runtime_multiplication_traps_on_overflow() {
     ));
 }
 
+/// A full-width signed `(* a C)` with a constant `C > 0` (non-power-of-two) guards overflow with a
+/// compile-time BOUND CHECK (`a > MAX/C || a < MIN/C → trap`) instead of the `div_s` round-trip — but
+/// must trap at EXACTLY the same points. `(* a 3)`: `a = MAX/3` fits, `a = MAX/3 + 1` overflows up;
+/// `a = MIN/3` fits, `a = MIN/3 - 1` overflows down; 0 and small values compute. Pins the boundary is
+/// exact both directions (the bound check's truncated MAX/C, MIN/C match the true overflow point).
+#[test]
+fn a_constant_multiplier_bound_check_traps_at_the_exact_boundary() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: a Int64)) (* a 3)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let max_over_3 = i64::MAX / 3; // 3074457345618258602
+    let min_over_3 = i64::MIN / 3; // -3074457345618258602
+    // In range at the boundary and below.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(max_over_3)]),
+        max_over_3 * 3
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(min_over_3)]),
+        min_over_3 * 3
+    );
+    assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 0);
+    assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(-5)]), -15);
+    // One past the boundary overflows — both directions must trap.
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(max_over_3 + 1)]),
+        "a*3 just past MAX/3 must trap (overflow up)"
+    );
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(min_over_3 - 1)]),
+        "a*3 just past MIN/3 must trap (overflow down)"
+    );
+    // A NARROW const multiply keeps BOTH range bounds (a product can leave either side) — regression
+    // guard for the reachable-bounds interaction: Int8 `a*3` at 50 = 150 > 127 must trap, not wrap.
+    let narrow = "(module m (def (f (: a Int8)) (* a 3)) (export f))";
+    let nb = compile_component(&crate::codec::encode(&parse(narrow))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&nb, "f", &[Val::S8(42)]), 126);
+    assert!(
+        call_traps(&nb, "f", &[Val::S8(50)]),
+        "Int8 50*3=150 > 127 must trap"
+    );
+    assert!(
+        call_traps(&nb, "f", &[Val::S8(-50)]),
+        "Int8 -50*3=-150 < -128 must trap"
+    );
+}
+
+/// The const-multiplier bound check extends to a NEGATIVE constant `C <= -2`: `a*C` shrinks as `a`
+/// grows, so it fits iff `MAX/C <= a <= MIN/C` and traps iff `a < MAX/C || a > MIN/C` (both
+/// trunc-toward-zero). `(* a -3)`: `a = MIN/-3` (positive) fits, `+1` overflows; `a = MAX/-3` (negative)
+/// fits, `-1` overflows. A negative POWER of two (`-2`) is eligible too (only positive powers become a
+/// shift). BUT `C = -1` is EXCLUDED — `MIN/-1 = 2^63` is not i64-representable — so it keeps the `div_s`
+/// guard, and `MIN * -1` still traps through it.
+#[test]
+fn a_negative_constant_multiplier_bound_check_traps_at_the_exact_boundary() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: a Int64)) (* a -3)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let max_over_neg3 = i64::MAX / -3; // -3074457345618258602 (the negative lower endpoint)
+    let min_over_neg3 = i64::MIN / -3; // 3074457345618258602 (the positive upper endpoint)
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(min_over_neg3)]),
+        min_over_neg3 * -3
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(max_over_neg3)]),
+        max_over_neg3 * -3
+    );
+    assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(5)]), -15);
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(min_over_neg3 + 1)]),
+        "a*-3 just past MIN/-3 must trap"
+    );
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(max_over_neg3 - 1)]),
+        "a*-3 just past MAX/-3 must trap"
+    );
+    // `* -1` is the excluded case — it keeps the div_s guard; `MIN * -1` must still trap (overflow), a
+    // small value negates. This pins that C=-1 did NOT take the bound-check path (which would have
+    // panicked the compiler computing MIN/-1) and still traps correctly.
+    let neg1 = "(module m (def (f (: a Int64)) (* a -1)) (export f))";
+    let nb = compile_component(&crate::codec::encode(&parse(neg1))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&nb, "f", &[Val::S64(5)]), -5);
+    assert!(
+        call_traps(&nb, "f", &[Val::S64(i64::MIN)]),
+        "MIN * -1 overflows and must trap"
+    );
+}
+
 /// A NESTED runtime checked op composes and traps correctly — `(* (+ a b) c)` computes in range and
 /// the shared scratch pool does not corrupt across the nesting.
 #[test]
@@ -2731,6 +2915,41 @@ mod runtime_ops {
         // A negative constant flips the direction: (+ a -1) moves DOWN → traps only the LOWER edge.
         assert!(traps("(: a Int8)", "(+ a -1)", &[Val::S8(-128)]));
         assert_eq!(run::<i8>("(: a Int8)", "(+ a -1)", &[Val::S8(127)]), 126);
+    }
+
+    #[test]
+    fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
+        // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
+        // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
+        // variable ("expected i64, found i32"). ROOT: `unify_width`/`unify_sign` BOUND the operator's
+        // shared width/sign VARIABLE to the deferred LEFT literal first, freezing it, so the RIGHT
+        // variable's `Fixed(8)`/unsigned meeting the now-`Deferred` var was a no-op → the result ground to
+        // the i64 default. Fixed by leaving a var meeting `Deferred` UNBOUND, so the concrete operand
+        // (whichever side) binds it — operand order no longer changes the result width/sign. The
+        // COMPARISON path (result Bool, operands not linked via a result var) additionally reconciles at
+        // emit (`operand_int_ty`, position-independent). All hold for `n : UInt8`:
+        assert_eq!(run::<u8>("(: n UInt8)", "(+ 1 n)", &[Val::U8(5)]), 6); // was invalid wasm
+        assert_eq!(run::<u8>("(: n UInt8)", "(* 2 n)", &[Val::U8(3)]), 6);
+        assert_eq!(run::<u8>("(: n UInt8)", "(& 15 n)", &[Val::U8(9)]), 9);
+        assert_eq!(run::<u8>("(: n UInt8)", "(<< 1 n)", &[Val::U8(3)]), 8);
+        assert_eq!(
+            run::<i64>("(: n UInt8)", "(if (< 1 n) 1 0)", &[Val::U8(5)]),
+            1
+        );
+        // The const-RIGHT mirror (always worked) and a both-var form still compute the same.
+        assert_eq!(run::<u8>("(: n UInt8)", "(+ n 1)", &[Val::U8(5)]), 6);
+        assert_eq!(
+            run::<u8>(
+                "(: a UInt8) (: b UInt8)",
+                "(+ a b)",
+                &[Val::U8(100), Val::U8(50)]
+            ),
+            150
+        );
+        // A wide left-const is unaffected (i64 result was always correct).
+        assert_eq!(run::<i64>("(: n Int64)", "(+ 1 n)", &[Val::S64(41)]), 42);
+        // (A genuine width conflict — UInt8 + Int64 — still rejects CDZ0301; the corpus guards that, and
+        // the deferred-var change only affects a var meeting a DEFERRED width, never two Fixed widths.)
     }
 
     #[test]
@@ -3578,6 +3797,35 @@ mod recursion {
     }
 
     #[test]
+    fn a_recursive_param_used_only_as_a_call_argument_infers_from_the_callee() {
+        // A recursive def's parameter used ONLY as a call ARGUMENT — never touched by a primitive
+        // operator, never annotated — was left unconstrained (`Any`) and the def DECLINED. The
+        // recursive-param solver derived a constraint only from an operator applied to the parameter or
+        // the self-call, never from an argument position. Fixed by unifying such an argument against the
+        // CALLEE's k-th parameter type (`callee_param_ty`), which the callee's own body pins. `a`, passed
+        // only to `(twice a)` where `twice` adds it, infers Int64: `f(5,3)` = twice(5)*3 = 30.
+        let bytes = component(
+            "(module m (def (twice a) (+ a a)) \
+               (def (f a n) (if (< n 1) 0 (+ (twice a) (f a (- n 1))))) \
+               (def (main) (f 5 3)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
+    }
+
+    #[test]
+    fn a_param_passed_to_a_polymorphic_callee_is_not_over_constrained() {
+        // The argument-position constraint is PRECISE: it fires only when the callee's k-th parameter is
+        // DETERMINED (not `Any`/`Var`). A parameter passed to a POLYMORPHIC callee (`id`, whose param is
+        // unconstrained) gets NO spurious constraint, so `g` stays usable at any type. `(+ (g 3) (g 4))`
+        // = 7 — `g`'s param inlines from each concrete argument as before, not pinned by the `id` call.
+        let bytes = component(
+            "(module m (def (id x) x) (def (g v) (id v)) \
+               (def (main) (+ (g 3) (g 4))) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
     fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
         // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
         // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with
@@ -3805,6 +4053,114 @@ mod match_engine {
             .iter()
             .find(|d| d.severity == crate::abi::Severity::Error)
             .and_then(|d| d.code.clone())
+    }
+
+    #[test]
+    fn a_constant_string_scrutinee_selects_the_matching_string_literal_arm() {
+        // 02-binding "matching on string literals": a STRING-literal pattern `("hello" …)` selects the arm
+        // whose string EQUALS a constant scrutinee (by value, both NFC — the constant `String` equality
+        // basis). The scrutinee folds (a literal, or a `String.concat`/`String.slice` that folds to a
+        // constant), so the whole match folds to the selected arm — no runtime string equality op.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match \"hello\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+        // A later arm + fall-through to the wildcard.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match \"world\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
+                ),
+                "main"
+            ),
+            2
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match \"xyz\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
+                ),
+                "main"
+            ),
+            0
+        );
+        // A scrutinee produced by a folding String op — `(String.concat \"a\" \"b\")` → \"ab\".
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match ((. String concat) \"a\" \"b\") (\"ab\" 100) (_ 200))) (export main))"
+                ),
+                "main"
+            ),
+            100
+        );
+    }
+
+    #[test]
+    fn a_string_match_is_well_formed_or_rejected() {
+        // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
+        // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match \"hi\" (\"hi\" 1) (\"yo\" 2))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210")
+        );
+        // A pattern whose type disagrees with the scrutinee — an Int literal against a String scrutinee —
+        // is a shape/type error (CDZ0201), checked structurally before the fold.
+        assert_eq!(
+            reject_code("(module m (def (main) (match \"hi\" (5 1) (_ 0))) (export main))")
+                .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn applying_a_non_function_is_a_coded_type_error() {
+        // 09-functions "applying a non-function/boolean/float is a type error": a value that is NOT a
+        // function has no defined result when applied (`core-semantics.md` §Applying A Function Binds Its
+        // Parameter To Its Argument), so `(5 3)`/`(true 1)`/`(3.5 1)` MUST be REJECTED with a code
+        // (CDZ0201 Malformed) — not DECLINED "value is not applyable" (a to-do). The head's type is a
+        // definite non-function (Int64/Bool/Float64), so `check_application` faults before lowering.
+        assert_eq!(
+            reject_code("(module m (def (main) (5 3)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (true 1)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (3.5 1)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
+        // The guard must NOT over-reject: a head that is applyable via a `(meta apply)` PRIMITIVE (the
+        // `tuple`/`record`/`list` compound-value alias, a type ctor) has no type SCHEME but IS applyable,
+        // so it must still COMPILE. `(tuple 1 2)` and `(list 1 2)` build their compounds (reject_code =
+        // None = compiled); a record field read likewise. Pins that the non-function check excludes
+        // meta-apply heads (the tuple/record/list regression the first cut of this check caused).
+        assert_eq!(
+            reject_code("(module m (def (main) (tuple 1 2)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (list 1 2)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))"),
+            None
+        );
     }
 
     #[test]
@@ -4077,6 +4433,37 @@ mod match_engine {
     }
 
     #[test]
+    fn bytes_at_of_a_runtime_element_widens_the_byte_to_the_option_payload() {
+        // ⚠ INVALID WASM regression: `(Bytes.at (Bytes.of (list n)) 0)` with `n : UInt8` a RUNTIME element,
+        // read at a CONSTANT index, mis-emitted. The `Bytes.at` fold saw a `Core::BytesOf` + constant
+        // index and used the raw element occurrence as the `Some` payload — correct for a CONSTANT byte
+        // (its core folds through the width), but a runtime `UInt8` element is an i32 value placed into the
+        // i64 `Some(Int64)` payload UN-WIDENED → "expected i64, found i32". Fixed: fold to `Some` only for
+        // a CONSTANT element; a runtime element falls through to the runtime `Core::BytesAt`, which
+        // zero-extends the byte to the Int64 payload width. `n = 5` → the byte at 0 is 5.
+        let src = "(module m (def (main (: n UInt8)) \
+                     (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1))) (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect("a runtime-element Bytes.at read must emit valid wasm");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime-element bytes-at run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "5", "the runtime-stored byte reads back as 5")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("runtime-element bytes-at run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn runtime_bytes_concat_slice_compact_under_wasmtime() {
         // The runtime `Core::BytesConcat`/`BytesSlice`/`BytesCompact` paths (not folds): each threads a
         // byte sequence through a fn PARAMETER so the op actually runs, and reads a SCALAR out (via
@@ -4175,6 +4562,51 @@ mod match_engine {
                 ),
                 want,
                 "constant Bytes.slice folds: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_byte_string_literal_is_a_constant_bytes_value() {
+        // `b"…"` in source is a `Ty::Bytes` constant, equal to the `Bytes.of` of the same bytes — it
+        // lowers to a `Core::BytesOf`, so it rides the constant equality/slice/concat fold. Named escapes
+        // (`\n`), `\xNN` hex (incl. a high byte ≥ 0x80), and the empty literal all decode. Each returns a
+        // scalar (1/0) via `if (= …)` so `main` needs no bytes escape.
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 67))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"\\x89PNG\" (Bytes.of (list 137 80 78 71))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"A\\nB\" (Bytes.of (list 65 10 66))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"\" (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            // a differing byte → false (the literal really carries its bytes, not just Bytes-ness)
+            (
+                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 99))) 1 0)) (export main))",
+                0,
+            ),
+            // usable through the ordinary bytes ops: length of a literal
+            (
+                "(module m (def (main) (Bytes.len b\"ABCD\")) (export main))",
+                4,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "byte-string literal is a constant Bytes: {body}"
             );
         }
     }
@@ -5005,6 +5437,74 @@ mod match_engine {
             run_returns::<i64>(&component(src), "main"),
             min,
             "runtime wrapping-add wraps at run time"
+        );
+    }
+
+    #[test]
+    fn wrapping_arithmetic_identities_elide_the_op() {
+        // Wrapping ops have the SAME algebraic identities as checked `+`/`*` (the wrap is total, so the
+        // fold is value-identical): `a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`. Over a RUNTIME operand the
+        // whole op is elided — `(Int64.wrapping-add a 0)` becomes just a local read, no `i64.add`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f (: a Int64)) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `a +% 0` and `a *% 1` → just the operand; no arithmetic op survives.
+        assert_eq!(
+            lir("(Int64.wrapping-add a 0)"),
+            vec![Lir::LocalGet(0)],
+            "a +% 0 elides to a"
+        );
+        assert_eq!(
+            lir("(Int64.wrapping-mul a 1)"),
+            vec![Lir::LocalGet(0)],
+            "a *% 1 elides to a"
+        );
+        // `a *% 0` → the constant 0 (the operand `a` is trap-free, so it is dropped).
+        assert_eq!(
+            lir("(Int64.wrapping-mul a 0)"),
+            vec![Lir::ConstI64(0)],
+            "a *% 0 elides to 0"
+        );
+        // A non-identity constant keeps the raw wrapping op.
+        assert!(
+            lir("(Int64.wrapping-add a 5)").contains(&Lir::I64Add),
+            "a non-identity wrapping-add keeps the raw i64.add"
+        );
+
+        // The annihilator DISCARDS the other operand, so a TRAPPING operand blocks it: `(/ 10 b) *% 0`
+        // must keep the division (and trap on b = 0), NOT fold to 0.
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: b Int64)) (Int64.wrapping-mul (/ 10 b) 0)) (export f))";
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(2)]), 0);
+        assert!(
+            call_traps(&bytes, "f", &[Val::S64(0)]),
+            "`(/ 10 b) *% 0` must still trap on b = 0 — the annihilator must not drop a trapping operand"
         );
     }
 
@@ -6394,7 +6894,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, run_returns, run_returns_with};
+    use super::{FromVal, find_runtime_wasm, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -6498,6 +6998,61 @@ mod stage1 {
         assert!(
             msg.contains("condition must be Bool"),
             "an ill-typed do intermediate must be caught though discarded; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_do_local_declaration_binds_the_following_forms() {
+        // 02-binding-and-control §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow
+        // It: a `(def …)` form of a `do` binds its name for the LATER forms — a VALUE declaration
+        // `(def x 5)` and a FUNCTION declaration `(def (f n) …)` alike, each resolved like a top-level
+        // def (a `Ref` / a lambda). A later declaration sees an earlier one (`y` = `(+ x 1)`).
+        assert_eq!(run_main("(do (def x 5) (+ x 1))"), 6);
+        assert_eq!(run_main("(do (def (f n) (+ n 1)) (f 9))"), 10);
+        assert_eq!(run_main("(do (def x 5) (def y (+ x 1)) y)"), 6);
+    }
+
+    #[test]
+    fn a_do_local_declaration_shadows_last_wins_and_an_outer_binding() {
+        // A repeated do-local declaration shadows the earlier one for what follows (last-wins, like a
+        // repeated `let` binding): `(def x 5) (def x (+ x 10))` → the second `x` sees the first → 15.
+        assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
+        // A do-local declaration shadows an OUTER lexical binding for the forms that follow it: the inner
+        // `(def x 99)` shadows the enclosing `let ((x 1))`, so the block yields 99.
+        assert_eq!(run_main("(let ((x 1)) (do (def x 99) x))"), 99);
+    }
+
+    #[test]
+    fn a_do_local_declaration_scope_is_backward_only() {
+        // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
+        // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
+        let msg = expect_decline("(do (def y (+ x 1)) (def x 5) y)");
+        assert!(
+            msg.contains("unbound") && msg.contains('x'),
+            "a forward reference to a later do-local declaration must be unbound; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_do_block_ending_in_a_declaration_is_malformed() {
+        // A sequencing block YIELDS its last form's value, so it must end in a value form: a TRAILING
+        // declaration `(do (def x 5))` leaves the block valueless.
+        let msg = expect_decline("(do (def x 5))");
+        assert!(
+            msg.contains("must end in a value form"),
+            "a do block ending in a declaration must be malformed; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_unused_do_local_declaration_with_an_ill_typed_value_is_still_caught() {
+        // A VALUE declaration's value is type-checked EAGERLY (like a `let` binding value) — a fault
+        // whether or not the name is later used. `(def x (if 5 1 2))` is ill-typed (non-Bool condition)
+        // and caught even though the block yields the unrelated `42`.
+        let msg = expect_decline("(do (def x (if 5 1 2)) 42)");
+        assert!(
+            msg.contains("condition must be Bool"),
+            "an ill-typed do-local value declaration must be caught though unused; got: {msg}"
         );
     }
 
@@ -6741,6 +7296,37 @@ mod stage1 {
         assert!(
             err.message.contains("NULLARY export") && err.message.contains("takes a parameter"),
             "the parameterized-compound decline must name the nullary-export trigger, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_nullary_recursive_sum_return_declines_with_an_honest_reason() {
+        // A NULLARY `main` returning a RECURSIVE sum built at runtime (`count 3` → an `IntList` whose
+        // spine length is decided at run time) declines: rendering an unbounded-depth recursive-sum value
+        // as the host result needs an `encode()` walker that LOOPS to a runtime-determined depth (the
+        // analogue of the runtime-`Bytes` looping walker), a later increment. The DECLINE is correct
+        // (folding such a value to a scalar works; only rendering it as the boundary result is deferred).
+        // REGRESSION: the message must NOT claim "this export takes a parameter" — `main` is NULLARY. The
+        // resource-escape path tried and its value-form template was `None` (a self-referential sum has no
+        // bounded static shape), falling through to the multi-export diagnosis, which previously
+        // misdiagnosed a nullary fall-through as parameterized. The honest reason names the missing walker.
+        use crate::testkit::parse;
+        let src = "(module m (type IntList (Cons (Tuple Int64 IntList)) Nil) \
+                     (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) \
+                        (IntList.Cons (tuple n (count (- n 1)))))) \
+                     (def (main) (count 3)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a nullary recursive-sum return declines (no looping value-form walker yet)",
+        );
+        assert!(
+            !err.message.contains("takes a parameter"),
+            "a NULLARY recursive-sum return must NOT be misdiagnosed as parameterized, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("runtime-determined depth") || err.message.contains("walker"),
+            "the decline names the missing looping value-form walker, got: {}",
             err.message
         );
     }
@@ -7175,6 +7761,37 @@ mod stage1 {
                 .is_some(),
             "a runtime compound equality imports the value-heap runtime (the value-eq walk is a runtime call)"
         );
+    }
+
+    #[test]
+    fn a_runtime_eq_of_a_multiparam_sum_with_a_phantom_parameter_walks() {
+        // A `Result` value has TWO type parameters (`Ok a`, `Err b`); `(Ok n)` fixes only `a`, leaving
+        // `b` a PHANTOM no value instantiates. A runtime `(= (Ok x) (Ok 6))` (both operands built from
+        // recursion, so unfoldable) must emit the `value-eq` heap walk — the free `Err` parameter `b`
+        // does NOT make the sum non-walkable (a phantom parameter carries no runtime structure). Before
+        // the fix `ty_heap_walkable` walked every variant's payload type, hit the free `b` (a `Ty::Var`),
+        // and declined "comparison of a compound value needs a heap walk" though the compared `Ok` values
+        // are exactly walkable. Run through the composed runtime to pin the value (equal → 1).
+        use crate::testkit::parse;
+        let src = "(module m (def (sumto (: n Int64)) (if (< n 1) 0 (+ n (sumto (- n 1))))) \
+                     (def (eq3) (if (= (Ok (sumto 3)) (Ok 6)) 1 0)) (export eq3))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a phantom-parameter multi-param sum equality compiles to a value-eq heap walk",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping phantom-param value-eq run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("eq3".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run phantom-param value-eq") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "1", "(Ok (sumto 3)) equals (Ok 6)"),
+            cdz_run::Outcome::Trap(t) => panic!("phantom-param value-eq trapped: {t}"),
+        }
     }
 
     #[test]
@@ -8182,6 +8799,51 @@ mod stage1 {
     }
 
     #[test]
+    fn recursion_is_detected_through_a_nested_do() {
+        // A self-call inside a nested `(do …)` is a real recursion edge. `resolve_do` collapses a `do` to
+        // `Ref{last}` (intermediates discarded as pure), which would hide a self-call in a `do` item from
+        // `is_recursive`'s callee walk — so `collect_callees` reads a `do` by raw AST and descends every
+        // item. Without this, `sum-to` here would read as NON-recursive and inline without end (a hang) or
+        // miscompile. `(do 0 (sum-to (- n 1)))` puts the self-call as the last item, and `(do (dummy) …)`
+        // shape (a discarded intermediate then the recursive tail) is exactly the effect-walk shape. This
+        // pins recursion detection through `do` at the plain (non-effect) level. `sum-to 3` = 3+2+1+0 = 6.
+        let src = "(module m (def (sum-to n) (if (= n 0) 0 (do 7 (+ n (sum-to (- n 1)))))) \
+                   (def (main) (sum-to 3)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("recursion through a nested do is detected and compiles"),
+                "main"
+            ),
+            6
+        );
+    }
+
+    #[test]
+    fn a_parameterized_recursive_walk_threads_a_list_state() {
+        // E3: a recursive PARAMETERIZED effectful walk `(walk n)` that accumulates into a LIST state,
+        // performing inside a nested `(do …)`. `walk` emits `n` at each step (threading `(List.push s n)`)
+        // and reads the list back at the base via `collect`. Specialized as `walk#ctx(n: Int64, s: List
+        // Int64)` — original param `n` threaded + annotated with its solved type, state a trailing list
+        // param, recursion via the memoized self-call. Seeded `(list 0)` (a DETERMINED element type — an
+        // empty `(list)` seed declines, its element type being `Any`), `(walk 3)` accumulates
+        // `(list 0 3 2 1)` whose length is 4. Exercises parameterized spec + list-state-through-recursion
+        // + do-intermediate perform + recursion-through-do all at once.
+        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+                   (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
+                   (def (main) (handle (list 0) \
+                     ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
+                     (List.len (walk 3)))) (export main))";
+        // COMPILES (the specialization + list-state threading succeed) — asserting compilation, not a run,
+        // because a list-returning body needs the value-heap runtime composed from the store (the
+        // `#[ignore]`d heap tests do that); the store-driven CLI run yields 4 (`(list 0 3 2 1)` length).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a parameterized recursive walk threading a determined list state must compile"
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
@@ -8201,22 +8863,27 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_effectful_case_the_fold_cannot_serve_declines_not_hangs() {
-        // E3 boundary: a recursive effectful walk the single-state fast path cannot serve (a 2-arm
-        // handler over a compound list state) must DECLINE cleanly — NOT hang. Regression guard for the
-        // unbounded-inline loop (a recursive callee β-reduced to a fresh non-self-referential copy each
-        // level would unroll forever without `THREAD_INLINE_LIMIT`). It compiles (declines) in bounded
-        // time; the point is the compiler returns rather than spinning.
+    fn a_recursive_effectful_walk_accumulates_into_a_list_state_handler() {
+        // E3 list-state: a recursive effectful walk over a 2-arm handler whose state is an empty-list
+        // seed `(list)`. `walk` performs `(Diag.emit n)` at each descent step and reads the accumulator
+        // back with `(Diag.collect)` at the base; the handler seeds `(list)` and threads `(List.push s v)`,
+        // so `(walk 3)` accumulates `(list 3 2 1)`, whose length is 3. The empty-list seed's element type
+        // is fixed by JOINING the seed type with each tail arm's next-state type — the growing arm's
+        // `(List.push s v)` reveals `List Int64` because the arm op param `v` types from the op's declared
+        // `(-> Int64 Unit)` signature (`handle_arm_param_ty`). Was the hang/decline boundary; now served.
+        // Also the regression guard for the unbounded-inline loop (`THREAD_INLINE_LIMIT`) — a served value
+        // still proves the fold TERMINATES.
         let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
                    (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
                    (def (main) (handle (list) \
                      ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
                      (List.len (walk 3)))) (export main))";
-        // Declines (not yet served) — but crucially TERMINATES (no hang). `is_err` = the decline; the
-        // test would time out (not fail) if the fold looped, so reaching this assertion IS the guard.
+        // The state lives on the value heap (`List.push`/`List.len`), so this needs the store runtime the
+        // in-process linker doesn't supply — assert it COMPILES (a well-formed component); the corpus gate
+        // (`14-effects-and-handlers.sexp`) verifies the runtime value is 3 against the real heap.
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a not-yet-served recursive effectful case must decline (and must terminate, not hang)"
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "recursive effectful list-state walk must compile"
         );
     }
 
@@ -8554,6 +9221,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_generic_recursive_sum_bare_self_reference_carries_its_params() {
+        // A GENERIC recursive sum whose self-reference is written BARE — `(type Tree (Leaf a) (Branch
+        // (Tuple Tree Tree)))` — must treat the bare `Tree` in the payload as the sum applied to its OWN
+        // params (`(Tree a)`), the same convention the constructor's RESULT type uses. Before the fix a
+        // bare self-reference reduced to the args-LESS `Ty::Sum{args:[]}`, which did not unify with the
+        // `(Tree Int64)` a `Branch` value carries → `cannot unify Tree with (Tree Int64)`. The param is
+        // annotated (recursive-sum-parameter instantiation inference is a separate increment). `sm` folds
+        // the tree to 12. Also covers a self-reference NESTED in a `List` payload (rose tree).
+        use crate::testkit::parse;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping generic-recursive-sum run");
+            return;
+        };
+        for (label, src, want) in [
+            (
+                "bare self-ref in a tuple payload",
+                "(module m (type Tree (Leaf a) (Branch (Tuple Tree Tree))) \
+                   (def (sm (: t (Tree Int64))) \
+                     (match t ((Tree.Leaf n) n) ((Tree.Branch (tuple l r)) (+ (sm l) (sm r))))) \
+                   (def (main) \
+                     (sm (Tree.Branch (tuple (Tree.Leaf 3) \
+                                             (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5))))))) \
+                   (export main))",
+                "12",
+            ),
+            (
+                "bare self-ref nested in a list payload",
+                "(module m (type Rose (RLeaf a) (RNode (List Rose))) \
+                   (def (sz (: t (Rose Int64))) \
+                     (match t ((Rose.RLeaf n) n) ((Rose.RNode xs) (List.len xs)))) \
+                   (def (main) (sz (Rose.RNode (list (Rose.RLeaf 1) (Rose.RLeaf 2) (Rose.RLeaf 3))))) \
+                   (export main))",
+                "3",
+            ),
+        ] {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile generic-recursive-sum ({label}): {e:?}"));
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => panic!("generic-recursive-sum trapped ({label}): {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn bare_prelude_option_needs_no_declaration() {
         // `Option`/`Some`/`None` are BUILT IN (prelude sums), so a program uses bare `Some`/`None` with
         // NO `(type Option …)` — the corpus surface. `(Some 5)` infers `Option Int64`; a bare `None` is
@@ -8832,6 +9550,86 @@ mod stage1 {
             }
             other => panic!("expected Core::SumNew for None, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_bare_user_variant_name_resolves_like_the_qualified_form() {
+        // A USER `(type …)` sum's variant may be referenced BARE — `NLit`/`NNil`, not only the qualified
+        // `(. Node NLit)` (`core-semantics.md` §A Sum Type Constructor Is A Single-Arity Function). A bare
+        // reference resolves to the SAME ctor field the qualified member access projects, so it lowers to
+        // the same `Core::SumNew`. This is the user-declaration analog of the built-in sums binding bare
+        // `Some`/`None` — pinned by comparing the bare form's disc against the qualified form's.
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use crate::testkit::parse;
+        let src = "(module m (type Node (NLit Int64) NNil) \
+                   (def (bare-lit (: a Int64)) (NLit a)) \
+                   (def (qual-lit (: a Int64)) (Node.NLit a)) \
+                   (def (bare-nil) NNil) \
+                   (def (qual-nil) Node.NNil) \
+                   (def (main) 0) (export main))";
+        let mut db = Db::load(parse(src));
+        let disc_of = |db: &mut Db, name: &str| -> u32 {
+            let body = db
+                .defs
+                .iter()
+                .find(|d| d.name == name)
+                .and_then(|d| d.body)
+                .unwrap_or_else(|| panic!("def {name}"));
+            match core_of(db, body) {
+                Core::SumNew { disc, .. } => disc,
+                other => panic!("expected Core::SumNew for {name}, got {other:?}"),
+            }
+        };
+        // The BARE payload variant and the QUALIFIED one lower to the same discriminant (0).
+        assert_eq!(disc_of(&mut db, "bare-lit"), disc_of(&mut db, "qual-lit"));
+        assert_eq!(disc_of(&mut db, "bare-lit"), 0, "NLit is variant 0");
+        // The BARE nullary variant and the QUALIFIED one likewise (disc 1).
+        assert_eq!(disc_of(&mut db, "bare-nil"), disc_of(&mut db, "qual-nil"));
+        assert_eq!(disc_of(&mut db, "bare-nil"), 1, "NNil is variant 1");
+    }
+
+    #[test]
+    fn a_bare_nullary_variant_constructs_and_matches_as_a_value() {
+        // 05-compound-types "a bare nullary constructor is the nullary sum value": a nullary variant used
+        // as a VALUE may be written bare (`NNil`), equivalent to `(Node.NNil unit)`. `(classify 0)` builds
+        // `NNil` bare and `(classify 7)` builds `(Node.NLit 7)`; `val` matches both → 1 + 7 = 8. Pins that
+        // the bare nullary form both CONSTRUCTS and MATCHES for a user sum, end-to-end through a run.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (type Node (NLit Int64) NNil) \
+                       (def (classify n) (if (= n 0) NNil (Node.NLit n))) \
+                       (def (val x) (match x ((Node.NLit v) v) ((Node.NNil _) 1))) \
+                       (def (main) (+ (val (classify 0)) (val (classify 7)))) (export main))"
+                )))
+                .expect("a bare nullary user variant must construct + match"),
+                "main"
+            ),
+            8
+        );
+    }
+
+    #[test]
+    fn a_bare_variant_is_shadowed_by_a_same_named_binding() {
+        // Scope-first resolution: a bare variant name resolves AFTER the lexical scope + top-level defs
+        // (step 3c, before the prelude), so a `def`/`let`/param of the same name SHADOWS the variant. A
+        // top-level `(def (NLit x) …)` named like the `Node` variant `NLit` wins over the ctor: `(NLit 5)`
+        // calls the def (→ 105), not the constructor. Pins that the bare-variant binding does not privilege
+        // a variant name over an ordinary binding.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (type Node (NLit Int64) NNil) \
+                       (def (NLit x) (+ x 100)) \
+                       (def (main) (NLit 5)) (export main))"
+                )))
+                .expect("a def named like a variant shadows the bare variant"),
+                "main"
+            ),
+            105
+        );
     }
 
     #[test]
@@ -9299,6 +10097,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_sum_match_disc_zero_probe_uses_eqz_and_dispatches() {
+        // A sum match dispatches on `sum-disc(scrutinee) == disc`; when the tested discriminant is 0 —
+        // the FIRST declared variant (`Some`), the common first-arm probe — that is `i32.eqz` (opcode
+        // 0x45), not `const 0 ; i32.eq`. Verify BOTH the emitted core module carries an `i32.eqz` AND the
+        // match still dispatches correctly across the present/absent variants (composed run). `Some`
+        // first so its disc-0 probe is the eqz.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (pick (: n Int64)) \
+                        (match (if (> n 0) (Option.Some n) Option.None) \
+                          ((Option.Some x) x) (Option.None -1))) \
+                     (export pick))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // The emitted component's embedded core module carries an `i32.eqz` (opcode 0x45) — the disc-0
+        // probe. Without the eqz special case the probe would be `i32.const 0` (0x41 0x00) + `i32.eq`
+        // (0x46) and no 0x45 would appear (this program has no other eqz — no scalar `== 0`, no bool
+        // negation). A whole-component byte scan suffices: the core module is embedded verbatim.
+        assert!(
+            bytes.contains(&0x45),
+            "the disc-0 (Some) probe must emit an i32.eqz (0x45)"
+        );
+        // And the dispatch is correct: `pick 5` → 5 (Some arm reads the payload), `pick 0` → -1 (None).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed run");
+            return;
+        };
+        for (arg, want) in [("5", "5"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("pick".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("disc-0-eqz sum-match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_nested_sum_match_is_a_decision_tree() {
         // The Maranget decision tree over MONOMORPHIC nested sums: `Box` wraps an `Inner` (itself a sum),
         // so `(match b ((Full (Pos x)) x) ((Full (Neg y)) y) (Empty -1))` shares the OUTER `Full` probe
@@ -9428,23 +10267,52 @@ mod stage1 {
         //      stack`. Hit even by a SCALAR guard (no heap handle).
         //  (2) BRANCH SCRATCH — when the guard produces an i32 heap handle (`value-eq`/`MatchSum`), its
         //      scratch slot must sit above the fall-through's i64 iteration arithmetic.
-        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). `find(0)` = 3 either way.
+        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). This also covers the two
+        // sibling scratch seams a heap-op-in-a-loop hit: a value-eq as the match SCRUTINEE (its handle
+        // scratch vs the probe chain's arm-body arith), and a value-eq guard on a LITERAL-probe arm (its
+        // handle scratch in the THEN vs the probe-else's iteration arith). All must be valid modules.
         use crate::testkit::parse;
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping guarded-wildcard-loop run");
             return;
         };
-        for (label, src) in [
+        for (label, src, want) in [
             (
-                "scalar guard",
+                "scalar guard (tail depth)",
                 "(module m (def (find (: n Int64)) \
                    (match n ((guard x (> x 2)) x) (_ (find (+ n 1))))) (export find))",
+                "3",
             ),
             (
-                "value-eq guard",
+                "value-eq guard on wildcard (tail depth + scratch)",
                 "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
                    (def (find (: n Int64)) \
                      (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find))",
+                "3",
+            ),
+            (
+                "value-eq as match scrutinee (scrutinee scratch)",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match (= (mk n) (mk 3)) (true n) (false (find (+ n 1))))) (export find))",
+                "3",
+            ),
+            (
+                "value-eq guard on literal-probe arm (probe-else scratch)",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match n ((guard 3 (= (mk n) (mk 3))) 300) (_ (find (+ n 1))))) (export find))",
+                "300",
+            ),
+            (
+                "value-eq guard on SUM-match arm, call scrutinee (sum-cont scratch)",
+                "(module m (type N (I Int64) (J Int64)) \
+                   (def (bump (: n Int64)) (if (< n 0) (N.J n) (N.I n))) \
+                   (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match (bump n) ((guard (N.I x) (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) \
+                   (export find))",
+                "3",
             ),
         ] {
             let bytes = compile_component(&crate::codec::encode(&parse(src)))
@@ -9456,7 +10324,7 @@ mod stage1 {
                 runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "find(0) = 3 ({label})"),
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "find(0) = {want} ({label})"),
                 cdz_run::Outcome::Trap(t) => panic!("guarded-wildcard-loop trapped ({label}): {t}"),
             }
         }
@@ -9749,6 +10617,94 @@ mod stage1 {
     }
 
     #[test]
+    fn a_lambda_captures_an_enclosing_binding_across_reduction() {
+        // A lambda that references an ENCLOSING binding (a free variable bound further out, NOT inside
+        // its own body) and is applied INSIDE that binding's scope. β-reducing the application must
+        // PRESERVE the free variable's resolution to the enclosing binding — `pin_free_vars` pins it so
+        // `beta_reduce` shares the occurrence rather than copying it into the orphan reduced node (where
+        // it would re-resolve unbound → a spurious CDZ0101, the bug this fixes). `core-semantics.md`
+        // §A Function Value Captures The Bindings In Scope Where It Is Created.
+        // Over an enclosing `let`: `(let ((k 10)) ((fn (x) (+ x k)) 5))` = 15.
+        assert_eq!(
+            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) 5))"),
+            15
+        );
+        // Two enclosing captures + a nested let: `(+ x a b)` reads `a`,`b` from the enclosing lets.
+        assert_eq!(
+            run_main("(let ((a 2)) (let ((b 3)) ((fn ((: x Int64)) (+ (+ x a) b)) 10)))"),
+            15
+        );
+        // Over an enclosing DEF PARAMETER: `(def (f k) ((fn (x) (+ x k)) 5))`, `f(10)` = 15.
+        let src = "(module m (def (f (: k Int64)) ((fn ((: x Int64)) (+ x k)) 5)) \
+             (def (main (: k Int64)) (f k)) (export main))";
+        assert_eq!(
+            run_returns_with::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main",
+                &[wasmtime::component::Val::S64(10)]
+            ),
+            15
+        );
+    }
+
+    #[test]
+    fn a_named_capturing_closure_applied_directly_folds() {
+        // A capturing lambda BOUND to a name (`let ((g (fn (x) (+ x k))))`) and applied `(g 5)` where `g`
+        // closes over an enclosing `k`. `g` is copy-propagated (a lambda value is never KEPT as a runtime
+        // `let` slot — `should_keep_binding` short-circuits it), so `(g 5)` β-reduces to `(+ 5 k)` and `k`
+        // folds through its enclosing binding. Regression guard: a prior version LIFTED `g` speculatively
+        // during the keep check, polluting `db.captured_ref` with `k`'s occurrence → the FOLDED `k` then
+        // lowered to a `Core::Captured` env-read in the enclosing scope (an uninitialized-local
+        // miscompile). The lambda-valued-binding short-circuit fixes it.
+        assert_eq!(
+            run_main("(let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5)))"),
+            15
+        );
+        // Applied more than once — each use folds independently: (5+10)+(6+10) = 31.
+        assert_eq!(
+            run_main("(let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (+ (g 5) (g 6))))"),
+            31
+        );
+        // Capturing an enclosing PARAMETER through a named binding (not just a `let`).
+        let src = "(module m \
+            (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5))) \
+            (def (main (: k Int64)) (f k)) (export main))";
+        assert_eq!(
+            run_returns_with::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main",
+                &[wasmtime::component::Val::S64(10)]
+            ),
+            15
+        );
+    }
+
+    #[test]
+    fn a_capturing_closure_composes_with_return_storage_and_multi_capture() {
+        // A closure FACTORY: `(def (mk k) (fn (x) (+ x k)))` returns a closure over `k`; `((mk 10) 5)`
+        // applies the returned closure = 15. A returned closure composed with a capture, both folded.
+        let factory = "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+            (def (main) ((mk 10) 5)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(factory))).expect("compile"),
+                "main"
+            ),
+            15
+        );
+        // A capturing closure STORED in a tuple, projected, applied — capture survives the storage.
+        assert_eq!(
+            run_main("(let ((k 7)) ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5))"),
+            12
+        );
+        // MULTIPLE distinct captures from different enclosing `let`s, through a nested-arith body.
+        assert_eq!(
+            run_main("(let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5))"),
+            13
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
@@ -9782,36 +10738,131 @@ mod stage1 {
         );
     }
 
+    /// Run `src`'s `main` with a single integer `arg` through the COMPOSED value-heap runtime (a closure
+    /// is a heap cell, so instantiation needs the runtime linked), returning the rendered result string.
+    /// Skips (returns `None`) if the runtime wasm is not built.
+    fn run_closure(src: &str, arg: i64) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime closure imports the value-heap runtime (a heap cell, not a fold)"
+        );
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
     #[test]
     fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
-        use wasmtime::component::Val;
         // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
         // higher-order function, applied inside the recursion. `apply-sum` cannot inline (it recurses),
         // so its function parameter `g` is a real runtime CLOSURE VALUE — the lambda `(fn (x) (* x 2))`
-        // is LAMBDA-LIFTED to a standalone function, passed as a funcref-table slot, and applied via
+        // is LAMBDA-LIFTED to a standalone function, passed as a heap-cell handle, and applied via
         // `call_indirect`. `apply-sum g n = g(n) + g(n-1) + … + g(1)`, so with `g = (*2)` the result is
         // `2·(n + (n-1) + … + 1) = n·(n+1)`. `core-semantics.md` §A Function Is A First-Class Value.
         let src = "(module m \
             (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(0)]), 0);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 2);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(3)]), 12);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 30);
-        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the result is
-        // `sum(k=1..n) (k + 100) = n(n+1)/2 + 100n`. Pins that the closure carries the RIGHT code (the
-        // table slot selects the applied function), not a fixed one.
+        let Some(r0) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r0, "0");
+        assert_eq!(run_closure(src, 1).unwrap(), "2");
+        assert_eq!(run_closure(src, 3).unwrap(), "12");
+        assert_eq!(run_closure(src, 5).unwrap(), "30");
+        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the closure must
+        // carry the RIGHT code (the table slot selects the applied function). n=3: 3·100 + 6 = 306.
         let src2 = "(module m \
             (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n)) (export main))";
-        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
-        // n=3: (3+100)+(2+100)+(1+100) = 306.
+        assert_eq!(run_closure(src2, 3).unwrap(), "306");
+    }
+
+    #[test]
+    fn a_capturing_closure_crosses_a_recursive_boundary() {
+        // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
+        // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND
+        // the captured `k` — passed to the recursive `apply-sum` and applied at each step, each
+        // application reading `k` back from the cell. `core-semantics.md` §A Function Value Captures The
+        // Bindings In Scope Where It Is Created. `apply-sum (fn (x) (+ x k)) 3 = (3+k)+(2+k)+(1+k) = 6+3k`.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3)) (export main))";
+        let Some(r0) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r0, "6");
+        assert_eq!(run_closure(src, 10).unwrap(), "36");
+        assert_eq!(run_closure(src, 100).unwrap(), "306");
+    }
+
+    #[test]
+    fn an_unannotated_closure_param_is_grounded_from_its_body() {
+        // A bare `(fn (x) (* x 2))` — no `(: x T)`. `x` types `Any` at its own occurrence (inference does
+        // not thread the use-site arrow back), but the body `(* x 2)` uses it as an integer operand, so
+        // `solve_lambda_param_ty` grounds `x : Int64` from that use (the lambda analogue of the recursive
+        // -def A2 solve). The closure lifts with that machine type and runs — no annotation needed.
+        // `apply-sum (fn (x) (* x 2)) 3 = 6+4+2 = 12`.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (fn (x) (* x 2)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "12");
+        assert_eq!(run_closure(src, 5).unwrap(), "30");
+    }
+
+    #[test]
+    fn a_multi_param_closure_applies_at_full_arity() {
+        // A TWO-parameter lambda VALUE `(fn (a b) (+ a b))` passed to a recursive HOF and applied at
+        // full arity `(g i i)`. It lifts to a `(env, a, b) -> result` function and applies via ONE
+        // `call_indirect` with both args (no intermediate closure). `ap2 g n = sum(i=n..1) (i+i) =
+        // 2·n(n+1)/2 = n(n+1)`. `core-semantics.md` §Functions Are Single-Arity (full-arity application).
+        let src = "(module m \
+            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1))))) \
+            (def (main (: n Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "12"); // (3+3)+(2+2)+(1+1)
+        assert_eq!(run_closure(src, 4).unwrap(), "20"); // 4·5
+        // A multi-param closure that also CAPTURES: `(fn (a b) (+ (+ a b) k))` captures `k`. n=2, k=100:
+        // (2+2+100)+(1+1+100) = 104+102 = 206.
+        let src2 = "(module m \
+            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1))))) \
+            (def (main (: k Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ (+ a b) k)) 2)) (export main))";
+        assert_eq!(run_closure(src2, 100).unwrap(), "206");
+    }
+
+    #[test]
+    fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
+        // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
+        // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The
+        // lambda may be lowered speculatively (registering a lift), but it is UNREACHED by any emitted
+        // `Core::Closure`, so it must be emitted as an inert stub (not a dead, ill-formed lifted body)
+        // and the program must still fold to a scalar. Regression guard for the reached-lift filter.
         assert_eq!(
-            run_returns_with::<i64>(&bytes2, "main", &[Val::S64(3)]),
-            306
+            run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
+            7
         );
     }
 
