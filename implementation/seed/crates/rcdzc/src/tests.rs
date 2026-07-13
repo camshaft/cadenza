@@ -10006,6 +10006,54 @@ mod stage1 {
     }
 
     #[test]
+    fn an_annotated_let_binder_constrains_the_value() {
+        // A `let` binder MAY carry a `(: <pat> <Type>)` annotation (core-semantics.md §A Binding Position
+        // Accepts An Irrefutable Pattern / type-system.md §Annotations Constrain, Never Contradict): the
+        // annotation constrains the value's type while the inner pattern binds. `check_binding_pattern` +
+        // `last_binder_named` peel it — a contradiction is CDZ0203, else the inner pattern binds normally.
+        let run = |body: &str| -> i64 {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&src))).expect("compile"),
+                "main",
+            )
+        };
+        // An annotated name binder, and an annotated DESTRUCTURING binder (annotation before the pattern).
+        assert_eq!(run("(let (((: x Int64) 5)) x)"), 5);
+        assert_eq!(
+            run("(let (((: (tuple a b) (Tuple Int64 Int64)) (tuple 3 4))) (+ a b))"),
+            7
+        );
+        // A CONTRADICTING annotation is CDZ0203.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        assert_eq!(code("(let (((: x Bool) 5)) x)").as_deref(), Some("CDZ0203"));
+        assert_eq!(
+            code("(let (((: (tuple a b) (Tuple Int64 Bool)) (tuple 3 4))) a)").as_deref(),
+            Some("CDZ0203")
+        );
+    }
+
+    #[test]
     fn a_def_parameter_may_be_a_tuple_pattern() {
         // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
         // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites

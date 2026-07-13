@@ -1385,9 +1385,18 @@ fn last_binder_named(
         if let Struct::List(kv) = db.ast.get(pair)
             && kv.len() == 2
         {
+            // An ANNOTATED binding `((: pat T) V)` — peel the annotation to the inner pattern `pat`; the
+            // binder is `pat`'s, and the type `T` is a constraint on `V` (checked when the let is lowered,
+            // CDZ0203 on contradiction). So `(: x Int64)` binds `x` and `(: (tuple a b) T)` destructures,
+            // both exactly as the un-annotated form does — the annotation does not change WHAT `name`
+            // binds, only constrains its type.
+            let lhs = match db.ast.as_form(kv[0], ":") {
+                Some(ann) if ann.len() == 2 => ann[0],
+                _ => kv[0],
+            };
             // A bare-name binding `(x V)` binds `name` directly to the value occurrence `V` — a `Ref`,
             // the common case (an allocation-free early return, the hot path).
-            if db.ast.as_name(kv[0]) == Some(name) {
+            if db.ast.as_name(lhs) == Some(name) {
                 return Some(Resolved::Ref { value: kv[1] });
             }
             // A DESTRUCTURING binding `((tuple a b) V)` — the LHS is a tuple PATTERN. A reference to one
@@ -1397,10 +1406,10 @@ fn last_binder_named(
             // match; reusing `find_binder_in_tuple` gives the desugar with zero new IR. (Refutability +
             // linearity are enforced when the `let` is lowered, so an ill-formed binding still faults —
             // this lookup only routes an in-scope binder to its value.)
-            if is_tuple_pattern(db, kv[0]) {
+            if is_tuple_pattern(db, lhs) {
                 let mut path = Vec::new();
                 let mut heads = Vec::new();
-                if find_binder_in_tuple(db, kv[0], name, &mut path, &mut heads) {
+                if find_binder_in_tuple(db, lhs, name, &mut path, &mut heads) {
                     return Some(Resolved::SumPayload {
                         scrutinee: kv[1],
                         steps: path.into(),

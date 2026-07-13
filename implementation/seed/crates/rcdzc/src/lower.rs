@@ -1715,6 +1715,41 @@ pub(crate) fn check_binding_pattern(
     pat: StructId,
     value_ty: &crate::ty::Ty,
 ) -> Result<(), Reject> {
+    // An ANNOTATED binding pattern `(: <pat> <Type>)` (type-system.md §Annotations Constrain, Never
+    // Contradict): the annotation constrains the bound value's type and the inner `<pat>` is the real
+    // binder. Peel it — check the annotation type AGREES with the value's type (a contradiction is
+    // CDZ0203, `(: x Bool) = 5`), then recurse on `<pat>` so the inner pattern's own well-formedness
+    // (irrefutable / linear / right shape) is still checked. A generic/deferred value type (`Any`, an
+    // unsolved var) agrees with any annotation — the annotation grounds it, no contradiction.
+    if let Some(ann) = db.ast.as_form(pat, ":")
+        && ann.len() == 2
+    {
+        let inner = ann[0];
+        let ty_expr = ann[1];
+        if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr)
+            && !value_ty.agrees_with(&annot_ty)
+        {
+            return Err(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "a binder annotated {} is bound to a value of type {}",
+                    annot_ty.render_name(),
+                    value_ty.render_name()
+                ),
+            )
+            .at(pat));
+        }
+        // The annotation may REFINE the value type (a deferred literal grounded to the annotated width),
+        // so validate the inner pattern against the annotation type when it is more specific than the
+        // value type, else the value type.
+        let refined = crate::eval::typeval_of(db, ty_expr).unwrap_or_else(|| value_ty.clone());
+        let inner_ty = if matches!(value_ty, crate::ty::Ty::Any) {
+            refined
+        } else {
+            value_ty.clone()
+        };
+        return check_binding_pattern(db, inner, &inner_ty);
+    }
     // A bare name (a binder) or `_` (wildcard) — trivially irrefutable, the common case.
     if let Some(name) = db.ast.as_name(pat) {
         // A bare name that resolves to a NULLARY constructor (`None`) is a refutable ctor, not a binder.
