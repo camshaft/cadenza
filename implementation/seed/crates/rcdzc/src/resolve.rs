@@ -1872,11 +1872,15 @@ fn resolve_quote(db: &Db, id: StructId) -> Resolved {
 /// pattern/body stay AST occurrences (resolved on their own demand); this records only the shape. Each
 /// arm must be a two-element `(pattern body)` list. A `match` with no arms is malformed.
 fn resolve_match(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a match is `(match <scrutinee> (<pattern> <body>)…)`";
     let tail = db.ast.as_form(id, "match").unwrap_or(&[]);
     let scrutinee = match tail.first() {
         Some(&s) => s,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "match has no scrutinee"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this match has no scrutinee — {SHAPE}"),
+            ));
         }
     };
     let mut arms: Vec<(StructId, StructId)> = Vec::new();
@@ -1886,13 +1890,16 @@ fn resolve_match(db: &Db, id: StructId) -> Resolved {
             _ => {
                 return Resolved::Poison(Reject::coded(
                     Code::Malformed,
-                    "a match arm must be (pattern body)",
+                    format!("a match arm must be `(<pattern> <body>)` — {SHAPE}"),
                 ));
             }
         }
     }
     if arms.is_empty() {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "match has no arms"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("this match has no arms — {SHAPE}"),
+        ));
     }
     Resolved::Match { scrutinee, arms }
 }
@@ -2162,15 +2169,24 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
 /// resolved on demand. Meaningful only inside a handler arm (the enclosing arm's lowering consumes it);
 /// a stray `resume` declines at lowering. A missing value or next-state is a `Poison`.
 fn resolve_resume(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a resume is `(resume <value> <next-state>)`";
     let tail = db.ast.as_form(id, "resume").unwrap_or(&[]);
     let value = match tail.first() {
         Some(&v) => v,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no value")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this resume has no value or next-state — {SHAPE}"),
+            ));
+        }
     };
     let next_state = match tail.get(1) {
         Some(&s) => s,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "resume has no next state"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this resume has no next-state — {SHAPE}"),
+            ));
         }
     };
     Resolved::Resume { value, next_state }
@@ -2180,21 +2196,32 @@ fn resolve_resume(db: &Db, id: StructId) -> Resolved {
 /// delegated effects' name occurrences; `body` the delegated computation. A missing effect list or body
 /// is a `Poison`.
 fn resolve_host(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a host is `(host (<effect>…) <body>)`";
     let tail = db.ast.as_form(id, "host").unwrap_or(&[]);
     let effects_occ = match tail.first() {
         Some(&e) => e,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no effect list")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this host has no effect list and no body — {SHAPE}"),
+            ));
+        }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "host has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this host has no body — {SHAPE}"),
+            ));
+        }
     };
     let effects = match db.ast.get(effects_occ) {
         Struct::List(es) => es.clone(),
         _ => {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "host effects must be a list",
+                format!("this host's effects must be a list — {SHAPE}"),
             ));
         }
     };
@@ -2204,18 +2231,32 @@ fn resolve_host(db: &Db, id: StructId) -> Resolved {
 /// Resolve `(let (BINDINGS) BODY)` into its resolved form. The bindings are `(name init)` pairs; scope
 /// is handled by the parent-walk (a reference finds its binder), so here we only record the shape.
 fn resolve_let(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a let is `(let ((<name> <init>)…) <body>)`";
     let tail = db.ast.as_form(id, "let").unwrap_or(&[]);
     let bindings_occ = match tail.first() {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "let has no bindings")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this let has no bindings and no body — {SHAPE}"),
+            ));
+        }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "let has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this let has no body — {SHAPE}"),
+            ));
+        }
     };
     let pairs = binding_pairs(db, bindings_occ);
     if pairs.is_empty() {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "let bindings are malformed"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}"),
+        ));
     }
     Resolved::Let {
         bindings: pairs,
@@ -2515,16 +2556,25 @@ fn is_param_occurrence(db: &Db, id: StructId) -> bool {
 /// (the ordinary parameter-scope mechanism, via `binder_in`). A type-lambda like `(fn (a) (-> (Int a)
 /// …))` is just this — `a` is an ordinary parameter, not a special "type variable".
 fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
+    const SHAPE: &str = "a fn is `(fn (<param>…) <body>)`";
     let tail = db.ast.as_form(id, "fn").unwrap_or(&[]);
     let params_occ = match tail.first() {
         Some(&p) => p,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no parameter list"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this fn has no parameter list and no body — {SHAPE}"),
+            ));
         }
     };
     let body = match tail.get(1) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "fn has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this fn has no body — {SHAPE}"),
+            ));
+        }
     };
     // The parameter occurrences (each a bare name). Collected into the `Arc<[StructId]>` the variant
     // holds (a refcounted slice — cloning the lambda is then O(1)).
@@ -2533,7 +2583,7 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
         _ => {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "fn parameters must be a list",
+                format!("this fn's parameters must be a list — {SHAPE}"),
             ));
         }
     };

@@ -513,9 +513,11 @@ pub mod suggest {
         let mut best: Option<(usize, String)> = None;
         for cand in candidates {
             let cand = cand.as_ref();
-            // Never suggest the name itself (a shadowed / out-of-scope exact match is not a typo), nor
-            // the wildcard.
-            if cand == name || cand == "_" {
+            // Never suggest the name itself (a shadowed / out-of-scope exact match is not a typo), the
+            // wildcard, nor the EMPTY name. An empty candidate arises from a nameless malformed binder
+            // (e.g. `(def)` registers a def with an empty name); "did you mean ``?" is never useful, and
+            // its edit distance to any 1-char name is 1 (≤ max_dist), so it would otherwise win.
+            if cand == name || cand == "_" || cand.is_empty() {
                 continue;
             }
             let d = edit_distance(name, cand);
