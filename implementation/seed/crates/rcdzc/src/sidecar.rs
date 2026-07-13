@@ -374,12 +374,33 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             // let initializer, a parameter binder, a sum/prelude binding) or `Lambda { body }` (a def
             // with parameters). Anything else — a literal, a prim, an unbound name, a non-user id — is
             // NOT a navigable reference: the empty result (total). The consumer maps the id to a span.
+            //
+            // When the resolved-to node is a top-level DEFINITION's body, jump to the def's NAME
+            // occurrence, not its body/value: go-to-definition should land on `helper` (so an editor
+            // highlights the name), not the `(+ x 1)` body a `Lambda`/`Ref` resolves to. Both a nullary
+            // def (`Ref` → the body value) and a function def (`Lambda` → the lambda body) resolve to a
+            // def body, so `def_index_by_body` maps either back to the def, and its sig's first child is
+            // the name. A non-def target (a `let` initializer, a parameter binder) has no such owner —
+            // keep the resolved occurrence itself, which IS the binding site to jump to. (Same
+            // name-occurrence convention the `Exports` query uses.)
+            let name_occ_of_def_body = |db: &Db, target: crate::ast::StructId| {
+                db.def_index_by_body(target)
+                    .map(|di| db.defs[di].sig_occ)
+                    .and_then(|sig| match db.ast.get(sig) {
+                        Struct::List(kids) => kids.first().copied(),
+                        _ => None,
+                    })
+                    .unwrap_or(target)
+            };
             let mut text = String::new();
             if db.is_user_node(id) {
-                match crate::resolve::resolved_of(db, id) {
-                    Resolved::Ref { value } => text = format!("{}\n", value.0),
-                    Resolved::Lambda { body, .. } => text = format!("{}\n", body.0),
-                    _ => {}
+                let target = match crate::resolve::resolved_of(db, id) {
+                    Resolved::Ref { value } => Some(value),
+                    Resolved::Lambda { body, .. } => Some(body),
+                    _ => None,
+                };
+                if let Some(target) = target {
+                    text = format!("{}\n", name_occ_of_def_body(db, target).0);
                 }
             }
             QueryResult {

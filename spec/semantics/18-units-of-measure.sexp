@@ -412,6 +412,26 @@
                         (Qty.of 1 (Unit.prefix kilo (Unit.base #"byte"))))))
   (output (: 2024 Int64)))
 
+(case "a negative-power SI prefix converts over Float"
+  (doc    "`(Unit.in (Unit.of #\"second\") (Qty.of 5.0 (Unit.prefix milli (Unit.of #\"second\"))))` converts
+           5 ms to seconds over Float64: `milli` = 10⁻³ = 1/1000, so 5 ms = 5/1000 = 0.005 s. The
+           exact-`Rational` case above pins 1/200; this pins the SAME negative-power conversion over the
+           inexact numeric the seed already has — the scale ratio (1/1000) applies as float arithmetic, so
+           the result is 0.005 (a value with no exact float form beyond this rounding, which is precisely
+           the precision the spec permits `only where the underlying numeric type is itself inexact`).")
+  (input  (Qty.value (Unit.in (Unit.of #"second") (Qty.of 5.0 (Unit.prefix milli (Unit.of #"second"))))))
+  (output (: 0.005 Float64)))
+
+(case "an IEC binary prefix converts exactly over Int64"
+  (doc    "`(Unit.in (Unit.of #\"byte\") (Qty.of 1 (Unit.prefix mebi (Unit.of #\"byte\"))))` converts 1 MiB
+           to bytes over Int64: `mebi` = 2²⁰ = 1048576, so 1 MiB = 1048576 byte. The exact-`Rational` case
+           above pins the same magnitude; this pins the binary prefix (kibi/mebi/gibi) converting over the
+           integer numeric the seed has — the whole scale is an exact integer multiply, so no precision is
+           lost. Pairs with the decimal-prefix Float case to cover both prefix systems over concrete
+           numerics via explicit `Unit.in`.")
+  (input  (Qty.value (Unit.in (Unit.of #"byte") (Qty.of 1 (Unit.prefix mebi (Unit.of #"byte"))))))
+  (output (: 1048576 Int64)))
+
 (case "comparing quantities of one dimension at different scales converts before comparing"
   (doc    "`(< (Qty 500.0 metre) (Qty 1.0 (Unit.prefix kilo metre)))` compares metres to kilometres — one
            dimension, two scales — so each converts to the reference and compares there: 500 m < 1000 m,
@@ -557,7 +577,6 @@
            `(Unit.in metre (Qty.of 1.0 furlong))` = 660 * 381/1250 = 201.168 m. Pins that a user-declared
            unit joins the family of its base's dimension and converts by the composed scale — the layer
            fixes the mechanism, a program supplies its own vocabulary.")
-  (needs  units-of-measure)
   (input  (do
             (Unit.define #"furlong" (Unit.of #"foot") 660 1)
             (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 1.0 (Unit.of #"furlong")))))
@@ -569,7 +588,6 @@
            as 2 m — a conflicting conversion — so it is CDZ0502 (units-of-measure.md #A Named Unit's
            Conversion Is Unique): a unit's name must resolve to ONE conversion. A redeclaration that
            AGREED with the built-in would be admissible; a disagreement is rejected.")
-  (needs  units-of-measure)
   (input  (do
             (Unit.define #"foot" (Unit.of #"metre") 2 1)
             (def (main) 0)

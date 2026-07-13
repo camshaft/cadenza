@@ -1881,7 +1881,6 @@
            pattern gets, rather than DECLINE ('a match pattern that is not a scalar literal or `_`') — a
            decline would grade a genuine type error as a mere unsupported form. The check fires whenever the
            scrutinee's type is a definite non-sum; an undetermined scrutinee still declines cleanly.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C Red Green)
             (def (main) (match 5 ((C.Red) 1) ((C.Green) 0))) (export main)))
@@ -1892,7 +1891,6 @@
            type error (CDZ0203), not a decline. A Bool is matched by the literals `true`/`false` or a
            binder, never by a sum's constructor. Pins that the scrutinee-vs-pattern-type check is over ANY
            definite non-sum scalar, not just Int64.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C Red Green)
             (def (main) (match true ((C.Red) 1) ((C.Green) 0))) (export main)))
@@ -2850,7 +2848,6 @@
            (unit-tested; the gate observes the run and the build succeeds). The dual of the CDZ0210
            non-exhaustiveness rejection above: that flags a value no arm covers, this an arm no value
            reaches.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C Red Green)
             (def (kind (: c C)) (match c ((C.Red) 1) ((C.Red) 2) ((C.Green) 0)))
@@ -3122,7 +3119,6 @@
            and matches it, recovering `Color.Red` → 1. `(mk false)` boxes `Color.Blue` → element 0 matches
            the third arm → 3. Pins that the discriminant representation composes with the value heap (an
            enum element is not mis-stored as a raw handle nor aliased to the zero variant).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Color Red Green Blue)
             (def (mk (: b Bool)) (tuple (if b Color.Red Color.Blue) 99))
@@ -3139,7 +3135,6 @@
            is a scalar comparison, not a structural heap walk: `Color.Red = Color.Red` is true (1),
            `Color.Red = Color.Green` is false (0), summing to 1. Pins that enum `=` is decided on the
            discriminant and yields a Bool, distinguishing a runtime-built enum from its siblings.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Color Red Green Blue)
             (def (eq2 (: x Color) (: y Color)) (if (= x y) 1 0))
