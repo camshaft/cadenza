@@ -5794,6 +5794,61 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_masks_collapse_to_a_single_and() {
+        // `(& (& v C1) C2)` → `(& v (C1 & C2))` — AND is associative and total, so two constant masks are
+        // one mask by their bitwise-AND. Pins the collapse at the Lir level (exactly ONE `and`) and the
+        // value parity, and checks the same-operand `& a a` fold still fires (the collapse is guarded).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let and_count = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I32And | Lir::I64And)).count();
+        // `(& (& x 255) 15)` → one `and` (255 & 15 = 15).
+        assert_eq!(and_count(&lir("(: x Int64)", "(: (& (& x 255) 15) Int64)")), 1, "two masks → one");
+        // Constant on the LEFT of the outer `&`.
+        assert_eq!(and_count(&lir("(: x Int64)", "(: (& 15 (& x 255)) Int64)")), 1, "left-const → one");
+        // A triple nest collapses all the way to one `and`.
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& (& (& x 255) 63) 15) Int64)")),
+            1,
+            "triple mask → one"
+        );
+        // The same-operand fold is NOT shadowed by the collapse guard: `(& x x)` → `x` (no `and`).
+        assert_eq!(and_count(&lir("(: x Int64)", "(: (& x x) Int64)")), 0, "& a a still folds to a");
+
+        // VALUE PARITY — subset and NON-subset mask pairs.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(58)]), 10); // 58&15
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(-1)]), 15);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& (& x 12) 10) Int64)", &[Val::S64(15)]), 8); // 15 & (12&10=8)
+        assert_eq!(run::<i64>("(: x Int64)", "(: (& 15 (& x 255)) Int64)", &[Val::S64(58)]), 10);
+        // Narrow (Int8): the folded constant grounds to the narrow width.
+        assert_eq!(run::<i8>("(: x Int8)", "(: (& (& x 15) 7) Int8)", &[Val::S8(13)]), 5); // 13&15&7 = 5
+    }
+
+    #[test]
     fn a_mask_covering_a_shifted_values_range_is_elided() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;

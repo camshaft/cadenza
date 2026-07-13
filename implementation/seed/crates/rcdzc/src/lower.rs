@@ -5871,6 +5871,14 @@ fn arith_identity(
         // constant — `(& x M)` returns `lc` (x) when `rc` (M) masks x's whole width; symmetric for `(& M x)`.
         Prim::BitAnd if is_full_mask_for(db, lhs, rc) => Some(lc.clone()),
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
+        // NESTED-MASK COLLAPSE: `(& (& v C1) C2)` → `(& v (C1 & C2))`. AND is associative and total
+        // (never traps), so masking twice with constants is one mask by their bitwise-AND — one fewer op,
+        // and the folded constant often enables downstream range folds (`(& (& x 255) 15)` → `(& x 15)`,
+        // range [0,15]). `v` keeps its own traps (it stays the operand). Either the LEFT or RIGHT outer
+        // operand may be the inner `(& v C1)`; the other must be the constant `C2`. Guarded on the shape
+        // (via `nested_mask_collapse`, which returns `None` when it does not apply) so the same-operand
+        // `& a a` fold below still fires. Verified value-identical: `(a & C1) & C2 == a & (C1 & C2)`.
+        Prim::BitAnd if let Some(folded) = nested_mask_collapse(db, lhs, lc, rhs, rc) => Some(folded),
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
         // `(>>ᵤ x k)` → 0 when the LOGICAL right shift drops ALL of `x`'s significant bits — its provable
@@ -5911,6 +5919,65 @@ fn arith_identity(
         Prim::BitAnd | Prim::BitOr if core_equiv(db, lhs, rhs) => Some(lc.clone()),
         _ => None,
     }
+}
+
+/// The NESTED-MASK COLLAPSE for an outer `&` whose operands are `(lhs, rhs)` (cores `lc`/`rc`): when one
+/// operand is `(& v C1)` and the OTHER is a constant `C2`, returns `(& v (C1 & C2))` — one mask instead
+/// of two. `None` when neither shape matches (so the caller's later folds still fire). AND is total, so
+/// no trap is dropped; `v` stays the operand (its own traps preserved). The folded constant `C1 & C2` is
+/// a fresh `Leaf::Int` atom, lowered lazily to `Core::ConstInt` and grounded to the op width at selection.
+fn nested_mask_collapse(
+    db: &mut Db,
+    lhs: StructId,
+    lc: &Core,
+    rhs: StructId,
+    rc: &Core,
+) -> Option<Core> {
+    // The `(v, C1)` of an inner `(& v C1)` node, C1 a constant on either side.
+    let nested_and_const = |db: &mut Db, inner: StructId| -> Option<(StructId, i64)> {
+        let Core::Arith {
+            op: Prim::BitAnd,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        match (core_of(db, il), core_of(db, ir)) {
+            (Core::ConstInt(c), _) => c.to_i64().map(|c| (ir, c)),
+            (_, Core::ConstInt(c)) => c.to_i64().map(|c| (il, c)),
+            _ => None,
+        }
+    };
+    let combine = |db: &mut Db, inner: StructId, outer_c: i64| -> Option<Core> {
+        let (v, inner_c) = nested_and_const(db, inner)?;
+        let folded = inner_c & outer_c;
+        let fc = db.push_atom(crate::ast::Leaf::Int {
+            value: IntValue::from_i64(folded),
+            radix: crate::ast::Radix::Dec,
+        });
+        trace!(target: "rcdzc::fold", inner_c, outer_c, folded, "nested-mask collapse (& (& v C1) C2) → (& v (C1&C2))");
+        Some(Core::Arith {
+            op: Prim::BitAnd,
+            lhs: v,
+            rhs: fc,
+        })
+    };
+    // `(& (& v C1) C2)` — inner on the LEFT, constant C2 on the RIGHT.
+    if let Core::ConstInt(c2) = rc
+        && let Some(c2) = c2.to_i64()
+        && let Some(folded) = combine(db, lhs, c2)
+    {
+        return Some(folded);
+    }
+    // `(& C2 (& v C1))` — constant C2 on the LEFT, inner on the RIGHT.
+    if let Core::ConstInt(c2) = lc
+        && let Some(c2) = c2.to_i64()
+        && let Some(folded) = combine(db, rhs, c2)
+    {
+        return Some(folded);
+    }
+    None
 }
 
 /// Whether masking the value at `val` with the constant `mask_core` is a NO-OP — i.e. `val & M == val`.
