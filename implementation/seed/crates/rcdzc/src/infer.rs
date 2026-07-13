@@ -1130,6 +1130,21 @@ fn tail_resume_value(db: &mut Db, node: StructId) -> Option<StructId> {
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
+/// Whether `ty` is a DEFINITE non-function type — a ground value type that can never be applied (a
+/// scalar Int/Bool/Float/String/Bytes/Unit, or a structural Record/Tuple/Sum/List/Map/Set value). Used
+/// to turn "applying a non-function" into a coded reject: only a type KNOWN not to be a function faults,
+/// so an UNDETERMINED head (`Ty::Any` — a not-yet-modeled construct or an unresolved variable) is NOT
+/// flagged (it falls through to a clean decline, never a spurious reject). `Ty::Fn` is applyable;
+/// `Ty::Type` (a type-value) is a constructor-like value handled on its own paths, so it is excluded too.
+fn is_definite_non_function(ty: &Ty) -> bool {
+    match ty {
+        // Applyable or undetermined — not a "definitely can't apply this" case.
+        Ty::Fn(_, _) | Ty::Any | Ty::Var(_) | Ty::Type => false,
+        // Every other ground/structural value type is a non-function.
+        _ => true,
+    }
+}
+
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
     // A LIST constructor (`list` alias) applied — its arguments are its ELEMENTS, and a list is
     // HOMOGENEOUS: every element must share one type (collections-and-text.md §A List Is A Homogeneous
@@ -1238,7 +1253,37 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
-        None => return,
+        // No scheme: the head is not a function-valued built-in/def. It may still be applyable via one
+        // of the paths above (lambda / constructor / compound alias — all handled + returned already),
+        // so reaching here means the head is a PLAIN VALUE. If its type is a DEFINITE non-function —
+        // applying a scalar `(5 3)`, a Bool `(true 1)`, a Float `(3.5 1)` — that is a MALFORMED
+        // application (`core-semantics.md` §Applying A Function Binds Its Parameter To Its Argument: a
+        // non-function has no defined result), the CDZ0201 the corpus assigns (09-functions "applying a
+        // non-function/boolean/float is a type error"). Reject it here rather than letting lowering
+        // decline "value is not applyable" (which grades as a to-do, not the type error it is). Guarded
+        // on `is_definite_non_function` so an UNDETERMINED head (`Ty::Any` — a not-yet-modeled construct,
+        // an unresolved var) still falls through to a clean decline, never a spurious reject.
+        None => {
+            // A head with a `(meta apply)` PRIMITIVE is applyable via that primitive even though it has
+            // no type SCHEME — the compound-value constructors (`tuple`/`record`/`list` aliases build the
+            // compound), a type constructor (`(Int 64)`), etc. Those are NOT "applying a non-function";
+            // only a head that is neither scheme-typed NOR a `(meta apply)` primitive AND whose type is a
+            // definite non-function is the malformed `(5 3)` / `(true 1)` / `(3.5 1)` case.
+            if !args.is_empty() && crate::eval::meta_apply_of(db, head).is_none() {
+                let ht = type_of(db, head);
+                if is_definite_non_function(&ht) {
+                    trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
+                    out.push(Reject::coded(
+                        Code::Malformed,
+                        format!(
+                            "cannot apply a value of type {} — it is not a function",
+                            ht.render_name()
+                        ),
+                    ));
+                }
+            }
+            return;
+        }
     };
     let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
     let mut subst = Subst::new();

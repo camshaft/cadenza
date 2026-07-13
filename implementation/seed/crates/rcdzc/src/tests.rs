@@ -4017,6 +4017,48 @@ mod match_engine {
     }
 
     #[test]
+    fn applying_a_non_function_is_a_coded_type_error() {
+        // 09-functions "applying a non-function/boolean/float is a type error": a value that is NOT a
+        // function has no defined result when applied (`core-semantics.md` §Applying A Function Binds Its
+        // Parameter To Its Argument), so `(5 3)`/`(true 1)`/`(3.5 1)` MUST be REJECTED with a code
+        // (CDZ0201 Malformed) — not DECLINED "value is not applyable" (a to-do). The head's type is a
+        // definite non-function (Int64/Bool/Float64), so `check_application` faults before lowering.
+        assert_eq!(
+            reject_code("(module m (def (main) (5 3)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (true 1)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (3.5 1)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
+        // The guard must NOT over-reject: a head that is applyable via a `(meta apply)` PRIMITIVE (the
+        // `tuple`/`record`/`list` compound-value alias, a type ctor) has no type SCHEME but IS applyable,
+        // so it must still COMPILE. `(tuple 1 2)` and `(list 1 2)` build their compounds (reject_code =
+        // None = compiled); a record field read likewise. Pins that the non-function check excludes
+        // meta-apply heads (the tuple/record/list regression the first cut of this check caused).
+        assert_eq!(
+            reject_code("(module m (def (main) (tuple 1 2)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (list 1 2)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_list_constructs_and_its_length_folds() {
         // `(list 1 2 3)` builds a homogeneous list; `List.len` of a compile-time-visible list folds to
         // its arity (no heap). `((. List len) (list 1 2 3))` → 3; the empty list → 0. Runtime elements
