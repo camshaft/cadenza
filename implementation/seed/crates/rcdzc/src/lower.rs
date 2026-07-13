@@ -564,6 +564,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
                 // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
                 _ if core_equiv(db, lhs, rhs) => lc,
+                // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
+                // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
+                // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
+                // result is a constant), so gated on `is_trap_free(lhs)` — a trapping `a` must still trap
+                // (`core_equiv` matches only pure cores, so `a` is pure anyway, but keep the guard explicit).
+                // Both operand orders (`a`&`!a` / `!a`&`a`) are handled by `bool_complement_pair`.
+                _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
+                    Core::ConstBool(!is_and) // and → false ; or → true
+                }
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -6771,6 +6780,18 @@ fn complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId
     }
 }
 
+/// Whether `lhs`/`rhs` are BOOLEAN complements — one is `v` and the other is `(not v)` (`Core::Not` whose
+/// operand is `core_equiv` to the first). The `and`/`or` analogue of the bitwise `complement_pair`; drives
+/// the boolean complement laws `(and a (not a))` → false, `(or a (not a))` → true. Both operand orders are
+/// tried. (`Core::Not` is `lower`'s canonical boolean negation — a `(not (not a))` already cancelled in the
+/// `Resolved::Not` fold, so a `Not` here wraps a non-`Not` operand.)
+fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
+    let is_not_of = |db: &mut Db, maybe_not: StructId, other: StructId| -> bool {
+        matches!(core_of(db, maybe_not), Core::Not { operand } if core_equiv(db, operand, other))
+    };
+    is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
+}
+
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
 /// are `(lhs, rhs)` (cores `lc`/`rc`): when one operand is `(OP v C1)` — the SAME op — and the OTHER is a
 /// constant `C2`, returns `(OP v (C1 ⊙ C2))` where `⊙` is that op's constant fold — one op instead of
@@ -7163,6 +7184,10 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
             rhs,
         }
         | Core::Compare { lhs, rhs, .. } => is_trap_free(db, lhs) && is_trap_free(db, rhs),
+        // Boolean negation `not` is a single `i32.eqz` — total (never traps) — so trap-free if its operand
+        // is. (Lets `(not a)` participate in a discarding fold, e.g. the boolean complement law
+        // `(and (not a) a)` → false, whose `is_trap_free(lhs)` guard sees the `(not a)` lhs.)
+        Core::Not { operand } => is_trap_free(db, operand),
         // `wrap` is total (never traps) — trap-free if its operand is.
         Core::Convert {
             op: Prim::Wrap,

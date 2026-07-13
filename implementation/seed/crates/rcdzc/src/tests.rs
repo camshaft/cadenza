@@ -14887,6 +14887,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_with_a_value_and_its_negation_folds_to_a_constant() {
+        // BOOLEAN COMPLEMENT LAWS: `(and a (not a))` → false, `(or a (not a))` → true — a boolean and its
+        // negation are exclusive+exhaustive. The `and`/`or` analogue of the bitwise `x & ~x`/`x | ~x` fold.
+        // DISCARDS both operands, so gated on `is_trap_free`. Pins the fold at the Lir level (no and/or/eqz)
+        // AND value/trap parity. Both operand orders and a comparison operand.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let ops = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::I32Eqz | Lir::If(_)))
+                .count()
+        };
+        // `(and a (not a))` / `(or a (not a))` fold to a constant — no connective/eqz/if.
+        assert_eq!(ops(&lir("(: a Bool)", "(: (and a (not a)) Bool)")), 0, "and a !a → false");
+        assert_eq!(ops(&lir("(: a Bool)", "(: (or a (not a)) Bool)")), 0, "or a !a → true");
+        // Reverse operand order and a comparison operand.
+        assert_eq!(ops(&lir("(: a Bool)", "(: (and (not a) a) Bool)")), 0, "and !a a → false");
+        assert_eq!(ops(&lir("(: x Int64)", "(: (and (< x 5) (not (< x 5))) Bool)")), 0, "and (<x5) !(<x5) → false");
+        // A DISTINCT negated operand does NOT fold.
+        let distinct = lir("(: a Bool) (: b Bool)", "(: (and a (not b)) Bool)");
+        assert!(
+            distinct.iter().any(|i| matches!(i, Lir::I32And | Lir::I32Eqz | Lir::If(_))),
+            "(and a (not b)) is not folded, got: {distinct:?}"
+        );
+
+        // VALUE PARITY over both truth values: `and a !a` is always false, `or a !a` always true.
+        use wasmtime::component::Val;
+        let fb = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+            "(module m (def (f (: a Bool)) {body}) (export f))"
+        )))).expect("compile");
+        for a in [true, false] {
+            assert!(!run_returns_with::<bool>(&fb("(and a (not a))"), "f", &[Val::Bool(a)]), "and a !a @{a}");
+            assert!(run_returns_with::<bool>(&fb("(or a (not a))"), "f", &[Val::Bool(a)]), "or a !a @{a}");
+        }
+        // TRAP SAFETY: a trapping operand in `(and a (not a))` — the fold discards it, so it must still trap.
+        let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (not (> (/ 10 n) 0))) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&gb, "f", &[Val::S64(0)]), "a trapping operand in the complement-law fold keeps its trap");
+        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 0);
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
