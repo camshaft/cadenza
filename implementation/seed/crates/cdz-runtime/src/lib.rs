@@ -1181,107 +1181,181 @@ impl DocBuilder {
     }
 }
 
-/// The recursion cap on the value walk — a runtime value nesting deeper than this declines rather than
-/// overflowing the native stack (a malformed descriptor with a self-`Ref` over a cyclic-looking heap, or
-/// a pathologically deep value). Ample for any real recursive value form; the walk is O(nodes).
-const ENCODE_DEPTH_CAP: u32 = 100_000;
+/// The NON-PROGRESS cap on the value walk — bounds a MALFORMED descriptor whose `Ref`/`Named` chain
+/// cycles WITHOUT ever consuming a heap node (e.g. `Ref → Ref`, or `Named → Ref → Named …`), which would
+/// otherwise spin the iterative walk forever building nothing. It counts only CONSECUTIVE non-consuming
+/// transitions (`Ref` and `Named` both keep the SAME value `h`); it RESETS to 0 on any descent into a
+/// child node (Tuple/List/Record/Sum reach a DIFFERENT heap node via `arr-get`/`sum-payload`, so they
+/// make progress and cannot cycle on a well-formed acyclic value). It is therefore NOT a value-DEPTH
+/// limit: because the walk is ITERATIVE (an explicit heap work stack — see `encode_value`), a genuinely
+/// deep value (a long list, a deep tree) is bounded only by heap, never by the ~4.5 k-frame native/wasm
+/// call stack a recursive walker would overflow. A real descriptor's `Ref`/`Named` runs are O(1) between
+/// consuming steps, so this cap never fires on a well-formed value however deep.
+const ENCODE_REF_CYCLE_CAP: u32 = 100_000;
 
-/// Walk the runtime value `h` under table entry `shape_ix`, appending its value-form structs to `b`;
-/// return this sub-value's root struct index. A `Ref` follows the table (this is where a recursive
-/// value re-enters the sum's shape); recursion is bounded by the value's ACTUAL depth (capped by
-/// `ENCODE_DEPTH_CAP`). `None` on a malformed descriptor / out-of-range disc / unrenderable shape.
-/// BORROWS `h`; the caller drops the root once after the whole document is built.
-fn encode_value(
-    desc: &Descriptor,
-    b: &mut DocBuilder,
-    h: Handle,
-    shape_ix: u32,
-    depth: u32,
-) -> Option<u32> {
-    if depth > ENCODE_DEPTH_CAP {
-        return None;
-    }
-    let shape = desc.table.get(shape_ix as usize)?;
-    Some(match shape {
-        Shape::Ref(target) => return encode_value(desc, b, h, *target, depth + 1),
-        Shape::Int => {
-            let l = b.int_leaf(op_get_int(h));
-            b.atom(l)
-        }
-        Shape::Bool => {
-            let l = b.bool_leaf(op_get_bool(h));
-            b.atom(l)
-        }
-        Shape::Unit => {
-            let l = b.name_leaf("unit");
-            b.atom(l)
-        }
-        // Float/Str/Bytes runtime rendering is a later slice (the sum vertical targets Int/Bool/Unit
-        // payloads first); a descriptor carrying them declines here rather than emitting a wrong leaf.
-        Shape::Float | Shape::Str | Shape::Bytes => return None,
-        Shape::Tuple(elems) => {
-            if elems.is_empty() {
-                let l = b.name_leaf("unit");
-                return Some(b.atom(l));
+/// One unit of pending work on the iterative encode's explicit stack. Modelled directly on the recursive
+/// walk it replaces (below, as `encode_value_recursive` in the tests) so the SEQUENCE of `DocBuilder`
+/// leaf/struct pushes — and therefore the document bytes — is IDENTICAL. `'d` borrows the descriptor's
+/// interned names (the head/field/type strings), so no name is cloned.
+enum EncodeWork<'d> {
+    /// Dispatch on the shape of value `h` at table entry `shape_ix`; leaf shapes emit + produce one
+    /// result, container shapes emit their head eagerly then push children (in reverse) + an assembler.
+    /// `refs` = consecutive non-consuming `Ref`/`Named` hops taken to reach here (reset on child descent).
+    Visit { h: Handle, shape_ix: u32, refs: u32 },
+    /// A record FIELD: emit the key leaf+atom (BEFORE the field value, matching the recursive per-field
+    /// order), then queue the value visit and a `Pair` assembler.
+    VisitField { h: Handle, shape_ix: u32, key: &'d str },
+    /// Assemble `list([head_s, <the top `nkids` results in child order>])` — the tuple/list/record/sum body.
+    List { head_s: u32, nkids: usize },
+    /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
+    /// (matching the recursive order), then `list([colon_s, value, tname_s])`.
+    Named { colon_s: u32, name: &'d str },
+    /// Assemble one record pair: pop the field value, `list([katom, fval])`.
+    Pair { katom: u32 },
+}
+
+/// Walk the runtime value `root_h` under table entry `root_shape`, appending its value-form structs to
+/// `b`; return the root struct index. A `Ref` follows the table (where a recursive value re-enters the
+/// sum's shape). `None` on a malformed descriptor / out-of-range disc / unrenderable shape / a `Ref`/
+/// `Named` cycle exceeding `ENCODE_REF_CYCLE_CAP`. BORROWS the value; caller drops the root afterward.
+///
+/// ITERATIVE (an explicit heap work stack, not native recursion) — a deep recursive value (a long linked
+/// list, a deep tree: the very shapes this op exists to encode) would overflow the ~4.5 k-frame native /
+/// wasm call stack of the recursive walker and ABORT the guest, rather than honour the op's decline
+/// contract. Same discipline as `op_drop`'s iterative free cascade. The push order reproduces the
+/// recursive walk's leaf/struct emission EXACTLY, so the document is byte-identical (guarded by
+/// `value_encode_iterative_matches_recursive_reference`). `refs` counts only consecutive non-consuming
+/// `Ref`/`Named` hops (reset on every child descent), so the cap bounds a malformed cycle WITHOUT
+/// limiting a well-formed value's genuine depth.
+fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shape: u32) -> Option<u32> {
+    let mut work: Vec<EncodeWork> = Vec::new();
+    let mut out: Vec<u32> = Vec::new(); // completed struct indices, in completion order
+    work.push(EncodeWork::Visit { h: root_h, shape_ix: root_shape, refs: 0 });
+    while let Some(task) = work.pop() {
+        match task {
+            EncodeWork::Visit { h, shape_ix, refs } => {
+                if refs > ENCODE_REF_CYCLE_CAP {
+                    return None; // a Ref/Named chain that never consumes a node — malformed descriptor cycle
+                }
+                match desc.table.get(shape_ix as usize)? {
+                    Shape::Ref(target) => {
+                        // Non-consuming: same `h`, no heap node reached → count toward the cycle cap.
+                        work.push(EncodeWork::Visit { h, shape_ix: *target, refs: refs + 1 });
+                    }
+                    Shape::Int => {
+                        let l = b.int_leaf(op_get_int(h));
+                        out.push(b.atom(l));
+                    }
+                    Shape::Bool => {
+                        let l = b.bool_leaf(op_get_bool(h));
+                        out.push(b.atom(l));
+                    }
+                    Shape::Unit => {
+                        let l = b.name_leaf("unit");
+                        out.push(b.atom(l));
+                    }
+                    // Float/Str/Bytes runtime rendering is a later slice (the sum vertical targets
+                    // Int/Bool/Unit payloads first); a descriptor carrying them declines here.
+                    Shape::Float | Shape::Str | Shape::Bytes => return None,
+                    Shape::Tuple(elems) => {
+                        if elems.is_empty() {
+                            let l = b.name_leaf("unit");
+                            out.push(b.atom(l));
+                        } else {
+                            let head = b.name_leaf("tuple");
+                            let head_s = b.atom(head);
+                            work.push(EncodeWork::List { head_s, nkids: elems.len() });
+                            // Push children in REVERSE so the LIFO stack visits them left→right; each
+                            // completes to one `out` entry, in child order under the `List` assembler.
+                            // A child is a DIFFERENT heap node (arr-get) → progress → reset `refs` to 0.
+                            for (i, &es) in elems.iter().enumerate().rev() {
+                                work.push(EncodeWork::Visit {
+                                    h: op_arr_get(h, i as u32),
+                                    shape_ix: es,
+                                    refs: 0,
+                                });
+                            }
+                        }
+                    }
+                    Shape::List(elem) => {
+                        let (elem, n) = (*elem, op_arr_len(h));
+                        let head = b.name_leaf("list");
+                        let head_s = b.atom(head);
+                        work.push(EncodeWork::List { head_s, nkids: n as usize });
+                        for i in (0..n).rev() {
+                            work.push(EncodeWork::Visit { h: op_arr_get(h, i), shape_ix: elem, refs: 0 });
+                        }
+                    }
+                    Shape::Record(fields) => {
+                        let head = b.name_leaf("record");
+                        let head_s = b.atom(head);
+                        work.push(EncodeWork::List { head_s, nkids: fields.len() });
+                        for (i, (k, fs)) in fields.iter().enumerate().rev() {
+                            work.push(EncodeWork::VisitField {
+                                h: op_arr_get(h, i as u32),
+                                shape_ix: *fs,
+                                key: k,
+                            });
+                        }
+                    }
+                    Shape::Sum(variants) => {
+                        let disc = op_sum_disc(h) as usize;
+                        let (head, payload_shape) = variants.get(disc)?;
+                        let head_leaf = b.name_leaf(head);
+                        let head_s = b.atom(head_leaf);
+                        // A nullary variant's payload shape is `Unit` → the bare `unit` atom (the
+                        // `(Variant unit)` form); a payload variant reaches its payload via `sum-payload`
+                        // — a DIFFERENT heap node → progress → reset `refs`.
+                        work.push(EncodeWork::List { head_s, nkids: 1 });
+                        work.push(EncodeWork::Visit {
+                            h: op_sum_payload(h),
+                            shape_ix: *payload_shape,
+                            refs: 0,
+                        });
+                    }
+                    Shape::Named(name, inner) => {
+                        // The `(: <value> <Type>)` value-form frame — same `h`, no node consumed → count.
+                        let inner = *inner;
+                        let colon = b.name_leaf(":");
+                        let colon_s = b.atom(colon);
+                        work.push(EncodeWork::Named { colon_s, name });
+                        work.push(EncodeWork::Visit { h, shape_ix: inner, refs: refs + 1 });
+                    }
+                }
             }
-            let head = b.name_leaf("tuple");
-            let head_s = b.atom(head);
-            let mut children = vec![head_s];
-            for (i, &es) in elems.iter().enumerate() {
-                children.push(encode_value(
-                    desc,
-                    b,
-                    op_arr_get(h, i as u32),
-                    es,
-                    depth + 1,
-                )?);
-            }
-            b.list(children)
-        }
-        Shape::List(elem) => {
-            let (elem, n) = (*elem, op_arr_len(h));
-            let head = b.name_leaf("list");
-            let head_s = b.atom(head);
-            let mut children = vec![head_s];
-            for i in 0..n {
-                children.push(encode_value(desc, b, op_arr_get(h, i), elem, depth + 1)?);
-            }
-            b.list(children)
-        }
-        Shape::Record(fields) => {
-            let head = b.name_leaf("record");
-            let head_s = b.atom(head);
-            let mut children = vec![head_s];
-            for (i, (k, fs)) in fields.iter().enumerate() {
-                let kname = b.name_leaf(k);
+            EncodeWork::VisitField { h, shape_ix, key } => {
+                // Key leaf+atom emitted BEFORE the field value; the `Pair` assembler runs AFTER it. The
+                // field value is a fresh child node (arr-get already applied) → a new walk, `refs` 0.
+                let kname = b.name_leaf(key);
                 let katom = b.atom(kname);
-                let fval = encode_value(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
-                children.push(b.list(vec![katom, fval]));
+                work.push(EncodeWork::Pair { katom });
+                work.push(EncodeWork::Visit { h, shape_ix, refs: 0 });
             }
-            b.list(children)
+            EncodeWork::List { head_s, nkids } => {
+                let base = out.len().checked_sub(nkids)?;
+                let mut children = Vec::with_capacity(nkids + 1);
+                children.push(head_s);
+                children.extend_from_slice(&out[base..]); // already in child order (see the reverse push)
+                out.truncate(base);
+                out.push(b.list(children));
+            }
+            EncodeWork::Named { colon_s, name } => {
+                let value = out.pop()?;
+                let tname = b.name_leaf(name);
+                let tname_s = b.atom(tname);
+                out.push(b.list(vec![colon_s, value, tname_s]));
+            }
+            EncodeWork::Pair { katom } => {
+                let fval = out.pop()?;
+                out.push(b.list(vec![katom, fval]));
+            }
         }
-        Shape::Sum(variants) => {
-            let disc = op_sum_disc(h) as usize;
-            let (head, payload_shape) = variants.get(disc)?;
-            let (head, payload_shape) = (head.clone(), *payload_shape);
-            let head_leaf = b.name_leaf(&head);
-            let head_s = b.atom(head_leaf);
-            // A nullary variant's payload shape is `Unit`, rendered as the bare `unit` atom (the
-            // `(Variant unit)` canonical form); a payload variant reaches its payload via `sum-payload`.
-            let payload = encode_value(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
-            b.list(vec![head_s, payload])
-        }
-        Shape::Named(name, inner) => {
-            // The `(: <value> <Type>)` value-form frame — only the outermost shape.
-            let (name, inner) = (name.clone(), *inner);
-            let colon = b.name_leaf(":");
-            let colon_s = b.atom(colon);
-            let value = encode_value(desc, b, h, inner, depth + 1)?;
-            let tname = b.name_leaf(&name);
-            let tname_s = b.atom(tname);
-            b.list(vec![colon_s, value, tname_s])
-        }
-    })
+    }
+    // A well-formed walk leaves exactly the one root struct index.
+    match out.len() {
+        1 => out.pop(),
+        _ => None,
+    }
 }
 
 /// Render the runtime value `h` to its canonical binary-AST value-form document, under the shape
@@ -1291,7 +1365,7 @@ fn encode_value(
 fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
     let descriptor = decode_descriptor(desc)?;
     let mut b = DocBuilder::default();
-    let root = encode_value(&descriptor, &mut b, h, descriptor.root, 0)?;
+    let root = encode_value(&descriptor, &mut b, h, descriptor.root)?;
     Some(b.finish(root))
 }
 
@@ -5447,6 +5521,146 @@ mod tests {
         ];
         assert_eq!(got, expect_cons, "Cons value form must be byte-identical to the codec");
         op_drop(cons);
+    }
+
+    /// The ORIGINAL recursive `encode_value`, kept as the differential oracle for the iterative
+    /// production walk. Byte-for-byte identical logic; the ONLY difference is native recursion vs the
+    /// production explicit heap stack. A deep value overflows THIS (that is the bug the iterative walk
+    /// fixes), so the differential test drives it only to modest depth.
+    fn encode_value_recursive(
+        desc: &super::Descriptor,
+        b: &mut super::DocBuilder,
+        h: Handle,
+        shape_ix: u32,
+        depth: u32,
+    ) -> Option<u32> {
+        use super::Shape as S;
+        // Oracle uses TOTAL-depth as its cap (the original recursive semantics); the production walk uses
+        // the sharper non-consuming `refs` cap. The differential test drives only shallow values (deep
+        // ones overflow THIS recursive oracle — the bug the iterative walk fixes), so the two caps never
+        // disagree on the tested inputs, and byte-identity is what the test asserts.
+        if depth > ENCODE_REF_CYCLE_CAP {
+            return None;
+        }
+        let shape = desc.table.get(shape_ix as usize)?;
+        Some(match shape {
+            S::Ref(target) => return encode_value_recursive(desc, b, h, *target, depth + 1),
+            S::Int => {
+                let l = b.int_leaf(op_get_int(h));
+                b.atom(l)
+            }
+            S::Bool => {
+                let l = b.bool_leaf(op_get_bool(h));
+                b.atom(l)
+            }
+            S::Unit => {
+                let l = b.name_leaf("unit");
+                b.atom(l)
+            }
+            S::Float | S::Str | S::Bytes => return None,
+            S::Tuple(elems) => {
+                if elems.is_empty() {
+                    let l = b.name_leaf("unit");
+                    return Some(b.atom(l));
+                }
+                let head = b.name_leaf("tuple");
+                let head_s = b.atom(head);
+                let mut children = vec![head_s];
+                for (i, &es) in elems.iter().enumerate() {
+                    children.push(encode_value_recursive(desc, b, op_arr_get(h, i as u32), es, depth + 1)?);
+                }
+                b.list(children)
+            }
+            S::List(elem) => {
+                let (elem, n) = (*elem, op_arr_len(h));
+                let head = b.name_leaf("list");
+                let head_s = b.atom(head);
+                let mut children = vec![head_s];
+                for i in 0..n {
+                    children.push(encode_value_recursive(desc, b, op_arr_get(h, i), elem, depth + 1)?);
+                }
+                b.list(children)
+            }
+            S::Record(fields) => {
+                let head = b.name_leaf("record");
+                let head_s = b.atom(head);
+                let mut children = vec![head_s];
+                for (i, (k, fs)) in fields.iter().enumerate() {
+                    let kname = b.name_leaf(k);
+                    let katom = b.atom(kname);
+                    let fval = encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
+                    children.push(b.list(vec![katom, fval]));
+                }
+                b.list(children)
+            }
+            S::Sum(variants) => {
+                let disc = op_sum_disc(h) as usize;
+                let (head, payload_shape) = variants.get(disc)?;
+                let (head, payload_shape) = (head.clone(), *payload_shape);
+                let head_leaf = b.name_leaf(&head);
+                let head_s = b.atom(head_leaf);
+                let payload = encode_value_recursive(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
+                b.list(vec![head_s, payload])
+            }
+            S::Named(name, inner) => {
+                let (name, inner) = (name.clone(), *inner);
+                let colon = b.name_leaf(":");
+                let colon_s = b.atom(colon);
+                let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
+                let tname = b.name_leaf(&name);
+                let tname_s = b.atom(tname);
+                b.list(vec![colon_s, value, tname_s])
+            }
+        })
+    }
+
+    fn build_intlist(n: usize) -> Handle {
+        let mut acc = op_sum_new(1, op_arr_alloc(0)); // Nil
+        for i in (0..n).rev() {
+            let pair = op_arr_alloc(2);
+            op_arr_set(pair, 0, op_box_int(i as i64));
+            op_arr_set(pair, 1, acc);
+            acc = op_sum_new(0, pair); // Cons(tuple i rest)
+        }
+        acc
+    }
+
+    /// The iterative production `encode_value` must produce BYTE-IDENTICAL documents to the recursive
+    /// oracle, across the interesting shapes (nested sums, lists, tuples). Drives only modest depth — a
+    /// deep value would overflow the recursive oracle (the exact bug the iterative walk fixes).
+    #[test]
+    fn value_encode_iterative_matches_recursive_reference() {
+        reset();
+        let desc = intlist_descriptor();
+        for &n in &[0usize, 1, 2, 5, 50, 500] {
+            let v = build_intlist(n);
+            let iter_doc = op_value_encode_form(v, &desc).expect("iterative encode");
+            // Recursive oracle over the same borrowed value.
+            let descriptor = decode_descriptor(&desc).expect("descriptor");
+            let mut b = DocBuilder::default();
+            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive encode");
+            let rec_doc = b.finish(root);
+            assert_eq!(iter_doc, rec_doc, "iterative and recursive encode disagree at N={n}");
+            op_drop(v);
+        }
+        assert_eq!(live_nodes(), 0, "no leak: every built list dropped");
+    }
+
+    /// The headline robustness property: a DEEP recursive value (a long linked list — the shape this op
+    /// exists to encode) encodes WITHOUT overflowing the stack. The recursive walker aborted the guest
+    /// between ~4.5 k levels (native 2 MB stack, worse in wasm); the iterative walk handles it in heap.
+    /// 50 000 ≫ that native crash depth, proving the fix is real (not just a raised cap).
+    #[test]
+    fn value_encode_deep_recursive_value_does_not_overflow_the_stack() {
+        reset();
+        let desc = intlist_descriptor();
+        const DEEP: usize = 50_000;
+        let v = build_intlist(DEEP);
+        let doc = op_value_encode_form(v, &desc).expect("deep encode must succeed, not crash or decline");
+        // A well-formed non-empty document (header + pools + root); the exact length is not the point.
+        assert!(doc.len() > DEEP, "a {DEEP}-element list yields a document with at least one struct per node");
+        op_drop(v);
+        assert_eq!(live_nodes(), 0, "no leak after the deep list is dropped");
     }
 
     fn alloc_calls() -> u64 {
