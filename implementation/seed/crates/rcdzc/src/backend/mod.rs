@@ -35,6 +35,9 @@ pub enum Target {
     /// artifact stripped of custom sections is byte-identical to the `Wasm` artifact — the
     /// reproducibility anchor (§5). Its artifact kind stays `"component"`: it is a decorated component,
     /// not a new output kind (that is Mode S, [`Target::Dwarf`], a separate `"dwarf"` artifact).
+    ///
+    //= spec/capabilities/debug-information.md#debug-information-may-be-embedded-or-emitted-as-a-sidecar
+    //# Debug information MAY be emitted embedded in the artifact it describes, so that the debug information travels with the runnable artifact as a single self-describing file.
     WasmDebug,
     /// A standalone DWARF SIDECAR module (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a
     /// `kind == "dwarf"` artifact SEPARATE from the runnable component: a bare core wasm module carrying
@@ -43,6 +46,9 @@ pub enum Target {
     /// the sections; Mode S detaches them. Its code offsets reference the runnable component's code
     /// section, which is byte-identical whether debug rides embedded or here (the sections are appended
     /// inertly after the code), so the two modes share the offset computation.
+    ///
+    //= spec/capabilities/debug-information.md#debug-information-may-be-embedded-or-emitted-as-a-sidecar
+    //# Debug information MAY instead be emitted as a separate artifact linked to the artifact it describes, so that a deployment can ship the runnable artifact lean and the debug information alongside it.
     Dwarf,
     /// Rust source — a self-contained `.rs` module (one `pub fn` per export) that links into an
     /// existing Rust codebase as ordinary source, with no component boundary and no FFI. The

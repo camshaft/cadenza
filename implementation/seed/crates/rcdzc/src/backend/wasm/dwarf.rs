@@ -5,16 +5,28 @@
 //! inspect scalar locals:
 //! - `.debug_str` — the string table the DIEs reference by offset (names, producer, dir).
 //! - `.debug_abbrev` — the abbreviation table (the DIE "shapes": compile_unit, subprogram, formal
-//!   parameter, base type).
+//!   parameter, base type, variable, lexical block).
 //! - `.debug_info` — a `DW_TAG_compile_unit` DIE whose children are one `DW_TAG_base_type` per distinct
 //!   scalar type (D3) then one `DW_TAG_subprogram` per function (its code-offset range
-//!   `DW_AT_low_pc`/`DW_AT_high_pc`, plus a `DW_TAG_formal_parameter` per scalar param with a
-//!   `DW_OP_WASM_location` local slot + a `DW_AT_type` ref — so a debugger can `print` the argument).
-//! - `.debug_line` — the line-number program mapping each function's code offset → (file, line).
+//!   `DW_AT_low_pc`/`DW_AT_high_pc`, plus, per scalar local: a `DW_TAG_formal_parameter` for a param and
+//!   a `DW_TAG_variable` for a `let`-binding — each with a `DW_OP_WASM_location` local slot + a
+//!   `DW_AT_type` ref, so a debugger can `print` it; a scalar match binder becomes a `DW_TAG_variable`
+//!   inside a PC-ranged `DW_TAG_lexical_block` so it is in scope only within its match).
+//! - `.debug_line` — the line-number program mapping each function's per-construct code offsets →
+//!   (file, line, column).
 //!
 //! These are CUSTOM sections (wasm section id 0) appended to the embedded CORE MODULE — the standard
 //! place wasm tools/debuggers look ("DWARF for WebAssembly"). Code addresses are byte offsets into the
 //! core module's CODE section (`code_offset_base + FuncCodeRange.code_start`, computed by the caller).
+//! A custom section is inert data the runtime never executes and no instruction can address, and it is
+//! not an import — so the running component can neither read its own DWARF nor gain a manifest entry
+//! from carrying it:
+//!
+//= spec/capabilities/debug-information.md#a-running-component-cannot-observe-its-own-debug-information
+//# A component MUST NOT be able to read its own debug information while it runs, so that debug information is metadata for an external tool rather than runtime type reflection the erasure guarantee removes (type-system.md §Types Are Erased From The Component).
+//!
+//= spec/capabilities/debug-information.md#a-running-component-cannot-observe-its-own-debug-information
+//# Debug information MUST NOT add a host operation to a component's manifest, so that a component carrying debug information imports exactly the operations the same component without it imports and its capability manifest is unchanged.
 //!
 //! **The byte discipline** matches the rest of the backend: everything is hand-emitted LEB128 / fixed
 //! little-endian, no encoder in the compile path. The oracle is `llvm-dwarfdump` / `wasm-tools` parsing
@@ -31,12 +43,19 @@
 //! sub-construct markers falls back to a single row at the function entry (function granularity). This
 //! is DWARF v4 (address size 4 — a wasm32 code offset is 32-bit), the version GDB/LLDB/`wasmtime -D
 //! debug-info` and the Chrome DWARF extension all accept.
+//!
+//= spec/capabilities/debug-information.md#debug-information-uses-an-interchange-format
+//# Debug information MUST be emitted in an interchange debug-information format that an external debugging tool consumes, rather than a form only Cadenza's own tooling can read, so that an existing debugger relates the artifact to its source without bespoke Cadenza support.
 
 use crate::backend::wasm::encode::{section, sleb128, uleb128};
 
 /// A fixed, non-provenance-leaking producer string (design §4 — never the live toolchain banner).
+//= spec/capabilities/debug-information.md#debug-information-carries-no-provenance
+//# The compiler MUST NOT embed into debug information a producer or build-environment string that would otherwise vary between builds of the same source.
 const PRODUCER: &str = "cadenza-rcdzc";
 /// A fixed sentinel compilation directory — never the build directory (design §4).
+//= spec/capabilities/debug-information.md#debug-information-carries-no-provenance
+//# The compiler MUST NOT embed into debug information a wall-clock time, an absolute filesystem path, or a build-host identifier.
 const COMP_DIR: &str = "/";
 
 // ── DWARF constants (from the DWARF 4 spec; hand-transcribed — the values are stable and standardized,
@@ -161,6 +180,9 @@ pub struct DwarfScope {
 /// Either emits a `DW_OP_WASM_location` pointing at the local slot + a `DW_AT_type` referencing the
 /// matching `DW_TAG_base_type` — the tag is the only difference, so a debugger shows args and locals
 /// distinctly.
+///
+//= spec/capabilities/debug-information.md#debug-information-may-carry-source-level-names-and-types
+//# Debug information MAY carry the source-level name of a definition or binding, so that an external tool can present a value under the name its source gives it.
 pub struct DwarfVar {
     pub name: String,
     pub slot: u32,
@@ -183,6 +205,9 @@ pub struct BaseType {
 /// The DWARF base type for a scalar Cadenza type — an integer width (signed/unsigned, 1/2/4/8 bytes)
 /// or `Bool`. `None` for a non-scalar (a heap-handle compound), which gets no `DW_TAG_variable` (DWARF
 /// cannot walk the tagless heap, §3). The name is a stable DWARF-facing spelling (`i64`, `u8`, `bool`).
+///
+//= spec/capabilities/debug-information.md#debug-information-may-carry-source-level-names-and-types
+//# Debug information MAY carry the source-level type of a binding as descriptive information, so that an external tool can present a value's type even though the executable form carries no runtime type.
 pub fn base_type_of(ty: &crate::ty::Ty) -> Option<BaseType> {
     use crate::ty::Ty;
     match ty {
@@ -243,6 +268,16 @@ pub fn base_type_of(ty: &crate::ty::Ty) -> Option<BaseType> {
 /// them appended. `module_path` is the tree-relative source path (the DWARF file-table + CU name).
 /// Returns the bytes to append to the core module (after the code section). Empty `funcs` still yields
 /// a valid one-file, zero-subprogram CU (a program with no emitted function is degenerate but valid).
+///
+/// Every string, DIE, base type, and line row is interned/emitted in `funcs` EMISSION order (which the
+/// layout fixes from the source), and no wall-clock, host path, or nondeterministic collection iteration
+/// enters the bytes — so two derivations of the same source with the same toolchain byte-match:
+///
+//= spec/capabilities/debug-information.md#debug-information-is-a-deterministic-function-of-source-and-toolchain
+//# The debug information the compiler emits MUST be a deterministic function of the canonical source and the pinned toolchain, so that two derivations of the same source with the same toolchain emit byte-identical debug information.
+///
+//= spec/capabilities/debug-information.md#debug-information-is-a-deterministic-function-of-source-and-toolchain
+//# The order in which debug information records its entries MUST be a deterministic function of the source, independent of filesystem enumeration order or nondeterministic collection iteration.
 pub fn debug_sections(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
     let mut str_tab = StrTab::default();
     // Intern the CU-level strings first (stable offsets, source-determined order).
@@ -377,6 +412,9 @@ pub fn standalone_dwarf_module(sections: &[u8]) -> Vec<u8> {
 /// the module). A debugger reading the runnable finds this and loads the sidecar's `.debug_*` sections
 /// automatically, so the code addresses resolve without a manual `-s`/`--symbols` flag. Appended to the
 /// embedded core module like the other debug sections — inert (moves no executed byte) and strippable.
+///
+//= spec/capabilities/debug-information.md#debug-information-may-be-embedded-or-emitted-as-a-sidecar
+//# The compiler MUST emit a reference, reachable from the runnable artifact, that identifies the separately emitted debug artifact describing it, so that a tool holding the runnable artifact can locate the debug information for it.
 pub fn external_debug_info_section(sidecar_path: &str) -> Vec<u8> {
     let mut payload = Vec::new();
     uleb128(sidecar_path.len() as u64, &mut payload);
@@ -395,8 +433,9 @@ fn custom_section(name: &str, payload: &[u8]) -> Vec<u8> {
 
 /// `.debug_abbrev` — the abbreviation table (the DIE "shapes"). Each entry:
 /// `<code-uleb> <tag-uleb> <children-byte> ( <attr-uleb> <form-uleb> )* 0 0`; the table ends with a
-/// single 0 abbrev code. Five abbrevs: compile_unit, subprogram (leaf), subprogram-with-children,
-/// formal_parameter/variable (D3 scalar locals), and base_type.
+/// single 0 abbrev code. Seven abbrevs: compile_unit, subprogram (leaf), subprogram-with-children,
+/// formal_parameter, base_type, variable (a `let`-binding local — D3), and lexical_block (a scalar
+/// match-binder scope — D3).
 fn build_abbrev() -> Vec<u8> {
     let mut b = Vec::new();
     let entry = |b: &mut Vec<u8>, code: u64, tag: u64, children: u8, attrs: &[(u64, u64)]| {
@@ -510,10 +549,20 @@ fn build_abbrev() -> Vec<u8> {
 const CU_HEADER_LEN: usize = 4 + 2 + 4 + 1;
 
 /// `.debug_info` — the CU header + the compile_unit DIE, whose children are: one `DW_TAG_base_type` per
-/// distinct scalar type (D3), then one subprogram DIE per function (each with its scalar params as
-/// `DW_TAG_formal_parameter` children referencing those base types). `fn_name_offs`/`base_type_offs`
-/// carry the `.debug_str` offsets; `base_type_die` maps each `BaseType` to its DIE offset (for a
-/// variable's `DW_AT_type` ref). CU header (DWARF 4, 32-bit); the tree is closed by 0 abbrev codes.
+/// distinct scalar type (D3), then one subprogram DIE per function. Each subprogram's children are its
+/// scalar params (`DW_TAG_formal_parameter`) and `let`-binding locals (`DW_TAG_variable`), each
+/// referencing a base type via `DW_AT_type`, plus a `DW_TAG_lexical_block` per scalar match-binder scope
+/// (its own PC range fencing its `DW_TAG_variable` binders). `fn_name_offs` and the `base_types` name
+/// offsets carry the `.debug_str` offsets; a local `base_die_off` map (built as the base-type DIEs are
+/// emitted) resolves each variable's `DW_AT_type` ref4. CU header (DWARF 4, 32-bit); the tree is closed
+/// by 0 abbrev codes.
+///
+/// The source names and type spellings written here land in the inert `.debug_info`/`.debug_str`
+/// custom sections, which no emitted instruction addresses — so carrying them for an external tool does
+/// not make them reachable by the running component (erasure is preserved):
+///
+//= spec/capabilities/debug-information.md#debug-information-may-carry-source-level-names-and-types
+//# A source-level name or type carried in debug information MUST NOT be reachable by the running component, so that carrying it for an external tool does not reintroduce the runtime type reflection erasure removes.
 #[allow(clippy::too_many_arguments)]
 fn build_info(
     fn_name_offs: &[u32],
@@ -618,6 +667,10 @@ fn build_info(
     let mut out = Vec::new();
     let unit_len = (2 + 4 + 1 + die.len()) as u32; // version + abbrev_off + addr_size + DIEs
     out.extend_from_slice(&unit_len.to_le_bytes());
+    // The concrete format is DWARF v4, fixed here (not a build knob), so every debug build emits the
+    // same interchange format a standard debugger reads.
+    //= spec/capabilities/debug-information.md#debug-information-uses-an-interchange-format
+    //# The concrete debug-information format MUST be pinned at the declared-default location, so that two builds that emit debug information emit it in the same format.
     out.extend_from_slice(&4u16.to_le_bytes()); // DWARF version 4
     out.extend_from_slice(&0u32.to_le_bytes()); // .debug_abbrev offset
     out.push(4u8); // address size (wasm32 code offset)
@@ -625,10 +678,16 @@ fn build_info(
     out
 }
 
-/// `.debug_line` — a DWARF 4 line-number program with one row per function (function granularity).
-/// Header + program. The program, for each function in ascending code order: set the address to the
-/// function's `low_pc`, advance the line to its source line, `copy` (emit a row), and finally
-/// `end_sequence` at the last function's `high_pc`.
+/// `.debug_line` — a DWARF 4 line-number program. Header + program. For each function in ascending code
+/// order it emits one row per source POSITION the body visits: each of `DwarfFunc.rows`
+/// (`(offset, line, col)`, per-construct) sets the address to that offset, advances the line register,
+/// sets the column register, and `copy`s a row — so a debugger steps construct-by-construct and can
+/// highlight the exact sub-expression on a line. A function with no per-construct rows falls back to a
+/// single row at its `low_pc`/`line` (function granularity). The program ends with `end_sequence` at the
+/// highest `high_pc`.
+///
+//= spec/capabilities/debug-information.md#debug-information-relates-an-execution-position-to-its-source
+//# Debug information MUST relate a position in the executable artifact to the source construct of the canonical representation it derives from, so that an external tool can present an execution position as a location in the program's source.
 fn build_line_program(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
     // ── The line-number program body ──
     let mut prog = Vec::new();
