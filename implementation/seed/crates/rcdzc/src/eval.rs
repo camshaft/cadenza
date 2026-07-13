@@ -1992,6 +1992,31 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     };
                     Some(a.pow(n))
                 }
+                // The ORDINARY arithmetic operators used on UNITS compose them, so unit composition reads
+                // as ordinary math on both surfaces (`metre * second`, `metre / second`, `metre ^ 2`) —
+                // no backtick-escaped `Unit.*` name. `*`/`/` fire only when BOTH operands reduce to units
+                // (a `(* 2 3)` numeric multiply has non-unit operands → falls through to `None` here and
+                // is handled as arithmetic elsewhere); `^` (arena `BitXor`) is unit-power when the base is
+                // a unit and the exponent a compile-time int. This is the same "dispatch by operand kind,
+                // not by name" the quantity operators use.
+                Prim::Mul if args.len() == 2 => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let b = unit_of(db, *args.get(1)?)?;
+                    Some(a.mul(&b))
+                }
+                Prim::Div if args.len() == 2 => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let b = unit_of(db, *args.get(1)?)?;
+                    Some(a.div(&b))
+                }
+                Prim::BitXor if args.len() == 2 => {
+                    let a = unit_of(db, *args.first()?)?;
+                    let n = match resolved_of(db, *args.get(1)?) {
+                        Resolved::Int(v) => v.to_i64()?,
+                        _ => return None,
+                    };
+                    Some(a.pow(n))
+                }
                 Prim::UnitPrefix => {
                     // `(Unit.prefix kilo u)` — read the prefix's `(num den)` scale off its `(meta scale)`
                     // channel and apply it to `u`. The first arg is the prefix record, the second the
