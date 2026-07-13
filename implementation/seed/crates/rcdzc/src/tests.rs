@@ -20582,4 +20582,40 @@ mod closure_host_resource {
             err.message
         );
     }
+
+    /// A closure that PERFORMS AN EFFECT cannot escape to the host (operator decision 2026-07-13:
+    /// "closures escaping effects — that's going to be super weird and I don't really want to support
+    /// it"). The closure's handler context is the `(host …)`/`(handle …)` frame open when the closure
+    /// was BUILT; that frame is gone when the host later invokes `call()`. Here the effect is DELEGATED
+    /// with `(host (ask) …)`, so absent this check the program would decline with an incidental internal
+    /// error ("not in the host-import set") — we reject it INTENTIONALLY with a message that names the
+    /// unsupported feature. (A fully intra-program-HANDLED effect leaves no `Core::HostCall` and is NOT
+    /// caught here — only an effect that would escape the boundary is.)
+    #[test]
+    fn a_closure_escaping_an_effect_declines_intentionally() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure whose body performs an effect must REJECT (closures can't escape effects)",
+        );
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0406"),
+            "expected the CDZ0406 closures-escaping-effects code, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+        assert!(
+            err.message.contains("performs an effect")
+                && err.message.contains("cannot cross the host boundary"),
+            "expected the closures-escaping-effects rejection naming the op, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("ask.ask"),
+            "the rejection should name the escaping effect operation, got: {}",
+            err.message
+        );
+    }
 }
