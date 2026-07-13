@@ -145,7 +145,11 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         };
     }
 
-    // Compute the boundary layout once (target-neutral). A program with no export declines.
+    // Compute the boundary layout once (target-neutral). A program with no export declines. Layout also
+    // gates emission on properties `collect_faults` does not model (e.g. a boundary shape it cannot lay
+    // out), so it must run — a well-formed program can still fail to lay out. (Its coarser declines that
+    // DUPLICATE a `collect_faults` coded fault — the ambiguous-param case — are handled by reporting the
+    // coded fault too, below, so the sidecar `check` surfaces it; the emit path keeps layout's decline.)
     let layout = match layout::compute(&mut db) {
         Ok(l) => l,
         Err(r) => {
@@ -800,6 +804,49 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 )
                 .at(occ),
             );
+        }
+    }
+    // AN EXPORTED DEFINITION WITH AN UNANNOTATED (AMBIGUOUS-TYPE) PARAMETER — `(def (f x) …)` exported.
+    // An exported parameter must have a concrete machine type to cross the boundary; an unannotated one
+    // whose inference never fixed a scalar (`Any`, no `valtype`) has none. The EMIT path declines this in
+    // `layout::export_params` (an uncoded decline `cdz check` never runs, so `check` used to accept it
+    // while `compile` failed — the check-vs-emit gap). Detect it HERE so BOTH surfaces report it, coded
+    // CDZ0201 anchored at the parameter, WITH the rustc-gold "add a type annotation" fix: WRAP the bare
+    // param `x` in `(: x Int64)` (`Int64` = the numeric-model default; heuristic — the annotation resolves
+    // the ambiguity but the concrete type is the author's to confirm). Only a BARE param binder is
+    // flagged/fixed; an already-annotated `(: x T)` whose T is non-representable is a different fault.
+    let export_param_defs: Vec<(usize, String)> = db
+        .exports
+        .iter()
+        .filter_map(|e| e.def.map(|d| (d, e.name.clone())))
+        .collect();
+    for (def, name) in export_param_defs {
+        let params = db.defs[def].params.clone();
+        for p in params {
+            // Skip an already-annotated binder `(: a T)` — this fault is the BARE, unannotated param.
+            if db.ast.as_form(p, ":").is_some() {
+                continue;
+            }
+            let ty = crate::infer::type_of(db, p);
+            if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
+                let mut reject = Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}`: parameter type is ambiguous — annotate it (a boundary \
+                         parameter needs a concrete type; inference never fixed one)"
+                    ),
+                )
+                .at(p);
+                if let Some(nm) = db.ast.as_name(p) {
+                    reject = reject.with_fix(crate::diag::Fix::wrap_heuristic(
+                        p,
+                        "(: ",
+                        " Int64)",
+                        format!("annotate `{nm}` with a type, e.g. `(: {nm} Int64)`"),
+                    ));
+                }
+                faults.push(reject);
+            }
         }
     }
     // SANITIZE ORIGINS BEFORE DEDUP. A fault anchored at a SYNTHESIZED/non-user node has its origin

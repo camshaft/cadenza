@@ -8562,6 +8562,45 @@ mod match_engine {
     }
 
     #[test]
+    fn an_exported_unannotated_param_surfaces_in_check_with_an_annotate_fix() {
+        // An exported def with an unannotated param `(def (f x) …)` has an ambiguous boundary parameter —
+        // it MUST be reported by the always-run `Diagnostics` set (`cdz check`), not only the emit path
+        // (where `layout::export_params` declined it, invisible to `check` — the check-vs-emit gap). It
+        // now carries the rustc-gold "add a type annotation" fix: WRAP `x` → `(: x Int64)`.
+        // Read the always-run `Diagnostics` set (what `cdz check` runs) — this fault is surfaced there
+        // (collect_faults), whereas the EMIT path reports layout's coarser decline first, so use the check
+        // path to see the coded CDZ0201.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f x) (+ x 1)) (export f))",
+        )));
+        let d = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("an exported unannotated param must be reported in check");
+        assert!(
+            d.message.contains("parameter type is ambiguous"),
+            "names the ambiguity: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries an annotate fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(: {} Int64)", crate::abi::WRAP_HOLE),
+            "wraps the bare param in a type annotation"
+        );
+        assert!(!fix.verified, "the concrete type is a heuristic guess");
+        // NO OVER-REPORT: a NON-exported unannotated param (it inlines at call sites) is NOT flagged.
+        let clean = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (helper x) (+ x 1)) (def (main) (helper 5)) (export main))",
+        )));
+        assert!(
+            !clean.iter().any(|d| d.code.as_deref() == Some("CDZ0201")),
+            "a non-exported unannotated param inlines — not a boundary ambiguity: {clean:?}"
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param

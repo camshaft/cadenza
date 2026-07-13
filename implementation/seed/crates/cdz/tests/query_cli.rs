@@ -1951,10 +1951,11 @@ fn type_at_on_a_keyword_names_it_not_any() {
 fn check_warns_on_an_unused_binding_and_underscore_silences_it() {
     let dir = scratch_dir("check_unused");
     let f = dir.join("prog.sexp");
-    // `q` (param) and `b` (let) are unused; `p` and `a` are used.
+    // `q` (param) and `b` (let) are unused; `p` and `a` are used. (Params ANNOTATED — an exported def's
+    // unannotated param is itself a CDZ0201 ambiguous-param error, off-topic for this unused-binding test.)
     std::fs::write(
         &f,
-        "(module m (def (f p q) (let ((a (: 1 Int64)) (b (: 2 Int64))) (+ a p))) (export f))\n",
+        "(module m (def (f (: p Int64) (: q Int64)) (let ((a (: 1 Int64)) (b (: 2 Int64))) (+ a p))) (export f))\n",
     )
     .unwrap();
     let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
@@ -1968,7 +1969,7 @@ fn check_warns_on_an_unused_binding_and_underscore_silences_it() {
     // `_`-prefix silences both.
     std::fs::write(
         &f,
-        "(module m (def (f p _q) (let ((a (: 1 Int64)) (_b (: 2 Int64))) (+ a p))) (export f))\n",
+        "(module m (def (f (: p Int64) (: _q Int64)) (let ((a (: 1 Int64)) (_b (: 2 Int64))) (+ a p))) (export f))\n",
     )
     .unwrap();
     let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
@@ -1986,7 +1987,12 @@ fn check_prints_a_verified_help_line_for_an_unused_binding() {
     // printed WITHOUT the `(heuristic)` marker a guessed fix gets, so an agent branches on applicability.
     let dir = scratch_dir("check_verified_fix");
     let f = dir.join("prog.sexp");
-    std::fs::write(&f, "(module m (def (f p q) (+ p 1)) (export f))\n").unwrap();
+    // Params annotated (an unannotated exported param is a CDZ0201, off-topic here); `q` is the unused one.
+    std::fs::write(
+        &f,
+        "(module m (def (f (: p Int64) (: q Int64)) (+ p 1)) (export f))\n",
+    )
+    .unwrap();
     let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
     assert!(ok, "a warning does not fail the build");
     assert!(
