@@ -4564,6 +4564,7 @@ enum ShapeNode {
     Sum(Vec<(String, u32)>),
     Named(String, u32),
     Ref(u32),
+    Set(u32),
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4610,6 +4611,19 @@ impl ShapeTableBuilder {
             Ty::List(elem) => {
                 let e = self.shape_of(db, elem)?;
                 self.push(ShapeNode::List(e))
+            }
+            // A SET renders `(Set.of (list …))` with elements in CANONICAL key-VALUE order. The runtime
+            // value-encode sorts by the element's scalar value, matching `const_key_order` — which only
+            // orders SCALAR keys (Int/Bool/Unit/String). So admit a set only over such an element (a
+            // nested-compound element has no canonical scalar order → decline, as the const escape does).
+            Ty::Set(elem)
+                if matches!(
+                    elem.strip_nominal(),
+                    Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String
+                ) =>
+            {
+                let e = self.shape_of(db, elem)?;
+                self.push(ShapeNode::Set(e))
             }
             Ty::Record(fields) => {
                 let mut out = Vec::with_capacity(fields.len());
@@ -4736,6 +4750,10 @@ impl ShapeTableBuilder {
                 }
                 ShapeNode::Ref(i) => {
                     d.push(11);
+                    leb(&mut d, *i as u64);
+                }
+                ShapeNode::Set(i) => {
+                    d.push(12); // matches the runtime `decode_shape` tag 12 = Set
                     leb(&mut d, *i as u64);
                 }
             }

@@ -16532,6 +16532,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_set_renders_via_the_value_encode_walker() {
+        // A recursive sum carrying a SET (a `SetList` — a tree of sets) now COMPILES its value-encode
+        // escape. `shape_of` emits `ShapeNode::Set` (descriptor tag 12) for a SCALAR-element set, and the
+        // runtime `value-encode` iterates the CHAMP + SORTS the elements into canonical key-VALUE order,
+        // rendering `(Set.of (list …))` (guarded byte-exact + canonical-order in cdz-runtime's
+        // `value_encode_renders_a_set_in_canonical_order`). A non-scalar-element set still declines.
+        use crate::testkit::parse;
+        let src = "(module m (type SetList (Cons (Tuple (Set Int64) SetList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (SetList.Nil ()) \
+                        (SetList.Cons (tuple (Set.of (list n)) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Set compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the set-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
