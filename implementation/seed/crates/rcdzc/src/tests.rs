@@ -12724,6 +12724,59 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_captures_a_capturing_closure_and_calls_it() {
+        // NESTED CAPTURING CLOSURES: `g = (fn (x) (f x))` captures `f`, and `f = (fn (y) (+ y k))` ITSELF
+        // captures `k`. Inside `g`'s lifted body, `f` is a runtime closure HANDLE read from `g`'s env cell
+        // — NOT the compile-time lambda it was defined from — so `(f x)` must apply via `call_indirect`
+        // (which threads `f`'s OWN env, carrying `k`), not β-reduce. The bug: `head_is_runtime_fn_value`
+        // followed the captured `f` REF through to its original `(fn …)` definition and reported
+        // not-runtime, so `(f x)` mis-lowered — `f`'s handle was read as a scalar and ADDED to `x` instead
+        // of called (a silent MISCOMPILE, wrong value). Fixed by recognizing a captured-ref head as a
+        // runtime fn value. `ap (fn (x) (f (+ x 1))) 2` with `f = (+100)`: g(2)+g(1) = (2+1+100)+(1+1+100)
+        // = 205.
+        let src = "(module m \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: k Int64)) \
+              (let ((f (fn ((: y Int64)) (+ y k)))) \
+                (ap (fn ((: x Int64)) (f (+ x 1))) 2))) (export main))";
+        let Some(r) = run_closure(src, 100) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "205"); // (2+1+100)+(1+1+100)
+        // The simplest form — `g` just forwards to the captured capturing `f` (no wrapping arithmetic):
+        // `ap (fn (x) (f x)) 2` with `f = (+100)` = (2+100)+(1+100) = 203. Pins that the captured closure's
+        // OWN environment (k) is threaded through the nested indirect call.
+        let plain = "(module m \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: k Int64)) \
+              (let ((f (fn ((: y Int64)) (+ y k)))) \
+                (ap (fn ((: x Int64)) (f x)) 2))) (export main))";
+        assert_eq!(run_closure(plain, 100).unwrap(), "203"); // (2+100)+(1+100)
+    }
+
+    #[test]
+    fn a_three_parameter_closure_applies_at_full_arity() {
+        // A THREE-parameter runtime closure applied at full arity through a recursive HOF — the multi-param
+        // lift generalizes past two params. `(fn (a b c) (+ (+ a b) c))` lifts to `(env, a, b, c) ->
+        // result` and applies via one `call_indirect` with all three args. `ap3 g n` sums `(g i i i) =
+        // 3·i` for i = n..1, so with n=3 the total is 3·(3+2+1) = 18.
+        let src = "(module m \
+            (def (ap3 (: g (-> Int64 (-> Int64 (-> Int64 Int64)))) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n n n) (ap3 g (- n 1))))) \
+            (def (main (: n Int64)) (ap3 (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)) n)) \
+            (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "18"); // 3·(3+2+1)
+        assert_eq!(run_closure(src, 4).unwrap(), "30"); // 3·(4+3+2+1)
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted

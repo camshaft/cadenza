@@ -432,6 +432,29 @@
   (call   main (: 3 Int64))
   (output (: 15 Int64)))
 
+; NESTED CAPTURING CLOSURES — a closure captures another closure that ITSELF captures. `g = (fn (x) (f
+; (+ x 1)))` captures `f`, and `f = (fn (y) (+ y k))` captures `k`. Inside `g`'s lifted body, `f` is a
+; runtime closure HANDLE read from `g`'s env cell — NOT the compile-time lambda it was defined from — so
+; `(f …)` must apply via `call_indirect` (which threads `f`'s OWN env, carrying `k`), not β-reduce to the
+; original definition. This pins that a captured value that happens to be a function is applied as a
+; runtime closure (its own environment preserved), rather than followed back to its definition and folded.
+
+(case "a closure captures a capturing closure and calls it through a recursive HOF"
+  (doc    "`g = (fn (x) (f (+ x 1)))` captures `f`, itself the capturing closure `(fn (y) (+ y k))` over
+           `k`. Inside `g`'s lifted body `f` is a runtime handle applied via an indirect call that threads
+           `f`'s own env (carrying `k`), not the original lambda. `ap g 2` = g(2)+g(1) = (2+1+k)+(1+1+k);
+           with k=100 that is 103+102 = 205. Pins nested capturing closures — a captured function is
+           called as a runtime closure with its own environment intact.")
+  (input  (do
+            (def (ap (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1)))))
+            (def (main (: k Int64))
+              (let ((f (fn ((: y Int64)) (+ y k))))
+                (ap (fn ((: x Int64)) (f (+ x 1))) 2)))
+            (export main)))
+  (call   main (: 100 Int64))
+  (output (: 205 Int64)))
+
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
 ; ONLY inside the LIFTED closure body, never in a top-level def, so the module's import set (which is
@@ -533,6 +556,24 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 12 Int64)))
+
+; A THREE-parameter runtime closure at full arity — the multi-param lift generalizes past two params.
+; `(fn (a b c) …)` lifts to `(env, a, b, c) → result` and applies via one `call_indirect` with all three
+; arguments. `ap3 g n` sums `(g i i i) = 3·i` for i = n…1, so with n=3 the total is 3·(3+2+1) = 18.
+
+(case "a three-parameter closure is applied at full arity through a recursive HOF"
+  (doc    "`ap3` applies its three-argument function `g` to `(g i i i)` at each recursion level and sums
+           the results. `g = (fn (a b c) (+ (+ a b) c))` lifts to a three-parameter closure applied at
+           full arity via one indirect call; with n=3 the sum is (3+3+3)+(2+2+2)+(1+1+1) = 18. Pins that
+           the multi-parameter lift is not special-cased to two params.")
+  (input  (do
+            (def (ap3 (: g (-> Int64 (-> Int64 (-> Int64 Int64)))) (: n Int64))
+              (if (= n 0) 0 (+ (g n n n) (ap3 g (- n 1)))))
+            (def (main (: n Int64))
+              (ap3 (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 18 Int64)))
 
 ; CURRIED-SYNTAX application of a runtime multi-param closure. `core-semantics.md` §Functions Are
 ; Single-Arity: `(fn (a b) …)` is single-arity curried sugar, so `((g n) 1)` — apply `g` to `n`, then

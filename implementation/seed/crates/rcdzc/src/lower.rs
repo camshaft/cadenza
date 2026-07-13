@@ -2592,6 +2592,16 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
 /// must fold — the runtime path is taken solely when `lambda_body` is `None` (a genuinely heap-held
 /// closure). So this is checked AFTER the lambda-reduction attempt would have fired for a foldable head.
 fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
+    // A CAPTURED free variable that is a fn value — a lifted closure body applies a closure it CAPTURED
+    // (`(fn (x) (f x))` where `f` is captured from an enclosing scope). Inside the lifted body `f` is a
+    // runtime closure HANDLE read from the env cell (`Core::Captured`), NOT the compile-time lambda it was
+    // defined from — so it must apply via `call_indirect`, not β-reduce. Checked FIRST: without this the
+    // `Ref` arm below follows `f` through to its original `(fn …)` definition and reports NOT-runtime, so
+    // `(f x)` mis-lowered — `f`'s handle was read as a scalar and ADDED to `x` instead of called (a
+    // miscompile of a closure that captures another capturing closure).
+    if db.captured_ref.contains_key(&id) {
+        return true;
+    }
     match resolved_of(db, id) {
         Resolved::Param { .. } => true,
         Resolved::Ref { value } => head_is_runtime_fn_value(db, value),
