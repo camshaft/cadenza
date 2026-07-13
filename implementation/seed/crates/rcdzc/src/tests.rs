@@ -15621,6 +15621,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_valued_float_literal_annotated_int_offers_a_drop_the_fraction_fix() {
+        // `(: 3.0 Int64)` / `(: 100.0 Int8)` — an integer-valued FLOAT literal annotated an INTEGER type —
+        // is CDZ0203, repaired by DROPPING the fractional form: REPLACE `3.0` with `3` (the annotation-
+        // position mirror of the arg-position float-literal fix, `(+ 2 3.0)` → `3`). Range-checked, so it
+        // type-checks in one shot.
+        for (src, want) in [
+            ("(module m (def (f) (: 3.0 Int64)) (export f))", "3"),
+            ("(module m (def (f) (: 100.0 Int8)) (export f))", "100"),
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("a drop-the-fraction fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(fix.replacement, want, "drops the `.0`: {}", d.message);
+            assert!(
+                !fix.verified,
+                "keep-int vs make-float is the author's call → heuristic"
+            );
+        }
+        // NO fix for a NON-integer float (`2.5`) or an OUT-OF-RANGE one (`500.0` : Int8) — truncating /
+        // narrowing is the author's semantic choice, not the compiler's to make.
+        for src in [
+            "(module m (def (f) (: 2.5 Int64)) (export f))",
+            "(module m (def (f) (: 500.0 Int8)) (export f))",
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.fix.is_none(),
+                "no drop-fraction fix for a non-integer / out-of-range float: {src} → {:?}",
+                d.fix
+            );
+        }
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with

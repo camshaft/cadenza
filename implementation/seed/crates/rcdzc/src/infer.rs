@@ -4670,50 +4670,78 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        // The annotation mismatch has a MECHANICAL REPAIR in two cases, each a wrap of the
-                        // value that makes it type-check in one shot (the annotation position mirrors the
-                        // argument position's coercion wraps):
+                        // The annotation mismatch has a MECHANICAL REPAIR in three cases, each making the
+                        // value type-check in ONE shot (the annotation position mirrors the argument
+                        // position's coercion fixes):
+                        //  • an INTEGER-VALUED FLOAT LITERAL annotated an INTEGER — `(: 3.0 Int64)` → DROP
+                        //    the fractional form, REPLACE `3.0` with `3` (a non-integer / out-of-range float
+                        //    yields no `int_text` → no fix; truncating is the author's choice);
                         //  • the annotation is a SUM with a single-payload variant whose payload is the
-                        //    value's type — "wrap in `Some`" (`(: n Option)` for `n : Int64`), derived
-                        //    generically from the sum's declaration; and
+                        //    value's type — "wrap in `Some`" (`(: n Option)` for `n : Int64`); and
                         //  • both types are INTEGERS and the annotation is an aliased width — wrap in the
-                        //    annotation type's checked conversion `(<AnnotInt>.of value)` (`(: n Int64)` for
-                        //    `n : Int8`), the same `.of` coercion the arg-position mismatch offers.
-                        // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
-                        let wrap: Option<(String, String, String, String)> =
-                            if let Some(ctor) = wrap_variant_for(db, &annot_ty, &expr_ty) {
-                                Some((
-                                    format!("({ctor} "),
-                                    ")".to_string(),
-                                    format!("wrap in `({ctor} …)`"),
-                                    format!(" — wrap the value in `{ctor}`"),
-                                ))
-                            } else if let Some((prefix, suffix, verb)) =
-                                int_coercion_wrap(&annot_ty, &expr_ty)
-                            {
-                                let n = annot_ty.render_name();
-                                Some((
-                                    prefix,
-                                    suffix,
-                                    verb,
-                                    format!(" — convert with `({n}.of …)`"),
-                                ))
-                            } else {
-                                None
-                            };
-                        let mut reject = Reject::coded(
-                            Code::TypeMismatch,
-                            format!(
-                                "annotation type {} does not match value type {}{}",
-                                annot_ty.render_name(),
-                                expr_ty.render_name(),
-                                wrap.as_ref().map(|w| w.3.as_str()).unwrap_or(""),
-                            ),
-                        );
-                        if let Some((prefix, suffix, verb, _)) = wrap {
-                            reject = reject.with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
+                        //    annotation type's checked `(<AnnotInt>.of value)` (`(: n Int64)` for `n : Int8`).
+                        // The float-drop is a REPLACE (not a wrap), so it is handled first; the other two
+                        // compute a `wrap (prefix, suffix, verb, msg_tail)`.
+                        let float_drop: Option<String> = if let Ty::Int(expected_int) = &annot_ty
+                            && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
+                            && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+                        {
+                            integer_text_of_float_literal(&dec, *expected_int)
+                        } else {
+                            None
+                        };
+                        if let Some(int_text) = float_drop {
+                            out.push(
+                                Reject::coded(
+                                    Code::TypeMismatch,
+                                    format!(
+                                        "annotation type {} does not match value type {} — drop the \
+                                         fractional form (`{int_text}`)",
+                                        annot_ty.render_name(),
+                                        expr_ty.render_name()
+                                    ),
+                                )
+                                .at(id)
+                                .with_fix(Fix::replace_heuristic(expr, int_text)),
+                            );
+                        } else {
+                            // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
+                            let wrap: Option<(String, String, String, String)> =
+                                if let Some(ctor) = wrap_variant_for(db, &annot_ty, &expr_ty) {
+                                    Some((
+                                        format!("({ctor} "),
+                                        ")".to_string(),
+                                        format!("wrap in `({ctor} …)`"),
+                                        format!(" — wrap the value in `{ctor}`"),
+                                    ))
+                                } else if let Some((prefix, suffix, verb)) =
+                                    int_coercion_wrap(&annot_ty, &expr_ty)
+                                {
+                                    let n = annot_ty.render_name();
+                                    Some((
+                                        prefix,
+                                        suffix,
+                                        verb,
+                                        format!(" — convert with `({n}.of …)`"),
+                                    ))
+                                } else {
+                                    None
+                                };
+                            let mut reject = Reject::coded(
+                                Code::TypeMismatch,
+                                format!(
+                                    "annotation type {} does not match value type {}{}",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name(),
+                                    wrap.as_ref().map(|w| w.3.as_str()).unwrap_or(""),
+                                ),
+                            );
+                            if let Some((prefix, suffix, verb, _)) = wrap {
+                                reject = reject
+                                    .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
+                            }
+                            out.push(reject);
                         }
-                        out.push(reject);
                     }
                 }
             } else if !runtime_width {
