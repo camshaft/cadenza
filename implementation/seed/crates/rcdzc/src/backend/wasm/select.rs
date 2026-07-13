@@ -138,6 +138,8 @@ const OP_BOX_BOOL: &str = "box-bool";
 const OP_GET_BOOL: &str = "get-bool";
 const OP_BOX_FLOAT: &str = "box-float";
 const OP_GET_FLOAT: &str = "get-float";
+const OP_BOX_FLOAT32: &str = "box-float32";
+const OP_GET_FLOAT32: &str = "get-float32";
 /// `sum-new(disc, payload) -> handle` — build a sum value from its discriminant and a single payload
 /// handle (`value-heap-runtime.md` §Sum). The payload is: an empty array for a nullary variant, the
 /// boxed value for a one-payload variant, or a tuple handle for a multi-payload variant.
@@ -500,12 +502,13 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
-        // A FLOAT64 element boxes with `box-float`: its machine slot is an `f64` (`valtype_of` → F64),
-        // which IS `box-float`'s argument, so NO coercion is needed (the shared `emit_box_i32_to_i64_extend`
-        // before the box op is a no-op for a non-int/non-enum-disc value). A FLOAT32 slot is an `f32`, which
-        // would need an `f64.promote_f32` before `box-float` and an `f32.demote_f64` after `get-float` at
-        // every box/unbox emit site — a separate width-coercion slice — so it DECLINES here for now.
+        // A FLOAT boxes into its width's dedicated leaf: Float64 → `box-float` (an `f64` slot, `valtype_of`
+        // → F64, IS `box-float`'s arg), Float32 → `box-float32` (an `f32` slot IS `box-float32`'s arg). So
+        // NEITHER needs coercion — the shared `emit_box_i32_to_i64_extend` before the box op is a no-op for
+        // a non-int/non-enum-disc value. A Float32 gets its OWN 4-byte leaf (not a promoted f64) so its
+        // canonical byte form + value-encode render are the f32's, not an f64's (`0.1f32` → `0.1`).
         Ty::Float(ft) if ft.ground_width() == 64 => Ok(Some(OP_BOX_FLOAT)),
+        Ty::Float(ft) if ft.ground_width() == 32 => Ok(Some(OP_BOX_FLOAT32)),
         // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), a
         // MAP (its CHAMP `map-*` handle), a BYTES sequence (`bytes-*` handle), or a STRING (a UTF-8
         // byte-leaf handle) — is already a u32 handle, so it is `arr-set` into the parent array (or used
@@ -559,9 +562,10 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
-        // A FLOAT64 element reads back with `get-float` (returns an `f64`, the value's machine slot) — the
-        // dual of `box_op_ty`'s Float64 arm, coercion-free. FLOAT32 declines (see there).
+        // A FLOAT reads back with its width's op: Float64 → `get-float` (an `f64`), Float32 → `get-float32`
+        // (an `f32`, the value's machine slot) — the duals of `box_op_ty`'s Float arms, both coercion-free.
         Ty::Float(ft) if ft.ground_width() == 64 => Ok(Some(OP_GET_FLOAT)),
+        Ty::Float(ft) if ft.ground_width() == 32 => Ok(Some(OP_GET_FLOAT32)),
         // A nested compound / SUM / LIST / MAP / BYTES / STRING handle `arr-get` (or `sum-payload`) yields
         // is used as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed
         // value (`Core::Captured` of a closure) reads back the handle directly, ready for a `call_indirect`.

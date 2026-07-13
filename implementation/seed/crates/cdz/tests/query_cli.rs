@@ -1535,6 +1535,48 @@ fn an_int_annotation_mismatch_carries_an_of_conversion_fix_that_fix_all_applies(
 }
 
 #[test]
+fn a_coercion_wrap_over_a_compound_value_produces_a_clean_two_insert_edit() {
+    // REGRESSION: a coercion wrap whose ctor is a DOTTED member-access (`(Int64.of …)` → head `(. Int64
+    // of)`) over a COMPOUND value (`(+ n 1)`, a list) used to fragment — the `same_head` diff treated the
+    // named-head `(+ …)` and the list-head `((. Int64 of) …)` as alignable and LCS-aligned them into
+    // leading-space inserts + empty deletes, yielding `( (. Int64 of) (+ n 1))` (a STRAY SPACE after `(`).
+    // Now `same_head` returns false for a name-vs-list head, so the wrap-preserve path fires: two clean
+    // inserts around the preserved compound. The result must have NO stray `( ` sequence.
+    let dir = scratch_dir("wrap_compound");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (f (: n Int8)) (: (+ n 1) Int64)) (export f))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the mismatch is an error");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0203\""))
+        .expect("the mismatch is emitted as JSON");
+    // The wrap is exactly TWO inserts (prefix + suffix), not a fragmented multi-edit LCS align.
+    let n_edits = line.matches("\"text\":").count();
+    assert_eq!(
+        n_edits, 2,
+        "a clean wrap is two inserts, got {n_edits}: {line}"
+    );
+    let (_, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(stderr.contains("applied"), "fix applies: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("((. Int64 of) (+ n 1))") && !repaired.contains("( (. Int64 of)"),
+        "the wrap is clean (no stray space after `(`): {repaired}"
+    );
+    let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok3 && out3.trim().is_empty(),
+        "the repaired file recompiles clean: {out3}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_string_where_bytes_expected_carries_a_to_bytes_fix_that_fix_all_applies() {
     // A total-conversion coercion, surfaced end-to-end: `(f "hi")` for a `(: b Bytes)` parameter reports
     // CDZ0203 AND carries a `wrap` fix → `(String.to-bytes "hi")`. `--json` emits the wrap as two inserts;

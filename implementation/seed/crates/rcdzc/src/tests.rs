@@ -5399,6 +5399,113 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_constant_count_shift_and_constant_divisor_rem_are_trap_free_for_a_discarding_fold() {
+        // `is_trap_free` now accepts a RIGHT shift by a CONSTANT in-range count (`>>` cannot overflow, a
+        // valid const count trips no guard) and a `/`/`%` by a CONSTANT divisor ∉ {0,-1} (no ÷0, no MIN/-1
+        // overflow). So a range comparison whose operand is such an op — a TAUTOLOGY — folds to a constant
+        // instead of keeping a bogus "might trap" compare: `(< (>>ᵤ x 60) 20)` on a UInt64 (∈ [0,15]) → true,
+        // `(< (% (& x 255) 10) 10)` (∈ [0,9]) → true. A LEFT shift, a RUNTIME count, or a RUNTIME divisor
+        // stays trapping, so its comparison is NOT folded and any real trap survives.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtU | Lir::I64LtS | Lir::I32LtU | Lir::I32LtS))
+                .count()
+        };
+        // TAUTOLOGIES fold — no comparison remains.
+        assert_eq!(
+            cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 20) Bool)")),
+            0,
+            "shr [0,15] < 20 → folded"
+        );
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (< (% (: (& x 255) Int64) 10) 10) Bool)"
+            )),
+            0,
+            "rem [0,9] < 10 → folded"
+        );
+        // NON-tautology (const inside the range) KEEPS its compare.
+        assert_eq!(
+            cmps(&lir("(: x UInt64)", "(: (< (>> x 60) 8) Bool)")),
+            1,
+            "shr [0,15] < 8 → runtime compare"
+        );
+
+        // VALUE PARITY: the folded tautologies are true; a non-tautology computes correctly.
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (< (>> x 60) 20) 111 222)",
+                &[Val::U64(12345)]
+            ),
+            111
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (< (% (: (& x 255) Int64) 10) 10) 111 222)",
+                &[Val::S64(12345)]
+            ),
+            111
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (< (>> x 60) 8) 111 222)",
+                &[Val::U64(12345)]
+            ),
+            111
+        ); // 12345>>60=0 < 8
+
+        // TRAP SAFETY: a LEFT shift is NOT trap-free (it can overflow), so a `(>= (<< x 2) MIN)` tautology
+        // is NOT folded and a genuine overflow still traps; a RUNTIME-divisor `%` likewise traps on ÷0.
+        assert!(
+            traps(
+                "(: x Int64)",
+                "(>= (<< x 2) -9223372036854775808)",
+                &[Val::S64(1i64 << 62)]
+            ),
+            "a left-shift overflow must still trap (<< is not trap-free)"
+        );
+        assert!(
+            traps(
+                "(: x Int64) (: d Int64)",
+                "(< (% (: (& x 255) Int64) d) 300)",
+                &[Val::S64(12345), Val::S64(0)]
+            ),
+            "a runtime-divisor rem must still trap on ÷0 (not trap-free)"
+        );
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound
@@ -17084,6 +17191,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_float32_renders_via_the_value_encode_walker() {
+        // The LAST value-encode gap closed: a recursive sum carrying a FLOAT32 now compiles its escape.
+        // Float32 gets its OWN 4-byte leaf (`box-float32`/`get-float32`), so `box_op_ty`/`get_op_ty` box
+        // it coercion-free and `shape_of` emits `ShapeNode::Float32` (descriptor tag 14); the runtime
+        // `value-encode` renders the f32's SHORTEST decimal (guarded in cdz-runtime's
+        // `value_encode_renders_a_float32_as_the_f32_shortest_decimal` — `0.1f32` → `0.1`, not the
+        // f64-promotion precision).
+        use crate::testkit::parse;
+        let src = "(module m (type F32List (Cons (Tuple Float32 F32List)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (F32List.Nil ()) \
+                        (F32List.Cons (tuple (: 1.5 Float32) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Float32 compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the float32-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_carrying_a_set_renders_via_the_value_encode_walker() {
         // A recursive sum carrying a SET (a `SetList` — a tree of sets) now COMPILES its value-encode
         // escape. `shape_of` emits `ShapeNode::Set` (descriptor tag 12) for a SCALAR-element set, and the
@@ -17157,6 +17285,53 @@ mod stage1 {
             err.message.contains("multiple exports"),
             "a multi-export compound return must name the multi-export trigger, got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_multi_export_string_declines_by_arity_not_by_type() {
+        // A STRING (and every other heap value: list/bytes/map/set/…) crosses the host boundary FINE as
+        // the SOLE export (the resource-escape path). So a String export ALONGSIDE a second export must
+        // decline by ARITY — "a heap value crosses only as the single export" — NOT by TYPE ("String has
+        // no component boundary representation", the old misleading message that blamed the type and
+        // misdirected a fix). The diagnosis is keyed on the SAME `crosses_as_resource_escape` predicate the
+        // escape gate uses, so every escape-capable type gets the arity message, not just Tuple/Record/Sum.
+        for src in [
+            // two compound (String) exports
+            "(module m (def (aaa) \"first\") (def (bbb) \"second\") (export aaa) (export bbb))",
+            // a compound (String) alongside a scalar
+            "(module m (def (aaa) \"first\") (def (n) 5) (export aaa) (export n))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a multi-export String declines");
+            assert!(
+                err.message.contains("SINGLE export") && err.message.contains("multiple exports"),
+                "a multi-export String must decline by ARITY (single-export), got: {}",
+                err.message
+            );
+            assert!(
+                !err.message.contains("no component boundary representation"),
+                "the message must not blame the TYPE (String crosses fine as the sole export), got: {}",
+                err.message
+            );
+        }
+        // CONTRAST: a String as the SOLE export crosses fine (the resource escape) — the constraint is
+        // arity, not the type.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (greet) \"hello\") (export greet))"
+            )))
+            .is_ok(),
+            "a String as the sole export must cross the boundary"
+        );
+        // NO OVER-REJECTION: a multi-export program with a NOMINAL-over-scalar export still crosses (it
+        // erases to a scalar boundary valtype, so it is not an arity decline).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (uid) (UserId.Mk 42)) (def (n) 5) (export uid) (export n))"
+            )))
+            .is_ok(),
+            "a nominal-over-scalar in a multi-export program crosses as its scalar, not an arity decline"
         );
     }
 
@@ -20258,6 +20433,48 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "two performs in the handle body must decline the single-hole fold"
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_locates_the_hole_at_a_non_leading_and_a_nested_position() {
+        // The hole may be at a NON-LEADING operand and NESTED several operators deep — `splice_context`
+        // locates the sole perform occurrence by identity, so pure siblings on either side and enclosing
+        // operators are preserved. `C = (- 200 □)`, arm `(+ 1 (resume 10 s))` → `(+ 1 (- 200 10))` = 191.
+        let non_leading = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- 200 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(non_leading)))
+                    .expect("hole at a non-leading operand folds"),
+                "main"
+            ),
+            191
+        );
+        // `C = (+ 1 (* 3 □))`, arm `(+ 1 (resume 10 s))` → `(+ 1 (+ 1 (* 3 10)))` = 32.
+        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (* 3 (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested)))
+                    .expect("hole nested deep folds"),
+                "main"
+            ),
+            32
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_fold_that_would_be_ill_typed_is_rejected_not_miscompiled() {
+        // SOUNDNESS: the fold is a source-to-source rewrite that then TYPE-CHECKS normally, so a fold that
+        // produces an ill-typed term REJECTS rather than miscompiles. Here `C = (< □ 5)` : Bool, so the arm
+        // `(+ 1 (resume 10 s))` folds to `(+ 1 (< 10 5))` — an integer `+` over a Bool — which the type
+        // checker rejects. Pins that the pure-continuation fold does not smuggle a type error past inference.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (< (Amb.flip) 5))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a fold that yields an ill-typed term (+ over Bool) must be rejected, not miscompiled"
         );
     }
 
@@ -24735,6 +24952,7 @@ mod r2_runtime_resource {
             AbiValType::S64 => PrimitiveValType::S64,
             AbiValType::Bool => PrimitiveValType::Bool,
             AbiValType::F64 => PrimitiveValType::F64,
+            AbiValType::F32 => PrimitiveValType::F32,
         })
     }
 
@@ -24746,6 +24964,7 @@ mod r2_runtime_resource {
             AbiValType::U32 | AbiValType::Bool => ValType::I32,
             AbiValType::S64 => ValType::I64,
             AbiValType::F64 => ValType::F64,
+            AbiValType::F32 => ValType::F32,
         };
         let params = op.params.iter().map(|p| core(*p)).collect();
         let results = op.result.map(|r| vec![core(r)]).unwrap_or_default();
@@ -31491,6 +31710,26 @@ mod closure_host_resource {
                               (def (two) 2) (export inc) (export isz) (export two))";
         crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct))).expect(
             "distinct-signature closures alongside a plain export compile (distinct-sig mixed path)",
+        );
+
+        // A SINGLE closure returning a byte-rope (Bytes/String) COMPILES (the compound-result `call` path);
+        // but TWO such closures sharing one `call` DECLINES with a SPECIFIC message (not the generic
+        // scalar-only one) — the multi-export list-returning `call` is a later slice.
+        let one_bytes =
+            "(do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(one_bytes)))
+            .expect("a single Bytes-returning closure compiles (compound-result path)");
+        let two_bytes = "(do (def (a) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n))))) \
+                         (def (b) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap n))))) \
+                         (export a) (export b))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(two_bytes)))
+            .expect_err(
+                "two Bytes-returning closures sharing one call must DECLINE (multi-export slice)",
+            );
+        assert!(
+            err.message.contains("MULTI-EXPORT") && err.message.contains("byte-rope"),
+            "expected the multi-export byte-rope-result decline, got: {}",
+            err.message
         );
     }
 

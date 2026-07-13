@@ -871,7 +871,13 @@ fn unit_module(ast: &mut Arenas) -> StructId {
 /// `(meta scale)` channel holding `(num den)` (a machine-integer ratio: `kilo`=1000/1, `milli`=1/1000,
 /// `mebi`=1048576/1). `Unit.prefix` reads this ratio and applies it to a unit via `Unit::scaled`. The
 /// scale is compile-time metadata, NOT a runtime `Rational` — so prefixes (and the conversions they
-/// drive) need no arbitrary-precision arithmetic. A prefix is an ordinary shadowable name.
+/// drive) need no arbitrary-precision arithmetic. A prefix is an ordinary shadowable name. The factor is
+/// an EXACT `(num, den)` ratio (a decimal multiple like `kilo`/`milli` or a binary one like `mebi`), so a
+/// prefixed unit scales to its base without approximation.
+//= spec/capabilities/units-of-measure.md#a-scaled-unit-is-a-unit-scaled-by-an-exact-factor
+//# A unit prefixed or otherwise scaled by an exact factor — a decimal multiple such as kilo or milli, or a binary multiple such as kibi or mebi — MUST itself be a unit of the same dimension as the unit it scales, differing only by that exact factor.
+//= spec/capabilities/units-of-measure.md#a-scaled-unit-is-a-unit-scaled-by-an-exact-factor
+//# A scale factor MUST be an exact value, so that a prefixed unit converts to its base without approximation.
 fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let n = push_atom(
@@ -1017,6 +1023,18 @@ fn unit_op_ctor(ast: &mut Arenas, prim: &str) -> StructId {
 /// computed in `infer::apply_type`'s dedicated arms rather than by a static `(meta t)` scheme — hence no
 /// `(meta t)` here (like the compound value constructors `tuple`/`record`/`list`, whose type is their
 /// arguments' shape, not a fixed scheme).
+///
+/// The dimension a `(Qty T u)` carries is a TYPE-LEVEL fact, checked during inference then ERASED before
+/// emission: `Qty.of`/`Qty.value` lower to their numeric value argument (the unit index leaves no
+/// runtime trace, `eval` never reaches the backend with a `Ty::Qty`), so attaching a unit changes
+/// neither the numeric byte form nor the runtime representation, and no unit/dimension is in the emitted
+/// component.
+//= spec/capabilities/units-of-measure.md#dimensions-are-checked-then-erased
+//# Dimensional consistency MUST be checked at compile time.
+//= spec/capabilities/units-of-measure.md#dimensions-are-checked-then-erased
+//# A unit or dimension MUST NOT appear in the emitted component, being erased after checking.
+//= spec/capabilities/units-of-measure.md#dimensional-analysis-does-not-alter-the-numeric-core
+//# Attaching a unit to a numeric value MUST NOT change the value's numeric byte form.
 fn qty_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta apply) = Qty` — the quantity-TYPE constructor, so `(Qty Float64 u)` in TYPE position builds

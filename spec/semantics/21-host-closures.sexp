@@ -1114,3 +1114,22 @@
   (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) ((. String concat) "x" "y"))) (export mk)))
   (call   mk (: 7 Int64) (: 0 Int64))
   (output (120 121)))
+
+; EMPTY byte-rope closure results — the copy loop must handle n=0 (empty Bytes / empty String). An empty
+; compound crosses as an empty `list<u8>`, so the `call` writes a `(ptr, len=0)` return area and the host
+; reads the empty list. Pins the boundary edge (a zero-length payload must not read a stray byte or trap).
+
+(case "a closure returning an empty Bytes crosses as the empty list"
+  (doc    "`(fn (n) (bin))` — an empty `Bytes`. `call(handle, 0)` copies zero bytes and returns
+           `(ptr, len=0)`; the host reads `()`. Pins the n=0 edge of the bytes copy loop (a `bytes-len` of
+           0 must skip the loop cleanly).")
+  (input  (do (def (main) (fn ((: n Int64)) (bin))) (export main)))
+  (call   main (: 0 Int64))
+  (output ()))
+
+(case "a closure returning an empty String crosses as the empty list"
+  (doc    "The String companion: `(fn (n) \"\")` — an empty String (an empty UTF-8 byte-rope) crosses as the
+           empty `list<u8>`. Confirms the n=0 edge on the String result path too.")
+  (input  (do (def (main) (fn ((: n Int64)) "")) (export main)))
+  (call   main (: 0 Int64))
+  (output ()))

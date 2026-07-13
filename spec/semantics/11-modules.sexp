@@ -552,3 +552,42 @@
             (def (main) (+ (pub-helper) 1))
             (export main)))
   (output (: 42 Int64)))
+
+; --- A sum value crosses a module boundary ---------------------------------------------------------
+; core-semantics.md #Sum Types Are Structural Types + modules-and-namespaces.md #Imports Are Explicit:
+; a sum is an ordinary value, so an exported function may RETURN one and the importing entry matches it
+; exactly as a local sum value. These pin that the sum construct/match machinery composes with linking —
+; a variant value built in one file dispatches correctly in another after the exported producer inlines.
+
+(case "a prelude Option value crosses a module boundary as an export result"
+  (doc    "`lib` exports `parse` returning an `Option Int64` (`(Some b)` for a positive input); the entry
+           imports it and matches the result. The Option value built in `lib` carries its variant tag
+           across the link so the entry's `(Some n)` arm binds n = 5. Pins that a prelude sum is an
+           ordinary cross-module value — its construction in one file and its match in another compose
+           through linking, no special handling for a sum at the boundary.")
+  (module "lib"
+    (do (def (parse (: b Int64)) (if (> b 0) (Some b) (None))) (export parse)))
+  (input  (do
+            (import "lib" (parse))
+            (def (main) (match (parse 5) ((Some n) n) ((None) 0)))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a recursive user sum built in a lib is folded by the entry's structural copy"
+  (doc    "`lib` declares a cons-list sum `L` and exports `mk` building `(Cons 5 (Cons 6 Nil))`. The
+           entry declares its OWN structurally-identical `L` (structural type identity — type-system.md
+           #A Structural Type's Shape Is Its Constituents) and folds the imported value with `sm`. The
+           recursive sum's spine built in one file is walked variant-by-variant in another, summing to 11.
+           Pins that a RECURSIVE user sum composes across the module boundary — its heap spine and variant
+           discriminants are read by the entry's match exactly as a locally-built one.")
+  (module "lib"
+    (do (type L (Nil) (Cons Int64 L))
+        (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil))))
+        (export mk)))
+  (input  (do
+            (import "lib" (mk))
+            (type L (Nil) (Cons Int64 L))
+            (def (sm l) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t)))))
+            (def (main) (sm (mk)))
+            (export main)))
+  (output (: 11 Int64)))
