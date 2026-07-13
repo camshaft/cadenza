@@ -514,21 +514,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // (constructors build, prims fold, defs β-reduce/inline) and must NOT be diverted here — so
             // this is gated on the head being a bare parameter, not merely on its type being `Ty::Fn`.
             // A multi-arg application `(g a b)` is a FULL-arity call of a multi-param closure (all args
-            // pushed to one `call_indirect`); a PARTIAL application (fewer args than the closure's arity)
-            // is runtime currying — it must build an intermediate closure, which is not yet supported, so
-            // it declines at select (the `call_indirect` type won't match). Checked before the lambda path.
-            if head_is_runtime_fn_value(db, head)
-                && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
-            {
-                if args.is_empty() {
+            // pushed to one `call_indirect`). CURRIED SYNTAX — `((g n) 1)` — is the SAME full-arity call
+            // written with nested parens: the head `(g n)` is ITSELF an application of the runtime fn `g`,
+            // so the whole spine is `g` applied to `[n, 1]`. `runtime_fn_spine` peels the nested `Apply`
+            // heads and gathers every argument left-to-right, reaching the ONE runtime fn value at the
+            // bottom; the accumulated args go to a single `call_indirect` (`closure_type_index` peels
+            // `args.len()` arrows off the closure's curried type to match the lifted lambda). A genuine
+            // PARTIAL application — a spine that stops SHORT of full arity, e.g. `(g n)` bound and returned
+            // — still declines at select (no lifted lambda's arity matches the short arg list), since it
+            // would need to build an intermediate closure. Checked before the lambda-reduction path.
+            if let Some((fn_head, all_args)) = runtime_fn_spine(db, id) {
+                if all_args.is_empty() {
                     return Core::Poison(Reject::decline(
                         "a runtime closure applied to no arguments",
                     ));
                 }
-                trace!(target: "rcdzc::lower", node = id.0, head = head.0, n_args = args.len(), "apply: runtime closure application → Core::CallClosure");
+                trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), "apply: runtime closure application (spine-flattened) → Core::CallClosure");
                 return Core::CallClosure {
-                    closure: head,
-                    args: args.to_vec(),
+                    closure: fn_head,
+                    args: all_args,
                 };
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
@@ -2146,6 +2150,36 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
             crate::eval::lambda_body(db, id).is_none()
         }
         _ => false,
+    }
+}
+
+/// Peel a CURRIED APPLICATION SPINE `(((f a) b) c)` into its ultimate RUNTIME FUNCTION-VALUE head and
+/// the full left-to-right argument list `[a, b, c]`. The curried surface `((g n) 1)` is the SAME
+/// full-arity application as `(g n 1)` — each nested `Apply` head contributes its own arguments, and the
+/// bottom head is the one runtime fn value they all apply to. Returns `Some((f, args))` iff that bottom
+/// head is a runtime function value (a fn-typed param / heap-held closure — `head_is_runtime_fn_value`)
+/// of arrow type; `None` if the head is anything else (a lambda that β-reduces, a constructor, a prim, a
+/// def), so those keep their own lowering paths. The accumulated args feed ONE `call_indirect`; if their
+/// count doesn't match a lifted lambda's arity (a genuine partial or over-application) it declines at
+/// select rather than fabricating an intermediate closure.
+fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
+    match resolved_of(db, id) {
+        Resolved::Apply { head, args } => {
+            // A nested application head — recurse and PREPEND the deeper spine's args (they bind to the
+            // function's leading parameters), then this level's args.
+            if let Some((fn_head, mut spine_args)) = runtime_fn_spine(db, head) {
+                spine_args.extend_from_slice(&args);
+                return Some((fn_head, spine_args));
+            }
+            // Bottom of the spine: the head is a direct runtime fn value applied to this level's args.
+            if head_is_runtime_fn_value(db, head)
+                && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
+            {
+                return Some((head, args.to_vec()));
+            }
+            None
+        }
+        _ => None,
     }
 }
 

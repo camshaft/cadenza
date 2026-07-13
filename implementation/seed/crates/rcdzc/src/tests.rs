@@ -11328,6 +11328,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_curried_application_spine_flattens_to_a_full_arity_indirect_call() {
+        // RUNTIME CURRYING reaching full arity. `((g n) 1)` is `(fn (a b) …)` single-arity curried sugar
+        // applied with nested parens — the SAME full-arity application as `(g n 1)`. When `g` is a
+        // recursive HOF's runtime parameter it cannot β-reduce; the nested `Apply` spine must FLATTEN so
+        // `g` applies to both `n` and `1` in ONE `call_indirect` (not decline as an unbuilt intermediate
+        // closure). `ap g n = sum(i=n..1) (i+1)`; with `g = (+)`, n=3 → (3+1)+(2+1)+(1+1) = 9.
+        let src = "(module m \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "9"); // (3+1)+(2+1)+(1+1)
+        assert_eq!(run_closure(src, 1).unwrap(), "2"); // (1+1)
+        assert_eq!(run_closure(src, 5).unwrap(), "20"); // sum(i=1..5)(i+1) = 15+5
+        // A DIFFERENT lifted lambda through the same curried recursive HOF — `g = (*)` — proving the
+        // flattened spine's `call_indirect` carries the right code (the table slot selects the applied
+        // function): `ap g n = sum(i=n..1) (i*1) = sum(i=n..1) i`; n=4 → 4+3+2+1 = 10.
+        let src2 = "(module m \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
+        assert_eq!(run_closure(src2, 4).unwrap(), "10"); // 4+3+2+1
+    }
+
+    #[test]
     fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
         // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
         // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The
