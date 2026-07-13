@@ -76,6 +76,7 @@ pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a branch perform under two nested handlers threads the inner state to the continuation
+pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a built map renders its entries in canonical key order
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
@@ -357,6 +358,7 @@ pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argum
 pass	a member access with no field operand is rejected, not a crash
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
+pass	a module function is recursive
 pass	a module may nest three deep
 pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field
@@ -514,6 +516,7 @@ pass	a recursive fold with an unannotated two-argument callback parameter
 pass	a recursive function counts down through a stateful effect and bails at zero
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
+pass	a recursive function in a nested module runs through the projection chain
 pass	a recursive function sums a range it walks by performing a fresh-index effect
 pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive function threads two nested handlers' states at once
@@ -751,6 +754,8 @@ pass	a well-formed annotation still checks and accepts a matching type (the cont
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
+pass	a zero-arm match on an empty-sum scrutinee is exhaustive
+pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
@@ -834,6 +839,8 @@ pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an inner binding shadows an outer one only within its scope
+pass	an inner lambda captures an enclosing match-arm binder and is applied
+pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
 pass	an integer literal in a type annotation's type position is rejected
@@ -874,6 +881,7 @@ pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
+pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
@@ -1263,6 +1271,7 @@ pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
+pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
@@ -1285,6 +1294,8 @@ pass	two variants of the same sum compare unequal regardless of operand order
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
+pass	unquote outside quasiquote is a syntax error
+pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unsigned comparison orders by magnitude, not by signed interpretation
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
@@ -1318,7 +1329,6 @@ todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-todo	a module function is recursive
 todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
@@ -1370,7 +1380,6 @@ todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
 todo	comparing two units of one dimension converts before comparing
@@ -1427,8 +1436,6 @@ todo	the built-in list is folded by an element-with-rest pattern
 todo	the default-integer pragma is definition-site scoped, not use-site
 todo	two rationals denoting the same number are equal regardless of how they were written
 todo	unquote in quasiquote evaluates normally and embeds
-todo	unquote outside quasiquote is a syntax error
-todo	unquote with more than one operand inside a quasiquote is malformed
 todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping

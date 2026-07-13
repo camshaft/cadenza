@@ -351,6 +351,17 @@ fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
         Resolved::Param { binder } => Some(binder),
         Resolved::Ref { value } => Some(value),
         Resolved::Lambda { body, .. } => Some(body),
+        // A MATCH-ARM / tuple-pattern binder resolves to a `SumPayload` reading the enclosing arm's
+        // SCRUTINEE (Case 5/6 in `resolve`). Its scope is where the scrutinee is bound; use the scrutinee
+        // as the representative for the `is_within` capture test. When an inner lambda in the arm CAPTURES
+        // such a binder (`(match (A m) ((A m) ((fn (x) (+ x m)) 3)))`) the scrutinee is bound OUTSIDE the
+        // lambda body, so `pin_free_vars` pins the occurrence — and `beta_reduce`'s SumPayload capture-share
+        // exception then SHARES it (preserving its `SumPayload` resolution) rather than copying it fresh
+        // into the reduced orphan, where it re-resolved unbound (a spurious CDZ0101). Without this arm the
+        // binder was invisible to `pin_free_vars`, so the capture was dropped — the bug this fixes. (A
+        // binder whose scrutinee is WITHIN the lambda body is body-local, not a capture, and stays unpinned
+        // as before.)
+        Resolved::SumPayload { scrutinee, .. } => Some(scrutinee),
         _ => None,
     }
 }

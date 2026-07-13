@@ -2805,6 +2805,24 @@
   (input  (= (Ok 1) (Err 2)))
   (output (: false Bool)))
 
+(case "a zero-arm match on an empty-sum scrutinee is exhaustive"
+  (doc    "Witnesses type-system.md #Never Is The Empty Sum (4th sentence): 'A match on a scrutinee of the
+           empty sum type MUST be exhaustive with zero arms, because there is no variant left to cover —
+           the degenerate base case of the exhaustiveness rule.' `(type Void)` declares the empty sum (zero
+           variants), which is UNINHABITED — no value of it can exist — so `(match v)` on a `v : Void`
+           parameter needs NO arms and is well-formed (it lowers to an unreachable, since it can never
+           run). Distinct from a zero-arm match on an INHABITED scrutinee (an Int, a populated sum), which
+           is genuinely non-exhaustive (CDZ0210, the rejection cases below). Here `never` is declared but
+           unreached, so the program compiles and `main` returns 0. Pins that an empty sum is recognized as
+           uninhabited by the exhaustiveness check, not treated as a type with values a case must cover.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Void)
+            (def (never (: v Void)) (match v))
+            (def (main) 0)
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "a match not covering the scrutinee is a compile-time rejection"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected. When the scrutinee's
            variant set is known statically and the arms leave a variant uncovered — only Neg and Pos
@@ -2814,6 +2832,19 @@
               ((Sign.Neg _) -1)
               ((Sign.Pos _)  1)))
   (error    CDZ0210))
+
+(case "a zero-arm match on an inhabited sum is non-exhaustive"
+  (doc    "The contrast to the empty-sum case above: `(type C Red Green)` is INHABITED (two variants), so a
+           zero-arm `(match c)` covers neither — it is non-exhaustive and rejects CDZ0210. Only the EMPTY
+           sum earns the zero-arm exemption; a populated sum's zero-arm match is the ordinary
+           non-exhaustiveness error. Pins the boundary the empty-sum exemption draws.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C Red Green)
+            (def (f (: c C)) (match c))
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0210))
 
 (case "a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected together with the guarded-arm

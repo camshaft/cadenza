@@ -20,6 +20,15 @@
 //! (`find_import_cycle`, a back-edge DFS over the import graph) → CDZ0201. A linked package also emits
 //! the `link-map` OUTPUT artifact (step 5, `encode_link_map`) so a consumer demuxes a cross-file
 //! diagnostic's global node id → `(file, local id)`. The bootstrap re-author (step 6) is what remains.
+//!
+//! A sibling file's definition is reachable ONLY through an explicit `(import …)` naming it: file-scoped
+//! resolution never sees another file's defs, and an import binds exactly the names it lists:
+//!
+//= spec/capabilities/modules-and-namespaces.md#imports-are-explicit
+//# A name defined in another module MUST be brought into scope only by an explicit import.
+//!
+//= spec/capabilities/modules-and-namespaces.md#imports-are-explicit
+//# An import MUST NOT introduce names into scope beyond those it explicitly names or the module it explicitly binds.
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use crate::diag::Reject;
@@ -325,12 +334,13 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         });
     }
 
-    // CYCLIC IMPORTS (`modules-and-namespaces.md` §Cyclic Module Dependencies Are Rejected): the
-    // import graph (file → each file it imports FROM) must be acyclic. A back-edge in a DFS is a cycle
-    // → a coded reject (CDZ0201). The same shape as the static-recursion call-graph DFS
-    // (`eval::is_recursive`), here over the fixed link-time import edges. (Value-level mutual recursion
-    // across files is fine — that is a runtime call, not an import edge; only a compile-time dependency
-    // LOOP is forbidden.)
+    // CYCLIC IMPORTS: the import graph (file → each file it imports FROM) must be acyclic. A back-edge
+    // in a DFS is a cycle → a coded reject (CDZ0201). The same shape as the static-recursion call-graph
+    // DFS (`eval::is_recursive`), here over the fixed link-time import edges. (Value-level mutual
+    // recursion across files is fine — that is a runtime call, not an import edge; only a compile-time
+    // dependency LOOP is forbidden.)
+    //= spec/capabilities/modules-and-namespaces.md#cyclic-module-dependencies-are-rejected
+    //# A set of modules whose import relationships form a cycle MUST be rejected at compile time.
     if let Some(cycle) = find_import_cycle(&scopes) {
         let names: Vec<&str> = cycle.iter().map(|&i| files[i].0.as_str()).collect();
         return Err(Reject::coded(
@@ -460,10 +470,11 @@ fn resolve_import_clause(
             };
             return Err(Reject::coded(Code::Malformed, msg).at(occ));
         }
-        // COLLIDING IMPORTED NAMES (`modules-and-namespaces.md` §Colliding Imported Names Are
-        // Rejected): two imports binding the SAME local name into one file's scope is a compile-time
-        // error (CDZ0201), never resolved by an implicit precedence. This is a positively-proven
-        // ill-formed program — a CODED reject, not a decline.
+        // COLLIDING IMPORTED NAMES: two imports binding the SAME local name into one file's scope is a
+        // compile-time error (CDZ0201), never resolved by an implicit precedence. This is a
+        // positively-proven ill-formed program — a CODED reject, not a decline.
+        //= spec/capabilities/modules-and-namespaces.md#colliding-imported-names-are-rejected
+        //# Importing two definitions under the same name into one scope MUST be a compile-time error rather than resolved by an implicit precedence.
         if out.iter().any(|i| i.local == name) {
             return Err(Reject::coded(
                 crate::diag::Code::Malformed,
