@@ -1398,6 +1398,53 @@ pub mod driver {
         (line, col)
     }
 
+    /// A precomputed line-start index over one source — the byte offset of each line's first char, in
+    /// ascending order (`starts[0] == 0`). Built ONCE per source in O(len); each `line_col` lookup is then
+    /// a binary search (O(log lines)) plus a bounded byte-count of the found line's prefix, instead of
+    /// [`line_col`]'s O(byte) scan from the start. This is what keeps a report that resolves MANY sites in
+    /// one source LINEAR-ish rather than O(sites × source_len): `cdz clones` on a big program spent ~86%
+    /// of its time in the per-site `line_col` newline re-scan (each site's offset averages O(len/2), so N
+    /// sites over an O(N) source was O(N²)). The column stays BYTE-counted from the line start (identical
+    /// to `line_col`), so the reported `(line, col)` is unchanged.
+    pub struct LineIndex {
+        /// Byte offset of the start of each line (line 1 is `starts[0] = 0`). Strictly ascending.
+        starts: Vec<usize>,
+        len: usize,
+    }
+
+    impl LineIndex {
+        /// Build the index for `src` — one linear pass recording the byte AFTER each `\n`.
+        pub fn new(src: &str) -> LineIndex {
+            let mut starts = vec![0usize];
+            for (i, b) in src.bytes().enumerate() {
+                if b == b'\n' {
+                    starts.push(i + 1);
+                }
+            }
+            LineIndex {
+                starts,
+                len: src.len(),
+            }
+        }
+
+        /// The 1-based `(line, column)` of `byte` in `src` — byte-identical to [`line_col`], via a binary
+        /// search over the line starts (O(log lines)) plus a CHAR count of the found line's prefix
+        /// (O(chars-on-that-line), a small bounded slice — NOT the O(byte)-from-start scan `line_col` does).
+        /// `src` MUST be the source this index was built from. A byte past the end clamps (like `line_col`).
+        pub fn line_col(&self, src: &str, byte: usize) -> (usize, usize) {
+            let byte = byte.min(self.len);
+            // The line is the last start `<= byte`. `partition_point` gives the count of starts `<= byte`;
+            // since `starts[0] == 0 <= byte` always, that count is `>= 1`, and the 1-based line IS the count.
+            let line = self.starts.partition_point(|&s| s <= byte);
+            let line_start = self.starts[line - 1];
+            // Column = CHARS from the line start to `byte`, + 1 — matching `line_col`'s per-char count
+            // exactly (it differs from a byte count only on multibyte input; the count is over ONE line's
+            // short prefix, so it is a small bounded cost, not the file-length scan).
+            let col = src[line_start..byte].chars().count() + 1;
+            (line, col)
+        }
+    }
+
     /// Run `lints` over `target`, rendering diagnostics one per line as
     /// `LABEL:line:col: SEVERITY: message` (LABEL is the file path or `(stdin)`; line:col from `src`
     /// when a span is known, else `?:?`). Returns `(report, had_error)` — `had_error` is the CI signal.
@@ -1456,20 +1503,35 @@ pub mod driver {
         (arr.finish(), lint::has_error(&diags))
     }
 
+    /// A per-source-label cache of [`LineIndex`], so resolving MANY clone sites in one source builds that
+    /// source's index ONCE (O(len)) and binary-searches per site — turning the report's O(sites × len)
+    /// newline re-scan into O(len + sites·log). Keyed by the file label a `CloneSite` carries.
+    fn build_line_indices(
+        sources: &std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<&str, LineIndex> {
+        sources
+            .iter()
+            .map(|(label, src)| (label.as_str(), LineIndex::new(src)))
+            .collect()
+    }
+
     /// Format a clone site's location `LABEL:line:col` (or `LABEL:?:?` when no span). `sources` maps a
-    /// file label to its source text, for the line:col computation.
+    /// file label to its source text; `indices` the matching prebuilt [`LineIndex`] per label (so the
+    /// line:col lookup is a binary search, not a from-start scan — the O(N²)→O(N log N) fix for a report
+    /// with many sites).
     fn site_loc(
         site: &clones::CloneSite,
         sources: &std::collections::HashMap<String, String>,
+        indices: &std::collections::HashMap<&str, LineIndex>,
     ) -> String {
         let label = site.file.as_deref().unwrap_or("(stdin)");
         match site.span {
-            Some(s) => match sources.get(label) {
-                Some(src) => {
-                    let (l, c) = line_col(src, s.start);
+            Some(s) => match (sources.get(label), indices.get(label)) {
+                (Some(src), Some(idx)) => {
+                    let (l, c) = idx.line_col(src, s.start);
                     format!("{label}:{l}:{c}")
                 }
-                None => format!("{label}:byte {}", s.start),
+                _ => format!("{label}:byte {}", s.start),
             },
             None => format!("{label}:?:?"),
         }
@@ -1481,6 +1543,7 @@ pub mod driver {
         classes: &[clones::CloneClass],
         sources: &std::collections::HashMap<String, String>,
     ) -> String {
+        let indices = build_line_indices(sources);
         let mut out = String::new();
         for (i, cls) in classes.iter().enumerate() {
             if i > 0 {
@@ -1493,7 +1556,7 @@ pub mod driver {
                 cls.exemplar
             ));
             for site in &cls.sites {
-                out.push_str(&format!("  {}\n", site_loc(site, sources)));
+                out.push_str(&format!("  {}\n", site_loc(site, sources, &indices)));
             }
         }
         out
@@ -1504,6 +1567,7 @@ pub mod driver {
         classes: &[clones::CloneClass],
         sources: &std::collections::HashMap<String, String>,
     ) -> String {
+        let indices = build_line_indices(sources);
         let mut arr = json::Array::new();
         for cls in classes {
             let mut obj = json::Object::new();
@@ -1511,25 +1575,7 @@ pub mod driver {
             obj.raw("size", &cls.size.to_string());
             let mut sites = json::Array::new();
             for site in &cls.sites {
-                let mut so = json::Object::new();
-                if let Some(f) = &site.file {
-                    so.string("file", f);
-                }
-                let lc = site.span.and_then(|s| {
-                    let label = site.file.as_deref().unwrap_or("(stdin)");
-                    sources.get(label).map(|src| line_col(src, s.start))
-                });
-                match lc {
-                    Some((l, c)) => {
-                        so.raw("line", &l.to_string());
-                        so.raw("col", &c.to_string());
-                    }
-                    None => {
-                        so.raw("line", "null");
-                        so.raw("col", "null");
-                    }
-                }
-                sites.raw(&so.finish());
+                sites.raw(&site_json(site, sources, &indices));
             }
             obj.raw("sites", &sites.finish());
             arr.raw(&obj.finish());
@@ -1537,10 +1583,12 @@ pub mod driver {
         arr.finish()
     }
 
-    /// A JSON site object `{file?, line, col}` for a clone/near-clone site.
+    /// A JSON site object `{file?, line, col}` for a clone/near-clone site. `indices` supplies the
+    /// prebuilt [`LineIndex`] per source label (binary-searched line:col, the O(N²)→O(N log N) fix).
     fn site_json(
         site: &clones::CloneSite,
         sources: &std::collections::HashMap<String, String>,
+        indices: &std::collections::HashMap<&str, LineIndex>,
     ) -> String {
         let mut so = json::Object::new();
         if let Some(f) = &site.file {
@@ -1548,7 +1596,10 @@ pub mod driver {
         }
         let lc = site.span.and_then(|s| {
             let label = site.file.as_deref().unwrap_or("(stdin)");
-            sources.get(label).map(|src| line_col(src, s.start))
+            match (sources.get(label), indices.get(label)) {
+                (Some(src), Some(idx)) => Some(idx.line_col(src, s.start)),
+                _ => None,
+            }
         });
         match lc {
             Some((l, c)) => {
@@ -1569,6 +1620,7 @@ pub mod driver {
         classes: &[clones::NearCloneClass],
         sources: &std::collections::HashMap<String, String>,
     ) -> String {
+        let indices = build_line_indices(sources);
         let mut out = String::new();
         for (i, cls) in classes.iter().enumerate() {
             if i > 0 {
@@ -1581,7 +1633,7 @@ pub mod driver {
                 cls.pattern
             ));
             for site in &cls.sites {
-                out.push_str(&format!("  {}\n", site_loc(site, sources)));
+                out.push_str(&format!("  {}\n", site_loc(site, sources, &indices)));
             }
         }
         out
@@ -1592,6 +1644,7 @@ pub mod driver {
         classes: &[clones::NearCloneClass],
         sources: &std::collections::HashMap<String, String>,
     ) -> String {
+        let indices = build_line_indices(sources);
         let mut arr = json::Array::new();
         for cls in classes {
             let mut obj = json::Object::new();
@@ -1600,7 +1653,7 @@ pub mod driver {
             obj.raw("holes", &cls.hole_count.to_string());
             let mut sites = json::Array::new();
             for site in &cls.sites {
-                sites.raw(&site_json(site, sources));
+                sites.raw(&site_json(site, sources, &indices));
             }
             obj.raw("sites", &sites.finish());
             arr.raw(&obj.finish());
@@ -3806,6 +3859,36 @@ mod tests {
             assert_eq!(driver::line_col(src, 4), (2, 1)); // 'd' (after first \n)
             assert_eq!(driver::line_col(src, 9), (3, 2)); // 'h'
             assert_eq!(driver::line_col(src, 9999), (3, 4)); // clamps past end
+        }
+
+        #[test]
+        fn line_index_matches_line_col_at_every_offset() {
+            // `LineIndex::line_col` (binary search + per-line char count) must return EXACTLY what the
+            // O(byte) `line_col` scan does at every byte offset — the byte-identity the `cdz clones`
+            // report relies on (the O(N²)→O(N log N) fix must not shift any reported line:col). Cover an
+            // empty line, a trailing newline, a byte past the end, AND multibyte chars (col counts CHARS,
+            // so a `é`/emoji before the offset must count as one column, not its UTF-8 byte length).
+            for src in [
+                "abc\ndef\nghi",
+                "",
+                "\n\n\n",
+                "no trailing newline",
+                "x\n",                  // trailing newline → an empty final line
+                "café\nnaïve\n😀 tail", // multibyte: é (2 bytes), ï (2), 😀 (4)
+            ] {
+                let idx = driver::LineIndex::new(src);
+                // Every valid byte boundary + a handful past the end.
+                for byte in 0..=src.len() + 3 {
+                    if byte <= src.len() && !src.is_char_boundary(byte) {
+                        continue; // `line_col`/`LineIndex` are only queried at char boundaries (span starts)
+                    }
+                    assert_eq!(
+                        idx.line_col(src, byte),
+                        driver::line_col(src, byte),
+                        "LineIndex disagrees with line_col at byte {byte} of {src:?}"
+                    );
+                }
+            }
         }
 
         #[test]

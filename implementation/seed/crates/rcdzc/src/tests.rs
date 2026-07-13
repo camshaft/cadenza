@@ -5420,6 +5420,109 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_refinement_elides_a_redundant_and_mask() {
+        // FLOW-SENSITIVE REDUNDANT-MASK ELISION: inside `(if (and (>= x 0) (< x 256)) (& x 255) …)` the
+        // then-branch KNOWS `x ∈ [0,255]`, so `x & 255 == x` — the mask covers x's whole refined range and
+        // is dropped, emitting just `x`. The `is_full_mask_for` lower fold could not see this (it runs with
+        // the refinement stack empty AND requires an unsigned TYPE); the emit-time `redundant_and_mask_value`
+        // consults the refined range. Pins the elision at the Lir level (no `& 255` in the then-branch) AND
+        // value parity; an UNREFINED signed mask must be KEPT.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And)).count();
+        // Under `x ∈ [0,255]`, the `& 255` is redundant — dropped. Only the two guard bitwise ops of the
+        // `and` condition are i32 (`I32And`), so NO `I64And` remains (the mask was the only one).
+        let elided = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 255) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            ands(&elided),
+            0,
+            "the redundant `& 255` under x∈[0,255] is elided, got: {elided:?}"
+        );
+        // CONTRAST: an UNREFINED signed `(& x 255)` (x full-range Int64) KEEPS the mask — it really narrows.
+        let kept = select(
+            "(module m (def (f (: x Int64)) (& x 255)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            ands(&kept),
+            1,
+            "an unrefined signed mask must be kept, got: {kept:?}"
+        );
+        // A mask that only PARTIALLY covers the refined range is NOT redundant — `(& x 15)` under x∈[0,255]
+        // (x can set bits above bit 3) must stay.
+        let partial = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 15) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            ands(&partial),
+            1,
+            "a partial mask (& 15) under x∈[0,255] is NOT redundant, got: {partial:?}"
+        );
+
+        // VALUE PARITY: the elided-mask path returns x in range; out of range takes the else; the partial
+        // mask still masks.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
+                &[Val::S64(200)]
+            ),
+            200
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
+                &[Val::S64(1000)]
+            ),
+            1000
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
+                &[Val::S64(0)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 256)) (& x 15) x)",
+                &[Val::S64(200)]
+            ),
+            8
+        ); // 200&15
+    }
+
+    #[test]
     fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
         // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
         // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its
@@ -9746,17 +9849,50 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0303")
         );
-        // A valid INTEGER default the numeric model admits but this compiler does not YET represent as a
-        // `Ty` (`BigInt`) does NOT reduce to a concrete type-value, so the conservative domain predicate
-        // does NOT fire (an unrepresented integer type is a legitimate default, not a domain violation) —
-        // the program declines downstream on the still-unmodeled pragma (CDZ0101, unbound `m`), never a
-        // false CDZ0303. Pins that CDZ0303 fires only on a type PROVEN non-integer, not on absence of proof.
+        // A type argument that does NOT reduce to a concrete `Ty` is never a false CDZ0303 — the domain
+        // predicate is conservative (fires only on a type PROVEN non-integer, not on absence of proof), so
+        // a valid unmodeled integer default is not falsely rejected. `BigInt` names such a type in the
+        // numeric model; in THIS compiler it is not yet a bound name either, so the pragma's own resolution
+        // reports it CDZ0101 (unbound) — the SAME code the downstream unbound-`m` reference gives, never a
+        // false CDZ0303. (When `BigInt` becomes a bound-but-unmodeled type, it will resolve to something,
+        // its `typeval_of` will be `None`, and the conservative accept — not CDZ0101 — will apply.)
         assert_eq!(
             reject_code(
                 "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
             )
             .as_deref(),
             Some("CDZ0101")
+        );
+    }
+
+    #[test]
+    fn a_default_integer_pragma_naming_an_unbound_type_is_cdz0101() {
+        // 06-numeric-model "a default-integer pragma naming an unbound type is rejected as unbound, like an
+        // annotation". A meaning-changing directive naming a NONEXISTENT type must not be silently accepted
+        // (modules-and-namespaces.md §An Unrecognized Module Directive Is Rejected). The domain predicate
+        // reduces its type argument with `typeval_of`, which is `None` for an unbound name — so the pragma
+        // used to fall through to the conservative accept and the module compiled. Resolution distinguishes
+        // an UNBOUND name (a `Poison` CDZ0101) from a BOUND-but-unmodeled type, so an unbound name is now the
+        // SAME CDZ0101 the annotation `(: x Nope)` gives, not a silent drop. The fault anchors at the pragma
+        // argument, which sorts before the downstream module reference, so it is the reported error.
+        assert_eq!(
+            reject_code(
+                "(do (module m (pragma default-integer Nope) (def (x) 5)) (def (main) 42) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101"),
+            "an unbound type name in a default-integer pragma is CDZ0101, not silently accepted"
+        );
+        // NO OVER-REJECTION: a VALID integer default (`Int64`) is not flagged by the domain check — the
+        // module compiles (the pragma's literal-defaulting effect is unbuilt, but that is a downstream
+        // decline, not a well-formedness fault, and here the module IS referenced via nothing so it emits).
+        assert_eq!(
+            reject_code(
+                "(do (module m (pragma default-integer Int64) (def (x) 5)) (def (main) 42) (export main))"
+            )
+            .as_deref(),
+            None,
+            "a valid integer default is not rejected by the unbound-name check"
         );
     }
 
@@ -16130,6 +16266,28 @@ mod stage1 {
         assert!(
             cdz_run::required_runtime(&bytes).expect("valid").is_some(),
             "the bytes-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
+    fn a_recursive_sum_carrying_a_float64_renders_via_the_value_encode_walker() {
+        // A recursive sum whose payload carries a FLOAT64 (a `FloatList` — a numeric tree) now COMPILES its
+        // value-encode escape. This required TWO gaps to close together: (1) `box_op_ty`/`get_op_ty` now
+        // box a Float64 element via `box-float`/`get-float` (coercion-free — an f64 slot IS box-float's
+        // arg), so a Float64 can live in a compound at all; (2) `shape_of` emits `ShapeNode::Float`
+        // (descriptor tag 2) and the runtime `value-encode` renders a KIND_FLOAT decimal leaf (guarded
+        // byte-exact + round-trip in cdz-runtime). Float32 still declines at the box layer (needs a
+        // promote/demote), so this uses Float64.
+        use crate::testkit::parse;
+        let src = "(module m (type FloatList (Cons (Tuple Float64 FloatList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (FloatList.Nil ()) \
+                        (FloatList.Cons (tuple 1.5 (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Float64 compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the float-bearing recursive-sum escape imports the runtime"
         );
     }
 

@@ -97,8 +97,8 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-// `format!` is only used in test/reference-oracle code, so import it there.
-#[cfg(test)]
+// `format!` is used by `DocBuilder::float_leaf` (the f64 → exact-decimal conversion for a `KIND_FLOAT`
+// value-form leaf reads the shortest round-tripping text via `{:e}`) and by test/reference-oracle code.
 use alloc::format;
 
 // The runtime's embedded allocator (talc), isolated so it is swappable in one file. Only present in
@@ -948,6 +948,7 @@ fn op_sum_payload(h: Handle) -> Handle {
 mod doc {
     pub const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
     pub const KIND_INT_POS_DEC: u8 = 0;
+    pub const KIND_FLOAT: u8 = 6;
     pub const KIND_STR: u8 = 7;
     pub const KIND_BOOL_FALSE: u8 = 8;
     pub const KIND_BOOL_TRUE: u8 = 9;
@@ -1095,6 +1096,7 @@ enum DocLeaf {
     Bool(bool),
     Str(Vec<u8>), // UTF-8 body verbatim (the runtime String's raw bytes)
     Bytes(Vec<u8>), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
+    Float { negative: bool, exponent: i64, significand: Vec<u8> }, // exact decimal (from f64), big-endian mag
 }
 enum DocStruct {
     Atom(u32),
@@ -1138,6 +1140,57 @@ impl DocBuilder {
     fn bytes_leaf(&mut self, bytes: Vec<u8>) -> u32 {
         self.leaves.push(DocLeaf::Bytes(bytes));
         (self.leaves.len() - 1) as u32
+    }
+    /// A float leaf — the EXACT decimal `(-1)^neg · significand · 10^exponent` the codec's `KIND_FLOAT`
+    /// stores. Converts the runtime `f64` to that decimal by a byte-for-byte PORT of the compiler's
+    /// `Decimal::from_f64` (rcdzc `ast.rs`): `{:e}` shortest round-tripping text → sign, digit string,
+    /// base-10 exponent, then a base-10→base-256 Horner conversion of the digits (no BigInt — plain
+    /// `Vec<u8>`, so `no_std`-portable). `None` for a NON-FINITE float (`nan`/`inf`), matching
+    /// `from_f64` (a non-finite float has no exact decimal / no written form) — the walker declines.
+    fn float_leaf(&mut self, f: f64) -> Option<u32> {
+        if !f.is_finite() {
+            return None;
+        }
+        let s = format!("{f:e}"); // [-]D[.DDDD]eEXP, shortest round-tripping
+        let (negative, rest) = match s.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, s.as_str()),
+        };
+        let (mantissa, exp10): (&str, i64) = match rest.split_once('e') {
+            Some((m, e)) => (m, e.parse().ok()?),
+            None => (rest, 0),
+        };
+        let (int_part, frac_part) = match mantissa.split_once('.') {
+            Some((i, fr)) => (i, fr),
+            None => (mantissa, ""),
+        };
+        let mut digits = String::from(int_part);
+        digits.push_str(frac_part);
+        let exponent = exp10 - frac_part.len() as i64; // fold fractional digits into the exponent
+        // base-10 digits → little-endian base-256 magnitude (Horner: acc = acc*10 + d).
+        let mut mag: Vec<u8> = Vec::new();
+        for ch in digits.bytes() {
+            if !ch.is_ascii_digit() {
+                return None;
+            }
+            let mut carry = (ch - b'0') as u32;
+            for byte in mag.iter_mut() {
+                let v = (*byte as u32) * 10 + carry;
+                *byte = (v & 0xff) as u8;
+                carry = v >> 8;
+            }
+            while carry > 0 {
+                mag.push((carry & 0xff) as u8);
+                carry >>= 8;
+            }
+        }
+        // strip most-significant zeros → big-endian minimal magnitude, empty iff zero.
+        while mag.last() == Some(&0) {
+            mag.pop();
+        }
+        mag.reverse();
+        self.leaves.push(DocLeaf::Float { negative, exponent, significand: mag });
+        Some((self.leaves.len() - 1) as u32)
     }
     fn atom(&mut self, leaf: u32) -> u32 {
         self.structs.push(DocStruct::Atom(leaf));
@@ -1186,6 +1239,15 @@ impl DocBuilder {
                     out.push(doc::KIND_BYTES);
                     doc_leb(&mut out, bytes.len() as u64);
                     out.extend_from_slice(bytes);
+                }
+                DocLeaf::Float { negative, exponent, significand } => {
+                    // KIND_FLOAT + negative(u8) + exponent(FIXED 8-byte big-endian i64, NOT LEB) +
+                    // LEB significand length + big-endian magnitude bytes. Matches the codec's Float write.
+                    out.push(doc::KIND_FLOAT);
+                    out.push(*negative as u8);
+                    out.extend_from_slice(&exponent.to_be_bytes());
+                    doc_leb(&mut out, significand.len() as u64);
+                    out.extend_from_slice(significand);
                 }
             }
         }
@@ -1300,9 +1362,14 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         let l = b.bytes_leaf(bytes);
                         out.push(b.atom(l));
                     }
-                    // Float rendering is a later slice (it needs the codec's Decimal significand/exponent
-                    // encoding); it declines here.
-                    Shape::Float => return None,
+                    Shape::Float => {
+                        // Convert the runtime f64 to the codec's EXACT decimal (KIND_FLOAT). A NON-FINITE
+                        // float (nan/inf) has no exact-decimal form → `float_leaf` returns None → the whole
+                        // encode declines (matches the compiler's `Decimal::from_f64` None; nan/inf cross by
+                        // their own dedicated forms, not the value-encode walker).
+                        let l = b.float_leaf(op_get_float(h))?;
+                        out.push(b.atom(l));
+                    }
                     Shape::Tuple(elems) => {
                         if elems.is_empty() {
                             let l = b.name_leaf("unit");
@@ -5614,7 +5681,10 @@ mod tests {
                 let l = b.bytes_leaf(bytes);
                 b.atom(l)
             }
-            S::Float => return None,
+            S::Float => {
+                let l = b.float_leaf(op_get_float(h))?;
+                b.atom(l)
+            }
             S::Tuple(elems) => {
                 if elems.is_empty() {
                     let l = b.name_leaf("unit");
@@ -5966,6 +6036,95 @@ mod tests {
         // The flattened rope body appears verbatim.
         assert!(iter_doc.windows(3).any(|w| w == [0x30, 0x40, 0x50]), "flattened rope body present");
         op_drop(acc);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
+    /// `value-encode` renders a Float payload (`Shape::Float`) as a `KIND_FLOAT` leaf — the codec's exact
+    /// decimal (kind 6: negative(u8) + exponent(fixed 8-byte BE i64) + LEB siglen + big-endian magnitude).
+    /// The runtime f64 is converted to the decimal by a port of the compiler's `Decimal::from_f64`. A
+    /// NON-FINITE float declines (no exact-decimal form), matching `from_f64`.
+    #[test]
+    fn value_encode_renders_a_float_leaf() {
+        reset();
+        let before = live_nodes();
+        let desc: &[u8] = &[0x01, 0x02, 0x00]; // table [0] = Float (tag 2), root = 0
+
+        // 1.5 → decimal 15 × 10^-1: negative=0, exponent=-1 (i64 BE), siglen=1, mag=[0x0f].
+        let f = op_box_float(1.5);
+        let got = op_value_encode_form(f, desc).expect("encode 1.5");
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // header
+            0x01, // leaf_count = 1
+            0x06, // KIND_FLOAT
+            0x00, // negative = false
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // exponent = -1 (i64 big-endian)
+            0x01, 0x0f, // siglen = 1, magnitude [15]
+            0x01, // struct_count = 1
+            0x00, 0x00, // TAG_ATOM, leaf 0
+            0x00, // root
+        ];
+        assert_eq!(got, expect, "1.5 → KIND_FLOAT decimal 15×10^-1, byte-identical to the codec");
+        op_drop(f);
+
+        // 0.0 → zero: exponent 0 (8 zero bytes), siglen 0 (empty magnitude).
+        let z = op_box_float(0.0);
+        let got_z = op_value_encode_form(z, desc).expect("encode 0.0");
+        assert_eq!(
+            &got_z[9..20],
+            &[0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            "0.0 → KIND_FLOAT, negative=0, exponent=0, siglen=0 (empty magnitude)"
+        );
+        op_drop(z);
+
+        // -2.0 → negative flag set; {:e} of -2.0 = -2e0 → digits "2", exp 0, mag [2].
+        let n = op_box_float(-2.0);
+        let got_n = op_value_encode_form(n, desc).expect("encode -2.0");
+        assert_eq!(got_n[10], 0x01, "negative flag set for -2.0");
+        assert_eq!(&got_n[19..21], &[0x01, 0x02], "siglen 1, magnitude [2]");
+        op_drop(n);
+
+        // A NON-FINITE float declines (nan/inf have no exact-decimal form → whole encode is None).
+        let nan = op_box_float(f64::NAN);
+        assert!(op_value_encode_form(nan, desc).is_none(), "nan declines (no exact decimal)");
+        op_drop(nan);
+        let inf = op_box_float(f64::INFINITY);
+        assert!(op_value_encode_form(inf, desc).is_none(), "inf declines");
+        op_drop(inf);
+
+        assert_eq!(live_nodes(), before, "no leak: every float value dropped");
+    }
+
+    /// The decimal `float_leaf` produces must ROUND-TRIP back to the original f64 (it is the shortest
+    /// round-tripping form). Reconstruct the decimal STRING `[-]<digits>e<exp>` from the emitted
+    /// `(neg, exponent, magnitude)` and parse it with Rust's CORRECTLY-ROUNDED `str::parse::<f64>` (exact,
+    /// unlike lossy `sig * 10f64.powi(exp)`). Compare bit-for-bit across finite values incl. ±0.0/subnormal.
+    #[test]
+    fn value_encode_float_decimal_round_trips_to_the_same_f64() {
+        reset();
+        let desc: &[u8] = &[0x01, 0x02, 0x00];
+        for &v in &[1.5f64, 0.0, -2.0, 3.14159, 1e10, -1e-10, 123456.789, 0.1, -0.0, f64::MAX, f64::MIN, 5e-324] {
+            let h = op_box_float(v);
+            let doc = op_value_encode_form(h, desc).expect("finite float encodes");
+            let neg = doc[10] == 1;
+            let mut eb = [0u8; 8];
+            eb.copy_from_slice(&doc[11..19]);
+            let exp = i64::from_be_bytes(eb);
+            let siglen = doc[19] as usize;
+            let mag = &doc[20..20 + siglen];
+            // Big-endian base-256 magnitude → a base-10 integer (fits u128 for a shortest-round-trip double).
+            let mut sig: u128 = 0;
+            for &b in mag {
+                sig = sig * 256 + b as u128;
+            }
+            let decimal = format!("{}{}e{}", if neg { "-" } else { "" }, sig, exp);
+            let reconstructed: f64 = decimal.parse().expect("decimal parses");
+            assert_eq!(
+                reconstructed.to_bits(),
+                v.to_bits(),
+                "float {v} round-trips through its KIND_FLOAT decimal ({decimal})"
+            );
+            op_drop(h);
+        }
         assert_eq!(live_nodes(), 0, "no leak");
     }
 

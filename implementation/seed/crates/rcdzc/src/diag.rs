@@ -115,29 +115,39 @@ pub enum Code {
     /// so `_x`/`_` never warn. The reference check is the same resolution-column read `UsesOf` uses.
     UnusedBinding,
     /// An effect operation is reached at a point with NEITHER an enclosing handler for its effect NOR an
-    /// enclosing host delegation of it — the merged "no home for a reached effect" check
-    /// (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). This single code
-    /// subsumes both the reached-but-undelegated host operation and the undischarged intra-program effect
-    /// (the retired CDZ0402), because host-binding is an entrypoint routing decision, not a
+    /// enclosing host delegation of it — the merged "no home for a reached effect" check. This single
+    /// code subsumes both the reached-but-undelegated host operation and the undischarged intra-program
+    /// effect (the retired CDZ0402), because host-binding is an entrypoint routing decision, not a
     /// declaration-time property — an effect reached the entrypoint's top with no home.
+    //= spec/capabilities/capabilities-and-effects.md#an-ungranted-effect-is-a-compile-time-error
+    //# An operation performed at a point that has neither an enclosing handler for its effect nor an enclosing host delegation of its effect MUST be rejected at compile time, so that an effect is always either discharged by a handler or delegated to the host and never silently ambient, making "no ambient authority" a compile-time property.
+    //= spec/capabilities/capabilities-and-effects.md#an-ungranted-effect-is-a-compile-time-error
+    //# This single check MUST subsume both the reached-but-undelegated host operation and the undischarged intra-program effect, so that the two are one condition — an effect reached an entrypoint's top with no home — rather than two separate diagnostics keyed on a declaration-time host/intra distinction the effect no longer carries.
+    //= spec/capabilities/capabilities-and-effects.md#undeclared-capability-is-a-compile-time-error
+    //# A program that reaches an effect operation that no enclosing handler discharges and that its entrypoint does not delegate to the host MUST be rejected at compile time, so that every effect is either handled in-program or explicitly granted to the host and none is silently ambient.
     EffectNoHome,
-    /// A handler arm names an operation the arm's effect does not declare — a closed-set violation
-    /// (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares). An effect's
-    /// operations are a closed, statically-known set (like a sum's variants), so discharging an operation
-    /// that does not exist is ill-formed.
+    /// A handler arm names an operation the arm's effect does not declare — a closed-set violation. An
+    /// effect's operations are a closed, statically-known set (like a sum's variants), so discharging an
+    /// operation that does not exist is ill-formed.
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-arm-names-an-operation-its-effect-declares
+    //# A handler arm that names an operation the arm's effect does not declare MUST be rejected at compile time, so that a handler discharges only operations that exist and the declaration remains the closed set of an effect's operations.
     HandlerUndeclaredOp,
-    /// A handler does NOT bind every operation its effect declares — a non-exhaustive handler
-    /// (`capabilities-and-effects.md` §A Handler Discharges Its Effect). A `handle E` names ONE effect
-    /// and its arms ARE that effect's operations; because an effect's operations are a closed,
-    /// statically-known set (like a sum's variants), a handle must discharge the WHOLE set — the effect
-    /// analogue of match exhaustiveness. A handler missing an operation is ill-formed: it would leave an
-    /// operation of the effect it claims to discharge silently without a home. (Discharging a subset
-    /// across LAYERS is nested handles, each exhaustive for its own effect.)
+    /// A handler does NOT bind every operation its effect declares — a non-exhaustive handler. A `handle
+    /// E` names ONE effect and its arms ARE that effect's operations; because an effect's operations are a
+    /// closed, statically-known set (like a sum's variants), a handle must discharge the WHOLE set — the
+    /// effect analogue of match exhaustiveness. A handler missing an operation is ill-formed: it would
+    /// leave an operation of the effect it claims to discharge silently without a home. (Discharging a
+    /// subset across LAYERS is nested handles, each exhaustive for its own effect.)
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-discharges-its-effect
+    //# A handler MUST bind every operation its effect declares, so that installing a handler for an effect discharges the whole of that effect's closed operation set — the effect analogue of a match covering every variant of its scrutinee's sum — and no operation of the effect a handler claims to discharge is left without a discharger under that handler.
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-discharges-its-effect
+    //# A handler that omits an operation its effect declares MUST be rejected at compile time, so that a partially-handled effect is a compile-time error rather than an operation that silently escapes the handler that appears to discharge it, and the rejection SHOULD identify the omitted operations so the gap is mechanically repairable.
     HandlerNotExhaustive,
-    /// A host delegation names an effect the delegated computation never reaches — latent authority
-    /// (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). The manifest must
-    /// be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised capability
-    /// is rejected rather than carried.
+    /// A host delegation names an effect the delegated computation never reaches — latent authority. The
+    /// manifest must be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised
+    /// capability is rejected rather than carried.
+    //= spec/capabilities/capabilities-and-effects.md#host-delegation-is-an-entrypoint-s-prerogative
+    //# A delegation that names an effect the delegated computation never reaches MUST be rejected at compile time, so that a manifest carries no latent authority — a granted capability that is never exercised — and the manifest is exactly the effects that escape, no more and no fewer.
     LatentAuthority,
     /// A closure that PERFORMS AN EFFECT is passed across the host boundary (as an export's result, or a
     /// parameter) — a closure escaping its handler context (`capabilities-and-effects.md` §An Effect Is
