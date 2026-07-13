@@ -1380,20 +1380,24 @@
   (input  (UInt8.of (: 200 Int32)))
   (output (: 200 UInt8)))
 
-(case "a checked integer conversion that does not fit traps"
-  (doc    "`(UInt8.of (: 256 Int32))` converts 256 to UInt8, but 256 is outside 0..=255, so the CHECKED
-           conversion MUST trap rather than silently truncate to 0 (numeric-model.md #Integer Types Have
-           Fixed Widths — a checked conversion traps on an out-of-range value). Contrast UInt8.wrap
-           below, which keeps the low bits.")
+(case "a checked integer conversion of an out-of-range CONSTANT is rejected at compile time"
+  (doc    "`(UInt8.of (: 256 Int32))` converts 256 to UInt8, but 256 is outside 0..=255. Because the
+           operand is a COMPILE-TIME CONSTANT, the compiler already knows at const-fold that it cannot
+           fit, so it REJECTS the conversion CDZ0302 (integer does not fit the target width) — consistent
+           with `(: 128 Int8)` → CDZ0302 and `(/ 1 0)` → CDZ0304, rather than emitting a runtime trap for
+           a statically-impossible conversion. (A RUNTIME `T.of` whose value is unknown until run time
+           still range-checks and traps at run time; only a compile-time-known out-of-range constant is
+           rejected up front.) Contrast UInt8.wrap below, which keeps the low bits and never rejects.")
   (input  (UInt8.of (: 256 Int32)))
-  (trap   "integer overflow"))
+  (error  CDZ0302))
 
-(case "a checked conversion of a negative value into an unsigned type traps"
-  (doc    "`(UInt8.of (: -1 Int32))` converts -1 to UInt8, but UInt8 has no negative values, so the
-           checked conversion MUST trap. Contrast `(UInt8.wrap -1)` = 255 below. Pins that T.of checks
-           the sign boundary, not only the magnitude boundary.")
+(case "a checked conversion of a negative CONSTANT into an unsigned type is rejected"
+  (doc    "`(UInt8.of (: -1 Int32))` converts -1 to UInt8, but UInt8 has no negative values. The constant
+           -1 provably does not fit at compile time, so the checked conversion is REJECTED CDZ0302 (not a
+           runtime trap). Contrast `(UInt8.wrap -1)` = 255 below. Pins that T.of checks the sign boundary,
+           not only the magnitude boundary, and rejects an out-of-range constant up front.")
   (input  (UInt8.of (: -1 Int32)))
-  (trap   "integer overflow"))
+  (error  CDZ0302))
 
 (case "a truncating conversion keeps the low bits rather than trapping"
   (doc    "`(UInt8.wrap (: 256 Int32))` = 0: the truncating conversion keeps the low 8 bits of 256
