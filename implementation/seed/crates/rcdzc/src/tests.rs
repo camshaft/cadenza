@@ -863,6 +863,7 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
         args: vec!["100".to_string(), "50".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(s, "150", "narrow heap round-trip"),
@@ -908,6 +909,7 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
         args: vec!["41".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -951,6 +953,7 @@ fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
         args: vec!["41".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -1015,6 +1018,7 @@ fn a_recursive_runtime_tuple_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => {
@@ -1051,6 +1055,7 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1085,6 +1090,7 @@ fn a_nested_runtime_tuple_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1120,6 +1126,7 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -1152,6 +1159,7 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
         args: vec![],
         runtime: Some(runtime),
         runtime_cache_dir: None,
+        host_responses: Vec::new(),
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
@@ -2447,6 +2455,169 @@ mod runtime_ops {
     /// Whether `f(args)` traps.
     fn traps(params: &str, body: &str, args: &[Val]) -> bool {
         call_traps(&func(params, body), "f", args)
+    }
+
+    #[test]
+    fn not_over_a_comparison_folds_to_the_complement() {
+        // `(not (CMP a b))` is the single complement comparison — no `i32.eqz`. The Lir shape is checked
+        // in select.rs; here we confirm the VALUE matches the branchy negation across every comparison,
+        // both signednesses, and the equality/inequality pair.
+        // `(not (< a b))` == `a >= b`.
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (< a b))",
+            &[Val::S64(5), Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (< a b))",
+            &[Val::S64(4), Val::S64(5)]
+        ));
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (< a b))",
+            &[Val::S64(6), Val::S64(5)]
+        ));
+        // `(not (> a b))` == `a <= b`.
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (> a b))",
+            &[Val::S64(5), Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (> a b))",
+            &[Val::S64(6), Val::S64(5)]
+        ));
+        // `(not (<= a b))` == `a > b`; `(not (>= a b))` == `a < b`.
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (<= a b))",
+            &[Val::S64(6), Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (<= a b))",
+            &[Val::S64(5), Val::S64(5)]
+        ));
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (>= a b))",
+            &[Val::S64(4), Val::S64(5)]
+        ));
+        // `(not (= a b))` == `a != b`.
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (= a b))",
+            &[Val::S64(4), Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (= a b))",
+            &[Val::S64(5), Val::S64(5)]
+        ));
+        // UNSIGNED complement uses the unsigned op: `(not (< a b))` over UInt64 with the high bit set.
+        assert!(
+            run::<bool>(
+                "(: a UInt64) (: b UInt64)",
+                "(not (< a b))",
+                &[Val::U64(u64::MAX), Val::U64(1)]
+            ),
+            "unsigned: MAX >= 1 (a signed ge would read MAX as -1 and be false)"
+        );
+        // NARROW Int32 complement.
+        assert!(run::<bool>(
+            "(: a Int32) (: b Int32)",
+            "(not (< a b))",
+            &[Val::S32(-1), Val::S32(-2)]
+        ));
+        // Composes: double negation is the bare comparison.
+        assert!(run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(not (not (< a b)))",
+            &[Val::S64(4), Val::S64(5)]
+        ));
+    }
+
+    #[test]
+    fn if_with_one_zero_branches_materializes_the_boolean() {
+        // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
+        // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
+        // tests; here we confirm the VALUE is identical to the branchy form across widths and both a
+        // comparison condition and a bare bool param.
+        // (if (< a b) 1 0) : Int64
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 1 0)",
+                &[Val::S64(3), Val::S64(9)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 1 0)",
+                &[Val::S64(9), Val::S64(3)]
+            ),
+            0
+        );
+        // (if (< a b) 0 1) : the negation.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 0 1)",
+                &[Val::S64(3), Val::S64(9)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 0 1)",
+                &[Val::S64(9), Val::S64(3)]
+            ),
+            1
+        );
+        // A bare BOOL param condition (not a comparison) — `(if p 1 0)` = p as an int.
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if p 1 0)", &[Val::Bool(true)]),
+            1
+        );
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if p 1 0)", &[Val::Bool(false)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>("(: p Bool)", "(if p 0 1)", &[Val::Bool(true)]),
+            0
+        );
+        // A narrow Int32-operand comparison still materializes to the correct 0/1.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int32) (: b Int32)",
+                "(if (< a b) 1 0)",
+                &[Val::S32(1), Val::S32(2)]
+            ),
+            1
+        );
+        // A NON-0/1 constant pair keeps the ordinary select — value parity holds there too.
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 5 7)",
+                &[Val::S64(1), Val::S64(2)]
+            ),
+            5
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(if (< a b) 5 7)",
+                &[Val::S64(2), Val::S64(1)]
+            ),
+            7
+        );
     }
 
     // ── bitwise: total, never trap; width-agnostic on a normalized value ─────────────────────────
@@ -3949,6 +4120,7 @@ mod recursion {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "258"),
@@ -3985,6 +4157,7 @@ mod match_engine {
             args,
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -4124,6 +4297,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -4205,6 +4379,57 @@ mod match_engine {
                 "main"
             ),
             5
+        );
+    }
+
+    #[test]
+    fn a_fixed_arity_list_pattern_binds_elements_of_a_constant_list() {
+        // 05-compound-types "an element pattern matches a list by its length and elements": a FIXED-ARITY
+        // `(list a b)` matches a constant list of that exact length, binding each position; the element
+        // binders read the constant elements (a `SumPayload` `Elem(i)` fold — no β-substitution). A
+        // wrong-length list falls to the wildcard; the empty `(list)` matches only the empty list.
+        let run = |src: &str| run_returns::<i64>(&component(src), "main");
+        assert_eq!(
+            run("(module m (def (main) (match (list 7) ((list a) a) (_ 0))) (export main))"),
+            7
+        );
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 7 8) ((list a b) (+ a b)) (_ 0))) (export main))"
+            ),
+            15
+        );
+        assert_eq!(
+            run("(module m (def (main) (match (list) ((list) 1) (_ 2))) (export main))"),
+            1
+        );
+        // A list of the WRONG arity does not match the fixed pattern — falls through to the wildcard.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 1 2 3) ((list a b) 99) (_ 42))) (export main))"
+            ),
+            42
+        );
+    }
+
+    #[test]
+    fn a_list_match_is_well_formed_or_declines() {
+        // A list is OPEN (any length): a match with only fixed-arity arms and no catch-all is
+        // NON-EXHAUSTIVE (CDZ0210) — a finite set of lengths cannot cover every list.
+        assert_eq!(
+            reject_code("(module m (def (main) (match (list 1 2) ((list a b) a))) (export main))")
+                .as_deref(),
+            Some("CDZ0210")
+        );
+        // A REST pattern `(list x .. rest)` is not yet lowered — it DECLINES (a to-do), never a
+        // miscompile. (The runtime element-pattern matcher + rest-tail materialization is a later
+        // increment.) `reject_code` returns the decline's code, which is uncoded (None) for a to-do.
+        assert_eq!(
+            reject_code("(module m (def (main) (match (list 1 2 3) ((list x .. rest) x) (_ 0))) (export main))")
+                .as_deref(),
+            // the rest binder's body reference is unbound today (CDZ0101) — a clean decline-class outcome,
+            // NOT a value/miscompile; pins that a rest pattern does not silently produce a wrong result.
+            Some("CDZ0101")
         );
     }
 
@@ -4310,6 +4535,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4413,6 +4639,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4458,6 +4685,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "if-list-len b={arg}"),
@@ -4626,6 +4854,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "60", "runtime Bytes.at byte-sum"),
@@ -4655,6 +4884,7 @@ mod match_engine {
             args: vec!["5".to_string()],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -4682,6 +4912,7 @@ mod match_engine {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&component(src), &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => s,
@@ -4941,6 +5172,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bin_pattern_decodes_and_binds_its_segments() {
+        // A `(bin …)` PATTERN over a constant Bytes scrutinee: decode + bind each segment, dispatch on
+        // literal segments, and match the WHOLE scrutinee (leftover / overrun → fall to the catch-all).
+        for (body, want) in [
+            // bind a fixed-width int (round-trips the construction): u16 258
+            (
+                "(module m (def (main) (match (bin (u16 258)) ((bin (u16 n)) n) (_ 0))) (export main))",
+                258,
+            ),
+            // signed segment: byte 255 as i8 → -1; unsigned: 255
+            (
+                "(module m (def (main) (match (Bytes.of (list 255)) ((bin (i8 n)) n) (_ 0))) (export main))",
+                -1,
+            ),
+            (
+                "(module m (def (main) (match (Bytes.of (list 255)) ((bin (u8 n)) n) (_ 0))) (export main))",
+                255,
+            ),
+            // little-endian read
+            (
+                "(module m (def (main) (match (bin (u16 258 le)) ((bin (u16 n le)) n) (_ 0))) (export main))",
+                258,
+            ),
+            // bit-fields decode back: 0xA5 = 1·01·00101 → a=1,b=1,c=5 → 7
+            (
+                "(module m (def (main) (match (Bytes.of (list 165)) ((bin (bits a 1) (bits b 2) (bits c 5)) (+ (+ a b) c)) (_ 0))) (export main))",
+                7,
+            ),
+            // a leading literal tag dispatches, then the field binds: [1,1,2] → 258
+            (
+                "(module m (def (main) (match (Bytes.of (list 1 1 2)) ((bin (u8 1) (u16 n)) n) (_ 0))) (export main))",
+                258,
+            ),
+            // whole-scrutinee: leftover bytes → the bin arm does NOT match → catch-all 0
+            (
+                "(module m (def (main) (match (Bytes.of (list 1 2 3)) ((bin (u16 n)) n) (_ 0))) (export main))",
+                0,
+            ),
+            // overrun: a u16 needs 2 bytes, input has 1 → non-match → 0
+            (
+                "(module m (def (main) (match (Bytes.of (list 5)) ((bin (u16 n) (bytes rest)) n) (_ 0))) (export main))",
+                0,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "bin pattern decodes: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive() {
+        // A `(bin …)` pattern never covers every byte sequence (empty input, wrong length, an unequal
+        // literal all fail), so a match whose only arm is a bin pattern is non-exhaustive → CDZ0210,
+        // exactly as a sum match missing a variant.
+        assert_eq!(
+            reject_code("(module m (def (main) (match (Bytes.of (list 1 2)) ((bin (u16 n)) n))) (export main))")
+                .as_deref(),
+            Some("CDZ0210"),
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
@@ -4982,6 +5281,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "if-bytes-len b={arg}"),
@@ -5006,6 +5306,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -5195,6 +5496,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -5272,6 +5574,7 @@ mod match_engine {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             cdz_run::run(&bytes, &opts).expect("run")
         };
@@ -5313,6 +5616,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -6064,6 +6368,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: None,
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "f {arg}"),
@@ -6305,6 +6610,7 @@ mod match_engine {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "15", "sm(count 5)"),
@@ -6362,6 +6668,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -6462,6 +6769,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: None,
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -6494,6 +6802,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "guarded variant f({arg})"),
@@ -6650,6 +6959,7 @@ mod match_engine {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "chained guards f({arg})"),
@@ -7293,6 +7603,27 @@ mod diagnostics {
             .filter(|d| d.code.as_deref() == Some("CDZ0306"))
             .map(|d| d.message)
             .collect()
+    }
+
+    #[test]
+    fn a_recursive_functions_used_parameter_is_not_flagged_unused() {
+        // A RECURSIVE function freshens its parameter binder when its body is resolved (and the
+        // accumulator transform may rewrite the body entirely), so a reference resolves to a
+        // SYNTHESIZED param copy, not the original occurrence. The usage check keys on the resolution
+        // KIND (does a body reference resolve to a `Param`?), not the target occ, so it is not fooled:
+        // `n` here is used three times → it must NOT warn (the reported false positive).
+        let src = "(module m (def (sm n) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))";
+        assert!(
+            unused_of(src).is_empty(),
+            "a used recursive param must not warn: {:?}",
+            unused_of(src)
+        );
+        // A genuinely-unused parameter still warns (the check is real, not just disabled for
+        // functions): `z` is never referenced.
+        let with_unused = "(module m (def (f p z) (+ p 1)) (export f))";
+        let u = unused_of(with_unused);
+        assert_eq!(u.len(), 1, "the truly-unused param z warns: {u:?}");
+        assert!(u[0].contains("`z`"), "{u:?}");
     }
 
     #[test]
@@ -8287,6 +8618,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run phantom-param value-eq") {
             cdz_run::Outcome::Value(s) => assert_eq!(s, "1", "(Ok (sumto 3)) equals (Ok 6)"),
@@ -8711,6 +9043,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_admitted_float_width_is_rejected_cdz0302() {
+        // 06-numeric-model: `(Float N)` for N ∉ {32,64} — the admitted IEEE set — is rejected CDZ0302
+        // (numeric-model.md §A Floating-Point Type Is Indexed By A Compile-Time Width), the float
+        // analogue of an out-of-range integer width. A non-admitted `(Float N)` reduces to the sentinel
+        // width 0 (via `reduce_ctor`), which the annotation check rejects. Set-MEMBERSHIP, not a range:
+        // 16 and 48 both fail even though 48 is within 1..=64 (an integer width would accept it).
+        for body in [
+            "(: 1.5 (Float 16))",
+            "(: 1.5 (Float 48))",
+            "(: 1.5 (Float 0))",
+            "(: 1.5 (Float 128))",
+        ] {
+            let msg = expect_decline(body);
+            assert!(
+                msg.contains("admitted IEEE widths"),
+                "a non-admitted float width must be rejected CDZ0302: {body}; got: {msg}"
+            );
+        }
+        // An ADMITTED width (`Float64`) types cleanly and CROSSES as f64 — the value runs to 1.5, not a
+        // CDZ0302. (A `Float32` value declines at emit until the f32 path lands — F3/F4 — but is
+        // WELL-TYPED, no CDZ0302; that decline is covered where the emit path is exercised.)
+        assert_eq!(run_main_as::<f64>("(: 1.5 (Float 64))"), 1.5);
+        assert_eq!(run_main_as::<f64>("(: 1.5 Float64)"), 1.5);
+    }
+
+    #[test]
+    fn a_float_operator_rejects_an_integer_operand_no_silent_promotion() {
+        // 06-numeric-model: the FLOAT operators `+.`/`-.`/`*.`/`/.` are float-only — an integer operand
+        // fails to unify with `(Float a)` → CDZ0301, the dual of an int operator rejecting a float
+        // (numeric-model.md §A Floating-Point Operation Uses A Floating-Point Operator). Neither operator
+        // coerces: `(+. 2 2.0)` is as rejected as `(+ 2 2.0)`.
+        for op in ["+.", "-.", "*.", "/."] {
+            let msg = expect_decline(&format!("({op} 2 2.0)"));
+            assert!(
+                msg.contains("Float") || msg.contains("Int") || msg.contains("unify"),
+                "an integer operand to `{op}` should cite the numeric mismatch; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn signed_and_unsigned_of_the_same_width_do_not_promote() {
         // `(+ (: 1 Int8) (: 2 UInt8))` — same width (8), different SIGNEDNESS → still rejected (no
         // implicit promotion). Pins that signedness alone is a mismatch, not just width.
@@ -8914,6 +9287,80 @@ mod stage1 {
         // `(let ((inc (fn (x) (+ x 1)))) (inc 10))` = 11 — a let-bound function, applied through the
         // ref to its lambda.
         assert_eq!(run_main("(let ((inc (fn (x) (+ x 1)))) (inc 10))"), 11);
+    }
+
+    // ── binding patterns: a `let` binder may be an irrefutable pattern ───────────────────────────
+
+    #[test]
+    fn a_let_binder_may_be_a_tuple_pattern() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `let` binder MAY be a
+        // tuple pattern that destructures the value, binding each element — the ergonomic form of the
+        // bind-then-`match` idiom. A binder reference resolves to a `SumPayload` reading the element out
+        // of the bound value (the same machinery a `(match v ((tuple a b) …))` arm uses), so this is a
+        // pure resolve-side lift with no new IR. Nested to any depth; a later binding sees an earlier
+        // pattern's binders (`let*` scoping).
+        assert_eq!(run_main("(let (((tuple a b) (tuple 3 4))) (+ a b))"), 7);
+        assert_eq!(
+            run_main("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"),
+            6
+        );
+        assert_eq!(
+            run_main("(let (((tuple a b) (tuple 3 4)) (c (+ a b))) c)"),
+            7
+        );
+    }
+
+    #[test]
+    fn an_ill_formed_let_binding_pattern_is_rejected_not_miscompiled() {
+        // A binding position has no alternative arm, so its pattern MUST be irrefutable and its shape MUST
+        // match the value's type (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
+        // Without the validation hook these silently MISCOMPILED (a wrong-arity / non-linear pattern
+        // resolved its binders and ran to a value); the hook faults them with the code the equivalent
+        // single-arm match would raise. `code` compiles a `main`-body and reports its rejection code (or
+        // None if it compiled) — the same shape the linearity test above uses.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None; // compiled — no rejection
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Refutable: a multi-variant constructor / a literal → CDZ0210 (non-exhaustive).
+        assert_eq!(
+            code("(let (((Some x) (Some 5))) x)").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(code("(let ((0 5)) 42)").as_deref(), Some("CDZ0210"));
+        // Shape-incompatible: a wrong-arity tuple / a tuple pattern vs a non-tuple value → CDZ0201.
+        assert_eq!(
+            code("(let (((tuple a b c) (tuple 1 2))) a)").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            code("(let (((tuple a b) 5)) a)").as_deref(),
+            Some("CDZ0201")
+        );
+        // Non-linear: a binder repeated across the pattern → CDZ0102.
+        assert_eq!(
+            code("(let (((tuple x x) (tuple 1 2))) x)").as_deref(),
+            Some("CDZ0102")
+        );
+        // NO OVER-REJECTION: a well-formed destructuring binding compiles.
+        assert_eq!(code("(let (((tuple a b) (tuple 3 4))) (+ a b))"), None);
     }
 
     #[test]
@@ -9700,6 +10147,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "generic pick {arg}"),
@@ -9731,6 +10179,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -9786,6 +10235,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
@@ -9845,6 +10295,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "prelude pick {arg}"),
@@ -9875,6 +10326,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => {
@@ -9913,6 +10365,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => {
@@ -10301,6 +10754,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -10340,6 +10794,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -10372,6 +10827,7 @@ mod stage1 {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => {
@@ -10611,6 +11067,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
@@ -10652,6 +11109,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
@@ -10696,6 +11154,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
@@ -10734,6 +11193,7 @@ mod stage1 {
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "code {arg}"),
@@ -10770,6 +11230,7 @@ mod stage1 {
             args: vec!["0".to_string()],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run value-eq-in-loop") {
             cdz_run::Outcome::Value(s) => {
@@ -10845,6 +11306,7 @@ mod stage1 {
                 args: vec!["0".to_string()],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "find(0) = {want} ({label})"),
@@ -11256,6 +11718,49 @@ mod stage1 {
     }
 
     #[test]
+    fn a_returned_capturing_closure_bound_by_let_and_applied_folds() {
+        use wasmtime::component::Val;
+        // A capturing closure RETURNED by a function, BOUND with `let`, then APPLIED — the discriminator
+        // that MISCOMPILED (invalid wasm, silently written at exit 0). `(mk n)` returns `(fn (x) (+ n x))`
+        // capturing the parameter `n`; `(let ((f (mk n))) (f 3))` binds that closure to `f` and applies it.
+        // Applying the SAME closure INLINE `((mk n) 3)` or through a higher-order function `(ap (mk n) 3)`
+        // always folded; only binding it with `let` mis-typed the local. Root cause: `should_keep_binding`
+        // short-circuits a syntactic `Resolved::Lambda` init to avoid a speculative `core_of` LIFT that
+        // pollutes `db.captured_ref`, but `(mk n)` is an `Apply` that REDUCES to a capturing lambda — it
+        // slipped past, was lifted, and recorded `n`'s occurrence as a capture. The copy-propagated
+        // `((mk n) 3)` then β-reduced to `(+ n 3)`, and the SHARED `n` occurrence lowered to a
+        // `Core::Captured` env-read in `main` (no env) → the i32/i64 slot mismatch. The fix extends the
+        // short-circuit to a binding whose value `lambda_body`-reduces to a lambda: it copy-propagates and
+        // folds inline exactly like the working `((mk n) 3)` form. With n = 10 → 10 + 3 = 13 (a pure fold,
+        // no runtime import).
+        let src = "(module m (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x))) \
+            (def (main (: n Int64)) (let ((f (mk n))) (f 3))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "the let-bound closure folds inline — no heap round-trip, no runtime import"
+        );
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(10)]), 13);
+        // Applied MORE THAN ONCE through the one binding — each application folds independently:
+        // (10+3) + (10+4) = 27.
+        let twice = "(module m (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x))) \
+            (def (main (: n Int64)) (let ((f (mk n))) (+ (f 3) (f 4)))) (export main))";
+        let b2 = compile_component(&crate::codec::encode(&parse(twice))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&b2, "main", &[Val::S64(10)]), 27);
+        // A MULTI-PARAM returned closure applied at full arity, both flat `(f 3 4)` and curried `((f 3) 4)`:
+        // 10 + 3 + 4 = 17.
+        for shape in [
+            "(module m (def (mk (: n Int64)) (fn (x y) (+ n (+ x y)))) \
+             (def (main (: n Int64)) (let ((f (mk n))) (f 3 4))) (export main))",
+            "(module m (def (mk (: n Int64)) (fn (x y) (+ n (+ x y)))) \
+             (def (main (: n Int64)) (let ((f (mk n))) ((f 3) 4))) (export main))",
+        ] {
+            let b = compile_component(&crate::codec::encode(&parse(shape))).expect("compile");
+            assert_eq!(run_returns_with::<i64>(&b, "main", &[Val::S64(10)]), 17);
+        }
+    }
+
+    #[test]
     fn a_closure_captures_another_closure_and_composes() {
         // A HIGHER-ORDER capture: `twice = (fn (y) (inc (inc y)))` closes over `inc` (itself a closure)
         // and applies it twice; `(twice 5)` = inc(inc(5)) = 7. A function value captured by another
@@ -11332,6 +11837,7 @@ mod stage1 {
             args: vec![arg.to_string()],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
             cdz_run::Outcome::Value(s) => Some(s),
@@ -11503,6 +12009,7 @@ mod stage1 {
                 args: vec![],
                 runtime: Some(runtime.clone()),
                 runtime_cache_dir: None,
+                host_responses: Vec::new(),
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
@@ -13224,6 +13731,7 @@ mod r2_runtime_resource {
             args: vec![],
             runtime: Some(runtime),
             runtime_cache_dir: None,
+            host_responses: Vec::new(),
         };
         match cdz_run::run(&comp, &opts).expect("run composed") {
             cdz_run::Outcome::Value(s) => Some(s),

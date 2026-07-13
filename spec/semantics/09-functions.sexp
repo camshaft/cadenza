@@ -89,6 +89,42 @@
             (def (main) ((mk 10) 5)) (export main)))
   (output (: 15 Int64)))
 
+; The SAME returned capturing closure, but BOUND with `let` before it is applied. `(let ((f (mk n))) (f 3))`
+; must compute exactly as the inline `((mk n) 3)` above — the binding names the closure value but does not
+; change its meaning. This was a MISCOMPILE (invalid wasm, silently written at exit 0): `should_keep_binding`
+; short-circuits a syntactic `Resolved::Lambda` init to avoid a speculative lift that pollutes the capture
+; set, but `(mk n)` is an `Apply` that REDUCES to a capturing lambda — it slipped past, was lifted, and
+; recorded the captured `n`; the copy-propagated `((mk n) 3)` then β-reduced to `(+ n 3)` with the shared `n`
+; lowered to a `Core::Captured` env-read in `main` (no env) → an i32/i64 slot mismatch. The fix propagates a
+; binding whose value reduces to a lambda, so it folds inline like the un-bound form. Every relaxation of the
+; trigger (inline application, a higher-order argument, a non-capturing closure) already worked; this pins the
+; let-bound one.
+
+(case "a returned capturing closure bound with let and applied folds like the inline form"
+  (doc    "`(mk n)` returns `(fn (x) (+ n x))` capturing the parameter `n`; `(let ((f (mk n))) (f 3))` binds
+           that closure to `f` and applies it, so with `n` = 10 the result is 10 + 3 = 13 — identical to the
+           inline `((mk n) 3)`. A `let`-bound closure value round-trips through its binding at the value's
+           own representation, not the default scalar width; a binding whose init reduces to a lambda is
+           copy-propagated so its application folds inline rather than mis-lifting the closure into the local.")
+  (input  (do
+            (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x)))
+            (def (main (: n Int64)) (let ((f (mk n))) (f 3)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 13 Int64)))
+
+(case "a let-bound returned closure applied twice folds each application independently"
+  (doc    "The multi-use companion: `(let ((f (mk n))) (+ (f 3) (f 4)))` binds the returned capturing closure
+           once and applies it twice; each application folds independently, so with `n` = 10 the result is
+           (10 + 3) + (10 + 4) = 27. Pins that binding a closure value and applying it more than once keeps
+           each use correct — the multi-reference case of the let-bound-closure fold.")
+  (input  (do
+            (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x)))
+            (def (main (: n Int64)) (let ((f (mk n))) (+ (f 3) (f 4))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 27 Int64)))
+
 (case "a capturing closure stored in a tuple is extracted and applied"
   (doc    "A capturing closure `(fn (x) (+ x k))` (over an enclosing `k = 7`) stored as a tuple element,
            projected out, and applied: `((. (tuple (fn (x) (+ x k)) 9) 0) 5)` = (+ 5 7) = 12. Storing a

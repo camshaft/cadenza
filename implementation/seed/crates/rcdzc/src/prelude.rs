@@ -119,6 +119,25 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         operator_record(ast, "compare", OpShape::Compare),
     );
 
+    // The FLOATING-POINT binary operators `+.` `-.` `*.` `/.` — spelled distinctly from the integer
+    // `+`/`-`/`*`/`/` (OCaml-style dot suffix) so no operator silently mixes an integer and a float
+    // operand (numeric-model.md §A Floating-Point Operation Uses A Floating-Point Operator). Each is a
+    // width-generic `∀a. (Float a) → (Float a) → (Float a)` — the SAME operator-record mechanism as the
+    // integer arithmetic, differing only in the `Float` type constructor. An integer operand fails to
+    // unify (`(+. 2 2.0)` → CDZ0301). These names tokenize as plain atoms in the s-expr surface.
+    for op in ["+.", "-.", "*.", "/."] {
+        names.insert(
+            op.to_string(),
+            operator_record(ast, op, OpShape::FloatBinary),
+        );
+    }
+
+    // `Float` — the float-TYPE constructor: `(Float 32)` / `(Float 64)` in type position builds the
+    // float type-value, applied via `(meta apply)` exactly as `Int`/`UInt`. A width outside the admitted
+    // set {32,64} is rejected CDZ0302 (numeric-model.md §A Floating-Point Type Is Indexed By A
+    // Compile-Time Width). Same `ctor_record` mechanism as `Int`; only the builder prim differs.
+    names.insert("Float".to_string(), ctor_record(ast, "Float"));
+
     // The named fixed-width integer modules — `Int8`/`Int16`/`Int32`/`Int64` and
     // `UInt8`/`UInt16`/`UInt32`/`UInt64`. Each is an ALIAS for the module `(Int N)` / `(UInt N)`
     // reduces to: a record whose `(meta t)` is that width's concrete type-value and whose `max`/`min`
@@ -137,6 +156,15 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         ("UInt64", false, 64),
     ] {
         names.insert(name.to_string(), int_module_record(ast, signed, width));
+    }
+
+    // The named float modules — `Float32`/`Float64`, ALIASES for `(Float 32)`/`(Float 64)`. Each is a
+    // record whose `(meta t)` is that width's concrete float type-value + operation fields (`of-int`
+    // and the width conversions, realized as they land). Built by the SAME width builder the `Float`
+    // constructor uses (`eval::build_float_module`), so a named float width and `(Float N)` denote one
+    // module — nothing special-cased per name, exactly like the integer widths.
+    for (name, width) in [("Float32", 32u32), ("Float64", 64)] {
+        names.insert(name.to_string(), float_module_record(ast, width));
     }
 
     names
@@ -623,6 +651,10 @@ enum OpShape {
     Comparison,
     /// `∀a. a → a → Ordering` — the three-way `compare` (bare operand var, `Ordering` sum result).
     Compare,
+    /// `∀a. (Float a) → (Float a) → (Float a)` — the width-generic FLOAT binary operators (`+.` `-.`
+    /// `*.` `/.`). The float analogue of `IntBinary`; only the type constructor differs (`Float` vs
+    /// `Int`), so an integer operand fails to unify (`(+. 2 2.0)` → CDZ0301).
+    FloatBinary,
 }
 
 /// An operator record `(record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic PRIM)))`. `(meta t)`
@@ -634,6 +666,7 @@ fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
         OpShape::IntBinary => binop_type_lambda(ast),
         OpShape::Comparison => comparison_type_lambda(ast),
         OpShape::Compare => compare_type_lambda(ast),
+        OpShape::FloatBinary => float_binop_type_lambda(ast),
     };
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, op);
@@ -664,6 +697,32 @@ fn binop_type_lambda(ast: &mut Arenas) -> StructId {
     let inner = arrow(ast, ia2, ia3);
     let body = arrow(ast, ia1, inner);
     // `(fn (a) BODY)`.
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type-lambda `(fn (a) (-> (Float a) (-> (Float a) (Float a))))` shared by the FLOAT binary
+/// operators `+.`/`-.`/`*.`/`/.` — the float analogue of [`binop_type_lambda`], generic over the float
+/// width `a`. Identical shape, only the type constructor differs (`Float` vs `Int`), so `infer` reads it
+/// as the scheme `∀a. (Float a) → (Float a) → (Float a)` and an integer operand fails to unify with
+/// `Float` (`(+. 2 2.0)` → CDZ0301, no silent promotion).
+fn float_binop_type_lambda(ast: &mut Arenas) -> StructId {
+    let float_a = |ast: &mut Arenas| -> StructId {
+        let float = push_atom(ast, Leaf::Name("Float".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![float, a])
+    };
+    let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
+        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        push_list(ast, vec![arr, l, r])
+    };
+    let fa1 = float_a(ast);
+    let fa2 = float_a(ast);
+    let fa3 = float_a(ast);
+    let inner = arrow(ast, fa2, fa3);
+    let body = arrow(ast, fa1, inner);
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let a_param = push_atom(ast, Leaf::Name("a".to_string()));
     let params = push_list(ast, vec![a_param]);
@@ -722,6 +781,39 @@ fn compare_type_lambda(ast: &mut Arenas) -> StructId {
 /// `max`/`min` are that width's bounds (from the shared `eval::int_bounds`, arbitrary precision so
 /// `UInt64.max = 2^64-1` is exact); its arithmetic/conversion ops are `unrealized` (decline when
 /// projected). Nothing is special-cased per name — only the `(signed, width)` differs.
+/// Append a fixed-width FLOAT MODULE record for `width` and return its occurrence — the value a named
+/// float width (`Float32`/`Float64`) binds to. The float analogue of [`int_module_record`], built the
+/// SAME way the `(Float N)` constructor builds its module (`eval::build_float_module`), so a named width
+/// and the constructor application denote one thing. It carries `(meta t)` = the type expression
+/// `(Float width)` (so `(: e Float64)` reduces to `Ty::Float` via the ordinary `(meta t)` projection).
+/// `of-int` (integer→float, the float analogue of `T.of`) and the width conversions are `unrealized`
+/// fields until F5 — declining cleanly when projected, the closed-module rule every prelude module follows.
+fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta t)` = `(Float width)`, reduced to the concrete float type-value by `typeval_of`.
+    let ty_expr = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let fields = vec![
+        meta_field(ast, "t", ty_expr),
+        // `of-int` — the CHECKED-free integer→float conversion (`Int64 → Float N`). Realized in F5.
+        unrealized_field(ast, "of-int"),
+    ];
+    let mut children = vec![head];
+    for f in fields {
+        children.push(f);
+    }
+    push_list(ast, children)
+}
+
 fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta t)` = the type expression `(Int width)` / `(UInt width)`, reduced to the concrete

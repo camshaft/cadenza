@@ -1415,6 +1415,13 @@ fn emit_tail(
             // /loop-`br` — the whole `if` becomes one value expression the caller consumes. (An exported
             // body emitted in tail position — `(def (f p a b) (if p a b))` — reaches HERE, not the
             // non-tail arm, so the select must be handled in both places.)
+            // BOOLEAN MATERIALIZATION: `(if c 1 0)`/`(if c 0 1)` → the condition coerced to the result
+            // width (a leaf `if` can reach tail position — an exported `(def (f p) (if p 1 0))` body).
+            if let Some(r) = try_bool_materialization(
+                db, cond, then_, else_, &result, slots, base, high, scratch_ty, layout, out,
+            ) {
+                return r;
+            }
             if !matches!(result, Ty::Unit)
                 && !is_heap_type(&result)
                 && valtype_of(&result).is_some()
@@ -1867,10 +1874,22 @@ fn emit(
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
         )),
-        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Ty::Float`
+        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Float64`
         // occupies in its f64 machine slot, and what an export returning a float leaves on the stack (the
-        // boundary lifts it to the component `f64`). Float ARITHMETIC (f64.add/…) is a later increment.
+        // boundary lifts it to the component `f64`). A `Float32`-typed constant needs an `f32.const`
+        // (a different opcode + a rounded-to-binary32 immediate) — DECLINES here until the f32 emit path
+        // lands (a clean Todo, never an f64 value in an f32 slot = invalid wasm). The width is read off
+        // the node's SOLVED type (the same read the boundary valtype uses). Float ARITHMETIC is later.
         Core::ConstFloat(d) => {
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            if width == 32 {
+                return Err(Reject::decline(
+                    "a Float32 constant is not yet emitted (only Float64 crosses; f32 emit is a later increment)",
+                ));
+            }
             out.push(Lir::F64ConstBits(d.to_f64_bits()));
             Ok(())
         }
@@ -2496,6 +2515,13 @@ fn emit(
             // handles and discard one WITHOUT the Perceus `drop` that owning branch would run, leaking
             // its cell — the `if` (which evaluates only the taken branch) stays for those. This is the
             // classic `min`/`max`/conditional-value idiom `(if (< a b) a b)`.
+            // BOOLEAN MATERIALIZATION first: `(if c 1 0)`/`(if c 0 1)` is the condition itself (coerced to
+            // the result width), cheaper than the `const;const;select` a leaf select would emit.
+            if let Some(r) = try_bool_materialization(
+                db, cond, then_, else_, &result, slots, base, high, scratch_ty, layout, out,
+            ) {
+                return r;
+            }
             if !matches!(result, Ty::Unit)
                 && !is_heap_type(&result)
                 && valtype_of(&result).is_some()
@@ -2942,6 +2968,22 @@ fn emit(
         // A runtime boolean NEGATION `!operand` — emit the operand (a Bool i32), then `i32.eqz` (1 if 0,
         // else 0 = logical NOT). From the `(if c false true)` fold.
         Core::Not { operand } => {
+            // COMPARISON NEGATION: `(not (CMP a b))` folds into the single COMPLEMENT comparison — `(not
+            // (< a b))` → `a >=ₛ b`, `(not (= a b))` → `a ≠ b` — instead of emitting the comparison and an
+            // `i32.eqz`. Every comparison over a total order has an exact complement (`compare_op_negated`),
+            // dropping one instruction from the ubiquitous negated-predicate. Emit the operands exactly as
+            // the `Core::Compare` arm does (same width grounding + RHS-above-high-water discipline), but
+            // with the inverted op and no trailing `eqz`. The `= 0` operand is NOT special-cased to `eqz`
+            // here: `(not (= x 0))` is `x ≠ 0`, i.e. `i64.ne` against a zero — the general compare path,
+            // which for a zero operand is as cheap (`eqz` would need its own inversion anyway).
+            if let Core::Compare { op, lhs, rhs } = core_of(db, operand) {
+                let it = operand_int_ty(db, lhs, rhs);
+                emit_operand(db, lhs, it, slots, base, high, scratch_ty, layout, out)?;
+                let rhs_base = base.max(*high);
+                emit_operand(db, rhs, it, slots, rhs_base, high, scratch_ty, layout, out)?;
+                out.push(compare_op_negated(op, it));
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
             out.push(Lir::I32Eqz);
             Ok(())
@@ -3075,13 +3117,26 @@ fn emit(
             }
             Ok(())
         }
-        // A HOST CALL — a perform delegated to the component boundary. The scalar emit (args + a call to
-        // the imported function) arrives in the next increment (E2h-2), once the host-import set is laid
-        // out and the serializer can resolve the (effect, op) pair to a core-func index. For now the IR
-        // node exists (E2h-1) but declines to emit — a Todo, never a miscompile.
-        Core::HostCall { .. } => Err(Reject::decline(
-            "a host call's boundary import is not yet emitted (E2h-2)",
-        )),
+        // A HOST CALL — a perform delegated to the component boundary. Emit each scalar argument (in
+        // order), then `call <host-import-index>` (the imported op's core-func index, its position in the
+        // program's host-import set, resolved via `layout.host_index`). A `Unit` argument occupies no
+        // boundary slot, so it is skipped (a nullary op `(E.op)` pushes nothing). The op's scalar result
+        // is left on the stack by the imported call.
+        Core::HostCall {
+            effect, op, args, ..
+        } => {
+            let index = layout.host_index(&effect, &op).ok_or_else(|| {
+                Reject::decline("a host call's operation is not in the host-import set")
+            })?;
+            for &arg in &args {
+                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
+                    continue; // a unit argument carries no boundary value
+                }
+                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+            }
+            out.push(Lir::CallHostImport(index));
+            Ok(())
+        }
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),
@@ -4409,6 +4464,62 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
     )
 }
 
+/// BOOLEAN MATERIALIZATION: an `(if c 1 0)` / `(if c 0 1)` whose branches are the integer literals `1`
+/// and `0` is just the condition itself, coerced to the result's integer width — no branch and no
+/// `select`. A bool `c` already evaluates to exactly `0`/`1` in an i32 slot, so:
+///   `(if c 1 0)` → `c`            (identity, then widen to the result slot);
+///   `(if c 0 1)` → `i32.eqz c`    (logical negation, likewise `0`/`1`).
+/// This attempts the emit and returns `Some(Ok(()))` when it fired, `None` when the shape does not match
+/// (the caller falls through to the `select`/`if` lowering). Sound at every width: `c` is unconditionally
+/// evaluated exactly as it was as the condition (so any trap in `c` still fires), and the branches carry
+/// no traps of their own (bare literals). The result width comes from the node's solved type — a 64-bit
+/// result zero-extends the i32 bool (`i64.extend_i32_u`); a ≤32-bit result already holds `0`/`1`.
+#[allow(clippy::too_many_arguments)]
+fn try_bool_materialization(
+    db: &mut Db,
+    cond: StructId,
+    then_: StructId,
+    else_: StructId,
+    result: &Ty,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Option<Result<(), Reject>> {
+    // The result must be an integer type (a `Bool` result already folded `(if c true false)`→`c` in
+    // `lower`; this is the INTEGER-literal analogue that `lower` cannot see without width knowledge).
+    let Ty::Int(it) = result else {
+        return None;
+    };
+    let (t, e) = (core_of(db, then_), core_of(db, else_));
+    // Read each branch's constant i64 value, if it is one.
+    let as_int = |c: &Core| match c {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    let (tv, ev) = (as_int(&t)?, as_int(&e)?);
+    // `(if c 1 0)` → c ; `(if c 0 1)` → !c. Any other constant pair is not a bool materialization.
+    let negate = match (tv, ev) {
+        (1, 0) => false,
+        (0, 1) => true,
+        _ => return None,
+    };
+    // Emit the condition (a bool → i32 `0`/`1`); negate via `i32.eqz` for the `0 1` form.
+    if let Err(r) = emit(db, cond, slots, base, high, scratch_ty, layout, out) {
+        return Some(Err(r));
+    }
+    if negate {
+        out.push(Lir::I32Eqz);
+    }
+    // Widen the i32 `0`/`1` to a 64-bit result slot; a ≤32-bit result already holds it.
+    if m_slot(*it) == ValType::I64 {
+        out.push(Lir::I64ExtendI32U);
+    }
+    Some(Ok(()))
+}
+
 /// Whether `id` is safe to evaluate UNCONDITIONALLY as the right operand of a BRANCHLESS boolean
 /// connective (`(and lhs rhs)` / `(or lhs rhs)` → `i32.and`/`i32.or`, no short-circuit `if`). The
 /// short-circuit exists ONLY to skip a `rhs` that could TRAP or has an EFFECT when `lhs` already decides
@@ -5667,6 +5778,30 @@ fn compare_op(op: Prim, it: IntTy) -> Lir {
     }
 }
 
+/// The machine op for the LOGICAL NEGATION of a comparison — used to fold `(not (CMP a b))` into a single
+/// inverted comparison instead of `compare ; i32.eqz`. Every comparison over a TOTAL order has an exact
+/// complement: `= ↔ ≠`, `< ↔ ≥`, `> ↔ ≤`. Integer order (signed and unsigned) and `Bool` order (a bool
+/// is a total 0/1) are total, and these are the only operand types a `Core::Compare` carries (a compound
+/// takes `Core::ValueEq`), so the complement holds for every case `compare_op` handles.
+fn compare_op_negated(op: Prim, it: IntTy) -> Lir {
+    let negated = match op {
+        Prim::Eq => {
+            return if it.ground_width() <= 32 {
+                Lir::I32Ne
+            } else {
+                Lir::I64Ne
+            };
+        }
+        Prim::Lt => Prim::Ge,
+        Prim::Gt => Prim::Le,
+        Prim::Le => Prim::Gt,
+        Prim::Ge => Prim::Lt,
+        // Not a comparison — unreachable, as in `compare_op`.
+        _ => return Lir::I64Ne,
+    };
+    compare_op(negated, it)
+}
+
 /// The integer type governing a runtime comparison's operands — read off whichever operand solves to
 /// an integer (they unify to one type). A boolean comparison has no integer operand, so it grounds to
 /// the ≤32-bit path via the default `i64`… (a bool is compared as an i32 — see `Compare` selection,
@@ -6137,6 +6272,125 @@ mod tests {
         assert!(
             f.code.contains(&Lir::I64DivS),
             "a runtime-operand multiply keeps the div_s guard, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn not_over_a_comparison_folds_to_the_complement_op() {
+        // (def (f (: a Int64) (: b Int64)) (not (< a b))) — the negation folds into the complement
+        // comparison `a >=ₛ b`: get a ; get b ; i64.ge_s — NO i32.eqz.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (not (< a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64GeS],
+            "not(<) is the single complement ge_s, no eqz"
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "the eqz is folded away into the complement comparison"
+        );
+    }
+
+    #[test]
+    fn not_over_equality_folds_to_ne() {
+        // (not (= a b)) → i64.ne (not i64.eq ; i32.eqz).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (not (= a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(f.code, vec![Lir::LocalGet(0), Lir::LocalGet(1), Lir::I64Ne]);
+    }
+
+    #[test]
+    fn not_over_an_unsigned_comparison_uses_the_unsigned_complement() {
+        // (not (< a b)) over UInt64 → i64.ge_U (the unsigned complement, not the signed ge_s).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a UInt64) (: b UInt64)) (not (< a b))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::I64GeU) && !f.code.iter().any(|i| matches!(i, Lir::I32Eqz)),
+            "unsigned not(<) is ge_u, no eqz, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn if_c_one_zero_materializes_the_bool_without_a_select() {
+        // (def (f (: a Int64) (: b Int64)) (if (< a b) 1 0)) — the boolean materialization: the compare
+        // already yields 0/1, so the `if` is just that i32 bool widened to the i64 result — NO two consts,
+        // NO select, NO branch.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 1 0)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::I64LtS,
+                Lir::I64ExtendI32U, // widen the 0/1 bool to the Int64 result — no select.
+            ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::Select)),
+            "the 1/0 branches materialize the condition directly, no select"
+        );
+    }
+
+    #[test]
+    fn if_c_zero_one_materializes_the_negated_bool() {
+        // (if (< a b) 0 1) — the reversed literals are the NEGATION: compare, `i32.eqz`, then widen.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 0 1)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalGet(1),
+                Lir::I64LtS,
+                Lir::I32Eqz, // negate the 0/1 bool.
+                Lir::I64ExtendI32U,
+            ]
+        );
+    }
+
+    #[test]
+    fn if_with_non_zero_one_constants_keeps_the_select() {
+        // (if (< a b) 5 7) — the branches are not 1/0, so the materialization does NOT fire; the leaf
+        // branches still lower to a branchless `select` (5, 7, cond).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) 5 7)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::Select)),
+            "non-0/1 constant branches keep the select, got: {:?}",
             f.code
         );
     }

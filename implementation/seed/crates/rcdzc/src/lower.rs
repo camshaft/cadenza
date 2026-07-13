@@ -125,6 +125,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // a constant — the same shape `b"…"`/`String.to-bytes` build); a runtime segment value takes the
         // runtime path (BN4). See `lower_bin_build`.
         Resolved::Bin { segs } => lower_bin_build(db, id, &segs),
+        // A `bin` PATTERN binder reference — decode the bound segment's value FROM THE SCRUTINEE. On a
+        // constant scrutinee (a visible `Core::BytesOf`) this const-folds to the decoded `ConstInt` /
+        // `Core::BytesOf`; a runtime scrutinee is the BN4 cursor read (declines for now). See
+        // `decode_bin_field`.
+        Resolved::BinField {
+            scrutinee,
+            segs,
+            seg_index,
+        } => decode_bin_field(db, scrutinee, &segs, seg_index),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -1042,6 +1051,24 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     {
         return lower_match_sum(db, scrutinee, arms);
     }
+    // A BYTES scrutinee whose arms use `(bin …)` binary patterns → the binary matcher (BN3, const
+    // scrutinee). A scalar-only match over Bytes (only bare-binder/`_` arms) is NOT here — it has no
+    // `(bin …)` arm, so it falls through to the scalar path (a whole-value binder / wildcard).
+    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::Bytes)
+        && arms
+            .iter()
+            .any(|&(pat, _)| db.ast.head_name(pat) == Some("bin"))
+    {
+        return lower_match_bin(db, scrutinee, arms);
+    }
+    // A LIST scrutinee is deconstructed by ELEMENT patterns (`core-semantics.md` §A List Is Deconstructed
+    // By Element Patterns With An Optional Rest). This increment folds a CONSTANT list (`Core::ListNew`)
+    // against FIXED-ARITY patterns `(list a b)` / `(list)`: the known length selects the matching arm; its
+    // element binders read the constant elements via `SumPayload` `Elem` folds. A REST pattern
+    // `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments).
+    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::List(_)) {
+        return lower_match_list(db, scrutinee, arms);
+    }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
     // `(guard <inner-pat> <cond>)` — the inner pattern gives the probe, `<cond>` the guard (a boolean the
     // arm's binder is in scope for, resolve Case 5). A pattern that is not a scalar literal, binder,
@@ -1214,6 +1241,81 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 }
 
+/// Lower a `(match scrutinee (list-pattern body)…)` over a LIST scrutinee — this increment folds a
+/// COMPILE-TIME-CONSTANT scrutinee against FIXED-ARITY element patterns. Its `Core::ListNew` gives the
+/// length; select the FIRST arm whose pattern matches (a `(list p0 … pk)` of arity k matches length k; a
+/// bare binder / `_` matches any) and lower that arm's body — the body's element binders resolve to
+/// `SumPayload` `Elem(i)` reads that FOLD against the constant list (resolve Case 6l). A REST pattern
+/// `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments). A well-formed match must
+/// cover every length — a bare binder / `_` catch-all — else CDZ0210.
+fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    enum Arm {
+        Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
+        Wild(StructId),         // a bare binder / `_` — matches any length
+    }
+    let mut classified: Vec<Arm> = Vec::with_capacity(arms.len());
+    for &(pat, body) in arms {
+        if db.ast.as_name(pat).is_some() {
+            classified.push(Arm::Wild(body));
+            continue;
+        }
+        match db
+            .ast
+            .as_ctor_form(pat, "list")
+            .or_else(|| db.ast.as_form(pat, "list"))
+        {
+            Some(es) if !es.iter().any(|&e| db.ast.as_name(e) == Some("..")) => {
+                // Fixed arity: each element must be a bare name binder / `_` (a nested/literal element
+                // pattern is a later increment).
+                if es.iter().all(|&e| db.ast.as_name(e).is_some()) {
+                    classified.push(Arm::Fixed(es.len(), body));
+                } else {
+                    return Core::Poison(Reject::decline(
+                        "a list element sub-pattern that is not a binder is not yet supported",
+                    ));
+                }
+            }
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "a list rest pattern `(list x .. rest)` (or a non-element list arm) is not yet supported",
+                ));
+            }
+        }
+    }
+    // WELL-FORMEDNESS: a list is OPEN (any length), so the arms must cover every length via a bare
+    // binder / `_` catch-all (a finite set of fixed arities cannot). Else CDZ0210.
+    if !classified.iter().any(|a| matches!(a, Arm::Wild(_))) {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a list match must cover every length (end in a `_` or a whole-list binder arm)",
+        ));
+    }
+    // FOLD only a constant scrutinee this increment: the length selects the arm; the body's element
+    // binders read the constant elements via their `SumPayload` `Elem` folds, so lowering the SELECTED
+    // body is all that is needed (no β-substitution).
+    let n = match core_of(db, scrutinee) {
+        Core::ListNew { elems } => elems.len(),
+        Core::Poison(r) => return Core::Poison(r),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "matching a runtime list by element patterns needs the runtime list matcher (constant lists only)",
+            ));
+        }
+    };
+    for arm in &classified {
+        let (matches, body) = match arm {
+            Arm::Fixed(k, body) => (*k == n, *body),
+            Arm::Wild(body) => (true, *body),
+        };
+        if matches {
+            return core_of(db, body);
+        }
+    }
+    Core::Poison(Reject::decline(
+        "list match: no arm matched the constant list (unreachable — a catch-all was required)",
+    ))
+}
+
 /// A constant scrutinee value for the guarded-match fold — an integer or a boolean.
 enum GuardFoldScrut {
     Int(IntValue),
@@ -1235,6 +1337,9 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
                 payloads[0]
             }
             (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
+            // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
+            (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
             _ => return None,
         };
     }
@@ -1250,6 +1355,117 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
 /// CDZ0210. A constant sum FOLDS to the selected body (like a scalar match); a runtime sum emits a
 /// `Core::MatchSum` tree. A payload binder resolves to a `SumPayload` on its own (resolve Case 6), so an
 /// arm carries only its discriminant + continuation.
+/// Lower a `match` over a BYTES scrutinee whose arms include `(bin …)` binary patterns (BN3, constant
+/// scrutinee). Each arm is either a `(bin <seg>…)` pattern or a CATCH-ALL (a bare binder / `_`). A `bin`
+/// arm MATCHES iff the segment automaton (`bin_match_decode`) consumes the whole scrutinee AND every
+/// LITERAL-slot segment's decoded value equals the literal (a magic-number/tag probe); its binder slots
+/// bind via `BinField` (resolve Case B) — so the arm body needs no per-binder threading here. A match
+/// with NO catch-all and only `bin` arms is NON-EXHAUSTIVE (a `bin` pattern never covers every byte
+/// sequence — empty input, wrong length, an unequal literal all fail) → CDZ0210, exactly like a sum
+/// missing a variant. On a CONSTANT scrutinee, select the first matching arm and lower its body; a
+/// runtime scrutinee declines (the BN4 cursor automaton).
+fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    if let Core::Poison(r) = core_of(db, scrutinee) {
+        return Core::Poison(r);
+    }
+    // Classify arms. A `(bin …)` arm carries its parsed segments; a bare-name/`_` arm is a catch-all.
+    // (A guarded bin pattern is a later refinement — decline if seen so we never mis-select.)
+    enum BinArm {
+        Bin(Vec<crate::resolved::Segment>, StructId), // segments, body
+        CatchAll(StructId),                           // body (bare binder or `_`)
+    }
+    let mut classified: Vec<BinArm> = Vec::with_capacity(arms.len());
+    for &(pat, body) in arms {
+        if db.ast.head_name(pat) == Some("bin") {
+            match crate::resolve::resolved_of(db, pat) {
+                crate::resolved::Resolved::Bin { segs } => classified.push(BinArm::Bin(segs, body)),
+                crate::resolved::Resolved::Poison(r) => return Core::Poison(r),
+                _ => {
+                    return Core::Poison(Reject::decline(
+                        "a bin pattern did not resolve to segments",
+                    ));
+                }
+            }
+        } else if db.ast.as_name(pat).is_some() {
+            // A bare name (binder) or `_` — a catch-all binding the whole scrutinee.
+            classified.push(BinArm::CatchAll(body));
+        } else {
+            // A literal / other pattern against a Bytes scrutinee — not supported here; decline.
+            return Core::Poison(Reject::decline(
+                "a match over Bytes mixes a bin pattern with an unsupported pattern",
+            ));
+        }
+    }
+    // Exhaustiveness: a `bin` pattern never covers every byte sequence, so a match with no catch-all is
+    // non-exhaustive (CDZ0210) — the same rule as a sum missing a variant.
+    let has_catch_all = classified.iter().any(|a| matches!(a, BinArm::CatchAll(_)));
+    if !has_catch_all {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a match over Bytes with only bin patterns and no catch-all is non-exhaustive",
+        ));
+    }
+    // A CONSTANT scrutinee → select the first matching arm at compile time.
+    let Some(raw) = bin_const_scrutinee(db, scrutinee) else {
+        return Core::Poison(Reject::decline(
+            "a bin match over a runtime Bytes scrutinee is not yet lowered (constant scrutinee only)",
+        ));
+    };
+    for arm in &classified {
+        match arm {
+            BinArm::CatchAll(body) => return core_of(db, *body),
+            BinArm::Bin(segs, body) => {
+                // A segment BN3 can't decide (a dependent-size `(bytes b n)`) → we cannot know whether
+                // this arm matches, so we must NOT silently skip it to a later arm (that would MISCOMPILE
+                // a case whose dependent arm should match). Decline the whole match instead (BN4 decides
+                // it). `bin_match_decode` returns `None` for BOTH a genuine non-match AND an undecidable
+                // dependent segment — distinguish: if any segment is a dependent `(bytes _ Some)`, decline.
+                if segs
+                    .iter()
+                    .any(|s| matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(_) }))
+                {
+                    return Core::Poison(Reject::decline(
+                        "a bin pattern with a dependent-size segment is not yet matched (BN4)",
+                    ));
+                }
+                let Some(decoded) = bin_match_decode(&raw, segs) else {
+                    continue; // a genuine non-match (overrun / leftover) → next arm
+                };
+                // Every LITERAL-slot segment must equal its decoded value (a magic-number / tag probe).
+                // A binder slot (a bare name) is bound, not tested.
+                let mut all_literals_match = true;
+                for (seg, dec) in segs.iter().zip(decoded.iter()) {
+                    // A slot is a literal probe iff it is NOT a bare name. Read its constant value.
+                    if db.ast.as_name(seg.slot).is_some() {
+                        continue; // a binder — no probe
+                    }
+                    match (core_of(db, seg.slot), dec) {
+                        (Core::ConstInt(lit), BinDecoded::Int(got)) => {
+                            if !lit.eq_value(&IntValue::from_i64(*got)) {
+                                all_literals_match = false;
+                                break;
+                            }
+                        }
+                        // A non-constant / non-int literal slot can't be decided here — abort the fold.
+                        _ => {
+                            return Core::Poison(Reject::decline(
+                                "a bin pattern literal segment is not a constant integer",
+                            ));
+                        }
+                    }
+                }
+                if all_literals_match {
+                    return core_of(db, *body);
+                }
+            }
+        }
+    }
+    // A catch-all is guaranteed present (checked above), so some arm always matches — unreachable.
+    Core::Poison(Reject::decline(
+        "bin match: no arm matched (unreachable — catch-all present)",
+    ))
+}
+
 fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // The scrutinee must be a COMPOUND the decision tree matches — a SUM (its type gives the root variant
     // set to switch on), a TUPLE (no discriminant; `Elem`-path binders/lit-tests), or a RECORD (no
@@ -1346,6 +1562,133 @@ struct MatchRow {
 fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     collect_pattern_binders(db, pat, &mut seen)
+}
+
+/// Validate a pattern in a BINDING position — a `let` binder, a `def`/`fn` parameter — where there is NO
+/// alternative arm, so the pattern MUST be irrefutable (`core-semantics.md §A Binding Position Accepts An
+/// Irrefutable Pattern`). `value_ty` is the type of the value being bound (a `let` initializer's type, or
+/// a parameter's solved type), used for the shape/arity check; pass `Ty::Any` when it is not yet solved
+/// (the permissive treatment a projection of `Any` gets — no shape check, only classification+linearity).
+///
+/// A binding pattern IS a single-arm match, so an ill-formed one gets the code the desugared match would.
+/// A REFUTABLE pattern (a multi-variant constructor, a literal, a length-constrained list pattern) is
+/// CDZ0210 (non-exhaustive — the other cases are uncovered and there is no fall-through arm). A
+/// SHAPE-INCOMPATIBLE pattern (a wrong-arity tuple, a tuple pattern vs a non-tuple value) is CDZ0201. A
+/// NON-LINEAR pattern (a binder repeated, flat or nested) is CDZ0102 (via `check_pattern_linear`).
+///
+/// A pattern that is irrefutable in principle but not-yet-supported (a record pattern, a single-variant
+/// user sum, any list pattern) DECLINES (reject-don't-miscompile — a later increment accepts it), NOT a
+/// coded reject. The classifier consults the PRELUDE (a variant's owning sum + variant count), never a
+/// head-string scan, so `None` is a constructor (not a binder) and a single-variant sum is told from a
+/// multi-variant one.
+///
+/// A bare name / `_` is the trivial irrefutable pattern — Ok with no work (the common, hot binding).
+pub(crate) fn check_binding_pattern(
+    db: &mut Db,
+    pat: StructId,
+    value_ty: &crate::ty::Ty,
+) -> Result<(), Reject> {
+    // A bare name (a binder) or `_` (wildcard) — trivially irrefutable, the common case.
+    if let Some(name) = db.ast.as_name(pat) {
+        // A bare name that resolves to a NULLARY constructor (`None`) is a refutable ctor, not a binder.
+        if name != "_" && crate::eval::variant_disc_of(db, pat).is_some() {
+            return classify_binding_ctor(db, pat, value_ty);
+        }
+        return Ok(());
+    }
+    // A literal `0` / `true` / `"s"` matches ONE value of its type — refutable, CDZ0210.
+    if matches!(
+        crate::resolve::resolved_of(db, pat),
+        crate::resolved::Resolved::Int(_)
+            | crate::resolved::Resolved::Bool(_)
+            | crate::resolved::Resolved::Str(_)
+            | crate::resolved::Resolved::Float(_)
+            | crate::resolved::Resolved::Bytes(_)
+    ) {
+        return Err(Reject::coded(
+            Code::NonExhaustive,
+            "a literal pattern is refutable — it matches one value, not every value of its type, so it \
+             cannot appear in a binding position",
+        )
+        .at(pat));
+    }
+    // A compound pattern `(head arg…)`. A `tuple` head is the one accepted destructuring shape in
+    // Increment A; a constructor head is classified by variant count; a record/list head declines.
+    if is_tuple_pattern(db, pat) {
+        // Linearity across the WHOLE pattern (CDZ0102), then shape/arity against the value's type
+        // (CDZ0201) + recursion into element sub-patterns — reusing the match-arm machinery verbatim.
+        check_pattern_linear(db, pat)?;
+        let mut lit_tests = Vec::new();
+        pattern_constraints(db, pat, value_ty, Vec::new(), &mut lit_tests)?;
+        return Ok(());
+    }
+    // A `(record …)` binding pattern is irrefutable in principle but a later increment — DECLINE.
+    if db.ast.as_form(pat, "record").is_some() {
+        return Err(Reject::decline(
+            "a record binding pattern is not yet supported (Increment B)",
+        ));
+    }
+    // A `(list …)` binding pattern (length-constrained → refutable; rest-binder → irrefutable) is out of
+    // scope with all list patterns — DECLINE (not reject), so the irrefutable form is not mis-rejected.
+    if db.ast.as_form(pat, "list").is_some() {
+        return Err(Reject::decline(
+            "a list binding pattern is not yet supported",
+        ));
+    }
+    // Otherwise a constructor-headed pattern `(Some x)` / `((. Sum V) x)` — classify by variant count.
+    classify_binding_ctor(db, pat, value_ty)
+}
+
+/// Classify a CONSTRUCTOR-headed binding pattern (`(Some x)`, bare `None`, `((. Sum V) x)`): a
+/// SINGLE-variant sum is irrefutable but a later increment (DECLINE); a MULTI-variant sum is refutable
+/// (the other variants are uncovered) → CDZ0210. The head is resolved against the prelude
+/// (`variant_owner_decl` → the owning sum's declaration → its variant count), never a head-string scan.
+/// A head that is not a constructor at all is a shape error (CDZ0201).
+fn classify_binding_ctor(
+    db: &mut Db,
+    pat: StructId,
+    _value_ty: &crate::ty::Ty,
+) -> Result<(), Reject> {
+    // The constructor head: a bare name / member `(. Sum V)` used as a whole pattern, or a `(head arg…)`
+    // application's head.
+    let head = match db.ast.get(pat) {
+        crate::ast::Struct::Atom(_) => pat,
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            // A bare member `(. Sum V)` used as a whole pattern — the ctor is the pattern itself.
+            Some(first) if db.ast.as_name(first) == Some(".") => pat,
+            Some(first) => first,
+            None => {
+                return Err(Reject::coded(Code::Malformed, "an empty binding pattern").at(pat));
+            }
+        },
+    };
+    let Some(decl) = crate::eval::variant_owner_decl(db, head) else {
+        // Not a constructor — a shape error (a head that is neither tuple/record/list nor a ctor).
+        return Err(Reject::coded(
+            Code::Malformed,
+            "a binding pattern head is not a tuple, record, or constructor",
+        )
+        .at(pat));
+    };
+    let variant_count = db
+        .type_decl_by_occ(decl)
+        .map(|d| d.variants.len())
+        .unwrap_or(0);
+    if variant_count == 1 {
+        // A single-variant sum's sole constructor covers the type — irrefutable, but binding-position
+        // support for it is Increment B. DECLINE (not reject) so a valid program flips to accept later.
+        return Err(Reject::decline(
+            "a single-variant-sum binding pattern is not yet supported (Increment B)",
+        ));
+    }
+    // A multi-variant constructor is refutable — the other variants are uncovered, and there is no
+    // alternative arm. CDZ0210, the non-exhaustive-single-arm-match code.
+    Err(Reject::coded(
+        Code::NonExhaustive,
+        "a multi-variant constructor pattern is refutable — the other variants are uncovered, so it \
+         cannot appear in a binding position (only in a `match` arm)",
+    )
+    .at(pat))
 }
 
 /// The recursive walk behind [`check_pattern_linear`]: insert each binder name into `seen`, faulting a
@@ -2091,6 +2434,9 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
                 payloads[0]
             }
             (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
+            // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
+            (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
             _ => return None,
         };
     }
@@ -2455,6 +2801,19 @@ fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool 
     if matches!(resolved_of(db, init), Resolved::Lambda { .. }) {
         return false;
     }
+    // A binding whose value REDUCES to a lambda — a function returning a closure, `(mk n)` returning
+    // `(fn (x) (+ n x))` — is the SAME hazard one syntactic step removed: it is not a `Resolved::Lambda`
+    // (it is an `Apply`), so it slips past the check above, but `is_runtime_computation`'s `core_of` below
+    // would still LIFT it (`lower_lambda_value`) and pollute `db.captured_ref` with the returned closure's
+    // captured occurrences. Those occurrences are SHARED with the fold's reduced body — `(let ((f (mk n)))
+    // (f 3))` copy-propagates `f` and β-reduces `((mk n) 3)` to `(+ n 3)`, reusing the ORIGINAL `n`
+    // occurrence — so the stale `captured_ref` entry makes the FOLDED `n` lower to a `Core::Captured`
+    // env-read in the ENCLOSING scope (which has no env) → invalid wasm ("expected i32, found i64"). Detect
+    // it with `lambda_body` (which reduces but does NOT lower, so it does not pollute) and propagate, so the
+    // application folds inline exactly as the (working) `((mk n) 3)` and HOF-argument forms do.
+    if crate::eval::lambda_body(db, init).is_some() {
+        return false;
+    }
     // A value that folds to a constant / atom leaves no computation to share — always propagate.
     if !is_runtime_computation(db, init) {
         return false;
@@ -2563,9 +2922,10 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
             ref_escapes_whole(db, value, init) || ref_escapes_whole(db, next_state, init)
         }
         Resolved::Host { body, .. } => ref_escapes_whole(db, body, init),
-        // A `SumPayload` reads a PIECE of the scrutinee (`sum-payload`), not the whole value — like a
-        // projection operand, it is not a whole-value escape of `init`.
+        // A `SumPayload`/`BinField` reads a PIECE of the scrutinee (a payload / a decoded segment), not
+        // the whole value — like a projection operand, it is not a whole-value escape of `init`.
         Resolved::SumPayload { .. }
+        | Resolved::BinField { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
@@ -3357,9 +3717,11 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             }
             n
         }
-        // A `SumPayload` reads the scrutinee at run time (`sum-payload`); if the scrutinee is `init`,
-        // that is a use of the binding.
-        Resolved::SumPayload { scrutinee, .. } => usize::from(scrutinee == init) as u32,
+        // A `SumPayload`/`BinField` reads the scrutinee at run time (a payload / a decoded segment); if
+        // the scrutinee is `init`, that is a use of the binding.
+        Resolved::SumPayload { scrutinee, .. } | Resolved::BinField { scrutinee, .. } => {
+            usize::from(scrutinee == init) as u32
+        }
         // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
         // resumption's value/next-state, or the handled/delegated body — count each position.
         Resolved::Handle {
@@ -3701,7 +4063,13 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BytesAt
         | Prim::BytesConcat
         | Prim::BytesSlice
-        | Prim::BytesCompact => {
+        | Prim::BytesCompact
+        // Float arithmetic is folded by `lower_float_arith` (an f64/f32 fold), not this integer fold.
+        | Prim::FAdd
+        | Prim::FSub
+        | Prim::FMul
+        | Prim::FDiv
+        | Prim::FloatCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -4908,6 +5276,165 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
     Core::BytesOf { elems }
 }
 
+/// The constant bytes of `scrutinee` if it reduces to a compile-time-visible `Core::BytesOf` (a `(bin
+/// …)`/`(Bytes.of …)`/`b"…"` constant) — `None` for a runtime Bytes (a parameter, a concat result), which
+/// takes the BN4 runtime cursor path. Each element must be a `ConstInt` in `0..=255`.
+fn bin_const_scrutinee(db: &mut Db, scrutinee: StructId) -> Option<Vec<u8>> {
+    let Core::BytesOf { elems } = core_of(db, scrutinee) else {
+        return None;
+    };
+    let mut raw = Vec::with_capacity(elems.len());
+    for e in elems {
+        match core_of(db, e) {
+            Core::ConstInt(v) => raw.push(v.to_i64().filter(|n| (0..=255).contains(n))? as u8),
+            _ => return None,
+        }
+    }
+    Some(raw)
+}
+
+/// One decoded `bin` segment against a concrete byte sequence: an integer (an `Int`/`Bits` segment's
+/// value) or a byte RANGE `[start, end)` into the scrutinee (a `Bytes` segment). Used both to decide a
+/// match (literal probes + whole-scrutinee close) and to bind a segment binder (`decode_bin_field`).
+enum BinDecoded {
+    Int(i64),
+    ByteRange(usize, usize),
+}
+
+/// Run a `bin` PATTERN's segment automaton over the concrete bytes `raw`, left-to-right. Returns each
+/// segment's decoded value if the pattern MATCHES the WHOLE sequence, else `None` (a non-match: a
+/// fixed-width segment overruns the input, a bit-field run does not close, or bytes are left unconsumed
+/// with no trailing unsized `(bytes …)`). BN3 handles fixed-width ints, bit-fields, and a FINAL unsized
+/// `(bytes rest)`; a dependent-size `(bytes b n)` is BN4 (returns `None`-with-a-flag via the caller). The
+/// literal-vs-binder distinction is the CALLER's (a literal slot must equal the decoded int); here we
+/// just decode every segment's raw value + enforce widths/consumption.
+fn bin_match_decode(raw: &[u8], segs: &[crate::resolved::Segment]) -> Option<Vec<BinDecoded>> {
+    use crate::resolved::SegKind;
+    let mut out = Vec::with_capacity(segs.len());
+    let mut off: usize = 0; // byte offset
+    let mut acc: u64 = 0; // open bit-accumulator (MSB-first) between bit-fields
+    let mut nbits: u32 = 0;
+    for (i, seg) in segs.iter().enumerate() {
+        match &seg.kind {
+            SegKind::Int { width, signed } => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at an int segment"
+                );
+                let w = *width as usize;
+                if off + w > raw.len() {
+                    return None; // overrun → non-match
+                }
+                // Assemble big-endian (MSB first); `le` reverses the byte order.
+                let mut val: u64 = 0;
+                for j in 0..w {
+                    let b = if seg.little_endian {
+                        raw[off + (w - 1 - j)]
+                    } else {
+                        raw[off + j]
+                    };
+                    val = (val << 8) | b as u64;
+                }
+                // Sign-extend a signed segment from its top bit; zero-extend an unsigned one.
+                let bits = (w as u32) * 8;
+                let decoded = if *signed && bits < 64 && (val >> (bits - 1)) & 1 == 1 {
+                    (val | !((1u64 << bits) - 1)) as i64
+                } else {
+                    val as i64
+                };
+                out.push(BinDecoded::Int(decoded));
+                off += w;
+            }
+            SegKind::Bits { k } => {
+                let k = *k;
+                // Pull `k` bits MSB-first from the byte stream, refilling the accumulator a byte at a time.
+                while nbits < k {
+                    if off >= raw.len() {
+                        return None; // overrun
+                    }
+                    acc = (acc << 8) | raw[off] as u64;
+                    off += 1;
+                    nbits += 8;
+                }
+                let shift = nbits - k;
+                let field = (acc >> shift) & ((1u64 << k) - 1);
+                acc &= (1u64 << shift) - 1;
+                nbits -= k;
+                out.push(BinDecoded::Int(field as i64));
+            }
+            SegKind::Bytes { size: None } => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a bytes segment"
+                );
+                // A FINAL unsized bytes binds the remainder. (Well-formedness in infer guarantees it is
+                // the last segment.) BN3 handles the final-rest form; a non-final would have been CDZ0220.
+                if i + 1 != segs.len() {
+                    return None;
+                }
+                out.push(BinDecoded::ByteRange(off, raw.len()));
+                off = raw.len();
+            }
+            // A dependent-size `(bytes b n)` is BN4 — signal "can't decide here" to the caller.
+            SegKind::Bytes { size: Some(_) } => return None,
+        }
+    }
+    // Whole-scrutinee accounting: after the last segment, any open bits or leftover bytes are a non-match
+    // (a `bin` pattern matches the ENTIRE sequence — leftover needs a trailing unsized `(bytes rest)`).
+    if nbits != 0 || off != raw.len() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Lower a `bin` PATTERN binder reference — decode the bound segment's value from the (constant)
+/// scrutinee. On a visible `Core::BytesOf` scrutinee, run the segment automaton and return this segment's
+/// decoded value: an `Int` → `Core::ConstInt`; a `Bytes` → a synthesized constant `Core::BytesOf` of the
+/// bound byte range (its core/ty pre-filled, like the slice-fold payload). A runtime scrutinee, or a
+/// pattern the automaton can't decode here (a dependent-size `(bytes b n)`), declines — BN4. The arm was
+/// already SELECTED by `lower_match_bin` (which ran the same decode + the literal probes), so this decode
+/// is on a byte sequence the pattern matched; a defensive `None` still declines rather than miscompiles.
+fn decode_bin_field(
+    db: &mut Db,
+    scrutinee: StructId,
+    segs: &[crate::resolved::Segment],
+    seg_index: usize,
+) -> Core {
+    let Some(raw) = bin_const_scrutinee(db, scrutinee) else {
+        return Core::Poison(Reject::decline(
+            "a bin pattern over a runtime Bytes scrutinee is not yet decoded (constant scrutinee only)",
+        ));
+    };
+    let Some(decoded) = bin_match_decode(&raw, segs) else {
+        return Core::Poison(Reject::decline(
+            "a bin pattern segment could not be decoded at compile time (dependent size / non-match)",
+        ));
+    };
+    match decoded.get(seg_index) {
+        Some(BinDecoded::Int(n)) => Core::ConstInt(IntValue::from_i64(*n)),
+        Some(BinDecoded::ByteRange(s, e)) => {
+            // A synthesized constant `Core::BytesOf` of the bound sub-range (same shape the Bytes.slice
+            // fold produces): fresh UInt8 element leaves, core/ty pre-filled so it rides the constant path.
+            let sub: Vec<StructId> = raw[*s..*e]
+                .iter()
+                .map(|&b| {
+                    db.push_atom(crate::ast::Leaf::Int {
+                        value: IntValue::from_i64(b as i64),
+                        radix: crate::ast::Radix::Dec,
+                    })
+                })
+                .collect();
+            let payload = db.push_atom(crate::ast::Leaf::Bytes(raw[*s..*e].to_vec()));
+            db.core.fill(payload, Core::BytesOf { elems: sub });
+            db.types.fill(payload, crate::ty::Ty::Bytes);
+            core_of(db, payload)
+        }
+        None => Core::Poison(Reject::decline(
+            "a bin pattern segment index is out of range",
+        )),
+    }
+}
+
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
@@ -5034,6 +5561,11 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",
         Prim::WrappingMul => "wrapping-mul",
+        Prim::FAdd => "+.",
+        Prim::FSub => "-.",
+        Prim::FMul => "*.",
+        Prim::FDiv => "/.",
+        Prim::FloatCtor => "Float",
     }
 }
 
