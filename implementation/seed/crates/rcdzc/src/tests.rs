@@ -5707,6 +5707,70 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_equality_guard_pins_the_variable_to_the_exact_value_in_the_then_branch() {
+        // FLOW REFINEMENT through an EQUALITY guard: `(if (= x c) THEN …)` — in THEN, `x == c`, so `x` pins
+        // to `[c, c]`. That lets the body shed a guard (`(+ x 1)` under `x == 5` cannot overflow → no
+        // round-trip) and fold a range-comparison (`(> x 3)` under `x == 5` → true). The `if`-guard analogue
+        // of the match-arm exact-value refinement. The ELSE branch (`x != c`) gets no refinement. Sound for
+        // both signednesses. Pins the elisions at the Lir level AND value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if (= x 5) (+ x 1) 0)` — the `+ x 1` under `x == 5` cannot overflow → its guard (an
+        // `IfUnreachableEnd` round-trip) is elided.
+        let guard = select(
+            "(module m (def (f (: x Int64)) (if (= x 5) (+ x 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !guard.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "(+ x 1) under x==5 sheds its overflow guard, got: {guard:?}"
+        );
+        // `(if (= x 5) (if (> x 3) 1 2) 0)` — the inner `(> x 3)` is decided true by `x == 5`: only the
+        // outer `= 5` comparison remains (the inner `> 3` folds away, no `Select`).
+        let cmp = select(
+            "(module m (def (f (: x Int64)) (if (= x 5) (if (> x 3) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmp.iter().filter(|i| matches!(i, Lir::I64GtS)).count(),
+            0,
+            "the inner (> x 3) under x==5 folds away, got: {cmp:?}"
+        );
+
+        // VALUE PARITY (both signednesses; then + else).
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(5)]), 6);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(3)]), 0);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (if (> x 3) 1 2) 0)", &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (if (> x 3) 1 2) 0)", &[Val::S64(9)]), 0);
+        // Unsigned equality guard refines too.
+        assert_eq!(run::<u8>("(: x UInt8)", "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)", &[Val::U8(200)]), 201);
+        assert_eq!(run::<u8>("(: x UInt8)", "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)", &[Val::U8(50)]), 0);
+    }
+
+    #[test]
     fn a_branch_refinement_elides_a_redundant_and_mask() {
         // FLOW-SENSITIVE REDUNDANT-MASK ELISION: inside `(if (and (>= x 0) (< x 256)) (& x 255) …)` the
         // then-branch KNOWS `x ∈ [0,255]`, so `x & 255 == x` — the mask covers x's whole refined range and

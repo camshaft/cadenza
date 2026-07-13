@@ -6106,6 +6106,28 @@ fn refine_from_comparison(
     } else {
         return base;
     };
+    // EQUALITY guard: `(if (= x c) THEN ELSE)` — in the THEN branch `x == c`, so pin `x` to the EXACT
+    // range `[c, c]` (the `if`-guard analogue of a match arm's exact-value refinement). This lets the body
+    // fold a guard/comparison on `x` (`(if (= x 5) (+ x 1) …)` — the `+ 1` under `x == 5` cannot overflow;
+    // a range-comparison on `x` decides). The ELSE branch gives only `x != c` — no interval — so skip it.
+    // Sound for BOTH signednesses: equality does not depend on the order's wraparound. Intersects with any
+    // existing frame bound for `x` (a `[c,c]` is the tightest, so it wins).
+    if matches!(cmp, Prim::Eq) {
+        if !then_branch {
+            return base; // `x != c` — no single interval
+        }
+        // `c` came from `to_i64()`, so it is already an i64 — no clamp needed.
+        let ec = c;
+        let mut frame = base;
+        // Pin `x` to the exact `[c, c]` — but only when `c` lies WITHIN any prior frame bound for `x`. If it
+        // does not, the guard is unsatisfiable (a contradiction the branch never reaches), so leave the
+        // prior frame rather than fabricate an inverted `[c,c]` a downstream consumer might misread.
+        let (plo, phi) = frame.get(&var).copied().unwrap_or((i64::MIN, Some(i64::MAX)));
+        if plo <= ec && phi.is_none_or(|h| ec <= h) {
+            frame.insert(var, (ec, Some(ec)));
+        }
+        return frame;
+    }
     // SIGNED integer variable only — an unsigned comparison's order wraps differently.
     let signed = matches!(type_of(db, var), Ty::Int(it) if it.ground_signed());
     if !signed {
