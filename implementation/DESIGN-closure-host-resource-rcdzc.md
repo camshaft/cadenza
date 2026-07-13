@@ -193,12 +193,17 @@ the component type. The new work:
     `own<t>` CONSUMES the handle per `call` (a 2nd call on the same handle → "unknown handle
     index") — so a closure is single-use per handle until C-HOST-5's `borrow<t>`. This is
     the byte reference the compiler EMIT PATH (still TODO) hand-emits from a real export.
-  - **⏳ REMAINING: the compiler emit path + `cdz-run` method-drive + a corpus case.** Route
-    an export whose RESULT is `Ty::Fn` (NOT the escape's nullary-compound trigger) into a
-    closure-resource envelope (`assemble_closure_resource`, forked from
-    `assemble_runtime_resource`), splicing `resource.new` at the boundary-return; teach
-    `cdz-run` to call `make` then `call(args)`; add `17-host-closures.sexp` (needs a gate
-    driver that invokes a resource METHOD, not a bare export — an open item).
+  - **✅ EMIT PATH + HOST + CORPUS LANDED `@20134a8f` — C-HOST-1 COMPLETE end-to-end.** The real
+    compiler now emits it: `emit` dispatches a single `Ty::Fn`-result export to
+    `emit_closure_resource`; `serialize::closure_resource_core_module` builds the core (make =
+    `call export` + `resource.new`; call = `resource.rep` → `arr-get`/`get-int` →
+    `call_indirect`); `envelope::assemble_closure_resource` + `resource_inner_component_closure`
+    wrap it as `cadenza:closure/exports`. `cdz-run` recognizes the interface
+    (`run_closure_resource`) and drives `make`→`call(args…)`, coercing the corpus's `(call …)`
+    args to `call`'s declared types. VERIFIED e2e: `(def (main) (fn (x) (+ x 1)))` → host
+    `call(5)`=6 / `call(41)`=42; `(* x 3)` on 4=12. +3 corpus cases
+    (`spec/semantics/21-host-closures.sexp`, all pass the full gate) + 2 unit tests (compiler
+    e2e via `ComposedRuntime::closure_make_call`; the core serializer). own<t> consumes per call.
 - **C-HOST-2 — a PARAMETERIZED export returning a CAPTURING closure.** `(def (adder (: k
   Int64)) (fn (x) (+ x k)))` → `adder : (s64) -> own<closure-s64-s64>`; host calls
   `adder(10)` then `call(5)` → 15. Proves the handle is computed from the host's input AND

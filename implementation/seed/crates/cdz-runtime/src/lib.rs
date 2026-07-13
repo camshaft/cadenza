@@ -3645,10 +3645,12 @@ impl Entry {
     fn extend_into(self, out: &mut Vec<Handle>) {
         out.extend_from_slice(&self.cols[..self.len]);
     }
-    /// Consume the entry into a fresh 1- or 2-element `Vec` (only where a node's `handles` IS exactly
-    /// this entry — the fresh-single-entry node).
-    fn into_vec(self) -> Vec<Handle> {
-        self.cols[..self.len].to_vec()
+    /// Consume the entry into a `Handles` built INLINE — for the fresh-single-entry node whose `handles`
+    /// IS exactly this entry. An entry has ≤2 columns (= INLINE_HANDLES_CAP), so this always fits the
+    /// inline arm with NO heap Vec, unlike a `Vec`-based build that `From<Vec>` would then re-inline and
+    /// free (a transient alloc on every fresh CHAMP node — the common map/set build path).
+    fn into_handles(self) -> Handles {
+        Handles::inline_from(&self.cols[..self.len])
     }
     /// The entry's columns as a slice — for a caller that copies them into node storage BY VALUE
     /// (handles are `Copy`, so this relocates them without dup/drop, exactly like moving the old Vec's
@@ -3755,15 +3757,32 @@ fn merge_two_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, level: u32) -> Hand
         let sub = merge_two_entries(e1, h1, e2, h2, level + 1);
         alloc_raw(Handles::inline_from(&[sub]), champ_header(0, 1 << i1, 2))
     } else if i1 < i2 {
-        let mut hs = Vec::with_capacity(e1.len() + e2.len());
-        e1.extend_into(&mut hs);
-        e2.extend_into(&mut hs);
-        alloc_raw(hs, champ_header((1 << i1) | (1 << i2), 0, 2))
+        // Two entries in different slots of a fresh 2-entry node, columns in ascending-slot order.
+        // For a SET (stride 1) that is 2 handles = inline-eligible: `merge_entry_pair` builds them
+        // INLINE (no transient heap Vec that `From<Vec>` would re-inline + free — this SPLIT fires on
+        // every set-insert into an occupied slot). A MAP (stride 2) is 4 handles → heap, as before.
+        alloc_raw(merge_entry_pair(&e1, &e2), champ_header((1 << i1) | (1 << i2), 0, 2))
     } else {
-        let mut hs = Vec::with_capacity(e1.len() + e2.len());
-        e2.extend_into(&mut hs);
-        e1.extend_into(&mut hs);
-        alloc_raw(hs, champ_header((1 << i2) | (1 << i1), 0, 2))
+        alloc_raw(merge_entry_pair(&e2, &e1), champ_header((1 << i2) | (1 << i1), 0, 2))
+    }
+}
+
+/// Build the `handles` for a fresh 2-entry CHAMP node from two entries in the given order, INLINE when
+/// the total column count fits (a SET's two 1-column entries = 2 ≤ INLINE_HANDLES_CAP), else on the
+/// heap (a MAP's two 2-column entries = 4). Consumes neither (handles are `Copy`); the caller has
+/// already relocated ownership of the entries' columns into the returned node.
+fn merge_entry_pair(first: &Entry, second: &Entry) -> Handles {
+    let total = first.len() + second.len();
+    if total <= INLINE_HANDLES_CAP {
+        let mut buf = [Handle::NULL; INLINE_HANDLES_CAP];
+        buf[..first.len()].copy_from_slice(first.cols());
+        buf[first.len()..total].copy_from_slice(second.cols());
+        Handles::Inline { buf, len: total as u8 }
+    } else {
+        let mut hs = Vec::with_capacity(total);
+        hs.extend_from_slice(first.cols());
+        hs.extend_from_slice(second.cols());
+        Handles::Heap(hs)
     }
 }
 
@@ -3863,7 +3882,7 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
     if datamap == 0 && nodemap == 0 {
         if arity == 0 {
             let i = level_index(hash, level);
-            let new = alloc_raw(entry.into_vec(), champ_header(1 << i, 0, 1)); // entry owned
+            let new = alloc_raw(entry.into_handles(), champ_header(1 << i, 0, 1)); // entry owned (inline handles, no transient Vec)
             op_drop(node);
             return (new, 1); // fresh single entry: a new key
         }
@@ -4099,7 +4118,7 @@ fn champ_insert_fbip(
     if datamap == 0 && nodemap == 0 {
         if arity == 0 {
             let i = level_index(hash, level);
-            return (champ_become_hdr(node, entry.into_vec(), 1 << i, 0, 1), 1); // fresh: new key
+            return (champ_become_hdr(node, entry.into_handles(), 1 << i, 0, 1), 1); // fresh: new key (inline handles, no transient Vec)
         }
         // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
         // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
@@ -5670,21 +5689,21 @@ mod tests {
         // because a set data-node that grows 2→3 entries spills inline→heap once (the cost of inlining a
         // node that grows). Accepted as a small trade for the big wins (sum_new/tuple2/`[k,v]` −1000 each,
         // vec push/update shared −1000); TODO next iteration: born-heap for growing CHAMP set nodes.
-        assert!(union <= 500, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 500");
+        assert!(union <= 320, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 320 (was 376 → 270 after merge_entry_pair inlines the 2-handle SET split node)");
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 450, "set_intersection x{N} allocs {inter} exceeds ceiling 450");
+        assert!(inter <= 320, "set_intersection x{N} allocs {inter} exceeds ceiling 320 (was 385 → 263 after merge_entry_pair)");
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 450, "set_difference x{N} allocs {diff} exceeds ceiling 450");
+        assert!(diff <= 320, "set_difference x{N} allocs {diff} exceeds ceiling 320 (was 391 → 266 after merge_entry_pair)");
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -5706,7 +5725,7 @@ mod tests {
         // build_set(0,N) is the map_insert cost. So this asserts the DIFFERENCE ITSELF adds little beyond
         // building da. Ceiling = build cost (~1084) + small headroom; a regression to the insert-fold
         // (which rebuilds another full set) would roughly double it.
-        assert!(ddiff <= 1200, "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 1200 (fast path: build da + in-place removes; a regression to the insert-fold would ~2x)");
+        assert!(ddiff <= 600, "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 600 (fast path: build da + in-place removes; was 807 → 488 after merge_entry_pair; a regression to the insert-fold would ~2x)");
         op_drop(db);
 
         // (H) map lookup by a SHALLOW-COMPOUND key (a 2-tuple) — a pure read whose only allocation

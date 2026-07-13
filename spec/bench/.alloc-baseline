@@ -4,7 +4,7 @@
 1000	bytes_concat x1000
 132	bytes_flatten x64
 1000	bytes_slice x1000
-767	map_insert x1000
+766	map_insert x1000
 6143	map_insert_shared x1000
 6418	map_insert_shared_newkey x1000
 3	map_iterate x1000
@@ -14,10 +14,10 @@
 1000	map_lookup_tuplekey x1000
 0	map_remove x1000
 6685	map_remove_shared x1000
-391	set_difference x1000
-807	set_difference_unique_small_b x1000
-385	set_intersection x1000
-376	set_union x1000
+266	set_difference x1000
+488	set_difference_unique_small_b x1000
+263	set_intersection x1000
+270	set_union x1000
 1000	sum_new x1000
 1000	tuple2_build x1000
 1200	vec_concat x100

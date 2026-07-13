@@ -21,6 +21,31 @@
   (input  (= Float64.nan Float64.nan))
   (output (: true Bool)))
 
+; A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a Float32 —
+; so a CROSS-WIDTH comparison between them (or against a finite float of the other width) is the same
+; no-silent-promotion type error a cross-width FINITE comparison is (CDZ0301, numeric-model.md #Numeric
+; Types Do Not Silently Promote). `nan` is not width-polymorphic: it must impose its own width on the
+; unification exactly as `(: 1.5 Float64)` does, or a Float32-vs-Float64 comparison slips past the check
+; the finite case is rejected by. (A SAME-width nan comparison is fine — the case above; only crossing the
+; width is the error.)
+
+(case "comparing a Float32 nan to a Float64 nan is a cross-width type error"
+  (doc    "`(= Float32.nan Float64.nan)` compares a Float32 value with a Float64 value — distinct float
+           types that do not silently unify (CDZ0301), exactly as the finite `(= (: 1.5 Float32) (: 1.5
+           Float64))` is rejected. A `Float32.nan` is a Float32 and a `Float64.nan` is a Float64; their
+           widths do not unify. Pins that a nan carries its declaring width into the comparison, not an
+           unfixed width that would ground to whatever the other operand is.")
+  (input  (= Float32.nan Float64.nan))
+  (error  CDZ0301))
+
+(case "comparing a Float32 nan to a Float64 finite value is a cross-width type error"
+  (doc    "`(= Float32.nan (: 1.5 Float64))` — a Float32 nan against a Float64 finite value: cross-width,
+           so CDZ0301, exactly as `(= (: 1.5 Float32) (: 1.5 Float64))` is. Pins that a nan on EITHER side
+           still imposes its declaring float width on the unification (the finite-vs-finite path already
+           does), so a mixed nan/finite cross-width comparison is caught, not run to a value.")
+  (input  (= Float32.nan (: 1.5 Float64)))
+  (error  CDZ0301))
+
 ; --- Float equality follows the canonical byte form RECURSIVELY, inside compound values --
 ; #Equality Is Structural: "Two values MUST be equal when they have the same type and their contents
 ; are equal component-wise" — and each float COMPONENT is compared by #Floating-Point Equality Follows

@@ -1142,9 +1142,11 @@ pub fn runtime_resource_core_module_form(
 /// but the resource method is `call` (not `encode`): it recovers the closure CELL rep, reads the code
 /// slot, and `call_indirect`s the lifted body with the caller's args.
 ///
-///  * `make() -> i32` — `call <export>` (builds the closure cell → its handle) then `resource.new` to
-///    register it as the resource's rep and hand back the resource handle. Identical to the escape's
-///    `make`.
+///  * `make(export-params…) -> i32` — forward the export's parameters, `call <export>` (which builds the
+///    closure cell, closing over those params → its handle), then `resource.new` to register the cell as
+///    the resource's rep. A NULLARY export gives `make()`; a PARAMETERIZED export (`(def (adder k) (fn (x)
+///    (+ x k)))`) gives `make(k)`, so the host computes a distinct closure per input (C-HOST-2). The
+///    captured params ride in the cell, so `call` is unchanged.
 ///  * `call(self, args…) -> R` — `resource.rep(self)` recovers the cell rep; `arr-get(cell, 0)` +
 ///    `get-int` + `i32.wrap_i64` reads the funcref-table slot; push the args (locals `1..1+arity`), push
 ///    the cell as the env (local slot 0 of the lifted fn), then `call_indirect` the lifted functype over
@@ -1153,8 +1155,9 @@ pub fn runtime_resource_core_module_form(
 ///
 /// The funcref TABLE + ELEMENT sections come from the selected export body's `layout.lifted` (the lifted
 /// closure occupies a table slot), emitted exactly as `core_module` does. `arg_vts`/`ret_vt` are the
-/// closure's CORE valtypes (from its `Ty::Fn`), `lifted_type_idx` the core type index of the lifted
-/// functype `(env, args…) -> R` (`layout.lifted_type_index(0, import_count)`).
+/// closure's CORE valtypes (from its `Ty::Fn`), `make_param_vts` the EXPORT's core param valtypes (empty
+/// for a nullary export), `lifted_type_idx` the core type index of the lifted functype `(env, args…) -> R`
+/// (`layout.lifted_type_index(0, import_count)`).
 #[allow(clippy::too_many_arguments)]
 pub fn closure_resource_core_module(
     funcs: &[SelectedFunc],
@@ -1162,6 +1165,7 @@ pub fn closure_resource_core_module(
     export_abs: u32,
     arg_vts: &[ValType],
     ret_vt: ValType,
+    make_param_vts: &[ValType],
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
@@ -1193,11 +1197,12 @@ pub fn closure_resource_core_module(
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    // make `()->i32`.
+    // make `(export-params…)->i32`.
     let make_type_idx = defined_type_base + n;
     {
+        let params: Vec<u8> = make_param_vts.iter().map(|v| vt_byte(*v)).collect();
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
-        t.extend_from_slice(&wasm_vec(0, &[]));
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
@@ -1282,9 +1287,14 @@ pub fn closure_resource_core_module(
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    // make: build the closure cell (`call export`) then `resource.new`.
+    // make: forward the export's params (locals 0..len), `call export` (builds the closure cell, closing
+    // over those params), then `resource.new`.
     {
-        let mut inner = uleb_bytes(0);
+        let mut inner = uleb_bytes(0); // make declares no locals of its own
+        for p in 0..make_param_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128(p as u64, &mut inner);
+        }
         inner.push(op::CALL);
         uleb128(export_abs as u64, &mut inner);
         inner.push(op::CALL);
