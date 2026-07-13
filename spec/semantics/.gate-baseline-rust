@@ -58,6 +58,8 @@ pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
+pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
+pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
 pass	a closure captures another closure and applies it
@@ -872,8 +874,6 @@ todo	a byte sequence carrying a runtime byte value is a first-class value
 todo	a byte sequence is constructed from a list of integers in range
 todo	a byte sequence written as a literal renders back to the same literal
 todo	a capturing closure is applied through a recursive higher-order function
-todo	a checked conversion of a negative value into an unsigned type traps
-todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
 todo	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 todo	a closure captures a capturing closure and calls it through a recursive HOF

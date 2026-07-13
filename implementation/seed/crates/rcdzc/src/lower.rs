@@ -9488,8 +9488,22 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                     trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "folded checked conversion (in range)");
                     Core::ConstInt(v)
                 } else {
-                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "checked conversion out of range → trap");
-                    Core::Trap
+                    // A CONSTANT operand that provably exceeds the target range is a statically-ill-formed
+                    // conversion — the compiler already knows at compile time it cannot succeed. Reject it
+                    // CDZ0302 (integer does not fit the target width), consistent with `(: 128 Int8)` and
+                    // the const-overflow arithmetic fold, rather than emitting a RUNTIME trap for a
+                    // statically-impossible conversion. (A RUNTIME `T.of` whose value is unknown until run
+                    // time still traps at run time — the branch below declines it to the checked emit; only
+                    // a compile-time-KNOWN out-of-range constant is rejected up front here.)
+                    let signed_word = if signed { "signed" } else { "unsigned" };
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), signed, width, "checked conversion of an out-of-range constant → CDZ0302 reject");
+                    Core::Poison(Reject::coded(
+                        Code::IntOutOfRange,
+                        format!(
+                            "integer does not fit the target type of the checked conversion \
+                             ({signed_word} {width}-bit)"
+                        ),
+                    ))
                 }
             }
         },

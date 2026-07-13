@@ -26,19 +26,52 @@ const guideRoot = join(here, "..");
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
-const { default: init, compile, render_value } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, render_value, render_syntax } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 
-// ---- wrapModule: mirrors guide/src/components/useCadenzaEditor.ts (keep in sync) ----
-// Snippets are authored in s-expr (the guide default `authoredIn`); a bare expr / defs get the
-// `export`/`main` the compiler needs, at top level (no module shell).
-const DECL_HEAD = /^\((def|type|effect)\b/;
-function wrapModule(src) {
+// ---- wrapModule / stripModule / renderSnippet: mirror guide/src/components/useCadenzaEditor.ts ----
+// (keep in sync). Snippets are authored in s-expr (the guide default `authoredIn`); a bare expr / defs
+// get the `export`/`main` the compiler needs, at top level (no module shell). The reader also TOGGLES
+// to ML, so we check that surface too (see `renderSnippet` + the ML pass below) — the surface where the
+// wrap/strip round-trip is most likely to bite.
+const DECL = "def|type|effect";
+function wrapModule(src, surface) {
   const t = src.trim();
-  if (/^\(module\b/.test(t) || /^\(do\b/.test(t)) return t;
-  if (DECL_HEAD.test(t)) return `(do ${t} (export main))`;
-  return `(do (def (main) ${t}) (export main))`;
+  if (surface === "sexpr") {
+    if (/^\(module\b/.test(t) || /^\(do\b/.test(t)) return t;
+    if (new RegExp(`^\\((${DECL})\\b`).test(t)) return `(do ${t} (export main))`;
+    return `(do (def (main) ${t}) (export main))`;
+  }
+  if (/^module\b/.test(t) || /(^|\n)\s*export\b/.test(t)) return t;
+  if (new RegExp(`^(${DECL})\\b`).test(t)) return `${t}\nexport { main }`;
+  return `def main() = ${t}\nexport { main }`;
+}
+function dedent(s) {
+  const lines = s.split("\n");
+  const min = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length), Infinity);
+  return Number.isFinite(min) ? lines.map((l) => l.slice(min)).join("\n") : s;
+}
+function stripModule(rendered, surface) {
+  const t = rendered.trim();
+  if (surface === "sexpr" ? /^\(module\b/.test(t) : /^module\b/.test(t)) return rendered;
+  if (surface === "sexpr") {
+    const m = /^\(do\b([\s\S]*)\)\s*$/.exec(t);
+    const body = (m ? m[1] : t).trim().replace(/\(export\s+[^)]*\)\s*$/, "").trim();
+    const bare = /^\(def\s+\(main\)\s+([\s\S]*)\)$/.exec(body);
+    if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
+    return body;
+  }
+  const lines = t.split("\n").filter((l) => !/^\s*export\s*[({]/.test(l));
+  const last = lines.reduce((a, l, i) => (l.trim() ? i : a), -1);
+  const body = lines.map((l, i) => (/^\S/.test(l) || i === last ? l.replace(/;\s*$/, "") : l)).join("\n").trim();
+  const bare = /^def\s+main\(\)\s*=[^\S\n]*([\s\S]*)$/.exec(body);
+  if (bare && !/^\s*(def|type)\b/m.test(bare[1])) return dedent(bare[1]).trim();
+  return body;
+}
+/// The ML the reader sees after toggling: wrap the s-expr snippet, render to ML, strip the scaffolding.
+function renderToMl(snippet) {
+  return stripModule(render_syntax(wrapModule(snippet, "sexpr"), "sexpr", "ml"), "ml");
 }
 
 // ---- run a compiled component through jco, return its rendered value text ----
@@ -111,57 +144,69 @@ const examples = files.flatMap((f) => {
   }
 });
 
-// ---- check each ----
-let pass = 0;
-const failures = [];
-for (const ex of examples) {
-  const program = ex.noWrap ? ex.snippet.trim() : wrapModule(ex.snippet);
+// ---- check one program (already wrapped) in one surface, returning null on success or a reason ----
+async function checkProgram(program, surface, ex, where) {
+  const brief = ex.snippet.replace(/\n/g, " ").slice(0, 80);
   let r;
   try {
-    r = compile(program, "sexpr");
+    r = compile(program, surface);
   } catch (e) {
     // A throw = a parse error. Fine only if the example is meant to fail.
-    if (ex.expect === "error") { pass++; continue; }
-    failures.push(`${ex.file} [${ex.kind}]: parse error — ${String(e.message || e).slice(0, 80)}\n    ${ex.snippet.replace(/\n/g, " ").slice(0, 90)}`);
-    continue;
+    if (ex.expect === "error") return null;
+    return `${ex.file} [${ex.kind}] (${where}): parse error — ${String(e.message || e).slice(0, 80)}\n    ${brief}`;
   }
   const declined = !r.component;
   if (ex.expect === "error") {
-    // "meant to fail" is satisfied by EITHER a compile decline OR a runtime trap (e.g. a range check
-    // like `(UInt8.of 300)`). The guide shows both as a non-value outcome; accept either.
-    if (declined) { pass++; continue; }
-    let traps = false;
-    try {
-      await runComponent(r.component);
-    } catch {
-      traps = true;
-    }
-    if (traps) pass++;
-    else failures.push(`${ex.file} [${ex.kind}]: expect="error" but it compiled AND ran to a value\n    ${ex.snippet.replace(/\n/g, " ").slice(0, 90)}`);
-    continue;
+    // "meant to fail" = a compile decline OR a runtime trap (e.g. `(UInt8.of 300)`); accept either.
+    if (declined) return null;
+    try { await runComponent(r.component); } catch { return null; }
+    return `${ex.file} [${ex.kind}] (${where}): expect="error" but it compiled AND ran to a value\n    ${brief}`;
   }
   if (declined) {
     const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
-    failures.push(`${ex.file} [${ex.kind}]: expected to compile but DECLINED — ${d ? `${d.code} ${d.message}` : "no component"}\n    ${ex.snippet.replace(/\n/g, " ").slice(0, 90)}`);
-    continue;
+    return `${ex.file} [${ex.kind}] (${where}): expected to compile but DECLINED — ${d ? `${d.code} ${d.message}` : "no component"}\n    ${brief}`;
   }
-  // Compiles. A graded exercise must also RUN to its `expected` value.
-  if (ex.expected != null) {
+  // Compiles. A graded exercise must also RUN to its `expected` value (checked on the s-expr surface).
+  if (ex.expected != null && surface === "sexpr") {
     try {
       const got = await runComponent(r.component);
-      if (String(got).trim() === ex.expected.trim()) pass++;
-      else failures.push(`${ex.file} [Exercise]: solution ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}\n    ${ex.snippet.replace(/\n/g, " ").slice(0, 90)}`);
+      if (String(got).trim() !== ex.expected.trim())
+        return `${ex.file} [Exercise] (${where}): solution ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}\n    ${brief}`;
     } catch (e) {
-      failures.push(`${ex.file} [Exercise]: solution failed to run — ${String(e.message || e).slice(0, 80)}`);
+      return `${ex.file} [Exercise] (${where}): solution failed to run — ${String(e.message || e).slice(0, 80)}`;
     }
-  } else {
-    pass++;
   }
+  return null;
 }
 
-console.log(`\nchecked ${examples.length} examples across ${files.length} files: ${pass} ok, ${failures.length} failed`);
+// ---- check each example in BOTH surfaces (the reader can toggle) ----
+let pass = 0;
+const failures = [];
+for (const ex of examples) {
+  // 1. s-expr — the authored surface.
+  const sexprProgram = ex.noWrap ? ex.snippet.trim() : wrapModule(ex.snippet, "sexpr");
+  const sexprFail = await checkProgram(sexprProgram, "sexpr", ex, "s-expr");
+  if (sexprFail) { failures.push(sexprFail); continue; }
+
+  // 2. ML — what the reader sees after toggling. Render the snippet to ML, then wrap + compile THAT.
+  //    This catches wrap/strip round-trip bugs that only bite on the ML surface (e.g. a `;`-in-a-
+  //    do-block snippet whose wrapper skipped the export). `noWrap` snippets are full modules already.
+  if (!ex.noWrap) {
+    let mlFail;
+    try {
+      const mlProgram = wrapModule(renderToMl(ex.snippet), "ml");
+      mlFail = await checkProgram(mlProgram, "ml", ex, "ML toggle");
+    } catch (e) {
+      mlFail = `${ex.file} [${ex.kind}] (ML toggle): render/wrap threw — ${String(e.message || e).slice(0, 80)}`;
+    }
+    if (mlFail) { failures.push(mlFail); continue; }
+  }
+  pass++;
+}
+
+console.log(`\nchecked ${examples.length} examples across ${files.length} files (both surfaces): ${pass} ok, ${failures.length} failed`);
 if (failures.length) {
   console.error("\nFAILURES:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
 }
-console.log("✓ every guide example compiles, and every graded exercise runs to its expected value.");
+console.log("✓ every guide example compiles in both surfaces, and every graded exercise runs to its expected value.");
