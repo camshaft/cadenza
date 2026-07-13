@@ -1563,6 +1563,16 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             };
         }
     }
+    // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
+    // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
+    // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type
+    // position (an annotation, further type-level computation). A `Type` value is erased before the
+    // boundary, so exporting one is rejected downstream ("a type value has no runtime form").
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TypeOf)
+        && args.len() == 1
+    {
+        return Ty::Type;
+    }
     // `Qty.value q` — recover the underlying numeric value, DISCARDING the unit. Its result is the
     // quantity's INNER type; a non-quantity argument yields `Any` (faulted elsewhere).
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyValue)

@@ -483,6 +483,14 @@ pub enum Prim {
     /// The `(meta apply)` of the `Qty` module — the quantity companion of `Int`/`List`/`Tuple`'s type
     /// constructors, so a `(Qty …)` annotation reduces through the ordinary `typeval_of` path.
     QtyCtor,
+    /// `Type.of e` — COMPILE-TIME TYPE REFLECTION: reduce to the type-VALUE of `e`'s inferred type, so
+    /// `(: x (Type.of y))` gives `x` the same type as `y`. The `(meta apply)` of the `Type` module.
+    /// Reduces (via `reduce_ctor`/`typeval_of`) to `encode_typeval(type_of(e))` — the value→type
+    /// direction that composes the two existing halves (`type_of` computes the `Ty`; `encode_typeval`
+    /// makes it a first-class type-value). Its own type is `Ty::Type`. Compile-time-ONLY: a `Type` value
+    /// is erased before the runtime boundary (like any type-value / a `Ty::Qty`), so `Type.of` is usable
+    /// in TYPE positions (annotations, further type-level computation), never returned at runtime.
+    TypeOf,
     /// A SET TYPE CONSTRUCTOR — the `(meta apply)` of the `Set` prelude module. `(Set Int64)` in type
     /// position builds `Ty::Set(elem)` (ONE parameter, like `List`). The set analogue of `ListCtor`.
     SetCtor,
@@ -614,6 +622,7 @@ impl Prim {
             "qty-value" => Some(Prim::QtyValue),
             "qty-pow" => Some(Prim::QtyPow),
             "Qty" => Some(Prim::QtyCtor),
+            "type-of" => Some(Prim::TypeOf),
             "Set" => Some(Prim::SetCtor),
             "set-of" => Some(Prim::SetOf),
             "set-contains" => Some(Prim::SetContains),

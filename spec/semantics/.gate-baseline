@@ -5,6 +5,9 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	Type.of carries a quantity's unit into a same-type annotation
+pass	Type.of reflects a runtime parameter's type at compile time
+pass	Type.of reflects a value's type for use as an annotation
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
@@ -531,6 +534,7 @@ pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
 pass	a reference to an unbound name is rejected before running
+pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a returned capturing closure bound with let and applied folds like the inline form
@@ -783,6 +787,7 @@ pass	an annotated let binder that contradicts the value is rejected
 pass	an annotated tuple-pattern parameter binds its pattern's names
 pass	an annotated tuple-pattern parameter still checks its annotation against the argument
 pass	an annotated value takes a narrower integer width
+pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash

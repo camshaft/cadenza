@@ -6647,6 +6647,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::QtyValue
         | Prim::QtyPow
         | Prim::QtyCtor
+        | Prim::TypeOf
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
         | Prim::Trap => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
@@ -10056,6 +10057,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::QtyValue => "qty-value",
         Prim::QtyPow => "qty-pow",
         Prim::QtyCtor => "Qty",
+        Prim::TypeOf => "type-of",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",
         Prim::SetContains => "set-contains",
