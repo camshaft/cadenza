@@ -5386,6 +5386,70 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_saturating_or_mask_folds_to_the_constant() {
+        // OR-SATURATION: `x | M` where the constant `M` covers x's whole range is just `M` — every bit x
+        // could set is already set in M, so the OR adds nothing (`x | 255` with `x ∈ [0,255]` → 255). The
+        // dual of the `& M → x` mask elision. Fires both at LOWER time (an unsigned-typed x: `UInt8 | 255`)
+        // and at EMIT time on a flow-REFINED signed x. DISCARDS x, so a trapping x keeps its trap. Pins the
+        // fold at the Lir level (no `or`, a `const M`) AND value/trap parity; a PARTIAL mask stays.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or)).count();
+        // EMIT-time refined: under `x ∈ [0,255]`, `(| x 255)` folds to `255` — no `i64.or`.
+        let refined = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 255) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(ors(&refined), 0, "the saturating `| 255` under x∈[0,255] folds to 255, got: {refined:?}");
+        // LOWER-time unsigned: `UInt8 | 255` → 255 (the type bounds x to [0,255]).
+        let unsigned = select(
+            "(module m (def (f (: x UInt8)) (| x 255)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(ors(&unsigned), 0, "UInt8 `| 255` saturates to 255 at lower time, got: {unsigned:?}");
+        // A PARTIAL mask (`| 15` under x∈[0,255]) is NOT a saturation — bits 4-7 of x survive, so it stays.
+        let partial = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 15) x)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(ors(&partial), 1, "a partial `| 15` under x∈[0,255] is kept, got: {partial:?}");
+
+        // VALUE PARITY: saturates to the constant in range; else branch out of range; partial still ORs.
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 255) x)", &[Val::S64(200)]), 255);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 255) x)", &[Val::S64(0)]), 255);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 255) x)", &[Val::S64(1000)]), 1000);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (and (>= x 0) (< x 256)) (| x 15) x)", &[Val::S64(200)]), 207); // 200|15
+        // TRAP PRESERVATION: the `|` fold DISCARDS x, so a trapping `(& (/ 100 z) 7)` still ÷0-traps.
+        assert!(
+            traps("(: z Int64)", "(| (: (& (: (/ 100 z) Int64) 7) Int64) 255)", &[Val::S64(0)]),
+            "the saturating-or fold must not drop a trapping operand"
+        );
+    }
+
+    #[test]
     fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
         // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
         // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its

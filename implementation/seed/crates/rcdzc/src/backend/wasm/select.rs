@@ -4122,6 +4122,17 @@ fn emit(
                     {
                         return emit_operand(db, v, ot, slots, base, high, scratch_ty, layout, out);
                     }
+                    // OR-SATURATION ELISION (flow-sensitive): `(| v M)` where the constant `M` covers `v`'s
+                    // whole provable range is just `M` — `v | M == M`, so emit the constant alone (`v`'s
+                    // bits are all already set in `M`). The emit-time sibling of the `BitOr` OR-saturation
+                    // lower fold, firing on a branch-REFINED `v` (`(if (and (>= x 0) (< x 256)) (| x 255) …)`
+                    // → `255` under `x ∈ [0,255]`). DISCARDS `v` — `redundant_or_mask_const` already checked
+                    // `v` is trap-free — so no defined trap is dropped.
+                    if op == Prim::BitOr
+                        && let Some(c) = crate::lower::redundant_or_mask_const(db, lhs, rhs)
+                    {
+                        return emit_operand(db, c, ot, slots, base, high, scratch_ty, layout, out);
+                    }
                     emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     out.push(m.bitwise(op));
