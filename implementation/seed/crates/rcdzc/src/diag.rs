@@ -45,6 +45,14 @@ pub enum Code {
     Malformed,
     /// A type mismatch (e.g. an `if` condition that is not a boolean; branches of differing type).
     TypeMismatch,
+    /// A comparison ACROSS THE NOMINAL BOUNDARY — comparing two values whose types are distinct NOMINAL
+    /// types even when structurally identical (`(= (A.Mk 1) (B.Mk 1))` for two same-shape sums `A`/`B`;
+    /// a nominal record vs a plain record of the same shape). A nominal type's identity is its
+    /// declaration, so such a comparison is ill-typed, NOT `false` — the untagged structural comparison
+    /// the nominal boundary forbids (`type-system.md` §Nominal Types Are Not Comparable Across Their
+    /// Boundary). Distinct from `TypeMismatch`: the operands are the SAME structural shape, differing
+    /// only in nominal tag.
+    NominalMismatch,
     /// Two operands of different numeric types with no explicit conversion (no silent promotion).
     NumericMismatch,
     /// An integer literal that does not fit the width its use requires.
@@ -108,6 +116,7 @@ impl Code {
             Code::Unbound => "CDZ0101",
             Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",
+            Code::NominalMismatch => "CDZ0202",
             Code::TypeMismatch => "CDZ0203",
             Code::NumericMismatch => "CDZ0301",
             Code::IntOutOfRange => "CDZ0302",

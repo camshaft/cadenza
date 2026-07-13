@@ -1511,14 +1511,39 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                     // NOT over-rejected — only the diagnostic CODE is specialized: a variant-ctor head
                     // reclassifies the unify mismatch from the generic `CDZ0203` to the structural
                     // `CDZ0201`. A non-ctor head (an ordinary function, an operator) keeps `CDZ0203`.
+                    let sparam = subst.apply(&param);
+                    let sat = subst.apply(&at);
                     if crate::eval::variant_disc_of(db, head).is_some() {
                         out.push(Reject::coded(
                             Code::Malformed,
                             format!(
                                 "a variant constructor's payload has declared type {}, but a value of \
                                  type {} was applied",
-                                subst.apply(&param).render_name(),
-                                subst.apply(&at).render_name()
+                                sparam.render_name(),
+                                sat.render_name()
+                            ),
+                        ));
+                    } else if let (Ty::Sum { decl: da, .. }, Ty::Sum { decl: db_, .. }) =
+                        (&sparam, &sat)
+                        && da != db_
+                        && same_sum_shape(db, *da, *db_)
+                    {
+                        // Two DISTINCT NOMINAL types (both sums) of the SAME STRUCTURAL SHAPE unified in the
+                        // same position — the classic is comparing them, `(= (A.Mk 1) (B.Mk 1))` for
+                        // same-shape sums `A`/`B` (the `=` operator is `∀a. a → a → Bool`, so its two
+                        // operands unify against one `a` and the nominal difference conflicts here). A
+                        // nominal type's identity is its declaration, so this is a comparison ACROSS THE
+                        // NOMINAL BOUNDARY — `CDZ0202`, ill-typed, NOT the `false` an untagged structural
+                        // comparison would give (`type-system.md` §Nominal Types Are Not Comparable Across
+                        // Their Boundary). Two sums of DIFFERENT shape (disjoint variant names — `Option` vs
+                        // `Result`) are unrelated types, the plain `CDZ0203` mismatch, so the shape guard
+                        // keeps that case on the generic code (the corpus draws exactly this line).
+                        out.push(Reject::coded(
+                            Code::NominalMismatch,
+                            format!(
+                                "comparing distinct nominal types {} and {} across the nominal boundary",
+                                sparam.render_name(),
+                                sat.render_name()
                             ),
                         ));
                     } else {
@@ -1538,6 +1563,26 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             }
         }
     }
+}
+
+/// Whether two sum DECLARATIONS have the same STRUCTURAL SHAPE — the same variant NAMES in the same
+/// order, each with the same payload arity. Used to tell a NOMINAL-boundary comparison (`CDZ0202`, two
+/// same-shape sums `A`/`B` differing only in tag) from an ordinary type mismatch (`CDZ0203`, two sums of
+/// DIFFERENT shape — `Option` vs `Result` — which are unrelated types). This is the structural relation
+/// nominal identity is an orthogonal tag OVER (`type-system.md` §Nominal Is An Orthogonal Modifier Over
+/// Any Structural Type): the tag distinguishes two types that would otherwise be the same shape. Compares
+/// the declared variant names + payload counts (the shape the corpus's disjoint-vs-same-shape cases draw
+/// the line on); it does not descend payload TYPES (a same-names-different-payload edge is out of scope).
+fn same_sum_shape(db: &Db, a: StructId, b: StructId) -> bool {
+    let (Some(da), Some(dbecl)) = (db.type_decl_by_occ(a), db.type_decl_by_occ(b)) else {
+        return false;
+    };
+    da.variants.len() == dbecl.variants.len()
+        && da
+            .variants
+            .iter()
+            .zip(dbecl.variants.iter())
+            .all(|(va, vb)| va.name == vb.name && va.payloads.len() == vb.payloads.len())
 }
 
 /// The type-agreement faults reachable from `id` — a query READ over the demand-filled type column,

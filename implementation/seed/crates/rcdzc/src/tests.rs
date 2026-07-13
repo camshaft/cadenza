@@ -10335,6 +10335,43 @@ mod stage1 {
     }
 
     #[test]
+    fn comparing_distinct_same_shape_nominal_sums_is_a_nominal_boundary_error() {
+        // Comparing two values whose types are distinct NOMINAL sums of the SAME structural shape —
+        // `(= (A.Mk 1) (B.Mk 1))` for `(type A (Mk Int64))` / `(type B (Mk Int64))` — is a comparison
+        // across the nominal boundary (CDZ0202), NOT the `false` an untagged structural comparison gives
+        // (type-system.md §Nominal Types Are Not Comparable Across Their Boundary). Two sums of DIFFERENT
+        // shape (disjoint variants — `Option` vs `Result`) are unrelated types → the plain CDZ0203; the
+        // same sum compared to itself is well-typed (→ false).
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m {body} (def (main) 0) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Same-shape distinct sums → CDZ0202.
+        assert_eq!(
+            code("(type A (Mk Int64)) (type B (Mk Int64)) (def (c) (= (A.Mk 1) (B.Mk 1)))").as_deref(),
+            Some("CDZ0202")
+        );
+        // Disjoint-variant sums (Option vs Result) → CDZ0203 (unrelated types, not a nominal boundary).
+        assert_eq!(
+            code("(def (c) (= (Some 1) (Ok 1)))").as_deref(),
+            Some("CDZ0203")
+        );
+        // A scalar-vs-Bool mismatch stays CDZ0203.
+        assert_eq!(code("(def (c) (= 1 true))").as_deref(), Some("CDZ0203"));
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
