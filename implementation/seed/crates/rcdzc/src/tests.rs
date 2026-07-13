@@ -4591,6 +4591,73 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_clear_low_bits_shift_pair_elides_the_left_shift_overflow_guard() {
+        // CLEAR-LOW-BITS IDIOM: `(<< (>> v k) k)` — right shift by k then left by the SAME k — just clears
+        // v's low k bits (`floor(v/2^k)*2^k`), which NEVER overflows v's type (for BOTH shift kinds: signed
+        // stays ≥ MIN since MIN is a multiple of 2^k, unsigned stays ≤ v). The interval analysis can't see
+        // this (a signed `v >>ₛ k` over a full-range v has no finite range, so `[MIN<<k, MAX<<k]` spuriously
+        // overflows) — a structural recognizer in `shl_provably_in_range` drops the `<<` overflow round-trip.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The `(<< (>> x 4) 4)` shift has NO overflow round-trip: the guard's `i64.ne`+`unreachable` is gone.
+        let idiom = lir("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)");
+        assert!(
+            !idiom.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "the clear-low-bits `<<` overflow round-trip should be elided, got: {idiom:?}"
+        );
+        // A bare `(<< x 4)` (NOT the idiom) KEEPS its overflow guard — the round-trip `i64.ne` stays.
+        let bare = lir("(: x Int64)", "(: (<< x 4) Int64)");
+        assert!(
+            bare.iter().any(|i| matches!(i, Lir::I64Ne)),
+            "a bare `<< 4` must keep its overflow guard, got: {bare:?}"
+        );
+
+        // VALUE PARITY across signs + widths: clearing the low k bits, MIN/MAX boundaries, no false trap.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(255)]), 240);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(-1)]), -16);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(i64::MIN)]),
+            i64::MIN,
+            "MIN cleared of its (already-zero) low bits stays MIN — no overflow"
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(i64::MAX)]),
+            i64::MAX - 15
+        );
+        // Narrow Int8: `(<< (>> x 3) 3)` clears the low 3 bits; MIN stays MIN (no overflow).
+        assert_eq!(run::<i8>("(: x Int8)", "(: (<< (: (>> x 3) Int8) 3) Int8)", &[Val::S8(127)]), 120);
+        assert_eq!(run::<i8>("(: x Int8)", "(: (<< (: (>> x 3) Int8) 3) Int8)", &[Val::S8(-128)]), -128);
+        // The idiom NEVER traps (even at MAX, where a bare `<< 4` would); a genuine `<< 4` overflow still does.
+        assert!(!traps("(: x Int64)", "(: (<< (: (>> x 4) Int64) 4) Int64)", &[Val::S64(i64::MAX)]));
+        assert!(traps("(: x Int64)", "(: (<< x 4) Int64)", &[Val::S64(1i64 << 60)]));
+    }
+
+    #[test]
     fn constant_count_shift_folds_the_count_guard() {
         // A shift by a COMPILE-TIME-CONSTANT count folds the runtime `count >= width` guard (the
         // condition is decided at compile time). It must behave IDENTICALLY to the runtime-count form:
