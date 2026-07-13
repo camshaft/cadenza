@@ -197,7 +197,6 @@
            applied to 7, its `C.A` result matches the `(C.A m)` arm → 7. Pins that a closure stored in a
            declared-function-typed payload takes its parameter type from that declaration — the callback-
            in-a-variant idiom without redundant annotations.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (type T (Susp (-> Int64 C)))
@@ -210,7 +209,6 @@
            type the `Some` payload fixes to the function `Int64 → C`, so `n : Int64` without annotation.
            Applied to 7 through the match binder → its `C.A` result yields 7. Pins the expected-arrow
            threading works for a built-in Option payload exactly as for a user variant.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (def (main) (match (Some (fn (n) (C.A n))) ((Some f) (match (f 7) ((C.A m) m) ((C.B) 0))) ((None) 0)))
@@ -223,7 +221,6 @@
            C)`. Without the expected-arrow fallback this declined 'a closure's parameter type has no
            machine representation' (nothing pinned `n`). Applied to 7, the body yields `C.B` → the `(C.B)`
            arm → 0. Pins that the declared arrow types even a body-unconstrained parameter.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (type T (Susp (-> Int64 C)))
@@ -237,7 +234,6 @@
            payload arrow `(-> Int64 C)`. Extracted and applied to 7 with k = 100 → `C.A (7 + 100)` → 107.
            Pins that the storage-context parameter typing composes with capture — the closure retains its
            environment through the variant payload and still types its parameter from the declaration.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (A Int64) B)
             (type T (Susp (-> Int64 C)))
