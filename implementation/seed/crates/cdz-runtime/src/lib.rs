@@ -6193,6 +6193,48 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak: every float value dropped");
     }
 
+    /// NaN canonicalization composes through a COMPOUND: two tuples `(nan, x)` built from DIFFERENT NaN
+    /// bit patterns are `value-eq` equal and hash-identical (so they are the same map key), because each
+    /// NaN element canonicalizes to one byte form on `box-float`. This is the reachable path Float64-in-
+    /// compound (@ea74c89f) + NaN-canonicalization (@f25d7075) enable together — `value-eq` (op 61) IS the
+    /// language `=` on runtime compounds, so a struct/tuple carrying a NaN must compare structurally equal
+    /// regardless of the NaN's origin. A tuple with -0.0 vs one with 0.0 stays UNEQUAL (distinct forms).
+    #[test]
+    fn nan_in_a_compound_is_value_eq_across_bit_patterns() {
+        reset();
+        let before = live_nodes();
+        let nan_a = f64::from_bits(0x7ff8_0000_0000_0001);
+        let nan_b = f64::from_bits(0xfff8_0000_dead_beef);
+        // (nan_a, 5) and (nan_b, 5) — different NaN bits, same int → structurally EQUAL after canon.
+        let mk = |nan: f64| -> Handle {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_float(nan));
+            op_arr_set(t, 1, op_box_int(5));
+            t
+        };
+        let ta = mk(nan_a);
+        let tb = mk(nan_b);
+        assert!(champ_eq(ta, tb), "two tuples carrying a NaN are value-eq (canonical NaN byte form)");
+        assert_eq!(champ_hash(ta), champ_hash(tb), "…and hash identically (same compound map key)");
+        op_drop(ta);
+        op_drop(tb);
+
+        // A tuple with -0.0 differs from one with 0.0 (the -0.0/0.0 forms genuinely differ).
+        let mkz = |z: f64| -> Handle {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, op_box_float(z));
+            op_arr_set(t, 1, op_box_int(5));
+            t
+        };
+        let tzp = mkz(0.0);
+        let tzn = mkz(-0.0);
+        assert!(!champ_eq(tzp, tzn), "(−0.0, 5) ≠ (0.0, 5) — distinct canonical byte forms");
+        op_drop(tzp);
+        op_drop(tzn);
+
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     fn alloc_calls() -> u64 {
         ALLOC_CALLS.load(std::sync::atomic::Ordering::Relaxed)
     }
