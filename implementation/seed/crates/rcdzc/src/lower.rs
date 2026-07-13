@@ -6254,6 +6254,32 @@ pub(crate) fn arith_provably_in_range(db: &mut Db, op: Prim, lhs: StructId, rhs:
     rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
+/// Whether `val << k` provably CANNOT overflow the type of `val` — so the shift's overflow round-trip
+/// guard (and narrow range-check) can be elided. A left shift is exact multiplication by `2^k`, so it
+/// overflows iff the interval `[vlo << k, vhi << k]` leaves the type's `[min, max]`. `<<` is monotone for
+/// `k ≥ 0`, so checking both endpoints (in `i128`, never wrapping) suffices. Used by both the `<<` emit
+/// and the `* 2^k → <<` strength-reduction emit — a masked/bounded operand (`(<< (& x 15) 2)` = `[0,60]`)
+/// sheds its guard. `None` operand range → `false` (keep the guard). Verified sound by endpoint check.
+pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool {
+    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
+        return false;
+    };
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+        Some(b) => b,
+        None => return false,
+    }) else {
+        return false;
+    };
+    let Some((vlo, vhi)) = closed_range(db, val) else {
+        return false;
+    };
+    // `k < 128` guaranteed (a valid shift count is `< width ≤ 64`); the i128 shift never overflows for a
+    // real operand interval, and the fit-check against the i64-representable type bounds catches any
+    // out-of-type result.
+    let (rlo, rhi) = ((vlo as i128) << k, (vhi as i128) << k);
+    rlo >= tmin as i128 && rhi <= tmax as i128
+}
+
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
 /// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
 /// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL

@@ -3683,6 +3683,33 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_provably_in_range_shift_computes_the_same_value_without_a_guard() {
+        // A `<<` / `* 2^k` whose result provably fits (a masked operand) has its overflow guard elided —
+        // the value must be EXACTLY the guarded result. `(<< (& x 15) 2)` = (x&15)*4 ∈ [0,60].
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(255)]),
+            60
+        ); // 15*4
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(-1)]),
+            60
+        ); // (-1&15)*4
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(1)]),
+            4
+        );
+        // `(* (& x 15) 2)` = (x&15)*2 ∈ [0,30], strength-reduced to `<< 1`, guard elided.
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 2)", &[Val::S64(255)]),
+            30
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 2)", &[Val::S64(7)]),
+            14
+        );
+    }
+
+    #[test]
     fn constant_count_shift_folds_the_count_guard() {
         // A shift by a COMPILE-TIME-CONSTANT count folds the runtime `count >= width` guard (the
         // condition is decided at compile time). It must behave IDENTICALLY to the runtime-count form:
@@ -20608,9 +20635,11 @@ mod closure_host_resource {
     #[test]
     fn a_closure_export_parameter_declines_with_a_clear_message() {
         use crate::testkit::parse;
-        let src = "(module m (def (invoke (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export invoke))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a closure-typed export parameter must DECLINE (Direction 2 not yet built)");
+        let src =
+            "(module m (def (invoke (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export invoke))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure-typed export parameter must DECLINE (Direction 2 not yet built)",
+        );
         assert!(
             err.message.contains("passed AS A PARAMETER"),
             "expected the Direction-2 not-yet-supported message, got: {}",
