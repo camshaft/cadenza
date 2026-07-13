@@ -606,33 +606,227 @@ fn dwarf_funcs_for(
 /// Requires `spans` (guaranteed present by `compile`'s §9.4 check for a `needs_spans()` target). The
 /// resource-escape shapes decline here for now (same scope as Mode E) — their code offsets come from a
 /// different core layout, a later increment.
-pub fn emit_dwarf(
+/// DWARF descriptors for a nullary-compound RESOURCE-ESCAPE export, for the detached sidecar (Mode S).
+///
+/// A single nullary export returning a compound crosses through the resource-escape core, NOT the
+/// ordinary multi-export core — so `emit_dwarf` cannot use its own ordinary-path core to place code
+/// offsets. This mirrors [`emit`]'s resource dispatch exactly (constant / sum / runtime-Bytes / runtime
+/// flat) to rebuild the SAME resource `main_core` the embedded Mode-E path attributes over, then derives
+/// the per-function DWARF descriptors from it via the shared [`dwarf_funcs_for`]. Because the embedded
+/// path appends its debug sections AFTER that core's code section (inert), a function's code offset is
+/// identical embedded-vs-sidecar — so a debugger maps to the same instruction with either artifact.
+///
+/// Returns:
+/// - `Ok(Some(funcs))` — the export IS a resource escape; `funcs` are its describable functions (EMPTY
+///   for a fully-constant compound, whose resource core bakes bytes and has no user body — Mode E emits
+///   no `.debug_*` there either, so an empty descriptor list yields a valid CU with no subprograms).
+/// - `Ok(None)` — the export is NOT a resource escape; the caller uses the ordinary-path core.
+/// - `Err(_)` — a genuine decline (a runtime compound shape with no value-form walker yet, matching the
+///   embedded path's own decline for the same shape).
+fn resource_escape_dwarf(
     db: &mut Db,
     layout: &Layout,
     span_data: &crate::spans::SpanData,
-) -> Result<Vec<u8>, Reject> {
-    // A nullary-compound resource escape has a different core layout; the sidecar-DWARF path does not
-    // model it yet (parallel to Mode E's scope). Decline cleanly rather than emit offsets into the wrong
-    // core.
-    if let [e] = &layout.exports[..]
-        && e.params.is_empty()
-        && matches!(
+) -> Result<Option<Vec<dwarf::DwarfFunc>>, Reject> {
+    // Only a single nullary export returning a compound takes the resource-escape core (mirrors `emit`).
+    let [e] = &layout.exports[..] else {
+        return Ok(None);
+    };
+    if !e.params.is_empty()
+        || !matches!(
             e.result,
             crate::ty::Ty::Tuple(_)
                 | crate::ty::Ty::Record(_)
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
-                // A map export takes the resource-escape core too, so the sidecar-DWARF path declines it.
                 | crate::ty::Ty::Map(_, _)
                 | crate::ty::Ty::Bytes
-                // A bare `String` export also takes the resource-escape core (its constant bytes baked),
-                // so the sidecar-DWARF path declines it here alongside the other compounds.
                 | crate::ty::Ty::String
         )
     {
-        return Err(Reject::decline(
-            "a DWARF sidecar for a compound-returning export is not yet supported",
-        ));
+        return Ok(None);
+    }
+    let export_def = e.def;
+    let result = e.result.clone();
+    let body = def_body(db, export_def)?;
+
+    // A fully-CONSTANT compound bakes its bytes into a resource core with NO user function — nothing to
+    // attribute. Mode E emits no `.debug_*` for it; the sidecar's CU therefore has no subprograms.
+    if crate::lower::constant_value_form(db, body).is_some() {
+        return Ok(Some(Vec::new()));
+    }
+
+    // A RUNTIME compound: reconstruct the resource core the embedded path builds for this variant, then
+    // read its code offsets. Each arm computes the SAME (imports, funcs, main_core) triple its embedded
+    // sibling does, so the offsets align. `resource_dwarf_from_core` finishes the shared tail.
+    if let crate::ty::Ty::Sum { .. } = &result {
+        let Some(tpl) = crate::lower::sum_form_template(db, &result) else {
+            return Err(Reject::decline(
+                "a DWARF sidecar for this sum-returning export is not yet supported (its variant \
+                 payload has no value form — matches the embedded path's own decline)",
+            ));
+        };
+        let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {
+            used.insert("sum-disc");
+            let mut any_payload = false;
+            let mut any_nested = false;
+            for variant in &tpl.variants {
+                for leaf in &variant.leaves {
+                    any_payload |= leaf.via_sum_payload;
+                    any_nested |= !leaf.path.is_empty();
+                    match leaf.kind {
+                        crate::lower::LeafFill::Int => used.insert("get-int"),
+                        crate::lower::LeafFill::Bool => used.insert("get-bool"),
+                    };
+                }
+            }
+            if any_payload {
+                used.insert("sum-payload");
+            }
+            if any_nested {
+                used.insert("arr-get");
+            }
+            used.insert("drop");
+        })?;
+        let export_abs = layout.abs(export_def).ok_or_else(|| {
+            Reject::decline("the escaping sum export is not in the emission order")
+        })?;
+        let main_core = serialize::runtime_resource_core_module_form(
+            &funcs,
+            &imports,
+            export_abs,
+            serialize::EscapeForm::Sum(&tpl),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(Some(resource_dwarf_from_core(
+            db, &layout, &funcs, &imports, &main_core, span_data,
+        )?));
+    } else if matches!(result, crate::ty::Ty::Bytes) {
+        let Some(form) = crate::lower::runtime_bytes_form(db) else {
+            return Err(Reject::decline(
+                "a DWARF sidecar for this runtime-Bytes export is not yet supported (no value form)",
+            ));
+        };
+        let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+            used.insert("drop");
+        })?;
+        let export_abs = layout.abs(export_def).ok_or_else(|| {
+            Reject::decline("the escaping bytes export is not in the emission order")
+        })?;
+        let main_core = serialize::runtime_resource_core_module_form(
+            &funcs,
+            &imports,
+            export_abs,
+            serialize::EscapeForm::RuntimeBytes(&form),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(Some(resource_dwarf_from_core(
+            db, &layout, &funcs, &imports, &main_core, span_data,
+        )?));
+    } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
+        let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {
+            if tpl.leaves.iter().any(|l| !l.path.is_empty()) {
+                used.insert("arr-get");
+            }
+            for leaf in &tpl.leaves {
+                match leaf.kind {
+                    crate::lower::LeafFill::Int => used.insert("get-int"),
+                    crate::lower::LeafFill::Bool => used.insert("get-bool"),
+                };
+            }
+            used.insert("drop");
+        })?;
+        let export_abs = layout
+            .abs(export_def)
+            .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
+        let main_core = serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl)
+            .map_err(Reject::decline)?;
+        return Ok(Some(resource_dwarf_from_core(
+            db, &layout, &funcs, &imports, &main_core, span_data,
+        )?));
+    }
+
+    // A runtime compound with no value-form walker yet (e.g. a runtime list) — the embedded path
+    // declines the same shape, so the sidecar does too rather than emit into a core it can't build.
+    Err(Reject::decline(
+        "a DWARF sidecar for this runtime compound-returning export is not yet supported (no value \
+         form — matches the embedded path's own decline)",
+    ))
+}
+
+/// Shared setup for a resource-escape sidecar: fix the import set (the reachable bodies' ops PLUS the
+/// walker/dtor ops the `extra` closure adds), shift the layout's import base past `k + 2` (the ops +
+/// `resource-new`/`resource-rep`, as every runtime-resource emitter does), and select every reachable
+/// body. Returns the imports, the selected funcs, and the base-shifted layout — the inputs both the
+/// resource core builder and `dwarf_funcs_for` need. Mirrors the head of `emit_runtime_resource`.
+fn resource_escape_build(
+    db: &mut Db,
+    layout: &Layout,
+    extra: impl FnOnce(&mut std::collections::BTreeSet<&'static str>),
+) -> Result<(Vec<&'static runtime_abi::RtOp>, Vec<SelectedFunc>, Layout), Reject> {
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    extra(&mut used);
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+    let layout = layout.with_import_base(imports.len() as u32 + 2);
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.export_plan(def) {
+            Some(ep) => ep.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function_of(db, body, &params, &layout, Some(def))?);
+    }
+    Ok((imports, funcs, layout))
+}
+
+/// Derive the per-function DWARF descriptors from a resource-escape `main_core` — its code-section base
+/// (the resource core is what the embedded Mode-E path attributes over, so the sidecar references the
+/// same offsets). The shared tail of every resource-escape sidecar arm.
+fn resource_dwarf_from_core(
+    db: &Db,
+    layout: &Layout,
+    funcs: &[SelectedFunc],
+    imports: &[&runtime_abi::RtOp],
+    main_core: &[u8],
+    span_data: &crate::spans::SpanData,
+) -> Result<Vec<dwarf::DwarfFunc>, Reject> {
+    let code_base = dwarf::code_section_payload_base(main_core)
+        .ok_or_else(|| Reject::decline("the resource core has no code section to reference"))?;
+    Ok(dwarf_funcs_for(
+        db, layout, funcs, imports, code_base, span_data,
+    ))
+}
+
+pub fn emit_dwarf(
+    db: &mut Db,
+    layout: &Layout,
+    span_data: &crate::spans::SpanData,
+) -> Result<Vec<u8>, Reject> {
+    // A nullary-compound export crosses via the RESOURCE-ESCAPE core (a different layout than the
+    // ordinary multi-export path). Its Mode-E component carries DWARF over the resource core's user
+    // bodies; the sidecar must reference those SAME code offsets. `resource_escape_dwarf` recomputes the
+    // matching resource core and derives the per-function descriptors from it — returning `Some(funcs)`
+    // for a resource-escape export (possibly empty, for a fully-constant compound with no user bodies to
+    // attribute — a valid CU with no subprograms, mirroring Mode E, which emits no `.debug_*` there) or
+    // `None` when the export is NOT a resource escape (fall through to the ordinary path below).
+    if let Some(dwarf_funcs) = resource_escape_dwarf(db, layout, span_data)? {
+        let sections = dwarf::debug_sections(&span_data.module_path, &dwarf_funcs);
+        return Ok(dwarf::standalone_dwarf_module(&sections));
     }
 
     // Recompute the exact core the runnable component embeds (imports + selection + serialize), so the

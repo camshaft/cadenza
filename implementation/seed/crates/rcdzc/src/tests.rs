@@ -16445,6 +16445,77 @@ mod debug_info {
             .to_vec()
     }
 
+    /// Every embedded core module's bytes, in order — the resource envelope embeds several (a dtor plus
+    /// the main walker core), and the `.debug_*` sections ride in a LATER one, not the first `dtor`. A
+    /// raw section-framing scan (a component's core-module is section id 1) rather than `wasmparser`,
+    /// whose stateful reader chokes when a nested module's own `\0asm` magic follows the section header.
+    fn core_modules_of(component: &[u8]) -> Vec<Vec<u8>> {
+        fn uleb(b: &[u8], i: &mut usize) -> u64 {
+            let (mut r, mut s) = (0u64, 0u32);
+            loop {
+                let x = b[*i];
+                *i += 1;
+                r |= u64::from(x & 0x7f) << s;
+                s += 7;
+                if x & 0x80 == 0 {
+                    return r;
+                }
+            }
+        }
+        let mut mods = Vec::new();
+        if component.get(0..4) != Some(b"\0asm") {
+            return mods;
+        }
+        let mut i = 8; // past `\0asm` + the 4-byte version/layer word
+        while i < component.len() {
+            let sid = component[i];
+            i += 1;
+            let len = uleb(component, &mut i) as usize;
+            // In a COMPONENT, section id 1 is an embedded core module (its body IS a `\0asm…` module).
+            if sid == 1 {
+                mods.push(component[i..i + len].to_vec());
+            }
+            i += len;
+        }
+        mods
+    }
+
+    /// The bytes of a named custom section inside a CORE module (`\0asm`…), or `None`. A dev-only
+    /// scanner used to byte-compare a sidecar's `.debug_*` against the embedded component's.
+    fn custom_section_of(core: &[u8], want: &str) -> Option<Vec<u8>> {
+        fn uleb(b: &[u8], i: &mut usize) -> u64 {
+            let (mut r, mut s) = (0u64, 0u32);
+            loop {
+                let x = b[*i];
+                *i += 1;
+                r |= u64::from(x & 0x7f) << s;
+                s += 7;
+                if x & 0x80 == 0 {
+                    return r;
+                }
+            }
+        }
+        if core.get(0..4) != Some(b"\0asm") {
+            return None;
+        }
+        let mut i = 8;
+        while i < core.len() {
+            let sid = core[i];
+            i += 1;
+            let len = uleb(core, &mut i) as usize;
+            let body = &core[i..i + len];
+            if sid == 0 {
+                let mut j = 0;
+                let nl = uleb(body, &mut j) as usize;
+                if std::str::from_utf8(&body[j..j + nl]) == Ok(want) {
+                    return Some(body[j + nl..].to_vec());
+                }
+            }
+            i += len;
+        }
+        None
+    }
+
     /// The parsed `name` section: the optional module name and the `(func_index, name)` pairs.
     type NameSection = (Option<String>, Vec<(u32, String)>);
 
@@ -17329,6 +17400,91 @@ mod debug_info {
                 .windows(b".debug_info".len())
                 .any(|w| w == b".debug_info"),
             "a plain compound-returning component must carry no DWARF"
+        );
+    }
+
+    #[test]
+    fn a_compound_returning_export_gets_a_dwarf_sidecar_matching_the_embedded_dwarf() {
+        // Mode S for the RESOURCE-ESCAPE path: a compound-returning export used to DECLINE a detached
+        // `dwarf` sidecar ("not yet supported"). It now emits one, and — the load-bearing invariant —
+        // its `.debug_*` sections are BYTE-IDENTICAL to the ones the embedded (Mode E) component carries,
+        // so a debugger maps to the same instructions with either artifact. Covers the flat-tuple, sum,
+        // and runtime-Bytes escape cores (each a distinct resource core layout).
+        for src in [
+            // runtime tuple (recursive build → real user bodies, resource-escape core)
+            "(module m \
+               (def (f (: n Int64)) (if (= n 0) (tuple n 7) (f (- n 1)))) \
+               (def (main) (f 3)) \
+               (export main))",
+            // runtime sum (Some payload, disc-switch walker)
+            "(module m \
+               (def (pick (: n Int64)) (if (= n 0) (Some 5) (pick (- n 1)))) \
+               (def (main) (pick 3)) \
+               (export main))",
+            // runtime Bytes (looping walker)
+            "(module m \
+               (def (grow (: n Int64) (: acc Bytes)) \
+                 (if (= n 0) acc (grow (- n 1) (Bytes.concat acc (Bytes.of (list 65)))))) \
+               (def (main) (grow 3 (Bytes.of (list)))) \
+               (export main))",
+        ] {
+            // The sidecar (Mode S).
+            let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+            assert!(
+                !out.has_error(),
+                "a compound-returning export must now emit a dwarf sidecar, not decline: {:?}",
+                out.diagnostics
+            );
+            let sidecar = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+
+            // The embedded (Mode E) component — find the core module that carries the DWARF (a resource
+            // envelope embeds several; the dtor core carries none).
+            let embedded = component_of(src, Target::WasmDebug);
+            let debug_core = core_modules_of(&embedded)
+                .into_iter()
+                .find(|m| custom_section_of(m, ".debug_info").is_some())
+                .expect("an embedded core module carrying DWARF");
+
+            for sect in [".debug_info", ".debug_line", ".debug_abbrev", ".debug_str"] {
+                let s = custom_section_of(&sidecar, sect);
+                let e = custom_section_of(&debug_core, sect);
+                assert_eq!(
+                    s, e,
+                    "the sidecar's {sect} must be byte-identical to the embedded component's \
+                     (same code offsets); src = {src}"
+                );
+                assert!(s.is_some(), "the sidecar must carry {sect}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_constant_compound_export_gets_a_valid_empty_dwarf_sidecar() {
+        // A FULLY-CONSTANT compound bakes its bytes into a resource core with NO user function to
+        // attribute — the embedded path emits no `.debug_*` for it. The sidecar must therefore be a
+        // VALID module with an empty compile unit (no subprograms), NOT a decline and not malformed.
+        let src = "(module m (def (pair) (tuple 42 7)) (export pair))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(
+            !out.has_error(),
+            "a constant compound must emit an (empty) sidecar, not decline: {:?}",
+            out.diagnostics
+        );
+        let sidecar = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+        // A bare core module carrying a `.debug_info` (the CU) but the CU has no subprogram DIEs — there
+        // were no user bodies. We assert the section EXISTS (the standalone module is well-formed) and
+        // that the embedded component carried no `.debug_info` (nothing to attribute), the dual property.
+        assert!(
+            custom_section_of(&sidecar, ".debug_info").is_some(),
+            "even an empty CU sidecar carries a .debug_info section"
+        );
+        let embedded = component_of(src, Target::WasmDebug);
+        let has_embedded_dwarf = core_modules_of(&embedded)
+            .iter()
+            .any(|m| custom_section_of(m, ".debug_info").is_some());
+        assert!(
+            !has_embedded_dwarf,
+            "a constant compound's embedded component has no user body → no embedded DWARF"
         );
     }
 
