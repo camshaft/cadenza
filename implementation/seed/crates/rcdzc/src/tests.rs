@@ -14933,6 +14933,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handle_with_an_unbound_effect_name_reports_one_error_not_a_shadowing_decline() {
+        // `handle Nope …` where `Nope` is not a declared effect: the unbound name is CDZ0101 (with a
+        // did-you-mean fix), and the handle can't fold → the emit path would ALSO return the "not yet
+        // reducible" decline. That decline is a consequence of the unbound effect, not an independent
+        // limitation — the lower path detects the arm op is an unbound name and propagates that CDZ0101
+        // (which dedups) instead of the decline, so the fault is ONE primary error carrying the fix.
+        let src = "(do (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle Nope 0 ((get (u) s (resume s s))) 42)) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an unbound effect name = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0101"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "the not-reducible decline must not shadow the unbound-effect CDZ0101"
+        );
+    }
+
+    #[test]
     fn a_handler_arm_for_an_undeclared_operation_is_cdz0403() {
         // E2a: a handler arm naming an operation its effect does not declare is a closed-set violation —
         // CDZ0403 (`capabilities-and-effects.md` §A Handler Arm Names An Operation Its Effect Declares).

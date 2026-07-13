@@ -1318,9 +1318,33 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     db.reparent(rewritten, Some(id), db.child_ix_of(id) as u32);
                     core_of(db, rewritten)
                 }
-                None => Core::Poison(Reject::decline(
-                    crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
-                )),
+                None => {
+                    // `reduce_handle` failed. When the handle's EFFECT NAME is UNBOUND (`handle Nope …`),
+                    // every arm op `(. Nope op)` projects an unbound name — a CDZ0101 already reported
+                    // authoritatively at the name — and the fold could never run, so the generic "not yet
+                    // reducible" decline here is a SHADOW of that CDZ0101 (a second `error:` for one root
+                    // cause). Detect it by lowering an arm op whose `(meta effect-op)` is absent and
+                    // checking its poison is a CDZ0101; if so, propagate THAT poison (it dedups against the
+                    // anchored unbound-name copy) so `handle Nope …` reports ONE error carrying the
+                    // did-you-mean fix. An UNDECLARED op on a KNOWN effect (`gett` on `E`) is left to its
+                    // CDZ0403 (whose decline M2's `dedup_faults` already suppresses) — lowering that arm op
+                    // would surface the weaker raw member-access CDZ0201 instead. A handle whose arms all
+                    // resolve but still can't fold (a real cross-function / non-tail resume) keeps the
+                    // honest decline (the corpus expects it).
+                    let unbound_arm_op = arms.iter().map(|a| a.op).find(|&op| {
+                        crate::eval::effect_op_of(db, op).is_none()
+                            && matches!(
+                                core_of(db, op),
+                                Core::Poison(ref r) if r.code == Some(crate::diag::Code::Unbound)
+                            )
+                    });
+                    match unbound_arm_op {
+                        Some(op) => core_of(db, op),
+                        None => Core::Poison(Reject::decline(
+                            crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
+                        )),
+                    }
+                }
             }
         }
         // A `(host (E…) body)` DELEGATES its listed effects to the component boundary (an entrypoint's
