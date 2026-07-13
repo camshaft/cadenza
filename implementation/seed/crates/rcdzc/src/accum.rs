@@ -23,15 +23,18 @@
 //! existing occurrences under `resolve_subtree` would.
 //!
 //! ## Scope
-//! Exactly the LINEAR self-recursion `f p… = (if BASE ID (OP g (f REC…)))` where:
+//! The LINEAR self-recursion `f p… = (if COND base-or-combine …)` where:
 //!  - `OP` is an ASSOCIATIVE binary op with a known identity — `+`/`*`/`+%`/`*%` (identity `0`/`1`);
-//!  - the base value equals `OP`'s identity;
+//!  - one `if` branch is the base value (`= OP`'s identity), the other the combine `(OP g (f REC…))`;
 //!  - exactly ONE self-recursive call, in one operand of `OP`; the OTHER operand `g` does not itself
 //!    recurse (it is the per-step term folded into the accumulator);
+//!  - EITHER branch ordering: the guide's `(if (= n 0) base combine)` (base in THEN) OR a FLIPPED
+//!    `(if (> n 0) combine base)` (base in ELSE). The condition is reused verbatim; the accumulator
+//!    places its branches in the same order so the condition still selects the base case;
 //!  - ANY number of parameters. Every self-call argument is threaded through the synthesized accumulator
 //!    UNCHANGED (a recursion variable like `n` or a pass-through like a limit/config/closure `k` alike),
 //!    and each original binder — annotations and all — carries over so a function-typed parameter still
-//!    types. The flipped base `(if (!= n 0) combine base)` remains a later refinement.
+//!    types.
 //!
 //! ## Soundness (the operator's call: checked `+` too, accept a trap-point change)
 //! Reassociating a CHECKED `+`/`*` can move WHERE an overflow traps (a partial sum overflows at a
@@ -76,6 +79,10 @@ struct Match {
     param_names: Vec<String>,
     /// The base-case condition occurrence `(= n 0)` — reused verbatim in the accumulator's `if`.
     base_cond: StructId,
+    /// Which `if` branch holds the BASE value in the original: `true` = THEN (`(if (= n 0) base combine)`,
+    /// the guide's shape), `false` = ELSE (a FLIPPED `(if (> n 0) combine base)`). `apply` places the
+    /// accumulator's branches in the SAME order so the reused condition still selects correctly.
+    base_is_then: bool,
     /// The associative op's spelling (`+`/`*`/`Int64.wrapping-add`/…) and its identity value.
     op_name: String,
     identity: i64,
@@ -88,10 +95,11 @@ struct Match {
 }
 
 /// Match a def against the linear-accumulator shape. Returns `None` (leave the def alone) unless it is
-/// EXACTLY `(def (f p…) (if COND ID (OP g (f REC…))))` with `OP` associative, `ID` = `OP`'s identity, and
-/// the single self-call in one `OP` operand. Any number of parameters is accepted — every self-call
-/// argument is threaded through the accumulator unchanged (reassociation is sound whether a parameter is
-/// a recursion variable or a pass-through).
+/// `(def (f p…) (if COND …))` where one `if` branch is `OP`'s identity `ID` and the other is the combine
+/// `(OP g (f REC…))` — `OP` associative, the single self-call in one `OP` operand. Either branch ordering
+/// is accepted (base in THEN, the guide's shape; or base in ELSE, a flipped condition). Any number of
+/// parameters is accepted — every self-call argument is threaded through the accumulator unchanged
+/// (reassociation is sound whether a parameter is a recursion variable or a pass-through).
 fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
     // At least one parameter, each a bare name (an annotated `(: n T)` is fine — take the inner name).
     // Extra parameters (pass-throughs like a limit/config, or a second recursion variable) are threaded
@@ -113,45 +121,67 @@ fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
     let [cond, then_, else_] = if_tail else {
         return None;
     };
-    // One branch is the base value (the OP identity), the other the recursive combine. The base
-    // condition `(= n 0)` selects the base branch when TRUE, so THEN is the base and ELSE the combine —
-    // the guide's shape. (A flipped `(if (!= n 0) combine base)` is a later refinement.)
-    let (base_val, combine, base_cond) = (*then_, *else_, *cond);
-    // The combine must be `(OP g rec)` or `(OP rec g)` where exactly one operand is the self-call.
+    // One branch is the base value (the OP identity), the other the recursive combine `(OP g (f REC…))`.
+    // Either ordering is accepted: the base condition may select the BASE branch when true (`(if (= n 0)
+    // base combine)` — the guide's shape, base in THEN) or the RECURSIVE branch when true (a FLIPPED
+    // condition `(if (> n 0) combine base)` — base in ELSE). Try ELSE as the combine first (guide shape),
+    // then THEN (flipped). `base_is_then` records which slot holds the base, so `apply` places the
+    // accumulator's branches in the matching order (the condition is reused verbatim).
+    let (base_is_then, base_val, op_name, identity, term, rec_args) = if let Some((op, id, t, r)) =
+        match_combine(ast, *else_, &d.name, param_names.len())
+    {
+        (true, *then_, op, id, t, r)
+    } else if let Some((op, id, t, r)) = match_combine(ast, *then_, &d.name, param_names.len()) {
+        (false, *else_, op, id, t, r)
+    } else {
+        return None;
+    };
+    // The base value must be the op's identity literal.
+    if int_literal(ast, base_val)? != identity {
+        return None;
+    }
+    Some(Match {
+        def_form,
+        param_names,
+        base_cond: *cond,
+        base_is_then,
+        op_name,
+        identity,
+        term,
+        rec_args,
+    })
+}
+
+/// If `combine` is `(OP g (f REC…))` or `(OP (f REC…) g)` — an ASSOCIATIVE op (with known identity) whose
+/// operands are exactly one self-call `(f REC…)` and one non-recursive per-step term `g` — decompose it
+/// into `(op_name, identity, term, rec_args)`. Returns `None` for any other shape (not associative, zero
+/// or two self-calls, or a term that itself recurses — the last would need multi-way accumulation).
+fn match_combine(
+    ast: &Arenas,
+    combine: StructId,
+    name: &str,
+    param_count: usize,
+) -> Option<(String, i64, StructId, Vec<StructId>)> {
     let combine_tail = list_children(ast, combine)?;
     let [op_occ, a, b] = combine_tail.as_slice() else {
         return None;
     };
     let op_name = ast.as_name(*op_occ)?.to_string();
     let identity = associative_identity(&op_name)?;
-    // The base value must be the op's identity literal.
-    if int_literal(ast, base_val)? != identity {
-        return None;
-    }
     // Exactly one operand is the self-call `(f REC…)` (an application of the def's own name with one
-    // argument PER PARAMETER); the other is the per-step term. The term must NOT itself recurse (a nested
-    // `f …` in the term would need multi-way accumulation — a later increment).
-    let a_rec = self_call_args(ast, *a, &d.name, param_names.len());
-    let b_rec = self_call_args(ast, *b, &d.name, param_names.len());
+    // argument PER PARAMETER); the other is the per-step term.
+    let a_rec = self_call_args(ast, *a, name, param_count);
+    let b_rec = self_call_args(ast, *b, name, param_count);
     let (term, rec_args) = match (a_rec, b_rec) {
-        (Some(rec), None) if !mentions_name(ast, *b, &d.name) => (*b, rec),
-        (None, Some(rec)) if !mentions_name(ast, *a, &d.name) => (*a, rec),
+        (Some(rec), None) if !mentions_name(ast, *b, name) => (*b, rec),
+        (None, Some(rec)) if !mentions_name(ast, *a, name) => (*a, rec),
         _ => return None, // zero or two self-calls, or the term also recurses — out of scope.
     };
     // The per-step term and every recursion argument must not smuggle in another self-call.
-    if mentions_name(ast, term, &d.name) || rec_args.iter().any(|&r| mentions_name(ast, r, &d.name))
-    {
+    if mentions_name(ast, term, name) || rec_args.iter().any(|&r| mentions_name(ast, r, name)) {
         return None;
     }
-    Some(Match {
-        def_form,
-        param_names,
-        base_cond,
-        op_name,
-        identity,
-        term,
-        rec_args,
-    })
+    Some((op_name, identity, term, rec_args))
 }
 
 /// Synthesize the accumulator def and rewrite the original def to seed it.
@@ -177,11 +207,11 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
     sig_children.extend(param_binders.iter().copied());
     sig_children.push(acc_binder);
 
-    // then-branch: the bare accumulator (base case returns what we've folded so far).
-    let then_ref = push_name(ast, acc_var);
+    // The base branch: the bare accumulator (base case returns what we've folded so far).
+    let base_ref = push_name(ast, acc_var);
 
-    // else-branch: `(acc_name rec_arg… (OP acc term))` — the tail self-call, passing every original
-    // recursion argument unchanged plus the folded accumulator.
+    // The recursive branch: `(acc_name rec_arg… (OP acc term))` — the tail self-call, passing every
+    // original recursion argument unchanged plus the folded accumulator.
     // The combine `(OP acc term)`: LEFT-fold order — acc first. Reuse the ORIGINAL `term` occurrence
     // (it references the params, which bind to this def's params).
     let op_ref = push_name(ast, &m.op_name);
@@ -191,9 +221,16 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
     rec_call_children.extend(m.rec_args.iter().copied());
     rec_call_children.push(combined);
     let rec_call = push_list(ast, rec_call_children);
-    // `(if base_cond then_ref rec_call)` — reuse the original `base_cond` occurrence.
+    // `(if base_cond THEN ELSE)` — reuse the original `base_cond` occurrence, placing the base and
+    // recursive branches in the SAME order the original used (so the reused condition still selects the
+    // base case correctly, whether it was written `(if (= n 0) base rec)` or `(if (> n 0) rec base)`).
     let if_head = push_name(ast, "if");
-    let acc_body = push_list(ast, vec![if_head, m.base_cond, then_ref, rec_call]);
+    let (then_branch, else_branch) = if m.base_is_then {
+        (base_ref, rec_call)
+    } else {
+        (rec_call, base_ref)
+    };
+    let acc_body = push_list(ast, vec![if_head, m.base_cond, then_branch, else_branch]);
     // Signature `(acc_name p… acc)` and the whole `(def sig acc_body)` form.
     let sig = push_list(ast, sig_children);
     let def_head = push_name(ast, "def");
@@ -406,5 +443,34 @@ mod tests {
         );
         let f = db.def_by_name("f").unwrap();
         assert_eq!(db.defs[f].params.len(), 2, "f still has (n, k)");
+    }
+
+    /// A FLIPPED base condition — `(if (> n 0) combine base)`, recursive branch in THEN and the base
+    /// value in ELSE — is also transformed. The matcher recognizes the combine in either branch; the
+    /// accumulator keeps the same branch order so the reused condition still selects the base case.
+    #[test]
+    fn introduce_handles_a_flipped_base_condition() {
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (> n 0) (+ n (f (- n 1))) 0)) (export f))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("f$acc").is_some(),
+            "a flipped-base linear recursion is accumulator-transformed"
+        );
+    }
+
+    /// A flipped shape whose base value is NOT the op's identity (`5`, not `0`) must NOT transform —
+    /// reassociating it would change the result.
+    #[test]
+    fn introduce_declines_a_flipped_base_that_is_not_the_identity() {
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (> n 0) (+ n (f (- n 1))) 5)) (export f))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("f$acc").is_none(),
+            "a non-identity base value must NOT be reassociated"
+        );
     }
 }
