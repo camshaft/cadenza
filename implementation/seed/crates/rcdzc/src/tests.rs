@@ -4275,6 +4275,70 @@ mod runtime_ops {
             0
         );
     }
+
+    #[test]
+    fn a_full_width_mask_on_an_unsigned_value_is_elided() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(& x 255)` on a UInt8 covers the whole value range → the `&` is a no-op, elided to just `x`.
+        let full8 = lir("(: x UInt8)", "(& x 255)");
+        assert!(
+            !full8.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "UInt8 (& x 255) elides the mask; got {full8:?}"
+        );
+        // `(& x 65535)` on a UInt16 likewise.
+        let full16 = lir("(: x UInt16)", "(& x 65535)");
+        assert!(
+            !full16
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "UInt16 (& x 65535) elides the mask; got {full16:?}"
+        );
+        // A PARTIAL mask does NOT elide (`(& x 15)` clears the high nibble).
+        let partial = lir("(: x UInt8)", "(& x 15)");
+        assert!(
+            partial
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "a partial mask keeps the and; got {partial:?}"
+        );
+
+        // VALUE PARITY — the elided mask must give the same value as the explicit `&`.
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(200)]), 200);
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(0)]), 0);
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(255)]), 255);
+        assert_eq!(
+            run::<u16>("(: x UInt16)", "(& x 65535)", &[Val::U16(40000)]),
+            40000
+        );
+        // The partial mask still masks correctly (parity where it is NOT elided).
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(200)]), 8); // 200 & 15 = 8
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
