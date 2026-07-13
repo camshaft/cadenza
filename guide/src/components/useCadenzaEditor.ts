@@ -27,19 +27,23 @@ export type EditorOutcome =
 /// bare top-level forms, so the shell was pure ceremony). Four shapes:
 ///   1. Already a full `module` / `(module …)` — the author wrote it; left untouched.
 ///   2. Already a top-level sequence (a `;` in ML / `(do …)` in s-expr) — assumed complete; untouched.
-///   3. DEFINITIONS (starts with `def`/`type`) — a `main` among them; append an `export`.
+///   3. DEFINITIONS (leads with a top-level declaration keyword — `def`/`type`/`effect`) — a `main` is
+///      among them; append an `export`. `effect` matters: an effects snippet leads with `(effect …)`,
+///      and mis-classifying it as a bare expression wraps the WHOLE multi-form snippet as
+///      `(def (main) …)`, which is malformed (`def`(main(), effect …, def main() …)).
 ///   4. A bare EXPRESSION — becomes `def main() = <expr>` plus the export.
 /// In s-expr the top-level forms must be gathered under one `(do …)` (s-expr has no bare multi-form
 /// top level); in ML they are newline-separated (the surface's native top-level form).
+const DECL_HEAD = "def|type|effect";
 export function wrapModule(src: string, surface: Surface): string {
   const trimmed = src.trim();
   if (surface === "sexpr") {
     if (/^\(module\b/.test(trimmed) || /^\(do\b/.test(trimmed)) return trimmed;
-    if (/^\((def|type)\b/.test(trimmed)) return `(do ${trimmed} (export main))`;
+    if (new RegExp(`^\\((${DECL_HEAD})\\b`).test(trimmed)) return `(do ${trimmed} (export main))`;
     return `(do (def (main) ${trimmed}) (export main))`;
   }
   if (/^module\b/.test(trimmed) || trimmed.includes(";")) return trimmed;
-  if (/^(def|type)\b/.test(trimmed)) return `${trimmed}\nexport { main }`;
+  if (new RegExp(`^(${DECL_HEAD})\\b`).test(trimmed)) return `${trimmed}\nexport { main }`;
   return `def main() = ${trimmed}\nexport { main }`;
 }
 

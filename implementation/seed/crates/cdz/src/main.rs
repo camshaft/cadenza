@@ -736,6 +736,19 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
         };
         any_error |= severity == "error";
+        // A fix the compiler rendered in s-expr form may not be byte-splice-able into THIS file's
+        // surface. `replace`/`delete`/`wrap` render on any surface (a bare name, a deletion, or the
+        // `(ctor …)`→`ctor(…)` reshape). `insert` splices ARM/child scaffold whose syntax only exists
+        // in-context (a handle/match arm) — an s-expr arm can't be lowered to ML by a fragment print —
+        // so on a non-s-expr file we DROP the structured fix (the message still names the arm to add).
+        // Treating it as "no fix node" makes both the human `help:` line and the JSON `fix` object omit
+        // it uniformly. (`cdz fix` already declines it via the verify re-parse; this stops `check --json`
+        // from handing an ML agent an unusable insert.)
+        let fix_node = if fix_kind == "insert" && is_ml_source(&args.file) {
+            "-"
+        } else {
+            fix_node
+        };
 
         // `--verify-fixes`: UPGRADE a heuristic fix to verified when applying it actually clears this
         // diagnostic. The compiler marks a fix verified only when a RULE proves it (D3's `_`-prefix);

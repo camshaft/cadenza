@@ -774,9 +774,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 if let Some(body) = crate::eval::lambda_body_of_nullary(db, head)
                     && crate::eval::is_recursive(db, body)
                 {
-                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: recursive nullary call → decline");
-                    return Core::Poison(Reject::decline(
-                        "a recursive function needs runtime specialization (not yet built)",
+                    // A NULLARY self-recursion has no parameter to vary, so it can never reduce to a value
+                    // (following it re-enters the same body without end) AND has no runtime-function form to
+                    // specialize — a genuinely UNPRODUCTIVE recursion, not a not-yet-built gap. This is the
+                    // robustness case (`self-hosting-and-bootstrap.md` §An Unsupported Construct Is Declined,
+                    // Not Miscompiled): the compiler stops at the recursion bound and declines with the
+                    // reserved CDZ0999 code — "declined, not crashed" — rather than aborting on a native
+                    // stack overflow. A PARAMETERIZED recursive call is DIFFERENT (it runtime-specializes,
+                    // or declines codeless if that isn't built yet — a plain Todo); only the unproductive
+                    // nullary shape is coded here.
+                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unproductive nullary recursion → CDZ0999");
+                    return Core::Poison(Reject::coded(
+                        Code::RecursionBound,
+                        "an unproductive self-recursion cannot be reduced to a value (declined at the recursion bound)",
                     ));
                 }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: zero-argument application is its head value");
@@ -6454,6 +6464,19 @@ pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool 
     // out-of-type result.
     let (rlo, rhi) = ((vlo as i128) << k, (vhi as i128) << k);
     rlo >= tmin as i128 && rhi <= tmax as i128
+}
+
+/// Whether the divisor at `id` could be `-1`. The narrow-signed-division range-check exists SOLELY for
+/// the `MIN_N / -1` overflow (the only quotient that leaves the type); if the divisor provably is NOT
+/// `-1`, that check is dead. Returns `true` (keep the check) unless the divisor's range EXCLUDES `-1` —
+/// a constant `≠ -1`, or a value whose `value_range` does not straddle `-1` (e.g. an unsigned/nonneg
+/// value, or a masked `(& y 7)` ∈ [0,7]). Conservative: an unknown range → `true`.
+pub(crate) fn divisor_can_be_neg_one(db: &mut Db, id: StructId) -> bool {
+    match value_range(db, id) {
+        Some((lo, Some(hi))) => lo <= -1 && -1 <= hi, // -1 within [lo, hi]
+        Some((lo, None)) => lo <= -1,                 // unbounded above; can reach -1 iff lo <= -1
+        None => true,                                 // unknown → assume it can
+    }
 }
 
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are

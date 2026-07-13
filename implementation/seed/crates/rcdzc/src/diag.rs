@@ -131,6 +131,17 @@ pub enum Code {
     /// dimensional specialization of the annotation conflict: `TypeMismatch` (CDZ0203) names the general
     /// type conflict; this names it when the conflict is dimensional.
     DimensionMismatch,
+    /// A ROBUSTNESS decline: a well-formed program the compiler cannot reduce to a component because it
+    /// hits a recursion/resource BOUND — an unproductive compile-time recursion (a nullary self-call
+    /// `(def (f) (f))` with no base case: following it re-enters the same body without end, and a nullary
+    /// def has no runtime-function form to specialize), or a pathological expression depth. The compiler
+    /// MUST stop at the bound and DECLINE, never abort with a native stack overflow
+    /// (`self-hosting-and-bootstrap.md` §An Unsupported Construct Is Declined, Not Miscompiled). The
+    /// terminal CDZ09xx band — a "declined, not crashed" outcome, distinct from a type/well-formedness
+    /// rejection (the program is well-formed; the COMPILER cannot yet derive it) and from a plain codeless
+    /// decline (a not-yet-built construct): this names the specific "cannot reduce, must not crash" case
+    /// the robustness corpus pins.
+    RecursionBound,
 }
 
 impl Code {
@@ -158,6 +169,7 @@ impl Code {
             Code::ClosureEscapesEffect => "CDZ0406",
             Code::IllFormedBinary => "CDZ0220",
             Code::DimensionMismatch => "CDZ0501",
+            Code::RecursionBound => "CDZ0999",
         }
     }
 }

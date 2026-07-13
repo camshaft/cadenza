@@ -56,7 +56,17 @@ export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "
 
   async function doRun() {
     setStatus({ phase: "busy" });
-    setStatus({ phase: "done", outcome: await editor.run() });
+    try {
+      setStatus({ phase: "done", outcome: await editor.run() });
+    } catch (e) {
+      // A run should never reject (the worker turns even a parse error into a decline), but if one
+      // ever does, land on a shown error rather than leaving the pane stuck on "Compiling & running…".
+      const message = e instanceof Error ? e.message : String(e);
+      setStatus({
+        phase: "done",
+        outcome: { kind: "declined", diags: [{ error: true, code: "", message, node: -1, from: 0, to: 0, fix: null }], wrapPrefixBytes: 0 },
+      });
+    }
   }
 
   function reset() {
