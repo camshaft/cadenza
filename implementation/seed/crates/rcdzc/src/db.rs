@@ -47,6 +47,15 @@ pub struct Def {
     pub params: Vec<StructId>,
     /// Body expression occurrence, or `None` if the def is malformed.
     pub body: Option<StructId>,
+    /// INTERNAL def — a MODULE MEMBER or DO-LOCAL function registered so a RECURSIVE call to it can lower
+    /// to a `Core::Call` (a standalone emittable wasm function; `crate::modules::register_callable`). It
+    /// is NOT in `def_name_index` (its NAME resolves by lexical scope — Case R / `do_local_binds` — per
+    /// the no-keys-outside-the-prelude rule) and is NOT a program EXPORT candidate or unused-def-warning
+    /// target; it exists purely to give a recursive nested function a stable `db.defs` index. Its body is
+    /// the member's ORIGINAL body, its params the original signature params, so `def_by_body`/`def_scheme`
+    /// find it and the body's param references resolve to the same occurrences (via the synth `(fn …)`).
+    /// `false` for every ordinary top-level / accum / effect-specialization def.
+    pub internal: bool,
 }
 
 /// The file-scoped name-resolution table for a multi-file PACKAGE (`DESIGN-package-linking.md` §4),
@@ -767,6 +776,13 @@ impl Db {
         // machinery the binding-pattern `let` case already realizes. Runs HERE (after accum, before the
         // parent index / `def_by_name`) so the rewritten def resolves like a hand-written one.
         crate::binding_params::lower(&mut ast, &mut defs);
+        // Register each MODULE MEMBER FUNCTION as an INTERNAL def, so a RECURSIVE call to it lowers to a
+        // standalone `Core::Call` (a stable `db.defs` index) instead of declining. Runs HERE — after the
+        // top-level transforms (accum/binding-params reshape the TOP-LEVEL defs; a module member compiles
+        // as an ordinary recursive call), before the parent index / `def_by_body` (which must index the
+        // member's body → its def) and before `def_name_index` (an internal def is EXCLUDED from it — its
+        // name resolves by scope, `resolve::module_sibling_binds`, per the no-keys-outside-the-prelude rule).
+        crate::modules::register_callable(&ast, &modules, &mut defs);
         // Bind the built-in sums' names in the PRELUDE map (the last-consulted lookup): the sum name to
         // its record (a type constructor / type-value), each variant name BARE to its ctor field. So a
         // reference to `Some`/`None`/`Ok`/`Err`/`Option`/`Result` resolves through the ordinary
@@ -806,7 +822,12 @@ impl Db {
             if let Some(body) = d.body {
                 def_by_body.insert(body, i);
             }
-            def_by_name.entry(d.name.clone()).or_insert(i);
+            // An INTERNAL def (a module-member callable) is NOT name-resolvable — its name resolves by
+            // lexical scope (`resolve::module_sibling_binds`), never a global lookup — so keep it OUT of
+            // `def_name_index`. (`def_by_body` above DOES index it, so `callee_def_index` finds it.)
+            if !d.internal {
+                def_by_name.entry(d.name.clone()).or_insert(i);
+            }
         }
         // Derive the file-scoped resolution table from the package linkage (`Some` only for a >1-file
         // package). For each file: its own top-level VALUE defs (a def whose signature occurrence falls
@@ -1790,6 +1811,7 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
                 sig_occ,
                 params,
                 body,
+                internal: false,
             });
         } else if let Some(tail) = ast.as_form(item, "export")
             && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))

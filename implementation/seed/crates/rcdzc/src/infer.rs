@@ -840,7 +840,19 @@ fn def_of_param(db: &mut Db, binder: StructId) -> Option<usize> {
     } else {
         parent
     };
-    db.defs.iter().position(|d| d.sig_occ == sig)
+    if let Some(i) = db.defs.iter().position(|d| d.sig_occ == sig) {
+        return Some(i);
+    }
+    // A MODULE-MEMBER internal def (`Def::internal`, `modules::register_callable`) reuses the member's
+    // signature params, but `modules::synthesize` wraps the member body in a synth `(fn params body)`
+    // that RE-PARENTS those very param occurrences under the synth `fn`'s params-list — so the parent
+    // walk above lands on the synth `fn`, not the member's `(NAME param…)` sig, and no def's `sig_occ`
+    // matches. Fall back to a param-MEMBERSHIP scan: the internal def's `params` hold those same
+    // occurrences, so match the def whose param list contains `binder`. Scoped to internal defs (the
+    // re-parenting only affects a synth-wrapped member); a tiny linear scan (few internal defs).
+    db.defs
+        .iter()
+        .position(|d| d.internal && d.params.contains(&binder))
 }
 
 /// Solve the parameter types of a RECURSIVE def by a single connected, threaded-`Subst` unification
@@ -1358,6 +1370,16 @@ fn ordered_param_binders(db: &Db, def: usize) -> Vec<StructId> {
 pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     if let Some(cached) = db.def_schemes.get(&def) {
         return cached.clone();
+    }
+    // If this def's PARAMETERS are still being solved (`solve_recursive_params` is on the stack — the A2
+    // connected solve is demanded BEFORE `def_scheme` for a module-member internal def, whose external
+    // call and self-call both route through the param-solve first), computing the scheme now would read
+    // an as-yet-`Any` parameter type and cache a spurious `None` that POISONS every later call. Return
+    // `None` WITHOUT caching, so once the solve completes and stores the parameter types, a subsequent
+    // `def_scheme` recomputes the real scheme. (A top-level recursive def reaches `def_scheme` first, so
+    // its own `type_of`→solve completes inline and this guard never fires — byte-identical there.)
+    if db.solving_params.contains(&def) {
+        return None;
     }
     // RE-ENTRY GUARD. Computing a recursive def's scheme demands `type_of` of its body, whose self-call
     // demands this def's scheme AGAIN before the memo is filled. Seed a `None` sentinel FIRST, so the
@@ -2101,12 +2123,24 @@ fn decode_payload_template(db: &mut Db, occ: StructId, params: &[String]) -> Opt
 /// call by its scheme. Follows a `Ref` to a `Lambda` whose body matches a def's body occurrence. (The
 /// infer-side sibling of `lower::callee_def_index`; kept here so infer does not depend on lower.)
 fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
-    let body = match crate::resolve::resolved_of(db, head) {
-        crate::resolved::Resolved::Lambda { body, .. } => body,
-        crate::resolved::Resolved::Ref { value } => return callee_def_index_for_infer(db, value),
-        _ => return None,
-    };
-    db.def_index_by_body(body)
+    // The head resolves to a `Lambda { body }` for a named function (top-level, or a module member via
+    // Case R) or a `Ref` chain to one; match its BODY back to the def index. A `Member` projection `(. m
+    // f)` reduces to the field lambda's body — reached WITHOUT the general `lambda_of` β-reduction
+    // machinery (which would inline a deep non-recursive call chain, an exponential cost on the hot infer
+    // path): read the field VALUE via `member_value` and recurse on it. So a recursive MODULE MEMBER
+    // called through the projection chain is typed by its registered internal def's scheme
+    // (`modules::register_callable`), matching `lower::callee_def_index`, at no cost to ordinary calls.
+    match crate::resolve::resolved_of(db, head) {
+        crate::resolved::Resolved::Lambda { body, .. } => db.def_index_by_body(body),
+        crate::resolved::Resolved::Ref { value } => callee_def_index_for_infer(db, value),
+        crate::resolved::Resolved::Member { operand, key } => {
+            match crate::eval::member_value(db, operand, &key) {
+                crate::eval::Member::Field(v) => callee_def_index_for_infer(db, v),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// The CDZ0405 non-exhaustive-HANDLER rejection, enriched with an "add the missing arm" fix (the effect

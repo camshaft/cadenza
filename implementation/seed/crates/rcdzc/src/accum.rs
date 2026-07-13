@@ -260,6 +260,7 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
         sig_occ: sig,
         params: acc_params,
         body: Some(acc_body),
+        internal: false,
     });
     debug_assert_eq!(defs.len(), acc_ix + 1);
 

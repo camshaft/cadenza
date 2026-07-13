@@ -8708,6 +8708,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_recursive_module_function_lowers_to_a_runtime_call() {
+        // 11-modules "a module function is recursive": a module member `(def (fac n) …)` that calls
+        // itself resolves (in-module sibling scope, mutual visibility) AND now LOWERS — it is registered
+        // as an internal `db.defs` entry (`modules::register_callable`) so the recursive call becomes a
+        // standalone `Core::Call` (a real wasm function), exactly as a top-level recursive def does. fac(5)
+        // = 120. Its unannotated `n` is solved by the connected A2 param solve, keyed on the internal def.
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module top (def (main) (do (module lib (def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))) ((. lib fac) 5))) (export main))"),
+                "main"
+            ),
+            120
+        );
+        // A recursive function in a NESTED module — reached through the projection chain `(. (. outer
+        // inner) fac)`, whose `Member` head `callee_def_index` reduces to the same registered internal def.
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module top (def (main) (do (module outer (module inner (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))))) ((. (. outer inner) fac) 5))) (export main))"),
+                "main"
+            ),
+            120
+        );
+        // MUTUAL recursion between two module members — `ev`/`od` call each other; neither β-reduces, so
+        // both lower to runtime calls. ev(10) = true → 1.
+        assert_eq!(
+            run_returns::<i64>(
+                &component("(module top (def (main) (do (module m (def (ev n) (if (= n 0) true (od (- n 1)))) (def (od n) (if (= n 0) false (ev (- n 1))))) (if ((. m ev) 10) 1 0))) (export main))"),
+                "main"
+            ),
+            1
+        );
+    }
+    #[test]
     fn a_module_nested_in_a_module_projects_as_a_nested_record() {
         // 11-modules "a module nested in a module …": a `(module inner …)` written as a MEMBER of
         // `(module outer …)` registers `inner` as a field of the outer's record whose value is the inner

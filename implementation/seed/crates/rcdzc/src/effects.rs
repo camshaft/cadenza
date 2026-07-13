@@ -2687,6 +2687,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         sig_occ: sig,
         params: spec_params.clone(),
         body: None,
+        internal: false,
     });
     db.effect_specializations.insert(memo_key, spec_index);
 

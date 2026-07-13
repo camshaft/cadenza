@@ -3940,14 +3940,22 @@ fn lower_recursive_call_or_decline(
 /// `Lambda` whose body matches a def's body occurrence. Returns `None` for a head that is not a named
 /// top-level def (a `let`-bound lambda, a computed head).
 fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
-    // The head resolves to a `Lambda { body, .. }` for a top-level def (resolve maps a def name to its
-    // lambda). Match that body occurrence back to the def index.
-    let body = match resolved_of(db, head) {
-        Resolved::Lambda { body, .. } => body,
-        Resolved::Ref { value } => return callee_def_index(db, value),
-        _ => return None,
-    };
-    db.def_index_by_body(body)
+    // The head resolves to a `Lambda { body }` for a named function (a top-level def, or a MODULE MEMBER
+    // via Case R) or a `Ref` chain to one; match its body back to the def index. A `Member` projection
+    // `(. m f)` reduces to the field lambda via `member_value` (WITHOUT the general `lambda_of`
+    // β-reduction, which would inline a deep non-recursive chain — an exponential cost on the hot lower
+    // path). So a recursive MODULE MEMBER called through the projection chain finds its registered
+    // internal def (`modules::register_callable`), exactly as a bare-named recursive def finds its
+    // top-level def, at no cost to an ordinary call.
+    match resolved_of(db, head) {
+        Resolved::Lambda { body, .. } => db.def_index_by_body(body),
+        Resolved::Ref { value } => callee_def_index(db, value),
+        Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
+            crate::eval::Member::Field(v) => callee_def_index(db, v),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding
