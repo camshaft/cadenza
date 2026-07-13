@@ -60,15 +60,23 @@ export default function Basics() {
 
       <Exercise
         id="basics:2"
-        prompt={<>Write a <C>max</C> function that returns the larger of two numbers, then call it on 3 and 9.</>}
-        starter={`(def (max a b)
-  (if ? a b))
-(def (main) (max 3 9))`}
-        solution={`(def (max a b)
-  (if (> a b) a b))
-(def (main) (max 3 9))`}
-        expected="9"
-        hint={<>The condition should be true when <C>a</C> is bigger. Try <C>(&gt; a b)</C>.</>}
+        prompt={
+          <>
+            <C>apply-twice</C> runs a function on a value twice. Pass it a function that <em>doubles</em>{" "}
+            its input, applied to <C>3</C> — doubling twice gives <C>12</C>.
+          </>
+        }
+        starter={`(let ((apply-twice (fn (f v) (f (f v)))))
+  (apply-twice (fn (x) ?) 3))`}
+        solution={`(let ((apply-twice (fn (f v) (f (f v)))))
+  (apply-twice (fn (x) (* x 2)) 3))`}
+        expected="12"
+        hint={
+          <>
+            The hole is the body of the function you're handing in — it should double its argument:{" "}
+            <C>(* x 2)</C>. Then <C>3 → 6 → 12</C>.
+          </>
+        }
       />
     </article>
   );
