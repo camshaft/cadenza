@@ -479,6 +479,7 @@ pass	an option value annotated with the wrong payload type is rejected
 pass	an ordering operator with a single operand is rejected, not a crash
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
+pass	an unannotated closure parameter is grounded from its body and applied at runtime
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string

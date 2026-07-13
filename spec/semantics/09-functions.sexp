@@ -148,6 +148,25 @@
   (call   main (: 10 Int64))
   (output (: 36 Int64)))
 
+; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
+; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
+; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls
+; out; the closure lifts with that machine type, needing no annotation. Same runtime path as the
+; annotated case above, only the parameter's type is inferred rather than declared.
+
+(case "an unannotated closure parameter is grounded from its body and applied at runtime"
+  (doc    "`(fn (x) (* x 2))` has no annotation on `x`; its type is solved from the body's `(* x 2)`
+           (an integer operand → `x : Int64`). Passed to the recursive `apply-sum` and applied via the
+           indirect call, `apply-sum (fn (x) (* x 2)) 3 = 6+4+2 = 12`. Pins that a bare-parameter lambda
+           lifts to a runtime closure without requiring an explicit parameter type.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: n Int64)) (apply-sum (fn (x) (* x 2)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 12 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field

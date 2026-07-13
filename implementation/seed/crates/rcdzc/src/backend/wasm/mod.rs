@@ -163,7 +163,7 @@ pub fn emit(
     // params list PREPENDS an env parameter (an i32 handle) whose binder key is the lifted body itself
     // (a `StructId` nothing resolves to as a `Core::Param`, so it claims slot 0 without shadowing).
     // The lifted set is fixed at layout time (in table-slot order); empty for a closure-free program.
-    for lifted in layout.lifted.clone() {
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         // The env's type is any type whose machine rep is an i32 HANDLE (the closure cell) — `Ty::Bytes`
         // is a heap-handle leaf (`valtype_of` → i32), used here purely as the "i32 handle" marker for the
         // env slot. The env's slot-map KEY must be a node NOTHING in the body resolves to (the body reads
@@ -175,7 +175,16 @@ pub fn emit(
             (env_key, crate::ty::Ty::Bytes),
             (lifted.param, lifted.param_ty.clone()),
         ];
-        funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
+        // An UNREACHED lifted lambda (demanded during type-checking / a fold that erased it — no reachable
+        // `Core::Closure` builds it) is emitted as an inert STUB with the same signature but a trivial body
+        // (return a zero of the result type). It is never called (its funcref-table entry is omitted), so a
+        // stub keeps the function-index space + type section consistent without carrying the dead lambda's
+        // (possibly ill-formed) body. A REACHED lambda selects its real body.
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
     }
 
     // Serialize the embedded core module (multi-export core module, functions in emission order). The

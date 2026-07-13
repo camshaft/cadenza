@@ -2105,7 +2105,14 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // param's type is what its uses in the body ground it to. A param the body does not constrain to a
     // machine type declines below (no invented width).
     let ret_ty = crate::infer::type_of(db, body);
-    let param_ty = crate::infer::type_of(db, param);
+    // The param's type: its annotation if present. An UNANNOTATED bare `(fn (x) …)` types `Any` at its
+    // own occurrence (inference does not thread the use-site arrow back), so SOLVE it from the body's
+    // uses — `(* x 2)` grounds `x` to Int64 (`solve_lambda_param_ty`, the lambda analogue of the
+    // recursive-def A2 solve). Still `Any` (no numeric use) → declines below (no invented width).
+    let param_ty = match crate::infer::type_of(db, param) {
+        crate::ty::Ty::Any => crate::infer::solve_lambda_param_ty(db, param, body),
+        t => t,
+    };
     if crate::backend::wasm::lir::valtype_of(&param_ty).is_none()
         || crate::backend::wasm::lir::valtype_of(&ret_ty).is_none()
     {

@@ -72,6 +72,11 @@ pub struct Layout {
     /// points at lifted lambda `k`'s function, so a `Core::Closure { code: k }` stored slot selects it
     /// through `call_indirect`. Empty for a program with no runtime closure (byte-identical to before).
     pub lifted: Vec<crate::lower::LiftedLambda>,
+    /// Parallel to `lifted`: whether slot `k` is REACHED by a `Core::Closure` in an emitted body. An
+    /// UNREACHED slot (a lambda demanded during type-checking / a fold that erased it) is emitted as an
+    /// inert STUB and gets NO funcref-table element (never called), so a dead lift is neither unsound nor
+    /// referenced. `true` for every slot of a program whose closures are all live.
+    pub lifted_reached: Vec<bool>,
 }
 
 impl Layout {
@@ -80,17 +85,18 @@ impl Layout {
     /// — `compute` and the backend's `import_base` reshuffle both go through it — so the indices are a
     /// maintained invariant, not a field a caller could forget or set inconsistently.
     pub fn new(exports: Vec<ExportPlan>, order: Vec<usize>, import_base: u32) -> Layout {
-        Layout::with_lifted(exports, order, import_base, Vec::new())
+        Layout::with_lifted(exports, order, import_base, Vec::new(), Vec::new())
     }
 
-    /// [`Layout::new`] plus the lambda-lifted closures (in table-slot order) — the emission plan when a
-    /// program has runtime closures. The lifted functions emit after the `order` defs, so their wasm
-    /// indices are `import_base + order.len() + slot`.
+    /// [`Layout::new`] plus the lambda-lifted closures (in table-slot order) + a parallel `reached` flag
+    /// per slot — the emission plan when a program has runtime closures. The lifted functions emit after
+    /// the `order` defs, so their wasm indices are `import_base + order.len() + slot`.
     pub fn with_lifted(
         exports: Vec<ExportPlan>,
         order: Vec<usize>,
         import_base: u32,
         lifted: Vec<crate::lower::LiftedLambda>,
+        lifted_reached: Vec<bool>,
     ) -> Layout {
         let order_pos = order.iter().enumerate().map(|(k, &d)| (d, k)).collect();
         let export_of_def = exports
@@ -105,6 +111,7 @@ impl Layout {
             order_pos,
             export_of_def,
             lifted,
+            lifted_reached,
         }
     }
 
@@ -230,15 +237,33 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     }
 
     // LAMBDA-LIFTED closures: lowering the def bodies above (via `collect_call_callees` → `core_of`)
-    // registers each surviving `(fn …)` into `db.lifted` (a `Core::Closure` naming its table slot). A
-    // lifted lambda's OWN body may itself call a recursive def, so walk each lifted body for its callees
-    // too, growing `order` (a NEW callee reached only through a closure must still be emitted). Iterate
-    // to a fixpoint over `db.lifted` (a lifted body could itself lift another lambda — rare, but the
-    // count can only grow, bounded by the arena). The lifted set is snapshotted into the layout in
-    // table-slot order; the lifted functions emit after `order`.
-    let mut j = 0;
-    while j < db.lifted.len() {
-        let body = db.lifted[j].body;
+    // registers each surviving `(fn …)` into `db.lifted` (a `Core::Closure` naming its table slot). But
+    // `db.lifted` accumulates EVERY lambda `lower_lambda_value` touched — including one demanded during
+    // type-checking / fold exploration that the final emitted code FOLDS AWAY (a constant closure applied
+    // immediately). Emitting such a DEAD lift is both wasteful and unsound (its body may read captures
+    // from an env no reachable `Core::Closure` ever builds). So collect only the lifted lambdas REACHED
+    // by a `Core::Closure { code }` in an EMITTED body (the reachable defs' bodies), transitively (a
+    // reached lambda's body may itself build a closure). This is the closure analogue of the
+    // `Core::Call` reachability above.
+    let mut reached_codes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // Seed from every reachable def body.
+    for &def in &order {
+        if let Some(body) = db.defs[def].body {
+            collect_closure_codes(db, body, &mut reached_codes);
+        }
+    }
+    // Transitively close: a reached lambda's body may build further closures AND call further defs.
+    let mut work: Vec<usize> = reached_codes.iter().copied().collect();
+    while let Some(code) = work.pop() {
+        let body = db.lifted[code].body;
+        let mut more = std::collections::HashSet::new();
+        collect_closure_codes(db, body, &mut more);
+        for c in more {
+            if reached_codes.insert(c) {
+                work.push(c);
+            }
+        }
+        // A reached lifted body's own `Core::Call` callees must be emitted too.
         let mut callees = Vec::new();
         collect_call_callees(db, body, &mut callees);
         for c in callees {
@@ -247,14 +272,170 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
                 order.push(c);
             }
         }
-        j += 1;
     }
+    // The lifted set snapshotted in table-slot order. `reached` marks which slots a reachable
+    // `Core::Closure` actually builds — an UNREACHED slot (a lambda demanded during type-checking / fold
+    // exploration that the emitted code folds away) is emitted as an inert STUB and its table entry left
+    // out (never called), so a dead lift is neither unsound nor referenced.
     let lifted = db.lifted.clone();
+    let lifted_reached: Vec<bool> = (0..lifted.len())
+        .map(|code| reached_codes.contains(&code))
+        .collect();
 
     // `import_base` is 0 until a program uses a runtime op: the per-program runtime-import set is
     // computed by the backend when a `Core` compound op lowers to a heap call (value-heap H2). A
     // program that imports nothing keeps base 0 and is byte-identical to a runtime-free build.
-    Ok(Layout::with_lifted(exports, order, 0, lifted))
+    Ok(Layout::with_lifted(
+        exports,
+        order,
+        0,
+        lifted,
+        lifted_reached,
+    ))
+}
+
+/// Collect the funcref-table slots (`Core::Closure { code }`) a body BUILDS, into `out` — the closure
+/// analogue of [`collect_call_callees`]. A closure value reaching a reachable body means its lifted
+/// function is genuinely used (so it must be emitted with a real body + its table entry); a lambda in
+/// `db.lifted` NOT reached this way was demanded only during type-checking / a fold that erased it, so it
+/// is a dead lift. Descends every sub-position (both `if` branches, arm bodies, operands) like the call
+/// walk. A `Core::CallClosure` dispatches dynamically (no static code), so it adds no slot itself.
+fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<usize>) {
+    use crate::core::Core;
+    match crate::lower::core_of(db, id) {
+        Core::Closure { code, captures } => {
+            out.insert(code);
+            for c in captures {
+                collect_closure_codes(db, c, out);
+            }
+        }
+        Core::CallClosure { closure, arg } => {
+            collect_closure_codes(db, closure, out);
+            collect_closure_codes(db, arg, out);
+        }
+        Core::If { cond, then_, else_ } => {
+            collect_closure_codes(db, cond, out);
+            collect_closure_codes(db, then_, out);
+            collect_closure_codes(db, else_, out);
+        }
+        Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_closure_codes(db, value, out);
+            }
+            collect_closure_codes(db, body, out);
+        }
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::ValueEq { lhs, rhs }
+        | Core::And { lhs, rhs, .. }
+        | Core::ListConcat { lhs, rhs }
+        | Core::BytesConcat { lhs, rhs } => {
+            collect_closure_codes(db, lhs, out);
+            collect_closure_codes(db, rhs, out);
+        }
+        Core::ListPush { list, elem } => {
+            collect_closure_codes(db, list, out);
+            collect_closure_codes(db, elem, out);
+        }
+        Core::ListUpdate { list, index, elem } => {
+            collect_closure_codes(db, list, out);
+            collect_closure_codes(db, index, out);
+            collect_closure_codes(db, elem, out);
+        }
+        Core::ListAt { list, index, .. } => {
+            collect_closure_codes(db, list, out);
+            collect_closure_codes(db, index, out);
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            collect_closure_codes(db, bytes, out);
+            collect_closure_codes(db, index, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_closure_codes(db, bytes, out);
+            collect_closure_codes(db, start, out);
+            collect_closure_codes(db, len, out);
+        }
+        Core::BytesCompact { operand }
+        | Core::Convert { operand, .. }
+        | Core::Not { operand }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand } => collect_closure_codes(db, operand, out),
+        Core::Call { args, .. } => {
+            for a in args {
+                collect_closure_codes(db, a, out);
+            }
+        }
+        Core::Match { scrutinee, arms } => {
+            collect_closure_codes(db, scrutinee, out);
+            for arm in arms {
+                if let Some(g) = arm.guard {
+                    collect_closure_codes(db, g, out);
+                }
+                collect_closure_codes(db, arm.body, out);
+            }
+        }
+        Core::Record { fields } => {
+            for value in fields.values() {
+                collect_closure_codes(db, *value, out);
+            }
+        }
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
+            for e in elems {
+                collect_closure_codes(db, e, out);
+            }
+        }
+        Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
+        Core::SumNew { payloads, .. } => {
+            for p in payloads {
+                collect_closure_codes(db, p, out);
+            }
+        }
+        Core::MatchSum { scrutinee, root } => {
+            collect_closure_codes(db, scrutinee, out);
+            collect_cont_closure_codes(db, &root, out);
+        }
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            collect_closure_codes(db, scrutinee, out)
+        }
+        // Leaves / references build no closure.
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstFloat(_)
+        | Core::Unit
+        | Core::Param { .. }
+        | Core::Captured { .. }
+        | Core::LocalRef { .. }
+        | Core::Poison(_) => {}
+    }
+}
+
+/// The closure-slot analogue of `collect_cont_callees` — walk a sum-match continuation for the closures
+/// its arm bodies build.
+fn collect_cont_closure_codes(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    out: &mut std::collections::HashSet<usize>,
+) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => collect_closure_codes(db, *body, out),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_closure_codes(db, *cond, out);
+            collect_closure_codes(db, *body, out);
+            collect_cont_closure_codes(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_closure_codes(db, then_, out);
+            collect_cont_closure_codes(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                collect_cont_closure_codes(db, &arm.cont, out);
+            }
+        }
+    }
 }
 
 /// Collect the `db.defs` indices a body CALLS at runtime — the `Core::Call` callees reached from the

@@ -368,6 +368,32 @@ pub struct LocalVar {
     pub ty: Ty,
 }
 
+/// An inert STUB function with the given parameter types and result type `ret` — its body is a single
+/// zero of the result's machine type. Used for an UNREACHED lambda-lifted closure (a dead lift the
+/// emitted code folds away and never calls): the stub keeps the function-index + type section consistent
+/// with the funcref table's slot numbering without carrying the dead lambda's (possibly ill-formed) body.
+/// It is never invoked (its table entry is omitted), so returning a zero is safe. `params` is the
+/// `(binder, type)` list the real selection would use; only the value types matter here.
+pub fn stub_function(params: &[(StructId, Ty)], ret: &Ty) -> SelectedFunc {
+    let param_vts: Vec<ValType> = params.iter().filter_map(|(_, t)| valtype_of(t)).collect();
+    // A zero of the result's machine slot. A result with no machine rep (should not happen for a lifted
+    // lambda, whose result type was checked at lift time) defaults to an i32 zero — harmless in a
+    // never-called stub.
+    let zero = match valtype_of(ret) {
+        Some(ValType::I64) => Lir::ConstI64(0),
+        Some(ValType::F64) => Lir::F64ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    SelectedFunc {
+        params: param_vts,
+        ret: ret.clone(),
+        code: vec![zero],
+        declared: Vec::new(),
+        src_body: None,
+        locals: Vec::new(),
+    }
+}
+
 /// Select one NULLARY definition body (rooted at AST occurrence `body`) into its flat instruction
 /// sequence. The return type is the body's solved type. Reads the core + type columns lazily.
 pub fn select_body(db: &mut Db, body: StructId, layout: &Layout) -> Result<SelectedFunc, Reject> {
@@ -3242,8 +3268,8 @@ fn emit_probe_chain(
         let else_base = *high;
         out.push(Lir::Else);
         emit_probe_chain(
-            db, src, rest, it, result_it, block_ty, slots, else_base, high, scratch_ty, layout, out,
-            inner,
+            db, src, rest, it, result_it, block_ty, slots, else_base, high, scratch_ty, layout,
+            out, inner,
         )?;
         out.push(Lir::End);
         Ok(())

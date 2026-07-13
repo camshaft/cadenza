@@ -421,6 +421,29 @@ fn callee_param_ty(db: &mut Db, callee: usize, k: usize) -> Option<Ty> {
     }
 }
 
+/// Solve the machine type of a LAMBDA parameter `binder` from its uses in the lambda `body` — the
+/// lambda analogue of [`solve_recursive_params`], for a lifted closure whose parameter is UNANNOTATED
+/// (a bare `(fn (x) …)`). A bare lambda types with a fresh variable at its own occurrence (inference
+/// does not thread the use-site arrow back onto it), so `type_of(binder)` is `Any`; but the body's
+/// operations DO constrain it — `(* x 2)` pins `x` to an integer. Give the param a fresh variable,
+/// walk the body collecting the operand constraints its uses impose (the same `collect_param_constraints`
+/// the recursive-def solve uses, with a sentinel def index that no call matches — a lambda body has no
+/// self-recursion to a def), then ground the solved variable (a numeric use defaults to Int64, an
+/// unconstrained variable stays `Any` → the caller declines rather than invent a width). Returns the
+/// grounded type. This is a read-only solve over a fresh `Subst` — it does NOT touch `db.param_types`
+/// (a lambda param is not a def param), so it is safe to call at lowering.
+pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> Ty {
+    let mut fresh = Fresh::new();
+    let var = param_annot_ty(db, binder).unwrap_or_else(|| Ty::Var(fresh.var()));
+    let mut env: crate::fxhash::FxHashMap<StructId, Ty> = crate::fxhash::FxHashMap::default();
+    env.insert(binder, var.clone());
+    let mut subst = Subst::new();
+    // A sentinel def index no `callee == def` comparison matches (a lambda body has no self-recursive
+    // call to a `db.defs` entry — its own applications resolve to the param or to real defs).
+    collect_param_constraints(db, body, &env, usize::MAX, &mut subst, &mut fresh);
+    ground_param(subst.apply(&var))
+}
+
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
 /// `binder` is not a top-level def parameter (e.g. a `fn` lambda parameter). Walks up from the binder to
 /// the `(def (NAME param…) body)` it sits in.

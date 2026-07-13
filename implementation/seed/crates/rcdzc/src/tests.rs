@@ -8246,8 +8246,9 @@ mod stage1 {
                      (loop))) (export main))";
         assert_eq!(
             run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a recursive fn under a 2-arm single-effect handler specializes and runs"),
+                &compile_component(&crate::codec::encode(&parse(src))).expect(
+                    "a recursive fn under a 2-arm single-effect handler specializes and runs"
+                ),
                 "main"
             ),
             3
@@ -10049,6 +10050,38 @@ mod stage1 {
         assert_eq!(r0, "6");
         assert_eq!(run_closure(src, 10).unwrap(), "36");
         assert_eq!(run_closure(src, 100).unwrap(), "306");
+    }
+
+    #[test]
+    fn an_unannotated_closure_param_is_grounded_from_its_body() {
+        // A bare `(fn (x) (* x 2))` — no `(: x T)`. `x` types `Any` at its own occurrence (inference does
+        // not thread the use-site arrow back), but the body `(* x 2)` uses it as an integer operand, so
+        // `solve_lambda_param_ty` grounds `x : Int64` from that use (the lambda analogue of the recursive
+        // -def A2 solve). The closure lifts with that machine type and runs — no annotation needed.
+        // `apply-sum (fn (x) (* x 2)) 3 = 6+4+2 = 12`.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (fn (x) (* x 2)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "12");
+        assert_eq!(run_closure(src, 5).unwrap(), "30");
+    }
+
+    #[test]
+    fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
+        // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
+        // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The
+        // lambda may be lowered speculatively (registering a lift), but it is UNREACHED by any emitted
+        // `Core::Closure`, so it must be emitted as an inert stub (not a dead, ill-formed lifted body)
+        // and the program must still fold to a scalar. Regression guard for the reached-lift filter.
+        assert_eq!(
+            run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
+            7
+        );
     }
 
     #[test]
