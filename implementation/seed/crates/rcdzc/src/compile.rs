@@ -726,6 +726,27 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             collect_reached_poisons(db, len, out);
         }
         Core::BytesCompact { operand } => collect_reached_poisons(db, operand, out),
+        // A map construction's entry keys AND values are all unconditionally part of the value — descend
+        // into each `(key, value)` pair.
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_reached_poisons(db, k, out);
+                collect_reached_poisons(db, v, out);
+            }
+        }
+        // `Map.insert` unconditionally evaluates the map, key, and value — descend into each.
+        Core::MapInsert { map, key, val, .. } => {
+            collect_reached_poisons(db, map, out);
+            collect_reached_poisons(db, key, out);
+            collect_reached_poisons(db, val, out);
+        }
+        // `Map.lookup`/`Map.remove` unconditionally evaluate the map and key — descend into both.
+        Core::MapLookup { map, key, .. } | Core::MapRemove { map, key, .. } => {
+            collect_reached_poisons(db, map, out);
+            collect_reached_poisons(db, key, out);
+        }
+        // `Map.size` unconditionally evaluates the map operand — descend.
+        Core::MapSize { map } => collect_reached_poisons(db, map, out),
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
             for p in payloads {

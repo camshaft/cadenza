@@ -106,6 +106,24 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 None => Ty::Any,
             }
         }
+        // An OPERATOR record used as a bare VALUE (not as an application head) — it carries a `(meta
+        // apply)` primitive AND a `(meta t)` scheme, so its type is that scheme instantiated. This is what
+        // types `Map.empty` (a nullary value operator, `∀k v. (Map k v)`) when it flows into an argument
+        // position (`(Map.insert Map.empty …)`), and a bare operator passed as a HOF argument (its arrow
+        // type). An APPLIED operator never reaches here — `apply_type` reads its scheme directly off the
+        // head — so this only fires for a bare use. Checked before the type-value branch (an op record is
+        // not a type-value: it has a `(meta apply)`, so `typeval_of` declines it) and the plain-record
+        // branch (which would wrongly type it as `(record (apply …) (t …))`).
+        Resolved::Record { .. }
+            if crate::eval::meta_apply_of(db, id).is_some()
+                && crate::eval::variant_disc_of(db, id).is_none() =>
+        {
+            let mut fresh = crate::unify::Fresh::new();
+            match crate::eval::scheme_of(db, id, &mut fresh) {
+                Some(scheme) => crate::unify::instantiate(&scheme, &mut fresh),
+                None => Ty::Any,
+            }
+        }
         // A record that IS a type — a ground-type record (`Bool`), a built integer module, or any
         // record carrying a `(meta t)` — is a type VALUE, so its type is `Type`. Otherwise a plain
         // data record's type is the record of its fields' types (each a lazy `type_of`).

@@ -265,6 +265,52 @@ pub enum Core {
     /// `Bytes.compact` — a content-equal byte sequence with independent storage (runtime `bytes-compact`;
     /// consumes its operand). Present when the operand is a RUNTIME value (a constant folds to itself).
     BytesCompact { operand: StructId },
+    /// A MAP value construction — `(map (k v) …)` or `Map.empty`. `entries` are `(key, value)` occurrence
+    /// pairs, IN SOURCE ORDER (a later duplicate key overwrites an earlier one, keys compared by value).
+    /// Present when it survives to selection as a RUNTIME value. The backend builds it on the persistent
+    /// CHAMP `map-*` heap: `map-empty` then a `map-insert(key, value)` per entry (each key/value boxed by
+    /// its type before the insert, which CONSUMES the map handle + the key + the value). `key_ty`/`val_ty`
+    /// are the solved key/value types (choosing the box/unbox ops). An empty map has no entries.
+    MapNew {
+        entries: Vec<(StructId, StructId)>,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+    },
+    /// `Map.insert` — add-or-replace `key ↦ val` in `map`, returning the new map (runtime `map-insert`;
+    /// persistent, CONSUMES the map handle). `key`/`val` are boxed by their types before the insert, as a
+    /// map entry is at construction. A present key replaces its value (keys compared by value).
+    MapInsert {
+        map: StructId,
+        key: StructId,
+        val: StructId,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+    },
+    /// `Map.lookup` — the FALLIBLE keyed read, present when the map is a RUNTIME value. The backend emits
+    /// `map-lookup(map, key)` (BORROWS both; the boxed key is dropped after) — a NULL handle for an absent
+    /// key — and wraps it: a non-null handle → `Some(<unbox value>)`, null → `None`. `disc_some`/`disc_none`
+    /// are the built-in Option variants' discriminants (read at lowering off the result type). `val_ty`
+    /// chooses the value unbox. The map companion of `ListAt` (a NULL-or-handle test instead of bounds).
+    MapLookup {
+        map: StructId,
+        key: StructId,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+        disc_some: u32,
+        disc_none: u32,
+    },
+    /// `Map.remove` — drop `key`'s association from `map`, returning the new map (runtime `map-remove`;
+    /// persistent, CONSUMES the map handle, BORROWS the key). Removing an absent key yields a map equal to
+    /// the operand (total). `key` is boxed by its type before the remove.
+    MapRemove {
+        map: StructId,
+        key: StructId,
+        key_ty: crate::ty::Ty,
+    },
+    /// `Map.size` — the count of distinct keys the map associates, present when the map is a RUNTIME value.
+    /// The backend emits `map-size(map)` (BORROWS; O(1) from the CHAMP root) + an i32→i64 extend to `Int64`.
+    /// The map companion of `ListLen`.
+    MapSize { map: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

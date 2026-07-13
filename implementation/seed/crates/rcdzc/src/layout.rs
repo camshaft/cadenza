@@ -402,6 +402,22 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
             collect_closure_codes(db, list, out);
             collect_closure_codes(db, index, out);
         }
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_closure_codes(db, k, out);
+                collect_closure_codes(db, v, out);
+            }
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            collect_closure_codes(db, map, out);
+            collect_closure_codes(db, key, out);
+            collect_closure_codes(db, val, out);
+        }
+        Core::MapLookup { map, key, .. } | Core::MapRemove { map, key, .. } => {
+            collect_closure_codes(db, map, out);
+            collect_closure_codes(db, key, out);
+        }
+        Core::MapSize { map } => collect_closure_codes(db, map, out),
         Core::BytesAt { bytes, index, .. } => {
             collect_closure_codes(db, bytes, out);
             collect_closure_codes(db, index, out);
@@ -540,6 +556,22 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, list, out);
             collect_call_callees(db, index, out);
         }
+        crate::core::Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_call_callees(db, k, out);
+                collect_call_callees(db, v, out);
+            }
+        }
+        crate::core::Core::MapInsert { map, key, val, .. } => {
+            collect_call_callees(db, map, out);
+            collect_call_callees(db, key, out);
+            collect_call_callees(db, val, out);
+        }
+        crate::core::Core::MapLookup { map, key, .. } | crate::core::Core::MapRemove { map, key, .. } => {
+            collect_call_callees(db, map, out);
+            collect_call_callees(db, key, out);
+        }
+        crate::core::Core::MapSize { map } => collect_call_callees(db, map, out),
         crate::core::Core::BytesAt { bytes, index, .. } => {
             collect_call_callees(db, bytes, out);
             collect_call_callees(db, index, out);

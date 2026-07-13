@@ -192,6 +192,19 @@ const OP_DUP: &str = "dup";
 /// so an owned-temporary operand is `drop`ped by the emit AFTER the compare. The runtime `=` on two
 /// runtime compounds neither of which the compiler folded.
 const OP_VALUE_EQ: &str = "value-eq";
+/// Persistent CHAMP map ops. `map-empty() -> handle` — the canonical empty map; `map-insert(m, key, val)
+/// -> handle` — add-or-replace (CONSUMES m, key, val; returns the new map); `map-lookup(m, key) -> handle`
+/// — the value for `key` or NULL when absent (BORROWS m + key); `map-remove(m, key) -> handle` — m without
+/// `key` (CONSUMES m; BORROWS key); `map-size(m) -> u32` — the entry count (BORROWS, O(1)). Keys and values
+/// cross as plain handles; the runtime compares keys by a tagless structural walk.
+const OP_MAP_EMPTY: &str = "map-empty";
+const OP_MAP_INSERT: &str = "map-insert";
+const OP_MAP_LOOKUP: &str = "map-lookup";
+const OP_MAP_REMOVE: &str = "map-remove";
+const OP_MAP_SIZE: &str = "map-size";
+/// NULL — the absent-value handle `map-lookup` returns for a key the map does not contain (the runtime's
+/// canonical null handle, 0). `Map.lookup` tests the returned handle against it to build `None` vs `Some`.
+const NULL_HANDLE: i32 = 0;
 
 /// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
 /// contract reclaims (a tuple, record, sum, or list). A scalar (integer/bool/unit) owns no heap cell,
@@ -203,7 +216,7 @@ const OP_VALUE_EQ: &str = "value-eq";
 fn is_heap_type(ty: &Ty) -> bool {
     matches!(
         ty,
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes
     )
 }
 
@@ -271,6 +284,31 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::ListUpdate { list, elem, .. } => {
             binding_escapes(db, list, binder, false) || binding_escapes(db, elem, binder, false)
         }
+        // A map construction CONSUMES each entry's key AND value into the built map — a binding used as a
+        // key or value escapes into it (like a tuple/list element).
+        Core::MapNew { entries, .. } => entries.iter().any(|&(k, v)| {
+            binding_escapes(db, k, binder, false) || binding_escapes(db, v, binder, false)
+        }),
+        // `Map.insert` CONSUMES the map, the key, and the value into the new map (the persistent op takes
+        // ownership of all three) — any of them used here escapes into the result.
+        Core::MapInsert { map, key, val, .. } => {
+            binding_escapes(db, map, binder, false)
+                || binding_escapes(db, key, binder, false)
+                || binding_escapes(db, val, binder, false)
+        }
+        // `Map.lookup` BORROWS the map (returns a fresh Option; the boxed key is an owned temporary the
+        // emit drops), so a map bound here does NOT escape through the lookup. The key flows into an owned
+        // temporary — consuming — so it escapes if used there.
+        Core::MapLookup { map, key, .. } => {
+            binding_escapes(db, map, binder, true) || binding_escapes(db, key, binder, false)
+        }
+        // `Map.remove` CONSUMES the map into the new map (persistent op takes ownership); the key is boxed
+        // into an owned temporary (consuming), dropped by the emit after the borrow-compare.
+        Core::MapRemove { map, key, .. } => {
+            binding_escapes(db, map, binder, false) || binding_escapes(db, key, binder, false)
+        }
+        // `Map.size` BORROWS its map operand (`map-size` reads the root without consuming) — like `List.len`.
+        Core::MapSize { map } => binding_escapes(db, map, binder, true),
         // A call CONSUMES its arguments; a host call likewise consumes its arguments across the boundary.
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
@@ -380,7 +418,13 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
 /// box op — so this returns `Ok(None)` for a compound (the caller skips the box). A type with no heap
 /// representation at all (a function/type-value) DECLINES. Reads the solved type.
 fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
-    match type_of(db, id) {
+    box_op_ty(&type_of(db, id))
+}
+
+/// The box op for a solved TYPE directly (not a node) — used where a map's key/value type is known but
+/// no representative node is at hand (a `Map.lookup` value unbox reads `val_ty`). Mirrors [`box_op`].
+fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
+    match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
         // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), or a
@@ -404,7 +448,13 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
 /// handle `arr-get` yields IS the nested compound — so this returns `Ok(None)` (the caller uses the
 /// handle as-is). A projection of a type with no heap representation declines.
 fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
-    match type_of(db, id) {
+    get_op_ty(&type_of(db, id))
+}
+
+/// The unbox op for a solved TYPE directly (not a node) — the dual of [`box_op_ty`], used where a value
+/// type is known but no node is at hand (a `Map.lookup` reads its `Some` payload back by `val_ty`).
+fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
+    match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
         // A nested compound / SUM / LIST / BYTES handle `arr-get` (or `sum-payload`) yields is used
@@ -631,6 +681,78 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, list, out);
             collect_used_ops(db, index, out);
+        }
+        // A map construction is `map-empty` then a `map-insert` per entry (each key/value boxed by its
+        // type). Mirrors the emit arm's op choices.
+        Core::MapNew {
+            entries,
+            key_ty,
+            val_ty,
+        } => {
+            out.insert(OP_MAP_EMPTY);
+            if !entries.is_empty() {
+                out.insert(OP_MAP_INSERT);
+                if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                    out.insert(op);
+                }
+                if let Ok(Some(op)) = box_op_ty(&val_ty) {
+                    out.insert(op);
+                }
+            }
+            for (k, v) in &entries {
+                collect_used_ops(db, *k, out);
+                collect_used_ops(db, *v, out);
+            }
+        }
+        // `Map.insert` = `map-insert`, boxing the key and value by their types.
+        Core::MapInsert {
+            map,
+            key,
+            val,
+            key_ty,
+            val_ty,
+        } => {
+            out.insert(OP_MAP_INSERT);
+            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                out.insert(op);
+            }
+            if let Ok(Some(op)) = box_op_ty(&val_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, map, out);
+            collect_used_ops(db, key, out);
+            collect_used_ops(db, val, out);
+        }
+        // A RUNTIME `Map.lookup`: box the key, `map-lookup` (→ the stored value handle, or NULL when
+        // absent), then build `Some(value)` / `None` (`sum-new`, `arr-alloc(0)` for None's unit). The
+        // stored value is a BOXED handle (like a list element), used DIRECTLY as the `Some` payload —
+        // `dup`'d so the map keeps its own reference (mirrors `ListAt`) — no unbox. The boxed key is an
+        // owned temporary the emit `drop`s after the borrow-lookup.
+        Core::MapLookup { map, key, key_ty, .. } => {
+            out.insert(OP_MAP_LOOKUP);
+            out.insert(OP_DUP);
+            out.insert(OP_DROP);
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, map, out);
+            collect_used_ops(db, key, out);
+        }
+        // `Map.remove` = `map-remove`, boxing the key by its type.
+        Core::MapRemove { map, key, key_ty } => {
+            out.insert(OP_MAP_REMOVE);
+            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, map, out);
+            collect_used_ops(db, key, out);
+        }
+        // `Map.size` = `map-size` (→ u32, extended to i64) — reads the map operand.
+        Core::MapSize { map } => {
+            out.insert(OP_MAP_SIZE);
+            collect_used_ops(db, map, out);
         }
         // A RUNTIME `Bytes.at`: `bytes-len` (bounds test) + `bytes-get` (the raw byte VALUE, in bounds),
         // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
@@ -2302,6 +2424,126 @@ fn emit(
             out.push(Lir::LocalTee(elem_slot)); // [disc_some, elem], elem_slot = elem
             out.push(Lir::CallImport(OP_DUP)); // pops elem, rc++ → [disc_some]
             out.push(Lir::LocalGet(elem_slot)); // [disc_some, elem] (the retained handle)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None: the unit payload is an empty array.
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
+        // A MAP construction — `(map …)` or `Map.empty`. `map-empty` leaves a fresh empty map; then for
+        // each entry, box the key and value by their types (a narrow int extended i32→i64 first) and
+        // `map-insert(map, key, val)` — which CONSUMES the map handle + key + value and RETURNS the new
+        // map, threading the handle through with no scratch local (like `bytes-set`). Entries insert in
+        // SOURCE order, so a later duplicate key overwrites (keys compared by value). Leaves the map handle.
+        Core::MapNew { entries, key_ty, val_ty } => {
+            out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
+            for &(k, v) in &entries {
+                emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+                if let Some(op) = box_op_ty(&key_ty)? {
+                    if let Some(m) = is_narrow_int(db, k) {
+                        out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    }
+                    out.push(Lir::CallImport(op)); // [map, key-handle]
+                }
+                emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
+                if let Some(op) = box_op_ty(&val_ty)? {
+                    if let Some(m) = is_narrow_int(db, v) {
+                        out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    }
+                    out.push(Lir::CallImport(op)); // [map, key, val-handle]
+                }
+                out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map'] (consumes map, key, val)
+            }
+            Ok(()) // leaves [map] — the map handle
+        }
+        // `Map.insert(m, k, v)` — emit the map handle, the key boxed by its type, the value boxed by its
+        // type, then `map-insert` (RETURNS the new map handle; consumes all three). Mirrors `MapNew`'s
+        // per-entry insert.
+        Core::MapInsert { map, key, val, key_ty, val_ty } => {
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+            if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(m) = is_narrow_int(db, key) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
+            if let Some(op) = box_op_ty(&val_ty)? {
+                if let Some(m) = is_narrow_int(db, val) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [map, key, val-handle]
+            }
+            out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map']
+            Ok(())
+        }
+        // `Map.remove(m, k)` — emit the map handle, the key boxed by its type, then `map-remove` (RETURNS
+        // the new map; consumes the map, borrows the key — the boxed key is an owned temporary dropped
+        // inside the op). Removing an absent key yields a map equal to the operand (total).
+        Core::MapRemove { map, key, key_ty } => {
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+            if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(m) = is_narrow_int(db, key) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map']
+            Ok(())
+        }
+        // `Map.size(m)` — emit the map handle, `map-size` (→ u32, an i32 slot), then extend to i64 (a
+        // count is non-negative), since `Map.size : Int64`. Mirrors `List.len`/`Bytes.len`.
+        Core::MapSize { map } => {
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            out.push(Lir::CallImport(OP_MAP_SIZE)); // → [size:i32]
+            out.push(Lir::I64ExtendI32U); // → [size:i64] — Map.size : Int64
+            Ok(())
+        }
+        // A runtime `Map.lookup(m, k)` — the fallible keyed read. Box the key, `map-lookup(m, key)` (BORROWS
+        // both; returns the STORED VALUE HANDLE, or NULL when the key is absent). If the returned handle is
+        // non-null build `Some(value)` — the value is a boxed handle used DIRECTLY as the `Some` payload,
+        // `dup`'d so the map keeps its own reference (mirrors `ListAt`'s borrowed `vec-get`) — else `None`.
+        // The boxed key is an owned temporary `drop`ped after the borrow. Scratch: the key handle (i32,
+        // dropped after lookup) and the looked-up value handle (i32).
+        Core::MapLookup { map, key, key_ty, disc_some, disc_none, .. } => {
+            let key_slot = base;
+            let val_slot = base + 1;
+            if val_slot + 1 > *high {
+                *high = val_slot + 1;
+            }
+            scratch_ty.insert(key_slot, ValType::I32);
+            scratch_ty.insert(val_slot, ValType::I32);
+            emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
+            if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(m) = is_narrow_int(db, key) {
+                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                }
+                out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
+            out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [value-or-null] (borrows map + key)
+            out.push(Lir::LocalSet(val_slot)); // val_slot = value-or-null, stack empty
+            // Drop the boxed key temporary now that the borrow-lookup is done (map-lookup borrows it).
+            out.push(Lir::LocalGet(key_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            // present = (value != NULL).
+            out.push(Lir::LocalGet(val_slot));
+            out.push(Lir::ConstI32(NULL_HANDLE));
+            out.push(Lir::I32Ne); // [present]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(value). The stored value handle is BORROWED (the map still owns it); `dup` it so
+            // the `Some` payload owns its own reference, then use it as the payload under `disc_some`.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(val_slot)); // [disc_some, value]
+            out.push(Lir::CallImport(OP_DUP)); // pops value, rc++ → [disc_some]
+            out.push(Lir::LocalGet(val_slot)); // [disc_some, value] (retained)
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
