@@ -322,6 +322,37 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// spec directive adds its key here.
 const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 
+/// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
+/// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
+/// (`numeric-model.md` §A Module May Declare Its Default Integer Literal Type). `<T>` is reduced to a
+/// type-VALUE by the ordinary evaluator (`eval::typeval_of`, the same path an annotation's type position
+/// takes), and the integer-domain predicate is `Ty::Int` — the ONE representation every fixed-width and
+/// deferred integer type shares. A non-integer type-value (`Float64` → `Ty::Float`, a record, …) is the
+/// numeric-domain rejection CDZ0303, distinct from the structural CDZ0602 (wrong arity) / CDZ0601
+/// (unknown key). A type argument that does NOT reduce to a concrete type-value — an integer type the
+/// numeric model admits but this compiler does not yet represent as a `Ty` (`BigInt`), an unbound name, a
+/// non-type expression — returns `None` here: NOT a domain violation (an unrepresented integer type is a
+/// legitimate default), so the whole program declines downstream on the still-unmodeled pragma rather
+/// than being falsely rejected as non-integer. The predicate is CONSERVATIVE — it fires only on a type it
+/// can prove is non-integer, never on absence of proof.
+fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    if matches!(ty, crate::ty::Ty::Int(_)) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::NonIntegerDefault,
+            format!(
+                "`default-integer` must name an integer type, but `{}` is not an integer type \
+                 (the default fixes the type otherwise-unconstrained integer literals take)",
+                ty.render_name()
+            ),
+        )
+        .at(form),
+    )
+}
+
 /// Every fault across the program's definitions. Well-formedness — scope resolution and type
 /// checking — is UNCONDITIONAL: it holds over EVERY top-level definition's body, not only the ones
 /// reachable from an export, because a program is well-formed or not regardless of what is asked to
@@ -386,12 +417,20 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // is checked (a top-level one or a module member alike); the fault anchors at the pragma form, which
     // sorts before a later reference, so it is the reported error.
     for form in (0..db.ast.structure.len() as u32).map(StructId) {
-        let Some(ptail) = db.ast.as_form(form, "pragma") else {
+        // OWN the tail + key before matching: the domain check below reduces the type argument via
+        // `eval::typeval_of` (which needs `&mut Db`), and a borrowed `key: &str` / `ptail: &[StructId]`
+        // into `db.ast` would pin `db` immutable for the whole match. `StructId` is `Copy`, so owning the
+        // tail is cheap; the key is a short owned `String`.
+        let Some(ptail) = db.ast.as_form(form, "pragma").map(<[_]>::to_vec) else {
             continue;
         };
-        let key = ptail.first().and_then(|&k| db.ast.as_name(k));
-        match key {
-            // `default-integer <T>` — exactly one argument (the default type). Missing/extra → malformed.
+        let key = ptail
+            .first()
+            .and_then(|&k| db.ast.as_name(k))
+            .map(str::to_string);
+        match key.as_deref() {
+            // `default-integer <T>` — exactly one argument (the default type). Missing/extra → malformed;
+            // a well-formed one whose type argument is not an integer type → the numeric-domain CDZ0303.
             Some("default-integer") => {
                 if ptail.len() != 2 {
                     faults.push(
@@ -401,6 +440,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         )
                         .at(form),
                     );
+                } else if let Some(reject) = non_integer_default_fault(db, form, ptail[1]) {
+                    faults.push(reject);
                 }
             }
             // A key the fixed registry does not define — rejected, not ignored. If the typo'd key is a
@@ -422,7 +463,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     crate::diag::suggest::nearest(other, PRAGMA_REGISTRY.iter().copied())
                     && let Some(&key_occ) = ptail.first()
                 {
-                    reject = reject.with_fix(crate::diag::Fix::replace_heuristic(key_occ, candidate));
+                    reject =
+                        reject.with_fix(crate::diag::Fix::replace_heuristic(key_occ, candidate));
                 }
                 faults.push(reject);
             }
@@ -560,7 +602,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // neither an earlier NOR a later parameter (renaming `x` in `(f x x)` to `x2` must dodge a real `x2`).
         let all_names: std::collections::HashSet<String> = params
             .iter()
-            .filter_map(|&p| db.ast.as_name(crate::eval::param_name_occ(db, p)).map(str::to_string))
+            .filter_map(|&p| {
+                db.ast
+                    .as_name(crate::eval::param_name_occ(db, p))
+                    .map(str::to_string)
+            })
             .collect();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for &p in params {
@@ -659,8 +705,9 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // 100) Int64))`'s body is ill-typed — the `(+ x 100)` is Int8, not Int64 — so it rejects CDZ0203
     // instead of emitting invalid wasm.) A non-lambda export body is already fully checked above.
     for body in export_bodies {
-        if let crate::resolved::Resolved::Lambda { body: closure_body, .. } =
-            crate::resolve::resolved_of(db, body)
+        if let crate::resolved::Resolved::Lambda {
+            body: closure_body, ..
+        } = crate::resolve::resolved_of(db, body)
         {
             faults.extend(type_errors(db, closure_body));
         }
@@ -822,7 +869,8 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     // fix the handle as the ONE primary error. Matched by message prefix (the reject reuses `Malformed`).
     let has_noncanonical_handle_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed)
-            && r.message.starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
+            && r.message
+                .starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
     });
     // Likewise: an exported closure with a non-representable part (an `Any` param/result, a captured
     // value with no machine type) is reported as the coded CDZ0201 "cannot cross the component boundary"

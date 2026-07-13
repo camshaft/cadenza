@@ -183,6 +183,7 @@ pass	a deeper nested call chain still folds in linear time near the inliner limi
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
+pass	a default-integer pragma naming a non-integer type is rejected
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegation naming an effect that is never reached is rejected as latent authority
@@ -1333,7 +1334,6 @@ todo	a built-in Ast constructor applied to a wrong-type payload is a type error
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
-todo	a default-integer pragma naming a non-integer type is rejected
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never

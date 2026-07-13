@@ -9439,6 +9439,37 @@ mod match_engine {
     }
 
     #[test]
+    fn a_default_integer_pragma_naming_a_non_integer_type_is_cdz0303() {
+        // 06-numeric-model "a default-integer pragma naming a non-integer type is rejected" +
+        // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: the directive names
+        // the type otherwise-unconstrained integer literals default to, so it MUST name an INTEGER type. A
+        // well-formed directive (recognized key, one type argument) whose argument reduces to a non-integer
+        // type-value (`Float64`) fails the integer-domain predicate — the NUMERIC-domain rejection CDZ0303,
+        // distinct from the structural CDZ0602 (wrong arity) and CDZ0601 (unknown key): key + arity are
+        // right, only the numeric domain is wrong. The fault anchors at the pragma form, which sorts before
+        // the later module reference, so it is the reported error rather than the downstream unbound-`m`.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer Float64) (def (x) 5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0303")
+        );
+        // A valid INTEGER default the numeric model admits but this compiler does not YET represent as a
+        // `Ty` (`BigInt`) does NOT reduce to a concrete type-value, so the conservative domain predicate
+        // does NOT fire (an unrepresented integer type is a legitimate default, not a domain violation) —
+        // the program declines downstream on the still-unmodeled pragma (CDZ0101, unbound `m`), never a
+        // false CDZ0303. Pins that CDZ0303 fires only on a type PROVEN non-integer, not on absence of proof.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101")
+        );
+    }
+
+    #[test]
     fn an_unknown_directive_near_a_registry_key_suggests_it() {
         // CDZ0601 is a CLOSED-SET violation (the pragma registry is fixed), so a near-miss typo gets the
         // same "did you mean?" fix a mistyped name/field/variant does: `default-integr` → replace with
