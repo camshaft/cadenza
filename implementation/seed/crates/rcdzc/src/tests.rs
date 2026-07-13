@@ -10168,6 +10168,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_multi_param_closure_applies_at_full_arity() {
+        // A TWO-parameter lambda VALUE `(fn (a b) (+ a b))` passed to a recursive HOF and applied at
+        // full arity `(g i i)`. It lifts to a `(env, a, b) -> result` function and applies via ONE
+        // `call_indirect` with both args (no intermediate closure). `ap2 g n = sum(i=n..1) (i+i) =
+        // 2·n(n+1)/2 = n(n+1)`. `core-semantics.md` §Functions Are Single-Arity (full-arity application).
+        let src = "(module m \
+            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1))))) \
+            (def (main (: n Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "12"); // (3+3)+(2+2)+(1+1)
+        assert_eq!(run_closure(src, 4).unwrap(), "20"); // 4·5
+        // A multi-param closure that also CAPTURES: `(fn (a b) (+ (+ a b) k))` captures `k`. n=2, k=100:
+        // (2+2+100)+(1+1+100) = 104+102 = 206.
+        let src2 = "(module m \
+            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1))))) \
+            (def (main (: k Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ (+ a b) k)) 2)) (export main))";
+        assert_eq!(run_closure(src2, 100).unwrap(), "206");
+    }
+
+    #[test]
     fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
         // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
         // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The

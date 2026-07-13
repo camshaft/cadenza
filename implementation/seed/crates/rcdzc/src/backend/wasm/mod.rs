@@ -171,10 +171,8 @@ pub fn emit(
         // NOT the body occurrence (which would make `select`'s `slots.get(body)` return slot 0 and emit the
         // env instead of the body).
         let env_key = db.push_name("$closure-env");
-        let params = vec![
-            (env_key, crate::ty::Ty::Bytes),
-            (lifted.param, lifted.param_ty.clone()),
-        ];
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
         // An UNREACHED lifted lambda (demanded during type-checking / a fold that erased it — no reachable
         // `Core::Closure` builds it) is emitted as an inert STUB with the same signature but a trivial body
         // (return a zero of the result type). It is never called (its funcref-table entry is omitted), so a

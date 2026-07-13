@@ -309,9 +309,11 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
                 collect_closure_codes(db, c, out);
             }
         }
-        Core::CallClosure { closure, arg } => {
+        Core::CallClosure { closure, args } => {
             collect_closure_codes(db, closure, out);
-            collect_closure_codes(db, arg, out);
+            for arg in args {
+                collect_closure_codes(db, arg, out);
+            }
         }
         Core::If { cond, then_, else_ } => {
             collect_closure_codes(db, cond, out);
@@ -552,11 +554,13 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, c, out);
             }
         }
-        // A closure application evaluates the closure value and its argument; the callee is dynamic
+        // A closure application evaluates the closure value and its arguments; the callee is dynamic
         // (`call_indirect`), so no static callee to add — the lifted functions are already in the set.
-        crate::core::Core::CallClosure { closure, arg } => {
+        crate::core::Core::CallClosure { closure, args } => {
             collect_call_callees(db, closure, out);
-            collect_call_callees(db, arg, out);
+            for arg in args {
+                collect_call_callees(db, arg, out);
+            }
         }
         // Leaves and references have no sub-calls (a `Captured` read is a heap read of the env cell).
         crate::core::Core::ConstInt(_)

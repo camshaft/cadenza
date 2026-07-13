@@ -434,14 +434,20 @@ pub enum Core {
         /// read returns a boxed handle that must be unboxed, a compound stays a handle).
         ty: crate::ty::Ty,
     },
-    /// Apply a RUNTIME CLOSURE VALUE to one argument via `call_indirect` through the funcref table. The
+    /// Apply a RUNTIME CLOSURE VALUE at FULL ARITY via `call_indirect` through the funcref table. The
     /// `closure` operand is the closure CELL — a heap product whose slot 0 is `box-int(table-slot)` and
     /// whose remaining slots are the captures. The lifted function is invoked with `(env = the closure
-    /// cell, arg)`: the arg and the cell are pushed, then `arr-get(cell, 0)`+`get-int` reads the table
+    /// cell, args…)`: the cell and the args are pushed, then `arr-get(cell, 0)`+`get-int` reads the table
     /// slot for the indirection index. Present only when the applied head is a runtime function value — a
-    /// function-typed PARAMETER `g` applied inside a (recursive) body. Single-arity (`core-semantics.md`
-    /// §Functions Are Single-Arity). `DESIGN-runtime-closures-rcdzc.md` §3.
-    CallClosure { closure: StructId, arg: StructId },
+    /// function-typed PARAMETER `g` applied inside a (recursive) body. A single-arg application carries
+    /// one arg; a MULTI-arg application `(g a b)` carries all of them (the lifted lambda is
+    /// `(env, a, b) -> result`), so long as it is applied at FULL arity — a PARTIAL application of a
+    /// runtime multi-param closure (runtime currying) still declines at the application site.
+    /// `DESIGN-runtime-closures-rcdzc.md` §3.
+    CallClosure {
+        closure: StructId,
+        args: Vec<StructId>,
+    },
     /// A produced "no" carried into the core.
     Poison(Reject),
 }

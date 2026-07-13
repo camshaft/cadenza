@@ -167,6 +167,26 @@
   (call   main (: 3 Int64))
   (output (: 12 Int64)))
 
+; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
+; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
+; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and
+; applies via a single indirect call (no intermediate closure). `ap2 (fn (a b) (+ a b)) n` sums
+; `(g i i)` for i = n…1, i.e. `2·(n + … + 1) = n·(n+1)`. (A PARTIAL application of a runtime multi-param
+; closure — runtime currying — still declines: it would need to build the intermediate closure.)
+
+(case "a two-parameter closure is applied at full arity through a recursive HOF"
+  (doc    "`ap2` applies its two-argument function `g` to `(g i i)` at each recursion level and sums the
+           results. `g = (fn (a b) (+ a b))` lifts to a two-parameter closure `(env, a, b) → result`
+           applied at full arity; with n=3 the sum is (3+3)+(2+2)+(1+1) = 12. Pins that a multi-parameter
+           lambda VALUE runs at run time when applied to all its arguments at once.")
+  (input  (do
+            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64))
+              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1)))))
+            (def (main (: n Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ a b)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 12 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field

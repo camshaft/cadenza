@@ -238,8 +238,9 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Closure { captures, .. } => captures
             .iter()
             .any(|&c| binding_escapes(db, c, binder, false)),
-        Core::CallClosure { closure, arg } => {
-            binding_escapes(db, closure, binder, false) || binding_escapes(db, arg, binder, false)
+        Core::CallClosure { closure, args } => {
+            binding_escapes(db, closure, binder, false)
+                || args.iter().any(|&a| binding_escapes(db, a, binder, false))
         }
         // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding).
         Core::ConstInt(_)
@@ -674,11 +675,13 @@ pub fn collect_used_ops(
                 collect_used_ops(db, c, out);
             }
         }
-        Core::CallClosure { closure, arg } => {
+        Core::CallClosure { closure, args } => {
             out.insert(OP_ARR_GET); // read the code slot from the cell
             out.insert(OP_GET_INT); // unbox it to the table index
             collect_used_ops(db, closure, out);
-            collect_used_ops(db, arg, out);
+            for arg in args {
+                collect_used_ops(db, arg, out);
+            }
         }
         // A CAPTURED-variable read: `arr-get(env, 1+index)` then unbox by the captured value's type.
         Core::Captured { .. } => {
@@ -1606,24 +1609,43 @@ fn tl_body_of(db: &Db, member: usize) -> Result<StructId, Reject> {
         .ok_or_else(|| Reject::decline("a loop member has no body"))
 }
 
-/// The `call_indirect` TYPE-section index for applying the closure value at `closure` — resolved from
-/// the closure head's solved `Ty::Fn(param, result)` by finding the lambda-lifted function with a
-/// matching signature and returning ITS functype's type index (`layout.lifted_type_index`). Structural
-/// functypes mean any type index with the same `(param)->result` validates; using a matching lifted
-/// lambda's keeps it exact. `None` if the head is not a function type, or no lifted lambda matches (a
-/// closure whose only source is a runtime value with no lifted body — not reachable in this increment).
-fn closure_type_index(db: &mut Db, closure: StructId, layout: &Layout) -> Option<u32> {
-    let (param, result) = match type_of(db, closure) {
-        Ty::Fn(p, r) => (*p, *r),
-        _ => return None,
-    };
-    let pv = valtype_of(&param)?;
-    let rv = valtype_of(&result)?;
-    // Find a lifted lambda whose param/result machine types match this closure's signature.
-    let slot = layout
-        .lifted
+/// The `call_indirect` TYPE-section index for applying the closure value at `closure` to `args` (at
+/// FULL arity) — resolved by finding the lambda-lifted function whose `(env, params…) -> result`
+/// signature matches the call's machine shape, and returning ITS functype's type index
+/// (`layout.lifted_type_index`). The match is by MACHINE valtype: the lifted lambda must have exactly
+/// `args.len()` params whose valtypes equal the call args' valtypes, and its result valtype must equal
+/// the whole application's result valtype. Structural functypes mean any type index with the same shape
+/// validates; using a matching lifted lambda's keeps it exact. `None` if no lifted lambda matches (a
+/// runtime closure with no lifted body — e.g. a partial application / runtime currying, not yet built).
+fn closure_type_index(
+    db: &mut Db,
+    closure: StructId,
+    args: &[StructId],
+    layout: &Layout,
+) -> Option<u32> {
+    // Each argument's machine valtype, and the application's result valtype (the closure's type peeled
+    // by `args.len()` arrows).
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = args
         .iter()
-        .position(|l| valtype_of(&l.param_ty) == Some(pv) && valtype_of(&l.ret_ty) == Some(rv))?;
+        .map(|&a| valtype_of(&type_of(db, a)))
+        .collect::<Option<_>>()?;
+    let mut result_ty = type_of(db, closure);
+    for _ in 0..args.len() {
+        result_ty = match result_ty {
+            Ty::Fn(_, r) => *r,
+            _ => return None,
+        };
+    }
+    let rv = valtype_of(&result_ty)?;
+    // Find a lifted lambda with the same param valtypes (in order) + result valtype.
+    let slot = layout.lifted.iter().position(|l| {
+        l.params.len() == arg_vts.len()
+            && l.params
+                .iter()
+                .zip(&arg_vts)
+                .all(|((_, pt), av)| valtype_of(pt) == Some(*av))
+            && valtype_of(&l.ret_ty) == Some(rv)
+    })?;
     Some(layout.lifted_type_index(slot, layout.import_base))
 }
 
@@ -2835,8 +2857,8 @@ fn emit(
         // cell (`arr-get(cell, 0)` + `get-int`) as the indirection index, then `call_indirect`. The cell
         // must be materialized into a local so it is read TWICE (once passed as env, once for the code
         // slot) without recomputation.
-        Core::CallClosure { closure, arg } => {
-            let type_index = closure_type_index(db, closure, layout).ok_or_else(|| {
+        Core::CallClosure { closure, args } => {
+            let type_index = closure_type_index(db, closure, &args, layout).ok_or_else(|| {
                 Reject::decline("a runtime closure application has no matching function type")
             })?;
             // Materialize the closure cell into a scratch local (read twice: env arg + code slot).
@@ -2854,10 +2876,12 @@ fn emit(
                 out,
             )?;
             out.push(Lir::LocalSet(cell_slot));
-            // The lifted function is `(env, arg) -> result`, so push env (param 0) THEN arg (param 1),
-            // in that order, before the indirection index.
+            // The lifted function is `(env, args…) -> result`, so push env (param 0) THEN each arg, in
+            // order, before the indirection index. Each arg emits above the cell slot (never reusing it).
             out.push(Lir::LocalGet(cell_slot)); // env (the cell)
-            emit(db, arg, slots, cell_slot + 1, high, scratch_ty, layout, out)?;
+            for &arg in &args {
+                emit(db, arg, slots, cell_slot + 1, high, scratch_ty, layout, out)?;
+            }
             // …then the indirection index: arr-get(cell, 0) → box-int(code); get-int → the table slot as
             // an i64; `call_indirect` needs the index as an i32, so narrow it (`i32.wrap_i64`). The code
             // is a small table slot, so the wrap is exact.

@@ -26,24 +26,25 @@ use crate::resolve::resolved_of;
 use crate::resolved::{Prim, Resolved};
 use tracing::trace;
 
-/// A LAMBDA-LIFTED closure — a `(fn (param) body)` that survived lowering as a runtime value and was
+/// A LAMBDA-LIFTED closure — a `(fn (param…) body)` that survived lowering as a runtime value and was
 /// hoisted to a standalone wasm function. Its position in `db.lifted` is its funcref-TABLE slot. Every
-/// closure is UNIFORMLY a `(env, param) -> result` function (so a function-typed parameter can hold a
+/// closure is UNIFORMLY an `(env, param…) -> result` function (so a function-typed parameter can hold a
 /// capturing OR a non-capturing closure interchangeably): the closure CELL (`box-int(code)` + captures)
-/// is passed as the env at local slot 0, and the lambda's own parameter at slot 1. A body reference to
-/// the lambda's parameter is a `Core::Param`; a reference to a CAPTURED free variable is a
-/// `Core::Captured { index }` that reads the env cell (recorded per-occurrence in `db.captured_refs`).
-/// The param + result machine types come from the lambda's body (`param_ty`/`ret_ty`).
+/// is passed as the env at local slot 0, and the lambda's own parameters at slots 1.. . A body reference
+/// to a lambda parameter is a `Core::Param`; a reference to a CAPTURED free variable is a
+/// `Core::Captured { index }` that reads the env cell (recorded per-occurrence in `db.captured_ref`).
+/// The param + result machine types come from the lambda's body. A MULTI-parameter lambda is supported
+/// only when applied at FULL arity (a `(g a b)` application → one `call_indirect` with all args); a
+/// partial application of a runtime multi-param closure (runtime currying) still declines.
 /// `DESIGN-runtime-closures-rcdzc.md` §3.
 #[derive(Clone, PartialEq, Debug)]
 pub struct LiftedLambda {
     /// The lambda's `body` occurrence — the identity that dedups a lambda lifted more than once, and
     /// what the backend selects as the function body.
     pub body: StructId,
-    /// The single parameter's binder occurrence (wasm local slot 1 — slot 0 is the env cell).
-    pub param: StructId,
-    /// The parameter's solved machine type.
-    pub param_ty: crate::ty::Ty,
+    /// The lambda's parameters, in order — each `(binder occurrence, solved machine type)`. They occupy
+    /// wasm local slots `1..1+params.len()` (slot 0 is the env cell).
+    pub params: Vec<(StructId, crate::ty::Ty)>,
     /// The result's solved machine type.
     pub ret_ty: crate::ty::Ty,
     /// The captured free variables, in cell order (cell index `1 + position`). Each is the binder
@@ -490,26 +491,29 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
             // A RUNTIME CLOSURE APPLICATION: the head is a runtime FUNCTION VALUE that does NOT reduce to
             // a compile-time lambda and is NOT a known constructor/operator/type-builder — a
-            // function-typed PARAMETER `g` applied inside a body (`(g n)`), or a runtime-held closure. It
-            // cannot β-reduce (its value is unknown at compile time), so it applies via `call_indirect`:
-            // lower to `Core::CallClosure`. The head must be a `Resolved::Param` (the only runtime
-            // function-value source in this increment); a sum-variant constructor (`Ok`, whose type is
-            // also an arrow), an operator prim, a type builder, and a named def all have their own paths
+            // function-typed PARAMETER `g` applied inside a body (`(g n)` / `(g a b)`), or a runtime-held
+            // closure. It cannot β-reduce (its value is unknown at compile time), so it applies via
+            // `call_indirect`: lower to `Core::CallClosure`. The head must be a `Resolved::Param` (the
+            // only runtime function-value source); a sum-variant constructor (`Ok`, whose type is also an
+            // arrow), an operator prim, a type builder, and a named def all have their own paths
             // (constructors build, prims fold, defs β-reduce/inline) and must NOT be diverted here — so
             // this is gated on the head being a bare parameter, not merely on its type being `Ty::Fn`.
-            // Single-arity per `core-semantics.md`. Checked before the lambda-head path.
+            // A multi-arg application `(g a b)` is a FULL-arity call of a multi-param closure (all args
+            // pushed to one `call_indirect`); a PARTIAL application (fewer args than the closure's arity)
+            // is runtime currying — it must build an intermediate closure, which is not yet supported, so
+            // it declines at select (the `call_indirect` type won't match). Checked before the lambda path.
             if head_is_param(db, head)
                 && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
             {
-                if args.len() != 1 {
+                if args.is_empty() {
                     return Core::Poison(Reject::decline(
-                        "a runtime closure applies to one argument at a time (curried)",
+                        "a runtime closure applied to no arguments",
                     ));
                 }
-                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: runtime closure application → Core::CallClosure");
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, n_args = args.len(), "apply: runtime closure application → Core::CallClosure");
                 return Core::CallClosure {
                     closure: head,
-                    arg: args[0],
+                    args: args.to_vec(),
                 };
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
@@ -2081,43 +2085,51 @@ fn head_is_param(db: &mut Db, id: StructId) -> bool {
 /// (`Core::Captured`) rather than following through to the (out-of-scope) binding. The param + result
 /// machine types come from the lambda's body (`type_of`).
 fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: StructId) -> Core {
-    // Single-arity only (the curried surface reduces multi-param application via partial application
-    // upstream; a bare multi-param lambda value has no single-arity table entry yet).
-    if params.len() != 1 {
+    // At least one parameter (a nullary lambda value has no use here). A multi-parameter lambda IS
+    // supported — it lifts to an `(env, p1, …, pn) -> result` function and is applied at FULL arity via
+    // one `call_indirect` (see the `Core::CallClosure` lowering). A PARTIAL application of a runtime
+    // multi-param closure (runtime currying) still declines at the application site, not here.
+    if params.is_empty() {
         return Core::Poison(Reject::decline(
-            "a multi-parameter lambda has no runtime form yet (only a single-arity closure lifts)",
+            "a nullary lambda has no runtime closure form",
         ));
     }
-    let param = crate::eval::param_name_occ(db, params[0]);
+    let param_occs: Vec<StructId> = params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
     // Collect the ORDERED, DISTINCT capture set — the enclosing-binding occurrences the body references
-    // (other than its own param / top-level defs / the prelude), first-reference order. Each capturing
-    // REFERENCE occurrence is recorded → its capture index, so the lifted body reads it from the env.
+    // (other than ANY of its own params / top-level defs / the prelude), first-reference order. Each
+    // capturing REFERENCE occurrence is recorded → its capture index, so the lifted body reads it from
+    // the env.
     let mut captures: Vec<StructId> = Vec::new();
     let mut capture_refs: Vec<(StructId, usize)> = Vec::new();
-    if !collect_captures(db, body, param, id, &mut captures, &mut capture_refs) {
+    if !collect_captures(db, body, &param_occs, id, &mut captures, &mut capture_refs) {
         return Core::Poison(Reject::decline(
             "a closure captures a value with no runtime representation (not yet built)",
         ));
     }
-    // The lambda's param + result machine types. A bare `(fn (x) …)` types with FRESH variables at its
-    // own occurrence (inference does not thread the use-site's expected `(-> A B)` back onto the arg's
-    // memoized type), so read the types from the BODY instead: the result is `type_of(body)`, and the
-    // param's type is what its uses in the body ground it to. A param the body does not constrain to a
-    // machine type declines below (no invented width).
+    // Each parameter's solved machine type. A bare `(fn (x) …)` types `Any` at its own occurrence
+    // (inference does not thread the use-site arrow back), so SOLVE it from the body's uses
+    // (`solve_lambda_param_ty`, the lambda analogue of the recursive-def A2 solve). A param the body does
+    // not constrain to a machine type declines below (no invented width). The RESULT type is the body's.
     let ret_ty = crate::infer::type_of(db, body);
-    // The param's type: its annotation if present. An UNANNOTATED bare `(fn (x) …)` types `Any` at its
-    // own occurrence (inference does not thread the use-site arrow back), so SOLVE it from the body's
-    // uses — `(* x 2)` grounds `x` to Int64 (`solve_lambda_param_ty`, the lambda analogue of the
-    // recursive-def A2 solve). Still `Any` (no numeric use) → declines below (no invented width).
-    let param_ty = match crate::infer::type_of(db, param) {
-        crate::ty::Ty::Any => crate::infer::solve_lambda_param_ty(db, param, body),
-        t => t,
-    };
-    if crate::backend::wasm::lir::valtype_of(&param_ty).is_none()
-        || crate::backend::wasm::lir::valtype_of(&ret_ty).is_none()
-    {
+    let mut param_tys: Vec<(StructId, crate::ty::Ty)> = Vec::new();
+    for &p in &param_occs {
+        let pt = match crate::infer::type_of(db, p) {
+            crate::ty::Ty::Any => crate::infer::solve_lambda_param_ty(db, p, body),
+            t => t,
+        };
+        if crate::backend::wasm::lir::valtype_of(&pt).is_none() {
+            return Core::Poison(Reject::decline(
+                "a closure's parameter type has no machine representation",
+            ));
+        }
+        param_tys.push((p, pt));
+    }
+    if crate::backend::wasm::lir::valtype_of(&ret_ty).is_none() {
         return Core::Poison(Reject::decline(
-            "a closure's parameter or result type has no machine representation",
+            "a closure's result type has no machine representation",
         ));
     }
     // Every captured value must have a machine representation too (it is boxed into the cell).
@@ -2138,12 +2150,11 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
     // Register the lift (dedup by body occurrence); its position in `db.lifted` is its table slot.
     let code = db.lift_lambda(crate::lower::LiftedLambda {
         body,
-        param,
-        param_ty,
+        params: param_tys,
         ret_ty,
         captures: captures.clone(),
     });
-    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, n_captures = captures.len(), "lift lambda → Core::Closure");
+    trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, n_params = params.len(), n_captures = captures.len(), "lift lambda → Core::Closure");
     Core::Closure { code, captures }
 }
 
@@ -2157,16 +2168,16 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
 fn collect_captures(
     db: &mut Db,
     node: StructId,
-    param: StructId,
+    params: &[StructId],
     lam_id: StructId,
     captures: &mut Vec<StructId>,
     capture_refs: &mut Vec<(StructId, usize)>,
 ) -> bool {
     match resolved_of(db, node) {
-        // A bare parameter USE: `Resolved::Param { binder }`. Its own param → not a capture; an
-        // enclosing param → a capture keyed by that binder.
+        // A bare parameter USE: `Resolved::Param { binder }`. One of the lambda's OWN params → not a
+        // capture; an enclosing param → a capture keyed by that binder.
         Resolved::Param { binder } => {
-            if binder == param {
+            if params.contains(&binder) {
                 return true;
             }
             record_capture(binder, node, captures, capture_refs);
@@ -2182,9 +2193,9 @@ fn collect_captures(
                 record_capture(value, node, captures, capture_refs);
                 return true;
             }
-            // Within the lambda (its param, a nested let) — recurse through the target for a nested
+            // Within the lambda (its params, a nested let) — recurse through the target for a nested
             // capture (e.g. a `let`-local whose init references a free variable).
-            return collect_captures(db, value, param, lam_id, captures, capture_refs);
+            return collect_captures(db, value, params, lam_id, captures, capture_refs);
         }
         _ => {}
     }
@@ -2194,7 +2205,7 @@ fn collect_captures(
             let children: Vec<StructId> = children.clone();
             children
                 .iter()
-                .all(|&c| collect_captures(db, c, param, lam_id, captures, capture_refs))
+                .all(|&c| collect_captures(db, c, params, lam_id, captures, capture_refs))
         }
         crate::ast::Struct::Atom(_) => true,
     }

@@ -413,6 +413,7 @@ pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
+pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected

@@ -649,9 +649,11 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, c, out);
             }
         }
-        Core::CallClosure { closure, arg } => {
+        Core::CallClosure { closure, args } => {
             collect_reached_poisons(db, closure, out);
-            collect_reached_poisons(db, arg, out);
+            for arg in args {
+                collect_reached_poisons(db, arg, out);
+            }
         }
         // A parameter, a let-binding reference, or a CAPTURED-variable read is a runtime read — no
         // sub-poison to collect.
