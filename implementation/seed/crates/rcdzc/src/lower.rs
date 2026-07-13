@@ -5213,17 +5213,46 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     let Some(m) = m.to_i64() else {
         return false;
     };
+    let Some(bits) = unsigned_value_bits(db, val) else {
+        return false; // not a provably-nonnegative value with a known ≤63-bit range.
+    };
+    let low = (1i64 << bits) - 1; // 2^bits - 1, all bits the value can possibly set
+    (m & low) == low
+}
+
+/// An upper bound `B` (in `1..=63`) on the number of LOW bits a runtime value can set — i.e. the value
+/// is provably in `[0, 2^B)`. `None` if no such bound is known (a signed/deferred type, a value that can
+/// be negative, or a width ≥ 64 whose mask is not i64-representable). Used to elide a redundant `& M`
+/// when `M` covers all `B` bits.
+///  - A resolved UNSIGNED width-N type: `B = N` (the value lives in `[0, 2^N)`).
+///  - A LOGICAL right shift `(>>ᵤ x k)` by a constant `k` of such a value: `B = N − k` (the shift drops
+///    the low `k` bits and zero-fills the top, so the result fits `N − k` bits). This is what makes the
+///    bit-extraction idiom `(& (>>ᵤ x k) mask)` shed its redundant mask.
+fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
+    // A logical right shift by a constant narrows the bound: `(>>ᵤ inner k)` fits `bits(inner) − k`.
+    if let Core::Arith {
+        op: Prim::Shr,
+        lhs: inner,
+        rhs: count,
+    } = core_of(db, val)
+        && let Core::ConstInt(k) = core_of(db, count)
+        && let Some(k) = k.to_i64()
+        && (0..64).contains(&k)
+        // `>>` is LOGICAL only for an UNSIGNED operand (a signed `>>ₛ` sign-extends, keeping high bits).
+        && let crate::ty::Ty::Int(it) = crate::infer::type_of(db, inner)
+        && it.sign == crate::ty::Sign::Fixed(false)
+        && let Some(inner_bits) = unsigned_value_bits(db, inner)
+    {
+        return Some(inner_bits.saturating_sub(k as u32).max(1));
+    }
+    // Otherwise the bound is the value's own resolved unsigned width.
     let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
-        return false;
+        return None;
     };
     let (crate::ty::Sign::Fixed(false), crate::ty::Width::Fixed(n)) = (it.sign, it.width) else {
-        return false; // only a resolved UNSIGNED type; signed/deferred must not fold.
+        return None; // only a resolved UNSIGNED type; signed/deferred is not provably nonnegative.
     };
-    if n >= 64 {
-        return false; // 2^64 - 1 is not i64-representable here.
-    }
-    let low = (1i64 << n) - 1; // 2^N - 1, all value bits of an unsigned N
-    (m & low) == low
+    (n < 64).then_some(n) // 2^64 - 1 is not i64-representable here.
 }
 
 /// Whether the node at `id` lowers to a core that CANNOT TRAP at run time — so discarding it (an

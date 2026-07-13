@@ -4484,6 +4484,74 @@ mod runtime_ops {
         // The partial mask still masks correctly (parity where it is NOT elided).
         assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(200)]), 8); // 200 & 15 = 8
     }
+
+    #[test]
+    fn a_mask_covering_a_shifted_values_range_is_elided() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(>>ᵤ x:UInt8 4)` yields a value in [0, 15], so `& 15` (covers all 4 bits) is redundant → elided.
+        let elided = lir("(: x UInt8)", "(& (>> x 4) 15)");
+        assert!(
+            !elided
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "the mask covering the shifted range is elided; got {elided:?}"
+        );
+        // A mask that does NOT cover the shifted range (`& 7` vs a [0,15] value) is KEPT.
+        let kept = lir("(: x UInt8)", "(& (>> x 4) 7)");
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "a mask narrower than the shifted range is kept; got {kept:?}"
+        );
+        // A SIGNED right shift (`>>ₛ`) sign-extends, so the high bits are NOT provably zero — the mask
+        // must be KEPT even when it covers the same low bits.
+        let signed = lir("(: x Int8)", "(& (>> x 4) 15)");
+        assert!(
+            signed
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "a signed arithmetic shift keeps the mask; got {signed:?}"
+        );
+
+        // VALUE PARITY — elided and kept must both compute correctly.
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(& (>> x 4) 15)", &[Val::U8(200)]),
+            12
+        ); // 200>>4=12
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(& (>> x 4) 15)", &[Val::U8(255)]),
+            15
+        );
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(& (>> x 4) 7)", &[Val::U8(255)]),
+            7
+        ); // 15 & 7 = 7
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
