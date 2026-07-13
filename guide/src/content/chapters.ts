@@ -79,7 +79,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Working with records & tuples",
     blurb: "Passing structured data around and reaching into it.",
     section: "Fundamentals",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/RecordsTuples.tsx")),
   },
   {
