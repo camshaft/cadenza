@@ -21771,6 +21771,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_delegation_with_every_effect_reached_reports_no_latent_authority() {
+        // The CDZ0404 latent-authority check computes the SET of effects the body reaches in ONE walk and
+        // tests each delegated effect by membership (was one full body walk PER delegated effect → O(N²)).
+        // This locks in the SET semantics: a host delegating many effects that are ALL reached must report
+        // ZERO CDZ0404 — the reached-set contains every delegated decl. (Checked via `diagnostics`, the
+        // fault path, so the separate emit-time "one interface per envelope" decline does not mask it.)
+        let src = "(do (effect A (op a (-> String Unit))) (effect B (op b (-> String Unit))) \
+                   (effect C (op c (-> String Unit))) \
+                   (def (main) (host (A B C) (do (A.a \"x\") (B.b \"y\") (C.c \"z\")))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let codes: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.iter().any(|c| c == "CDZ0404"),
+            "every delegated effect is reached — no latent authority; got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn a_wide_delegation_flags_only_the_unreached_effect_as_latent_authority() {
+        // The set-membership latent-authority check must still flag a GENUINELY unreached effect: a host
+        // delegating A, B, C whose body reaches only A and B leaves C ∉ the reached set → exactly one
+        // CDZ0404 (for C), not zero and not one-per-effect. Guards that the O(N)→set rewrite did not lose
+        // the per-effect verdict (the `body_reached_effects` twin agrees with the old per-effect probe).
+        let src = "(do (effect A (op a (-> String Unit))) (effect B (op b (-> String Unit))) \
+                   (effect C (op c (-> String Unit))) \
+                   (def (main) (host (A B C) (do (A.a \"x\") (B.b \"y\")))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let n404 = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0404"))
+            .count();
+        assert_eq!(
+            n404, 1,
+            "only the unreached effect C is latent authority — exactly one CDZ0404"
+        );
+    }
+
+    #[test]
     fn a_stateful_handler_threads_its_state_across_performs() {
         // E1c-2: a handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and
         // threads `s+1` forward — is reduced by the evaluation-order fold. `(Fresh.next)` reads state
@@ -23007,7 +23048,7 @@ mod stage1 {
     #[test]
     fn a_delegated_effect_reached_through_a_recursive_callee_compiles() {
         // E2h-rec: `main` delegates `log` and calls a RECURSIVE `go` that performs `log.emit` on each
-        // step. Two coupled fixes: (1) `body_reaches_effect` (the CDZ0404 latent-authority check) now
+        // step. Two coupled fixes: (1) `body_reached_effects` (the CDZ0404 latent-authority check) now
         // FOLLOWS a recursive callee (visited-set guarded), so `log` is seen as reached — no false
         // "latent authority"; (2) `go`'s `log.emit` lowers to a `Core::HostCall` via
         // `perform_host_target`'s program-delegation fallback (the enclosing entrypoint delegates `log`),

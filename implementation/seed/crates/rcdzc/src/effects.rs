@@ -806,47 +806,49 @@ pub fn perform_host_target(
 /// ancestor was erased by a `reduce_handle` node synthesis. Memoized-free but cheap (a handful of
 /// exports, walked once per residual host perform).
 fn program_delegates_effect(db: &mut Db, decl: crate::ast::StructId) -> bool {
-    // Memoized per `decl`: the delegation set is a pure function of the export bodies, but this is a
-    // FALLBACK consulted once per residual host-perform — recomputing the O(export-body) walk per perform
-    // was O(N²) for a program with N performs / a wide N-op effect handler. First query computes, rest hit.
-    if let Some(&hit) = db.delegates_effect_cache.get(&decl) {
-        return hit;
+    // The delegation SET is a pure function of the export bodies, but this is a FALLBACK consulted once per
+    // residual host-perform. Keying a cache by `decl` was still O(N²) for N DISTINCT delegated effects:
+    // each decl missed once → N full export-body walks. Instead materialize the WHOLE set in ONE walk on
+    // first query, then answer every query (including for effects NOT delegated) by O(1) membership.
+    if db.delegated_effects.is_none() {
+        let export_bodies: Vec<StructId> = db
+            .exports
+            .iter()
+            .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
+            .collect();
+        let mut set = crate::fxhash::FxHashSet::default();
+        for b in export_bodies {
+            collect_host_delegated(db, b, 0, &mut set);
+        }
+        db.delegated_effects = Some(set);
     }
-    let export_bodies: Vec<StructId> = db
-        .exports
-        .iter()
-        .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
-        .collect();
-    let delegates = export_bodies
-        .into_iter()
-        .any(|b| body_has_host_delegating(db, b, decl, 0));
-    db.delegates_effect_cache.insert(decl, delegates);
-    delegates
+    db.delegated_effects.as_ref().unwrap().contains(&decl)
 }
 
-/// Whether the subtree at `node` contains a `(host (E…) …)` delegating the effect `decl`. A structural
-/// walk (bounded); a `host` node's effect list is checked, then the walk descends every child.
-fn body_has_host_delegating(
+/// Collect into `out` every effect-declaration occurrence delegated by a `(host (E…) …)` in the subtree at
+/// `node` — the set-building twin of the old per-`decl` `body_has_host_delegating` probe, run ONCE over the
+/// export bodies so N distinct delegated effects cost one walk, not N. A structural walk (bounded); a
+/// `host` node's effect list contributes its decls, then the walk descends every child.
+fn collect_host_delegated(
     db: &mut Db,
     node: StructId,
-    decl: crate::ast::StructId,
     depth: u32,
-) -> bool {
+    out: &mut crate::fxhash::FxHashSet<crate::ast::StructId>,
+) {
     if depth > 128 {
-        return false;
+        return;
     }
-    if let Resolved::Host { effects, .. } = resolved_of(db, node)
-        && effects
-            .iter()
-            .any(|&e| effect_decl_of_host_name(db, e) == Some(decl))
-    {
-        return true;
+    if let Resolved::Host { effects, .. } = resolved_of(db, node) {
+        for e in effects.iter() {
+            if let Some(decl) = effect_decl_of_host_name(db, *e) {
+                out.insert(decl);
+            }
+        }
     }
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| body_has_host_delegating(db, c, decl, depth + 1)),
-        Struct::Atom(_) => false,
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            collect_host_delegated(db, c, depth + 1, out);
+        }
     }
 }
 
@@ -991,14 +993,18 @@ fn check_no_home_walk(
             // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). Check each
             // delegated effect is reached by a perform in the body; if not, CDZ0404 (anchored at the
             // delegation's effect-name occurrence).
+            // Compute the SET of effects the body reaches ONCE (one walk), then test each delegated effect
+            // by O(1) membership — not one full-body walk per delegated effect (which was O(N²) for an
+            // N-effect delegation: `body_reaches_effect` re-walked the whole O(N) body N times).
+            let reached = body_reached_effects(db, body);
             for &(occ, decl) in &added {
                 // Suppress CDZ0404 when the body has a MEMBER ACCESS on this effect that just does not
                 // resolve as a perform — a MISSPELLED op (`(E.emitt …)`). That is a cascade of the typo's
                 // primary CDZ0201 ("did you mean `emit`?"), not a genuine unreached-effect: the author
                 // DID intend to reach `E`. Fixing the typo makes both vanish, so report only the root.
-                if !body_reaches_effect(db, body, decl, 0)
-                    && !body_has_effect_member_access(db, body, decl)
-                {
+                // (`body_has_effect_member_access` runs only for an UNREACHED effect — rare, so its per-
+                // effect body walk is not on the hot path a valid all-reached delegation takes.)
+                if !reached.contains(&decl) && !body_has_effect_member_access(db, body, decl) {
                     // The repair is to DROP the unreached effect from the manifest — a delete edit on the
                     // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
                     // Route To A Fix). The effect's name (for the label) comes from its declaration.
@@ -1037,15 +1043,49 @@ fn check_no_home_walk(
     }
 }
 
-/// Whether the resolved subtree at `node` performs an operation of the effect whose declaration
-/// occurrence is `decl` — following calls into their callee bodies (the perform may be cross-function).
-/// A RECURSIVE callee IS followed (its body walked ONCE), guarded by a `visited` set of callee-body
-/// occurrences so a self-/mutual-recursive cycle terminates. Used by the CDZ0404 latent-authority check:
-/// following a recursive callee is required so `(host (log) (go 1))` where `go` recursively performs
+/// The SET of effect declarations the body subtree at `node` reaches by a perform — following calls into
+/// their callee bodies (the perform may be cross-function), and following a RECURSIVE callee's body ONCE
+/// (guarded by a `visited` set of callee-body occurrences so a self-/mutual-recursive cycle terminates).
+/// Following a recursive callee is required so `(host (log) (go 1))` where `go` recursively performs
 /// `log.emit` is NOT falsely flagged as latent authority (its perform IS reached, through the recursion).
-fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bool {
+/// The latent-authority check (CDZ0404) uses this so a `(host (E0 … EN) body)` delegating N effects does
+/// ONE body walk + N O(1) set lookups, not N full body walks — which was O(N²) (an N-effect delegation
+/// over an O(N) body = 2s at 1600 effects, ~81% in the per-effect walk).
+fn body_reached_effects(db: &mut Db, node: StructId) -> std::collections::HashSet<u32> {
+    let mut reached = std::collections::HashSet::new();
     let mut visited = std::collections::HashSet::new();
-    body_reaches_effect_visited(db, node, decl, depth, &mut visited)
+    body_reached_effects_walk(db, node, 0, &mut reached, &mut visited);
+    reached
+}
+
+fn body_reached_effects_walk(
+    db: &mut Db,
+    node: StructId,
+    depth: u32,
+    reached: &mut std::collections::HashSet<u32>,
+    visited: &mut std::collections::HashSet<StructId>,
+) {
+    if depth > 64 {
+        return;
+    }
+    if let Resolved::Apply { head, .. } = resolved_of(db, node) {
+        if let Some((d, _idx)) = crate::eval::effect_op_of(db, head) {
+            reached.insert(d.0);
+        }
+        // Follow a (possibly recursive) callee's body ONCE — `visited.insert` false on re-entry stops a
+        // cycle. Mirrors `body_reaches_effect_visited`'s call-following so the reached set is identical.
+        if let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+            && visited.insert(callee)
+        {
+            body_reached_effects_walk(db, callee, depth + 1, reached, visited);
+        }
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            body_reached_effects_walk(db, c, depth, reached, visited);
+        }
+    }
 }
 
 /// Whether the body subtree at `node` contains a MEMBER ACCESS `(. E k)` whose operand resolves to the
@@ -1070,40 +1110,6 @@ fn body_has_effect_member_access(db: &mut Db, node: StructId, decl: u32) -> bool
         Struct::List(children) => children
             .iter()
             .any(|&c| body_has_effect_member_access(db, c, decl)),
-        Struct::Atom(_) => false,
-    }
-}
-
-fn body_reaches_effect_visited(
-    db: &mut Db,
-    node: StructId,
-    decl: u32,
-    depth: u32,
-    visited: &mut std::collections::HashSet<StructId>,
-) -> bool {
-    if depth > 64 {
-        return false;
-    }
-    if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some((d, _idx)) = crate::eval::effect_op_of(db, head)
-        && d.0 == decl
-    {
-        return true;
-    }
-    if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some(callee) = crate::eval::lambda_body(db, head)
-            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
-        // Walk the callee's body ONCE — `visited.insert` is false on a re-entry (a recursive cycle),
-        // which stops the descent so a self-/mutual-recursive callee terminates.
-        && visited.insert(callee)
-        && body_reaches_effect_visited(db, callee, decl, depth + 1, visited)
-    {
-        return true;
-    }
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| body_reaches_effect_visited(db, c, decl, depth, visited)),
         Struct::Atom(_) => false,
     }
 }
