@@ -89,6 +89,13 @@ const DTOR_CORE_EXPORT: &str = "t-dtor";
 const RESOURCE_TYPE_NAME: &str = "t";
 const MAKE_BOUNDARY_NAME: &str = "make";
 const ENCODE_BOUNDARY_NAME: &str = "encode";
+/// The interface a CLOSURE-resource export publishes under, and its method name — distinct from the
+/// value-escape's `cadenza:run/run` + `encode` because the host contract is a callable method, not a
+/// serializer (`DESIGN-closure-host-resource-rcdzc.md`). The core module exports `make`/`call` (a closure
+/// resource needs no `memory`/`cabi_realloc` for scalar args), so `CALL_CORE_EXPORT == CALL_BOUNDARY_NAME`.
+const CLOSURE_INTERFACE: &str = "cadenza:closure/exports";
+const CALL_CORE_EXPORT: &str = "call";
+const CALL_BOUNDARY_NAME: &str = "call";
 
 /// An export's RESULT as the boundary crosses it. A scalar crosses as a component primitive byte; a
 /// compound's canonical binary value form crosses as `list<u8>` (the R0 escape-path ABI — the resource
@@ -1090,6 +1097,178 @@ pub fn assemble_runtime_resource(
     out
 }
 
+/// Assemble a CLOSURE-RESOURCE component (C-HOST-1): a closure crossing the boundary as a resource whose
+/// `call` method invokes it. The same runtime-import + resource shape as [`assemble_runtime_resource`],
+/// but the second lifted method is `call : (self: own<t>, args…) -> R` (no `encode`, so no `list<u8>`
+/// type, no Memory/Realloc canon options — a scalar-arg `call` needs no linear memory). Published as
+/// `cadenza:closure/exports`. `main_core` is [`serialize::closure_resource_core_module`]'s output (which
+/// exports `make` + `call`); `arg_bytes`/`result_byte` are the closure's boundary valtypes
+/// (`AbiValType::comp_byte`). BYTE-IDENTICAL to the C-HOST-1 oracle
+/// (`closure_host_resource::oracle_closure_component`).
+///
+/// Outer index spaces (k = imports.len()): lowered ops → core funcs 0..k; `t-dtor` → core func k;
+/// `resource.new` → k+1, `resource.rep` → k+2; aliased `make` → k+3, `call` → k+4. The resource type is
+/// component type 1 (the import-instance-type is type 0). Component funcs: aliased ops 0..k, then the
+/// lifted `make` → comp func k, `call` → comp func k+1.
+pub fn assemble_closure_resource(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    arg_bytes: &[u8],
+    result_byte: u8,
+) -> Vec<u8> {
+    let k = imports.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: the import instance-type declaring the k used runtime ops (component type 0).
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
+
+    // sec 10: import the runtime interface as an instance of component type 0.
+    out.extend_from_slice(&{
+        let mut item = extern_name(import_name);
+        item.push(0x05); // ComponentTypeRef::Instance
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    });
+
+    // sec 6: alias each op out of the imported instance → component funcs 0..k.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    });
+    // sec 8: canon-lower each aliased op → core funcs 0..k.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    });
+
+    // sec 2: `heap-dtor` core instance exporting the lowered `drop` (→ core instance 0); sec 1: dtor
+    // module; sec 2: instantiate it (→ core instance 1); sec 6: alias `t-dtor` (→ core func k).
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| i as u32)
+        .expect("the closure-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    out.extend_from_slice(&core_module_section(dtor_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 0)])),
+    ));
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(1, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: the resource type `t` (rep i32, dtor = core func k) → component type 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(k as u32)),
+    ));
+    // sec 8: canon `resource.new` (→ core func k+1) AND `resource.rep` (→ core func k+2).
+    out.extend_from_slice(&{
+        let mut items = resource_new_item(1);
+        items.extend_from_slice(&resource_rep_item(1));
+        section(sec::CANON, &wasm_vec(2, &items))
+    });
+    // sec 2: the `heap` core instance exporting the k lowered ops + resource-new (k+1) + resource-rep
+    // (k+2) → core instance 2 (what `main_core` binds its `heap` import to).
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, i as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (k + 1) as u32));
+        ex.push((RESOURCE_REP, (k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    // sec 1: the program core module (module 1). sec 2: instantiate threading `heap` = core instance 2 →
+    // core instance 3.
+    out.extend_from_slice(&core_module_section(main_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
+    ));
+    // sec 6: alias `make` + `call` off the program instance (core instance 3) → core funcs k+3, k+4. No
+    // memory/realloc (a scalar-arg `call` needs no linear memory).
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(3, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, CALL_CORE_EXPORT));
+        section(sec::ALIAS, &wasm_vec(2, &items))
+    });
+    // sec 7: `own<t>` (type 2) then the `make` functype `() -> own<t>` (type 3). Resource is comp type 1.
+    out.extend_from_slice(&{
+        let mut items = own_item(1);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(2)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 8: lift `make` (core func k+3) against functype type 3 → component func k.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
+    ));
+    // sec 7: `own<t>` (type 4) then the `call` functype `(self: own<t>, args…) -> R` (type 5). ⚠ `own<t>`
+    // CONSUMES self per call (single-use per handle) — the `borrow<t>` migration for repeated calls is
+    // C-HOST-5 (shared with the value-escape's `encode`).
+    out.extend_from_slice(&{
+        let mut items = own_item(1);
+        items.extend_from_slice(&closure_call_functype(4, arg_bytes, result_byte));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 8: lift `call` (core func k+4) against functype type 5 → component func k+1. No canon options
+    // (scalar args/result — no memory/realloc needed).
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((k + 4) as u32, 5)),
+    ));
+    // sec 4: the nested re-export component. sec 5: instantiate it (comp type 1 + comp funcs k, k+1) →
+    // component instance 1 (the runtime import is component instance 0). sec 11: export as the closure
+    // interface.
+    out.extend_from_slice(&component_section(&resource_inner_component_closure(
+        arg_bytes,
+        result_byte,
+    )));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(1, &component_instantiate_call_item(1, k as u32, (k + 1) as u32)),
+    ));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
+    ));
+    out
+}
+
 /// The nested RE-EXPORT component (a self-contained component blob, its own magic + sections). It
 /// IMPORTS an abstract resource (`SubResource` bound) + the two funcs typed against it, then RE-EXPORTS
 /// the resource DIRECTLY (no `SubResource` ascription — that would mint a fresh identity distinct from
@@ -1163,6 +1342,80 @@ fn resource_inner_component() -> Vec<u8> {
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 10)),
+    ));
+    out
+}
+
+/// The nested RE-EXPORT component for a CLOSURE resource — like [`resource_inner_component`] but the
+/// second method is `call : (self: own<t>, args…) -> R` (invoke the closure) instead of `encode : (self:
+/// own<t>) -> list<u8>`. Imports the abstract resource + `make`/`call` typed against it, re-exports the
+/// resource DIRECTLY + both funcs ascribed against the exported identity — the only way to export a
+/// resource-with-methods (the outer component instantiates it with the real rep-carrying resource + the
+/// lifted funcs). `arg_bytes`/`result_byte` are the closure's boundary valtypes (`AbiValType::comp_byte`).
+/// Inner index spaces: imported resource → type 0; `own<0>` → 1; make-ft `()->own<0>` → 2; `own<0>` → 3;
+/// call-ft `(self:own<3>, args…)->R` → 4; imported `make` → func 0; imported `call` → func 1; RE-EXPORTED
+/// resource → type 5; `own<5>` → 6; make-exp-ft → 7; `own<5>` → 8; call-exp-ft `(self:own<8>, args…)->R` →
+/// 9. (No `list u8` type as the encode variant has — a `call`'s result is a scalar valtype inline.)
+fn resource_inner_component_closure(arg_bytes: &[u8], result_byte: u8) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import the abstract resource → type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_subresource_item("import-type-t")),
+    ));
+    // sec 7: `own<0>` (type 1) then the imported `make` functype `() -> own<0>` (type 2).
+    let make_import_types = {
+        let mut items = own_item(0);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(1)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_import_types);
+    // sec 10: import `import-func-make` as a func of type 2 → func 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+    ));
+    // sec 7: `own<0>` (type 3) then the imported `call` functype `(self: own<3>, args…) -> R` (type 4).
+    let call_import_types = {
+        let mut items = own_item(0);
+        items.extend_from_slice(&closure_call_functype(3, arg_bytes, result_byte));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&call_import_types);
+    // sec 10: import `import-func-call` as a func of type 4 → func 1.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-call", 4)),
+    ));
+    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY as `t` → exported type 5.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
+    ));
+    // sec 7: `own<5>` (type 6) then the `make` functype re-typed against the exported resource (type 7).
+    let make_export_types = {
+        let mut items = own_item(5);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(6)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_export_types);
+    // sec 11: export `make` (func 0) ascribed to functype 7.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 7)),
+    ));
+    // sec 7: `own<5>` (type 8) then the `call` functype re-typed against the exported resource (type 9).
+    let call_export_types = {
+        let mut items = own_item(5);
+        items.extend_from_slice(&closure_call_functype(8, arg_bytes, result_byte));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&call_export_types);
+    // sec 11: export `call` (func 1) ascribed to functype 9.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(CALL_BOUNDARY_NAME, 1, 9)),
     ));
     out
 }
@@ -1475,6 +1728,27 @@ fn component_instantiate_item(res_ty: u32, make_fn: u32, encode_fn: u32) -> Vec<
         ("import-type-t", 0x03, res_ty), // Type → internal resource comp type
         ("import-func-make", 0x01, make_fn), // Func → lifted make comp func
         ("import-func-encode", 0x01, encode_fn), // Func → lifted encode comp func
+    ];
+    let mut arg_items = Vec::new();
+    for (name, sort, idx) in args {
+        arg_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        arg_items.extend_from_slice(name.as_bytes());
+        arg_items.push(sort);
+        uleb128(idx as u64, &mut arg_items);
+    }
+    item.extend_from_slice(&wasm_vec(args.len(), &arg_items));
+    item
+}
+
+/// Like [`component_instantiate_item`] but for the CLOSURE inner component: the second imported func is
+/// `import-func-call` (the `call` method), not `import-func-encode`.
+fn component_instantiate_call_item(res_ty: u32, make_fn: u32, call_fn: u32) -> Vec<u8> {
+    let mut item = vec![0x00]; // instantiate form
+    uleb128(0, &mut item); // inner component index (component 0)
+    let args: [(&str, u8, u32); 3] = [
+        ("import-type-t", 0x03, res_ty),
+        ("import-func-make", 0x01, make_fn),
+        ("import-func-call", 0x01, call_fn),
     ];
     let mut arg_items = Vec::new();
     for (name, sort, idx) in args {

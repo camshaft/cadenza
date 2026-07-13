@@ -240,6 +240,23 @@ fn run_export(
         return run_resource_escape(&mut *store, &instance);
     }
 
+    // The CLOSURE ESCAPE (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a program whose result is a
+    // closure exports the `cadenza:closure/exports` instance (`make`/`call`), not a bare function. Call
+    // `make()` → the closure handle, then `call(handle, args…)` with the caller's arguments, rendering the
+    // result. Taken when the closure interface is present AND there is no bare function to call directly —
+    // even when a `--call <name>` was given (the corpus names the entry `main`, but a closure export has no
+    // bare `main` function; the args are the closure's arguments).
+    if sole_func_export(engine, component).is_none()
+        && has_closure_instance(engine, component)
+        && opts
+            .export
+            .as_deref()
+            .map(|name| instance.get_func(&mut *store, name).is_none())
+            .unwrap_or(true)
+    {
+        return run_closure_resource(&mut *store, &instance, &opts.args);
+    }
+
     // Resolve the export to call: the named one, or the sole function export found by signature.
     let export_name = match &opts.export {
         Some(name) => name.clone(),
@@ -530,6 +547,75 @@ fn has_run_instance(engine: &Engine, component: &Component) -> bool {
         .any(|(name, item)| {
             name == RUN_INTERFACE && matches!(item, ComponentItem::ComponentInstance(_))
         })
+}
+
+/// The interface a CLOSURE-resource export publishes under (`make`/`call` live inside it) —
+/// `DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1. A closure crossing the boundary becomes a resource
+/// the host holds + invokes; `cdz-run` recognizes this instance to take the closure-call path.
+const CLOSURE_INTERFACE: &str = "cadenza:closure/exports";
+
+/// Whether `component` exports a `cadenza:closure/exports` INSTANCE — the marker of a closure-resource
+/// program (its result is a closure crossing as a resource with a `make`/`call` pair).
+fn has_closure_instance(engine: &Engine, component: &Component) -> bool {
+    component
+        .component_type()
+        .exports(engine)
+        .any(|(name, item)| {
+            name == CLOSURE_INTERFACE && matches!(item, ComponentItem::ComponentInstance(_))
+        })
+}
+
+/// Run a CLOSURE-resource program: reach `make`/`call` inside the `cadenza:closure/exports` instance,
+/// call `make()` → the closure resource handle, then `call(handle, args…)` with the caller's arguments
+/// (coerced to `call`'s declared parameter types) → the closure's result, rendered. The host acts as the
+/// closure's custodian: it holds the opaque handle and invokes the guest's `call` method (which dispatches
+/// the closure via the guest's own `call_indirect`). `own<t>` consumes the handle, so this is one call per
+/// `make` (the corpus drives a single `(call …)` per case).
+fn run_closure_resource(
+    store: &mut Store<()>,
+    instance: &wasmtime::component::Instance,
+    arg_strs: &[String],
+) -> Result<Outcome> {
+    let iface = instance
+        .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
+        .ok_or_else(|| anyhow!("closure escape: no `{CLOSURE_INTERFACE}` instance export"))?;
+    let make_idx = instance
+        .get_export_index(&mut *store, Some(&iface), "make")
+        .ok_or_else(|| anyhow!("closure escape: `{CLOSURE_INTERFACE}` exports no `make`"))?;
+    let call_idx = instance
+        .get_export_index(&mut *store, Some(&iface), "call")
+        .ok_or_else(|| anyhow!("closure escape: `{CLOSURE_INTERFACE}` exports no `call`"))?;
+    let make = instance
+        .get_func(&mut *store, make_idx)
+        .ok_or_else(|| anyhow!("closure escape: `make` is not a function"))?;
+    let call = instance
+        .get_func(&mut *store, call_idx)
+        .ok_or_else(|| anyhow!("closure escape: `call` is not a function"))?;
+
+    let mut handle = [Val::Bool(false)];
+    if let Err(e) = make.call(&mut *store, &[], &mut handle) {
+        return Ok(Outcome::Trap(format!("{e}")));
+    }
+    let _ = make.post_return(&mut *store);
+    // `call`'s params are `(self, args…)`; coerce the caller's arg strings to the DECLARED arg types
+    // (skipping the leading `self` handle param).
+    let param_types: Vec<Type> = call.params(&*store).iter().map(|(_, t)| t.clone()).collect();
+    let arg_types = param_types.get(1..).unwrap_or(&[]);
+    let coerced = coerce_args(arg_strs, arg_types)?;
+    let mut call_args = vec![handle[0].clone()];
+    call_args.extend(coerced);
+    let mut out = [Val::Bool(false)];
+    match call.call(&mut *store, &call_args, &mut out) {
+        Ok(()) => {
+            let _ = call.post_return(&mut *store);
+            Ok(Outcome::Value(match out.first() {
+                None => "unit".to_string(),
+                Some(Val::String(s)) => s.clone(),
+                Some(other) => render_val(other),
+            }))
+        }
+        Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+    }
 }
 
 /// Run a resource-escape program: reach `make`/`encode` inside the `cadenza:run/run` instance, call

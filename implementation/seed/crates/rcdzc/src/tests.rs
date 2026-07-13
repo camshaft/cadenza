@@ -1593,6 +1593,42 @@ impl ComposedRuntime {
         results[0].clone()
     }
 
+    /// Drive a CLOSURE-RESOURCE export (C-HOST-1): call `make()` on the `cadenza:closure/exports`
+    /// instance to get the closure resource handle, then `call(handle, args…)` to invoke it — returning
+    /// the `call` result. This is the host acting as the closure's custodian: it holds an opaque handle
+    /// and invokes the guest's `call` method (which dispatches the closure via the guest's own
+    /// `call_indirect`). `own<t>` consumes the handle per call, so each `closure_make_call` mints a fresh
+    /// handle (C-HOST-1 own/no-drop; the `borrow<t>` repeated-call form is C-HOST-5).
+    fn closure_make_call(
+        &mut self,
+        args: &[wasmtime::component::Val],
+    ) -> wasmtime::component::Val {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "make")
+            .expect("closure `make` exported");
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self.program.get_func(&mut self.store, make_idx).expect("make func");
+        let call = self.program.get_func(&mut self.store, call_idx).expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, &[], &mut handle).expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut call_args = vec![handle[0].clone()];
+        call_args.extend_from_slice(args);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut self.store, &call_args, &mut out).expect("call");
+        call.post_return(&mut self.store).expect("call post_return");
+        out[0].clone()
+    }
+
     /// Call a runtime HEAP op by name (e.g. `arr-get`, `get-int`, `arr-len`, `drop`) on the shared
     /// runtime instance — how a test reads back a handle the program returned (the "display function"),
     /// or releases it. Returns the op's single result, or `Val::Bool(false)` for a no-result op like
@@ -19579,11 +19615,49 @@ mod closure_host_resource {
         .expect("closure-resource core serializes");
 
         // The emitted CORE MODULE must be structurally valid wasm (funcref table + call_indirect + the
-        // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; wiring it into
-        // a runnable component (production envelope + composed runtime) is the next increment.
+        // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; the runnable
+        // end-to-end path (below) wires the WHOLE pipeline through the composed runtime.
         let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");
+    }
+
+    /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
+    /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
+    /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
+    /// → 6 — dispatched through the guest's own `call_indirect`, composing the real value-heap runtime (the
+    /// closure cell is a heap allocation). The production analog of the C-HOST-1 oracle. `#[ignore]` — needs
+    /// `xtask build` to have populated the store with the runtime wasm.
+    #[test]
+    fn a_compiled_closure_export_is_called_by_the_host() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // A nullary export returning a closure `(-> Int64 Int64)`. The compiler routes it through the
+        // closure-resource escape; the host holds the resource and calls it.
+        let src = "(module m (def (main) (fn ((: x Int64)) (+ x 1))) (export main))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // It must import the value-heap runtime (the closure cell is a heap allocation) and export the
+        // closure interface — not a bare function.
+        assert!(
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
+            "a closure-resource export imports the value-heap runtime (the cell is a heap value)"
+        );
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make() → closure handle; call(handle, 5) → 6.
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(5)]),
+            Val::S64(6),
+            "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
+        );
+        // A fresh handle called with 41 → 42 (own<t> consumed the first; each call mints a new handle).
+        assert_eq!(rt.closure_make_call(&[Val::S64(41)]), Val::S64(42));
     }
 }

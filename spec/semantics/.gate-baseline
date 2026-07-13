@@ -88,6 +88,7 @@ pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
+pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
@@ -214,6 +215,8 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
+pass	a host-called closure applied to a different argument tracks the input
+pass	a host-called closure with a different body dispatches the right code
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a lambda's return type ascription agreeing with the body is transparent

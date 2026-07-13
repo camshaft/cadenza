@@ -143,6 +143,18 @@ pub fn emit(
         }
     }
 
+    // CLOSURE-RESOURCE escape (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a SINGLE export whose
+    // RESULT is a closure type `(-> A… R)` crosses as a component-model resource with a `call` method the
+    // host invokes. UNLIKE the value-escape above (a nullary-COMPOUND trigger), this fires on a `Ty::Fn`
+    // RESULT — the export MAY take parameters (the closure is computed from the host's inputs), and its
+    // body lowers NORMALLY (the `Core::Closure` builds the cell); the `resource.new` is spliced at the
+    // boundary-return by the closure-resource core module. First cut: scalar-aliased closure args/result.
+    if let [e] = &layout.exports[..]
+        && let crate::ty::Ty::Fn(_, _) = &e.result
+    {
+        return emit_closure_resource(db, layout, e.def, &e.result, spans);
+    }
+
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit
@@ -977,6 +989,115 @@ fn emit_runtime_resource(
         &dtor_core,
         &imports,
         &import_name,
+    ))
+}
+
+/// Emit the CLOSURE-RESOURCE component (C-HOST-1): an export whose RESULT is a closure `(-> A… R)` crosses
+/// as a component resource with a `call` method the host invokes. The export body lowers NORMALLY (its
+/// `Core::Closure` builds the cell + lifts the lambda into `layout.lifted`); the core's `make` calls the
+/// export then `resource.new`s the cell, and `call` recovers it (`resource.rep`) + `call_indirect`s the
+/// lifted body. Reuses the value-heap runtime (the cell is a heap allocation) via
+/// `assemble_closure_resource`. First cut: the closure's args + result are the aliased scalar widths
+/// (`abi_val_type`); a compound/closure arg or an un-representable result declines.
+fn emit_closure_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    result: &crate::ty::Ty,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    // Flatten the curried closure type `(-> A (-> B R))` into its argument types `[A, B]` + the final
+    // result `R`. Each must have a scalar boundary ABI type (this increment); else decline.
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = result.clone();
+    while let crate::ty::Ty::Fn(dom, rng) = cur {
+        arg_tys.push((*dom).clone());
+        cur = *rng;
+    }
+    let ret_ty = cur;
+    // Boundary bytes (component valtypes) for the `call` method's args + result — aliased scalar widths.
+    let arg_bytes: Vec<u8> = arg_tys
+        .iter()
+        .map(|t| {
+            host::abi_val_type(t)
+                .map(|a| a.comp_byte())
+                .ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a closure argument of type {} has no scalar host-boundary representation \
+                         (only aliased widths cross the closure `call` boundary yet)",
+                        t.render_name()
+                    ))
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    let result_byte = host::abi_val_type(&ret_ty)
+        .map(|a| a.comp_byte())
+        .ok_or_else(|| {
+            Reject::decline(format!(
+                "a closure result of type {} has no scalar host-boundary representation",
+                ret_ty.render_name()
+            ))
+        })?;
+    // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
+    // the `call_indirect` lifted functype shape).
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
+        .iter()
+        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+        .collect::<Result<_, _>>()?;
+    let ret_vt =
+        valtype_of(&ret_ty).ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+
+    // Ops: the reachable bodies' ops (cell build: arr-alloc/arr-set/box-int), PLUS the `call` method's
+    // ops (arr-get + get-int to read the code slot) + `drop` for the dtor.
+    let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+    })?;
+    let export_abs = layout
+        .abs(export_def)
+        .ok_or_else(|| Reject::decline("the closure export is not in the emission order"))?;
+    // The lifted closure the export built occupies table slot 0; its functype index in the core.
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline(
+            "a closure export produced no lifted lambda (the closure did not survive as a runtime value)",
+        ));
+    }
+    // APPEND the lambda-lifted closure bodies AFTER the `order` defs (the funcref table's element section
+    // points at `import_base + order.len() + slot`, so the lifted bodies must be the trailing funcs).
+    // Each is `(env, param…) -> result`: prepend a fresh env param (an i32 handle, keyed by a synthesized
+    // atom nothing resolves to). Mirrors the ordinary `emit` path's lifted-body selection.
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+    let main_core = serialize::closure_resource_core_module(
+        &funcs,
+        &imports,
+        export_abs,
+        &arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_closure_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &arg_bytes,
+        result_byte,
     ))
 }
 
