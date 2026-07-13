@@ -511,7 +511,8 @@ impl<'a> Parser<'a> {
         match self.kind() {
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
-                self.atom(literal::classify_word(self.text(t)), span)
+                let num = self.atom(literal::classify_word(self.text(t)), span);
+                self.maybe_quantity_literal(num, span)
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
@@ -593,6 +594,48 @@ impl<'a> Parser<'a> {
                 self.error_node(span)
             }
         }
+    }
+
+    /// A numeric literal immediately followed by a bare unit name is a QUANTITY LITERAL: `5 feet`
+    /// (and `5.0 feet`) reads as `(Qty.of 5 (Unit.of #"feet"))` — the concise ML surface for attaching
+    /// a compile-time unit to a number. It binds TIGHTER than every infix operator (built here in
+    /// prefix position, before the Pratt loop), so `5 feet / 1 second` groups as
+    /// `(/ (Qty.of 5 (Unit.of #"feet")) (Qty.of 1 (Unit.of #"second")))` — a rate, not `5 (feet / 1) …`.
+    ///
+    /// The unit name is any single `Ident` that is neither a keyword (`in`/`then`/…) nor a word-op
+    /// (`and`/`or`) — those keep their existing meaning after a number (`5 in`, `5 and mask`). A
+    /// number followed by anything else (an operator, `(`, EOF) is just the bare number. Juxtaposing a
+    /// number and a name has no other meaning on the ML surface (application is `f(x)`, not
+    /// juxtaposition), so this repurposes a previously-meaningless adjacency. The printer renders the
+    /// same arena shape back to `<num> <name>`, an exact round-trip.
+    fn maybe_quantity_literal(&mut self, num: StructId, num_span: Span) -> StructId {
+        if !self.at(Kind::Ident) {
+            return num;
+        }
+        let text = self.cur_text();
+        if keyword(text).is_some() || word_op(text).is_some() {
+            return num;
+        }
+        let unit_span = self.cur_span();
+        let name = text.to_string();
+        self.bump(); // the unit name
+        // (Unit.of #"name")
+        let unit_head = self.member_head("Unit", "of", unit_span);
+        let sym = self.atom(Leaf::Sym(name), unit_span);
+        let unit_expr = self.list(vec![unit_head, sym], unit_span);
+        // (Qty.of num (Unit.of #"name"))
+        let span = num_span.merge(self.prev_span());
+        let qty_head = self.member_head("Qty", "of", span);
+        self.list(vec![qty_head, num, unit_expr], span)
+    }
+
+    /// Build a member-access head `(. obj key)` — the arena shape `obj.key` desugars to, reused to
+    /// synthesize the `Qty.of` / `Unit.of` heads of a quantity literal.
+    fn member_head(&mut self, obj: &str, key: &str, span: Span) -> StructId {
+        let dot = self.name(".", span);
+        let obj = self.name(obj, span);
+        let key = self.name(key, span);
+        self.list(vec![dot, obj, key], span)
     }
 
     /// Postfix chain: `.member` and `(args…)` application, tightest, left-nested.
@@ -1971,6 +2014,42 @@ mod tests {
         let a = parse_ok("f(f, f)");
         // "f" interned once (+ nothing else); 3 occurrences.
         assert_eq!(a.leaves.len(), 1);
+    }
+
+    #[test]
+    fn quantity_literal_desugars() {
+        use crate::sexpr;
+        // A numeric literal followed by a bare unit name is a quantity literal: `5 feet` desugars to
+        // the same arena as the canonical `(Qty.of 5 (Unit.of #"feet"))`.
+        let a = parse_ok("5 feet");
+        assert_eq!(sexpr::print(&a), r#"((. Qty of) 5 ((. Unit of) #"feet"))"#);
+        // A float value works the same way.
+        let f = parse_ok("5.0 metre");
+        assert_eq!(
+            sexpr::print(&f),
+            r#"((. Qty of) 5.0 ((. Unit of) #"metre"))"#
+        );
+        // The literal binds TIGHTER than every operator, so `5 feet / 1 second` is a rate — the
+        // division of two quantity literals — the reading the surface is designed to give.
+        let rate = parse_ok("5 feet / 1 second");
+        assert_eq!(
+            sexpr::print(&rate),
+            r#"(/ ((. Qty of) 5 ((. Unit of) #"feet")) ((. Qty of) 1 ((. Unit of) #"second")))"#
+        );
+        // It composes as an ordinary operand: a call argument, and an addend.
+        assert_eq!(
+            sexpr::print(&parse_ok("dist(5 feet)")),
+            r#"(dist ((. Qty of) 5 ((. Unit of) #"feet")))"#
+        );
+    }
+
+    #[test]
+    fn number_before_keyword_is_not_a_quantity() {
+        use crate::sexpr;
+        // Only a bare NON-keyword identifier attaches as a unit. A word-operator keeps its infix
+        // meaning after a number: `5 and mask` is the boolean `and`, not a quantity in unit `and`.
+        let a = parse_ok("5 and mask");
+        assert_eq!(sexpr::print(&a), "(and 5 mask)");
     }
 
     #[test]

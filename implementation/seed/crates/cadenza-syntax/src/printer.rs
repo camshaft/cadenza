@@ -255,6 +255,18 @@ impl<'a> Printer<'a> {
                 _ => {}
             }
         }
+        // A quantity literal `(Qty.of <numlit> (Unit.of #"name"))` renders back to its concise surface
+        // `<num> name` — the inverse of the parser's `maybe_quantity_literal`. Binds tightest (like a
+        // literal), so a following `.member`/`(args)`/infix operand needs no parens. Checked before the
+        // name-head dispatch since the head is the member-access LIST `(. Qty of)`, not a name.
+        if let Some((num, name)) = self.quantity_literal(items) {
+            self.doc.ibox(0);
+            self.expr(num, PREC_MEMBER);
+            self.doc.word(" ");
+            self.doc.word(name);
+            self.doc.end();
+            return;
+        }
         // A head that is an Atom(Name) may name a construct or an operator; otherwise it is a
         // computed-callee application.
         let head = self.head_name(items[0]);
@@ -1667,6 +1679,59 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// If `items` is a quantity literal `(Qty.of <numlit> (Unit.of #"name"))`, return its numeric
+    /// operand and the unit name — so it prints as the concise `<num> name` surface (the inverse of the
+    /// parser's `maybe_quantity_literal`). All of these must hold, else the general call form renders it
+    /// (a faithful round-trip either way):
+    ///   * head is the member access `(. Qty of)` and there are exactly two arguments;
+    ///   * arg 0 is a NON-NEGATIVE numeric literal (the surface starts `<digit>… name`, so a negative
+    ///     or non-numeric operand would not re-lex as a number-then-name adjacency);
+    ///   * arg 1 is `(Unit.of #"name")` where `name` is a bare-safe identifier (re-lexes to one `Ident`).
+    fn quantity_literal(&self, items: &[StructId]) -> Option<(StructId, String)> {
+        if items.len() != 3 || !self.is_member_call(items[0], "Qty", "of") {
+            return None;
+        }
+        if !self.is_nonneg_number(items[1]) {
+            return None;
+        }
+        let Struct::List(unit) = self.a.get(items[2]) else {
+            return None;
+        };
+        if unit.len() != 2 || !self.is_member_call(unit[0], "Unit", "of") {
+            return None;
+        }
+        let name = match self.a.get(unit[1]) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Sym(s) if name_is_bare_safe(s) => s.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some((items[1], name))
+    }
+
+    /// True iff `id` is the member-access head `(. obj key)` with the given object and key names.
+    fn is_member_call(&self, id: StructId, obj: &str, key: &str) -> bool {
+        matches!(self.a.get(id), Struct::List(m)
+            if m.len() == 3
+                && self.head_name(m[0]).as_deref() == Some(".")
+                && self.head_name(m[1]).as_deref() == Some(obj)
+                && self.head_name(m[2]).as_deref() == Some(key))
+    }
+
+    /// True iff `id` is a non-negative `Int` or `Float` literal — the numeric operand a quantity literal
+    /// can render bare before a unit name.
+    fn is_nonneg_number(&self, id: StructId) -> bool {
+        match self.a.get(id) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Int { value, .. } => value.sign() != num_bigint::Sign::Minus,
+                Leaf::Float(d) => !d.negative,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     /// If `id` is an `Atom(Name)` that is a plain member key (alpha/underscore start, no dots), that
     /// name — so `(. a b)` prints as `a.b` but a dotted/odd key falls back to the call form.
     fn plain_key(&self, id: StructId) -> Option<String> {
@@ -1916,6 +1981,40 @@ mod tests {
         // The independent s-expr reader is the oracle: `(|> x f)` prints as the ML pipeline.
         let a = sexpr::read("(|> x f)").unwrap();
         assert_eq!(print(&a, 80), "x |> f");
+    }
+
+    #[test]
+    fn quantity_literal_round_trips() {
+        // A quantity literal `(Qty.of <num> (Unit.of #"name"))` renders as the concise `<num> name`
+        // surface and re-parses to the same arena — the inverse of `maybe_quantity_literal`.
+        assert_eq!(assert_roundtrip("5 feet", 80), "5 feet");
+        assert_eq!(assert_roundtrip("5.0 metre", 80), "5.0 metre");
+        // It binds tighter than any operator, so `5 feet / 1 second` is a RATE — the division of two
+        // quantity literals, not `5 (feet / 1) second`.
+        assert_eq!(
+            assert_roundtrip("5 feet / 1 second", 80),
+            "5 feet / 1 second"
+        );
+        assert_eq!(
+            assert_roundtrip("3 metre + 2 metre", 80),
+            "3 metre + 2 metre"
+        );
+        assert_eq!(assert_roundtrip("dist(5 feet)", 80), "dist(5 feet)");
+        // The independent s-expr reader is the oracle: the canonical `(Qty.of …)` form prints concise.
+        let a = sexpr::read(r#"(Qty.of 5 (Unit.of #"metre"))"#).unwrap();
+        assert_eq!(print(&a, 80), "5 metre");
+        // Shapes the concise surface can't express fall back to the round-tripping call form: a
+        // computed unit, a non-bare-safe unit name, and `Unit.of` used outside a `Qty.of`.
+        let computed =
+            sexpr::read(r#"(Qty.of 5.0 (Unit./ (Unit.of #"metre") (Unit.of #"second")))"#).unwrap();
+        assert_eq!(
+            print(&computed, 80),
+            "Qty.of(5.0, Unit.of(#\"metre\") / Unit.of(#\"second\"))"
+        );
+        let odd = sexpr::read(r#"(Qty.of 5 (Unit.of #"foo bar"))"#).unwrap();
+        assert_eq!(print(&odd, 80), "Qty.of(5, Unit.of(#\"foo bar\"))");
+        let bare = sexpr::read(r#"(Unit.of #"metre")"#).unwrap();
+        assert_eq!(print(&bare, 80), "Unit.of(#\"metre\")");
     }
 
     #[test]
