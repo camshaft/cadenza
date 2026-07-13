@@ -9595,13 +9595,18 @@ mod match_engine {
         // is a compile-time rejection (units erase before the program runs), never a runtime trap.
         let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"metre\")) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
-        assert_eq!(
-            compile_component(&crate::codec::encode(&parse(src)))
-                .err()
-                .and_then(|d| d.code.as_deref().map(str::to_string))
-                .as_deref(),
-            Some("CDZ0501"),
-            "a length + a time must reject CDZ0501 (dimensional mismatch)"
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a length + a time must reject CDZ0501 (dimensional mismatch)");
+        assert_eq!(err.code.as_deref(), Some("CDZ0501"), "got: {}", err.message);
+        // The message names the OPERATION and just the UNITS (not the whole `(Qty …)` types), and states
+        // the equal-dimensions rule — the rustc-gold form, not a bare type dump.
+        assert!(
+            err.message.contains("adding")
+                && err.message.contains("metre")
+                && err.message.contains("second")
+                && !err.message.contains("(Qty"),
+            "names the op + bare units + rule, no full-type dump: {}",
+            err.message
         );
     }
 

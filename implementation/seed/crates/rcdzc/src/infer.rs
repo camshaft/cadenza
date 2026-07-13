@@ -457,6 +457,32 @@ fn int_width_range(signed: bool, w: u32) -> Option<String> {
     }
 }
 
+/// The GERUND naming the additive/relational operation a CDZ0501 dimensional fault arose in — "adding",
+/// "subtracting", "comparing" — so the message reads as an action ("adding quantities of incompatible
+/// dimension"). `prim` is the operator's [`crate::resolved::Prim`] (the `is_additive` set: `+`/`-` plus
+/// the comparisons); anything else (or an unrecognized head) falls back to the neutral "combining".
+fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
+    use crate::resolved::Prim;
+    match prim {
+        Some(Prim::Add) => "adding",
+        Some(Prim::Sub) => "subtracting",
+        Some(Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq | Prim::Compare) => "comparing",
+        _ => "combining",
+    }
+}
+
+/// The NOUN for the same operation — "addition", "subtraction", "comparison" — used in the "… requires
+/// equal dimensions" clause of a CDZ0501 message. Falls back to "this operation".
+fn additive_op_noun(prim: Option<crate::resolved::Prim>) -> &'static str {
+    use crate::resolved::Prim;
+    match prim {
+        Some(Prim::Add) => "addition",
+        Some(Prim::Sub) => "subtraction",
+        Some(Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq | Prim::Compare) => "comparison",
+        _ => "this operation",
+    }
+}
+
 /// The declared type of an annotated parameter whose NAME occurrence is `binder`, if any. A parameter
 /// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
 /// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
@@ -2097,9 +2123,13 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                             out.push(Reject::coded(
                                 Code::DimensionMismatch,
                                 format!(
-                                    "combining quantities of incompatible dimension: {} and {}",
-                                    a.render_name(),
-                                    b.render_name()
+                                    "{} quantities of incompatible dimension: {} and {} — {} requires \
+                                     equal dimensions (units are never silently converted across \
+                                     dimensions)",
+                                    additive_op_gerund(prim),
+                                    ua.render_human(),
+                                    ub.render_human(),
+                                    additive_op_noun(prim),
                                 ),
                             ));
                         } else {
@@ -2123,9 +2153,12 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                         out.push(Reject::coded(
                             Code::DimensionMismatch,
                             format!(
-                                "combining a quantity with a non-quantity: {} and {}",
+                                "{} a quantity and a plain number: {} and {} — a quantity has a \
+                                 dimension a bare number lacks, and there is no implicit \
+                                 dimensionless coercion",
+                                additive_op_gerund(prim),
                                 a.render_name(),
-                                b.render_name()
+                                b.render_name(),
                             ),
                         ));
                         for &arg in args {
@@ -3347,9 +3380,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     out.push(Reject::coded(
                         Code::DimensionMismatch,
                         format!(
-                            "annotation dimension {} does not match the derived dimension {}",
-                            annot_ty.render_name(),
-                            type_of(db, expr).render_name()
+                            "this expression has dimension {} but is annotated {} — the annotation \
+                             must match the dimension the expression derives",
+                            eu.render_human(),
+                            au.render_human(),
                         ),
                     ));
                 } else {
