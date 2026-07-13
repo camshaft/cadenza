@@ -30,6 +30,11 @@ pub enum Format {
     /// prints a document arena back to CommonMark; a fenced `cdz`/`ml`/`sexp` block embeds its program
     /// as a real arena subtree. A document is data, not a program (the compiler never sees one).
     Markdown,
+    /// The JSON surface: a faithful data document (`(json-object …)`/`(json-array …)`/`(json-null)`
+    /// plus scalar leaves). Reads any JSON to a value arena and prints a value arena back to JSON. Like
+    /// a markdown document, it is data, not a program; it preserves duplicate/non-identifier keys, key
+    /// order, heterogeneous arrays, and exact numbers rather than coercing to native `record`/`list`.
+    Json,
     /// A readable debug view of the arena structure as an indented TREE — OUTPUT ONLY (not a
     /// re-readable surface). Shows the raw shape the compiler sees, for inspecting a binary AST.
     Debug,
@@ -39,14 +44,15 @@ pub enum Format {
 }
 
 impl Format {
-    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `markdown`/`md`, `debug`, `flat`).
-    /// Case-insensitive.
+    /// Parse a format name (`binary`/`bin`, `sexpr`/`sexp`, `ml`, `markdown`/`md`, `json`, `debug`,
+    /// `flat`). Case-insensitive.
     pub fn parse(name: &str) -> Option<Format> {
         match name.to_ascii_lowercase().as_str() {
             "binary" | "bin" => Some(Format::Binary),
             "sexpr" | "sexp" | "s" => Some(Format::Sexpr),
             "ml" => Some(Format::Ml),
             "markdown" | "md" => Some(Format::Markdown),
+            "json" => Some(Format::Json),
             "debug" => Some(Format::Debug),
             "flat" => Some(Format::Flat),
             _ => None,
@@ -59,15 +65,16 @@ impl Format {
             Format::Sexpr => "sexpr",
             Format::Ml => "ml",
             Format::Markdown => "markdown",
+            Format::Json => "json",
             Format::Debug => "debug",
             Format::Flat => "flat",
         }
     }
 
     /// Infer the surface format from a file path's extension: `.cdz`/`.ml` → ML, `.sexp`/`.sexpr` →
-    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown. The output-only `debug`/`flat`
-    /// views have no extension. `None` if the path has no recognized extension (the caller then
-    /// requires an explicit format).
+    /// s-expr, `.bin`/`.cdzb` → binary, `.md`/`.markdown` → markdown, `.json` → JSON. The output-only
+    /// `debug`/`flat` views have no extension. `None` if the path has no recognized extension (the
+    /// caller then requires an explicit format).
     pub fn from_extension(path: &str) -> Option<Format> {
         let ext = std::path::Path::new(path)
             .extension()?
@@ -78,6 +85,7 @@ impl Format {
             "sexp" | "sexpr" => Some(Format::Sexpr),
             "bin" | "cdzb" => Some(Format::Binary),
             "md" | "markdown" => Some(Format::Markdown),
+            "json" => Some(Format::Json),
             _ => None,
         }
     }
@@ -155,6 +163,17 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             let text = utf8(input)?;
             Ok(crate::markdown::read(text))
         }
+        Format::Json => {
+            // JSON, unlike CommonMark, can fail — a malformed document is a clean error, mapped from
+            // the reader's `at byte N` to `at line:col` like the s-expr surface.
+            let text = utf8(input)?;
+            crate::json::read(text).map_err(|e| {
+                ConvertError(format!(
+                    "JSON parse error: {}",
+                    locate_byte_in_message(&e.0, text)
+                ))
+            })
+        }
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
         Format::Debug => Err(ConvertError(
@@ -199,6 +218,10 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // to `--to markdown`) is wrapped in a single ```cdz fence over its ML rendering (see
         // `markdown::print`), so `--to markdown` stays total.
         Format::Markdown => Ok(crate::markdown::print(arenas, opts.width).into_bytes()),
+        // A JSON value arena prints back to JSON; a NON-JSON root (a bare program handed to `--to json`)
+        // becomes a single JSON string over its ML rendering (see `json::print`), so `--to json` stays
+        // total.
+        Format::Json => Ok(crate::json::print(arenas, opts.width).into_bytes()),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
         Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),
     }
@@ -274,6 +297,7 @@ mod tests {
         assert_eq!(Format::parse("bin"), Some(Format::Binary));
         assert_eq!(Format::parse("SEXPR"), Some(Format::Sexpr));
         assert_eq!(Format::parse("ml"), Some(Format::Ml));
+        assert_eq!(Format::parse("JSON"), Some(Format::Json));
         assert_eq!(Format::parse("nope"), None);
     }
 
@@ -284,9 +308,32 @@ mod tests {
         assert_eq!(Format::from_extension("a/b/c.sexp"), Some(Format::Sexpr));
         assert_eq!(Format::from_extension("prog.sexpr"), Some(Format::Sexpr));
         assert_eq!(Format::from_extension("prog.bin"), Some(Format::Binary));
+        assert_eq!(Format::from_extension("data.json"), Some(Format::Json));
         assert_eq!(Format::from_extension("PROG.CDZ"), Some(Format::Ml)); // case-insensitive
         assert_eq!(Format::from_extension("prog"), None); // no extension
         assert_eq!(Format::from_extension("prog.txt"), None); // unknown extension
+    }
+
+    #[test]
+    fn json_to_binary_to_json_round_trips() {
+        // JSON reads to a value arena, encodes to canonical binary, and re-reads to the same tree.
+        let src = "{\"a\": [1, 2, {\"b\": null}], \"c\": true}";
+        let bin = convert(src.as_bytes(), Format::Json, Format::Binary).unwrap();
+        let back = convert(&bin, Format::Binary, Format::Json).unwrap();
+        // Re-encoding the reprinted JSON gives identical canonical bytes (arena-idempotent).
+        let again = convert(&back, Format::Json, Format::Binary).unwrap();
+        assert_eq!(bin, again);
+    }
+
+    #[test]
+    fn json_parse_error_reports_line_col() {
+        // A malformed JSON document is refused, with the position mapped to line:col.
+        let err = convert(b"{\n  \"a\": ,\n}", Format::Json, Format::Sexpr).unwrap_err();
+        assert!(
+            err.0.contains("JSON parse error") && !err.0.contains("byte"),
+            "expected a JSON parse error with line:col, got {}",
+            err.0
+        );
     }
 
     #[test]

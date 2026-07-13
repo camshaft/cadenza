@@ -71,9 +71,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     names.insert("Int".to_string(), ctor_record(ast, "Int"));
     names.insert("UInt".to_string(), ctor_record(ast, "UInt"));
     names.insert("->".to_string(), ctor_record(ast, "->"));
-    // `Tuple` — the tuple-type constructor, VARIADIC over its element types: `(Tuple Int64 Bool)` builds
-    // the tuple type-value. Same `(meta apply)` mechanism as `->`; only the builder differs.
-    names.insert("Tuple".to_string(), ctor_record(ast, "Tuple"));
+    // `Tuple` — BOTH the tuple-type constructor (`(meta apply)` = the `Tuple` builder: `(Tuple Int64
+    // Bool)` builds the tuple type-value, variadic over element types) AND a module of POSITIONAL row
+    // operations reached by member access (`(. Tuple cat)`). Same dual shape as `Record`/`List`/`Map`.
+    let tuple_mod = tuple_module(ast);
+    names.insert("Tuple".to_string(), tuple_mod);
     // `Record` — BOTH the record-type constructor (`(meta apply)` = the `Record` builder: `(Record (a
     // Int64) (b Bool))` builds the record type-value, reading each arg as a `(name type)` pair) AND a
     // module of record ROW OPERATIONS reached by member access (`(. Record project)`). Same dual shape as
@@ -360,6 +362,33 @@ fn record_module(ast: &mut Arenas) -> StructId {
         ("extend", "record-extend"),
         ("with", "record-with"),
         ("pop", "record-pop"),
+    ] {
+        let lambda = row_op_placeholder_type(ast);
+        let op = list_op_record(ast, prim, lambda);
+        let key = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![key, op]));
+    }
+    push_list(ast, children)
+}
+
+/// The `Tuple` module record — carrying BOTH `(meta apply)` = the `Tuple` TYPE constructor (`(Tuple
+/// Int64 Bool)` in type position builds `Ty::Tuple`) AND a field per POSITIONAL row operation (`(. Tuple
+/// cat)`), the tuple analogue of `record_module`. Realizes `cat` (concatenate two tuples), `split-at`
+/// (split at a compile-time position → a prefix/suffix pair), `pop` (element 0 off). A tuple op's result
+/// arity is fixed statically from the operands', and a position `k` is a compile-time literal — so, like
+/// the record row ops, there is no ordinary HM arrow: `infer::apply_type` computes the result type and
+/// `check_application` skips the scheme-unify. The `(meta t)` is the same permissive `∀a. a → a`
+/// placeholder (never unified), present only so member access resolves the op as applyable.
+fn tuple_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta apply)` = the `Tuple` TYPE constructor (`(Tuple Int64 Bool)` builds the tuple type-value).
+    let builder = intrinsic_node(ast, "Tuple");
+    let apply_field = meta_field(ast, "apply", builder);
+    let mut children = vec![head, apply_field];
+    for (name, prim) in [
+        ("cat", "tuple-cat"),
+        ("split-at", "tuple-split-at"),
+        ("pop", "tuple-pop"),
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);

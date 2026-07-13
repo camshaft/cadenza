@@ -11500,6 +11500,64 @@ mod match_engine {
             Some("CDZ0212"),
             "pop of an absent field is CDZ0212"
         );
+        // A mistyped `pop`/`with` field near a real one carries a did-you-mean — the closed-set
+        // suggestion `without`/`project` already give, over the operand record's fields.
+        let dp = reject_full(
+            "(module m (def (main) (Record.pop (record (alpha 1) (beta 2)) alpa)) (export main))",
+        )
+        .expect("pop of an absent field is CDZ0212");
+        assert!(
+            dp.message.contains("did you mean `alpha`?"),
+            "a mistyped popped field suggests the near one; got {}",
+            dp.message
+        );
+        let dw = reject_full(
+            "(module m (def (main) (Record.with (record (alpha 1) (beta 2)) (alpa 9))) (export main))",
+        )
+        .expect("with of an absent field is CDZ0212");
+        assert!(
+            dw.message.contains("did you mean `alpha`?")
+                && dw.message.contains("use `Record.extend`"),
+            "a mistyped `with` field suggests the near one AND keeps the extend hint; got {}",
+            dw.message
+        );
+    }
+
+    #[test]
+    fn tuple_cat_split_at_pop_reshape_tuples_positionally() {
+        // 15-rows tuple reshaping — the POSITIONAL analogue of the record row ops. `Tuple.cat a b`
+        // concatenates (arity = sum, each element keeps its position's type); `Tuple.split-at t k` splits
+        // at compile-time `k` into a `(prefix suffix)` pair (k=0 → prefix is unit, k out of 0..=arity →
+        // CDZ0201); `Tuple.pop t` takes element 0 off. cat/split-at/pop all compile over constant tuples.
+        for src in [
+            "(module m (def (main) (Tuple.cat (tuple 1 2) (tuple 3 4))) (export main))",
+            "(module m (def (main) (Tuple.split-at (tuple 1 2 3) 1)) (export main))",
+            "(module m (def (main) (Tuple.split-at (tuple 1 2) 0)) (export main))",
+            "(module m (def (main) (Tuple.pop (tuple 1 2 3))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a well-formed tuple reshaping must compile: {src}"
+            );
+        }
+        // A split position OUTSIDE the operand's static arity `0..=len` is CDZ0201 (the `(. x N)`
+        // static-bounds rule) — `(tuple 1 2)` has arity 2, so a split at 5 names a position it lacks.
+        assert_eq!(
+            reject_code("(module m (def (main) (Tuple.split-at (tuple 1 2) 5)) (export main))")
+                .as_deref(),
+            Some("CDZ0201"),
+            "a split beyond the tuple's arity is CDZ0201"
+        );
+        // `Tuple` is STILL the tuple-TYPE constructor in type position — the dual-shape module did not
+        // break `(: t (Tuple Int64 Bool))`.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (: (tuple 1 true) (Tuple Int64 Bool))) (export main))"
+            ),
+            None,
+            "Tuple must still work as the tuple-type constructor in an annotation"
+        );
     }
 
     #[test]
@@ -14883,6 +14941,102 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_with_identical_operands_folds_to_the_operand() {
+        // IDEMPOTENCE for the boolean short-circuit connectives: `(and a a)` → `a` and `(or a a)` → `a` (the
+        // sibling of the bitwise `(& a a)`/`(| a a)` fold). `a` is the short-circuit condition, always
+        // evaluated once, so the fold KEEPS its effects/traps — the redundant re-evaluation is dropped.
+        // Pins the fold at the Lir level (no `i32.and`/`i32.or`) AND value/trap parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let connectives = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or))
+                .count()
+        };
+        // `(and a a)` / `(or a a)` → just `a` (no connective op).
+        assert_eq!(
+            connectives(&lir("(: a Bool)", "(: (and a a) Bool)")),
+            0,
+            "and a a → a"
+        );
+        assert_eq!(
+            connectives(&lir("(: a Bool)", "(: (or a a) Bool)")),
+            0,
+            "or a a → a"
+        );
+        // A repeated COMPARISON operand also folds: `(and (< x 5) (< x 5))` → `(< x 5)`.
+        assert_eq!(
+            connectives(&lir("(: x Int64)", "(: (and (< x 5) (< x 5)) Bool)")),
+            0,
+            "and (<x5)(<x5) → (<x5)"
+        );
+        // DISTINCT operands do NOT fold — the connective (an `i32.and` or a short-circuit `if`) stays.
+        let distinct = lir("(: a Bool) (: b Bool)", "(: (and a b) Bool)");
+        assert!(
+            distinct
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::If(_))),
+            "distinct (and a b) is not folded, got: {distinct:?}"
+        );
+
+        // VALUE PARITY.
+        use wasmtime::component::Val;
+        let fb = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        for (body, wt, wf) in [("(and a a)", true, false), ("(or a a)", true, false)] {
+            let b = fb(body);
+            assert_eq!(
+                run_returns_with::<bool>(&b, "f", &[Val::Bool(true)]),
+                wt,
+                "{body} @true"
+            );
+            assert_eq!(
+                run_returns_with::<bool>(&b, "f", &[Val::Bool(false)]),
+                wf,
+                "{body} @false"
+            );
+        }
+        // TRAP SAFETY: a repeated trapping operand is still evaluated once (as the condition), so it traps.
+        let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (> (/ 10 n) 0)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&gb, "f", &[Val::S64(0)]),
+            "(and <traps> <traps>) keeps the div-by-zero trap"
+        );
+        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 1);
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
@@ -16681,6 +16835,59 @@ mod diagnostics {
             Some(format!("(Float64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
             "annotation-position float coercion: {}",
             a.message
+        );
+    }
+
+    #[test]
+    fn over_application_offers_a_delete_the_extra_argument_fix() {
+        // Applying MORE arguments than a function/ctor/operator accepts (CDZ0203/CDZ0201) now carries a
+        // `delete` fix removing the FIRST surplus argument — the fixpoint removes each extra in turn.
+        // A ctor `(Mk 1 2)` (arity 1) and a user-fn `(g 1 2)` (arity 1) each report ONCE with the fix.
+        for src in [
+            "(module m (type P (Mk Int64)) (def (f) (Mk 1 2)) (export f))",
+            "(module m (def (g (: x Int64)) x) (def (f) (g 1 2)) (export f))",
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("a delete-the-extra-arg fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+            assert!(
+                !fix.verified,
+                "which callee the author meant is a guess → heuristic"
+            );
+        }
+        // A fixed-arity OPERATOR `(+ 1 2 3)` produces TWO faults (the grammar CDZ0201 "+ takes exactly 2
+        // operands" + the generic CDZ0203 over-application). They are the same defect — dedup keeps ONE,
+        // the authoritative CDZ0201, carrying the delete fix on the surplus operand.
+        let over = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (+ 1 2 3)) (export f))",
+        )));
+        let errs: Vec<_> = over
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "operator over-application reports ONCE (dedup drops the CDZ0203 sibling): {errs:?}"
+        );
+        assert_eq!(
+            errs[0].code.as_deref(),
+            Some("CDZ0201"),
+            "the authoritative arity reject"
+        );
+        assert_eq!(
+            errs[0].fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the surviving CDZ0201 carries the delete fix"
+        );
+        // TOO-FEW `(+ 1)` has no surplus to delete → the arity reject carries NO fix (honest).
+        let few = first_error("(module m (def (f) (+ 1)) (export f))");
+        assert_eq!(few.code.as_deref(), Some("CDZ0201"), "got: {}", few.message);
+        assert!(
+            few.fix.is_none(),
+            "nothing to delete for too-few: {:?}",
+            few.fix
         );
     }
 

@@ -366,6 +366,12 @@ fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
     }
 }
 
+// Applying a function evaluates its body with each parameter bound to its argument — realized here by
+// β-reduction: `arg_of` maps each parameter occurrence to its argument, and the reduced body sees those
+// bindings (a free variable of the lambda is pinned to its captured binder, so the body observes the
+// captured environment extended with the parameter→argument binding).
+//= spec/capabilities/core-semantics.md#applying-a-function-binds-its-parameter-to-its-argument
+//# Applying a function to its argument MUST evaluate the function body in an environment that extends the function's captured environment with its parameter bound to the argument.
 pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, StructId>) -> StructId {
     // A name occurrence in a BINDER POSITION (the name slot of a `let` binding pair, or a match-arm
     // pattern binder) NAMES a binding — it is not a reference to be substituted. Its `resolved_of`
