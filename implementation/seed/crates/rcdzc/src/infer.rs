@@ -3404,7 +3404,11 @@ fn check_application(
                     // CDZ0203 (`TypeMismatch`) — the SAME code an over-applied CONSTRUCTOR and a
                     // scheme-typed over-application use (applying the fully-consumed value, which is not a
                     // function, to a further argument). Keeps the over-application taxonomy uniform.
-                    out.push(Reject::coded(
+                    // The mechanical repair: DELETE the FIRST surplus argument (`args[params.len()]`) — the
+                    // fixpoint removes each extra in turn until the arity matches. Anchor the fault + fix at
+                    // the surplus arg so `cdz fix` edits it. Heuristic: the author may instead have meant a
+                    // different callee; removing the extra is the direct resolution of "too many arguments".
+                    let mut reject = Reject::coded(
                         Code::TypeMismatch,
                         format!(
                             "applied {} arguments to a function of arity {} — it is not a function after \
@@ -3412,7 +3416,14 @@ fn check_application(
                             args.len(),
                             params.len()
                         ),
-                    ));
+                    );
+                    if let Some(&surplus) = args.get(params.len()) {
+                        reject = reject.at(surplus).with_fix(crate::diag::Fix::delete_heuristic(
+                            surplus,
+                            "remove the extra argument",
+                        ));
+                    }
+                    out.push(reject);
                 }
             }
         }
@@ -3701,7 +3712,9 @@ fn check_application(
             other => {
                 if arg_index > 0 {
                     trace!(target: "rcdzc::infer", head = head.0, arity = arg_index, args = args.len(), "apply: over-applied a scheme-typed head (CDZ0203)");
-                    out.push(Reject::coded(
+                    // `arg_index` args were consumed before the arrow ran out, so `args[arg_index]` is the
+                    // FIRST surplus — DELETE it (the fixpoint removes each extra in turn). Anchor + fix there.
+                    let mut reject = Reject::coded(
                         Code::TypeMismatch,
                         format!(
                             "applied {} arguments to a function of arity {} — it is not a function after \
@@ -3709,7 +3722,14 @@ fn check_application(
                             args.len(),
                             arg_index
                         ),
-                    ));
+                    );
+                    if let Some(&surplus) = args.get(arg_index) {
+                        reject = reject.at(surplus).with_fix(crate::diag::Fix::delete_heuristic(
+                            surplus,
+                            "remove the extra argument",
+                        ));
+                    }
+                    out.push(reject);
                 } else {
                     trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
                     out.push(Reject::coded(

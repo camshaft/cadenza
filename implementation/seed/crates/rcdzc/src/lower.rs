@@ -6209,10 +6209,22 @@ fn fold_int_combine(op: Prim, l: i128, r: i128) -> Core {
 
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
-        return Core::Poison(Reject::coded(
+        let mut reject = Reject::coded(
             Code::Malformed,
             format!("{} takes exactly 2 operands", intrinsic_name(op)),
-        ));
+        );
+        // OVER-application of a fixed-arity operator (`(+ 1 2 3)`) has a mechanical repair: DELETE the
+        // first surplus operand (`args[2]`) — the fixpoint removes each extra until exactly 2 remain. (A
+        // TOO-FEW `(+ 1)` has nothing to delete → no fix.) This is the authoritative operator-arity reject;
+        // it carrying the fix lets `dedup_faults` drop the sibling CDZ0203 over-application (which anchors
+        // at the same surplus arg) so the operator reports ONCE, with the fix.
+        if args.len() > 2 {
+            reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
+                args[2],
+                "remove the extra operand",
+            ));
+        }
+        return Core::Poison(reject);
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);

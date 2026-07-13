@@ -16652,6 +16652,59 @@ mod diagnostics {
     }
 
     #[test]
+    fn over_application_offers_a_delete_the_extra_argument_fix() {
+        // Applying MORE arguments than a function/ctor/operator accepts (CDZ0203/CDZ0201) now carries a
+        // `delete` fix removing the FIRST surplus argument — the fixpoint removes each extra in turn.
+        // A ctor `(Mk 1 2)` (arity 1) and a user-fn `(g 1 2)` (arity 1) each report ONCE with the fix.
+        for src in [
+            "(module m (type P (Mk Int64)) (def (f) (Mk 1 2)) (export f))",
+            "(module m (def (g (: x Int64)) x) (def (f) (g 1 2)) (export f))",
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("a delete-the-extra-arg fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+            assert!(
+                !fix.verified,
+                "which callee the author meant is a guess → heuristic"
+            );
+        }
+        // A fixed-arity OPERATOR `(+ 1 2 3)` produces TWO faults (the grammar CDZ0201 "+ takes exactly 2
+        // operands" + the generic CDZ0203 over-application). They are the same defect — dedup keeps ONE,
+        // the authoritative CDZ0201, carrying the delete fix on the surplus operand.
+        let over = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (+ 1 2 3)) (export f))",
+        )));
+        let errs: Vec<_> = over
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "operator over-application reports ONCE (dedup drops the CDZ0203 sibling): {errs:?}"
+        );
+        assert_eq!(
+            errs[0].code.as_deref(),
+            Some("CDZ0201"),
+            "the authoritative arity reject"
+        );
+        assert_eq!(
+            errs[0].fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the surviving CDZ0201 carries the delete fix"
+        );
+        // TOO-FEW `(+ 1)` has no surplus to delete → the arity reject carries NO fix (honest).
+        let few = first_error("(module m (def (f) (+ 1)) (export f))");
+        assert_eq!(few.code.as_deref(), Some("CDZ0201"), "got: {}", few.message);
+        assert!(
+            few.fix.is_none(),
+            "nothing to delete for too-few: {:?}",
+            few.fix
+        );
+    }
+
+    #[test]
     fn a_non_aliased_int_width_target_carries_no_conversion_fix() {
         // The conversion is GATED to an ALIASED width ({8,16,32,64}) — those are the only BOUND names. The
         // TARGET is the FIRST operand's type (the one the operator pins); with a non-aliased `(Int 48)`

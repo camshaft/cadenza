@@ -1055,6 +1055,20 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
         })
         .map(|r| (r.code, r.message.as_str()))
         .collect();
+    // OVER-APPLICATION OF A FIXED-ARITY OPERATOR reports TWICE: the authoritative CDZ0201 "+ takes exactly
+    // 2 operands" (the grammar/lower arity reject) AND the generic CDZ0203 "applied N arguments to a
+    // function of arity M" — both now carrying a delete fix on the SAME surplus operand node. Keep the
+    // operator-specific CDZ0201, drop the CDZ0203 whose delete fix targets a node a CDZ0201 delete fix also
+    // targets. Collect the surplus nodes a `Malformed` (CDZ0201) delete fix targets; the over-application
+    // `TypeMismatch` copy pointing at one of them is the sibling to drop. (A ctor/user-fn over-application
+    // has NO CDZ0201, so its CDZ0203 — the only report — is never in this set and survives with its fix.)
+    let operator_arity_fix_nodes: std::collections::HashSet<u32> = faults
+        .iter()
+        .filter(|r| r.code == Some(Code::Malformed))
+        .filter_map(|r| r.fix.as_ref())
+        .filter(|f| matches!(f.edit, crate::diag::Edit::Delete { .. }))
+        .map(|f| f.edit.target().0)
+        .collect();
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -1144,6 +1158,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             // CDZ0401 in favor of the CDZ0403/CDZ0405 that names the actual, fixable defect (one primary
             // "no" per root cause — `reference-compiler.md` §Outcomes Are Ordered By Safety).
             if has_malformed_handler_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // The over-application CDZ0203 sibling of an operator-arity CDZ0201 (see `operator_arity_fix_nodes`):
+            // drop it when its delete fix targets the same surplus operand the authoritative CDZ0201's fix does.
+            if r.code == Some(Code::TypeMismatch)
+                && r.message.contains(crate::diag::OVER_APPLICATION_MARKER)
+                && r.fix.as_ref().is_some_and(|f| {
+                    matches!(f.edit, crate::diag::Edit::Delete { .. })
+                        && operator_arity_fix_nodes.contains(&f.edit.target().0)
+                })
+            {
                 return false;
             }
             // An unanchored fault that also appears ANCHORED (same code + message) is that fault minus
