@@ -7934,23 +7934,52 @@ mod match_engine {
     }
 
     #[test]
-    fn a_recursive_newtype_stays_boxed_and_works() {
-        // A recursive newtype (its inner transitively reaches itself) CANNOT erase — the erased type is
-        // infinite — so it stays a boxed sum and works fully. `(type Lst (Lst (Option (Tuple Int64
-        // Lst))))` matched one level yields the head. (Direct + mutual recursion are guarded by
-        // `reaches_decl`; this exercises the through-a-sum recursive case that the arg-walk catches.)
-        // Uses the runtime-linked runner (a boxed sum builds heap nodes → needs the value-heap runtime),
-        // skipping if the runtime wasm is absent — unlike the erased cases, which need no heap.
+    fn a_recursive_newtype_erases_and_matches() {
+        // A RECURSIVE newtype ERASES (its inner's self-reference is a finite `Ty::Sum{decl}` back-edge —
+        // the μ-binder — so the erased inner is finite). `(type Lst (Mk (Option (Tuple Int64 Lst))))`
+        // erases the outer `Mk` box; matched one level yields the head. The inner `Option` still builds a
+        // heap node, so this uses the runtime-linked runner (skips if the runtime wasm is absent).
         let v = run_heap_value(
-            "(module m (type Lst (Lst (Option (Tuple Int64 Lst)))) \
-               (def (main) (match (Lst (Some (tuple 5 (Lst None)))) ((Lst o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
+            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+               (def (main) (match (Mk (Some (tuple 5 (Mk None)))) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
+            vec![],
+        );
+        if let Some(v) = v {
+            assert_eq!(v, "5", "a recursive newtype erases and matches to its head");
+        }
+    }
+
+    #[test]
+    fn a_recursive_newtype_unifies_across_folded_and_unfolded_reps() {
+        // The Phase-1 crux: a recursive newtype's type appears FOLDED (an annotation `(: … Lst)` collapses
+        // the recursion to a `Ty::Sum{Lst}` back-edge) and UNFOLDED (a value's type, `Ty::Nominal{Lst}` at
+        // the recursion point). Because `Ty::Nominal` is compared by decl+args (NOT inner), these unify —
+        // the annotation type-checks. Was "annotation type Lst does not match value type Lst" pre-fix.
+        let v = run_heap_value(
+            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+               (def (main) (match (: (Mk (Some (tuple 42 (Mk None)))) Lst) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
             vec![],
         );
         if let Some(v) = v {
             assert_eq!(
-                v, "5",
-                "a recursive newtype stays boxed and matches to its head"
+                v, "42",
+                "a folded annotation unifies with the unfolded value type"
             );
+        }
+    }
+
+    #[test]
+    fn mutually_recursive_newtypes_erase_and_match() {
+        // MUTUAL recursion: `(type A (Mk (Option B))) (type B (Wrap (Tuple Int64 A)))` — each is a newtype
+        // whose inner references the OTHER (a `Ty::Sum` back-edge to the other's decl), both finite. Both
+        // erase and construct/match end-to-end; the decl+args identity makes the cross-references unify.
+        let v = run_heap_value(
+            "(module m (type A (Mk (Option B))) (type B (Wrap (Tuple Int64 A))) \
+               (def (main) (match (Mk (Some (Wrap (tuple 7 (Mk None))))) ((Mk o) (match o ((Some w) (match w ((Wrap t) (. t 0)))) ((None _) 0))))) (export main))",
+            vec![],
+        );
+        if let Some(v) = v {
+            assert_eq!(v, "7", "mutually-recursive newtypes erase and match");
         }
     }
 
@@ -18294,17 +18323,17 @@ mod stage1 {
             "a two-variant sum stays boxed"
         );
 
-        // A RECURSIVE single-variant sum is NOT erased (its inner would be infinite / inconsistently
-        // boxed) — the recursion guard declines.
+        // A RECURSIVE single-variant sum ERASES — its inner's self-reference is a finite `Ty::Sum{decl}`
+        // LEAF (the μ-binder), so the inner `(Tuple Int64 Ty::Sum{Stream})` is finite. `Ty::Nominal` is
+        // compared by decl+args (not inner), so the folded/unfolded divergence is harmless.
         let ast = parse(
             "(module m (type Stream (More (Tuple Int64 Stream))) (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
         let occ = decl_of(&db, "Stream");
-        assert_eq!(
-            newtype_underlying(&mut db, occ),
-            None,
-            "a recursive single-variant sum stays boxed"
+        assert!(
+            matches!(newtype_underlying(&mut db, occ), Some(Ty::Tuple(_))),
+            "a recursive single-variant sum erases to a finite inner (self-ref is a Ty::Sum leaf)"
         );
 
         // A GENERIC single-variant sum IS erasable — its underlying template carries the param as
@@ -18341,22 +18370,25 @@ mod stage1 {
             "a non-recursive newtype over a sum erases to the sum type"
         );
 
-        // MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))` is caught (load-order-independent) — both
-        // stay boxed (each reaches itself through the other).
+        // MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))` ERASES both — each newtype's inner is the
+        // OTHER's `Ty::Sum` leaf (`A`'s inner is `Ty::Sum{B}`, `B`'s is `Ty::Sum{A}`), both finite. Neither
+        // unfolds the cycle; the `Ty::Sum` back-edges terminate every reader, and `decl+args` identity
+        // makes the folded/unfolded reps compare equal. Both return `Some`.
         let ast =
             parse("(module m (type A (Mk B)) (type B (Wrap A)) (def (main) 0) (export main))");
         let mut db = Db::load(ast);
         let a = decl_of(&db, "A");
         let b = decl_of(&db, "B");
-        assert_eq!(
-            newtype_underlying(&mut db, a),
-            None,
-            "mutual-recursive A stays boxed"
+        // Both ERASE (return `Some`). The inner's cross-reference is the other decl as a `Ty::Sum` OR
+        // `Ty::Nominal` back-edge depending on which was cached first — both finite, both terminate every
+        // reader; the exact variant is a load-order detail, so assert only that erasure happened.
+        assert!(
+            newtype_underlying(&mut db, a).is_some(),
+            "mutual-recursive A erases"
         );
-        assert_eq!(
-            newtype_underlying(&mut db, b),
-            None,
-            "mutual-recursive B stays boxed"
+        assert!(
+            newtype_underlying(&mut db, b).is_some(),
+            "mutual-recursive B erases"
         );
     }
 
@@ -21052,7 +21084,16 @@ mod stage1 {
             body = format!("(f {body})");
         }
         let src = format!("(module m (def (f n) (+ n 1)) (def (main) {body}) (export main))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        // Compile through the SAME host-stack guard the `rcdzc`/`cdz` bin uses (`host.rs`: "the bin AND
+        // the deep-input test both go through it"). The recursive-descent compile (fold/lower/fault-walk)
+        // recurses ~per nesting level; a depth-25 chain can exceed a default `cargo test` worker's ≈2 MB
+        // stack and SIGABRT the whole lib-test binary (a HARD abort, not a `#[should_panic]`-catchable
+        // failure) on a build whose per-frame cost sits near the edge. `run_with_compiler_stack` sizes the
+        // stack from `DESCENT_DEPTH_LIMIT`, so the depth guard — not the native stack — bounds it, exactly
+        // as at the bin. (Sibling `a_pathologically_deep_expression_declines_not_crashes` already does this.)
+        let bytes = crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
+        });
         assert_eq!(
             run_returns::<i64>(&bytes, "main"),
             25,
@@ -21066,7 +21107,11 @@ mod stage1 {
             body = format!("(g {body})");
         }
         let src = format!("(module m (def (g n) (+ n n)) (def (main) {body}) (export main))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        // Same host-stack guard as the single-use chain above — a parameter-duplicating chain nests just
+        // as deep, so it must not rely on the default test stack either.
+        let bytes = crate::host::run_with_compiler_stack(|| {
+            compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
+        });
         assert_eq!(
             run_returns::<i64>(&bytes, "main"),
             4096,

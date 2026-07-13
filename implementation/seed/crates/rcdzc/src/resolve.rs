@@ -105,6 +105,30 @@ pub fn is_grammar_head(head: &str) -> bool {
     GRAMMAR.contains(&head)
 }
 
+/// Whether the name occurrence `id` is the HEAD (first child) of a List whose head-name is a GRAMMAR
+/// keyword — i.e. `id` is the literal `def`/`let`/`if`/`do`/… keyword TOKEN of a form the resolver
+/// dispatches STRUCTURALLY by that head name. Such a token is a SYNTACTIC KEYWORD, not a value
+/// reference: it never denotes a binding, and its enclosing form is resolved by `head_name`, which never
+/// resolves the head atom itself. (An APPLICATION head `(f x)` is NOT caught — `f` is not a grammar
+/// keyword — so it still resolves to a `Ref`, keeping application-head lookup and use-tracking intact.)
+///
+/// This exists because `compute` is occasionally asked to resolve a form-head atom DIRECTLY — the
+/// module-wide `compile::collect_unused_binding_warnings` walk calls `resolved_of` on EVERY node — and a
+/// grammar keyword falling through to `resolve_name` was an "unbound name", which then runs the O(scope)
+/// `nearest_name_suggestion` typo scan (a Levenshtein per candidate). With one grammar keyword per `def`,
+/// a module of N defs paid O(N²): profiling an N-def module showed ~90% of the whole compile in that
+/// suggestion scan over the `def`/`do`/`export` head tokens. Recognizing the keyword position as INERT
+/// (resolve to `Unit`, like the pattern-binder positions) removes the spurious lookup for every caller.
+fn is_grammar_form_head_occurrence(db: &Db, id: StructId) -> bool {
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
+    // `id` must be the FIRST child of `parent`, and `parent`'s head name a grammar keyword. `head_name`
+    // reads that same first child's name, so this holds exactly when `id` IS the grammar head token.
+    matches!(db.ast.get(parent), Struct::List(kids) if kids.first() == Some(&id))
+        && db.ast.head_name(parent).is_some_and(is_grammar_head)
+}
+
 /// The resolved form of the node at `id`, filling the column on demand (memoized). The query the
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
 pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
@@ -179,6 +203,16 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     // position `k` is NOT caught here — it is an ordinary value expression (a literal / a
                     // scoped name), so it resolves normally (the map-key-is-a-value rule, on the pattern side).
                     trace!(target: "rcdzc::resolve", node = id.0, %n, "name → map-pattern binder (inert)");
+                    Resolved::Unit
+                } else if is_grammar_form_head_occurrence(db, id) {
+                    // A GRAMMAR keyword in head position (`def`/`let`/`do`/…): a syntactic keyword TOKEN,
+                    // NOT a value reference. Its enclosing form is dispatched by `head_name`, which never
+                    // resolves this atom; only a blanket node walk (the unused-binding warning pass) asks.
+                    // Resolve it INERT (like a pattern binder) so it does NOT fall to `resolve_name` and
+                    // run the O(scope) `nearest_name_suggestion` typo scan — which made an N-def module
+                    // O(N²) (one keyword per def × an O(N) scan each). An application head is not a grammar
+                    // keyword, so it is unaffected and still resolves to its `Ref`.
+                    trace!(target: "rcdzc::resolve", node = id.0, %n, "name → grammar keyword head (inert)");
                     Resolved::Unit
                 } else {
                     resolve_name(db, id, &n)

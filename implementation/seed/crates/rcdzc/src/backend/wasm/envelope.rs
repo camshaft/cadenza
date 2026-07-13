@@ -1125,6 +1125,49 @@ pub fn assemble_runtime_resource_with_len(
     imports: &[&RtOp],
     import_name: &str,
 ) -> Vec<u8> {
+    // `len` is the single scalar method `len : borrow<t> -> u32`; the generic path is the one hand-emit.
+    assemble_runtime_resource_with_scalar_methods(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        &[ScalarMethod {
+            boundary_name: LEN_BOUNDARY_NAME,
+            core_export: LEN_CORE_EXPORT,
+            result_prim: wasm_abi::COMP_U32,
+        }],
+    )
+}
+
+/// A scalar-result value-resource METHOD beyond make+encode: its boundary name (e.g. `"len"`), the core
+/// module's export name for its body (e.g. `"t-len"`), and its result primitive valtype byte (e.g.
+/// `COMP_U32`). All scalar methods are `borrow<t>` (repeatable) and take NO Memory/Realloc canon options
+/// (nothing crosses through linear memory). A LIST/STRING-result method (`to-bytes`/`to-string`) is a
+/// later increment — it needs the Memory/Realloc plumbing `encode` carries, so it is not a `ScalarMethod`.
+#[derive(Clone, Copy)]
+pub struct ScalarMethod {
+    pub boundary_name: &'static str,
+    pub core_export: &'static str,
+    pub result_prim: u8,
+}
+
+/// Assemble a runtime-resource component carrying make + encode + N extra SCALAR borrow methods (VM-1/VM-2).
+/// The generalization of [`assemble_runtime_resource`] (N=0) and [`assemble_runtime_resource_with_len`]
+/// (N=1, `len`). Each scalar method appends: a boundary alias of its `t-<name>` core export (at core func
+/// `k+6+i`, in method order, AFTER make k+3/t-encode k+4/cabi_realloc k+5), a functype `(self: borrow<t>)
+/// -> <prim>` REUSING the `borrow<t>` defined type 4 laid for encode (identity-free — the ComponentBuilder
+/// oracle reuses it), a scalar `canon lift` (no Memory/Realloc), and a re-export in the inner component.
+/// BYTE-IDENTICAL to the ComponentBuilder oracle (the N=1 case is gated by
+/// `len_method_envelope_matches_component_builder_oracle`; N=0 by `combined_envelope_matches_...`). The
+/// program core module must export `make`/`t-encode`/`cabi_realloc` + each method's `t-<name>` (a scalar
+/// borrow body, its param IS the rep). Component type/func indices are documented inline.
+pub fn assemble_runtime_resource_with_scalar_methods(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    methods: &[ScalarMethod],
+) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -1218,16 +1261,19 @@ pub fn assemble_runtime_resource_with_len(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
     ));
-    // sec 6: alias the boundary exports off the program instance (core instance 3) — now FIVE: make k+3,
-    // t-encode k+4, memory, cabi_realloc k+5, AND t-len (core func k+6).
+    // sec 6: alias the boundary exports off the program instance (core instance 3): make k+3, t-encode
+    // k+4, memory, cabi_realloc k+5, THEN each scalar method's `t-<name>` (core func k+6+i, in method
+    // order). Alias order fixes the core-func indices the lifts reference.
     let boundary_aliases = {
         let mut items = Vec::new();
         items.extend_from_slice(&core_alias_item(3, MAKE_CORE_EXPORT));
         items.extend_from_slice(&core_alias_item(3, ENCODE_CORE_EXPORT));
         items.extend_from_slice(&memory_alias_item(3, MEMORY_EXPORT));
         items.extend_from_slice(&core_alias_item(3, REALLOC_EXPORT));
-        items.extend_from_slice(&core_alias_item(3, LEN_CORE_EXPORT));
-        section(sec::ALIAS, &wasm_vec(5, &items))
+        for m in methods {
+            items.extend_from_slice(&core_alias_item(3, m.core_export));
+        }
+        section(sec::ALIAS, &wasm_vec(4 + methods.len(), &items))
     };
     out.extend_from_slice(&boundary_aliases);
     // sec 7 + 8: make (types 2,3 → comp func k) and encode (types 4,5,6 → comp func k+1) — IDENTICAL to
@@ -1256,30 +1302,32 @@ pub fn assemble_runtime_resource_with_len(
             &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
         ),
     ));
-    // sec 7: the `len` functype `(self: borrow<t>) -> u32` (type 7). REUSE the `borrow<t>` defined type 4
-    // laid for encode (a borrow<t> is identity-free — the same defined type serves both methods; the
-    // ComponentBuilder oracle reuses it, so the hand-emit must too for byte-identity). Only the functype is
-    // new here.
-    let len_types = {
-        let items = self_borrow_to_scalar_functype(4, wasm_abi::COMP_U32);
-        section(sec::COMPONENT_TYPE, &wasm_vec(1, &items))
-    };
-    out.extend_from_slice(&len_types);
-    // sec 8: lift `len` (core func k+6) against functype type 7 → component func k+2. A scalar result → NO
-    // Memory/Realloc canon options.
-    out.extend_from_slice(&section(
-        sec::CANON,
-        &wasm_vec(1, &canon_lift_item((k + 6) as u32, 7)),
+    // Per scalar method `i`: a functype `(self: borrow<t>) -> <prim>` (component type 7+i) REUSING the
+    // `borrow<t>` defined type 4 laid for encode (identity-free — the oracle reuses it), then a scalar
+    // `canon lift` of its core func (k+6+i) against that functype → component func k+2+i. No
+    // Memory/Realloc options (scalar result).
+    for (i, m) in methods.iter().enumerate() {
+        let ty_idx = 7 + i as u32;
+        out.extend_from_slice(&section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(1, &self_borrow_to_scalar_functype(4, m.result_prim)),
+        ));
+        out.extend_from_slice(&section(
+            sec::CANON,
+            &wasm_vec(1, &canon_lift_item((k + 6 + i) as u32, ty_idx)),
+        ));
+    }
+    // sec 4: the nested re-export component with make/encode + each scalar method.
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_scalar_methods(methods),
     ));
-    // sec 4: the nested re-export component with make/encode/len.
-    out.extend_from_slice(&component_section(&resource_inner_component_borrow_len()));
-    // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the three
-    // lifted funcs (comp funcs k, k+1, k+2) → component instance 0.
+    // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the lifted
+    // funcs (make = comp func k, encode = k+1, method i = k+2+i) → component instance 0.
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
         &wasm_vec(
             1,
-            &component_instantiate_len_item(1, k as u32, (k + 1) as u32, (k + 2) as u32),
+            &component_instantiate_scalar_methods_item(1, k as u32, methods),
         ),
     ));
     out.extend_from_slice(&section(
@@ -3122,14 +3170,19 @@ fn resource_inner_component_borrow() -> Vec<u8> {
     out
 }
 
-/// The VM-1 inner re-export component: [`resource_inner_component_borrow`] plus a scalar `len` method.
-/// Imports the abstract resource + make + encode + len, re-exports the resource directly and re-declares
-/// all THREE methods against it. BYTE-IDENTICAL to `tests::…::inner_reexport_component_methods` (the
-/// ComponentBuilder reference). Type-index progression (component defined types, in emission order):
-/// imports — own<0> 1, make-ft 2, borrow<0> 3, list 4, encode-ft 5, borrow<0> 6, len-ft 7; re-export t →
-/// type 8; make re-decl — own<8> 9, make-ft 10; encode re-decl — borrow<8> 11, list 12, encode-ft 13;
-/// len re-decl — borrow<8> 14, len-ft 15. Funcs: make 0, encode 1, len 2.
-fn resource_inner_component_borrow_len() -> Vec<u8> {
+/// The inner re-export component for make + encode + N extra SCALAR methods (VM-1/VM-2). Generalizes
+/// `resource_inner_component_borrow` (N=0) and the former `_borrow_len` (N=1). Imports the abstract
+/// resource + make + encode + each scalar method, then RE-EXPORTS the resource directly and re-declares
+/// every method against the exported identity. BYTE-IDENTICAL to `tests::…::inner_reexport_component_*`
+/// (the ComponentBuilder reference). Component defined-type progression, in emission order:
+///   IMPORTS: own<0> 1, make-ft 2, borrow<0> 3, list 4, encode-ft 5, then per method i: borrow<0>
+///            (6+2i), method-ft (7+2i). So after M methods, next type = 6 + 2M.
+///   RE-EXPORT `t` → type `E` = 6 + 2M.
+///   EXPORT re-decls: own<E> (E+1), make-ft (E+2), borrow<E> (E+3), list (E+4), encode-ft (E+5), then per
+///            method i: borrow<E> (E+6+2i), method-ft (E+7+2i).
+/// Funcs: make 0, encode 1, method i = 2+i.
+fn resource_inner_component_scalar_methods(methods: &[ScalarMethod]) -> Vec<u8> {
+    let m = methods.len() as u32;
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     // sec 10: import the abstract resource → type 0.
@@ -3160,56 +3213,72 @@ fn resource_inner_component_borrow_len() -> Vec<u8> {
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_func_item("import-func-encode", 5)),
     ));
-    // sec 7: borrow<0> (type 6) + len functype `(self: borrow<0>) -> u32` (type 7).
-    out.extend_from_slice(&{
-        let mut items = borrow_item(0);
-        items.extend_from_slice(&self_borrow_to_scalar_functype(6, wasm_abi::COMP_U32));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
-    });
-    // sec 10: import `import-func-len` : type 7 → func 2.
-    out.extend_from_slice(&section(
-        sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-len", 7)),
-    ));
-    // sec 11: RE-EXPORT the resource directly as `t` → exported type 8.
+    // Per method i (IMPORT side): borrow<0> (type 6+2i) + method functype (type 7+2i), then import
+    // `import-func-<name>` : that functype → func 2+i.
+    for (i, meth) in methods.iter().enumerate() {
+        let bt = 6 + 2 * i as u32;
+        out.extend_from_slice(&{
+            let mut items = borrow_item(0);
+            items.extend_from_slice(&self_borrow_to_scalar_functype(bt, meth.result_prim));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_IMPORT,
+            &wasm_vec(
+                1,
+                &import_func_item(&format!("import-func-{}", meth.boundary_name), bt + 1),
+            ),
+        ));
+    }
+    // sec 11: RE-EXPORT the resource directly as `t` → exported type E = 6 + 2M.
+    let e = 6 + 2 * m;
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
     ));
-    // sec 7: own<8> (type 9) + make functype re-typed against the exported resource (type 10).
+    // sec 7: own<E> (type E+1) + make functype re-typed (type E+2).
     out.extend_from_slice(&{
-        let mut items = own_item(8);
-        items.extend_from_slice(&nullary_result_functype(&owned_valtype(9)));
+        let mut items = own_item(e);
+        items.extend_from_slice(&nullary_result_functype(&owned_valtype(e + 1)));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     });
-    // sec 11: export `make` (func 0) ascribed to functype 10.
+    // sec 11: export `make` (func 0) ascribed to functype E+2.
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 10)),
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, e + 2)),
     ));
-    // sec 7: borrow<8> (type 11), list u8 (type 12), encode functype re-typed (type 13).
+    // sec 7: borrow<E> (type E+3), list u8 (type E+4), encode functype re-typed (type E+5).
     out.extend_from_slice(&{
-        let mut items = borrow_item(8);
+        let mut items = borrow_item(e);
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(11, 12));
+        items.extend_from_slice(&self_borrow_to_list_functype(e + 3, e + 4));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     });
-    // sec 11: export `encode` (func 1) ascribed to functype 13.
+    // sec 11: export `encode` (func 1) ascribed to functype E+5.
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 13)),
+        &wasm_vec(
+            1,
+            &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, e + 5),
+        ),
     ));
-    // sec 7: borrow<8> (type 14) + len functype re-typed (type 15).
-    out.extend_from_slice(&{
-        let mut items = borrow_item(8);
-        items.extend_from_slice(&self_borrow_to_scalar_functype(14, wasm_abi::COMP_U32));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
-    });
-    // sec 11: export `len` (func 2) ascribed to functype 15.
-    out.extend_from_slice(&section(
-        sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(LEN_BOUNDARY_NAME, 2, 15)),
-    ));
+    // Per method i (EXPORT side): borrow<E> (type E+6+2i) + method functype re-typed (type E+7+2i), then
+    // export `<name>` (func 2+i) ascribed to that functype.
+    for (i, meth) in methods.iter().enumerate() {
+        let bt = e + 6 + 2 * i as u32;
+        out.extend_from_slice(&{
+            let mut items = borrow_item(e);
+            items.extend_from_slice(&self_borrow_to_scalar_functype(bt, meth.result_prim));
+            section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        });
+        out.extend_from_slice(&section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(
+                1,
+                &export_func_ascribed_item(meth.boundary_name, 2 + i as u32, bt + 1),
+            ),
+        ));
+    }
     out
 }
 
@@ -3530,31 +3599,40 @@ fn component_instantiate_item(res_ty: u32, make_fn: u32, encode_fn: u32) -> Vec<
     item
 }
 
-/// Like [`component_instantiate_item`] but for the VM-1 value-resource-with-`len` inner component: a
-/// FOURTH arg `import-func-len` supplies the lifted `len` method (comp func `len_fn`). The inner component
-/// ([`resource_inner_component_borrow_len`]) imports under these same four names.
-fn component_instantiate_len_item(
+/// Like [`component_instantiate_item`] but for the value-resource-with-scalar-methods inner component
+/// (VM-1/VM-2): the three fixed args (`import-type-t`=`res_ty`, `import-func-make`=`first_fn`,
+/// `import-func-encode`=`first_fn+1`) plus one `import-func-<name>` per scalar method (comp func
+/// `first_fn+2+i`, in method order). The inner component ([`resource_inner_component_scalar_methods`])
+/// imports under these same names.
+fn component_instantiate_scalar_methods_item(
     res_ty: u32,
-    make_fn: u32,
-    encode_fn: u32,
-    len_fn: u32,
+    first_fn: u32,
+    methods: &[ScalarMethod],
 ) -> Vec<u8> {
     let mut item = vec![0x00]; // instantiate form
     uleb128(0, &mut item); // inner component index (component 0)
-    let args: [(&str, u8, u32); 4] = [
-        ("import-type-t", 0x03, res_ty),
-        ("import-func-make", 0x01, make_fn),
-        ("import-func-encode", 0x01, encode_fn),
-        ("import-func-len", 0x01, len_fn),
-    ];
     let mut arg_items = Vec::new();
-    for (name, sort, idx) in args {
-        arg_items.extend_from_slice(&uleb_bytes(name.len() as u64));
-        arg_items.extend_from_slice(name.as_bytes());
-        arg_items.push(sort);
-        uleb128(idx as u64, &mut arg_items);
+    let mut n_args = 0usize;
+    let push = |name: &str, sort: u8, idx: u32, out: &mut Vec<u8>| {
+        out.extend_from_slice(&uleb_bytes(name.len() as u64));
+        out.extend_from_slice(name.as_bytes());
+        out.push(sort);
+        uleb128(idx as u64, out);
+    };
+    push("import-type-t", 0x03, res_ty, &mut arg_items);
+    push("import-func-make", 0x01, first_fn, &mut arg_items);
+    push("import-func-encode", 0x01, first_fn + 1, &mut arg_items);
+    n_args += 3;
+    for (i, meth) in methods.iter().enumerate() {
+        push(
+            &format!("import-func-{}", meth.boundary_name),
+            0x01,
+            first_fn + 2 + i as u32,
+            &mut arg_items,
+        );
+        n_args += 1;
     }
-    item.extend_from_slice(&wasm_vec(args.len(), &arg_items));
+    item.extend_from_slice(&wasm_vec(n_args, &arg_items));
     item
 }
 

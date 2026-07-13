@@ -1944,96 +1944,14 @@ pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
     } else {
         Ty::Tuple(tys.into())
     };
-    // RECURSION GUARD: erase iff the inner does NOT transitively reach THIS declaration. A newtype whose
-    // inner cycles back to `decl` (directly — `(type Stream (More (Tuple Int64 Stream)))` — or via mutual
-    // recursion `(type A (Mk B)) (type B (Mk A))`) has an INFINITE erased type, which `Ty::Nominal{inner}`
-    // cannot represent, so it STAYS boxed. A newtype whose inner is a sum that does NOT cycle back (`(type
-    // Cached (Mk (Option Value)))`) DOES erase — its `Option` box is genuine and unavoidable, but the
-    // outer `Mk` box (disc always 0, no information) is pure overhead and is removed (no double-boxing).
-    // `reaches_decl` walks sum/nominal decls transitively (cycle-tracked, load-order-independent), so this
-    // replaces the blunt "contains ANY sum" check that conservatively boxed every newtype-over-a-sum.
-    if reaches_decl(db, &inner, decl, &mut Vec::new()) {
-        return None;
-    }
+    // A RECURSIVE newtype ERASES TOO (Phase 2). Its inner's self-reference decodes to a finite
+    // `Ty::Sum { decl }` LEAF (the μ-binder — `Ty::Sum` holds only the decl, not inline variants), so the
+    // inner `(Option (Tuple Int64 Ty::Sum{Lst}))` is finite, NOT infinite. The old "infinite type" fear
+    // was wrong. The equirecursive equality problem (a recursive nominal's inner diverging by derivation
+    // path) is dissolved by Phase 1: `Ty::Nominal` is compared by `decl + args`, never `inner`. So there
+    // is NO recursion guard — every single-variant sum erases; a recursive one's inner is a finite
+    // machine-rep hint whose `Ty::Sum` back-edge terminates every reader.
     Some(inner)
-}
-
-/// Whether the type `ty` transitively REACHES the declaration `target` — i.e. following every nested
-/// sum/nominal into ITS variants' payload types eventually lands back on `target`'s own declaration. This
-/// is the newtype recursion guard: a newtype `decl` whose inner reaches `decl` is RECURSIVE (its erased
-/// type would be infinite), so it must stay boxed; one that doesn't reach it is erasable even if it wraps
-/// OTHER (non-cyclic) sums. `seen` tracks the sum decls already on the walk so a DIFFERENT recursive sum
-/// nested inside (`(type Cached (Mk IntList))` where `IntList` is its own recursive sum) terminates
-/// without looping — its self-cycle is not `target`'s cycle. Load-order-independent (it reads the decl
-/// table, not the erasure cache), so mutual recursion is caught regardless of which decl loads first.
-fn reaches_decl(db: &mut Db, ty: &Ty, target: StructId, seen: &mut Vec<StructId>) -> bool {
-    match ty {
-        // A NOMINAL carries its instantiated `inner` directly — the concrete reach is there.
-        Ty::Nominal { decl, inner, .. } => {
-            if *decl == target {
-                return true;
-            }
-            let inner = (**inner).clone();
-            reaches_decl(db, &inner, target, seen)
-        }
-        Ty::Sum { decl, args, .. } => {
-            if *decl == target {
-                return true;
-            }
-            // The INSTANTIATION args carry the concrete reach: `Option (Tuple Int64 Lst)` mentions `Lst`
-            // ONLY in its arg, not in `Option`'s declaration (whose `Some` payload is the param `a`). So a
-            // recursive `(type Lst (Lst (Option (Tuple Int64 Lst))))` reaches `Lst` THROUGH this arg — walk
-            // the args (they carry the real instantiation, not part of the visited decl's own cycle).
-            if args.iter().any(|a| reaches_decl(db, a, target, seen)) {
-                return true;
-            }
-            if seen.contains(decl) {
-                return false; // a different sum already being walked — its own cycle, not target's
-            }
-            seen.push(*decl);
-            // Walk each variant's payload type at its declaration (params as vars — the payload TEMPLATE;
-            // the concrete reach through the instantiation is handled by the `args` walk above).
-            let Some(td) = db.type_decl_by_occ(*decl) else {
-                seen.pop();
-                return false;
-            };
-            let variants: Vec<Vec<StructId>> =
-                td.variants.iter().map(|v| v.payloads.clone()).collect();
-            let params: Vec<String> = td.params.clone();
-            let mut hit = false;
-            'outer: for payloads in &variants {
-                for &p in payloads {
-                    if let Some(pty) = decode_payload_template(db, p, &params)
-                        && reaches_decl(db, &pty, target, seen)
-                    {
-                        hit = true;
-                        break 'outer;
-                    }
-                }
-            }
-            seen.pop();
-            hit
-        }
-        Ty::Tuple(elems) => elems.iter().any(|t| reaches_decl(db, t, target, seen)),
-        Ty::Record(fields) => {
-            let vals: Vec<Ty> = fields.values().cloned().collect();
-            vals.iter().any(|t| reaches_decl(db, t, target, seen))
-        }
-        Ty::List(elem) | Ty::Set(elem) => reaches_decl(db, elem, target, seen),
-        Ty::Map(k, v) => {
-            let (k, v) = ((**k).clone(), (**v).clone());
-            reaches_decl(db, &k, target, seen) || reaches_decl(db, &v, target, seen)
-        }
-        Ty::Qty { inner, .. } => {
-            let inner = (**inner).clone();
-            reaches_decl(db, &inner, target, seen)
-        }
-        Ty::Fn(p, r) => {
-            let (p, r) = ((**p).clone(), (**r).clone());
-            reaches_decl(db, &p, target, seen) || reaches_decl(db, &r, target, seen)
-        }
-        _ => false,
-    }
 }
 
 /// Decode a newtype payload TYPE occurrence to a template `Ty`, mapping a declaration PARAMETER name
