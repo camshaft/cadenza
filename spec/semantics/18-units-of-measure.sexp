@@ -189,7 +189,7 @@
            map ({metre: 2}) — so the addition is well-dimensioned and yields metre² with value 5.0. Pins
            that dimensional equality compares canonical forms, not syntax: metre·metre = metre².")
   (input  (+ (* (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"metre")))
-             (Qty.of 1.0 (Unit.^ (Unit.base #"metre") 2))))
+             (Qty.of 1.0 (^ (Unit.base #"metre") 2))))
   (output (: (Qty.of 5.0 (Unit.^ (Unit.base #"metre") 2)) (Qty Float64 (Unit.^ (Unit.base #"metre") 2)))))
 
 ; ============================================================================================
