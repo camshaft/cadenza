@@ -9593,6 +9593,39 @@ mod stage1 {
     }
 
     #[test]
+    fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
+        use wasmtime::component::Val;
+        // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
+        // higher-order function, applied inside the recursion. `apply-sum` cannot inline (it recurses),
+        // so its function parameter `g` is a real runtime CLOSURE VALUE — the lambda `(fn (x) (* x 2))`
+        // is LAMBDA-LIFTED to a standalone function, passed as a funcref-table slot, and applied via
+        // `call_indirect`. `apply-sum g n = g(n) + g(n-1) + … + g(1)`, so with `g = (*2)` the result is
+        // `2·(n + (n-1) + … + 1) = n·(n+1)`. `core-semantics.md` §A Function Is A First-Class Value.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(0)]), 0);
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 2);
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(3)]), 12);
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 30);
+        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the result is
+        // `sum(k=1..n) (k + 100) = n(n+1)/2 + 100n`. Pins that the closure carries the RIGHT code (the
+        // table slot selects the applied function), not a fixed one.
+        let src2 = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n)) (export main))";
+        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
+        // n=3: (3+100)+(2+100)+(1+100) = 306.
+        assert_eq!(
+            run_returns_with::<i64>(&bytes2, "main", &[Val::S64(3)]),
+            306
+        );
+    }
+
+    #[test]
     fn a_higher_order_function_folds() {
         // `(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))` = 7 — a function passed as
         // an argument, applied twice; the whole thing β-reduces to `(+ (+ 5 1) 1)` = 7.

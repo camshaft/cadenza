@@ -92,6 +92,13 @@ pub enum Lir {
     /// self-call in tail position no longer traps by stack exhaustion). Emitted for a `Core::Call` in
     /// TAIL position; the callee's result type equals the caller's, so it is the caller's return value.
     ReturnCall(u32),
+    /// `call_indirect (type T) (table 0)` — an INDIRECT call through the module's funcref table: the
+    /// arguments then the TABLE INDEX (an i32) are already on the stack; pops the index, reads the funcref
+    /// at that table slot, and calls it against functype `T`. This is how a runtime CLOSURE VALUE is
+    /// applied (`Core::CallClosure`): the closure's stored table slot selects the lifted function's code.
+    /// `T` is a TYPE-section index for the closure's signature `(arg) -> result`; the table is always 0
+    /// (the one funcref table). Distinct from `Call` (a static function index) — the callee is dynamic.
+    CallIndirect(u32),
     /// `call <import-index>` — call a value-heap runtime op by NAME (`arr-alloc`, `box-int`, …). The op
     /// name is carried symbolically because its concrete core function index (its position `0..k` in the
     /// program's sorted used-set) is only fixed once the whole used-set is known; `serialize` resolves
@@ -268,9 +275,12 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // A Float64 occupies an f64 machine slot — a float literal that crosses the boundary (or, later,
         // a float arithmetic result) lives here.
         Ty::Float => Some(ValType::F64),
-        // A function value has no scalar machine representation (runtime closures are a later stage);
-        // one reaching a slot declines.
-        Ty::Fn(_, _) => None,
+        // A runtime FUNCTION VALUE (a closure) is a funcref-TABLE SLOT — an i32, like a heap handle. A
+        // no-capture closure IS that slot directly; a capturing closure (later) is an i32 handle to a
+        // heap cell holding the slot + captures. Either way the value occupies an i32 machine slot, so a
+        // `Ty::Fn`-typed parameter / local / argument lives here. (A lambda that FOLDS away at compile
+        // time never reaches a slot; only one that survives as a runtime value does — via `call_indirect`.)
+        Ty::Fn(_, _) => Some(ValType::I32),
         // A type value is compile-time-only (erased before runtime) — no machine representation.
         Ty::Type => None,
         // An unresolved variable has no machine representation — an undetermined type never reaches a

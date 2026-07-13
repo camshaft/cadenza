@@ -97,6 +97,38 @@
   (call   main (: true Bool))
   (output (: 11 Int64)))
 
+; A function argument passed to a RECURSIVE higher-order function, applied inside the recursion. This
+; is the case a function value MUST exist at run time: the recursive `apply-sum` cannot be inlined
+; away (it recurses), so its function parameter `g` is a genuine runtime CLOSURE VALUE — the lambda is
+; lambda-lifted to a standalone function and applied through an indirect call, not folded. The whole
+; point of first-class functions for a compiler (`core-semantics.md` §A Function Is A First-Class
+; Value): a pass maps a function over a recursive structure. `apply-sum g n = g(n)+g(n-1)+…+g(1)`.
+
+(case "a function argument is applied through a recursive higher-order function"
+  (doc    "`apply-sum` sums `g` applied to each of n, n-1, …, 1 — a recursive HOF. Its `g` parameter is
+           a runtime function value (the recursion prevents inlining `g` away), applied via an indirect
+           call. With `g = (fn (x) (* x 2))` and n=3: g(3)+g(2)+g(1) = 6+4+2 = 12. The lambda is lifted
+           to a standalone function; a generation with no runtime function representation declines.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 12 Int64)))
+
+(case "a different function argument through the same recursive higher-order function"
+  (doc    "The companion pinning that the closure carries the RIGHT code — a DIFFERENT lambda `(fn (x)
+           (+ x 100))` through the same `apply-sum`, so the indirect call must dispatch to THIS
+           function, not a fixed one. n=3: (3+100)+(2+100)+(1+100) = 306.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 306 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field

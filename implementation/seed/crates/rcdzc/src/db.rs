@@ -552,6 +552,16 @@ pub struct Db {
     /// reading it at each reference keeps the two ends of one binding in agreement.
     pub(crate) kept_bindings: crate::fxhash::FxHashSet<StructId>,
 
+    /// LAMBDA-LIFTED closures — the body occurrences of `(fn …)` lambdas that survived lowering as a
+    /// RUNTIME value (passed to a recursive callee, stored in a runtime cell) and were lifted to
+    /// standalone wasm functions. In discovery order; a lambda's position here is its funcref-TABLE slot
+    /// (the value a `Core::Closure` stores and a `Core::CallClosure` dispatches through). Populated by
+    /// [`Db::lift_lambda`] during lowering (memoized — a lambda lifted once keeps its slot); read by
+    /// `layout` to append the lifted functions to the emission order and build the table/element
+    /// sections. A body used only at compile time (β-reduced away) never lifts, so this is empty for a
+    /// program with no runtime closure — byte-identical to before. `DESIGN-runtime-closures-rcdzc.md` §3.
+    pub(crate) lifted: Vec<crate::lower::LiftedLambda>,
+
     /// The set of subtree roots [`crate::resolve::resolve_subtree`] has ALREADY fully walked. That
     /// function eagerly resolves every node under a root to PIN an argument's meaning before
     /// β-reduction re-parents it; `apply_lambda` calls it on each argument at EVERY application. The
@@ -703,6 +713,7 @@ impl Db {
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
+            lifted: Vec::new(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
@@ -740,6 +751,37 @@ impl Db {
     /// of the lexical-scope walk.
     pub fn parent_of(&self, id: StructId) -> Option<StructId> {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
+    }
+
+    /// Whether `id` is `ancestor` or lexically WITHIN its subtree — walk `id`'s parent chain and see if
+    /// `ancestor` is on it. Used by the closure-capture check to tell a reference to the lambda's OWN
+    /// scope (its param, a nested `let`) from a reference OUTSIDE it (a captured free variable). O(depth)
+    /// via the same parent chain the scope walk uses; a synthesized node past the parent index stops the
+    /// walk (returns false — treated as not-within, so a capturing lambda declines conservatively).
+    pub fn is_within(&self, id: StructId, ancestor: StructId) -> bool {
+        let mut cur = id;
+        loop {
+            if cur == ancestor {
+                return true;
+            }
+            match self.parent_of(cur) {
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
+    }
+
+    /// Register a LAMBDA-LIFTED closure, returning its funcref-TABLE slot (its position in `db.lifted`).
+    /// Deduped by the lambda's `body` occurrence — a lambda lifted more than once (a combinator used at
+    /// several sites, or re-lowered) keeps ONE table slot + ONE emitted function. See [`lifted`].
+    ///
+    /// [`lifted`]: Db::lifted
+    pub fn lift_lambda(&mut self, lam: crate::lower::LiftedLambda) -> usize {
+        if let Some(pos) = self.lifted.iter().position(|l| l.body == lam.body) {
+            return pos;
+        }
+        self.lifted.push(lam);
+        self.lifted.len() - 1
     }
 
     /// Whether the lexical-scope SKIP index covers `id` — true for a load-time node (its entry is

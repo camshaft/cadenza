@@ -66,6 +66,12 @@ pub struct Layout {
     /// `exports.iter().find()` per func — O(N²) on a many-export program. `None`-absent means the def
     /// is not an export (an internal reachable callee), which reads its params via `def_params`.
     export_of_def: std::collections::HashMap<usize, usize>,
+    /// The LAMBDA-LIFTED closures, in funcref-table-slot order (a copy of `db.lifted` at layout time).
+    /// Each lifted lambda is emitted as a standalone wasm function AFTER the `order` def functions, so
+    /// its wasm function index is `import_base + order.len() + its slot`. The funcref table's element `k`
+    /// points at lifted lambda `k`'s function, so a `Core::Closure { code: k }` stored slot selects it
+    /// through `call_indirect`. Empty for a program with no runtime closure (byte-identical to before).
+    pub lifted: Vec<crate::lower::LiftedLambda>,
 }
 
 impl Layout {
@@ -74,6 +80,18 @@ impl Layout {
     /// — `compute` and the backend's `import_base` reshuffle both go through it — so the indices are a
     /// maintained invariant, not a field a caller could forget or set inconsistently.
     pub fn new(exports: Vec<ExportPlan>, order: Vec<usize>, import_base: u32) -> Layout {
+        Layout::with_lifted(exports, order, import_base, Vec::new())
+    }
+
+    /// [`Layout::new`] plus the lambda-lifted closures (in table-slot order) — the emission plan when a
+    /// program has runtime closures. The lifted functions emit after the `order` defs, so their wasm
+    /// indices are `import_base + order.len() + slot`.
+    pub fn with_lifted(
+        exports: Vec<ExportPlan>,
+        order: Vec<usize>,
+        import_base: u32,
+        lifted: Vec<crate::lower::LiftedLambda>,
+    ) -> Layout {
         let order_pos = order.iter().enumerate().map(|(k, &d)| (d, k)).collect();
         let export_of_def = exports
             .iter()
@@ -86,6 +104,7 @@ impl Layout {
             import_base,
             order_pos,
             export_of_def,
+            lifted,
         }
     }
 
@@ -112,6 +131,22 @@ impl Layout {
     /// (via `export_of_def`) replacing an `exports.iter().find(|e| e.def == def)` scan.
     pub fn export_plan(&self, def: usize) -> Option<&ExportPlan> {
         self.export_of_def.get(&def).map(|&i| &self.exports[i])
+    }
+
+    /// The absolute wasm-function index of lambda-lifted closure `slot` — the lifted functions emit
+    /// AFTER the `order` defs, so lifted `slot` is wasm func `import_base + order.len() + slot`. This is
+    /// what the funcref-table element section points at for table slot `slot`.
+    pub fn lifted_abs(&self, slot: usize) -> u32 {
+        self.import_base + (self.order.len() + slot) as u32
+    }
+
+    /// The TYPE-section index of lambda-lifted closure `slot`'s functype — the functypes are laid
+    /// imports first, then `order` defs, then lifted lambdas, so lifted `slot`'s type index is
+    /// `import_count + order.len() + slot`. A `call_indirect` applying a closure of that signature
+    /// references this type. (Structural functypes: any type index with the matching `(param)->result`
+    /// signature validates; using the lifted function's own type keeps it exact.)
+    pub fn lifted_type_index(&self, slot: usize, import_count: u32) -> u32 {
+        import_count + (self.order.len() + slot) as u32
     }
 }
 
@@ -194,10 +229,32 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         i += 1;
     }
 
+    // LAMBDA-LIFTED closures: lowering the def bodies above (via `collect_call_callees` → `core_of`)
+    // registers each surviving `(fn …)` into `db.lifted` (a `Core::Closure` naming its table slot). A
+    // lifted lambda's OWN body may itself call a recursive def, so walk each lifted body for its callees
+    // too, growing `order` (a NEW callee reached only through a closure must still be emitted). Iterate
+    // to a fixpoint over `db.lifted` (a lifted body could itself lift another lambda — rare, but the
+    // count can only grow, bounded by the arena). The lifted set is snapshotted into the layout in
+    // table-slot order; the lifted functions emit after `order`.
+    let mut j = 0;
+    while j < db.lifted.len() {
+        let body = db.lifted[j].body;
+        let mut callees = Vec::new();
+        collect_call_callees(db, body, &mut callees);
+        for c in callees {
+            if in_order.insert(c) {
+                trace!(target: "rcdzc::layout", def = c, "reachable via a lifted closure body — added to emission order");
+                order.push(c);
+            }
+        }
+        j += 1;
+    }
+    let lifted = db.lifted.clone();
+
     // `import_base` is 0 until a program uses a runtime op: the per-program runtime-import set is
     // computed by the backend when a `Core` compound op lowers to a heap call (value-heap H2). A
     // program that imports nothing keeps base 0 and is byte-identical to a runtime-free build.
-    Ok(Layout::new(exports, order, 0))
+    Ok(Layout::with_lifted(exports, order, 0, lifted))
 }
 
 /// Collect the `db.defs` indices a body CALLS at runtime — the `Core::Call` callees reached from the
