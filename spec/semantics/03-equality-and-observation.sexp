@@ -313,6 +313,41 @@
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+(case "a runtime sum equality drives a tail-recursive loop"
+  (doc    "The runtime heap walk `=` used as the CONDITION of a tail-recursive function that compiles to a
+           wasm LOOP: `find` searches upward from 0 for the `n` whose `(N.I n)` equals `(N.I 3)`, so the
+           comparison runs each iteration and the else-branch `(find (+ n 1))` iterates. `find(0)` = 3. This
+           pins that a runtime `value-eq` in a loop's condition COMPOSES with the loop's own scratch: the
+           i32 heap-handle slots the compare stashes must not collide with the i64 arithmetic slot the
+           `(+ n 1)` iteration uses — the sibling branches must allocate their scratch ABOVE the condition's
+           high-water. A generation that reused the condition's handle slot for the branch's arithmetic
+           emitted an invalid module (`expected i64, found i32`); this exercises the branch-scratch
+           discipline that keeps a heap-handle condition and a scalar branch in one function well-typed.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (mk n) (N.I n))
+            (def (find n) (if (= (mk n) (mk 3)) n (find (+ n 1))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
+(case "a runtime sum match drives a tail-recursive loop"
+  (doc    "The `match` companion of the value-eq-in-a-loop case: a runtime sum MATCH (built by `bump`, so
+           it does not fold to a scalar compare) is the CONDITION of the tail-recursive `find`, and the
+           else-branch `(find (+ n 1))` iterates the loop. `find(0)` = 3. Pins the same branch-scratch
+           discipline for a `MatchSum` condition — its i32 scrutinee-handle slot must not collide with the
+           i64 iteration arithmetic — which a folding match (`(match (N.I n) …)` reducing to `n == 3`) would
+           never exercise. `bump` keeps the scrutinee a genuine heap value, so the match is a real runtime
+           dispatch in the loop condition.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type N (I Int64) (J Int64))
+            (def (bump n) (if (< n 0) (N.J n) (N.I n)))
+            (def (find n) (if (match (bump n) ((N.I x) (= x 3)) ((N.J _) false))
+                              n (find (+ n 1))))
+            (def (main) (find 0)) (export main)))
+  (output (: 3 Int64)))
+
 (case "two constant sums with the same payload but different variants are not equal"
   (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and
            structural equality compares the VARIANT before the payload: `(= (Ok 1) (Err 1))` is FALSE even
