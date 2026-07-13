@@ -42,7 +42,8 @@ enum AbiTy {
     U32,  // a heap handle or a small unsigned scalar
     S64,  // a boxed signed 64-bit integer
     Bool, // a boxed boolean
-    F64,  // a boxed float
+    F64,  // a boxed Float64
+    F32,  // a boxed Float32 (box-float32/get-float32 — a Float32 lives in an f32 machine slot)
 }
 
 impl AbiTy {
@@ -54,6 +55,7 @@ impl AbiTy {
             WitType::Bool => Some(AbiTy::Bool),
             WitType::S64 => Some(AbiTy::S64),
             WitType::F64 => Some(AbiTy::F64),
+            WitType::F32 => Some(AbiTy::F32),
             _ => None,
         }
     }
@@ -66,6 +68,7 @@ impl AbiTy {
             AbiTy::S64 => quote!(AbiValType::S64),
             AbiTy::Bool => quote!(AbiValType::Bool),
             AbiTy::F64 => quote!(AbiValType::F64),
+            AbiTy::F32 => quote!(AbiValType::F32),
         }
     }
 }
@@ -384,26 +387,28 @@ fn render(
         #[doc = " `comp_byte` is the component instance-type's primitive valtype. Both are wasm-spec"]
         #[doc = " constants (a TARGET concern) so they live here in the backend, not in the generated data."]
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-        pub enum AbiValType { U32, S64, Bool, F64 }
+        pub enum AbiValType { U32, S64, Bool, F64, F32 }
 
         impl AbiValType {
             #[doc = " The CORE wasm valtype byte a lowered handle/scalar occupies (i32=0x7F, i64=0x7E,"]
-            #[doc = " f64=0x7C) — a `u32` handle / `bool` both lower to i32."]
+            #[doc = " f64=0x7C, f32=0x7D) — a `u32` handle / `bool` both lower to i32."]
             pub fn core_byte(self) -> u8 {
                 match self {
                     AbiValType::U32 | AbiValType::Bool => 0x7F,
                     AbiValType::S64 => 0x7E,
                     AbiValType::F64 => 0x7C,
+                    AbiValType::F32 => 0x7D,
                 }
             }
-            #[doc = " The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75) —"]
-            #[doc = " the faithful boundary type the import instance-type declares."]
+            #[doc = " The COMPONENT-model primitive valtype byte (u32=0x79, s64=0x78, bool=0x7F, f64=0x75,"]
+            #[doc = " f32=0x76) — the faithful boundary type the import instance-type declares."]
             pub fn comp_byte(self) -> u8 {
                 match self {
                     AbiValType::U32 => 0x79,
                     AbiValType::S64 => 0x78,
                     AbiValType::Bool => 0x7F,
                     AbiValType::F64 => 0x75,
+                    AbiValType::F32 => 0x76,
                 }
             }
         }

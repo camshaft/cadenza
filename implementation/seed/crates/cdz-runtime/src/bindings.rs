@@ -586,6 +586,20 @@ pub mod exports {
                     let result0 = T::value_encode(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_box_float32_cabi<T: Guest>(arg0: f32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::box_float32(arg0);
+                    _rt::as_i32(result0)
+                }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_get_float32_cabi<T: Guest>(arg0: i32) -> f32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::get_float32(arg0 as u32);
+                    _rt::as_f32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -902,6 +916,18 @@ pub mod exports {
                     ///    the empty Bytes (the compiler only ever bakes a well-formed descriptor). See
                     ///    DESIGN-recursive-sum-escape-walker.md.
                     fn value_encode(v: u32, desc: u32) -> u32;
+                    /// 62 — canonical value-form Bytes (borrows v+desc)
+                    /// ── Float32 leaf (indices 63–64) — a Float32 value boxed in its NATURAL 4-byte form, distinct from
+                    ///    the 8-byte `box-float`/`get-float` (Float64). A Float32 needs its own leaf so its canonical byte
+                    ///    form (and value-encode's shortest-decimal render) is the f32's, NOT a promoted f64's: `0.1f32`
+                    ///    stores the f32 bits and renders `0.1`, where promoting to f64 would render `0.10000000149011612`
+                    ///    (numeric-model.md §Floating-Point Equality Follows The Canonical Byte Form — each width has its
+                    ///    own canonical form). The compiler emits `box-float32` where a Float32 enters a value-heap slot (a
+                    ///    tuple/sum/list element, a map key/value) and `get-float32` reading it back. Every NaN canonicalizes
+                    ///    to the one canonical quiet `f32` NaN on construction (the f32 twin of `box-float`'s NaN normalize).
+                    fn box_float32(v: f32) -> u32;
+                    /// 63 — box a Float32 (4-byte leaf, NaN-canonical)
+                    fn get_float32(handle: u32) -> f32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1127,7 +1153,14 @@ pub mod exports {
                         "cadenza:runtime/heap#value-encode")] unsafe extern "C" fn
                         export_value_encode(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_value_encode_cabi::<$ty > (arg0,
-                        arg1) } } };
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#box-float32")] unsafe extern "C" fn
+                        export_box_float32(arg0 : f32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_box_float32_cabi::<$ty > (arg0) } }
+                        #[unsafe (export_name = "cadenza:runtime/heap#get-float32")]
+                        unsafe extern "C" fn export_get_float32(arg0 : i32,) -> f32 {
+                        unsafe { $($path_to_types)*:: _export_get_float32_cabi::<$ty >
+                        (arg0) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1280,6 +1313,23 @@ mod _rt {
         let layout = alloc::Layout::from_size_align_unchecked(size, align);
         alloc::dealloc(ptr, layout);
     }
+    pub fn as_f32<T: AsF32>(t: T) -> f32 {
+        t.as_f32()
+    }
+    pub trait AsF32 {
+        fn as_f32(self) -> f32;
+    }
+    impl<'a, T: Copy + AsF32> AsF32 for &'a T {
+        fn as_f32(self) -> f32 {
+            (*self).as_f32()
+        }
+    }
+    impl AsF32 for f32 {
+        #[inline]
+        fn as_f32(self) -> f32 {
+            self as f32
+        }
+    }
     extern crate alloc as alloc_crate;
     pub use alloc_crate::alloc;
 }
@@ -1319,9 +1369,9 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1652] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xf6\x0b\x01A\x02\x01\
-A\x02\x01Bh\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 1705] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xab\x0c\x01A\x02\x01\
+A\x02\x01Bl\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0x\x04\0\
 \x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\x06h\
 andley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\x01\x04\
 \x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\0\x09\
@@ -1355,9 +1405,10 @@ e-objects\x01\x18\x04\0\x0avec-concat\x01\x1d\x01o\x02yy\x01@\x02\x01vy\x05index
 y\0%\x04\0\x09vec-split\x01&\x04\0\x09set-union\x01\x1d\x04\0\x10set-intersectio\
 n\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x0avec-of-arr\x01\x09\x01@\x02\x01\
 ay\x01by\0\x7f\x04\0\x08value-eq\x01'\x01@\x02\x01vy\x04descy\0y\x04\0\x0cvalue-\
-encode\x01(\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runtime/runtime\
-\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0d\
-wit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+encode\x01(\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01)\x01@\x01\x06handley\0v\x04\
+\0\x0bget-float32\x01*\x04\0\x14cadenza:runtime/heap\x05\0\x04\0\x17cadenza:runt\
+ime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproces\
+sed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

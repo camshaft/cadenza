@@ -4573,6 +4573,7 @@ enum ShapeNode {
     Int,
     Bool,
     Float,
+    Float32,
     Str,
     Bytes,
     Unit,
@@ -4609,11 +4610,11 @@ impl ShapeTableBuilder {
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
-            // A FLOAT64 payload is renderable (`box_op_ty`/`get_op_ty` box it via `box-float`/`get-float`,
-            // and the runtime `value-encode` renders a KIND_FLOAT decimal leaf). A FLOAT32 payload still
-            // declines at the box layer (an f32-slot needs a promote/demote coercion), so it falls through
-            // to the `_ => None` decline below — its recursive-sum escape is a later slice.
+            // A FLOAT payload is renderable at BOTH widths: `box_op_ty`/`get_op_ty` box it via its width's
+            // leaf (`box-float`/`box-float32`), and the runtime `value-encode` renders a KIND_FLOAT decimal
+            // — Float64 from the f64, Float32 from its OWN 4-byte leaf (the f32's shortest decimal).
             Ty::Float(ft) if ft.ground_width() == 64 => self.push(ShapeNode::Float),
+            Ty::Float(ft) if ft.ground_width() == 32 => self.push(ShapeNode::Float32),
             Ty::String => self.push(ShapeNode::Str),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
@@ -4746,6 +4747,7 @@ impl ShapeTableBuilder {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
+                ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
                 ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes
                 ShapeNode::Unit => d.push(5),

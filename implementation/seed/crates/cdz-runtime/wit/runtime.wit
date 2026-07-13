@@ -304,6 +304,17 @@ interface heap {
   //    the empty Bytes (the compiler only ever bakes a well-formed descriptor). See
   //    DESIGN-recursive-sum-escape-walker.md.
   value-encode: func(v: u32, desc: u32) -> u32;        // 62 — canonical value-form Bytes (borrows v+desc)
+
+  // ── Float32 leaf (indices 63–64) — a Float32 value boxed in its NATURAL 4-byte form, distinct from
+  //    the 8-byte `box-float`/`get-float` (Float64). A Float32 needs its own leaf so its canonical byte
+  //    form (and value-encode's shortest-decimal render) is the f32's, NOT a promoted f64's: `0.1f32`
+  //    stores the f32 bits and renders `0.1`, where promoting to f64 would render `0.10000000149011612`
+  //    (numeric-model.md §Floating-Point Equality Follows The Canonical Byte Form — each width has its
+  //    own canonical form). The compiler emits `box-float32` where a Float32 enters a value-heap slot (a
+  //    tuple/sum/list element, a map key/value) and `get-float32` reading it back. Every NaN canonicalizes
+  //    to the one canonical quiet `f32` NaN on construction (the f32 twin of `box-float`'s NaN normalize).
+  box-float32: func(v: f32) -> u32;    // 63 — box a Float32 (4-byte leaf, NaN-canonical)
+  get-float32: func(handle: u32) -> f32; // 64 — read a Float32 back
 }
 
 world runtime {

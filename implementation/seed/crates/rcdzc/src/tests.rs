@@ -16855,6 +16855,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_float32_renders_via_the_value_encode_walker() {
+        // The LAST value-encode gap closed: a recursive sum carrying a FLOAT32 now compiles its escape.
+        // Float32 gets its OWN 4-byte leaf (`box-float32`/`get-float32`), so `box_op_ty`/`get_op_ty` box
+        // it coercion-free and `shape_of` emits `ShapeNode::Float32` (descriptor tag 14); the runtime
+        // `value-encode` renders the f32's SHORTEST decimal (guarded in cdz-runtime's
+        // `value_encode_renders_a_float32_as_the_f32_shortest_decimal` — `0.1f32` → `0.1`, not the
+        // f64-promotion precision).
+        use crate::testkit::parse;
+        let src = "(module m (type F32List (Cons (Tuple Float32 F32List)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (F32List.Nil ()) \
+                        (F32List.Cons (tuple (: 1.5 Float32) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Float32 compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the float32-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_recursive_sum_carrying_a_set_renders_via_the_value_encode_walker() {
         // A recursive sum carrying a SET (a `SetList` — a tree of sets) now COMPILES its value-encode
         // escape. `shape_of` emits `ShapeNode::Set` (descriptor tag 12) for a SCALAR-element set, and the
@@ -24551,6 +24572,7 @@ mod r2_runtime_resource {
             AbiValType::S64 => PrimitiveValType::S64,
             AbiValType::Bool => PrimitiveValType::Bool,
             AbiValType::F64 => PrimitiveValType::F64,
+            AbiValType::F32 => PrimitiveValType::F32,
         })
     }
 
@@ -24562,6 +24584,7 @@ mod r2_runtime_resource {
             AbiValType::U32 | AbiValType::Bool => ValType::I32,
             AbiValType::S64 => ValType::I64,
             AbiValType::F64 => ValType::F64,
+            AbiValType::F32 => ValType::F32,
         };
         let params = op.params.iter().map(|p| core(*p)).collect();
         let results = op.result.map(|r| vec![core(r)]).unwrap_or_default();
