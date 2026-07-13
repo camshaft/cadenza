@@ -1121,6 +1121,53 @@
             ((None _)     -1)))
   (output (: 5 Int64)))
 
+; --- A variant payload may be ANY monomorphic leaf type, including Char and Symbol -----------------
+; core-semantics.md #Sum Types Are Structural Types: a variant's payload type is any type. The leaf
+; scalars `Char` and `Symbol` are types exactly as `Bytes`/`String`/`Bool` are, so a variant may carry
+; one. A generation that decoded a variant payload's type through the type-value round-trip
+; (encode_ty/decode_ty) must handle EVERY leaf: an omitted arm collapsed the payload to `Unit`, so a
+; `(Ch Char)` variant read as nullary and its `#\a` argument then failed to type ("Char and Unit must
+; be the same type"). These pin that a Char and a Symbol payload construct, match, and bind exactly as
+; an Int64 payload does. Tagged `(needs chars)`/`(needs symbols)` — the leaf's own capability.
+
+(case "a variant carrying a Char payload constructs, matches, and binds it"
+  (needs  chars)
+  (doc    "`(type Tok (Ch Char) (End))` declares a variant `Ch` whose payload is a `Char` — a leaf type
+           like `String`/`Bytes`. Constructing `(Tok.Ch #\\a)` and matching binds the char to `c`, and
+           `(Char.to-int c)` reads its scalar value 97. Pins that a Char is a valid variant payload: the
+           payload-type decode must map the `Char` leaf, not collapse it to `Unit` (which read the
+           variant as nullary and rejected the `#\\a` argument). The Char analogue of the String-payload
+           variant, exercising the type-value round-trip for the `Char` leaf.")
+  (input  (do (type Tok (Ch Char) (End))
+              (def (main) (match (Tok.Ch #\a) ((Tok.Ch c) (Char.to-int c)) ((Tok.End) 0)))
+              (export main)))
+  (call   main)
+  (output (: 97 Int64)))
+
+(case "a variant carrying a Symbol payload constructs, matches, and binds it"
+  (needs  symbols)
+  (doc    "The Symbol companion: `(type T (Mk Symbol) (No))` carries a `Symbol` payload. Constructing
+           `(T.Mk (Symbol.of \"hi\"))` and matching binds the symbol to `s`, and `(Symbol.to-string s)`
+           recovers its content \"hi\". Pins that a Symbol — the other bare-name leaf omitted from the
+           payload-type decode — is a valid variant payload exactly as a String is, so its round-trip
+           through the type-value encode/decode maps the leaf rather than collapsing it to `Unit`.")
+  (input  (do (type T (Mk Symbol) (No))
+              (def (main) (match (T.Mk (Symbol.of "hi")) ((T.Mk s) (Symbol.to-string s)) ((T.No) "")))
+              (export main)))
+  (call   main)
+  (output (: "hi" String)))
+
+(case "a Char-payload sum value escapes across the boundary in its canonical form"
+  (needs  chars)
+  (doc    "The escape companion: a `(Ch Char)` variant value returned across the boundary renders in its
+           canonical value form `(Ch #\\a)` — the char payload survives the value-escape walk exactly as
+           an Int64 payload does. Pins that the Char leaf's payload round-trips not only through the
+           type-value decode (construction/match) but through the ESCAPE path (the deterministic value
+           form), so a Char payload is a first-class sum payload end to end.")
+  (input  (do (type Tok (Ch Char) (End)) (def (main) (Tok.Ch #\a)) (export main)))
+  (call   main)
+  (output (: (Ch #\a) Tok)))
+
 ; --- A variant carrying a BARE NULLARY variant with an unconstrained payload type-checks ---------
 ; type-system.md #Generics Are Type-Valued Parameters: a nullary variant `None : ∀a. Option a` is
 ; generic in its payload. Constructing `(Some (None))`, the inner `None`'s payload `a` is a free type

@@ -349,6 +349,20 @@ pub enum Edit {
     Delete { at: crate::ast::StructId },
 }
 
+impl Edit {
+    /// The node this edit TARGETS — the node replaced/wrapped/deleted, or the list appended into. Every
+    /// variant carries exactly one `at`; this reads it uniformly (a consumer that dedups or validates fixes
+    /// asks "which node does this touch?" without matching each variant).
+    pub fn target(&self) -> crate::ast::StructId {
+        match self {
+            Edit::ReplaceNode { at, .. }
+            | Edit::InsertArms { at, .. }
+            | Edit::Wrap { at, .. }
+            | Edit::Delete { at } => *at,
+        }
+    }
+}
+
 impl Fix {
     /// A heuristic node-replacement fix — the "did you mean `replacement`?" repair. Heuristic because
     /// the nearest-name match is a guess at intent, not a proof; an agent confirms it before applying.

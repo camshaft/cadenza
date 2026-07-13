@@ -2498,6 +2498,13 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // variant `(type Tag (Named String) …)` then unified its `"x"` argument against `Unit` ("cannot
         // unify Unit with String"). The same round-trip hole the `Bytes` arm above fixed for bytes.
         Ty::String => db.push_name("String"),
+        // `Char`/`Symbol` — the remaining monomorphic leaves, the exact `Bytes`/`String` analogue.
+        // Round-trip with `decode_ty`'s `"Char"`/`"Symbol"` arms. Without these the catch-all below
+        // encoded them as `Unit`, so a `Char`/`Symbol` nested in a compound type-value (a `(Tuple Char …)`
+        // element, or a variant payload — which boxes as a tuple) collapsed to `Unit` and a `(Ch Char)`
+        // variant's `#\a` argument then unified against `Unit` ("Char and Unit must be the same type").
+        Ty::Char => db.push_name("Char"),
+        Ty::Symbol => db.push_name("Symbol"),
         // A float type-value: the `(Float N)` HEAD form (like `(Int N)`), so the WIDTH round-trips
         // FAITHFULLY through `decode_ty`'s `(Float N)` arm — INCLUDING the sentinel width 0 a
         // non-admitted `(Float 16)` reduces to (a bare alias name would lose it: width 0 has no alias,

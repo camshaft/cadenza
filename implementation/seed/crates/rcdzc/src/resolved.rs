@@ -157,7 +157,12 @@ pub enum Prim {
     /// the ONE canonical NaN byte form. Every NaN equals every NaN and NaN differs from every finite float
     /// under the canonical-byte-form equality (`core-semantics.md` §Floating-Point Equality Follows The
     /// Canonical Byte Form) — the fold compares by `to_f64_bits`, so a single canonical NaN bit pattern
-    /// makes `(= nan nan)` true. Types as `Ty::Float` (a bare `nan` grounds to Float64).
+    /// makes `(= nan nan)` true. Types as `Ty::Float` (a bare `nan` grounds to Float64). A negative zero
+    /// keeps its sign in the `Decimal` (`negative` bit), so `-0.0` serializes distinctly from `0.0`.
+    //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
+    //# Every floating-point not-a-number value MUST serialize to one canonical byte form, consistent with structural equality treating all not-a-number values as equal.
+    //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
+    //# A floating-point negative zero MUST serialize distinctly from a positive zero, consistent with structural equality treating them as distinct.
     FloatNan,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,

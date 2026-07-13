@@ -1000,6 +1000,11 @@ enum Shape {
     Sum(Vec<(String, u32)>),
     Named(String, u32),
     Ref(u32),
+    /// A SET over one element shape — rendered `(Set.of (list e1 … en))` with the elements in CANONICAL
+    /// key-VALUE order (collections-and-text.md §A Set's canonical form). The runtime iterates the CHAMP
+    /// in hash order, so the walk SORTS by the element's canonical scalar value (matching the compiler's
+    /// `const_key_order`), NOT by hash or raw bytes. Only a SCALAR element shape is orderable-and-encodable.
+    Set(u32),
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -1075,6 +1080,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             Shape::Named(name, desc_leb(d, pos)? as u32)
         }
         11 => Shape::Ref(desc_leb(d, pos)? as u32),
+        12 => Shape::Set(desc_leb(d, pos)? as u32),
         _ => return None,
     })
 }
@@ -1283,6 +1289,69 @@ impl DocBuilder {
     }
 }
 
+/// Follow a shape index through `Named`/`Ref` wrappers to the underlying shape (an erased newtype / a
+/// table alias adds no runtime representation). Bounded by a small hop budget as a malformed-cycle
+/// backstop. Returns the resolved `&Shape` (borrowed from the table), or `None` on a broken/cyclic index.
+fn resolve_shape(desc: &Descriptor, mut shape_ix: u32) -> Option<&Shape> {
+    for _ in 0..64 {
+        match desc.table.get(shape_ix as usize)? {
+            Shape::Ref(target) | Shape::Named(_, target) => shape_ix = *target,
+            other => return Some(other),
+        }
+    }
+    None
+}
+
+/// Canonical ORDER of two SCALAR values under `shape` — matching the compiler's `const_key_order` (the
+/// order a map/set renders its keys/elements in, `collections-and-text.md`): an Int by NUMERIC value
+/// (NOT raw bytes — the CHAMP stores ints little-endian, so byte order ≠ value order), a String
+/// lexicographically (byte compare == UTF-8 lexicographic), a Bool `false < true`, Unit a singleton. Any
+/// other (non-scalar) shape has no canonical scalar order here → `None`, so the Set/Map encode declines
+/// exactly as `const_key_order` does for a nested-compound key.
+fn canonical_scalar_order(shape: &Shape, a: Handle, b: Handle) -> Option<core::cmp::Ordering> {
+    match shape {
+        Shape::Int => Some(op_get_int(a).cmp(&op_get_int(b))),
+        Shape::Bool => Some(op_get_bool(a).cmp(&op_get_bool(b))),
+        Shape::Unit => Some(core::cmp::Ordering::Equal),
+        Shape::Str => {
+            // Compare the stored UTF-8 bytes lexicographically (== string lexicographic order).
+            let av = with_node(a, Vec::new(), |n| n.raw.as_slice().to_vec());
+            let bv = with_node(b, Vec::new(), |n| n.raw.as_slice().to_vec());
+            Some(av.cmp(&bv))
+        }
+        _ => None,
+    }
+}
+
+/// Collect a SET's elements into a Vec of (borrowed) element handles, SORTED into canonical key-VALUE
+/// order under the element shape `elem_ix` (resolved through `Named`/`Ref`). The CHAMP iterates hash
+/// order, so this re-sorts to the canonical render order. `None` (the encode declines) when the element
+/// shape is not a canonically-orderable SCALAR — matching the compiler's `const_key_order`, which
+/// declines a nested-compound element. The returned handles are BORROWED (the set still owns them); the
+/// caller only reads them to encode, so no dup/drop is needed.
+fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Option<Vec<Handle>> {
+    let elem_shape = resolve_shape(desc, elem_ix)?;
+    // Only a canonically-orderable scalar element is encodable (a nested-compound element declines).
+    if !matches!(elem_shape, Shape::Int | Shape::Bool | Shape::Unit | Shape::Str) {
+        return None;
+    }
+    // Walk the set's cursor, collecting borrowed element handles.
+    let mut elems: Vec<Handle> = Vec::new();
+    let mut cur = op_set_iter(set);
+    loop {
+        let e = op_set_iter_elem(cur);
+        if e == Handle::NULL {
+            break; // exhausted
+        }
+        elems.push(e);
+        cur = op_set_iter_next(cur);
+    }
+    op_drop(cur); // release the final (exhausted) cursor
+    // Sort into canonical value order. Elements are distinct set members, so the compare is total here.
+    elems.sort_by(|&x, &y| canonical_scalar_order(elem_shape, x, y).unwrap_or(core::cmp::Ordering::Equal));
+    Some(elems)
+}
+
 /// The NON-PROGRESS cap on the value walk — bounds a MALFORMED descriptor whose `Ref`/`Named` chain
 /// cycles WITHOUT ever consuming a heap node (e.g. `Ref → Ref`, or `Named → Ref → Named …`), which would
 /// otherwise spin the iterative walk forever building nothing. It counts only CONSECUTIVE non-consuming
@@ -1314,6 +1383,11 @@ enum EncodeWork<'d> {
     Named { colon_s: u32, name: &'d str },
     /// Assemble one record pair: pop the field value, `list([katom, fval])`.
     Pair { katom: u32 },
+    /// Assemble `((. Set of) (list e1 … en))` — the canonical Set value form. Pops the top `nelems`
+    /// results (the elements, already in canonical order from the Set arm's sort), wraps them in an inner
+    /// `(list …)` under the pre-emitted `list_head_s`, and applies the `(. Set of)` member-access head
+    /// (whose atoms are emitted HERE, AFTER the elements — matching the recursive oracle's build order).
+    SetOf { list_head_s: u32, nelems: usize },
 }
 
 /// Walk the runtime value `root_h` under table entry `root_shape`, appending its value-form structs to
@@ -1445,6 +1519,25 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         work.push(EncodeWork::Named { colon_s, name });
                         work.push(EncodeWork::Visit { h, shape_ix: inner, refs: refs + 1 });
                     }
+                    Shape::Set(elem) => {
+                        // A Set renders `((. Set of) (list e1 … en))` with elements in CANONICAL key-VALUE
+                        // order. The CHAMP iterates hash order, so collect + SORT by the element's canonical
+                        // scalar value (matching the compiler's `const_key_order`). Only a SCALAR element is
+                        // orderable/encodable; a non-scalar element shape declines (as `const_key_order` does).
+                        // Emit the `list` head EAGERLY (pre-order — the SAME discipline as `list`/`tuple`,
+                        // matching the recursive oracle's leaf/struct order); the `(. Set of)` head atoms are
+                        // emitted AFTER the elements by the `SetOf` assembler (the oracle emits them last too).
+                        let elem = *elem;
+                        let sorted = set_elements_canonical(desc, h, elem)?;
+                        let list_head = b.name_leaf("list");
+                        let list_head_s = b.atom(list_head);
+                        work.push(EncodeWork::SetOf { list_head_s, nelems: sorted.len() });
+                        // Push in REVERSE so the LIFO stack encodes them in canonical order onto `out`. Each
+                        // element is a DISTINCT heap node (a set member) → progress → reset `refs`.
+                        for &e in sorted.iter().rev() {
+                            work.push(EncodeWork::Visit { h: e, shape_ix: elem, refs: 0 });
+                        }
+                    }
                 }
             }
             EncodeWork::VisitField { h, shape_ix, key } => {
@@ -1472,6 +1565,25 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
             EncodeWork::Pair { katom } => {
                 let fval = out.pop()?;
                 out.push(b.list(vec![katom, fval]));
+            }
+            EncodeWork::SetOf { list_head_s, nelems } => {
+                // The top `nelems` results are the elements in canonical order, under the pre-emitted
+                // `list_head_s`. Build the inner `(list …)`, then the `(. Set of)` head (atoms emitted now,
+                // AFTER the elements — matching the oracle), then apply it: `((. Set of) (list …))`.
+                let base = out.len().checked_sub(nelems)?;
+                let mut list_children = Vec::with_capacity(nelems + 1);
+                list_children.push(list_head_s);
+                list_children.extend_from_slice(&out[base..]);
+                out.truncate(base);
+                let inner_list = b.list(list_children);
+                let dot_l = b.name_leaf(".");
+                let dot = b.atom(dot_l);
+                let set_l = b.name_leaf("Set");
+                let set_mod = b.atom(set_l);
+                let of_l = b.name_leaf("of");
+                let of_key = b.atom(of_l);
+                let set_of = b.list(vec![dot, set_mod, of_key]);
+                out.push(b.list(vec![set_of, inner_list]));
             }
         }
     }
@@ -5749,6 +5861,25 @@ mod tests {
                 let tname_s = b.atom(tname);
                 b.list(vec![colon_s, value, tname_s])
             }
+            S::Set(elem) => {
+                let elem = *elem;
+                let sorted = set_elements_canonical(desc, h, elem)?;
+                let list_head = b.name_leaf("list");
+                let list_head_s = b.atom(list_head);
+                let mut list_children = vec![list_head_s];
+                for e in sorted {
+                    list_children.push(encode_value_recursive(desc, b, e, elem, depth + 1)?);
+                }
+                let inner_list = b.list(list_children);
+                let dot = b.name_leaf(".");
+                let dot_s = b.atom(dot);
+                let set_l = b.name_leaf("Set");
+                let set_s = b.atom(set_l);
+                let of_l = b.name_leaf("of");
+                let of_s = b.atom(of_l);
+                let set_of = b.list(vec![dot_s, set_s, of_s]);
+                b.list(vec![set_of, inner_list])
+            }
         })
     }
 
@@ -6232,6 +6363,67 @@ mod tests {
         op_drop(tzp);
         op_drop(tzn);
 
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// `value-encode` renders a Set (`Shape::Set`) as `((. Set of) (list e1 … en))` with elements in
+    /// CANONICAL key-VALUE order — NOT the CHAMP hash order. The walk collects the elements + sorts by the
+    /// element's canonical scalar value (matching the compiler's `const_key_order`). Verifies the
+    /// structure + canonical INT order (numeric, not raw-byte) + differential vs the recursive oracle.
+    #[test]
+    fn value_encode_renders_a_set_in_canonical_order() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: table [0] = Int, [1] = Set(→0), root = 1. Tag 12 = Set.
+        let desc: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01]; // len 2, [0]=Int(0), [1]=Set(tag12, elem 0), root 1
+
+        // Insert ints in NON-sorted order incl. values whose LITTLE-ENDIAN bytes disagree with numeric
+        // order (1 vs 256): 256, 1, 3, 2 → canonical numeric order is 1, 2, 3, 256.
+        let mut s = op_set_empty();
+        for &v in &[256i64, 1, 3, 2] {
+            s = op_set_insert(s, op_box_int(v));
+        }
+        let doc = op_value_encode_form(s, desc).expect("encode a Set");
+
+        // Differential: the recursive oracle must produce byte-identical output.
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0).expect("recursive");
+        let rec_doc = b.finish(root);
+        assert_eq!(doc, rec_doc, "iterative and recursive Set encode must agree");
+
+        // The document must decode to `(Set.of (list 1 2 3 256))` — the ints in NUMERIC order. Rather than
+        // hand-derive every byte, assert the int magnitudes appear in ascending order in the leaf pool: the
+        // KIND_INT leaves carry big-endian magnitudes [1],[2],[3],[1,0](=256) in that sequence.
+        // Find the four int-leaf magnitudes in emission order (KIND_INT_POS_DEC = 0).
+        let mut mags: Vec<Vec<u8>> = Vec::new();
+        let mut i = 9; // after 8-byte header + 1-byte leaf_count
+        // leaf_count is at [8]; parse that many leaves.
+        let leaf_count = doc[8] as usize;
+        for _ in 0..leaf_count {
+            let kind = doc[i];
+            i += 1;
+            if kind == 0 {
+                // KIND_INT_POS_DEC: LEB len + magnitude
+                let len = doc[i] as usize;
+                i += 1;
+                mags.push(doc[i..i + len].to_vec());
+                i += len;
+            } else if kind == 10 {
+                // KIND_NAME: LEB len + bytes
+                let len = doc[i] as usize;
+                i += 1 + len;
+            } else {
+                panic!("unexpected leaf kind {kind} in a Set-of-Int document");
+            }
+        }
+        assert_eq!(
+            mags,
+            vec![vec![1u8], vec![2u8], vec![3u8], vec![1u8, 0u8]],
+            "the int leaves appear in NUMERIC order 1,2,3,256 (256 = big-endian magnitude [1,0]), NOT the \
+             CHAMP hash order or little-endian byte order the elements were inserted in"
+        );
+        op_drop(s);
         assert_eq!(live_nodes(), before, "no leak");
     }
 

@@ -21,6 +21,21 @@ use unicode_normalization::UnicodeNormalization;
 #[derive(Debug)]
 pub struct ReadError(pub String);
 
+/// The maximum nesting depth the recursive-descent reader accepts before returning a [`ReadError`]
+/// rather than recursing further. Recursive descent (`read_list` → `read_node` → `read_primary` →
+/// `read_list`) uses one native stack frame per nesting level, so unbounded depth overflows the stack
+/// and ABORTS the process (SIGABRT) on pathologically deep — but syntactically valid — input; the
+/// crash is worse on the guide's `cdz-wasm` (a ~1 MB stack parsing UNTRUSTED browser input, where the
+/// overflow depth is far lower than the ~25000 a native 8 MB stack reaches).
+///
+/// Set to the compiler's own `DESCENT_DEPTH_LIMIT` (rcdzc `db.rs` = 1024): the compiler already
+/// DECLINES a program nested past that ("expression nests too deeply to compile"), so a source the
+/// parser rejects here is one the compiler would reject anyway — no valid program is lost. Matching
+/// (not exceeding) the compiler's limit keeps the deepest margin below the smallest target stack (the
+/// ~1 MB wasm stack overflows well before 4096 native-frame-equivalents), so every source-ingesting
+/// entry point (`convert`/`check`/`fix`, `cdz-wasm`) returns a clean diagnostic instead of crashing.
+pub const MAX_NESTING_DEPTH: u32 = 1024;
+
 /// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form).
 pub fn read(text: &str) -> Result<Arenas, ReadError> {
     let mut b = Builder::new();
@@ -284,6 +299,11 @@ struct Reader<'a, 'b> {
     src: &'a [u8],
     pos: usize,
     b: &'b mut Builder,
+    /// The current nesting depth of the recursive descent — incremented on entry to each `read_list`
+    /// and decremented on exit, so it counts open `(` on the descent path. Past [`MAX_NESTING_DEPTH`]
+    /// the reader returns a [`ReadError`] instead of recursing, guarding the native stack against
+    /// overflow on pathologically deep input (see the constant's docs).
+    depth: u32,
     /// When `Some`, every structure occurrence pushes its source span here, in creation order, so
     /// the table stays exactly 1:1 with the arena (`spans[id]` is that occurrence's span). `None`
     /// on the plain [`read`] path — then the `mk_*` helpers are pure builder calls, byte-identical.
@@ -296,6 +316,7 @@ impl<'a, 'b> Reader<'a, 'b> {
             src: text.as_bytes(),
             pos: 0,
             b,
+            depth: 0,
             spans: track.then(|| SpanTable::new(FileId::default())),
         }
     }
@@ -493,22 +514,38 @@ impl<'a, 'b> Reader<'a, 'b> {
     }
 
     fn read_list(&mut self) -> Result<StructId, ReadError> {
+        // DEPTH GUARD: a list is the ONE recursive-descent point (`read_list` → `read_node` →
+        // `read_primary` → `read_list`), so counting open lists bounds the native stack. Past the limit
+        // return a clean diagnostic rather than recurse into a stack overflow (SIGABRT). Checked BEFORE
+        // consuming `(` so the depth-limit error anchors at the offending open paren.
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(ReadError(format!(
+                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
+                self.pos
+            )));
+        }
+        self.depth += 1;
         let start = self.pos;
         self.bump(); // '('
         let mut items = Vec::new();
-        loop {
+        let result = loop {
             self.skip_ws();
             match self.peek() {
-                None => return Err(ReadError("unterminated list".into())),
+                None => break Err(ReadError("unterminated list".into())),
                 Some(b')') => {
                     self.bump();
-                    break;
+                    // The list spans from `(` through the matching `)` (now consumed, so `self.pos` is
+                    // just past).
+                    break Ok(self.mk_list(items, Span::new(start, self.pos)));
                 }
-                Some(_) => items.push(self.read_node()?),
+                Some(_) => match self.read_node() {
+                    Ok(item) => items.push(item),
+                    Err(e) => break Err(e),
+                },
             }
-        }
-        // The list spans from `(` through the matching `)` (now consumed, so `self.pos` is just past).
-        Ok(self.mk_list(items, Span::new(start, self.pos)))
+        };
+        self.depth -= 1;
+        result
     }
 
     //= spec/capabilities/collections-and-text.md#a-string-literal-s-escapes-are-a-closed-set
@@ -789,6 +826,31 @@ mod tests {
     fn reads_a_form() {
         let a = read("(+ 1 2)").unwrap();
         assert_eq!(a.head_name(a.root), Some("+"));
+    }
+
+    #[test]
+    fn deeply_nested_input_is_diagnosed_not_crashed() {
+        // A pathologically deep but syntactically valid nest overflowed the native stack (SIGABRT) in
+        // the unguarded recursive descent; the depth guard makes it a clean `ReadError` instead. The
+        // depth here (limit + a margin) far exceeds `MAX_NESTING_DEPTH` — without the guard this
+        // recursion would abort the process (the real crash needs ~25000, but the guard fires at the
+        // limit, so a modest over-limit depth exercises it deterministically without a huge string).
+        let n = (MAX_NESTING_DEPTH as usize) + 50;
+        let src = format!("{}1{}", "(+ ".repeat(n), " 1)".repeat(n));
+        let err = read(&src).expect_err("deep nesting must be a clean error, not a crash");
+        assert!(
+            err.0.contains("nests too deeply"),
+            "expected a depth-limit diagnostic, got: {}",
+            err.0
+        );
+        // Just UNDER the limit still parses (the guard does not reject a valid moderate nest). A depth
+        // of `limit - 1` open lists is within budget.
+        let ok = (MAX_NESTING_DEPTH as usize) - 1;
+        let shallow = format!("{}1{}", "(+ ".repeat(ok), " 1)".repeat(ok));
+        assert!(
+            read(&shallow).is_ok(),
+            "a nest just under the limit must still parse"
+        );
     }
 
     /// The text a span covers, for span assertions.

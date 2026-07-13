@@ -104,6 +104,7 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
+pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
