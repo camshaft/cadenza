@@ -336,6 +336,17 @@ pub struct Db {
     /// `Sum`↔`Nominal` choice is uniform across the compiler.
     pub newtype_inner: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
 
+    /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
+    /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
+    /// box: it is represented at run time DIRECTLY as its discriminant `i32` (construction is a
+    /// `ConstI32(disc)`, a match switches on the i32 itself with no `sum-disc` call, equality is `i32.eq`,
+    /// and it crosses the host boundary as a component `enum`). A SINGLE-variant nullary sum is a nominal
+    /// Unit (in `newtype_inner`, not here); a MIXED sum (some variant carries a payload — `Option`, a
+    /// recursive sum) stays a boxed `Ty::Sum` handle so its nullary and payload variants share one uniform
+    /// representation. Materialized once at load (like `newtype_inner`), so every backend site agrees on
+    /// the representation via `is_enum_disc`.
+    pub enum_disc: crate::fxhash::FxHashSet<StructId>,
+
     /// For each `StructId`, the `List` occurrence that holds it as a child, or `None` for the root.
     /// The structure arena is NOT deduplicated, so every occurrence has exactly one parent — this is
     /// one deterministic scan, filled at load. It is what lets `resolve` derive a name's LEXICAL scope
@@ -809,6 +820,7 @@ impl Db {
             effect_decls,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
+            enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
             scope_skip,
@@ -857,7 +869,25 @@ impl Db {
                 db.newtype_inner.insert(decl, inner);
             }
         }
+        // ENUM-DISCRIMINANT REPRESENTATION: materialize which sums are C-style enums — MORE than one
+        // variant, EVERY variant nullary. Such a value is just its discriminant, so the backend
+        // represents it as a bare `i32` (no heap box). A single-variant nullary sum is a nominal Unit
+        // (already in `newtype_inner`), and a mixed sum stays boxed — so require ≥2 variants AND all
+        // nullary here. Materialized after `newtype_inner` (an all-nullary decl with one variant went to
+        // `newtype_inner` above and is not re-added), so the two sets are disjoint.
+        for td in &db.type_decls {
+            if td.variants.len() >= 2 && td.variants.iter().all(|v| v.payloads.is_empty()) {
+                db.enum_disc.insert(td.occ);
+            }
+        }
         db
+    }
+
+    /// Whether the sum whose declaration is `decl` is a C-style ENUM represented DIRECTLY as its
+    /// discriminant `i32` (no heap box) — see [`Db::enum_disc`]. The single query every backend site uses
+    /// to choose the unboxed path for construction, matching, equality, rendering, and boundary crossing.
+    pub fn is_enum_disc(&self, decl: StructId) -> bool {
+        self.enum_disc.contains(&decl)
     }
 
     /// Enter a β-reduction: on success returns a guard that holds the depth bumped for its lifetime;

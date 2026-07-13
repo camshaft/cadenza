@@ -6699,6 +6699,19 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Eq) && node_ty_is_enum_disc(db, args[0]) {
+                // ENUM-DISCRIMINANT equality: both operands are bare discriminant i32s (an all-nullary
+                // enum is represented as its discriminant, no heap box), so `=` is a plain `i32.eq` — NOT
+                // a `value-eq` heap walk (which would misread a small discriminant as a tagged immediate
+                // handle). Route to `Core::Compare`, whose backend emits `i32.eq` for an enum-disc operand
+                // (`operand_int_ty` widths it as i32). Only equality — an enum has no order, so `<`/`>`
+                // never reach here (they take the `is_scalar` path above, false for a sum, then decline).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "enum-discriminant equality → i32.eq compare");
+                Core::Compare {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else if matches!(op, Prim::Eq) && compound_eq_heap_walkable(db, args[0]) {
                 // RUNTIME STRUCTURAL EQUALITY — a `=` on two COMPOUND heap values neither of which folded
                 // (a sum/tuple/record built from a parameter or a recursive call). Emit a `value-eq`
@@ -9514,6 +9527,17 @@ fn is_scalar(db: &mut Db, id: StructId) -> bool {
         crate::infer::type_of(db, id),
         crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
     )
+}
+
+/// Whether the value at `id` has an ENUM-DISCRIMINANT type — a C-style enum the backend represents as a
+/// bare discriminant `i32` (no heap box; `Db::is_enum_disc`). Used to route `=` on such a value to the
+/// scalar `i32.eq` compare rather than a `value-eq` heap walk. Peels a nominal wrapper (a nominal-over-
+/// enum shares the representation).
+fn node_ty_is_enum_disc(db: &mut Db, id: StructId) -> bool {
+    match crate::infer::type_of(db, id).strip_nominal() {
+        crate::ty::Ty::Sum { decl, .. } => db.is_enum_disc(*decl),
+        _ => false,
+    }
 }
 
 /// Reduce an `Ordering` to the boolean the comparison `op` asks of it — the one place the relational
