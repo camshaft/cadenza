@@ -28,16 +28,23 @@
 set -uo pipefail
 
 # ── locate the checkouts ──────────────────────────────────────────────────────────────────────
-# Resolve the MAIN repo root from the shared .git common-dir — robust no matter which worktree this
-# script is invoked from (the parent of `.git`). Falls back to a path-walk from the script location.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_DIR="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-if [ -n "$COMMON_DIR" ]; then
-  DEFAULT_ROOT="$(dirname "$COMMON_DIR")"
+# Resolve the MAIN repo root from the shared .git common-dir (the parent of `.git`) — robust no
+# matter which worktree this runs from, and independent of where the script FILE lives (it may be
+# piped in via process substitution, so `$BASH_SOURCE` can point outside the repo). We therefore
+# anchor on the current working directory, which the cron sets to the main checkout. As a fallback,
+# a path-walk from the script location; and if a `CDZ_SMITH_MAIN` override is given it wins.
+CWD_COMMON="$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+if [ -n "$CWD_COMMON" ]; then
+  DEFAULT_ROOT="$(dirname "$CWD_COMMON")"
 else
-  DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+  DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../../.." 2>/dev/null && pwd)"
 fi
 MAIN="${CDZ_SMITH_MAIN:-$DEFAULT_ROOT}"
+if [ -z "$MAIN" ] || [ ! -d "$MAIN/.git" ]; then
+  echo "[fuzz-cycle] cannot locate the main repo (MAIN='$MAIN'); set CDZ_SMITH_MAIN. Skipping."
+  exit 0
+fi
 # The fuzzing worktree gets its OWN path + branch so it never collides with a human/dev worktree
 # that might also be named `cdz-smith`.
 WORKTREE="${CDZ_SMITH_WORKTREE:-$MAIN/.claude/worktrees/cdz-smith-fuzz}"
