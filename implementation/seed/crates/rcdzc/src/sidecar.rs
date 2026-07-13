@@ -11,11 +11,18 @@
 //! **Why this is not new analysis.** Every `Query` is a read of a column the compiler already fills
 //! (or a trivial derivation over one): `TypeOf` reads the solved-type column (`infer::type_of`),
 //! `UsesOf` is the transpose of the resolution column (`resolve::resolved_of`). The oracle contract
-//! (`tooling-and-lsp.md` §An Agent Queries The Compiler For Any Static Fact) already obliges every
-//! such fact to be TOTAL, DETERMINISTIC, and equal to what a full compile determines — so this surface
-//! EXPOSES an obligation the compiler carries, it does not compute a second, possibly-disagreeing
-//! answer (`query-engine.md` §A Batch Compile And A Point Query Are The Same Reads Of The Same
-//! Columns).
+//! already obliges every such fact to be TOTAL, DETERMINISTIC, and equal to what a full compile
+//! determines — so this surface EXPOSES an obligation the compiler carries: an agent learns a static
+//! fact by asking, and the answer is read from the SAME columns a compile reads (never a separate
+//! analyzer that could disagree with the compiler or the executable semantics).
+//!
+//= spec/capabilities/tooling-and-lsp.md#an-agent-queries-the-compiler-for-any-static-fact
+//# An agent MUST be able to query the compiler for any static fact about a program — the type of any node, a name's resolution, the inferred manifest/effect row, the solved constraints — and the answer MUST be total, deterministic, and equal to what a full compile determines, so that an agent learns a static fact by asking rather than by instrumenting the program.
+//!
+//= spec/capabilities/tooling-and-lsp.md#tooling-shares-the-compiler-and-the-semantics
+//# A type, definition, or diagnostic the tooling reports MUST agree with the compiler and the executable semantics rather than be computed by a separate implementation.
+//!
+//! (`query-engine.md` §A Batch Compile And A Point Query Are The Same Reads Of The Same Columns.)
 //!
 //! **Why no effects, no mutable state.** A fact is a pure read, so a sidecar that branches on one —
 //! "emit debug only if the module declares an effect", "rewrite only where the type is `T`" — is
@@ -266,6 +273,14 @@ fn write_string(out: &mut Vec<u8>, s: &str) {
 /// nothing yields a defined "no such …" line, never an error) — the oracle contract. Pure with respect
 /// to the artifact channel: a query NEVER denies the component, and reading a fact does not change what
 /// any other request produces.
+///
+/// Every arm is TOTAL — a name/node with no answer (an unbound name, a node past the program, a poison)
+/// yields a defined "unknown"/empty result, so a query over an incomplete or malformed program returns a
+/// partial answer rather than failing opaquely, and never crashes the caller's session:
+//= spec/capabilities/tooling-and-lsp.md#queries-over-incomplete-source-are-total
+//# A tooling query over source that does not fully parse MUST return a defined partial result rather than fail opaquely.
+//= spec/capabilities/tooling-and-lsp.md#queries-over-incomplete-source-are-total
+//# A tooling query MUST NOT crash the editor session on malformed source.
 pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
     match query {
         Query::TypeOf { name } => {
