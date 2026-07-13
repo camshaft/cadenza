@@ -265,6 +265,23 @@
   (call   main (: 3 Int64))
   (output (: true Bool)))
 
+(case "an abortive perform in a conditional let binding abandons the computation"
+  (doc    "The abortive early-exit from a `let` INITIALIZER — the 'bind the validated value or bail' shape.
+           `(let ((k (if (< x 5) (Bail.bail 7) 0))) (+ 1 k))`: the binding's init aborts when `x < 5`. An
+           init is a non-tail position (its value feeds `k`), but an abort ABANDONS the computation, so the
+           `if` lifts out of the `let` — `(if (< x 5) (Bail.bail 7) (let ((k 0)) (+ 1 k)))` — value-
+           preserving because the condition (and any earlier binding) is pure. Called with `x = 9` (not <
+           5), the false branch binds `k = 0` and returns `1 + 0` = 1; with `x = 3` the abort fires,
+           discarding the binding and the body, yielding the arm value (`DESIGN-effects-rcdzc.md` §4.2).")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: x Int64))
+              (handle 0 ((Bail.bail (n) s n))
+                (let ((k (if (< x 5) (Bail.bail 7) 0))) (+ 1 k)))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 1 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

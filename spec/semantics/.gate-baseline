@@ -652,6 +652,7 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch

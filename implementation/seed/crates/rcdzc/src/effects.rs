@@ -1245,6 +1245,57 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
         };
         return Some(db.push_list(vec![if_head, lhs, then_, else_]));
     }
+    // A `(let (b0… (k (if c t e)) b1…) body)` whose binding INIT is an `(if …)` carrying an abort: the init
+    // is a NON-tail strict position (its value feeds the binder `k`), so the per-branch capture can't reach
+    // it in place. But an abort ABANDONS everything, so lift the `if` OUT of the let, distributing the whole
+    // let into each branch with the init replaced by that branch's value: `(let (… (k (if c t e)) …) body)`
+    // ≡ `(if c (let (… (k t) …) body) (let (… (k e) …) body))`. Sound when `c` and the PRECEDING binding
+    // inits (b0…) are pure — they are duplicated across the two branches (a later binding sees earlier ones,
+    // so we cannot reorder past an effectful earlier init). The aborting branch's `(k t)` init is then an
+    // unconditional abort the fold collapses; the other branch keeps the let. Only the FIRST such init is
+    // lifted per pass (the fixpoint handles the rest).
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+    {
+        let (bindings_occ, body_occ) = (form[0], form[1]);
+        if let Struct::List(pairs) = db.ast.get(bindings_occ).clone() {
+            for (bi, &pair) in pairs.iter().enumerate() {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                    && let Resolved::If { cond, then_, else_ } = resolved_of(db, kv[1])
+                    && subtree_has_abortive_perform(db, kv[1], ctx)
+                {
+                    // `cond` and every PRECEDING init must be pure (duplicated across the two branches; an
+                    // effectful earlier binding cannot be run twice). A later init / the body may perform —
+                    // it is copied whole into each branch unchanged (run once per branch, as before).
+                    let cond_pure = !subtree_performs(db, cond, ctx);
+                    let preceding_pure = pairs[..bi].iter().all(|&p| match db.ast.get(p).clone() {
+                        Struct::List(pkv) if pkv.len() == 2 => !subtree_performs(db, pkv[1], ctx),
+                        _ => true,
+                    });
+                    if cond_pure && preceding_pure {
+                        // Rebuild the whole `let` with binding `bi`'s init replaced by `branch`.
+                        let rebuild = |db: &mut Db, branch: StructId| -> StructId {
+                            let name = kv[0];
+                            let new_pair = db.push_list(vec![name, branch]);
+                            let new_pairs: Vec<StructId> = pairs
+                                .iter()
+                                .enumerate()
+                                .map(|(j, &p)| if j == bi { new_pair } else { p })
+                                .collect();
+                            let new_bindings = db.push_list(new_pairs);
+                            let let_head = db.push_atom(Leaf::Name("let".to_string()));
+                            db.push_list(vec![let_head, new_bindings, body_occ])
+                        };
+                        let new_then = rebuild(db, then_);
+                        let new_else = rebuild(db, else_);
+                        let if_head = db.push_atom(Leaf::Name("if".to_string()));
+                        return Some(db.push_list(vec![if_head, cond, new_then, new_else]));
+                    }
+                }
+            }
+        }
+    }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child. A special form
     // (`if`/`let`/`match`) is descended structurally too: a non-tail abort nested in a `let` init or an
     // `if` branch's operand is lifted within that sub-position, then the enclosing thread arm folds it.
@@ -1299,18 +1350,30 @@ fn body_has_unsound_abortive_perform(
             || body_has_unsound_abortive_perform(db, else_, ctx, tail, true);
     }
     // A `(let ((n init)…) body)`: the let's VALUE is the BODY's value, so the body inherits THIS position's
-    // tail-ness + `under_cond`. Each INIT is a strict operand — NON-tail, carrying the let's `under_cond`.
-    if let Some(form) = db.ast.as_form(node, "let")
+    // tail-ness + `under_cond`. Each INIT is a strict operand. KEY (post-hoist, mirroring the generic-op
+    // case): an UNCONDITIONAL abort in an init INSIDE a tail branch is CAPTURABLE — when the init aborts the
+    // whole let collapses to that value, which `thread_branch_local_abort` takes per-branch — so init `bi`
+    // is capturable-tail iff we are on a `tail` path AND every PRECEDING init is perform-free (an effectful
+    // earlier init runs before the abort and cannot be dropped; a conditional abort in an init was already
+    // lifted out of the let by the hoist, so a surviving one is unconditional). The BODY inherits the let's
+    // tail-ness + `under_cond`.
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
         && form.len() == 2
     {
         let (bindings_occ, body_occ) = (form[0], form[1]);
         if let Struct::List(pairs) = db.ast.get(bindings_occ).clone() {
-            for pair in pairs {
+            for (bi, &pair) in pairs.iter().enumerate() {
                 if let Struct::List(kv) = db.ast.get(pair).clone()
                     && kv.len() == 2
-                    && body_has_unsound_abortive_perform(db, kv[1], ctx, false, under_cond)
                 {
-                    return true;
+                    let preceding_pure = pairs[..bi].iter().all(|&p| match db.ast.get(p).clone() {
+                        Struct::List(pkv) if pkv.len() == 2 => !subtree_performs(db, pkv[1], ctx),
+                        _ => true,
+                    });
+                    let init_tail = tail && preceding_pure;
+                    if body_has_unsound_abortive_perform(db, kv[1], ctx, init_tail, under_cond) {
+                        return true;
+                    }
                 }
             }
         }

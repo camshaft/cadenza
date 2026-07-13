@@ -13363,18 +13363,49 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_perform_in_a_conditional_let_init_declines() {
-        // E4 soundness guard, the `let`-init case: a `let` binding's INIT is a strict operand (NON-tail — its
-        // value feeds the binder), so an abortive perform in an init UNDER A CONDITIONAL cannot be realized
-        // by the per-branch fold (the branch value must become `k`, not abandon the whole handle). `(let ((k
-        // (if true (Bail.bail 7) 0))) (+ 1 k))` must DECLINE — the guard's `let` arm descends each init at
-        // `tail=false`, so the abort is flagged (`under_cond && !tail`). Contrast an UNCONDITIONAL init abort
-        // (`(let ((k (Bail.bail 7))) …)`) which is the sound E4-a collapse and still folds.
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+    fn an_abortive_perform_in_a_conditional_let_init_hoists_and_folds() {
+        // E4 let-init hoist: an abort in a conditional `let` INIT — `(let ((k (if c (Bail.bail 7) 0)))
+        // (+ 1 k))` — is lifted OUT of the let by distributing the whole let into each branch with the init
+        // replaced: `(if c (let ((k (Bail.bail 7))) (+ 1 k)) (let ((k 0)) (+ 1 k)))`. The aborting branch's
+        // init is then an unconditional abort the fold collapses; the other branch keeps the let. Sound
+        // because the `if` condition and any PRECEDING bindings are pure (duplicated across the branches).
+        // True branch → 7 (abort discards the let body); false branch → `1 + 0` = 1. (Previously DECLINED.)
+        let t = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (main) (handle 99 ((Bail.bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(t)))
+                    .expect("a conditional let-init abort hoists and compiles"),
+                "main"
+            ),
+            7
+        );
+        let f = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (let ((k (if false (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(f)))
+                    .expect("the non-aborting let-init branch folds"),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn an_abortive_let_init_after_an_effectful_binding_declines() {
+        // E4 let-init hoist LIMIT: lifting a conditional `let`-init out of the let duplicates the `if`
+        // condition AND every PRECEDING binding init across the two branches. When an earlier binding is
+        // EFFECTFUL — `(let ((a (Get.get 0)) (k (if c (Bail.bail 7) 0))) …)` with a tail-resumptive `Get` —
+        // it runs (threads state) before the abort and cannot be duplicated or dropped, so the hoist
+        // declines to lift and the guard flags the still-conditional init → `reduce_handle` DECLINES.
+        let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) \
+                     (handle 0 ((Get.get (n) s (resume 5 s))) \
+                       (let ((a (Get.get 0)) (k (if (< x 5) (Bail.bail 7) 0))) (+ a k))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abortive perform in a conditional let-init must decline, not miscompile"
+            "an abortive let-init after an effectful binding must decline, not miscompile"
         );
     }
 
