@@ -636,6 +636,31 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 let rewritten = db.push_list(vec![if_head, cond, then_app, else_app]);
                 return core_of(db, rewritten);
             }
+            // A CURRIED CONSTRUCTOR SPINE — `((Pair 3) 4)`. A sum constructor is single-arity, so the
+            // nested-parens surface is the SAME construction as the flat `(Pair 3 4)` (core-semantics.md
+            // §A Sum Type Constructor Is A Single-Arity Function; §Functions Are Single-Arity). The flat
+            // form has a bare `(. Sum V)` head and takes the `Some(Prim::SumNew)` path below directly;
+            // this handles the case where the head is ITSELF an `Apply` of an under-applied constructor
+            // (which otherwise reaches the `None` "not applyable" arm, since a half-applied ctor value has
+            // no `(meta apply)`). `ctor_spine` peels the nested heads to the bottom variant constructor and
+            // gathers every payload left-to-right; when the count reaches the variant's full payload arity,
+            // build it exactly as the flat form does (`lower_sum_new`). A spine that stops SHORT of arity —
+            // a genuinely partial constructor bound/returned as a first-class value — is left to fall
+            // through (it needs a runtime closure, a later increment), and an OVER-applied spine likewise
+            // falls through to the existing arity diagnostics. Checked before the runtime-closure/lambda
+            // paths since a ctor spine matches none of those (the bottom head is a constructor record).
+            // Only engage for genuine NESTING — the immediate head is itself an `Apply` (`((Pair 3) 4)`)
+            // or a `Ref` to a partial ctor (`(let ((g (Pair 3))) (g 4))`). A FLAT `(Pair 3 4)` has the
+            // bare ctor record as its head; it keeps its established `Some(Prim::SumNew)` path below
+            // (byte-identical output), so this diverts nothing that already worked.
+            if crate::eval::variant_disc_of(db, head).is_none()
+                && let Some((ctor, all_args)) = ctor_spine(db, id)
+                && crate::eval::variant_payload_arity(db, ctor) == Some(all_args.len())
+                && !all_args.is_empty()
+            {
+                trace!(target: "rcdzc::lower", node = id.0, head = ctor.0, n_args = all_args.len(), "apply: curried constructor spine → flat sum construction");
+                return lower_sum_new(db, ctor, &all_args);
+            }
             // A RUNTIME CLOSURE APPLICATION: the head is a runtime FUNCTION VALUE that does NOT reduce to
             // a compile-time lambda and is NOT a known constructor/operator/type-builder — a
             // function-typed PARAMETER `g` applied inside a body (`(g n)` / `(g a b)`), or a runtime-held
@@ -3369,6 +3394,76 @@ fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId
     }
 }
 
+/// Peel a CURRIED CONSTRUCTOR SPINE `((V a) b)` into the variant-constructor head `V` and the full
+/// left-to-right payload list `[a, b]`. A sum constructor is a single-arity function (core-semantics.md
+/// §A Sum Type Constructor Is A Single-Arity Function; §Functions Are Single-Arity: `(f a b)` desugars to
+/// `((f a) b)`), so a multi-payload variant written curried — `((Pair 3) 4)` — is the SAME construction
+/// as the flat `(Pair 3 4)`: each nested `Apply` head contributes its own arguments and the bottom head
+/// is the one variant constructor they all apply to. Returns `Some((ctor, args))` iff the bottom head is
+/// a variant constructor (`variant_disc_of` is `Some`) reached through at least one nested `Apply` (a
+/// FLAT `(Pair 3 4)` has a non-`Apply` head and takes the ordinary `lower_sum_new` path directly — this
+/// is only for the nested-parens surface). `None` for any other head, so lambdas/prims/defs keep their
+/// paths. The caller checks the gathered count against the variant's payload arity before building.
+fn ctor_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
+    // FUEL bounds the peel. The Ref-follow + lambda-reduction below can chain (a partial ctor bound to a
+    // ref, itself the reduction of a helper); more importantly a RECURSIVE nullary def `(def (f) (f))`
+    // has its head-ref point back to the SAME `(f)` apply, so an unfueled follow-and-recurse cycles
+    // forever (a stack overflow). A real constructor spine is bounded by the variant's payload arity (a
+    // handful); 64 is far above any genuine spine and stops the pathological cycle with a clean `None`.
+    ctor_spine_fueled(db, id, 64)
+}
+
+fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, Vec<StructId>)> {
+    if fuel == 0 {
+        return None;
+    }
+    // Follow a `let`/`def` REF to the value it binds, so a partial constructor stashed in a binding —
+    // `(let ((g (Pair 3))) (g 4))`, where the head `g` refs the half-applied `(Pair 3)` — flattens the
+    // same as the inline `((Pair 3) 4)`. Without this, the ref head is neither an `Apply` (so no deeper
+    // spine) nor a constructor record (so no bottom), and the partial ctor reaches "not applyable". A ref
+    // that cycles back to `id` (a recursive nullary self-call) is caught by the fuel bound above.
+    let node = match resolved_of(db, id) {
+        Resolved::Ref { value } => value,
+        _ => id,
+    };
+    let Resolved::Apply { head, args } = resolved_of(db, node) else {
+        return None;
+    };
+    // A nested application head — recurse to the bottom constructor and PREPEND the deeper spine's args
+    // (they bind to the constructor's leading payloads), then this level's args.
+    if let Some((ctor, mut spine_args)) = ctor_spine_fueled(db, head, fuel - 1) {
+        spine_args.extend_from_slice(&args);
+        return Some((ctor, spine_args));
+    }
+    // Bottom of the spine: the head is a variant constructor applied to this level's args. Reached either
+    // through the recursive arm above (the OUTER `Apply`'s head is the inner `Apply`) or directly when a
+    // followed ref lands on a half-applied constructor `(Pair 3)`. A genuine FLAT construction never lands
+    // here — its own head is the bare `(. Sum V)` record, so `ctor_spine` on it returns `None` at the
+    // `let…else` (a record is not an `Apply`) and the flat `Some(Prim::SumNew)` path builds it.
+    if crate::eval::variant_disc_of(db, head).is_some() {
+        return Some((head, args.to_vec()));
+    }
+    // The head is a LAMBDA (a def / `fn`) applied to this level's args, and that application REDUCES to a
+    // constructor — `((mk1 3) 4)` where the head `(mk1 3)` applies the helper `(def (mk1 x) (Pair x))` to
+    // `3`, reducing to `(Pair 3)`. β-reduce `head` over `args` under the depth guard, then peel the
+    // reduced spine (the reduced `(Pair 3)` yields the bottom ctor + `[3]`); the caller's outer level
+    // appends its own `[4]`. `args` are CONSUMED by the reduction, so they are NOT re-appended here. Only
+    // attempted when the head is a lambda (`lambda_body` is `Some`) — a runtime-closure/prim head keeps its
+    // path. `apply_lambda` DECLINES a recursive callee (returns `Err`), and the `enter_reduction` guard
+    // plus the fuel bound stop a deep/cyclic chain from inlining without end.
+    if crate::eval::lambda_body(db, head).is_some()
+        && let Some(mut guard) = db.enter_reduction()
+    {
+        let g = guard.db();
+        if let Ok(Some(reduced)) = crate::eval::apply_lambda(g, head, &args)
+            && reduced != head
+        {
+            return ctor_spine_fueled(g, reduced, fuel - 1);
+        }
+    }
+    None
+}
+
 /// Lower a `(fn (param…) body)` that survives as a RUNTIME value — LAMBDA-LIFT it to a standalone
 /// function and produce a `Core::Closure` naming its funcref-table slot + capture set. Single-parameter
 /// only (the curried surface reduces multi-param application via partial application upstream). The
@@ -5843,6 +5938,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitDiv
         | Prim::UnitPow
         | Prim::UnitPrefix
+        | Prim::UnitOf
         | Prim::QtyOf
         | Prim::QtyValue
         | Prim::QtyCtor
@@ -8782,6 +8878,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitDiv => "unit-div",
         Prim::UnitPow => "unit-pow",
         Prim::UnitPrefix => "unit-prefix",
+        Prim::UnitOf => "unit-of",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
         Prim::QtyCtor => "Qty",

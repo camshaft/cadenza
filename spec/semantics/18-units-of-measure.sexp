@@ -420,3 +420,30 @@
   (input  (+ (Qty.of 1.0 (Unit.prefix kilo (Unit.base #"metre")))
              (Qty.of 1.0 (Unit.base #"second"))))
   (error  CDZ0501))
+
+; ============================================================================================
+; Named FAMILY units over concrete numerics — `Unit.of` consults the family registry (a name → its
+; reference dimension + exact machine-integer scale), so `inch`/`foot`/`kilometre` are units of one
+; dimension that auto-convert exactly as prefixed units do. The `(Rational.of …)` family cases above
+; pin the exact-magnitude form (realized when Rational lands); these pin the same conversions over the
+; numerics the seed already has (Float rounds, Int is exact/truncates — spec §A Unit Carries An Exact
+; Scale). The family vocabulary is prelude DATA, not a privileged in-compiler list.
+
+(case "adding two named family units of one dimension converts to the reference (Float)"
+  (doc    "`(+ (Qty.of 1.0 (Unit.of #\"inch\")) (Qty.of 1.0 (Unit.of #\"millimetre\")))` — inch and
+           millimetre are named units of `length` (inch = 127/5000 m, mm = 1/1000 m) — each converts to
+           the reference `metre` and adds: 127/5000 + 1/1000 = 33/1250 = 0.0264 m. Over Float64 the exact
+           scales apply as ordinary float arithmetic.")
+  (needs  units-of-measure)
+  (input  (Qty.value (+ (Qty.of 1.0 (Unit.of #"inch"))
+                        (Qty.of 1.0 (Unit.of #"millimetre")))))
+  (output (: 0.0264 Float64)))
+
+(case "a named family unit combines across DIFFERENT dimensions is a compile-time error"
+  (doc    "`(+ (Qty.of 1.0 (Unit.of #\"inch\")) (Qty.of 1.0 (Unit.of #\"second\")))` mixes `length` and
+           `time` — different dimensions — so it is CDZ0501, exactly as the base-unit case is. A family
+           unit names a measure of ONE dimension; combining across dimensions is rejected regardless of
+           whether the units are base or named family units.")
+  (needs  units-of-measure)
+  (input  (+ (Qty.of 1.0 (Unit.of #"inch")) (Qty.of 1.0 (Unit.of #"second"))))
+  (error  CDZ0501))

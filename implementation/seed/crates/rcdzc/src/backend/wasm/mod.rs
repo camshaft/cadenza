@@ -188,6 +188,27 @@ pub fn emit(
         ));
     }
 
+    // MULTI-EXPORT closures (not yet built): more than one export where at least one RESULT is a closure.
+    // The single-export closure escape above (`[e]`) does not fire, so such a program would otherwise fall
+    // through to the scalar multi-export path and decline with a confusing GENERIC message ("type `(-> A B)`
+    // has no component boundary representation"). DECLINE here instead with a message that names the
+    // feature: a multi-export closure envelope publishes N `make` functions (one per closure export) — same
+    // -signature exports sharing one resource type + `call`, distinct signatures minting distinct resource
+    // types — a distinct structural increment. Reject-don't-miscompile: a clean, honest Todo.
+    if layout.exports.len() > 1
+        && layout
+            .exports
+            .iter()
+            .any(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+    {
+        return Err(Reject::decline(
+            "a program that exports MORE THAN ONE closure (or a closure alongside another export) is not \
+             yet supported — it needs a multi-export closure envelope publishing one `make` per closure \
+             export (same-signature exports sharing a resource type, distinct signatures minting distinct \
+             resource types); DESIGN-closure-host-resource-rcdzc.md, multi-export closures",
+        ));
+    }
+
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit
@@ -1054,22 +1075,22 @@ fn emit_closure_resource(
     // closure's handler context is the `(handle …)`/`(host …)` frame that was OPEN when the closure was
     // built; that frame is gone by the time the host later invokes `call()`, so an effect performed inside
     // the escaped body has no home. We reject this INTENTIONALLY rather than let it fall through to an
-    // incidental decline (CDZ0401 "no home", or "not in the host-import set"). The detector: the export
-    // body OR any lifted closure body reaches a `Core::HostCall` — a fully intra-program-HANDLED effect
-    // leaves no `Core::HostCall` (the fold reduced it away), so a legitimate self-contained effect inside
-    // the closure is NOT caught here; only an effect that would escape the boundary is.
+    // incidental decline (CDZ0401 "no home", or "not in the host-import set").
+    //
+    // The detector scans the LIFTED CLOSURE BODIES ONLY — the code that crosses the boundary and runs
+    // LATER, when the host invokes `call()`, outside the delegation frame. A `Core::HostCall` there is a
+    // genuine escape (its effect has no home at the call). A HostCall in the EXPORT BODY PROPER is NOT an
+    // escape: the export body is the `make` code, which runs at export-execution time WHILE the `(host …)`
+    // delegation is still in dynamic scope — a build-time effect whose result the closure merely captures
+    // as a plain value (`(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`) is discharged in scope, and
+    // the returned closure is effect-free. So it must NOT be flagged — mirroring the intra-program
+    // `(handle … (let ((v (E.get))) (fn (x) (+ x v))))`, which compiles because the fold reduces its
+    // effect away. Scanning the whole export body over-rejected exactly this build-time-delegated case
+    // (it caught the `make`-time HostCall as if the closure had performed it).
     {
-        let export_body = layout
-            .exports
-            .iter()
-            .find(|e| e.def == export_def)
-            .map(|e| e.body);
         let mut escaping = Vec::new();
         for l in &layout.lifted {
             host::collect_host_imports(db, l.body, &mut escaping);
-        }
-        if let Some(body) = export_body {
-            host::collect_host_imports(db, body, &mut escaping);
         }
         if let Some(h) = escaping.first() {
             return Err(Reject::coded(

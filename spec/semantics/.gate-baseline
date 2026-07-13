@@ -74,6 +74,8 @@ pass	a byte-string literal with escapes equals its explicit byte sequence
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored in a tuple is extracted and applied
+pass	a capturing closure whose body uses the capture after an inner computation
+pass	a capturing closure with a let binding in its body
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a char literal naming a surrogate is a reader error
 pass	a char order agrees with its scalar value
@@ -88,14 +90,17 @@ pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
+pass	a closure capturing two values is made and called by the host
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
+pass	a closure driving control flow off a captured boolean
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning a boolean is called by the host
 pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
+pass	a closure whose body calls a top-level helper function
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
@@ -221,6 +226,7 @@ pass	a header of packed nibbles and a length-prefixed body round-trips
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
+pass	a helper returning a partial constructor is over-applied to complete the variant
 pass	a helper sums two fields of a record parameter
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
@@ -322,6 +328,7 @@ pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named capturing closure applied directly folds through its capture
 pass	a named capturing closure applied more than once folds at each use
+pass	a named family unit combines across DIFFERENT dimensions is a compile-time error
 pass	a named float width alias and its width-indexed expansion name the same type
 pass	a named function is partially applied, bound, and used
 pass	a named higher-order function receives a lambda argument
@@ -393,6 +400,8 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a partial constructor bound in a let completes when applied
+pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
@@ -582,6 +591,7 @@ pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
+pass	a three-payload constructor fully curried builds the variant
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level value definition binds a name usable by the program's functions
 pass	a top-level value definition binds a record projected by the program's functions
@@ -614,6 +624,7 @@ pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-parameter closure is applied at full arity through a recursive HOF
+pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
@@ -644,6 +655,7 @@ pass	a zero-length slice is the empty byte sequence
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
+pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
@@ -736,6 +748,7 @@ pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an unimported sibling definition is not in scope
+pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote of an expression with an unbound name is rejected, not quoted
 pass	an unrecognized string escape is rejected
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
@@ -915,6 +928,7 @@ pass	mixing signed and unsigned of the same width does not silently promote
 pass	mixing two float widths without a conversion does not silently promote
 pass	mixing two integer widths without a conversion does not silently promote
 pass	mixing two numeric types without an explicit conversion does not silently promote
+pass	mixing units of DIFFERENT dimensions is still a compile-time error
 pass	modulo by -1 is zero even at the minimum integer
 pass	modulo by zero traps
 pass	modulo gives the remainder
@@ -1127,6 +1141,7 @@ todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
+todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
@@ -1218,7 +1233,6 @@ todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	an unproductive self-recursion is declined, not a compiler crash
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
 todo	an unrecognized pragma key is rejected rather than ignored
 todo	an unusual in-range width is a first-class type
@@ -1250,7 +1264,6 @@ todo	extending a record with an already-present field is rejected
 todo	interning the same string twice yields equal symbols
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
-todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms

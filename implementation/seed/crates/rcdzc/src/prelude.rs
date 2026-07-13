@@ -735,6 +735,11 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     let prefix_field = push_atom(ast, Leaf::Name("prefix".to_string()));
     let prefix_op = unit_op_ctor(ast, "unit-prefix");
     children.push(push_list(ast, vec![prefix_field, prefix_op]));
+    // `of` — name a FAMILY unit from the registry: `(Unit.of #"foot")` = length at foot's scale to
+    // metre. Member access (`(. Unit of)`), a field. Consults `Db::unit_families`.
+    let of_field = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_op = unit_op_ctor(ast, "unit-of");
+    children.push(push_list(ast, vec![of_field, of_op]));
     push_list(ast, children)
 }
 
@@ -762,6 +767,77 @@ fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
     let ratio = push_list(ast, vec![n, d]);
     let scale_field = meta_field(ast, "scale", ratio);
     push_list(ast, vec![head, scale_field])
+}
+
+/// The FAMILY-OF-MEASURE registry — the ONE place the built-in family vocabulary lives (the analogue of
+/// `Prim::from_name` for prim spellings). Maps each named unit to `(reference-dimension, scale-num,
+/// scale-den)`: a unit's scale is its EXACT ratio to its dimension's reference (metre/second/byte), a
+/// machine-integer pair (`units-of-measure.md` §A Unit Carries An Exact Scale To Its Dimension's
+/// Reference). `(Unit.of #"foot")` looks its name up here and builds `Unit.base("metre").scaled(381,
+/// 1250)`. The reference unit of each dimension maps to scale 1/1 (`"metre"` → `("metre", 1, 1)`), so
+/// `(Unit.of #"metre")` is the length reference itself. Every scale fits a machine int (the largest, a
+/// mile's 201168/125), so a family unit auto-converts over Float/Int with NO bignum. A build MAY supply
+/// its own families; this is the SI + common imperial/information set.
+pub fn unit_families() -> BTreeMap<String, (String, i128, i128)> {
+    // The SI + common imperial/information families, as `(name, reference-dimension, num, den)` rows.
+    let rows: &[(&str, &str, i128, i128)] = &[
+        // length — reference `metre`.
+        ("metre", "metre", 1, 1),
+        ("millimetre", "metre", 1, 1000),
+        ("centimetre", "metre", 1, 100),
+        ("kilometre", "metre", 1000, 1),
+        ("inch", "metre", 127, 5000),
+        ("foot", "metre", 381, 1250),
+        ("mile", "metre", 201168, 125),
+        // time — reference `second`.
+        ("second", "second", 1, 1),
+        ("millisecond", "second", 1, 1000),
+        ("minute", "second", 60, 1),
+        ("hour", "second", 3600, 1),
+        // information — reference `byte`. Decimal (kB/MB/GB) and binary (KiB/MiB/GiB) are DISTINCT scales.
+        ("byte", "byte", 1, 1),
+        ("kilobyte", "byte", 1000, 1),
+        ("megabyte", "byte", 1_000_000, 1),
+        ("gigabyte", "byte", 1_000_000_000, 1),
+        ("kibibyte", "byte", 1024, 1),
+        ("mebibyte", "byte", 1_048_576, 1),
+        ("gibibyte", "byte", 1_073_741_824, 1),
+    ];
+    match register_families(rows.iter().copied()) {
+        Ok(m) => m,
+        // A conflict in the BUILT-IN table is a compiler invariant violation (a typo/duplicate in the
+        // list above), not a user error — fail loudly at construction. When a USER family-declaration
+        // surface lands, it routes through `register_families` too and a conflict THERE is the
+        // user-facing rejection (`register_families` returns the offending name for a coded diagnostic).
+        Err(name) => {
+            panic!("built-in unit family `{name}` registered with conflicting conversions")
+        }
+    }
+}
+
+/// Register a set of family units into the name → `(reference-dimension, num, den)` map, ENFORCING that
+/// a name maps to ONE conversion: registering the same name TWICE with DIFFERENT `(dimension, scale)` is
+/// an error (returns the offending name), so a name's conversion is a well-defined function
+/// (`units-of-measure.md` §A Unit Carries An Exact Scale To Its Dimension's Reference — a unit HAS a
+/// scale, singular). A duplicate that AGREES is idempotent (harmless). This is the gate the built-in
+/// table is validated through, and the one a future user-declared family flows through — a conflicting
+/// user registration becomes the coded rejection `Code::UnitConflict` (CDZ0502).
+pub fn register_families<'a>(
+    rows: impl Iterator<Item = (&'a str, &'a str, i128, i128)>,
+) -> Result<BTreeMap<String, (String, i128, i128)>, String> {
+    let mut m: BTreeMap<String, (String, i128, i128)> = BTreeMap::new();
+    for (name, dim, num, den) in rows {
+        let entry = (dim.to_string(), num, den);
+        match m.get(name) {
+            // Already registered with a DIFFERENT dimension or scale — a genuine conflict.
+            Some(existing) if *existing != entry => return Err(name.to_string()),
+            // Absent, or a duplicate that AGREES (idempotent) — record it.
+            _ => {
+                m.insert(name.to_string(), entry);
+            }
+        }
+    }
+    Ok(m)
 }
 
 /// A UNIT-builder record `(record ((meta apply) (intrinsic PRIM)))` — `Unit.one`/`Unit.base`/`Unit.*`/…

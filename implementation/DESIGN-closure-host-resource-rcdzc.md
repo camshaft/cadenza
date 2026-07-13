@@ -240,6 +240,17 @@ the component type. The new work:
   code-matched) + 1 unit test (`a_closure_escaping_an_effect_declines_intentionally`). Distinct from
   CDZ0401 (EffectNoHome = no delegation anywhere): here the effect IS delegated, but the delegation
   cannot travel with the escaping closure.
+- **✅ C-HOST-3c (RICHER CAPTURE coverage + clean multi-export decline) COMPLETE `@<pending>`.** Two
+  parts, both green: (1) the C-HOST-2 make-forwarding + captured-cell machinery is capture-count- and
+  body-shape-agnostic, so a closure capturing SEVERAL values, driving control flow off a captured
+  Bool, binding a `let` in its body, or calling a top-level helper ALL cross the boundary + are
+  invoked by the host with NO compiler change — witnessed as +5 corpus cases (21-host-closures →15).
+  (2) A MULTI-EXPORT program with a closure result now DECLINES with a message NAMING the feature
+  (`emit` gained a `layout.exports.len() > 1 && any Ty::Fn result` arm) instead of falling through to
+  the scalar multi-export path's confusing generic "type `(-> A B)` has no component boundary
+  representation". +1 unit test (`multiple_closure_exports_decline_naming_the_feature`). The multi-
+  export closure ENVELOPE itself (N `make`, shared `call`/resource per signature) remains the next
+  real structural increment + the round-trip prerequisite.
 - **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
   `cdz-run` threads a handle returned by one export back into another; inside, the param is
   `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.

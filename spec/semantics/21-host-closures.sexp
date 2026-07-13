@@ -142,3 +142,87 @@
               (host (ask)
                 (fn ((: x Int64)) (+ x (ask.ask))))) (export main)))
   (error  CDZ0406))
+
+; RICHER CAPTURING closures — the C-HOST-2 make-forwarding + captured-cell machinery is arity- and
+; body-shape-agnostic, so a closure that captures SEVERAL values, drives control flow off a captured
+; Bool, binds a `let` in its body, or calls a top-level helper all cross the boundary and are invoked
+; by the host with no additional compiler support. Each `make(captures…)` builds the cell (closing over
+; the export's params), and `call(x)` dispatches the lifted body through the guest's `call_indirect`,
+; reading the captured environment back from the cell. These witness the CAPTURE path end-to-end past
+; the single-scalar-capture cases above.
+
+(case "a closure capturing two values is made and called by the host"
+  (doc    "`(def (both (: a Int64) (: b Int64)) (fn (x) (+ (+ a b) x)))` — the closure captures BOTH `a`
+           and `b`. The host `make(10, 20)` (closing over a=10, b=20 into the cell), then `call(5)` =
+           10 + 20 + 5 = 35. Pins that a closure cell carries MORE THAN ONE captured value, each read
+           back inside the `call` dispatch. The first two `(call …)` args are make's captures, the last
+           is the closure's argument.")
+  (input  (do (def (both (: a Int64) (: b Int64)) (fn ((: x Int64)) (+ (+ a b) x))) (export both)))
+  (call   both (: 10 Int64) (: 20 Int64) (: 5 Int64))
+  (output (: 35 Int64)))
+
+(case "a capturing closure whose body uses the capture after an inner computation"
+  (doc    "`(def (scale (: k Int64)) (fn (x) (* (+ x 1) k)))` — the captured `k` multiplies an inner
+           `(+ x 1)`, so it is used AFTER a nested subexpression rather than as the first operand. The host
+           calls `make(k=4)` then `call(x=3)` = (3 + 1) * 4 = 16. Pins that the captured value flows
+           through a nested subexpression unchanged.")
+  (input  (do (def (scale (: k Int64)) (fn ((: x Int64)) (* (+ x 1) k))) (export scale)))
+  (call   scale (: 4 Int64) (: 3 Int64))
+  (output (: 16 Int64)))
+
+(case "a capturing closure with a let binding in its body"
+  (doc    "`(def (f (: k Int64)) (fn (x) (let ((y (* x 2))) (+ y k))))` — the closure body binds a local
+           `y` then adds the captured `k`. The host `make(100)` then `call(7)` = (7*2) + 100 = 114. Pins
+           that a `let` inside an escaping closure body lowers correctly alongside the captured env.")
+  (input  (do (def (f (: k Int64)) (fn ((: x Int64)) (let ((y (* x 2))) (+ y k)))) (export f)))
+  (call   f (: 100 Int64) (: 7 Int64))
+  (output (: 114 Int64)))
+
+(case "a closure driving control flow off a captured boolean"
+  (doc    "`(def (g (: flag Bool)) (fn (x) (if flag (+ x 1) (- x 1))))` — the closure captures a Bool and
+           branches on it. The host `make(true)` then `call(10)` = 11 (the then-branch); a `make(false)`
+           would yield 9. Pins that a captured Bool drives an `if` inside the `call` dispatch — the
+           capture is not restricted to a numeric accumulator.")
+  (input  (do (def (g (: flag Bool)) (fn ((: x Int64)) (if flag (+ x 1) (- x 1)))) (export g)))
+  (call   g (: true Bool) (: 10 Int64))
+  (output (: 11 Int64)))
+
+(case "a closure whose body calls a top-level helper function"
+  (doc    "`(def (dbl (: n Int64)) (* n 2))` `(def (h (: k Int64)) (fn (x) (+ (dbl x) k)))` — the escaping
+           closure body CALLS the top-level `dbl`. The host `make(5)` (capturing k=5) then `call(3)` =
+           (dbl 3) + 5 = 6 + 5 = 11. Pins that a closure crossing the boundary can call another in-program
+           function (the helper is emitted as an ordinary reachable def, called directly from the lifted
+           closure body).")
+  (input  (do (def (dbl (: n Int64)) (* n 2)) (def (h (: k Int64)) (fn ((: x Int64)) (+ (dbl x) k))) (export h)))
+  (call   h (: 5 Int64) (: 3 Int64))
+  (output (: 11 Int64)))
+
+; The scope fence is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose result
+; the closure merely CAPTURES does NOT escape and must not be rejected. The distinction is where the
+; `ask.ask` runs: INSIDE the returned closure (above — escapes, run later outside the delegation) versus
+; in the export body PROPER (below — run at export-execution time, while the `(host (ask) …)` delegation
+; is still in dynamic scope, its result captured as a plain value). The escape check flags a
+; `Core::HostCall` only in the LIFTED closure bodies, not the whole export body — so the build-time case
+; is allowed, exactly as the intra-program analogue `(handle … (let ((v (E.get))) (fn (x) (+ x v))))`
+; compiles. (Running this needs the export-time host-call boundary — a later increment — so it declines
+; today; the point pinned here is that the COMPILE-TIME outcome is NOT the CDZ0406 over-rejection.)
+
+(case "a build-time delegated effect whose result a returned closure captures does not escape"
+  (doc    "`(def (main) (host (ask) (let ((v (ask.ask))) (fn (x) (+ x v)))))` performs `ask.ask` in the
+           `let` initializer — at export-execution time, inside the `(host (ask) …)` delegation's dynamic
+           extent, where the effect has a home — and returns a closure that captures only the plain result
+           `v`. The returned closure is effect-free; nothing crosses the host boundary performing `ask`, so
+           this is NOT an escaping effect and must not be rejected CDZ0406 (contrast the escaping case
+           above, where `ask.ask` is INSIDE the returned closure). The escape check scans the returned
+           closure's body, not the whole export body. With `ask.ask` responding 10 and the call argument 3,
+           the result is 3 + 10 = 13; running it needs the export-time host-call boundary (a later
+           increment), so a generation without it declines rather than over-rejecting CDZ0406.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (let ((v (ask.ask)))
+                  (fn ((: x Int64)) (+ x v))))) (export main)))
+  (call   main (: 3 Int64))
+  (host-responses (respond ask.ask (: 10 Int64)))
+  (output (: 13 Int64)))
