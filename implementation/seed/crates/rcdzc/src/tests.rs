@@ -18691,6 +18691,49 @@ mod stage1 {
     }
 
     #[test]
+    fn an_all_nullary_enum_nested_in_a_boxed_sum_round_trips() {
+        // ⚠ INVALID WASM regression: an all-nullary enum (a bare i32 disc) NESTED inside a boxed sum
+        // (`(Option Color)`) mis-emitted both ends: (1) construction `box-int`ed the i32 disc WITHOUT the
+        // i64 extend (i32 → the i64 box-int → wasm rejects); (2) the match's disc read used `sum-disc` on
+        // the boxed-int handle instead of `get-int` + wrap, because `sum_single_payload_ty` returned the
+        // UNSUBSTITUTED payload var (`?0`) rather than `Color`. Fixed by (1) `emit_box_i32_to_i64_extend`
+        // (an enum-disc payload zero-extends like a narrow int) and (2) `sum_single_payload_ty` using
+        // `payload_ty_at_instantiation` (substitutes the sum's args → the payload resolves to `Color`).
+        // Build `Some(pick n)` then match the nested `Color`; round-trips all three variants.
+        use crate::testkit::parse;
+        let src = "(module m (type Color (Red) (Green) (Blue)) \
+                     (def (pick (: n Int64)) (if (< n 0) (Red) (if (= n 0) (Green) (Blue)))) \
+                     (def (mk (: n Int64)) (Some (pick n))) \
+                     (def (get (: o (Option Color))) \
+                        (match o ((Some (Red)) 10) ((Some (Green)) 20) ((Some (Blue)) 30) ((None) 0))) \
+                     (def (main (: n Int64)) (get (mk n))) \
+                     (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile nested enum");
+        // A boxed Option DOES import the runtime (it is a genuine heap sum carrying the enum payload).
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a boxed (Option Color) imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed nested-enum run");
+            return;
+        };
+        for (arg, want) in [("-1", "10"), ("0", "20"), ("5", "30")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "get(mk {arg})"),
+                cdz_run::Outcome::Trap(t) => panic!("nested-enum run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_sum_match_disc_zero_probe_uses_eqz_and_dispatches() {
         // A sum match dispatches on `sum-disc(scrutinee) == disc`; when the tested discriminant is 0 —
         // the FIRST declared variant (`Some`), the common first-arm probe — that is `i32.eqz` (opcode

@@ -590,6 +590,25 @@ fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
     }
 }
 
+/// Before `box-int`ing a value into a heap cell, widen it from an i32 slot to the i64 `box-int` expects.
+/// Fires for a NARROW int (extended by ITS sign) OR an ENUM-DISC value (a bare i32 discriminant, extended
+/// UNSIGNED — a discriminant is a small non-negative index). A full-width i64 int, or a non-scalar, needs
+/// no extend. Shared by every `box-int` payload/element site (a sum payload, a tuple/record element, a
+/// closure capture, a map value) — an enum-disc payload (`(Some (Green))`, a `Color` element in a tuple)
+/// must widen exactly like a narrow int, or an i32 reaches the i64 `box-int` and wasm rejects the module.
+fn emit_box_i32_to_i64_extend(db: &mut Db, id: StructId, out: &mut Emit) {
+    if let Some(m) = is_narrow_int(db, id) {
+        out.push(if m.signed {
+            Lir::I64ExtendI32S
+        } else {
+            Lir::I64ExtendI32U
+        });
+    } else if node_is_enum_disc(db, id) {
+        // An enum-disc value is a non-negative i32 discriminant → zero-extend to the i64 cell.
+        out.push(Lir::I64ExtendI32U);
+    }
+}
+
 /// A selected function body: its flat instruction sequence, the value types of its declared (non-
 /// parameter) locals in slot order, its parameter value types, and its solved return type (for the
 /// type section). A body may take parameters and declare locals (the scratch a guarded operation
@@ -2327,7 +2346,8 @@ fn ty_at_path(db: &mut Db, root: &crate::ty::Ty, path: &[crate::core::PathStep])
 /// nullary or unresolvable variant. A helper for [`ty_at_path`]; reads the decl's first variant's payload
 /// occurrences and decodes them (a single payload IS the type, multiple box as a tuple).
 fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::Ty> {
-    let crate::ty::Ty::Sum { decl, .. } = sum.strip_nominal() else {
+    let stripped = sum.strip_nominal().clone();
+    let crate::ty::Ty::Sum { decl, .. } = &stripped else {
         return None;
     };
     let ctor = {
@@ -2335,7 +2355,12 @@ fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::
         let v0 = td.variants.first()?;
         v0.ctor?
     };
-    crate::eval::variant_payload_type(db, ctor)
+    // Substitute the sum's ACTUAL type ARGS into the variant's generic payload: `Option Color`'s `Some`
+    // payload is `Color`, NOT the unsubstituted parameter `?0`. `payload_ty_at_instantiation` unifies the
+    // ctor's result (`Option ?a`) against the concrete scrutinee type, so a nested enum-disc payload
+    // (`(Option Color)`) resolves to `Color` and `ty_is_enum_disc` sees it — without this, the payload
+    // read as `?0` mis-selected `sum-disc` over the `get-int` a boxed enum-disc needs (invalid wasm).
+    crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
 }
 
 /// Emit the scrutinee at `scrutinee`, walk `path` to the sub-value, and leave its DISCRIMINANT (an i32)
@@ -2359,6 +2384,7 @@ fn push_discriminant(
     let root = type_of(db, scrutinee);
     let sub = ty_at_path(db, &root, path);
     let sub_is_enum = ty_is_enum_disc(db, &sub);
+    eprintln!("PUSHDISC2: root={} path={:?} sub={} enum={}", root.render_name(), path, sub.render_name(), sub_is_enum);
     emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
     for step in path {
         match step {
@@ -2529,13 +2555,7 @@ fn emit(
                 // A scalar element boxes to a handle (a NARROW int first extends i32→i64, as box-int
                 // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly.
                 if let Some(op) = box_op(db, value)? {
-                    if let Some(m) = is_narrow_int(db, value) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, value, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
@@ -2557,13 +2577,7 @@ fn emit(
                 // A scalar element boxes (a NARROW int extends i32→i64 first, box-int takes i64); a
                 // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box.
                 if let Some(op) = box_op(db, elem)? {
-                    if let Some(m) = is_narrow_int(db, elem) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, elem, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
@@ -2585,13 +2599,7 @@ fn emit(
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
                 emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 if let Some(op) = box_op(db, elem)? {
-                    if let Some(m) = is_narrow_int(db, elem) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, elem, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
                 }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [arr]
@@ -2677,13 +2685,7 @@ fn emit(
                 // Materialize the segment value in the i64 slot (a narrow int emits an i32 → extend by
                 // its OWN signedness; an Int64 is already i64). Stack still just `[buf]` after the set.
                 emit(db, s.value, slots, base + 1, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
-                if let Some(m) = is_narrow_int(db, s.value) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, s.value, out);
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
                 // RANGE CHECK: the value must fit the segment's (signed, bits) width, else trap. Width 8
                 // (an i64 holds every i64) needs no check. Signed: `-(2^(bits-1)) <= val < 2^(bits-1)`;
@@ -2762,13 +2764,7 @@ fn emit(
                 let k = f.k; // 1..=56 (guarded at lower)
                 // Materialize the field value in the i64 slot (a narrow int extends by its own signedness).
                 emit(db, f.value, slots, base + 2, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
-                if let Some(m) = is_narrow_int(db, f.value) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, f.value, out);
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
                 // RANGE CHECK: a k-bit UNSIGNED field, so `0 <= val < 2^k` (k ≤ 56 → 2^k is a positive i64).
                 out.push(Lir::LocalGet(val_slot));
@@ -2910,13 +2906,7 @@ fn emit(
             emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, elem]
             if let Some(op) = box_op(db, elem)? {
-                if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [list, handle]
             }
             out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list']
@@ -2958,13 +2948,7 @@ fn emit(
             out.push(Lir::I32WrapI64); // [list, index:i32] — now known to fit u32
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [list, index, elem]
             if let Some(op) = box_op(db, elem)? {
-                if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [list, index, handle]
             }
             out.push(Lir::CallImport(OP_VEC_UPDATE)); // → [list']
@@ -3000,13 +2984,7 @@ fn emit(
                     let p = payloads[0];
                     emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, value]
                     if let Some(op) = box_op(db, p)? {
-                        if let Some(m) = is_narrow_int(db, p) {
-                            out.push(if m.signed {
-                                Lir::I64ExtendI32S
-                            } else {
-                                Lir::I64ExtendI32U
-                            });
-                        }
+                        emit_box_i32_to_i64_extend(db, p, out);
                         out.push(Lir::CallImport(op)); // [disc, payload-handle]
                     }
                 }
@@ -3018,13 +2996,7 @@ fn emit(
                         out.push(Lir::ConstI32(i as i32)); // [disc, arr, i]
                         emit(db, p, slots, base, high, scratch_ty, layout, out)?; // [disc, arr, i, value]
                         if let Some(op) = box_op(db, p)? {
-                            if let Some(m) = is_narrow_int(db, p) {
-                                out.push(if m.signed {
-                                    Lir::I64ExtendI32S
-                                } else {
-                                    Lir::I64ExtendI32U
-                                });
-                            }
+                            emit_box_i32_to_i64_extend(db, p, out);
                             out.push(Lir::CallImport(op)); // [disc, arr, i, handle]
                         }
                         out.push(Lir::CallImport(OP_ARR_SET)); // [disc, arr]
@@ -3116,24 +3088,12 @@ fn emit(
             for &(k, v) in &entries {
                 emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
                 if let Some(op) = box_op_ty(db, &key_ty)? {
-                    if let Some(m) = is_narrow_int(db, k) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, k, out);
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
                 if let Some(op) = box_op_ty(db, &val_ty)? {
-                    if let Some(m) = is_narrow_int(db, v) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, v, out);
                     out.push(Lir::CallImport(op)); // [map, key, val-handle]
                 }
                 out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map'] (consumes map, key, val)
@@ -3153,24 +3113,12 @@ fn emit(
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_ty(db, &key_ty)? {
-                if let Some(m) = is_narrow_int(db, key) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
             if let Some(op) = box_op_ty(db, &val_ty)? {
-                if let Some(m) = is_narrow_int(db, val) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, val, out);
                 out.push(Lir::CallImport(op)); // [map, key, val-handle]
             }
             out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map']
@@ -3183,13 +3131,7 @@ fn emit(
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_ty(db, &key_ty)? {
-                if let Some(m) = is_narrow_int(db, key) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
             out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map']
@@ -3212,13 +3154,7 @@ fn emit(
             for &e in &elems {
                 emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
                 if let Some(op) = box_op_ty(db, &elem_ty)? {
-                    if let Some(m) = is_narrow_int(db, e) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, e, out);
                     out.push(Lir::CallImport(op)); // [set, elem-handle]
                 }
                 out.push(Lir::CallImport(OP_SET_INSERT)); // → [set'] (consumes set, elem)
@@ -3231,13 +3167,7 @@ fn emit(
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_ty(db, &elem_ty)? {
-                if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
             out.push(Lir::CallImport(OP_SET_INSERT)); // → [set']
@@ -3250,13 +3180,7 @@ fn emit(
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_ty(db, &elem_ty)? {
-                if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
             out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set']
@@ -3282,13 +3206,7 @@ fn emit(
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
             if let Some(op) = box_op_ty(db, &elem_ty)? {
-                if let Some(m) = is_narrow_int(db, elem) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
             out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
@@ -3334,13 +3252,7 @@ fn emit(
             emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_ty(db, &key_ty)? {
-                if let Some(m) = is_narrow_int(db, key) {
-                    out.push(if m.signed {
-                        Lir::I64ExtendI32S
-                    } else {
-                        Lir::I64ExtendI32U
-                    });
-                }
+                emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
             out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
@@ -4319,13 +4231,7 @@ fn emit(
                 out.push(Lir::ConstI32(1 + k as i32)); // index
                 emit(db, cap, slots, base, high, scratch_ty, layout, out)?;
                 if let Some(op) = box_op(db, cap)? {
-                    if let Some(m) = is_narrow_int(db, cap) {
-                        out.push(if m.signed {
-                            Lir::I64ExtendI32S
-                        } else {
-                            Lir::I64ExtendI32U
-                        });
-                    }
+                    emit_box_i32_to_i64_extend(db, cap, out);
                     out.push(Lir::CallImport(op));
                 }
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
