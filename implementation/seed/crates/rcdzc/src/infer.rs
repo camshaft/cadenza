@@ -400,6 +400,14 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
     let crate::ty::Width::Fixed(w) = it.width else {
         return None;
     };
+    // The SENTINEL width 0 (a `reduce_ctor` clamp of an out-of-range/malformed width like `(UInt 65)`) is
+    // an ill-formed TYPE, not a literal-range problem — reporting "literal does not fit UInt0" misleads
+    // (it names the clamped sentinel and blames the literal). The ill-formed-width check
+    // (`out_of_range_int_width`, applied at the param/value annotation) reports the REAL fault naming the
+    // written width, so skip the literal-fit report here and let that fire.
+    if w == 0 {
+        return None;
+    }
     // The bound value's CONSTANT integer value, if it has one: a bare literal `200`, OR a value that
     // FOLDS to a constant (`(+ 100 100)` → 200) — the same computed constants the value annotation
     // `(: (+ 100 100) Int8)` range-checks. `core_of` performs the fold; a runtime value (a param, a call
@@ -604,6 +612,29 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // A RUNTIME WIDTH `(: n (UInt m))` with a runtime `m` is its own CDZ0302 (surfaced where the
     // annotation is used in the body); do not also fault it here as "not a type".
     if crate::eval::is_runtime_width_type(db, ty_expr) {
+        return;
+    }
+    // An OVER-CEILING / zero integer width `(UInt 65)`/`(UInt 0)` is an ILL-FORMED type (no valid
+    // representation) wherever it appears — well-formedness is TOTAL, so it must be rejected at the
+    // annotation, not only when a literal is fit-checked against it (`literal_width_fault`) or the def is
+    // exported. `reduce_ctor` clamps the width to the sentinel 0, so `typeval_of` succeeds with `Int0` and
+    // the "not a type" check below never fires; catch it HERE by reading the ORIGINAL width off the
+    // annotation, and name that width (not the misleading clamped `UInt0`). CDZ0302, the same code the
+    // literal-fit path gives — consistent with the totality the unbound-name rule already has.
+    if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, signed, width = w, "fault: over-ceiling integer width in a parameter annotation (CDZ0302)");
+        out.push(
+            Reject::coded(
+                Code::IntOutOfRange,
+                format!(
+                    "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size \
+                     integer wider than 64 bits is reserved to the big-integer layer, and 0 is not a \
+                     width)",
+                    if signed { "Int" } else { "UInt" }
+                ),
+            )
+            .at(ty_expr),
+        );
         return;
     }
     // The operand denotes a type → fine. Otherwise reject, exactly as the value-annotation form does:
@@ -4332,6 +4363,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         "a floating-point width must be one of the admitted IEEE widths (32 or 64)",
                     ));
                 }
+                // An OUT-OF-CEILING / zero INTEGER width `(: e (UInt 65))` is ill-formed at the annotation
+                // regardless of what `e` is — the integer analogue of the float admitted-set check just
+                // above. `reduce_ctor` clamps such a width to the sentinel 0 (so `annot_ty` is `Int0`), and
+                // the literal-fit check below would only fire for a CONCRETE literal and would name the
+                // misleading clamped `UInt0`; catch it HERE by reading the ORIGINAL width, so a NON-literal
+                // value (`(: x (UInt 65))`) is rejected too and the message names the written width. Same
+                // CDZ0302 + wording as the parameter-annotation path (`param_annotation_faults`).
+                if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
+                    trace!(target: "rcdzc::infer", node = id.0, signed, width = w, "fault: over-ceiling integer width in a value annotation (CDZ0302)");
+                    out.push(Reject::coded(
+                        Code::IntOutOfRange,
+                        format!(
+                            "`{}{w}` is not a valid integer type: a width must be in 1..=64 (a fixed-size \
+                             integer wider than 64 bits is reserved to the big-integer layer, and 0 is not \
+                             a width)",
+                            if signed { "Int" } else { "UInt" }
+                        ),
+                    ));
+                }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the
                 // annotation fixes its type (`(: 200 UInt8)` : UInt8) subject only to a RANGE CHECK —
@@ -4339,7 +4389,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // "Annotations Constrain": the annotation determines the literal's type rather than
                 // clashing with the signed-64 default a bare literal would otherwise take.)
                 if let (Resolved::Int(v), Ty::Int(it)) = (resolved_of(db, expr), &annot_ty) {
+                    // Skip the SENTINEL width 0 (`(: 5 (UInt 65))` clamps to `Int0`): the ill-formed-width
+                    // check just above already reported it naming the written width, so a "literal does not
+                    // fit UInt0" here would double-report and mislead.
                     if let crate::ty::Width::Fixed(w) = it.width
+                        && w != 0
                         && !v.fits_width(it.ground_signed(), w)
                     {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), "fault: literal does not fit annotated width (CDZ0302)");
