@@ -21551,6 +21551,268 @@ mod closure_host_resource {
         );
     }
 
+    /// ROUND-TRIP oracle core (the byte anchor for C-HOST-4, Direction 2): a `make` that produces a
+    /// closure resource + a SEPARATE `apply` CONSUMER that takes the closure resource as `own<t>` plus an
+    /// arg, recovers the cell (`resource.rep`), and dispatches it (`call_indirect`). Unlike the single/
+    /// multi-export `call` (which is a resource METHOD on the same resource `make` produced), `apply`
+    /// models a DISTINCT export whose PARAMETER is a closure — the host threads a handle from `make` back
+    /// into `apply`. The dispatch is identical (`resource.rep` → slot → `call_indirect`); what is new is
+    /// that the handle ORIGINATES in one export call and is CONSUMED by another. Exports: `make : () -> i32`
+    /// (rep = table slot 0), `apply : (i32 self, i64 x) -> i64`.
+    fn roundtrip_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64)->i64; 2 = make ()->i32; 3 = apply
+        // (i32,i64)->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I64]); // 3 apply
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        // Defined funcs: lifted = 2 (type 1), make = 3 (type 2), apply = 4 (type 3).
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // apply
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_apply = 4u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("apply", ExportKind::Func, f_apply);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(x) = x + 1
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::I64Const(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // apply(self, x) = call_indirect[type 1](x, slot = resource.rep(self)) — the CONSUMER: it takes a
+        // closure resource as a parameter and dispatches it. This is what a Cadenza `(def (apply (: g (->
+        // Int64 Int64)) (: x Int64)) (g x))` lowers to at the boundary.
+        let mut apply = Function::new(vec![]);
+        apply.instruction(&Instruction::LocalGet(1)); // x
+        apply.instruction(&Instruction::LocalGet(0)); // self handle
+        apply.instruction(&Instruction::Call(f_rrep)); // → the slot
+        apply.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        apply.instruction(&Instruction::End);
+        code.function(&apply);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the ROUND-TRIP oracle: imports the abstract resource + `make : ()
+    /// -> own<t>` + `apply : (self: own<t>, s64) -> s64`, then re-exports the resource + both funcs
+    /// ascribed. Structurally like the single-export inner component but the second func is `apply` (a
+    /// consumer taking the resource as a parameter) rather than `call` (a method) — the byte shapes are the
+    /// same (both take `own<t>` first); the semantic difference is what the outer host does with it.
+    fn roundtrip_inner_component() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        ); // type 0
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty)); // func 0
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (apply_ty, mut af) = c.type_function();
+        af.params([
+            ("g", ComponentValType::Type(own_imp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let apply_fn = c.import("import-func-apply", ComponentTypeRef::Func(apply_ty)); // func 1
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (apply_exp_ty, mut af2) = c.type_function();
+        af2.params([
+            ("g", ComponentValType::Type(own_exp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "apply",
+            ComponentExportKind::Func,
+            apply_fn,
+            Some(ComponentTypeRef::Func(apply_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer ROUND-TRIP oracle: wraps `roundtrip_core` in a resource with `make` + `apply`, published
+    /// as `cadenza:closure/exports`. Standalone (no heap runtime). Proves the host can produce a closure
+    /// handle from one export and thread it into another.
+    fn oracle_roundtrip_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let apply_core = c.core_alias_export(prog_inst, "apply", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_a, oda) = c.type_defined();
+        oda.own(res_ty);
+        let (make_ty, mut mfa) = c.type_function();
+        mfa.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_a)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift apply : (g: own<t>, x: s64) -> s64
+        let (own_b, odb) = c.type_defined();
+        odb.own(res_ty);
+        let (apply_ty, mut afb) = c.type_function();
+        afb.params([
+            ("g", ComponentValType::Type(own_b)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let apply_comp = c.lift_func(apply_core, apply_ty, []);
+        let inner_idx = c.component(roundtrip_inner_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-apply", ComponentExportKind::Func, apply_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// ROUND-TRIP end-to-end ORACLE (C-HOST-4): the host produces a closure handle from `make()` and
+    /// threads it BACK into a separate consumer `apply(handle, 5)` = 6. Proves host-as-custodian: a closure
+    /// crosses to the host as a resource and is handed back into another Cadenza export, which recovers the
+    /// cell and dispatches it via the guest's own `call_indirect`. The byte anchor licensing the compiler's
+    /// closure-parameter path (the hand-emitted `own<closure>` param ABI is the next increment).
+    #[test]
+    fn a_closure_handle_round_trips_through_a_consumer_export() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_roundtrip_component(&roundtrip_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("round-trip closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make");
+        let apply_idx = instance
+            .get_export_index(&mut store, Some(&iface), "apply")
+            .expect("apply");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let apply = instance.get_func(&mut store, apply_idx).expect("apply func");
+
+        // make() → a closure handle the HOST holds…
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make");
+        make.post_return(&mut store).expect("post_return");
+        assert!(
+            matches!(handle[0], Val::Resource(_)),
+            "make returns a resource handle, got {:?}",
+            handle[0]
+        );
+        // …then threads it BACK into the consumer `apply(handle, 5)` — the round trip. = (fn (x) (+ x 1))(5)
+        // = 6, dispatched through the guest's call_indirect from a handle that crossed OUT and back IN.
+        let mut out = [Val::Bool(false)];
+        apply
+            .call(&mut store, &[handle[0].clone(), Val::S64(5)], &mut out)
+            .expect("apply(handle, 5)");
+        apply.post_return(&mut store).expect("post_return");
+        assert_eq!(
+            out[0],
+            Val::S64(6),
+            "the host handed our closure back into `apply`, which dispatched it: (+ x 1)(5) = 6"
+        );
+    }
+
     /// C-HOST-1 (compiler serializer): `serialize::closure_resource_core_module` — the PRODUCTION core
     /// module a closure-resource export emits — produces a structurally VALID core module. Unlike the
     /// standalone oracle above (whose "cell" is the bare table slot), this is the real shape: the export
