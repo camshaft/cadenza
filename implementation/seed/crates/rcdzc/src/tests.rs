@@ -5852,6 +5852,38 @@ mod match_engine {
     }
 
     #[test]
+    fn an_out_of_range_literal_names_the_valid_range() {
+        // CDZ0302 states the concrete VALID RANGE the literal missed (rustc's "the range is `-128..=127`"),
+        // not only the type name — a signed N-bit is `-(2^(N-1))..=2^(N-1)-1`, an unsigned N-bit
+        // `0..=2^N-1`. The range is mechanically derived from the annotated type's sign+width.
+        let d = reject_full("(module m (def (main) (: 999 (Int 8))) (export main))")
+            .expect("an over-width Int8 literal is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        assert!(
+            d.message.contains("Int8") && d.message.contains("-128..=127"),
+            "names the type AND its valid range: {}",
+            d.message
+        );
+        // Unsigned: the range starts at 0 (and a negative literal is out of range).
+        let u = reject_full("(module m (def (main) (: 300 (UInt 8))) (export main))")
+            .expect("an over-width UInt8 literal is rejected");
+        assert!(
+            u.message.contains("0..=255"),
+            "an unsigned range starts at 0: {}",
+            u.message
+        );
+        // The widest unsigned bound renders exactly (needs u128 arithmetic, not i64).
+        let w =
+            reject_full("(module m (def (main) (: 18446744073709551616 (UInt 64))) (export main))")
+                .expect("2^64 does not fit UInt64");
+        assert!(
+            w.message.contains("0..=18446744073709551615"),
+            "UInt64.max renders exactly: {}",
+            w.message
+        );
+    }
+
+    #[test]
     fn a_constant_argument_is_range_checked_against_a_narrow_parameter_width() {
         // A CONSTANT argument passed to a NARROW-typed parameter must be range-checked against the
         // parameter's declared width, exactly as a direct `(: 200 Int8)` is — β-reduction now carries the
