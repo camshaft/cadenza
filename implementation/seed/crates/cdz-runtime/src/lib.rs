@@ -3226,6 +3226,19 @@ runtime_local! {
         core::cell::RefCell::new((Vec::new(), Vec::new()));
 }
 
+runtime_local! {
+    /// REUSED scratch worklist for `champ_eq`'s general (NESTED-compound) equality walk — the same
+    /// alloc-elision as `HASH_SCRATCH`. The shallow fast path (both compounds have only arity-0
+    /// children) never touches this; a genuinely nested compound (e.g. a record-of-records or
+    /// tuple-of-tuples compared by the language `=`, now that `value-eq` exposes `champ_eq`) fell
+    /// through to a freshly-allocated `Vec<(Handle,Handle)>` per comparison. Reusing one buffer
+    /// (clear + refill) makes a nested value-eq allocation-FREE steady-state. Safe: single-threaded,
+    /// the walk is iterative and never re-enters `champ_eq` (`with_raw_arity` uses a stack buffer), so
+    /// the borrow never nests.
+    static EQ_SCRATCH: core::cell::RefCell<Vec<(Handle, Handle)>> =
+        core::cell::RefCell::new(Vec::new());
+}
+
 /// A deterministic structural hash of the whole subtree rooted at `root`: FNV-1a over each node's
 /// raw bytes folded with its children's hashes. Because the rep is canonical, structurally-equal
 /// subtrees hash equal; differing raw or structure (very likely) differs.
@@ -3355,41 +3368,47 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
             return result;
         }
     }
-    let mut work: Option<Vec<(Handle, Handle)>> = None;
-    let mut pair = Some((a, b));
-    while let Some((x, y)) = pair {
-        // Process (x, y); `descend` is set to the children to push when both are equal compounds.
-        let mut descend: Option<(&Node, &Node)> = None;
-        if x == y {
-            // same pointer (incl. both NULL) ⇒ identical subtree, no descent needed
-        } else if is_immediate(x) || is_immediate(y) {
-            // An immediate's `.0` is NOT a Node pointer — compare by decoded value (arity 0, so
-            // equality reduces to equal canonical raw bytes and equal arity), WITHOUT allocating.
-            let equal = with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx == ry && ax == ay));
-            if !equal {
-                return false;
-            }
-        } else {
-            match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
-                (None, None) => {}
-                (Some(nx), Some(ny)) => {
-                    if *nx.raw != *ny.raw || nx.handles.len() != ny.handles.len() {
-                        return false;
-                    }
-                    descend = Some((nx, ny)); // equal compound roots — push children below
+    // General NESTED-compound walk. The worklist is REUSED from a thread-local (`EQ_SCRATCH`): each
+    // call clears it and returns it empty-but-capacious, so after the first nested compare it never
+    // allocates again (was a fresh `Vec` per nested comparison). Safe: single-threaded + the walk is
+    // iterative and never re-enters `champ_eq`, so the borrow never nests.
+    EQ_SCRATCH.with(|cell| {
+        let work = &mut *cell.borrow_mut();
+        work.clear();
+        let mut pair = Some((a, b));
+        while let Some((x, y)) = pair {
+            // Process (x, y); `descend` is set to the children to push when both are equal compounds.
+            let mut descend: Option<(&Node, &Node)> = None;
+            if x == y {
+                // same pointer (incl. both NULL) ⇒ identical subtree, no descent needed
+            } else if is_immediate(x) || is_immediate(y) {
+                // An immediate's `.0` is NOT a Node pointer — compare by decoded value (arity 0, so
+                // equality reduces to equal canonical raw bytes and equal arity), WITHOUT allocating.
+                let equal = with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx == ry && ax == ay));
+                if !equal {
+                    return false;
                 }
-                _ => return false, // exactly one null ⇒ differ
+            } else {
+                match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
+                    (None, None) => {}
+                    (Some(nx), Some(ny)) => {
+                        if *nx.raw != *ny.raw || nx.handles.len() != ny.handles.len() {
+                            return false;
+                        }
+                        descend = Some((nx, ny)); // equal compound roots — push children below
+                    }
+                    _ => return false, // exactly one null ⇒ differ
+                }
             }
-        }
-        if let Some((nx, ny)) = descend {
-            let w = work.get_or_insert_with(Vec::new);
-            for i in 0..nx.handles.len() {
-                w.push((nx.handles[i], ny.handles[i]));
+            if let Some((nx, ny)) = descend {
+                for i in 0..nx.handles.len() {
+                    work.push((nx.handles[i], ny.handles[i]));
+                }
             }
+            pair = work.pop();
         }
-        pair = work.as_mut().and_then(Vec::pop);
-    }
-    true
+        true
+    })
 }
 
 /// A deterministic, insertion-INDEPENDENT total order over key subtrees, used to canonicalize the
@@ -5784,13 +5803,44 @@ mod tests {
             }
         });
         println!("ALLOC map_lookup_nestedkey x{N}: {nlookup}");
-        // ~5/op for N=1000: ONLY the 4-deep probe's arr nodes. The general-walk champ_hash worklists are
-        // now REUSED from a thread-local (`HASH_SCRATCH`) — they grow once to the high-water mark then
-        // clear+reuse, so a nested hash is allocation-FREE (was 7/op = +2 per hash for the `work`+`results`
-        // buffers, @b3ac802). Guards that the thread-local reuse didn't regress (a per-hash Vec alloc, or
-        // the realloc chain, would push this back to ≥7000).
-        assert!(nlookup <= 5500, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 5500 (probe arr nodes only; the general-walk hash worklists are thread-local-reused, allocation-free)");
+        // ~4/op for N=1000: ONLY the 4-deep probe's arr nodes. BOTH general-walk worklists that a nested
+        // key touches are now REUSED from a thread-local — champ_hash's (`HASH_SCRATCH`, @b3ac802) AND the
+        // slot-hit champ_eq's (`EQ_SCRATCH`, this tick): each clears + reuses its buffer, so a nested-key
+        // hash AND its equality compare are both allocation-FREE (was 5/op with the eq worklist Vec, 7/op
+        // before the hash worklists were reused). Guards that neither thread-local reuse regressed.
+        assert!(nlookup <= 4400, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 4400 (probe arr nodes only; both the champ_hash AND champ_eq general-walk worklists are thread-local-reused, allocation-free — was 5000 with the eq Vec)");
         op_drop(nm);
+
+        // (H2b) DIRECT structural value-equality (`champ_eq`, the language `=` on two runtime compounds
+        // via `value-eq`) over a NESTED compound — the general worklist walk, NOT the shallow fast path.
+        // Two equal 4-deep nested tuples are compared N times; `champ_eq` BORROWS both operands and the
+        // walk is iterative, so a comparison allocates NOTHING now that the worklist is reused from the
+        // `EQ_SCRATCH` thread-local (was one `Vec<(Handle,Handle)>` per compare). Build both operands
+        // ONCE outside the measured loop so only the compares are timed. Guards the eq-worklist reuse.
+        let nested = |seed: i64| -> Handle {
+            let mut t = op_box_int(seed);
+            for d in 1..4i64 {
+                let outer = op_arr_alloc(2);
+                op_arr_set(outer, 0, op_box_int(seed + d));
+                op_arr_set(outer, 1, t);
+                t = outer;
+            }
+            t
+        };
+        let ea = nested(42);
+        let eb = nested(42); // structurally equal to `ea`, distinct nodes → forces the full walk
+        let veq = measure(&mut || {
+            for _ in 0..N {
+                assert!(champ_eq(ea, eb)); // equal nested compounds — full general worklist walk
+            }
+        });
+        println!("ALLOC value_eq_nested x{N}: {veq}");
+        // ZERO allocations: `champ_eq` borrows, and the general-walk worklist is reused from `EQ_SCRATCH`
+        // (clear + refill, grows once then never allocates). A regression to a per-compare Vec would push
+        // this to ~N. Both operands are pre-built + dropped outside the measured closure.
+        assert!(veq <= 50, "nested value-eq x{N} allocs {veq} exceeds ceiling 50 (champ_eq borrows + the general-walk worklist is thread-local-reused → allocation-free; a per-compare Vec would be ~N)");
+        op_drop(ea);
+        op_drop(eb);
 
         // (H3) map lookup by a heap-backed STRING key (the JSON-object / dictionary shape: keys are
         // multi-byte strings whose raw is a Heap `Vec<u8>`, not an inline immediate). A string key is
