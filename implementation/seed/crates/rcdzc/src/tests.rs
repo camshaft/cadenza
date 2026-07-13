@@ -9611,6 +9611,68 @@ mod match_engine {
     }
 
     #[test]
+    fn a_family_unit_auto_converts_to_the_reference_over_float() {
+        // F2-2: `1 inch + 1 mm` over Float64 — two named FAMILY units of `length` (inch = 127/5000 m, mm
+        // = 1/1000 m) — each converts to the reference `metre` and sums to 127/5000 + 1/1000 = 33/1250 =
+        // 0.0264 m. The family vocabulary is prelude DATA (`Db::unit_families`); the scales are machine-
+        // int metadata, so `Unit.of` families convert over Float with NO bignum. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1.0 ((. Unit of) #\"inch\")) \
+                      ((. Qty of) 1.0 ((. Unit of) #\"millimetre\"))))) (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an inch+mm family-unit sum compiles and runs"),
+                "main"
+            ),
+            0.0264
+        );
+    }
+
+    #[test]
+    fn registering_a_family_unit_twice_with_conflicting_conversions_is_an_error() {
+        // Operator ask: a name→conversion must be a FUNCTION — registering the same unit name with a
+        // DIFFERENT dimension or scale is an error (returns the offending name → CDZ0502 at a future user
+        // family-declaration surface), while a duplicate that AGREES is idempotent. `register_families`
+        // is the gate the built-in table and any user family flow through.
+        use crate::prelude::register_families;
+        // A conflict: `foot` twice with different scales.
+        let conflict = register_families(
+            [
+                ("foot", "metre", 381i128, 1250i128),
+                ("foot", "metre", 1, 3), // a bogus, disagreeing scale
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            conflict.err().as_deref(),
+            Some("foot"),
+            "a name registered with two different conversions is a conflict"
+        );
+        // A conflict on the DIMENSION too (same name, different reference dimension).
+        assert!(
+            register_families([("x", "metre", 1i128, 1i128), ("x", "second", 1, 1)].into_iter())
+                .is_err(),
+            "same name under two dimensions conflicts"
+        );
+        // An AGREEING duplicate is idempotent (harmless), not an error.
+        let ok = register_families(
+            [
+                ("inch", "metre", 127i128, 5000i128),
+                ("inch", "metre", 127, 5000),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            ok.ok().and_then(|m| m.get("inch").cloned()),
+            Some(("metre".to_string(), 127, 5000)),
+            "an agreeing re-registration is idempotent"
+        );
+        // The built-in table itself registers without conflict (it is validated through the same gate).
+        assert!(crate::prelude::unit_families().contains_key("foot"));
+    }
+
+    #[test]
     fn a_prefixed_unit_of_a_different_dimension_still_rejects_cdz0501() {
         // F2-1: a prefix scales WITHIN a dimension, never across — `km + second` is still CDZ0501. Pins
         // that the family/prefix relaxation (auto-convert within a dimension) does not weaken the

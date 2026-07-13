@@ -1937,6 +1937,17 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     let u = unit_of(db, *args.get(1)?)?;
                     u.scaled(num, den)
                 }
+                Prim::UnitOf => {
+                    // `(Unit.of #"foot")` — the family-unit name is the symbol's text (a `Str` in Layer
+                    // 1); consult the family registry for its reference dimension + scale, then build
+                    // `base(dim).scaled(num, den)`. An unregistered name fails to reduce (declines).
+                    let name = match resolved_of(db, *args.first()?) {
+                        Resolved::Str(s) => s,
+                        _ => return None,
+                    };
+                    let (dim, num, den) = db.unit_families.get(&name)?.clone();
+                    Unit::base(dim).scaled(num, den)
+                }
                 _ => None,
             }
         }

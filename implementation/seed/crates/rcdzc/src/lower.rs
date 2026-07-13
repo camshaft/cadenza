@@ -5843,6 +5843,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitDiv
         | Prim::UnitPow
         | Prim::UnitPrefix
+        | Prim::UnitOf
         | Prim::QtyOf
         | Prim::QtyValue
         | Prim::QtyCtor
@@ -8782,6 +8783,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitDiv => "unit-div",
         Prim::UnitPow => "unit-pow",
         Prim::UnitPrefix => "unit-prefix",
+        Prim::UnitOf => "unit-of",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
         Prim::QtyCtor => "Qty",
