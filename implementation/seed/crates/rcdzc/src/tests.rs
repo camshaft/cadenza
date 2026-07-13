@@ -3169,6 +3169,53 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_comparison_fold_to_a_constant_preserves_a_trapping_operand() {
+        // A tautology/unsatisfiable comparison folds to a CONSTANT — but that must NOT discard the runtime
+        // operand's evaluation, or a TRAPPING operand loses its trap. `(>= (/ 10 z) Int64.min)` is a
+        // tautology (every Int64 >= min), but the operand `(/ 10 z)` with z==0 divides by zero and MUST
+        // trap; likewise `(< (& (/ 10 z) 15) 16)` (the masked value ∈ [0,15], so `< 16` is a tautology the
+        // derived-range fold collapses). Both the type-bound and derived-range folds now refuse to fold to
+        // a constant when the operand may trap (`is_trap_free` guard), keeping the runtime compare so the
+        // operand is evaluated and traps — matching the self-comparison fold's discipline.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(>= (/ 10 z) -9223372036854775808)",
+                &[Val::S64(0)]
+            ),
+            "a tautology `>= Int64.min` must still trap on a div-by-zero operand"
+        );
+        assert!(
+            traps("(: z Int64)", "(< (& (/ 10 z) 15) 16)", &[Val::S64(0)]),
+            "a derived-range tautology must still trap on a div-by-zero operand"
+        );
+        // The doubling-overflow operand: `(+ z z)` at MAX overflows (checked arith traps), and `>= min` is
+        // a tautology — the fold must not drop the overflow.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(>= (+ z z) -9223372036854775808)",
+                &[Val::S64(i64::MAX)]
+            ),
+            "a tautology must still trap on an overflowing operand"
+        );
+        // NO OVER-CONSERVATISM: a TRAP-FREE operand (a masked PARAM) still FOLDS and computes correctly —
+        // `(< (& z 15) 16)` is always true, and a non-trapping div-tautology returns the folded result.
+        assert_eq!(
+            run::<i64>("(: z Int64)", "(if (< (& z 15) 16) 1 0)", &[Val::S64(5)]),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: z Int64)",
+                "(if (>= (/ 10 z) -9223372036854775808) 1 0)",
+                &[Val::S64(2)]
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir

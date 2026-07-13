@@ -6078,7 +6078,19 @@ fn fold_comparison_at_type_bound(
     };
     // The constant occurrence to reuse as the rhs of a rewritten `v == c` (keeps its width grounding).
     let c_occ = if v_on_left { rhs } else { lhs };
+    // A tautology/unsatisfiable comparison folds to a CONSTANT — but that DISCARDS the runtime operand
+    // `v`, so a TRAPPING operand (`(/ 10 z)` with z==0, an overflowing `(+ x x)`) would lose its trap and
+    // the program would run to the folded bool instead of trapping. Only fold when `v` is TRAP-FREE; a
+    // possibly-trapping operand keeps the runtime `Core::Compare` (returning `None`), which evaluates `v`
+    // and traps exactly as a genuine comparison does. This mirrors the self-comparison fold's
+    // `is_trap_free` guard above (which likewise refuses to drop a trapping operand). The `v == bound`
+    // rewrite (`eq_bound`) is unaffected — it KEEPS `v` as an operand, so its trap is preserved.
+    let operand_trap_free = is_trap_free(db, v);
     let const_bool = |r: bool, why: &str| {
+        if !operand_trap_free {
+            trace!(target: "rcdzc::fold", node = v.0, why, "range-vs-constant comparison is decidable but the operand may trap — keep the runtime compare to preserve the trap");
+            return None;
+        }
         trace!(target: "rcdzc::fold", node = v.0, why, "range-vs-constant comparison folds to a constant");
         Some(Core::ConstBool(r))
     };
