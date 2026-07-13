@@ -518,6 +518,11 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         // A quantity erases to its inner numeric type (`lower` strips the `Qty`), so box it by that inner
         // type — a `(Qty Int64 u)` element boxes exactly as an `Int64` element.
         Ty::Qty { inner, .. } => box_op_ty(db, inner),
+        // A NOMINAL newtype erases to its inner (the tag adds nothing to the runtime representation) — box
+        // by the inner type. A scalar-inner newtype boxes as its scalar; a recursive newtype's inner is a
+        // finite `Ty::Sum`-back-edged compound (a handle), boxed as-is. This is what lets a newtype value
+        // (incl. a recursive one's self-referential cell) sit in a tuple/sum/collection slot.
+        Ty::Nominal { inner, .. } => box_op_ty(db, inner),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -562,6 +567,9 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type — unbox by that inner type (the dual of `box_op_ty`).
         Ty::Qty { inner, .. } => get_op_ty(db, inner),
+        // A NOMINAL newtype erases to its inner — unbox by the inner type (the dual of `box_op_ty`'s
+        // Nominal arm), so a newtype value read back from a heap slot uses the right unbox.
+        Ty::Nominal { inner, .. } => get_op_ty(db, inner),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()

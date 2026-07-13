@@ -913,7 +913,9 @@ fn a_runtime_string_concat_and_byte_len_run_on_the_byte_leaf() {
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "three one-byte appends → byte-len 3"),
-        cdz_run::Outcome::Trap(t) => panic!("runtime string concat/byte-len trapped (miscompile?): {t}"),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("runtime string concat/byte-len trapped (miscompile?): {t}")
+        }
     }
 }
 
@@ -6600,27 +6602,74 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or | Lir::I32Or)).count();
-        let xors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor)).count();
-        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And | Lir::I32And)).count();
+        let ors = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Or | Lir::I32Or))
+                .count()
+        };
+        let xors = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor))
+                .count()
+        };
+        let ands = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64And | Lir::I32And))
+                .count()
+        };
         // `(| (| x 5) 3)` → one `or`; `(^ (^ x 5) 3)` → one `xor`; constant-left too.
-        assert_eq!(ors(&lir("(: x Int64)", "(: (| (| x 5) 3) Int64)")), 1, "two ors → one");
-        assert_eq!(ors(&lir("(: x Int64)", "(: (| 5 (| x 3)) Int64)")), 1, "left-const or → one");
-        assert_eq!(xors(&lir("(: x Int64)", "(: (^ (^ x 5) 3) Int64)")), 1, "two xors → one");
+        assert_eq!(
+            ors(&lir("(: x Int64)", "(: (| (| x 5) 3) Int64)")),
+            1,
+            "two ors → one"
+        );
+        assert_eq!(
+            ors(&lir("(: x Int64)", "(: (| 5 (| x 3)) Int64)")),
+            1,
+            "left-const or → one"
+        );
+        assert_eq!(
+            xors(&lir("(: x Int64)", "(: (^ (^ x 5) 3) Int64)")),
+            1,
+            "two xors → one"
+        );
         // Same-operand folds are NOT shadowed: `(^ x x)` → 0 (no xor), `(| x x)` → x (no or).
-        assert_eq!(xors(&lir("(: x Int64)", "(: (^ x x) Int64)")), 0, "^ a a → 0");
-        assert_eq!(ors(&lir("(: x Int64)", "(: (| x x) Int64)")), 0, "| a a → a");
+        assert_eq!(
+            xors(&lir("(: x Int64)", "(: (^ x x) Int64)")),
+            0,
+            "^ a a → 0"
+        );
+        assert_eq!(
+            ors(&lir("(: x Int64)", "(: (| x x) Int64)")),
+            0,
+            "| a a → a"
+        );
         // A MIXED op pair (`(| (& x 240) 15)`) is NOT collapsed — keeps both.
         let mixed = lir("(: x Int64)", "(: (| (& x 240) 15) Int64)");
         assert_eq!(ors(&mixed) + ands(&mixed), 2, "and-then-or keeps both ops");
 
         // VALUE PARITY.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(8)]), 15); // 8|7
-        assert_eq!(run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(16)]), 23);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(10)]), 12); // 10^6
-        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(6)]), 0); // 6^6
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(8)]),
+            15
+        ); // 8|7
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(16)]),
+            23
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(10)]),
+            12
+        ); // 10^6
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(6)]),
+            0
+        ); // 6^6
         // Double complement `(^ (^ x -1) -1)` = `x ^ 0` = x.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (^ x -1) -1) Int64)", &[Val::S64(42)]), 42);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (^ (^ x -1) -1) Int64)", &[Val::S64(42)]),
+            42
+        );
     }
 
     #[test]
@@ -6844,20 +6893,55 @@ mod runtime_ops {
         };
         let has_and = |c: &[Lir]| c.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And));
         // UInt64 >> 56 ∈ [0,255] → `& 255` elided; >> 60 ∈ [0,15] → `& 15` elided.
-        assert!(!has_and(&lir("(: x UInt64)", "(& (>> x 56) 255)")), "x>>56 ∈ [0,255], mask dropped");
-        assert!(!has_and(&lir("(: x UInt64)", "(& (>> x 60) 15)")), "x>>60 ∈ [0,15], mask dropped");
+        assert!(
+            !has_and(&lir("(: x UInt64)", "(& (>> x 56) 255)")),
+            "x>>56 ∈ [0,255], mask dropped"
+        );
+        assert!(
+            !has_and(&lir("(: x UInt64)", "(& (>> x 60) 15)")),
+            "x>>60 ∈ [0,15], mask dropped"
+        );
         // UInt32 >> 28 ∈ [0,15] → `& 15` elided.
-        assert!(!has_and(&lir("(: x UInt32)", "(& (>> x 28) 15)")), "u32 x>>28 ∈ [0,15], mask dropped");
+        assert!(
+            !has_and(&lir("(: x UInt32)", "(& (>> x 28) 15)")),
+            "u32 x>>28 ∈ [0,15], mask dropped"
+        );
         // But `>> 8` on a UInt64 (∈ [0, 2^56-1]) does NOT fit `& 255` → mask KEPT.
-        assert!(has_and(&lir("(: x UInt64)", "(& (>> x 8) 255)")), "x>>8 exceeds 255, mask kept");
+        assert!(
+            has_and(&lir("(: x UInt64)", "(& (>> x 8) 255)")),
+            "x>>8 exceeds 255, mask kept"
+        );
         // A mask NARROWER than the shifted range is kept (`x>>56 ∈ [0,255]` vs `& 15`).
-        assert!(has_and(&lir("(: x UInt64)", "(& (>> x 56) 15)")), "mask narrower than range, kept");
+        assert!(
+            has_and(&lir("(: x UInt64)", "(& (>> x 56) 15)")),
+            "mask narrower than range, kept"
+        );
 
         // VALUE PARITY. Top byte 0xFF → 255; top byte 0x05 → 5. And the kept-mask control.
-        assert_eq!(run::<u64>("(: x UInt64)", "(& (>> x 56) 255)", &[Val::U64(0xFF00_0000_0000_0000)]), 255);
-        assert_eq!(run::<u64>("(: x UInt64)", "(& (>> x 56) 255)", &[Val::U64(0x0500_0000_0000_0000)]), 5);
-        assert_eq!(run::<u32>("(: x UInt32)", "(& (>> x 28) 15)", &[Val::U32(0xA000_0000)]), 10);
-        assert_eq!(run::<u64>("(: x UInt64)", "(& (>> x 8) 255)", &[Val::U64(0x1234)]), 0x12);
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(& (>> x 56) 255)",
+                &[Val::U64(0xFF00_0000_0000_0000)]
+            ),
+            255
+        );
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(& (>> x 56) 255)",
+                &[Val::U64(0x0500_0000_0000_0000)]
+            ),
+            5
+        );
+        assert_eq!(
+            run::<u32>("(: x UInt32)", "(& (>> x 28) 15)", &[Val::U32(0xA000_0000)]),
+            10
+        );
+        assert_eq!(
+            run::<u64>("(: x UInt64)", "(& (>> x 8) 255)", &[Val::U64(0x1234)]),
+            0x12
+        );
     }
 
     #[test]
@@ -7810,23 +7894,52 @@ mod match_engine {
     }
 
     #[test]
-    fn a_recursive_newtype_stays_boxed_and_works() {
-        // A recursive newtype (its inner transitively reaches itself) CANNOT erase — the erased type is
-        // infinite — so it stays a boxed sum and works fully. `(type Lst (Lst (Option (Tuple Int64
-        // Lst))))` matched one level yields the head. (Direct + mutual recursion are guarded by
-        // `reaches_decl`; this exercises the through-a-sum recursive case that the arg-walk catches.)
-        // Uses the runtime-linked runner (a boxed sum builds heap nodes → needs the value-heap runtime),
-        // skipping if the runtime wasm is absent — unlike the erased cases, which need no heap.
+    fn a_recursive_newtype_erases_and_matches() {
+        // A RECURSIVE newtype ERASES (its inner's self-reference is a finite `Ty::Sum{decl}` back-edge —
+        // the μ-binder — so the erased inner is finite). `(type Lst (Mk (Option (Tuple Int64 Lst))))`
+        // erases the outer `Mk` box; matched one level yields the head. The inner `Option` still builds a
+        // heap node, so this uses the runtime-linked runner (skips if the runtime wasm is absent).
         let v = run_heap_value(
-            "(module m (type Lst (Lst (Option (Tuple Int64 Lst)))) \
-               (def (main) (match (Lst (Some (tuple 5 (Lst None)))) ((Lst o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
+            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+               (def (main) (match (Mk (Some (tuple 5 (Mk None)))) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
+            vec![],
+        );
+        if let Some(v) = v {
+            assert_eq!(v, "5", "a recursive newtype erases and matches to its head");
+        }
+    }
+
+    #[test]
+    fn a_recursive_newtype_unifies_across_folded_and_unfolded_reps() {
+        // The Phase-1 crux: a recursive newtype's type appears FOLDED (an annotation `(: … Lst)` collapses
+        // the recursion to a `Ty::Sum{Lst}` back-edge) and UNFOLDED (a value's type, `Ty::Nominal{Lst}` at
+        // the recursion point). Because `Ty::Nominal` is compared by decl+args (NOT inner), these unify —
+        // the annotation type-checks. Was "annotation type Lst does not match value type Lst" pre-fix.
+        let v = run_heap_value(
+            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+               (def (main) (match (: (Mk (Some (tuple 42 (Mk None)))) Lst) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
             vec![],
         );
         if let Some(v) = v {
             assert_eq!(
-                v, "5",
-                "a recursive newtype stays boxed and matches to its head"
+                v, "42",
+                "a folded annotation unifies with the unfolded value type"
             );
+        }
+    }
+
+    #[test]
+    fn mutually_recursive_newtypes_erase_and_match() {
+        // MUTUAL recursion: `(type A (Mk (Option B))) (type B (Wrap (Tuple Int64 A)))` — each is a newtype
+        // whose inner references the OTHER (a `Ty::Sum` back-edge to the other's decl), both finite. Both
+        // erase and construct/match end-to-end; the decl+args identity makes the cross-references unify.
+        let v = run_heap_value(
+            "(module m (type A (Mk (Option B))) (type B (Wrap (Tuple Int64 A))) \
+               (def (main) (match (Mk (Some (Wrap (tuple 7 (Mk None))))) ((Mk o) (match o ((Some w) (match w ((Wrap t) (. t 0)))) ((None _) 0))))) (export main))",
+            vec![],
+        );
+        if let Some(v) = v {
+            assert_eq!(v, "7", "mutually-recursive newtypes erase and match");
         }
     }
 
@@ -8794,9 +8907,13 @@ mod match_engine {
         assert_eq!(fix.replacement, "default-integer");
         assert!(!fix.verified, "a nearest-key guess is heuristic");
         // A FAR key gets no misleading suggestion (the plain reject).
-        let far = reject_full("(do (pragma frobnicate 3) (def (main) 1) (export main))")
-            .expect("reject");
-        assert!(far.fix.is_none(), "no suggestion for an unrelated key: {:?}", far.fix);
+        let far =
+            reject_full("(do (pragma frobnicate 3) (def (main) 1) (export main))").expect("reject");
+        assert!(
+            far.fix.is_none(),
+            "no suggestion for an unrelated key: {:?}",
+            far.fix
+        );
     }
 
     #[test]
@@ -18171,17 +18288,17 @@ mod stage1 {
             "a two-variant sum stays boxed"
         );
 
-        // A RECURSIVE single-variant sum is NOT erased (its inner would be infinite / inconsistently
-        // boxed) — the recursion guard declines.
+        // A RECURSIVE single-variant sum ERASES — its inner's self-reference is a finite `Ty::Sum{decl}`
+        // LEAF (the μ-binder), so the inner `(Tuple Int64 Ty::Sum{Stream})` is finite. `Ty::Nominal` is
+        // compared by decl+args (not inner), so the folded/unfolded divergence is harmless.
         let ast = parse(
             "(module m (type Stream (More (Tuple Int64 Stream))) (def (main) 0) (export main))",
         );
         let mut db = Db::load(ast);
         let occ = decl_of(&db, "Stream");
-        assert_eq!(
-            newtype_underlying(&mut db, occ),
-            None,
-            "a recursive single-variant sum stays boxed"
+        assert!(
+            matches!(newtype_underlying(&mut db, occ), Some(Ty::Tuple(_))),
+            "a recursive single-variant sum erases to a finite inner (self-ref is a Ty::Sum leaf)"
         );
 
         // A GENERIC single-variant sum IS erasable — its underlying template carries the param as
@@ -18218,22 +18335,25 @@ mod stage1 {
             "a non-recursive newtype over a sum erases to the sum type"
         );
 
-        // MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))` is caught (load-order-independent) — both
-        // stay boxed (each reaches itself through the other).
+        // MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))` ERASES both — each newtype's inner is the
+        // OTHER's `Ty::Sum` leaf (`A`'s inner is `Ty::Sum{B}`, `B`'s is `Ty::Sum{A}`), both finite. Neither
+        // unfolds the cycle; the `Ty::Sum` back-edges terminate every reader, and `decl+args` identity
+        // makes the folded/unfolded reps compare equal. Both return `Some`.
         let ast =
             parse("(module m (type A (Mk B)) (type B (Wrap A)) (def (main) 0) (export main))");
         let mut db = Db::load(ast);
         let a = decl_of(&db, "A");
         let b = decl_of(&db, "B");
-        assert_eq!(
-            newtype_underlying(&mut db, a),
-            None,
-            "mutual-recursive A stays boxed"
+        // Both ERASE (return `Some`). The inner's cross-reference is the other decl as a `Ty::Sum` OR
+        // `Ty::Nominal` back-edge depending on which was cached first — both finite, both terminate every
+        // reader; the exact variant is a load-order detail, so assert only that erasure happened.
+        assert!(
+            newtype_underlying(&mut db, a).is_some(),
+            "mutual-recursive A erases"
         );
-        assert_eq!(
-            newtype_underlying(&mut db, b),
-            None,
-            "mutual-recursive B stays boxed"
+        assert!(
+            newtype_underlying(&mut db, b).is_some(),
+            "mutual-recursive B erases"
         );
     }
 

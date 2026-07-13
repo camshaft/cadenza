@@ -885,6 +885,17 @@ impl Db {
                 db.enum_disc.insert(td.occ);
             }
         }
+        // EVICT the resolved/types cache residue from the `newtype_underlying` precompute above. That walk
+        // called `typeval_of` on newtype payload occurrences (incl. a RECURSIVE newtype's self-reference)
+        // BEFORE `newtype_inner` was fully populated, so it memoized `Resolved::TypeVal(Ty::Sum{decl})` on
+        // the shared sum-record `(meta t)` nodes — the PRE-normalization boxed form. Left in place, a later
+        // annotation `(: x Lst)` reads that stale `Ty::Sum` (bypassing `decode_ty`/`normalize_sum`) and
+        // fails to unify with the value's `Ty::Nominal` ("type Lst does not match type Lst"). This
+        // precompute is the ONLY thing that has touched these columns in `load`, so resetting them to
+        // empty is safe — every real query re-decodes on demand through the now-complete `normalize_sum`,
+        // getting the erased `Ty::Nominal`. (Cheap: the columns are otherwise empty at this point.)
+        db.resolved = Column::new();
+        db.types = Column::new();
         db
     }
 
